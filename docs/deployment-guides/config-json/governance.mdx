@@ -83,11 +83,13 @@ Virtual keys are issued to clients and act as scoped API tokens. Each key specif
 | `name` | Yes | Human-readable name |
 | `value` | No | The key token sent by clients (use `env.` prefix). Auto-generated if omitted |
 | `is_active` | No | Default `true`. Set `false` to disable without deleting |
-| `team_id` | No | Associate with a team (mutually exclusive with `customer_id`) |
+| `team_id` | No | Associate with a team (mutually exclusive with `customer_id` and `business_unit_id`) |
 | `customer_id` | No | Associate with a customer |
+| `business_unit_id` | No | Enterprise. Associate with a business unit (mutually exclusive with `team_id` and `customer_id`) |
 | `rate_limit_id` | No | Attach a rate limit |
 | `calendar_aligned` | No | Snap budget resets to day/week/month/year boundaries |
 | `allow_all_providers` | No | Default `false`. When `true`, the key can use every provider, including ones added later. Listed `provider_configs` retain their per-provider model/key/budget/rate-limit rules. Providers without an entry get all models, all keys, and no per-provider limits |
+| `disable_content_logging` | No | Tri-state. Omit to inherit `client.disable_content_logging`. `true` keeps this key's request and response content out of the log store (unless an allowed `x-bf-disable-content-logging: false` header re-enables it for one request) and out of OpenTelemetry export. `false` stores content for this key even when the client setting is `true`. See [Content Logging](/features/observability/content-logging) |
 | `provider_configs` | No | Allowed provider/model/key combinations (empty = deny all, unless `allow_all_providers` is `true`) |
 
 ### Provider Config Fields
@@ -260,6 +262,7 @@ Routing rules dynamically select the provider and model for each request based o
 | `scope_id` | Conditional | Required when `scope` is not `"global"` |
 | `chain_rule` | No | If `true`, re-evaluates the chain after this rule matches |
 | `fallbacks` | No | Ordered fallback list if the primary target fails. See [Fallback Fields](#fallback-fields) |
+| `ttft_timeout_ms` | No | Time-to-first-token (TTFT) cutoff for streaming requests, 1 to 300000 ms. An attempt with no first token in time is cut off and the next fallback runs; the last attempt is never cut off. See [TTFT cutoff](/providers/routing-rules#time-to-first-token-ttft-cutoff) |
 
 ### Target Fields
 
@@ -326,6 +329,25 @@ Define organizational entities and attach rate limits directly. Team budgets ref
         "team_id": "team-ml"
       }
     ]
+  }
+}
+```
+
+### Access profiles on teams, customers, and business units
+
+<Info>Enterprise-only.</Info>
+
+A team, customer, or business unit can hold one [access profile](/enterprise/access-profiles) instead of budgets and a rate limit of its own. Name it with `access_profile` on the entity's entry; the profile itself is declared under the top-level `access_profiles`:
+
+```json
+{
+  "access_profiles": [
+    { "name": "Engineering Baseline", "budgets": [{ "id": "budget-engineering-baseline", "max_limit": 500, "reset_duration": "1M" }] }
+  ],
+  "governance": {
+    "customers": [{ "id": "customer-acme", "name": "Acme Corp", "access_profile": "Engineering Baseline" }],
+    "teams": [{ "id": "team-ml", "name": "ML Team", "access_profile": "Engineering Baseline" }],
+    "business_units": [{ "id": "bu-emea", "name": "EMEA", "access_profile": "Engineering Baseline" }]
   }
 }
 ```

@@ -69,7 +69,7 @@ logs:
           type: string
       - name: complexity_mechanisms
         in: query
-        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, decision, llm, session, or skipped)
         schema:
           type: string
       - name: session_id
@@ -134,6 +134,18 @@ logs:
         description: "Exact lookup on a log ID (which is the request ID). Takes precedence over the time range — start_time/end_time/period are ignored when it is set. roots_only is ignored too, so an ID naming a fallback child returns that child rather than collapsing it into its root."
         schema:
           type: string
+      - name: roots_only
+        in: query
+        description: "Hide rows whose parent_request_id points at another row matching the same filters, so each fallback chain lists as its root request. The root carries child_count, children_cost and children_tokens for the rows it hides. Ignored when parent_request_id or request_id is set."
+        schema:
+          type: boolean
+          default: false
+      - name: group_sessions
+        in: query
+        description: "Collapse every row sharing a session_id onto that session's earliest root request, which carries session_child_count, session_total_cost and session_total_tokens. Requires roots_only=true, and is ignored when session_id, parent_request_id or request_id is set. Sorting orders the collapsed rows by the root row's own value, not by the session total."
+        schema:
+          type: boolean
+          default: false
       - name: limit
         in: query
         description: Number of logs to return (default 50, max 1000)
@@ -284,7 +296,7 @@ logs-stats:
           type: string
       - name: complexity_mechanisms
         in: query
-        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+        description: Comma-separated list of complexity decision mechanisms to filter by (semantic, decision, llm, session, or skipped)
         schema:
           type: string
       - name: session_id
@@ -1143,7 +1155,7 @@ _histogram-parameters:
   complexity_mechanisms:
     name: complexity_mechanisms
     in: query
-    description: Comma-separated list of complexity decision mechanisms to filter by (semantic, llm, session, or skipped)
+    description: Comma-separated list of complexity decision mechanisms to filter by (semantic, decision, llm, session, or skipped)
     schema:
       type: string
   session_id:
@@ -1570,6 +1582,9 @@ mcp-logs:
     summary: Delete MCP tool logs
     description: |
       Deletes MCP tool logs by their IDs.
+      Requires authenticated management access. Requests admitted without checking
+      credentials because dashboard authentication is disabled, unconfigured, or
+      bypassed by an auth whitelist receive 403 before any logs are deleted.
     tags:
       - Logging
     requestBody:
@@ -1590,6 +1605,12 @@ mcp-logs:
               $ref: "../../schemas/management/common.yaml#/MessageResponse"
       "400":
         $ref: "../../openapi.yaml#/components/responses/BadRequest"
+      "403":
+        description: Authentication was bypassed; authenticated management access is required
+        content:
+          application/json:
+            schema:
+              $ref: "../../schemas/inference/common.yaml#/BifrostError"
       "500":
         $ref: "../../openapi.yaml#/components/responses/InternalError"
 

@@ -42,17 +42,23 @@ func (s *PineconeStore) Ping(ctx context.Context) error {
 // Note: Pinecone namespaces are created implicitly when upserting vectors.
 // This method is a no-op but ensures the connection is valid.
 func (s *PineconeStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]VectorStoreProperties) error {
-	// Store dimension for use in GetAll (zero vector queries)
-	s.mu.Lock()
-	s.dimension = dimension
-	s.mu.Unlock()
-
-	// Pinecone namespaces are created automatically on first upsert.
-	// We just verify the index connection is valid.
-	_, err := s.indexConn.DescribeIndexStats(ctx)
+	// Pinecone namespaces are created automatically on first upsert, so this
+	// verifies the index connection. The index has one dimension for every
+	// namespace in it, so a namespace asked for at any other size could never
+	// hold its vectors; that is refused here, as every store refuses it.
+	stats, err := s.indexConn.DescribeIndexStats(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to verify index connection: %w", err)
 	}
+	if stats != nil && stats.Dimension != nil && dimension > 0 && int(*stats.Dimension) != dimension {
+		return dimensionMismatchError(namespace, int(*stats.Dimension), dimension, "index")
+	}
+
+	// Store dimension for use in GetAll (zero vector queries). Only once the size is accepted:
+	// the store is shared, so a refused size must leave it as it was.
+	s.mu.Lock()
+	s.dimension = dimension
+	s.mu.Unlock()
 	return nil
 }
 

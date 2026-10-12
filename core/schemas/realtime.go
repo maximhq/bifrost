@@ -235,6 +235,7 @@ func ParseRealtimeEvent(raw []byte) (*BifrostRealtimeEvent, error) {
 	}
 
 	event := &BifrostRealtimeEvent{
+		RawData: append(json.RawMessage(nil), raw...),
 		Type:    alias.Type,
 		EventID: alias.EventID,
 		Session: alias.Session,

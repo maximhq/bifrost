@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 )
@@ -45,21 +47,26 @@ type EnvKeyInfo struct {
 
 // CompatConfig holds the compat plugin feature flags.
 type CompatConfig struct {
-	ConvertTextToChat      bool `json:"convert_text_to_chat"`
-	ConvertChatToResponses bool `json:"convert_chat_to_responses"`
-	ShouldDropParams       bool `json:"should_drop_params"`
-	ShouldConvertParams    bool `json:"should_convert_params"`
-	AzureDeepseek          bool `json:"azure_deepseek"`
+	ConvertTextToChat                   bool `json:"convert_text_to_chat"`
+	ConvertChatToResponses              bool `json:"convert_chat_to_responses"`
+	ShouldDropParams                    bool `json:"should_drop_params"`
+	ShouldConvertParams                 bool `json:"should_convert_params"`
+	AzureDeepseek                       bool `json:"azure_deepseek"`
+	ForceReasoningOnlyModelsToResponses bool `json:"force_reasoning_only_models_to_responses"`
+	ConvertDecisionToResponses          bool `json:"convert_decision_to_responses"`
 }
 
-// UnmarshalJSON defaults all bool fields to true when absent from JSON.
+// UnmarshalJSON defaults all bool fields to true when absent from JSON, except
+// ConvertDecisionToResponses: emulating a decision through a chat model is opt-in.
 func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	type compatConfig struct {
-		ConvertTextToChat      *bool `json:"convert_text_to_chat"`
-		ConvertChatToResponses *bool `json:"convert_chat_to_responses"`
-		ShouldDropParams       *bool `json:"should_drop_params"`
-		ShouldConvertParams    *bool `json:"should_convert_params"`
-		AzureDeepseek          *bool `json:"azure_deepseek"`
+		ConvertTextToChat                   *bool `json:"convert_text_to_chat"`
+		ConvertChatToResponses              *bool `json:"convert_chat_to_responses"`
+		ShouldDropParams                    *bool `json:"should_drop_params"`
+		ShouldConvertParams                 *bool `json:"should_convert_params"`
+		AzureDeepseek                       *bool `json:"azure_deepseek"`
+		ForceReasoningOnlyModelsToResponses *bool `json:"force_reasoning_only_models_to_responses"`
+		ConvertDecisionToResponses          *bool `json:"convert_decision_to_responses"`
 	}
 	var s compatConfig
 	if err := sonic.Unmarshal(data, &s); err != nil {
@@ -70,6 +77,8 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 	c.ShouldDropParams = s.ShouldDropParams == nil || *s.ShouldDropParams
 	c.ShouldConvertParams = s.ShouldConvertParams == nil || *s.ShouldConvertParams
 	c.AzureDeepseek = s.AzureDeepseek == nil || *s.AzureDeepseek
+	c.ForceReasoningOnlyModelsToResponses = s.ForceReasoningOnlyModelsToResponses == nil || *s.ForceReasoningOnlyModelsToResponses
+	c.ConvertDecisionToResponses = s.ConvertDecisionToResponses != nil && *s.ConvertDecisionToResponses
 	return nil
 }
 
@@ -100,6 +109,10 @@ type ClientConfig struct {
 	MaxRequestBodySizeMB                  int                                   `json:"max_request_body_size_mb"`                    // The maximum request body size in MB
 	Compat                                CompatConfig                          `json:"compat"`                                      // Compat plugin configuration
 	MCPAgentDepth                         int                                   `json:"mcp_agent_depth"`                             // The maximum depth for MCP agent mode tool execution
+	MCPMaxInstructionsPerClient           int                                   `json:"mcp_max_instructions_per_client"`             // Byte bound on one server's forwarded instructions; 0 is the default
+	MCPMaxInstructionsTotal               int                                   `json:"mcp_max_instructions_total"`                  // Byte bound on the whole forwarded aggregate; 0 is the default
+	MCPCodeModeLimits                     *schemas.MCPCodeModeLimits            `json:"mcp_code_mode_limits,omitempty"`              // Per-execution code mode limits; nil or zero fields use the defaults
+	MCPOAuthPrivateAllowlist              []string                              `json:"mcp_oauth_private_allowlist,omitempty"`       // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
 	MCPToolExecutionTimeout               int                                   `json:"mcp_tool_execution_timeout"`                  // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel               string                                `json:"mcp_code_mode_binding_level"`                 // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                   int                                   `json:"mcp_tool_sync_interval"`                      // Global tool sync interval in minutes (default: 10, 0 = built-in default)
@@ -111,14 +124,18 @@ type ClientConfig struct {
 	LoggingHeaders                        []string                              `json:"logging_headers,omitempty"`                   // Headers to capture in log metadata
 	WhitelistedRoutes                     []string                              `json:"whitelisted_routes,omitempty"`                // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
+	DeleteExpiredVirtualKeys              bool                                  `json:"delete_expired_virtual_keys"`                 // Delete expired virtual keys by default; a key's delete_after_expire overrides this
+	EnforceVKObjectOwnership              bool                                  `json:"enforce_vk_object_ownership"`                 // Restrict provider objects (files, batches, containers, ...) to the virtual key that created them
 	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
-	MCPServerAuthMode                     tables.MCPServerAuthMode              `json:"mcp_server_auth_mode,omitempty"`              // How /mcp authenticates inbound clients: headers (default), both, or oauth.
-	OAuth2ServerConfig                    *tables.OAuth2ServerConfig            `json:"oauth2_server_config,omitempty"`              // OAuth2 AS-specific settings (IssuerURL, token TTLs). Only relevant when MCPServerAuthMode is both or oauth.
-	ConfigHash                            string                                `json:"-"`                                           // Config hash for reconciliation (not serialized)
-	DumpErrorsInConsoleLogs               bool                                  `json:"dump_errors_in_console_logs"`                 // Dump error details in console logs
-	WebhookConfig                         *tables.WebhookConfig                 `json:"webhook_config,omitempty"`                    // Global webhook delivery settings; nil means all defaults
+	A2AStoreRawRequestResponse            bool                                  `json:"a2a_store_raw_request_response"`
+	A2AExternalClientURL                  *schemas.SecretVar                    `json:"a2a_external_client_url,omitempty"` // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs. Supports env var syntax ("env.MY_VAR") and vault refs
+	MCPServerAuthMode                     tables.MCPServerAuthMode              `json:"mcp_server_auth_mode,omitempty"`    // How /mcp authenticates inbound clients: headers (default), both, or oauth.
+	OAuth2ServerConfig                    *tables.OAuth2ServerConfig            `json:"oauth2_server_config,omitempty"`    // OAuth2 AS-specific settings (IssuerURL, token TTLs). Only relevant when MCPServerAuthMode is both or oauth.
+	ConfigHash                            string                                `json:"-"`                                 // Config hash for reconciliation (not serialized)
+	DumpErrorsInConsoleLogs               bool                                  `json:"dump_errors_in_console_logs"`       // Dump error details in console logs
+	WebhookConfig                         *tables.WebhookConfig                 `json:"webhook_config,omitempty"`          // Global webhook delivery settings; nil means all defaults
 }
 
 // IsMCPOAuthDiscoveryEnabled reports whether the well-known OAuth discovery
@@ -132,12 +149,14 @@ func (c *ClientConfig) IsMCPOAuthDiscoveryEnabled() bool {
 func (c *ClientConfig) UnmarshalJSON(data []byte) error {
 	type ClientConfigAlias ClientConfig
 	alias := ClientConfigAlias{
+		EnforceVKObjectOwnership: true, // an omitted field keeps provider objects bound to their creator
 		Compat: CompatConfig{
-			ConvertTextToChat:      true,
-			ConvertChatToResponses: true,
-			ShouldDropParams:       true,
-			ShouldConvertParams:    true,
-			AzureDeepseek:          true,
+			ConvertTextToChat:                   true,
+			ConvertChatToResponses:              true,
+			ShouldDropParams:                    true,
+			ShouldConvertParams:                 true,
+			AzureDeepseek:                       true,
+			ForceReasoningOnlyModelsToResponses: true,
 		},
 	}
 	input := struct {
@@ -211,10 +230,26 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	if c.Compat.ShouldConvertParams {
 		hash.Write([]byte("compatShouldConvertParams:true"))
 	}
+	if c.Compat.AzureDeepseek {
+		hash.Write([]byte("compatAzureDeepseek:true"))
+	}
+	if !c.Compat.ForceReasoningOnlyModelsToResponses {
+		hash.Write([]byte("compatForceReasoningOnlyModelsToResponses:false"))
+	}
+	if c.Compat.ConvertDecisionToResponses {
+		hash.Write([]byte("compatConvertDecisionToResponses:true"))
+	}
 
 	// Only hash non-default value to avoid legacy config hash churn.
 	if c.HideDeletedVirtualKeysInFilters {
 		hash.Write([]byte("hideDeletedVirtualKeysInFilters:true"))
+	}
+	if c.DeleteExpiredVirtualKeys {
+		hash.Write([]byte("deleteExpiredVirtualKeys:true"))
+	}
+	// Default is true; only hash the opt-out to avoid config hash churn on upgrade.
+	if !c.EnforceVKObjectOwnership {
+		hash.Write([]byte("enforceVKObjectOwnership:false"))
 	}
 
 	// Always hash when non-zero — explicitly setting the default (10) is a meaningful
@@ -229,6 +264,13 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		hash.Write([]byte("mcpAgentDepth:" + strconv.Itoa(c.MCPAgentDepth)))
 	} else {
 		hash.Write([]byte("mcpAgentDepth:0"))
+	}
+	// No else: 0 is the default, so writing ":0" would change every existing config's hash.
+	if c.MCPMaxInstructionsPerClient > 0 {
+		hash.Write([]byte("mcpMaxInstructionsPerClient:" + strconv.Itoa(c.MCPMaxInstructionsPerClient)))
+	}
+	if c.MCPMaxInstructionsTotal > 0 {
+		hash.Write([]byte("mcpMaxInstructionsTotal:" + strconv.Itoa(c.MCPMaxInstructionsTotal)))
 	}
 
 	if c.MCPToolExecutionTimeout > 0 {
@@ -253,6 +295,8 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	if c.MCPDisableAutoToolInject {
 		hash.Write([]byte("mcpDisableAutoToolInject:true"))
 	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.MCPEnableTempTokenAuth {
@@ -292,6 +336,27 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	// Only hash non-default value to avoid legacy config hash churn on upgrade.
 	if c.DumpErrorsInConsoleLogs {
 		hash.Write([]byte("dumpErrorsInConsoleLogs:true"))
+	}
+
+	// Only hash when present to avoid legacy config hash churn on upgrade.
+	if c.MCPCodeModeLimits != nil {
+		data, err := sonic.Marshal(c.MCPCodeModeLimits)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("mcpCodeModeLimits:"))
+		hash.Write(data)
+	}
+
+	// Only hash when present to avoid legacy config hash churn on upgrade. An explicit
+	// empty list is present: it revokes every host, so it must read as a file change.
+	if c.MCPOAuthPrivateAllowlist != nil {
+		data, err := sortedStringsJSON(c.MCPOAuthPrivateAllowlist)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("mcpOAuthPrivateAllowlist:"))
+		hash.Write(data)
 	}
 
 	// Only hash when present to avoid legacy config hash churn on upgrade.
@@ -448,6 +513,18 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		}
 	}
 
+	// Only hashed when set to avoid hash churn on existing configs that predate the field.
+	if c.A2AStoreRawRequestResponse {
+		hash.Write([]byte("a2aStoreRawRequestResponse:true"))
+	}
+	if c.A2AExternalClientURL.IsSet() {
+		if c.A2AExternalClientURL.IsFromSecret() {
+			hash.Write([]byte("a2aExternalClientURL:ref:" + c.A2AExternalClientURL.GetRawRef()))
+		} else {
+			hash.Write([]byte("a2aExternalClientURL:val:" + c.A2AExternalClientURL.GetValue()))
+		}
+	}
+
 	// Only hash non-default values to avoid legacy config hash churn on upgrade —
 	// existing configs carry an empty auth mode and a nil OAuth2 server config.
 	if c.MCPServerAuthMode != "" {
@@ -489,7 +566,35 @@ func (c *ClientConfig) GenerateClientConfigHashWithToolManager(tm *schemas.MCPTo
 	} else {
 		h.Write([]byte("toolMgrDisableAutoInject:false"))
 	}
+	// Only hash a non-default value, so a config written before this field existed keeps
+	// producing the same hash on upgrade.
+	if tm.CodeModeLimits != nil {
+		data, err := sonic.Marshal(tm.CodeModeLimits)
+		if err != nil {
+			return "", err
+		}
+		h.Write([]byte("toolMgrCodeModeLimits:"))
+		h.Write(data)
+	}
+	// Same presence rule as mcpOAuthPrivateAllowlist in GenerateClientConfigHash.
+	if tm.OAuthPrivateAllowlist != nil {
+		data, err := sortedStringsJSON(tm.OAuthPrivateAllowlist)
+		if err != nil {
+			return "", err
+		}
+		h.Write([]byte("toolMgrOAuthPrivateAllowlist:"))
+		h.Write(data)
+	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// sortedStringsJSON marshals a sorted copy of values, so a list's hash does
+// not depend on the order its entries were written in.
+func sortedStringsJSON(values []string) ([]byte, error) {
+	sorted := make([]string, len(values))
+	copy(sorted, values)
+	sort.Strings(sorted)
+	return sonic.Marshal(sorted)
 }
 
 // Redacted returns a copy of ClientConfig with any env-backed SecretVar fields masked.
@@ -497,6 +602,9 @@ func (c *ClientConfig) Redacted() ClientConfig {
 	out := *c
 	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromSecret() {
 		out.MCPExternalClientURL = c.MCPExternalClientURL.Redacted()
+	}
+	if c.A2AExternalClientURL != nil && c.A2AExternalClientURL.IsFromSecret() {
+		out.A2AExternalClientURL = c.A2AExternalClientURL.Redacted()
 	}
 	return out
 }
@@ -511,9 +619,11 @@ type ProviderConfig struct {
 	SendBackRawRequest       bool                              `json:"send_back_raw_request"`                 // Include raw request in BifrostResponse
 	SendBackRawResponse      bool                              `json:"send_back_raw_response"`                // Include raw response in BifrostResponse
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
+	IgnoreProviderCost       bool                              `json:"ignore_provider_cost"`                  // Ignore provider-reported usage.cost and price from Bifrost's catalog
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
+	InjectedTools            []schemas.InjectedTool            `json:"injected_tools,omitempty"`              // MCP tools injected and auto-executed server side
 	ConfigHash               string                            `json:"config_hash,omitempty"`                 // Hash of config.json version, used for change detection
 	Status                   string                            `json:"status,omitempty"`                      // Model discovery status for keyless providers
 	Description              string                            `json:"description,omitempty"`                 // Model discovery error message for keyless providers
@@ -532,9 +642,11 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		SendBackRawRequest:       p.SendBackRawRequest,
 		SendBackRawResponse:      p.SendBackRawResponse,
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
+		IgnoreProviderCost:       p.IgnoreProviderCost,
 		CustomProviderConfig:     p.CustomProviderConfig,
 		OpenAIConfig:             p.OpenAIConfig,
 		PromptCache:              p.PromptCache,
+		InjectedTools:            p.InjectedTools,
 		ConfigHash:               p.ConfigHash,
 		Status:                   p.Status,
 		Description:              p.Description,
@@ -626,6 +738,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			vertexConfig.Region = *key.VertexKeyConfig.Region.RedactedIfSecret()
 			vertexConfig.AuthCredentials = *key.VertexKeyConfig.AuthCredentials.Redacted()
 			vertexConfig.ForceSingleRegion = key.VertexKeyConfig.ForceSingleRegion
+			vertexConfig.AWSWorkloadIdentity = key.VertexKeyConfig.AWSWorkloadIdentity.Redacted()
 			redactedConfig.Keys[i].VertexKeyConfig = vertexConfig
 		}
 
@@ -727,6 +840,13 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 			redactedConfig.Keys[i].SGLKeyConfig = sglConfig
 		}
 
+		if key.CloudflareKeyConfig != nil {
+			cloudflareConfig := &schemas.CloudflareKeyConfig{}
+			// The account ID is an identifier, not a credential — surface it in plaintext.
+			cloudflareConfig.AccountID = *key.CloudflareKeyConfig.AccountID.RedactedIfSecret()
+			redactedConfig.Keys[i].CloudflareKeyConfig = cloudflareConfig
+		}
+
 		// Redact Databricks key config if present
 		if key.DatabricksKeyConfig != nil {
 			databricksConfig := &schemas.DatabricksKeyConfig{
@@ -755,6 +875,10 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 				PrivateKey:     *key.GithubCopilotKeyConfig.PrivateKey.Redacted(),
 				GithubDomain:   *key.GithubCopilotKeyConfig.GithubDomain.Redacted(),
 			}
+		}
+
+		if key.OAuthKeyConfig != nil {
+			redactedConfig.Keys[i].OAuthKeyConfig = key.OAuthKeyConfig.Redacted()
 		}
 	}
 	return &redactedConfig
@@ -823,6 +947,15 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 		hash.Write(data)
 	}
 
+	// Hash InjectedTools
+	if len(p.InjectedTools) > 0 {
+		data, err := sonic.Marshal(p.InjectedTools)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+
 	// Hash SendBackRawRequest
 	if p.SendBackRawRequest {
 		hash.Write([]byte("sendBackRawRequest"))
@@ -838,6 +971,11 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 		hash.Write([]byte("storeRawRequestResponse"))
 	}
 
+	// Hash IgnoreProviderCost
+	if p.IgnoreProviderCost {
+		hash.Write([]byte("ignoreProviderCost"))
+	}
+
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
@@ -845,6 +983,140 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 // This is used to detect changes to keys between config.json and database.
 // Skips: ID (dynamic UUID), timestamps
 func GenerateKeyHash(key schemas.Key) (string, error) {
+	var aliases []byte
+	if key.Aliases != nil {
+		// A map, so the encoding must sort keys or the same key hashes differently between
+		// restarts and is reconciled as edited.
+		data, err := providerUtils.MarshalSorted(key.Aliases)
+		if err != nil {
+			return "", err
+		}
+		aliases = data
+	}
+	return generateKeyHash(key, aliases)
+}
+
+// LegacyAliasOrderKeyHash returns the config_hash a key had on builds that hashed aliases
+// with the unsorted encoder, with its aliases encoded in the given order. Reconciliation uses
+// it to recognise a hash stored by such a build; tests use it to craft one.
+func LegacyAliasOrderKeyHash(key schemas.Key, order []string) (string, error) {
+	var aliases []byte
+	if key.Aliases != nil {
+		data, err := legacyAliasBytes(key.Aliases, order)
+		if err != nil {
+			return "", err
+		}
+		aliases = data
+	}
+	return generateKeyHash(key, aliases)
+}
+
+// maxLegacyAliasPermutations bounds the upgrade search in KeyHashMatchesLegacyAliasOrder:
+// seven aliases is 5040 hashes, a few milliseconds once per mismatching key at startup. A key
+// with more aliases falls back to treating the mismatch as a file edit, which is what every
+// build before the sorted hash did at random.
+const maxLegacyAliasPermutations = 7
+
+// KeyHashMatchesLegacyAliasOrder reports whether storedHash is this key's hash under the
+// unsorted alias encoding of older builds, in any alias order. GenerateKeyHash sorts alias
+// names, so the first restart on a sorted build sees a mismatch for every key with two or
+// more aliases even when config.json is untouched; reconciliation calls this before treating
+// that mismatch as a file edit, so API and dashboard edits survive the upgrade. It runs only
+// after a direct compare failed, never on the request path.
+func KeyHashMatchesLegacyAliasOrder(key schemas.Key, storedHash string) (bool, error) {
+	n := len(key.Aliases)
+	if storedHash == "" || n < 2 || n > maxLegacyAliasPermutations {
+		return false, nil
+	}
+	names := make([]string, 0, n)
+	for name := range key.Aliases {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	// Heap's algorithm visits every ordering once, swapping one pair per step.
+	counters := make([]int, n)
+	for i := 0; ; {
+		candidate, err := LegacyAliasOrderKeyHash(key, names)
+		if err != nil {
+			return false, err
+		}
+		if candidate == storedHash {
+			return true, nil
+		}
+		for i = 0; i < n && counters[i] >= i; i++ {
+			counters[i] = 0
+		}
+		if i >= n {
+			return false, nil
+		}
+		if i%2 == 0 {
+			names[0], names[i] = names[i], names[0]
+		} else {
+			names[counters[i]], names[i] = names[i], names[counters[i]]
+		}
+		counters[i]++
+	}
+}
+
+// legacyAliasBytes rebuilds the bytes the unsorted encoder fed the hasher for aliases in the
+// given order: sonic's default map encoding, which is each quoted name, a colon and the
+// alias's own MarshalJSON output, comma-joined in map iteration order inside braces.
+func legacyAliasBytes(aliases schemas.KeyAliases, order []string) ([]byte, error) {
+	if len(order) != len(aliases) {
+		return nil, fmt.Errorf("alias order names %d aliases, key has %d", len(order), len(aliases))
+	}
+	var b bytes.Buffer
+	b.WriteByte('{')
+	for i, name := range order {
+		alias, ok := aliases[name]
+		if !ok {
+			return nil, fmt.Errorf("alias %q is not on the key", name)
+		}
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		k, err := sonic.Marshal(name)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(k)
+		b.WriteByte(':')
+		v, err := sonic.Marshal(alias)
+		if err != nil {
+			return nil, err
+		}
+		b.Write(v)
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
+}
+
+// generateKeyHash composes the key hash; aliases is the already-encoded alias map (sorted for
+// current hashes, in a given order for legacy ones) or nil when the key has none.
+// oauthKeyConfigHashView returns the copy of an OAuth block that the key hash is computed
+// over. Its secret-bearing fields carry their source, as the top-level Value does: a reference
+// as "ref:<reference>" and a literal as "val:<value>". Hashing the resolved value instead would
+// make an unchanged config.json look edited whenever the environment or vault rotates the
+// secret behind it, and reconciliation would then replace the stored key and its edits.
+func oauthKeyConfigHashView(cfg *schemas.OAuthKeyConfig) *schemas.OAuthKeyConfig {
+	view := *cfg
+	source := func(v *schemas.SecretVar) *schemas.SecretVar {
+		if v == nil {
+			return nil
+		}
+		if v.IsFromSecret() {
+			return &schemas.SecretVar{Val: "ref:" + v.GetRawRef()}
+		}
+		return &schemas.SecretVar{Val: "val:" + v.Val}
+	}
+	view.TokenURL = *source(&cfg.TokenURL)
+	view.ClientID = source(cfg.ClientID)
+	view.ClientSecret = source(cfg.ClientSecret)
+	view.PrivateKey = source(cfg.PrivateKey)
+	return &view
+}
+
+func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 	hash := sha256.New()
 	// Hash Name
 	hash.Write([]byte(key.Name))
@@ -915,13 +1187,9 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
-	// Hash Aliases
-	if key.Aliases != nil {
-		data, err := sonic.Marshal(key.Aliases)
-		if err != nil {
-			return "", err
-		}
-		hash.Write(data)
+	// Hash Aliases (encoded by the caller, see GenerateKeyHash).
+	if aliases != nil {
+		hash.Write(aliases)
 	}
 	// Hash VLLMKeyConfig
 	if key.VLLMKeyConfig != nil {
@@ -955,6 +1223,14 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 		}
 		hash.Write(data)
 	}
+	// Hash CloudflareKeyConfig
+	if key.CloudflareKeyConfig != nil {
+		data, err := sonic.Marshal(key.CloudflareKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
 	// Hash DatabricksKeyConfig
 	if key.DatabricksKeyConfig != nil {
 		data, err := sonic.Marshal(key.DatabricksKeyConfig)
@@ -966,6 +1242,15 @@ func GenerateKeyHash(key schemas.Key) (string, error) {
 	// Hash GithubCopilotKeyConfig
 	if key.GithubCopilotKeyConfig != nil {
 		data, err := sonic.Marshal(key.GithubCopilotKeyConfig)
+		if err != nil {
+			return "", err
+		}
+		hash.Write(data)
+	}
+	// Hash OAuthKeyConfig. extra_params is a map, so the encoding must sort keys or the same
+	// key hashes differently between restarts and reconciliation replaces dashboard edits.
+	if key.OAuthKeyConfig != nil {
+		data, err := providerUtils.MarshalSorted(oauthKeyConfigHashView(key.OAuthKeyConfig))
 		if err != nil {
 			return "", err
 		}
@@ -1050,9 +1335,24 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	} else {
 		hash.Write([]byte("allowAllProviders:false"))
 	}
+	// Hash DisableContentLogging only when the key says something. Nil is inherit, and writing
+	// nothing for it keeps every key that predates the column on the hash it already has, so
+	// config sync sees no drift on upgrade (the unconditional AllowAllProviders write above is
+	// what forced a backfill migration).
+	if vk.DisableContentLogging != nil {
+		if *vk.DisableContentLogging {
+			hash.Write([]byte("disableContentLogging:true"))
+		} else {
+			hash.Write([]byte("disableContentLogging:false"))
+		}
+	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
 		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))
+	}
+	// Hash DeleteAfterExpire only when set, for the same reason
+	if vk.DeleteAfterExpire != nil {
+		hash.Write([]byte(fmt.Sprintf("deleteAfterExpire:%t", *vk.DeleteAfterExpire)))
 	}
 	// Hash TeamID
 	if vk.TeamID != nil {
@@ -1061,6 +1361,11 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 	// Hash CustomerID
 	if vk.CustomerID != nil {
 		hash.Write([]byte("customerID:" + *vk.CustomerID))
+	}
+	// Hash BusinessUnitID. Written only when set, like the owners above, so every key that
+	// predates business-unit ownership keeps the hash it already has and config sync sees no drift.
+	if vk.BusinessUnitID != nil {
+		hash.Write([]byte("businessUnitID:" + *vk.BusinessUnitID))
 	}
 	// Hash RateLimitID
 	if vk.RateLimitID != nil {
@@ -1264,6 +1569,11 @@ func GenerateCustomerHash(c tables.TableCustomer) (string, error) {
 		hash.Write([]byte("budgetID:" + id))
 	}
 
+	// Only when set, so a customer declaring none keeps the hash it had before the field existed.
+	if c.AccessProfile != "" {
+		hash.Write([]byte("accessProfile:" + c.AccessProfile))
+	}
+
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
@@ -1336,6 +1646,11 @@ func GenerateTeamHash(t tables.TableTeam) (string, error) {
 			return "", err
 		}
 		hash.Write([]byte("claims:" + string(data)))
+	}
+
+	// Only when set, so a team declaring none keeps the hash it had before the field existed.
+	if t.AccessProfile != "" {
+		hash.Write([]byte("accessProfile:" + t.AccessProfile))
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -1423,6 +1738,22 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 		hashes.SemanticSettings = settingsHash
 	}
 
+	if config.Classifier != "" {
+		settingsHash, err := hashComplexityValue(normalized.Classifier)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash classifier settings: %w", err)
+		}
+		hashes.ClassifierSettings = settingsHash
+	}
+
+	if normalized.Decision != nil {
+		settingsHash, err := hashComplexityValue(normalized.Decision)
+		if err != nil {
+			return ComplexityAnalyzerConfigHashes{}, fmt.Errorf("failed to hash decision settings: %w", err)
+		}
+		hashes.DecisionSettings = settingsHash
+	}
+
 	if normalized.LLM != nil {
 		settingsHash, err := hashComplexityValue(normalized.LLM)
 		if err != nil {
@@ -1442,6 +1773,7 @@ func GenerateComplexityAnalyzerConfigHashes(config *ComplexityAnalyzerConfig) (C
 	return hashes, nil
 }
 
+// legacyMediumKeywordsHashFromSectionHashes combines legacy code and technical hashes into the canonical medium hash.
 func legacyMediumKeywordsHashFromSectionHashes(codeHash, technicalHash string) (string, error) {
 	if codeHash == "" && technicalHash == "" {
 		return "", nil
@@ -1455,6 +1787,7 @@ func legacyMediumKeywordsHashFromSectionHashes(codeHash, technicalHash string) (
 	})
 }
 
+// hashComplexityValue returns a stable hash for one complexity configuration section.
 func hashComplexityValue(value any) (string, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -1485,6 +1818,8 @@ type routingTargetHashPayload struct {
 	Model    string  `json:"model"`
 	KeyID    string  `json:"key_id"`
 	Weight   float64 `json:"weight"`
+	// TTFTTimeoutMs is omitted when unset so targets without it keep their hash.
+	TTFTTimeoutMs int `json:"ttft_timeout_ms,omitempty"`
 }
 
 // derefStr returns the dereferenced value of s, or "" if s is nil.
@@ -1493,6 +1828,14 @@ func derefStr(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// derefInt returns the dereferenced value of n, or 0 if n is nil.
+func derefInt(n *int) int {
+	if n == nil {
+		return 0
+	}
+	return *n
 }
 
 // Skips: CreatedAt, UpdatedAt (dynamic fields)
@@ -1522,8 +1865,8 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 	targets := make([]tables.TableRoutingTarget, len(r.Targets))
 	copy(targets, r.Targets)
 	sort.Slice(targets, func(i, j int) bool {
-		pi := routingTargetHashPayload{Provider: derefStr(targets[i].Provider), Model: derefStr(targets[i].Model), KeyID: derefStr(targets[i].KeyID), Weight: targets[i].Weight}
-		pj := routingTargetHashPayload{Provider: derefStr(targets[j].Provider), Model: derefStr(targets[j].Model), KeyID: derefStr(targets[j].KeyID), Weight: targets[j].Weight}
+		pi := routingTargetHashPayload{Provider: derefStr(targets[i].Provider), Model: derefStr(targets[i].Model), KeyID: derefStr(targets[i].KeyID), Weight: targets[i].Weight, TTFTTimeoutMs: derefInt(targets[i].TTFTTimeoutMs)}
+		pj := routingTargetHashPayload{Provider: derefStr(targets[j].Provider), Model: derefStr(targets[j].Model), KeyID: derefStr(targets[j].KeyID), Weight: targets[j].Weight, TTFTTimeoutMs: derefInt(targets[j].TTFTTimeoutMs)}
 		di, err := sonic.Marshal(pi)
 		if err != nil {
 			return false
@@ -1535,7 +1878,7 @@ func GenerateRoutingRuleHash(r tables.TableRoutingRule) (string, error) {
 		return string(di) < string(dj)
 	})
 	for _, t := range targets {
-		payload := routingTargetHashPayload{Provider: derefStr(t.Provider), Model: derefStr(t.Model), KeyID: derefStr(t.KeyID), Weight: t.Weight}
+		payload := routingTargetHashPayload{Provider: derefStr(t.Provider), Model: derefStr(t.Model), KeyID: derefStr(t.KeyID), Weight: t.Weight, TTFTTimeoutMs: derefInt(t.TTFTTimeoutMs)}
 		data, err := sonic.Marshal(payload)
 		if err != nil {
 			return "", err
@@ -1817,6 +2160,97 @@ func GenerateWebhookEndpointHash(endpoint *tables.TableWebhookEndpoint) (string,
 		}
 	}
 
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+// hashAgentSecretVar contributes a SecretVar to an agent registration hash.
+// Secret-backed values hash their reference so an unresolved env/vault ref is
+// stable across boots; literal values hash the value itself.
+func hashAgentSecretVar(h hash.Hash, label string, v *schemas.SecretVar) {
+	if v == nil {
+		return
+	}
+	if v.IsFromSecret() {
+		writeHashField(h, label+":ref", v.GetRawRef())
+	} else {
+		writeHashField(h, label+":val", v.Val)
+	}
+}
+
+// hashAgentUpstreamAuth contributes one upstream auth block to an agent
+// registration hash. Maps and slices are sorted for deterministic hashing.
+func hashAgentUpstreamAuth(h hash.Hash, label string, auth *schemas.UpstreamAuth) {
+	if auth == nil {
+		return
+	}
+	writeHashField(h, label+":type", string(auth.Type))
+	writeHashField(h, label+":advanced", strconv.FormatBool(auth.Advanced))
+	if len(auth.Headers) > 0 {
+		keys := make([]string, 0, len(auth.Headers))
+		for k := range auth.Headers {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			value := auth.Headers[k]
+			hashAgentSecretVar(h, label+":header:"+k, &value)
+		}
+	}
+	schemes := make([]string, len(auth.SecuritySchemes))
+	copy(schemes, auth.SecuritySchemes)
+	sort.Strings(schemes)
+	for _, scheme := range schemes {
+		writeHashField(h, label+":scheme", scheme)
+	}
+	if auth.OAuth != nil {
+		writeHashField(h, label+":oauth:provider_url", auth.OAuth.ProviderURL)
+		writeHashField(h, label+":oauth:discovery_url", auth.OAuth.DiscoveryURL)
+		writeHashField(h, label+":oauth:token_url", auth.OAuth.TokenURL)
+		writeHashField(h, label+":oauth:resource", auth.OAuth.Resource)
+		hashAgentSecretVar(h, label+":oauth:client_id", auth.OAuth.ClientID)
+		hashAgentSecretVar(h, label+":oauth:client_secret", auth.OAuth.ClientSecret)
+		scopes := make([]string, len(auth.OAuth.Scopes))
+		copy(scopes, auth.OAuth.Scopes)
+		sort.Strings(scopes)
+		for _, scope := range scopes {
+			writeHashField(h, label+":oauth:scope", scope)
+		}
+	}
+	if auth.TLS != nil {
+		writeHashField(h, label+":tls:insecure_skip_verify", strconv.FormatBool(auth.TLS.InsecureSkipVerify))
+		hashAgentSecretVar(h, label+":tls:ca_cert_pem", auth.TLS.CACertPEM)
+		hashAgentSecretVar(h, label+":tls:client_cert_pem", auth.TLS.ClientCertPEM)
+		hashAgentSecretVar(h, label+":tls:client_key_pem", auth.TLS.ClientKeyPEM)
+	}
+}
+
+// GenerateAgentRegistrationHash generates a SHA256 hash of an Agent Gateway
+// registration's admin-declared fields, including its virtual-key grants. It
+// is used to detect changes between config.json and database config.
+// Timestamps and the stored hash itself are excluded.
+func GenerateAgentRegistrationHash(r *schemas.AgentRegistration) (string, error) {
+	hash := sha256.New()
+	writeHashField(hash, "name", r.Name)
+	writeHashField(hash, "agent_card_url", r.AgentCardURL)
+	writeHashField(hash, "tenant", r.Tenant)
+	writeHashField(hash, "enabled", strconv.FormatBool(r.Enabled))
+	writeHashField(hash, "allow_by_default", strconv.FormatBool(r.AllowByDefault))
+	writeHashField(hash, "forward_accepted_credential", strconv.FormatBool(r.ForwardAcceptedCredential))
+	writeHashField(hash, "forward_accepted_credential_overrides_auth", strconv.FormatBool(r.ForwardAcceptedCredentialOverridesAuth))
+	uris := make([]string, len(r.ExtensionURIs))
+	copy(uris, r.ExtensionURIs)
+	sort.Strings(uris)
+	for _, uri := range uris {
+		writeHashField(hash, "extension_uri", uri)
+	}
+	ids := make([]string, len(r.VirtualKeyIDs))
+	copy(ids, r.VirtualKeyIDs)
+	sort.Strings(ids)
+	for _, id := range ids {
+		writeHashField(hash, "virtual_key_id", id)
+	}
+	hashAgentUpstreamAuth(hash, "discovery_auth", r.DiscoveryAuth)
+	hashAgentUpstreamAuth(hash, "runtime_auth", r.RuntimeAuth)
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 

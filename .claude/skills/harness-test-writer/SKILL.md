@@ -103,6 +103,11 @@ Conventions (match the existing collection exactly):
   a streaming variant if the route streams, and where applicable a second route that
   pins the same invariant independently (e.g. native `/v1/responses` alongside the
   converted `/v1/chat/completions` path).
+- **Non-200 expectations**: the collection-level test script asserts HTTP 200 on every
+  request unless the request NAME carries a status tag: `[EXPECT-4XX]` (any 4xx, for
+  "the field reached the provider and it rejected it" pins) or an exact `[EXPECT-<code>]`
+  such as `[EXPECT-422]`. Put the tag in the name of every case that expects a non-200
+  reply, or the run fails on the injected "Status code is 200" assertion.
 - **Test scripts** (Postman `event[].script.exec`, plain ES5 JavaScript):
   - Never skip any error status code. Do NOT open the script with an early-return
     guard like `if ([401, 403, 429, 500, 502, 503, 504].indexOf(pm.response.code) !== -1) { return; }`
@@ -161,10 +166,13 @@ The augment script only regenerates its own "(generated)" folders, so a new top-
 folder passes through untouched - but run it anyway to catch parse breakage.
 
 Do NOT auto-run the live suite: it starts a gateway and makes paid provider calls.
-Report the run command and offer to execute it:
+Report the run command and offer to execute it. The keyword is descriptive text from the
+case or folder names, never an issue number, and the gateway port is explicit because
+worktrees run side by side (avoid 8080 and 8090, the harness viewer's port, unless free):
 
 ```bash
-make run-provider-harness-test PROVIDER=<provider> FEATURE="<distinctive keyword from your case names>"
+make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python
+make run-provider-harness-test PROVIDER=<provider> FEATURE="<distinctive keyword from your case names>" BASE_URL=http://localhost:<port>
 ```
 
 ## Step 7 - Report

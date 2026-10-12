@@ -198,6 +198,7 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 					Type:         ResponsesMessageContentBlockType(block.Type),
 					Text:         block.Text,
 					CacheControl: block.CacheControl,
+					GuardContent: block.GuardContent,
 				}
 
 				// Map image
@@ -406,6 +407,32 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 			// Non-nil: the Responses schema requires summary to be an array, and a nil
 			// slice marshals to null, which upstreams reject for the whole input item.
 			summaries := []ResponsesReasoningSummary{}
+			// OpenAI pairs an item id with its encrypted token, so the id must come from the encrypted detail whose
+			// token is emitted below (the last one carrying data). If that detail has no id, mint a fresh one rather
+			// than borrow a neighbour's: an id the token was never issued with is rejected upstream. With no token
+			// to pair, the first recorded id is kept.
+			var emittedToken *ChatReasoningDetails
+			for i := range am.ReasoningDetails {
+				if d := &am.ReasoningDetails[i]; d.Type == BifrostReasoningDetailsTypeEncrypted && d.Data != nil {
+					emittedToken = d
+				}
+			}
+			reasoningID := ""
+			if emittedToken != nil {
+				if emittedToken.ID != nil {
+					reasoningID = *emittedToken.ID
+				}
+			} else {
+				for _, d := range am.ReasoningDetails {
+					if d.ID != nil && *d.ID != "" {
+						reasoningID = *d.ID
+						break
+					}
+				}
+			}
+			if reasoningID == "" {
+				reasoningID = "rs_" + GetRandomString(50)
+			}
 			for _, d := range am.ReasoningDetails {
 				switch d.Type {
 				case BifrostReasoningDetailsTypeText:
@@ -433,7 +460,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				reasoningType := ResponsesMessageTypeReasoning
 				reasoningRole := ResponsesInputMessageRoleAssistant
 				rm := ResponsesMessage{
-					ID:   new("rs_" + GetRandomString(50)),
+					ID:   new(reasoningID),
 					Type: &reasoningType,
 					Role: &reasoningRole,
 				}
@@ -609,8 +636,9 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				}
 
 				responseBlocks = append(responseBlocks, ResponsesMessageContentBlock{
-					Type: blockType,
-					Text: block.Text,
+					Type:         blockType,
+					Text:         block.Text,
+					GuardContent: block.GuardContent,
 				})
 				rb := &responseBlocks[len(responseBlocks)-1]
 
@@ -679,6 +707,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 						Type:         ResponsesMessageContentBlockType(block.Type),
 						Text:         block.Text,
 						CacheControl: block.CacheControl,
+						GuardContent: block.GuardContent,
 					}
 
 					// Map image
@@ -724,6 +753,30 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 
 // ToChatMessages converts a slice of ResponsesMessages back to ChatMessages
 // This handles the aggregation of function_call messages back into assistant messages with tool calls
+// responsesBlocksWithoutToolChanges returns blocks with the Anthropic mid-conversation
+// tool_addition / tool_removal entries removed. It returns the input slice unchanged when
+// there is nothing to drop.
+func responsesBlocksWithoutToolChanges(blocks []ResponsesMessageContentBlock) []ResponsesMessageContentBlock {
+	drop := false
+	for _, block := range blocks {
+		if block.Type == ResponsesInputMessageContentBlockTypeToolAddition || block.Type == ResponsesInputMessageContentBlockTypeToolRemoval {
+			drop = true
+			break
+		}
+	}
+	if !drop {
+		return blocks
+	}
+	kept := make([]ResponsesMessageContentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type == ResponsesInputMessageContentBlockTypeToolAddition || block.Type == ResponsesInputMessageContentBlockTypeToolRemoval {
+			continue
+		}
+		kept = append(kept, block)
+	}
+	return kept
+}
+
 func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	if len(rms) == 0 {
 		return []ChatMessage{}
@@ -761,6 +814,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 						}
 						pendingReasoning.WriteString(*block.Text)
 						pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
+							ID:        rm.ID,
 							Index:     len(pendingReasoningDetails),
 							Type:      BifrostReasoningDetailsTypeText,
 							Text:      block.Text,
@@ -773,6 +827,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 				for _, summary := range rm.ResponsesReasoning.Summary {
 					summaryText := summary.Text
 					pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
+						ID:      rm.ID,
 						Index:   len(pendingReasoningDetails),
 						Type:    BifrostReasoningDetailsTypeSummary,
 						Summary: &summaryText,
@@ -780,6 +835,7 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 				}
 				if rm.ResponsesReasoning.EncryptedContent != nil {
 					pendingReasoningDetails = append(pendingReasoningDetails, ChatReasoningDetails{
+						ID:    rm.ID,
 						Index: len(pendingReasoningDetails),
 						Type:  BifrostReasoningDetailsTypeEncrypted,
 						Data:  rm.ResponsesReasoning.EncryptedContent,
@@ -917,13 +973,27 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					}
 				}
 			} else if rm.Content.ContentBlocks != nil {
-				chatBlocks := make([]ChatContentBlock, len(rm.Content.ContentBlocks))
-				for i, block := range rm.Content.ContentBlocks {
+				// Chat has no tool_addition / tool_removal content part, so the blocks are dropped
+				// here rather than forwarded as an unknown type the OpenAI-shaped wire rejects. A
+				// message left with nothing to say is skipped entirely.
+				contentBlocks := responsesBlocksWithoutToolChanges(rm.Content.ContentBlocks)
+				if len(contentBlocks) == 0 && len(rm.Content.ContentBlocks) > 0 {
+					continue
+				}
+				chatBlocks := make([]ChatContentBlock, len(contentBlocks))
+				for i, block := range contentBlocks {
 					// Map ResponsesMessageContentBlockType to ChatContentBlockType
 					var chatBlockType ChatContentBlockType
 					switch block.Type {
 					case ResponsesInputMessageContentBlockTypeText:
 						chatBlockType = ChatContentBlockTypeText // "input_text" -> "text"
+					case ResponsesOutputMessageContentTypeText:
+						// Replayed assistant text. The single-part short-circuit above
+						// already treats this as plain text; without the case here a
+						// multi-part assistant turn falls through to the default and
+						// carries the Responses-only "output_text" spelling onto the
+						// chat surface, which has no such content part.
+						chatBlockType = ChatContentBlockTypeText // "output_text" -> "text"
 					case ResponsesInputMessageContentBlockTypeImage:
 						chatBlockType = ChatContentBlockTypeImage // "input_image" -> "image_url"
 					case ResponsesInputMessageContentBlockTypeFile:
@@ -936,8 +1006,9 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 					}
 
 					chatBlocks[i] = ChatContentBlock{
-						Type: chatBlockType,
-						Text: block.Text,
+						Type:         chatBlockType,
+						Text:         block.Text,
+						GuardContent: block.GuardContent,
 					}
 
 					// Convert specific block types
@@ -1056,6 +1127,7 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 			NumSearchQueries:         cu.CompletionTokensDetails.NumSearchQueries,
 		}
 	}
+	usage.ToolUsage = cu.ToolUsage.DeepCopy()
 
 	return usage
 }
@@ -1095,8 +1167,90 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 			NumSearchQueries:         ru.OutputTokensDetails.NumSearchQueries,
 		}
 	}
+	usage.ToolUsage = ru.ToolUsage.DeepCopy()
 
 	return usage
+}
+
+// NormalizedUsage folds whichever family's usage a settled response carries into
+// the canonical BifrostLLMUsage shape, so the logging plugin and the tracer read
+// token counts from one place and cannot disagree.
+//
+// Streaming requests do not reach here: they settle through the accumulator and
+// carry usage on the accumulated result instead.
+//
+// The returned value may alias the response's own usage; callers that retain it
+// past the request should DeepCopy.
+func (r *BifrostResponse) NormalizedUsage() *BifrostLLMUsage {
+	if r == nil {
+		return nil
+	}
+	switch {
+	case r.TextCompletionResponse != nil && r.TextCompletionResponse.Usage != nil:
+		return r.TextCompletionResponse.Usage
+	case r.ChatResponse != nil && r.ChatResponse.Usage != nil:
+		return r.ChatResponse.Usage
+	case r.ResponsesResponse != nil && r.ResponsesResponse.Usage != nil:
+		return r.ResponsesResponse.Usage.ToBifrostLLMUsage()
+	case r.CompactionResponse != nil && r.CompactionResponse.Usage != nil:
+		return r.CompactionResponse.Usage.ToBifrostLLMUsage()
+	case r.EmbeddingResponse != nil && r.EmbeddingResponse.Usage != nil:
+		return r.EmbeddingResponse.Usage
+	case r.RerankResponse != nil && r.RerankResponse.Usage != nil:
+		return r.RerankResponse.Usage
+	case r.DecisionResponse != nil && r.DecisionResponse.Usage != nil:
+		return r.DecisionResponse.Usage
+	case r.TranscriptionResponse != nil && r.TranscriptionResponse.Usage != nil:
+		u := r.TranscriptionResponse.Usage
+		out := &BifrostLLMUsage{}
+		if u.InputTokens != nil {
+			out.PromptTokens = *u.InputTokens
+		}
+		if u.OutputTokens != nil {
+			out.CompletionTokens = *u.OutputTokens
+		}
+		if u.TotalTokens != nil {
+			out.TotalTokens = *u.TotalTokens
+		}
+		// Derive on zero as well as nil: some providers report total_tokens: 0
+		// alongside real counts. Matches the speech branch below.
+		if out.TotalTokens == 0 {
+			out.TotalTokens = out.PromptTokens + out.CompletionTokens
+		}
+		if d := u.InputTokenDetails; d != nil {
+			out.PromptTokensDetails = &ChatPromptTokensDetails{
+				TextTokens:  d.TextTokens,
+				AudioTokens: d.AudioTokens,
+			}
+		}
+		return out
+	case r.SpeechResponse != nil && r.SpeechResponse.Usage != nil:
+		u := r.SpeechResponse.Usage
+		out := &BifrostLLMUsage{
+			PromptTokens:     u.InputTokens,
+			CompletionTokens: u.OutputTokens,
+			TotalTokens:      u.TotalTokens,
+		}
+		if out.TotalTokens == 0 {
+			out.TotalTokens = out.PromptTokens + out.CompletionTokens
+		}
+		return out
+	case r.ImageGenerationResponse != nil && r.ImageGenerationResponse.Usage != nil:
+		u := r.ImageGenerationResponse.Usage
+		out := &BifrostLLMUsage{
+			PromptTokens:     u.InputTokens,
+			CompletionTokens: u.OutputTokens,
+		}
+		if u.TotalTokens > 0 {
+			out.TotalTokens = u.TotalTokens
+		} else {
+			out.TotalTokens = out.PromptTokens + out.CompletionTokens
+		}
+		return out
+	case r.PassthroughResponse != nil && r.PassthroughResponse.PassthroughUsage != nil:
+		return r.PassthroughResponse.PassthroughUsage.LLMUsage
+	}
+	return nil
 }
 
 // =============================================================================
@@ -1168,11 +1322,13 @@ func (cr *BifrostChatRequest) ToResponsesRequest() *BifrostResponsesRequest {
 		}
 
 		// Handle Reasoning from reasoning_effort
-		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Enabled != nil || cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil || cr.Params.Reasoning.Type != nil) {
+		if cr.Params.Reasoning != nil && (cr.Params.Reasoning.Enabled != nil || cr.Params.Reasoning.Effort != nil || cr.Params.Reasoning.MaxTokens != nil || cr.Params.Reasoning.Type != nil || cr.Params.Reasoning.Mode != nil || cr.Params.Reasoning.Summary != nil) {
 			brr.Params.Reasoning = &ResponsesParametersReasoning{
 				Effort:    cr.Params.Reasoning.Effort,
 				MaxTokens: cr.Params.Reasoning.MaxTokens,
 				Type:      cr.Params.Reasoning.Type,
+				Mode:      cr.Params.Reasoning.Mode,
+				Summary:   cr.Params.Reasoning.Summary,
 			}
 		}
 
@@ -1269,6 +1425,8 @@ func (brr *BifrostResponsesRequest) ToChatRequest() *BifrostChatRequest {
 				Effort:    brr.Params.Reasoning.Effort,
 				MaxTokens: brr.Params.Reasoning.MaxTokens,
 				Type:      brr.Params.Reasoning.Type,
+				Mode:      brr.Params.Reasoning.Mode,
+				Summary:   brr.Params.Reasoning.Summary,
 			}
 		}
 
@@ -1469,6 +1627,9 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 		Object:        "response",
 		CreatedAt:     cr.Created,
 		Model:         cr.Model,
+		ServiceTier:   cr.ServiceTier,
+		Speed:         cr.Speed,
+		InferenceGeo:  cr.InferenceGeo,
 		Citations:     cr.Citations,
 		SearchResults: cr.SearchResults,
 		Videos:        cr.Videos,
@@ -1538,6 +1699,9 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 		Created:       responsesResp.CreatedAt,
 		Object:        "chat.completion",
 		Model:         responsesResp.Model,
+		ServiceTier:   responsesResp.ServiceTier,
+		Speed:         responsesResp.Speed,
+		InferenceGeo:  responsesResp.InferenceGeo,
 		Citations:     responsesResp.Citations,
 		SearchResults: responsesResp.SearchResults,
 		Videos:        responsesResp.Videos,
@@ -1586,27 +1750,30 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 
 // ChatToResponsesStreamState tracks state during Chat-to-Responses streaming conversion
 type ChatToResponsesStreamState struct {
-	ToolArgumentBuffers   map[string]string // Maps tool call ID to accumulated argument JSON
-	ItemIDs               map[string]string // Maps tool call ID to item ID
-	ToolCallNames         map[string]string // Maps tool call ID to tool name
-	ToolCallIndexToID     map[uint16]string // Maps tool call index to tool call ID (for lookups when ID is missing)
-	MessageID             *string           // Message ID from first chunk
-	Model                 *string           // Model name
-	CreatedAt             int               // Timestamp for created_at consistency
-	HasEmittedCreated     bool              // Whether we've emitted response.created
-	HasEmittedInProgress  bool              // Whether we've emitted response.in_progress
-	TextItemAdded         bool              // Whether text item has been added
-	TextItemClosed        bool              // Whether text item has been closed
-	TextItemHasContent    bool              // Whether text item has received any content deltas
-	TextBuffer            strings.Builder   // Accumulated text deltas for output_text.done/content_part.done
-	TextOutputIndex       int               // Output index assigned to the text/message item
-	ReasoningItemAdded    bool              // Whether the reasoning item has been opened
-	ReasoningItemClosed   bool              // Whether the reasoning item has been closed
-	ReasoningOutputIndex  int               // Output index assigned to the reasoning item
-	ReasoningBuffer       strings.Builder   // Accumulated reasoning deltas for reasoning output_item.done
-	CurrentOutputIndex    int               // Current output index counter
-	ToolCallOutputIndices map[string]int    // Maps tool call ID to output index
-	SequenceNumber        int               // Monotonic sequence number across all chunks
+	ToolArgumentBuffers   map[string]string   // Maps tool call ID to accumulated argument JSON
+	ItemIDs               map[string]string   // Maps tool call ID to item ID
+	ToolCallNames         map[string]string   // Maps tool call ID to tool name
+	ToolCallIndexToID     map[uint16]string   // Maps tool call index to tool call ID (for lookups when ID is missing)
+	MessageID             *string             // Message ID from first chunk
+	Model                 *string             // Model name
+	CreatedAt             int                 // Timestamp for created_at consistency
+	HasEmittedCreated     bool                // Whether we've emitted response.created
+	HasEmittedInProgress  bool                // Whether we've emitted response.in_progress
+	TextItemAdded         bool                // Whether text item has been added
+	TextItemClosed        bool                // Whether text item has been closed
+	TextItemHasContent    bool                // Whether text item has received any content deltas
+	TextBuffer            strings.Builder     // Accumulated text deltas for output_text.done/content_part.done
+	TextOutputIndex       int                 // Output index assigned to the text/message item
+	ReasoningItemAdded    bool                // Whether the reasoning item has been opened
+	ReasoningItemClosed   bool                // Whether the reasoning item has been closed
+	ReasoningOutputIndex  int                 // Output index assigned to the reasoning item
+	ReasoningBuffer       strings.Builder     // Accumulated reasoning deltas for reasoning output_item.done
+	CurrentOutputIndex    int                 // Current output index counter
+	ToolCallOutputIndices map[string]int      // Maps tool call ID to output index
+	SequenceNumber        int                 // Monotonic sequence number across all chunks
+	ServiceTier           *BifrostServiceTier // Served tier from the latest chunk that carried one
+	Speed                 *string             // Served speed from the latest chunk that carried one
+	InferenceGeo          *string             // Served inference geo from the latest chunk that carried one
 }
 
 // chatToResponsesStreamStatePool provides a pool for ChatToResponsesStreamState objects.
@@ -1678,6 +1845,9 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	state.ReasoningOutputIndex = 0
 	state.ReasoningBuffer = strings.Builder{}
 	state.SequenceNumber = 0
+	state.ServiceTier = nil
+	state.Speed = nil
+	state.InferenceGeo = nil
 	return state
 }
 
@@ -1717,6 +1887,9 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		state.ReasoningOutputIndex = 0
 		state.ReasoningBuffer = strings.Builder{}
 		state.SequenceNumber = 0
+		state.ServiceTier = nil
+		state.Speed = nil
+		state.InferenceGeo = nil
 		chatToResponsesStreamStatePool.Put(state)
 	}
 }
@@ -1727,6 +1900,19 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToResponsesStreamState) []*BifrostResponsesStreamResponse {
 	if cr == nil || state == nil {
 		return nil
+	}
+
+	// OpenAI sends the served tier on every chunk and Anthropic-shaped upstreams on
+	// only some, so remember the latest one seen for the terminal response, including
+	// from a chunk that carries no choices.
+	if cr.ServiceTier != nil {
+		state.ServiceTier = cr.ServiceTier
+	}
+	if cr.Speed != nil {
+		state.Speed = cr.Speed
+	}
+	if cr.InferenceGeo != nil {
+		state.InferenceGeo = cr.InferenceGeo
 	}
 
 	// If no choices to convert, return early
@@ -2301,6 +2487,9 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			Status:            &responseStatus,
 			StopReason:        responsesStopReasonFromChatFinishReason(choice.FinishReason),
 			IncompleteDetails: terminalIncompleteDetails,
+			ServiceTier:       state.ServiceTier,
+			Speed:             state.Speed,
+			InferenceGeo:      state.InferenceGeo,
 		}
 
 		if state.Model != nil {
@@ -2449,6 +2638,9 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 		}
 		resp.Created = rsr.Response.CreatedAt
 		resp.Model = rsr.Response.Model
+		resp.ServiceTier = rsr.Response.ServiceTier
+		resp.Speed = rsr.Response.Speed
+		resp.InferenceGeo = rsr.Response.InferenceGeo
 	}
 
 	switch rsr.Type {

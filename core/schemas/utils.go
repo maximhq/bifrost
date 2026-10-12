@@ -906,6 +906,60 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 		copy.File = &copyFile
 	}
 
+	// The guard marker is replayed to Bedrock verbatim; copy the qualifiers slice so the
+	// two blocks never share backing storage.
+	if original.GuardContent != nil {
+		copyGuardContent := &GuardContent{}
+		if original.GuardContent.Qualifiers != nil {
+			copyGuardContent.Qualifiers = append([]string(nil), original.GuardContent.Qualifiers...)
+		}
+		copy.GuardContent = copyGuardContent
+	}
+
+	// Deep copy CacheControl if present
+	if original.CacheControl != nil {
+		copyCacheControl := &CacheControl{Type: original.CacheControl.Type}
+		if original.CacheControl.TTL != nil {
+			copyTTL := *original.CacheControl.TTL
+			copyCacheControl.TTL = &copyTTL
+		}
+		if original.CacheControl.Scope != nil {
+			copyScope := *original.CacheControl.Scope
+			copyCacheControl.Scope = &copyScope
+		}
+		copy.CacheControl = copyCacheControl
+	}
+
+	// Deep copy Citations.
+	if original.Citations != nil {
+		copyCitations := &Citations{}
+		if original.Citations.Enabled != nil {
+			copyEnabled := *original.Citations.Enabled
+			copyCitations.Enabled = &copyEnabled
+		}
+		copy.Citations = copyCitations
+	}
+
+	// Deep copy PromptCacheBreakpoint.
+	if original.PromptCacheBreakpoint != nil {
+		copyPromptCacheBreakpoint := &PromptCacheBreakpoint{}
+		if original.PromptCacheBreakpoint.Mode != nil {
+			copyMode := *original.PromptCacheBreakpoint.Mode
+			copyPromptCacheBreakpoint.Mode = &copyMode
+		}
+		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
+	}
+
+	// Deep copy CachePoint.
+	if original.CachePoint != nil {
+		copyCachePoint := &CachePoint{Type: original.CachePoint.Type}
+		if original.CachePoint.TTL != nil {
+			copyTTL := *original.CachePoint.TTL
+			copyCachePoint.TTL = &copyTTL
+		}
+		copy.CachePoint = copyCachePoint
+	}
+
 	return copy
 }
 
@@ -1286,6 +1340,35 @@ func deepCopySchemaValue(original interface{}) interface{} {
 	}
 }
 
+// deepCopyComputerToolCallAction copies a computer action, including its pointers and slices.
+func deepCopyComputerToolCallAction(original ResponsesComputerToolCallAction) ResponsesComputerToolCallAction {
+	copied := original
+	copied.X = clonePtr(original.X)
+	copied.Y = clonePtr(original.Y)
+	copied.Button = clonePtr(original.Button)
+	copied.ScrollX = clonePtr(original.ScrollX)
+	copied.ScrollY = clonePtr(original.ScrollY)
+	copied.Text = clonePtr(original.Text)
+	if original.Path != nil {
+		copied.Path = append([]ResponsesComputerToolCallActionPath(nil), original.Path...)
+	}
+	if original.Keys != nil {
+		copied.Keys = append([]string(nil), original.Keys...)
+	}
+	if original.Region != nil {
+		copied.Region = append([]int(nil), original.Region...)
+	}
+	return copied
+}
+
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
 // DeepCopyResponsesMessage creates a deep copy of a ResponsesMessage
 // to prevent shared data mutation between different plugin accumulators
 func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
@@ -1446,6 +1529,10 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				}
 			}
 
+			if original.ResponsesToolMessage.Output.ResponsesShellCallOutput != nil {
+				copy.ResponsesToolMessage.Output.ResponsesShellCallOutput = deepCopyShellCallOutput(original.ResponsesToolMessage.Output.ResponsesShellCallOutput)
+			}
+
 			if original.ResponsesToolMessage.Output.ResponsesComputerToolCallOutput != nil {
 				copyOutput := *original.ResponsesToolMessage.Output.ResponsesComputerToolCallOutput
 				copy.ResponsesToolMessage.Output.ResponsesComputerToolCallOutput = &copyOutput
@@ -1462,21 +1549,7 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			}
 
 			if original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction != nil {
-				copyAction := *original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction
-				// Deep copy Path slice
-				if copyAction.Path != nil {
-					copyAction.Path = make([]ResponsesComputerToolCallActionPath, len(copyAction.Path))
-					for i, path := range original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction.Path {
-						copyAction.Path[i] = path // struct copy is fine for simple structs
-					}
-				}
-				// Deep copy Keys slice
-				if copyAction.Keys != nil {
-					copyAction.Keys = make([]string, len(copyAction.Keys))
-					for i, key := range original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction.Keys {
-						copyAction.Keys[i] = key
-					}
-				}
+				copyAction := deepCopyComputerToolCallAction(*original.ResponsesToolMessage.Action.ResponsesComputerToolCallAction)
 				copy.ResponsesToolMessage.Action.ResponsesComputerToolCallAction = &copyAction
 			}
 
@@ -1495,6 +1568,20 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				copy.ResponsesToolMessage.Action.ResponsesLocalShellToolCallAction = &copyAction
 			}
 
+			if original.ResponsesToolMessage.Action.ResponsesShellToolCallAction != nil {
+				copyAction := *original.ResponsesToolMessage.Action.ResponsesShellToolCallAction
+				copyAction.Commands = append([]string(nil), copyAction.Commands...)
+				if copyAction.TimeoutMS != nil {
+					timeoutMS := *copyAction.TimeoutMS
+					copyAction.TimeoutMS = &timeoutMS
+				}
+				if copyAction.MaxOutputLength != nil {
+					maxOutputLength := *copyAction.MaxOutputLength
+					copyAction.MaxOutputLength = &maxOutputLength
+				}
+				copy.ResponsesToolMessage.Action.ResponsesShellToolCallAction = &copyAction
+			}
+
 			if original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction != nil {
 				copyAction := *original.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction
 				copy.ResponsesToolMessage.Action.ResponsesMCPApprovalRequestAction = &copyAction
@@ -1508,6 +1595,28 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 				copyCaller.ToolID = &copyToolID
 			}
 			copy.ResponsesToolMessage.Caller = &copyCaller
+		}
+
+		if original.ResponsesToolMessage.ItemCaller != nil {
+			itemCaller := *original.ResponsesToolMessage.ItemCaller
+			if original.ResponsesToolMessage.ItemCaller.CallerID != nil {
+				callerID := *original.ResponsesToolMessage.ItemCaller.CallerID
+				itemCaller.CallerID = &callerID
+			}
+			copy.ResponsesToolMessage.ItemCaller = &itemCaller
+		}
+
+		if original.ResponsesToolMessage.CreatedBy != nil {
+			createdBy := *original.ResponsesToolMessage.CreatedBy
+			copy.ResponsesToolMessage.CreatedBy = &createdBy
+		}
+
+		if original.ResponsesToolMessage.ResponsesShellCall != nil {
+			copy.ResponsesToolMessage.ResponsesShellCall = deepCopyShellCall(original.ResponsesToolMessage.ResponsesShellCall)
+		}
+
+		if original.ResponsesToolMessage.ResponsesApplyPatchCall != nil {
+			copy.ResponsesToolMessage.ResponsesApplyPatchCall = deepCopyApplyPatchCall(original.ResponsesToolMessage.ResponsesApplyPatchCall)
 		}
 
 		// Deep copy embedded tool call structs (simplified version - add more as needed)
@@ -1545,6 +1654,12 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copyToolCall := *original.ResponsesToolMessage.ResponsesComputerToolCall
 			if original.ResponsesToolMessage.ResponsesComputerToolCall.PendingSafetyChecks != nil {
 				copyToolCall.PendingSafetyChecks = append([]ResponsesComputerToolCallPendingSafetyCheck(nil), original.ResponsesToolMessage.ResponsesComputerToolCall.PendingSafetyChecks...)
+			}
+			if actions := original.ResponsesToolMessage.ResponsesComputerToolCall.Actions; actions != nil {
+				copyToolCall.Actions = make([]ResponsesComputerToolCallAction, len(actions))
+				for i := range actions {
+					copyToolCall.Actions[i] = deepCopyComputerToolCallAction(actions[i])
+				}
 			}
 			copy.ResponsesToolMessage.ResponsesComputerToolCall = &copyToolCall
 		}
@@ -1595,10 +1710,10 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.ResponsesCodeInterpreterToolCall = &copyToolCall
 		}
 
-		// Deep copy ResponsesMCPToolCall.
-		if original.ResponsesToolMessage.ResponsesMCPToolCall != nil {
-			copyToolCall := *original.ResponsesToolMessage.ResponsesMCPToolCall
-			copy.ResponsesToolMessage.ResponsesMCPToolCall = &copyToolCall
+		// Deep copy ServerLabel (shared by the MCP items).
+		if original.ResponsesToolMessage.ServerLabel != nil {
+			serverLabel := *original.ResponsesToolMessage.ServerLabel
+			copy.ResponsesToolMessage.ServerLabel = &serverLabel
 		}
 
 		// Deep copy ResponsesImageGenerationCall.
@@ -1793,6 +1908,55 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 	return copy
 }
 
+// deepCopyShellCallOutput copies a shell_call_output "output" array, pointers included.
+func deepCopyShellCallOutput(original []ResponsesShellCallOutputContent) []ResponsesShellCallOutputContent {
+	copied := make([]ResponsesShellCallOutputContent, len(original))
+	for i, content := range original {
+		copied[i] = content
+		if content.Outcome.ExitCode != nil {
+			exitCode := *content.Outcome.ExitCode
+			copied[i].Outcome.ExitCode = &exitCode
+		}
+		if content.CreatedBy != nil {
+			createdBy := *content.CreatedBy
+			copied[i].CreatedBy = &createdBy
+		}
+	}
+	return copied
+}
+
+// deepCopyShellCall copies the shell_call / shell_call_output fields.
+func deepCopyShellCall(original *ResponsesShellCall) *ResponsesShellCall {
+	copied := *original
+	if original.Environment != nil {
+		environment := *original.Environment
+		if original.Environment.ContainerID != nil {
+			containerID := *original.Environment.ContainerID
+			environment.ContainerID = &containerID
+		}
+		copied.Environment = &environment
+	}
+	if original.MaxOutputLength != nil {
+		maxOutputLength := *original.MaxOutputLength
+		copied.MaxOutputLength = &maxOutputLength
+	}
+	return &copied
+}
+
+// deepCopyApplyPatchCall copies the apply_patch_call operation.
+func deepCopyApplyPatchCall(original *ResponsesApplyPatchCall) *ResponsesApplyPatchCall {
+	copied := *original
+	if original.Operation != nil {
+		operation := *original.Operation
+		if original.Operation.Diff != nil {
+			diff := *original.Operation.Diff
+			operation.Diff = &diff
+		}
+		copied.Operation = &operation
+	}
+	return &copied
+}
+
 // deepCopyResponsesMessageContentBlock creates a deep copy of a ResponsesMessageContentBlock
 func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock) ResponsesMessageContentBlock {
 	copy := ResponsesMessageContentBlock{
@@ -1861,6 +2025,16 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 			copyMediaResolution.NumTokens = new(*original.MediaResolution.NumTokens)
 		}
 		copy.MediaResolution = copyMediaResolution
+	}
+
+	// The guard marker is replayed to Bedrock verbatim; copy the qualifiers slice so the
+	// two blocks never share backing storage.
+	if original.GuardContent != nil {
+		copyGuardContent := &GuardContent{}
+		if original.GuardContent.Qualifiers != nil {
+			copyGuardContent.Qualifiers = append([]string(nil), original.GuardContent.Qualifiers...)
+		}
+		copy.GuardContent = copyGuardContent
 	}
 
 	// Deep copy ResponsesInputMessageContentBlockImage
@@ -2047,9 +2221,34 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		}
 	}
 	if original.ResponsesOutputMessageContentCompaction != nil {
-		copy.ResponsesOutputMessageContentCompaction = &ResponsesOutputMessageContentCompaction{
+		copyCompaction := &ResponsesOutputMessageContentCompaction{
 			Summary: original.ResponsesOutputMessageContentCompaction.Summary,
 		}
+		// tool_changes are replayed to the provider verbatim, so they must survive the copy.
+		if changes := original.ResponsesOutputMessageContentCompaction.ToolChanges; changes != nil {
+			copyCompaction.ToolChanges = make([]ResponsesMessageContentBlock, len(changes))
+			for i, change := range changes {
+				copyCompaction.ToolChanges[i] = deepCopyResponsesMessageContentBlock(change)
+			}
+		}
+		copy.ResponsesOutputMessageContentCompaction = copyCompaction
+	}
+	// The tool target of a tool_addition / tool_removal block is what the provider acts on;
+	// without it the block is dropped on egress. The definition is copied by value (its nested
+	// schema pointers are shared, as no transform mutates a tool definition in place).
+	if original.ToolChange != nil {
+		copyTarget := &ResponsesToolChangeTarget{Type: original.ToolChange.Type}
+		if original.ToolChange.Name != nil {
+			copyTarget.Name = new(*original.ToolChange.Name)
+		}
+		if original.ToolChange.ServerName != nil {
+			copyTarget.ServerName = new(*original.ToolChange.ServerName)
+		}
+		if original.ToolChange.Definition != nil {
+			copyDefinition := *original.ToolChange.Definition
+			copyTarget.Definition = &copyDefinition
+		}
+		copy.ToolChange = copyTarget
 	}
 	if original.ResponsesOutputMessageContentFallback != nil {
 		copyFallback := &ResponsesOutputMessageContentFallback{
@@ -2207,6 +2406,43 @@ func IsElevenlabsSoundModel(model string) bool {
 	return strings.Contains(model, "eleven_text_to_sound")
 }
 
+// IsTypesafeModel checks if the model targets a TypeSafe System One decisions
+// endpoint (e.g. "typesafe/jev-1.13", "~typesafe/jev-latest") rather than chat.
+func IsTypesafeModel(model string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "~"), "typesafe/")
+}
+
+// IsClefModel checks if the model is a Clef decision model on Cloudflare Workers AI,
+// by its bare name ("clef-flash") or Cloudflare's full ID ("@cf/cloudflare/clef-flash").
+// Any "clef" name matches, so new Clef variants work without a code change.
+func IsClefModel(model string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(model, "@cf/cloudflare/"), "clef")
+}
+
+// IsPerplexityDeciderModel checks if the model is one of Perplexity's decider models
+// ("pplx-decider-v1.1-27b"), served on its decisions endpoint rather than chat. Dated
+// snapshots share the prefix.
+func IsPerplexityDeciderModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "pplx-decider")
+}
+
+// ollamaDecisionModelPrefixes are the System One model families in Ollama's
+// library, served on its /v1/systemone endpoint rather than chat.
+var ollamaDecisionModelPrefixes = []string{"nimble", "tev1", "clef", "laya"}
+
+// IsOllamaDecisionModel checks if the model is one of Ollama's System One
+// models ("nimble", "clef-flash", "tev1:0.8b"). Any name in a System One family
+// matches, so new variants work without a code change.
+func IsOllamaDecisionModel(model string) bool {
+	model = strings.ToLower(model)
+	for _, prefix := range ollamaDecisionModelPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
@@ -2344,6 +2580,26 @@ func IsOpus55Plus(model string) bool {
 	return strings.Contains(m, "5-5") || strings.Contains(m, "5.5")
 }
 
+// openAIDecisionModelPrefixes are the model families OpenAI serves on its
+// POST /v1/decisions endpoint. They back DefaultSupportsDecisions for
+// deployments without the datasheet; with it, the supports_decisions row
+// decides.
+var openAIDecisionModelPrefixes = []string{"gpt-6-luna"}
+
+// DefaultSupportsDecisions is the name-based fallback for
+// ModelCaps.SupportsDecisions, used when the datasheet says nothing: true for
+// a model family OpenAI serves on its decisions endpoint. Dated snapshots
+// share their family's prefix.
+func DefaultSupportsDecisions(model string) bool {
+	model = strings.TrimPrefix(strings.ToLower(model), "openai/")
+	for _, prefix := range openAIDecisionModelPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // DefaultSupportsForcedToolChoice is the name-based fallback for
 // ModelCaps.SupportsForcedToolChoice, used when the datasheet says nothing.
 func DefaultSupportsForcedToolChoice(model string) bool {
@@ -2389,6 +2645,11 @@ func IsCohereModel(model string) bool {
 // Bedrock identifier prefix ("amazon.titan-*").
 func IsTitanModel(model string) bool {
 	return strings.Contains(model, "titan")
+}
+
+// IsTitanMultimodalEmbeddingModel checks if the model is Titan's multimodal embedding model.
+func IsTitanMultimodalEmbeddingModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "titan-embed-image")
 }
 
 // IsGrokModel checks if the model is an xAI Grok model.

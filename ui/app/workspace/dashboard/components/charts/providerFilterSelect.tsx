@@ -1,5 +1,9 @@
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { StartTruncatedLabel } from "@/components/ui/truncatedLabel";
+import { ProviderSelector } from "@/components/ui/providerSelector";
+
+// The list here comes from the analytics series, not the providers API, so it can name a
+// provider that has since been deleted. The sentinel is what "no filter" is stored as.
+const ALL_PROVIDERS_VALUE = "all";
+const ALL_PROVIDERS_OPTION = { value: ALL_PROVIDERS_VALUE, label: "All Providers" };
 
 interface ProviderFilterSelectProps {
 	providers: string[];
@@ -10,18 +14,16 @@ interface ProviderFilterSelectProps {
 
 export function ProviderFilterSelect({ providers, selectedProvider, onProviderChange, "data-testid": testId }: ProviderFilterSelectProps) {
 	return (
-		<Select value={selectedProvider} onValueChange={onProviderChange}>
-			<SelectTrigger className="!h-7.5 w-[110px] text-xs sm:w-[130px]" data-testid={testId} size="sm">
-				<SelectValue placeholder="All Providers" />
-			</SelectTrigger>
-			<SelectContent className="w-auto max-w-[var(--radix-popper-available-width)] min-w-[var(--radix-select-trigger-width)]">
-				<SelectItem value="all">All Providers</SelectItem>
-				{providers.filter(Boolean).map((provider) => (
-					<SelectItem key={provider} value={provider} className="text-xs [&>span:last-child]:min-w-0">
-						<StartTruncatedLabel>{provider}</StartTruncatedLabel>
-					</SelectItem>
-				))}
-			</SelectContent>
-		</Select>
+		<ProviderSelector
+			source="values"
+			values={providers}
+			size="sm"
+			className="!h-7.5 w-[110px] text-xs sm:w-[130px]"
+			contentWidth={220}
+			allOption={ALL_PROVIDERS_OPTION}
+			value={selectedProvider || ALL_PROVIDERS_VALUE}
+			onChange={onProviderChange}
+			data-testid={testId}
+		/>
 	);
 }

@@ -79,6 +79,10 @@ type Store struct {
 	rawOverrides  []Override
 	customPricing *customPricingData
 
+	// Providers whose self-reported usage.cost is ignored in favour of catalog pricing.
+	ignoreProviderCostMu sync.RWMutex
+	ignoreProviderCost   map[schemas.ModelProvider]struct{}
+
 	// Sync configuration owned here so UpdateSyncConfig is atomic w.r.t. the
 	// URL accessors in sync.go. The composer's ticker reads SyncInterval()
 	// and LastSyncedAt() to schedule.
@@ -102,6 +106,7 @@ func New(configStore configstore.ConfigStore, logger schemas.Logger, cfg Config)
 		supportedParams:        make(map[string][]string),
 		datasheetByProvider:    make(map[schemas.ModelProvider][]string),
 		deprecatedByProvider:   make(map[schemas.ModelProvider][]string),
+		ignoreProviderCost:     make(map[schemas.ModelProvider]struct{}),
 		url:                    cfg.URL,
 		modelParametersURL:     cfg.ModelParametersURL,
 		syncInterval:           cfg.SyncInterval,

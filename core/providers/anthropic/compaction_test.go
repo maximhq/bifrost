@@ -792,3 +792,137 @@ func TestMixedTextThenToolCallsStreamMapsStopReasonToToolUse(t *testing.T) {
 		t.Fatal("expected message_stop event in mixed text+tool_use stream")
 	}
 }
+
+// TestToBifrostResponsesStream_CompactionToolChanges (#8207): a streamed compaction block
+// may carry tool_changes on its content_block_start (the server-recorded net tool set of the
+// compacted range). It must ride along to the item emitted on the compaction delta, and the
+// Anthropic egress must put it back on the content_block_start it rebuilds.
+func TestToBifrostResponsesStream_CompactionToolChanges(t *testing.T) {
+	t.Parallel()
+
+	state := &AnthropicResponsesStreamState{
+		ContentIndexToOutputIndex: make(map[int]int),
+		ContentIndexToBlockType:   make(map[int]AnthropicContentBlockType),
+		ToolArgumentBuffers:       make(map[int]string),
+		MCPCallOutputIndices:      make(map[int]bool),
+		ItemIDs:                   make(map[int]string),
+		OutputItems:               make(map[int]*schemas.ResponsesMessage),
+		ReasoningSignatures:       make(map[int]string),
+		TextContentIndices:        make(map[int]bool),
+		ReasoningContentIndices:   make(map[int]bool),
+		CompactionContentIndices:  make(map[int]*schemas.CacheControl),
+		CurrentOutputIndex:        0,
+		CreatedAt:                 1234567890,
+		HasEmittedCreated:         true,
+		HasEmittedInProgress:      true,
+	}
+
+	start := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockStart,
+		Index: schemas.Ptr(0),
+		ContentBlock: &AnthropicContentBlock{
+			Type: AnthropicContentBlockTypeCompaction,
+			ToolChanges: []AnthropicContentBlock{{
+				Type: AnthropicContentBlockTypeToolRemoval,
+				Tool: &AnthropicToolChangeTarget{Type: AnthropicToolChangeTargetTypeToolReference, Name: schemas.Ptr("get_weather")},
+			}},
+		},
+	}
+	if _, err, _ := start.ToBifrostResponsesStream(context.Background(), 0, state); err != nil {
+		t.Fatalf("content_block_start: %v", err)
+	}
+
+	summary := "Summary of the compacted range."
+	delta := &AnthropicStreamEvent{
+		Type:  AnthropicStreamEventTypeContentBlockDelta,
+		Index: schemas.Ptr(0),
+		Delta: &AnthropicStreamDelta{Type: AnthropicStreamDeltaTypeCompaction, Content: &summary},
+	}
+	responses, err, _ := delta.ToBifrostResponsesStream(context.Background(), 1, state)
+	if err != nil {
+		t.Fatalf("compaction delta: %v", err)
+	}
+	if len(responses) != 2 || responses[0].Item == nil || responses[0].Item.Content == nil || len(responses[0].Item.Content.ContentBlocks) == 0 {
+		t.Fatalf("expected output_item.added with a compaction block, got %d responses", len(responses))
+	}
+	block := responses[0].Item.Content.ContentBlocks[0]
+	cmp := block.ResponsesOutputMessageContentCompaction
+	if cmp == nil || len(cmp.ToolChanges) != 1 {
+		t.Fatalf("compaction tool_changes dropped on the streamed item: %+v", cmp)
+	}
+	if cmp.ToolChanges[0].Type != schemas.ResponsesInputMessageContentBlockTypeToolRemoval ||
+		cmp.ToolChanges[0].ToolChange == nil || cmp.ToolChanges[0].ToolChange.Name == nil || *cmp.ToolChanges[0].ToolChange.Name != "get_weather" {
+		t.Fatalf("tool_changes[0] = %+v, want a tool_removal referencing get_weather", cmp.ToolChanges[0])
+	}
+
+	// Egress: the rebuilt content_block_start carries tool_changes again.
+	egressCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	events := ToAnthropicResponsesStreamResponse(egressCtx, &schemas.BifrostResponsesStreamResponse{
+		Type:        schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		OutputIndex: schemas.Ptr(0),
+		Item:        responses[0].Item,
+	})
+	var startEvent *AnthropicStreamEvent
+	for _, ev := range events {
+		if ev != nil && ev.Type == AnthropicStreamEventTypeContentBlockStart {
+			startEvent = ev
+		}
+	}
+	if startEvent == nil || startEvent.ContentBlock == nil {
+		t.Fatalf("no content_block_start emitted: %+v", events)
+	}
+	if len(startEvent.ContentBlock.ToolChanges) != 1 || startEvent.ContentBlock.ToolChanges[0].Tool == nil ||
+		startEvent.ContentBlock.ToolChanges[0].Tool.Name == nil || *startEvent.ContentBlock.ToolChanges[0].Tool.Name != "get_weather" {
+		t.Fatalf("egress content_block_start lost tool_changes: %+v", startEvent.ContentBlock)
+	}
+}
+
+// TestToAnthropicResponsesStream_CompactionToolChangesUseModelCaps: the streamed compaction
+// egress must resolve the request's provider and model when it rebuilds inline definitions,
+// so a recorded dynamic-filtering web_search keeps its dated type instead of the empty-caps
+// default web_search_20250305.
+func TestToAnthropicResponsesStream_CompactionToolChangesUseModelCaps(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	item := &schemas.ResponsesMessage{
+		ID:   schemas.Ptr("cmp_1"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type: schemas.ResponsesOutputMessageContentTypeCompaction,
+			ResponsesOutputMessageContentCompaction: &schemas.ResponsesOutputMessageContentCompaction{
+				Summary: "summary",
+				ToolChanges: []schemas.ResponsesMessageContentBlock{{
+					Type: schemas.ResponsesInputMessageContentBlockTypeToolAddition,
+					ToolChange: &schemas.ResponsesToolChangeTarget{
+						Type:       schemas.ResponsesToolChangeTargetTypeToolDefinition,
+						Definition: &schemas.ResponsesTool{Type: schemas.ResponsesToolTypeWebSearch},
+					},
+				}},
+			},
+		}}},
+	}
+	resp := &schemas.BifrostResponsesStreamResponse{
+		Type:        schemas.ResponsesStreamResponseTypeOutputItemAdded,
+		OutputIndex: schemas.Ptr(0),
+		Item:        item,
+	}
+	resp.ExtraFields.RoutingInfo = schemas.RoutingInfo{Provider: schemas.Anthropic, Model: "claude-opus-5-5"}
+	events := ToAnthropicResponsesStreamResponse(ctx, resp)
+	var start *AnthropicStreamEvent
+	for _, ev := range events {
+		if ev != nil && ev.Type == AnthropicStreamEventTypeContentBlockStart {
+			start = ev
+		}
+	}
+	if start == nil || start.ContentBlock == nil || len(start.ContentBlock.ToolChanges) != 1 {
+		t.Fatalf("content_block_start with one tool_changes entry not emitted: %+v", events)
+	}
+	def := start.ContentBlock.ToolChanges[0].Tool
+	if def == nil || def.Definition == nil || def.Definition.Type == nil {
+		t.Fatalf("tool_changes[0] definition missing: %+v", start.ContentBlock.ToolChanges[0])
+	}
+	if got := *def.Definition.Type; got != AnthropicToolTypeWebSearch20260209 {
+		t.Errorf("web_search type = %s, want %s (stream egress rebuilt the definition with empty ModelCaps)", got, AnthropicToolTypeWebSearch20260209)
+	}
+}

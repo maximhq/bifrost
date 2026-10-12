@@ -1943,3 +1943,42 @@ export function MCPIcon(props: SVGProps<SVGSVGElement>) {
 		</svg>
 	);
 }
+
+// WarpIcon is the mark for Warp, the dashboard's data agent: Warp's winged
+// helmet, one eye covered.
+//
+// The path is normalised onto lucide's grid rather than kept in the artwork's
+// own space. As authored, the ink filled 75% x 79% of its viewBox and sat high
+// in it (147 units of headroom against 49 below), so at any shared box size the
+// glyph rendered small and a touch above the text baseline beside icons that
+// fill their own box. Remapping the ink bounding box - not the declared viewBox
+// - onto a centred 21-unit span inside 0 0 24 24 puts it on the same optical
+// grid as every icon it sits next to.
+//
+// It is filled and stroked in the same colour. The artwork's lines are about
+// 1.5% of its box where lucide's are 8%, so fill alone renders as hairline
+// beside them; the stroke supplies the missing weight and makes strokeWidth mean
+// what it means on any other icon here. fill-rule="evenodd" is load-bearing - it
+// carves the eye, the mouth and the gaps between the feathers, and under the
+// default rule the mark collapses to a silhouette.
+//
+// No <title>: every consumer supplies its own aria-label, and a nested <title>
+// would be announced on top of it.
+export function WarpIcon({ strokeWidth = 1.5, ...props }: SVGProps<SVGSVGElement>) {
+	return (
+		<svg
+			fill="none"
+			strokeWidth={strokeWidth}
+			stroke="currentColor"
+			style={{ flex: "none", lineHeight: 1 }}
+			viewBox="0 0 24 24"
+			xmlns="http://www.w3.org/2000/svg"
+			aria-hidden="true"
+			{...props}
+		>
+			<circle cx="12" cy="12" r="10" />
+			<circle cx="15" cy="12" r="6" />
+			<circle cx="18" cy="12" r="2" />
+		</svg>
+	);
+}

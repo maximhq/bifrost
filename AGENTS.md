@@ -220,6 +220,17 @@ Client HTTP Request
 - **Plugin pipeline symmetry**: Pre-hooks execute in registration order, post-hooks in **reverse** order (LIFO). For every pre-hook executed, the corresponding post-hook is guaranteed to run.
 - **Streaming**: SSE chunks flow through `chan chan *schemas.BifrostStreamChunk`. Accumulated into full response for post-hooks via `framework/streaming/accumulator.go`.
 
+### Every change states its cost on the request flow
+
+Bifrost's value is ~11µs of overhead at 5,000 RPS, so every change is evaluated for the memory allocations and processing time it adds to the end-to-end flow, not only for correctness. Before a PR is opened:
+
+- **Measure, do not assert.** Code on the request path (handlers, plugins, providers, streaming, key selection, auth) ships with a `Benchmark*` in the existing `_test.go` file, run with `-benchmem`, and the PR body records allocs/op and ns/op before and after. A change that cannot be benchmarked states plainly why ("config load only", "runs once per provider rebuild").
+- **The common case must not regress.** A feature that is off by default, or only applies to some keys/providers, adds zero allocations and at most a nil/empty check to requests that do not use it. Put the work behind that check, not in front of it.
+- **Per-credential or per-stream state lives in a manager, not per request.** Caches keyed by credential or `RequestID` are built once and reused (see the token cache in `core/providers/utils/tokencache` and the streaming accumulator); the per-request cost is a map load, never a rebuild.
+- **Name the memory that is retained.** Anything cached for longer than a request (tokens, connections, slots, buffers) states its bound in the PR body: what it is keyed by, how large an entry is, and when it is freed.
+
+Reviewers treat a missing cost statement the same way as missing tests.
+
 ### BifrostContext — Custom Context
 
 `BifrostContext` (`core/schemas/context.go`) is a custom `context.Context` with **thread-safe mutable values**. Unlike standard Go contexts, values can be set after creation:
@@ -592,6 +603,17 @@ Insert into the collection surgically (a script that splices the new object in, 
 
 The narrow exemptions: changes with no wire-visible effect (comments, internal renames, log lines) and behaviour no HTTP request can reach. If a change is exempt, say so explicitly in the PR rather than leaving the omission unexplained.
 
+### Provider-native features are tested on every route that reaches the provider
+
+A provider is reachable through more than its own SDK endpoint, and a fix that only looks at the route named in the issue is incomplete. Before calling a provider-native feature (a content block type, a beta header, a request parameter) fixed or added, enumerate every inbound route that can carry it to that provider and cover each one:
+
+- **The provider's native surface**: `/anthropic/v1/messages`, `/genai/...`, `/bedrock/...` and the matching SDK integration under `transports/bifrost-http/integrations/`.
+- **The neutral OpenAI-shaped surfaces**: `/v1/responses` and `/v1/chat/completions`, routed by the `provider/model` prefix. The payload arrives in neutral shape (for example a Responses `function` tool, not an Anthropic `input_schema` tool), and the client cannot set provider headers such as `anthropic-beta`, so any header the feature needs must be derived from the body by the gateway.
+- **The Go SDK**, which enters at the same neutral types as `/v1/responses`.
+- **Other hosts of the same model family** that reuse the provider's converters: Bedrock, Bedrock Mantle, Vertex, Azure, OpenRouter. Find them with `grep -rl "providers/<provider>\"" core/providers transports/bifrost-http` and check the per-host gates (`ProviderFeatures`, placement gates like `DefaultSupportsMidConversationSystem`) rather than assuming the converter change reaches them.
+
+For each route the change reaches: a unit test that drives that route's ingress type into the provider egress, and a provider-harness case in the same folder with the route in the case name, using the shape and headers a real client on that route would send (so a `/v1/responses` case must not carry `anthropic-beta`). Routes the change does not reach are not silently skipped: the PR states each one and why (no equivalent construct on that wire, gated off by the feature table, dropped by a placement fallback), so the gap is a recorded decision and not an omission. If the fix leaves a host with the beta header on but the body construct dropped, say so explicitly; that mismatch is itself a bug to track.
+
 ### Every non-exempt wire-visible fix ends with unit tests, then a harness command handed to the user
 
 Unit tests and `make test-core` are the finish line for the agent. Run the Go-level red/green loop and the regression reruns, and report what passed and what failed.
@@ -617,9 +639,9 @@ make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python
 make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>" BASE_URL=http://localhost:<port>
 ```
 
-Do not pass `APP_DIR` or `CI=1` to `run-provider-harness-test`. `APP_DIR` already defaults to `tests/integrations/python` (Makefile:2255), the same profile `make dev` is pointed at, and `CI=1` suppresses the interactive HTML viewer that makes a live run readable. `make dev` is the one that needs `APP_DIR` spelled out, because it is what decides which code and config the server runs.
+Do not pass `APP_DIR` or `CI=1` to `run-provider-harness-test`. `APP_DIR` already defaults to `tests/integrations/python` (Makefile:2255), the same profile `make dev` is pointed at, and `CI=1` suppresses the interactive HTML viewer that makes a live run readable. `make dev` is the one that needs `APP_DIR` spelled out, because it is what decides which code and config the server runs. Always pass `PORT` to `make dev` and the matching `BASE_URL` to the harness: several worktrees may be running at once, and the harness viewer itself listens on 8090, so pick a port that is neither 8080 nor 8090 unless `lsof` shows both free.
 
-Never print that block with a placeholder still in it. `<provider>` and `<keyword>` belong to the template; substitute the real values for the change so every line pastes straight into a shell.
+Never print that block with a placeholder still in it. `<provider>`, `<keyword>`, and `<port>` belong to the template; substitute the real values for the change so every line pastes straight into a shell. The keyword is descriptive text from the case or folder names (for example `"sdk fidelity"`), never an issue or PR number.
 
 The exemptions are the ones in the previous section: a change with no wire-visible effect (comments, internal renames, log lines, test-only or guidance-only edits) or behaviour no HTTP request can reach is exempt. For an exempt change, say so explicitly instead of printing the block.
 
@@ -797,6 +819,7 @@ Systematically address unresolved PR review comments. Uses GraphQL to get unreso
 - **Converter functions**: Pure — no side effects, no logging, no HTTP.
 - **Pool names**: Descriptive string passed to `pool.New()` (e.g., `"channel-message"`, `"response-stream"`).
 - **Context keys**: Use `BifrostContextKey` type. Custom plugins should define their own key types to avoid collisions.
+- **Struct comments**: Keep struct field comments to a short trailing one-liner (or none). Long multi-line explanations do not belong inside struct definitions; put the rationale in the doc comment of the function that uses the field, or in the package doc.
 - **Go filenames**: No underscores. The only permitted underscore is the `_test.go` suffix. Examples: `pluginpipeline.go`, `pluginpipeline_test.go` — never `plugin_pipeline.go` or `plugin_pipeline_race_test.go`. Concatenate words (lowercase, no separators) for multi-word filenames.
 
 # Frontend Code Guidelines & Patterns
@@ -938,6 +961,26 @@ Available today: `virtualKeySelector`, `teamSelector`, `customerSelector` (OSS);
 Do not edit `entitySelector.tsx` to accommodate one surface. It only carries behaviour identical across every entity; per-entity differences belong in the wrapper, per-surface differences in props (`trigger`, `triggerClassName`, `excludeIds`, `noPortal`, `className`).
 
 **OSS ↔ enterprise placement.** `entitySelector.tsx` and any selector whose API is OSS live in `ui/components/entitySelectors/`. A selector for an enterprise-only API lives in `bifrost-enterprise/enterprise-ui/app/components/entitySelectors/` and OSS must never import it directly — OSS reaches it through a runtime registry (`ui/lib/registries/userPicker.tsx`, `ui/lib/registries/modelLimitScopes.tsx`), with an empty fallback under `ui/app/_fallbacks/enterprise/` so OSS-only builds simply hide the option. Keep single mode prop-compatible with the registry contract (`{ value, onChange, disabled, fallbackOption }`) so the selector can be registered as-is.
+
+---
+
+### Provider and model pickers — always `ProviderSelector` / `ModelSelector`
+
+Every provider or model picker goes through `ui/components/ui/providerSelector.tsx` or `modelSelector.tsx`. Never hand-roll a `Select` over `VisibleProviderNames`, a `Combobox` over `useGetProvidersQuery`, or a search box over `useGetModelsQuery`: these already carry provider icons and labels, server-side model search with paging, deprecated demotion, a pinned "Selected" row for a value no longer in the list, and multi-mode chips.
+
+```tsx
+<ProviderSelector value={p} onChange={setP} />                              // single
+<ProviderSelector multiple value={ps} onChange={setPs} />                   // multi
+<ProviderSelector mode="add" onSelect={add} trigger={<Button>Add</Button>} /> // fire-and-forget
+<ModelSelector provider={p} value={m} onChange={setM} allowCustomModel />
+```
+
+- `source` on `ProviderSelector`: `"configured"` (default, what the user set up), `"catalog"` (everything Bifrost supports, for add flows), `"values"` (a list from elsewhere, e.g. analytics labels that may name a deleted provider).
+- Scope models with `provider` / `keys` / `vks`; `baseModelsWithoutProvider` collapses duplicates when no provider is picked, `allowCustomModel` accepts a name off-catalog, `unfiltered` bypasses the provider's model pool.
+- Rows outside the source list go in `extraOptions` (above), `footerOptions` (below), or `allOption` for an "All Providers" sentinel. `ALL_MODELS_OPTION` is exported for the `*` row. Never merge them into the fetched array yourself.
+- They own fetch, search, paging and reset. No parent `useState` mirror, debounce, or refetch-on-open.
+- Per-surface differences are props, not forks: `size="sm"`, `contentWidth`, `noPortal` (inside a sheet), `className`, `inputId` / `ariaDescribedBy` / `ariaInvalid`, `data-testid`, `optionTestId`, `contentTestId`. For selectability use `getOptionState` (model) or `disabled` + `disabledReason` on an option (provider). Anything new is a prop defaulting to today's behaviour.
+- Pure helpers live in `providerSelector.utils.ts` with a case in `providerSelector.test.ts`, since the components pull in the store.
 
 ---
 

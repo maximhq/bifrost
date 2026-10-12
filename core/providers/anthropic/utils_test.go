@@ -3164,6 +3164,55 @@ func TestStripUnsupportedFieldsFromRawBody_EffortGating(t *testing.T) {
 	}
 }
 
+// A kept output_config.effort snaps onto the model's ladder: Opus 4.5 takes
+// low/medium/high, Opus/Sonnet 4.6 add max, Opus 4.7+ add xhigh. Claude Code
+// defaults to xhigh, which a retargeted request carries onto older models.
+func TestStripUnsupportedFields_EffortLevelClamp(t *testing.T) {
+	tests := []struct {
+		model, effort, want string
+	}{
+		{"claude-opus-4-5", "xhigh", "high"},
+		{"claude-opus-4-5", "max", "high"},
+		{"claude-opus-4-5-20251101", "medium", "medium"},
+		{"claude-opus-4-6", "xhigh", "max"},
+		{"claude-sonnet-4-6", "max", "max"},
+		{"claude-opus-4-7", "xhigh", "xhigh"},
+		{"claude-opus-5-5", "max", "max"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model+"/"+tt.effort+"/raw", func(t *testing.T) {
+			body := []byte(`{"model":"` + tt.model + `","output_config":{"effort":"` + tt.effort + `"}}`)
+			out, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, tt.model)
+			if err != nil {
+				t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+			}
+			if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != tt.want {
+				t.Errorf("output_config.effort = %q, want %q; body=%s", got, tt.want, out)
+			}
+		})
+		t.Run(tt.model+"/"+tt.effort+"/typed", func(t *testing.T) {
+			req := &AnthropicMessageRequest{Model: tt.model, OutputConfig: &AnthropicOutputConfig{Effort: new(tt.effort)}}
+			stripUnsupportedAnthropicFields(req, schemas.Anthropic, tt.model)
+			if req.OutputConfig == nil || req.OutputConfig.Effort == nil || *req.OutputConfig.Effort != tt.want {
+				t.Errorf("OutputConfig = %+v, want effort %q", req.OutputConfig, tt.want)
+			}
+		})
+	}
+
+	t.Run("datasheet_ladder_wins", func(t *testing.T) {
+		model := "claude-opus-4-5-ladder-override"
+		setOverride(t, model, schemas.ModelCapabilities{ReasoningEffortLevels: []string{"low", "medium", "high", "xhigh"}})
+		body := []byte(`{"model":"` + model + `","output_config":{"effort":"xhigh"}}`)
+		out, err := StripUnsupportedFieldsFromRawBody(body, schemas.Anthropic, model)
+		if err != nil {
+			t.Fatalf("StripUnsupportedFieldsFromRawBody: %v", err)
+		}
+		if got := providerUtils.GetJSONField(out, "output_config.effort").String(); got != "xhigh" {
+			t.Errorf("output_config.effort = %q, want \"xhigh\" from the row's ladder; body=%s", got, out)
+		}
+	})
+}
+
 // TestStripUnsupportedFieldsFromRawBody_PerMessageOutputConfig pins the raw-passthrough
 // gate for per-message effort (messages[].output_config, beta
 // mid-conversation-output-config-2026-07-01). Claude Code 2.1.285 sends it on a
@@ -4249,8 +4298,18 @@ func betaHeaderCorpus() map[string]string {
 		// empty content array and a string-content system message may carry it too.
 		"per-message output_config.effort on an effort-only system message":   `{"model":"claude-opus-5-5","output_config":{"effort":"high"},"messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":"low"}}]}`,
 		"per-message output_config.effort on a string-content system message": `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":"be brief","output_config":{"effort":"low"}}]}`,
-		"per-message output_config without effort (must NOT trigger)":         `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":null}}]}`,
-		"no messages field at all":                                            `{"model":"` + model + `","max_tokens":64}`,
+		// Mid-conversation tool changes (#8207): a by-reference block needs the tool-changes
+		// beta; a by-value tool_definition (on the block, or recorded in a compaction block's
+		// tool_changes) additionally needs inline-tools.
+		"tool_removal by reference on a system message":                 `{"model":"claude-sonnet-5-5","tools":[{"name":"t","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_removal","tool":{"type":"tool_reference","name":"t"}}]}]}`,
+		"tool_addition with an inline tool_definition":                  `{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"t","input_schema":{"type":"object"}}}}]}]}`,
+		"compaction tool_changes with an inline tool_definition":        `{"model":"claude-sonnet-5-5","messages":[{"role":"assistant","content":[{"type":"compaction","content":"summary","tool_changes":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"t","input_schema":{"type":"object"}}}}]}]},{"role":"user","content":"hi"}]}`,
+		"compaction tool_changes by reference only (no inline beta)":    `{"model":"claude-sonnet-5-5","tools":[{"name":"t","input_schema":{"type":"object"}}],"messages":[{"role":"assistant","content":[{"type":"compaction","content":"summary","tool_changes":[{"type":"tool_removal","tool":{"type":"tool_reference","name":"t"}}]}]},{"role":"user","content":"hi"}]}`,
+		"tool_addition inline definition with strict and defer_loading": `{"model":"claude-sonnet-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"t","input_schema":{"type":"object"},"strict":true,"defer_loading":true}}}]}]}`,
+		"compaction tool_changes inline definition with strict":         `{"model":"claude-sonnet-5-5","messages":[{"role":"assistant","content":[{"type":"compaction","content":"summary","tool_changes":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"name":"t","input_schema":{"type":"object"},"strict":true}}}]}]},{"role":"user","content":"hi"}]}`,
+		"tool_addition inline mcp_toolset definition":                   `{"model":"claude-sonnet-5-5","mcp_servers":[{"type":"url","url":"https://mcp.example.com","name":"calendar"}],"messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"type":"mcp_toolset","mcp_server_name":"calendar"}}}]}]}`,
+		"per-message output_config without effort (must NOT trigger)":   `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"hi"},{"role":"system","content":[],"output_config":{"effort":null}}]}`,
+		"no messages field at all":                                      `{"model":"` + model + `","max_tokens":64}`,
 
 		// --- scope found elsewhere; the messages branch must not double-add or mask it ---
 		"scoped cache_control in system": `{"model":"` + model + `","system":[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","scope":"organization"}}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
@@ -4423,6 +4482,12 @@ func TestAccumulateResponsesUsage_BillsWebSearch(t *testing.T) {
 	if got := *billed.CompletionTokensDetails.NumSearchQueries; got != 2 {
 		t.Fatalf("billed usage NumSearchQueries = %d, want 2", got)
 	}
+	if got := usage.ToolUsage.WebSearch.NumRequests; got != 2 {
+		t.Fatalf("response usage ToolUsage web search = %d, want 2", got)
+	}
+	if got := billed.ToolUsage.WebSearch.NumRequests; got != 2 {
+		t.Fatalf("billed usage ToolUsage web search = %d, want 2", got)
+	}
 }
 
 // TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo verifies the chat
@@ -4459,6 +4524,9 @@ func TestToBifrostChatResponse_ForwardsWebSearchAndInferenceGeo(t *testing.T) {
 	}
 	if got := *result.Usage.CompletionTokensDetails.NumSearchQueries; got != 3 {
 		t.Fatalf("chat usage NumSearchQueries = %d, want 3", got)
+	}
+	if result.Usage.ToolUsage == nil || result.Usage.ToolUsage.WebSearch == nil || result.Usage.ToolUsage.WebSearch.NumRequests != 3 {
+		t.Fatalf("chat usage ToolUsage = %+v, want web_search.num_requests 3", result.Usage.ToolUsage)
 	}
 	if result.InferenceGeo == nil || *result.InferenceGeo != "us" {
 		t.Fatalf("inference_geo not forwarded; got %v", result.InferenceGeo)
@@ -4948,10 +5016,9 @@ var notEmittedByRequestGating = map[string]string{
 		"fallback-credit date to the AWS one on Bedrock/Mantle; gating emits only the canonical value",
 	"AnthropicMCPClientBetaHeaderDeprecated": "superseded version constant kept for inbound matching; " +
 		"gating emits AnthropicMCPClientBetaHeader",
-	"AnthropicContext1MBetaHeader":                  "opted into via network config or passthrough headers, not derived from the request body",
-	"AnthropicRedactThinkingBetaHeader":             "opted into via network config or passthrough headers, not derived from the request body",
-	"AnthropicSkillsBetaHeader":                     "opted into via network config or passthrough headers, not derived from the request body",
-	"AnthropicMidConversationToolChangesBetaHeader": "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicContext1MBetaHeader":      "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicRedactThinkingBetaHeader": "opted into via network config or passthrough headers, not derived from the request body",
+	"AnthropicSkillsBetaHeader":         "opted into via network config or passthrough headers, not derived from the request body",
 }
 
 // TestEveryBetaHeaderIsCoveredByTheCorpus makes a newly added beta header loud.
@@ -5439,6 +5506,66 @@ func TestAddMissingBetaHeaders_PerMessageEffortInjectsMidConversationOutputConfi
 	})
 }
 
+// TestAddMissingBetaHeaders_ToolChangesInjectBetas (#8207): tool_addition / tool_removal
+// blocks derive mid-conversation-tool-changes-2026-07-01 from the body; a by-value
+// tool_definition (on the block or inside a compaction block's tool_changes) additionally
+// derives inline-tools-2026-09-15. Both paths (typed and raw body) must agree, and the
+// headers must not appear for a body without the blocks.
+func TestAddMissingBetaHeaders_ToolChangesInjectBetas(t *testing.T) {
+	corpus := betaHeaderCorpus()
+	cases := []struct {
+		name       string
+		body       string
+		wantChange bool
+		wantInline bool
+	}{
+		{"by-reference removal", corpus["tool_removal by reference on a system message"], true, false},
+		{"inline definition", corpus["tool_addition with an inline tool_definition"], true, true},
+		{"compaction tool_changes inline definition", corpus["compaction tool_changes with an inline tool_definition"], true, true},
+		{"compaction tool_changes by reference", corpus["compaction tool_changes by reference only (no inline beta)"], true, false},
+		{"no tool changes", corpus["bare request"], false, false},
+	}
+	check := func(t *testing.T, merged []string, wantChange, wantInline bool) {
+		t.Helper()
+		if got := slices.Contains(merged, AnthropicMidConversationToolChangesBetaHeader); got != wantChange {
+			t.Errorf("%s present=%v, want %v; got %v", AnthropicMidConversationToolChangesBetaHeader, got, wantChange, merged)
+		}
+		if got := slices.Contains(merged, AnthropicInlineToolsBetaHeader); got != wantInline {
+			t.Errorf("%s present=%v, want %v; got %v", AnthropicInlineToolsBetaHeader, got, wantInline, merged)
+		}
+	}
+	for _, tc := range cases {
+		if tc.body == "" {
+			t.Fatalf("corpus entry for %q missing", tc.name)
+		}
+		t.Run(tc.name+"/typed", func(t *testing.T) {
+			var req AnthropicMessageRequest
+			if err := schemas.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContext(ctx, &req, schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic), tc.wantChange, tc.wantInline)
+		})
+		t.Run(tc.name+"/raw", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(tc.body), schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic), tc.wantChange, tc.wantInline)
+		})
+	}
+	t.Run("dropped where the provider lacks the feature", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(corpus["tool_addition with an inline tool_definition"]), schemas.Vertex); err != nil {
+			t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+		}
+		check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Vertex), false, false)
+	})
+}
+
 // TestDefaultSupportsMidConversationSystem_ModelList pins the documented model list for
 // mid-conversation system messages: Opus 4.8+, Sonnet 5.5 (not Sonnet 5), Fable/Mythos.
 // Source: https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
@@ -5469,5 +5596,301 @@ func TestDefaultSupportsMidConversationSystem_ModelList(t *testing.T) {
 	}
 	if !DefaultSupportsMidConversationOutputConfig(schemas.Anthropic, "claude-sonnet-5-5") {
 		t.Error("Sonnet 5.5 must report per-message effort support")
+	}
+}
+
+// TestHandleAnthropicResponsesRequest_KeepsBedrockInvokeGuardrailOutcome: Bedrock's native
+// InvokeModel reports the guardrail outcome as top-level amazon-bedrock-* fields that
+// AnthropicMessageResponse has no member for; the handler must keep them on the response.
+func TestHandleAnthropicResponsesRequest_KeepsBedrockInvokeGuardrailOutcome(t *testing.T) {
+	const trace = `{"guardrail":{"input":{"gr-1":[{"topicPolicy":{"topics":[{"name":"x","action":"BLOCKED"}]}}]},"outputs":[]}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"claude-sonnet-4-6","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1},"amazon-bedrock-guardrailAction":"INTERVENED","amazon-bedrock-trace":` + trace + `}`))
+	}))
+	defer server.Close()
+
+	run := func(provider schemas.ModelProvider) *schemas.BifrostResponsesResponse {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		request := &schemas.BifrostResponsesRequest{Provider: provider, Model: "claude-sonnet-4-6", Input: makeSimpleInput("Hello!")}
+		resp, bifrostErr := HandleAnthropicResponsesRequest(ctx, &fasthttp.Client{}, server.URL+"/model/m/invoke", request,
+			AnthropicRequestBuildConfig{Provider: provider, Model: "claude-sonnet-4-6"},
+			map[string]string{}, nil, nil, truncationTestLogger{})
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %s", bifrostErr.Error.Message)
+		}
+		return resp
+	}
+
+	resp := run(schemas.Bedrock)
+	if got := resp.ProviderExtraFields[BedrockInvokeGuardrailActionKey]; got != "INTERVENED" {
+		t.Errorf("guardrail action = %v, want INTERVENED", got)
+	}
+	raw, _ := resp.ProviderExtraFields[BedrockInvokeGuardrailTraceKey].(json.RawMessage)
+	if string(raw) != trace {
+		t.Errorf("guardrail trace = %s, want %s", raw, trace)
+	}
+
+	if extra := run(schemas.Anthropic).ProviderExtraFields; len(extra) != 0 {
+		t.Errorf("a non-Bedrock response must not grow guardrail fields: %v", extra)
+	}
+}
+
+// TestHandleAnthropicResponsesStream_KeepsBedrockInvokeGuardrailOutcome: on a native
+// InvokeModelWithResponseStream the guardrail outcome arrives as top-level amazon-bedrock-*
+// fields of the final event, which AnthropicStreamEvent has no member for; the terminal
+// response chunk must carry them, verbatim.
+func TestHandleAnthropicResponsesStream_KeepsBedrockInvokeGuardrailOutcome(t *testing.T) {
+	const trace = `{"guardrail":{"input":{"gr-1":[{"topicPolicy":{"topics":[{"name":"x","action":"BLOCKED"}]}}]},"outputs":[]}}`
+	body := anthropicMessageStart + anthropicTextDelta +
+		"event: content_block_stop\n" + `data: {"type":"content_block_stop","index":0}` + "\n\n" +
+		"event: message_delta\n" + `data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}` + "\n\n" +
+		"event: message_stop\n" + `data: {"type":"message_stop","amazon-bedrock-invocationMetrics":{"inputTokenCount":5},"amazon-bedrock-guardrailAction":"INTERVENED","amazon-bedrock-trace":` + trace + `}` + "\n\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	run := func(plain string) []*schemas.BifrostStreamChunk {
+		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+		request := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "claude-sonnet-4-6", Input: makeSimpleInput("Hello!")}
+		jsonData, bifrostErr := BuildAnthropicResponsesRequestBody(ctx, request, AnthropicRequestBuildConfig{Provider: schemas.Bedrock, Model: "claude-sonnet-4-6", IsStreaming: true})
+		if bifrostErr != nil {
+			t.Fatalf("build: %s", bifrostErr.Error.Message)
+		}
+		stream, bifrostErr := HandleAnthropicResponsesStream(ctx, &fasthttp.Client{}, server.URL+"/model/m/invoke-with-response-stream"+plain, jsonData,
+			map[string]string{}, nil, 30, nil, false, false, schemas.Bedrock,
+			truncationPassthroughPostHook, nil, nil, truncationTestLogger{}, nil)
+		if bifrostErr != nil {
+			t.Fatalf("unexpected error: %s", bifrostErr.Error.Message)
+		}
+		return collectTruncationChunks(t, stream)
+	}
+
+	chunks := run("")
+	var carrying int
+	for _, chunk := range chunks {
+		if chunk.BifrostResponsesStreamResponse == nil || chunk.BifrostResponsesStreamResponse.Response == nil {
+			continue
+		}
+		extra := chunk.BifrostResponsesStreamResponse.Response.ProviderExtraFields
+		if extra[BedrockInvokeGuardrailActionKey] == nil && extra[BedrockInvokeGuardrailTraceKey] == nil {
+			continue
+		}
+		carrying++
+		if chunk.BifrostResponsesStreamResponse.Type != schemas.ResponsesStreamResponseTypeCompleted {
+			t.Errorf("guardrail outcome rode on %s, want the terminal completed chunk", chunk.BifrostResponsesStreamResponse.Type)
+		}
+		if got := extra[BedrockInvokeGuardrailActionKey]; got != "INTERVENED" {
+			t.Errorf("guardrail action = %v, want INTERVENED", got)
+		}
+		raw, _ := extra[BedrockInvokeGuardrailTraceKey].(json.RawMessage)
+		if string(raw) != trace {
+			t.Errorf("guardrail trace = %s, want %s", raw, trace)
+		}
+	}
+	if carrying != 1 {
+		t.Fatalf("%d chunks carried the guardrail outcome, want exactly 1", carrying)
+	}
+}
+
+// TestResolveAnthropicProgrammaticCaller pins the version rule. allowed_callers must
+// name the code execution version the request declares: Anthropic auto-injects a
+// code_execution tool for the caller, which 400s ("Auto-injecting tools would
+// conflict with existing tool names: ['code_execution']") when the versions differ.
+func TestResolveAnthropicProgrammaticCaller(t *testing.T) {
+	tests := []struct {
+		name            string
+		declaredVersion string
+		hasCodeExec     bool
+		wantCaller      string
+		wantEmitVersion string
+	}{
+		{
+			name:        "no code execution tool: Anthropic auto-injects the named version",
+			hasCodeExec: false,
+			wantCaller:  "code_execution_20260120",
+		},
+		{
+			name:            "version-less code_interpreter is raised to reach programmatic tool calling",
+			declaredVersion: "",
+			hasCodeExec:     true,
+			wantCaller:      "code_execution_20260120",
+			wantEmitVersion: "code_execution_20260120",
+		},
+		{
+			name:            "explicit 20250825 is matched verbatim",
+			declaredVersion: "code_execution_20250825",
+			hasCodeExec:     true,
+			wantCaller:      "code_execution_20250825",
+		},
+		{
+			name:            "explicit 20260120 is matched verbatim",
+			declaredVersion: "code_execution_20260120",
+			hasCodeExec:     true,
+			wantCaller:      "code_execution_20260120",
+		},
+		{
+			name:            "explicit 20260521 is matched verbatim",
+			declaredVersion: "code_execution_20260521",
+			hasCodeExec:     true,
+			wantCaller:      "code_execution_20260521",
+		},
+		{
+			name:            "unrecognized version is named as declared and left alone",
+			declaredVersion: "code_execution_20270101",
+			hasCodeExec:     true,
+			wantCaller:      "code_execution_20270101",
+		},
+		{
+			name:            "legacy 20250522 has no caller value",
+			declaredVersion: "code_execution_20250522",
+			hasCodeExec:     true,
+			wantCaller:      "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			caller, emitVersion := resolveAnthropicProgrammaticCaller(tt.declaredVersion, tt.hasCodeExec)
+			if caller != tt.wantCaller {
+				t.Errorf("caller = %q, want %q", caller, tt.wantCaller)
+			}
+			if emitVersion != tt.wantEmitVersion {
+				t.Errorf("emitVersion = %q, want %q", emitVersion, tt.wantEmitVersion)
+			}
+		})
+	}
+}
+
+// TestAnthropicAllowedCallers covers the value rewrite itself.
+func TestAnthropicAllowedCallers(t *testing.T) {
+	tests := []struct {
+		name               string
+		in                 []string
+		programmaticCaller string
+		want               []string
+	}{
+		{name: "direct is shared", in: []string{"direct"}, programmaticCaller: "code_execution_20260120", want: []string{"direct"}},
+		{name: "programmatic is renamed", in: []string{"programmatic"}, programmaticCaller: "code_execution_20260120", want: []string{"code_execution_20260120"}},
+		{name: "renamed to the declared version", in: []string{"programmatic"}, programmaticCaller: "code_execution_20250825", want: []string{"code_execution_20250825"}},
+		{name: "mixed list", in: []string{"direct", "programmatic"}, programmaticCaller: "code_execution_20260521", want: []string{"direct", "code_execution_20260521"}},
+		{name: "anthropic values pass through", in: []string{"code_execution_20260120"}, programmaticCaller: "code_execution_20260120", want: []string{"code_execution_20260120"}},
+		{name: "collapses duplicates after rename", in: []string{"programmatic", "code_execution_20260120"}, programmaticCaller: "code_execution_20260120", want: []string{"code_execution_20260120"}},
+		{name: "unexpressible caller is dropped", in: []string{"programmatic"}, programmaticCaller: "", want: nil},
+		{name: "unexpressible caller leaves direct alone", in: []string{"direct", "programmatic"}, programmaticCaller: "", want: []string{"direct"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := anthropicAllowedCallers(tt.in, tt.programmaticCaller)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// TestAddMissingBetaHeaders_InlineDefinitionCarriesItsOwnBetas: a tool defined by value inside
+// a tool_addition block needs the same beta headers its tools[] twin would get (strict ->
+// structured outputs, defer_loading -> tool search), on both the typed and the raw path, and
+// inside compaction tool_changes too. An inline mcp_toolset needs the MCP client beta.
+func TestAddMissingBetaHeaders_InlineDefinitionCarriesItsOwnBetas(t *testing.T) {
+	corpus := betaHeaderCorpus()
+	cases := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{"inline strict + defer_loading", corpus["tool_addition inline definition with strict and defer_loading"],
+			[]string{AnthropicStructuredOutputsBetaHeader, AnthropicToolSearchBetaHeader, AnthropicInlineToolsBetaHeader}},
+		{"compaction inline strict", corpus["compaction tool_changes inline definition with strict"],
+			[]string{AnthropicStructuredOutputsBetaHeader, AnthropicInlineToolsBetaHeader}},
+		{"inline mcp_toolset", corpus["tool_addition inline mcp_toolset definition"],
+			[]string{AnthropicMCPClientInlineToolsBetaHeader, AnthropicInlineToolsBetaHeader}},
+	}
+	for _, tc := range cases {
+		if tc.body == "" {
+			t.Fatalf("corpus entry for %q missing", tc.name)
+		}
+		check := func(t *testing.T, merged []string) {
+			t.Helper()
+			for _, want := range tc.want {
+				if !slices.Contains(merged, want) {
+					t.Errorf("beta %s missing; got %v", want, merged)
+				}
+			}
+		}
+		t.Run(tc.name+"/typed", func(t *testing.T) {
+			var req AnthropicMessageRequest
+			if err := schemas.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContext(ctx, &req, schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic))
+		})
+		t.Run(tc.name+"/raw", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(tc.body), schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic))
+		})
+	}
+}
+
+// TestAddMissingBetaHeaders_SingleMCPClientDate: mcp_servers and an inline mcp_toolset must
+// not produce two mcp-client-* betas. With an inline toolset present the inline-era date is
+// the one sent; without it the regular one stays.
+func TestAddMissingBetaHeaders_SingleMCPClientDate(t *testing.T) {
+	corpus := betaHeaderCorpus()
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"mcp_servers + inline toolset", corpus["tool_addition inline mcp_toolset definition"], AnthropicMCPClientInlineToolsBetaHeader},
+		{"mcp_servers only", `{"model":"claude-sonnet-5-5","mcp_servers":[{"type":"url","url":"https://mcp.example.com","name":"calendar"}],"messages":[{"role":"user","content":"hi"}]}`, AnthropicMCPClientBetaHeader},
+	}
+	for _, tc := range cases {
+		check := func(t *testing.T, merged []string) {
+			t.Helper()
+			var mcp []string
+			for _, h := range merged {
+				if strings.HasPrefix(h, AnthropicMCPClientBetaHeaderPrefix) {
+					mcp = append(mcp, h)
+				}
+			}
+			if len(mcp) != 1 || mcp[0] != tc.want {
+				t.Errorf("mcp-client betas = %v, want exactly [%s]", mcp, tc.want)
+			}
+		}
+		t.Run(tc.name+"/typed", func(t *testing.T) {
+			var req AnthropicMessageRequest
+			if err := schemas.Unmarshal([]byte(tc.body), &req); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContext(ctx, &req, schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic))
+		})
+		t.Run(tc.name+"/raw", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if err := AddMissingBetaHeadersToContextFromRawBody(ctx, []byte(tc.body), schemas.Anthropic); err != nil {
+				t.Fatalf("AddMissingBetaHeadersToContextFromRawBody: %v", err)
+			}
+			check(t, FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, nil), schemas.Anthropic))
+		})
 	}
 }

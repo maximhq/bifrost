@@ -1,10 +1,14 @@
 package logging
 
 import (
+	"context"
+	"fmt"
+	"hash/fnv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -23,6 +27,27 @@ const (
 	// logging plugin can fully drain in the worst case; remaining entries beyond
 	// the deadline are dropped so the process is never wedged on a slow store.
 	cleanupDrainTimeout = 30 * time.Second
+	// batchWriteAttempts is how many times processBatch sends a batch whose
+	// failure was transient (connection lost, statement timeout, server
+	// shutting down) before counting it as dropped. The per-row fallback is
+	// skipped for these: it cannot succeed either and only multiplies the failed
+	// statements by the batch size, which is what let the write queue back up.
+	batchWriteAttempts = 3
+	// batchWriteBackoff is the pause before the second attempt; it doubles on
+	// each further attempt, so three attempts wait 250ms + 500ms at most.
+	batchWriteBackoff = 250 * time.Millisecond
+)
+
+var (
+	// maintenancePollInterval is how often a paused batchWriter re-checks the
+	// logstore migration lock (see awaitMigrationWindow). A var so tests can
+	// shrink it.
+	maintenancePollInterval = time.Second
+	// maintenanceMaxPause caps one pause. A lock that outlives it (a very long
+	// backfill step, or a crashed migrator whose session a proxy keeps alive)
+	// must not stall log writes forever, so after the cap the writer flushes
+	// anyway, which is exactly what it did before the gate existed.
+	maintenanceMaxPause = 2 * time.Minute
 )
 
 // PendingLogData holds PreLLMHook input data until PostLLMHook fires.
@@ -42,6 +67,12 @@ type PendingLogData struct {
 	// chunks are not reaped before they finish. Atomic because the cleanup
 	// goroutine reads it concurrently with per-chunk PostLLMHook writes.
 	LastActivity atomic.Int64
+	// Live is set for a GPT Live session's row: what its units have folded into it so far.
+	Live             *liveSessionState
+	ProvisionalInput bool           // Input captured before the virtual key's content decision was known
+	ContentPolicy    *contentPolicy // Content policy resolved in PreLLMHook; nil means the global policy
+	EvictionAttempts int            // Sweeps that could not queue this entry's partial row
+	EvictedPartial   bool           // PostLLMHook stub for an already-evicted request; reconciles by UPDATE
 }
 
 // pendingInjectEntries wraps a slice of log entries so it can be used with sync.Map.
@@ -56,10 +87,25 @@ type pendingInjectEntries struct {
 	drained bool
 }
 
+// pendingAgentInjectEntries is the Agent analogue of pendingInjectEntries: request
+// rows parked by PostA2AHook until Inject backfills authoritative latency
+// numbers from the completed trace.
+type pendingAgentInjectEntries struct {
+	mu        sync.Mutex
+	entries   []*logstore.AgentLog
+	createdAt time.Time
+	// drained is set by injectAgentEntries under mu once entries has been handed
+	// to the write queue; a late park writes directly instead.
+	drained bool
+}
+
 // writeQueueEntry is an entry pushed to the batch write queue.
+// Exactly one of log (insert), logUpdate (partial update), mcpLog or agentLog is set.
 type writeQueueEntry struct {
 	log         *logstore.Log
+	logUpdate   *logstore.Log
 	mcpLog      *logstore.MCPToolLog
+	agentLog    *logstore.AgentLog
 	callback    func(entry *logstore.Log)
 	mcpCallback func(entry *logstore.MCPToolLog)
 }
@@ -81,6 +127,11 @@ func (p *LoggerPlugin) batchWriter() {
 	timer.Stop()
 	timerRunning := false
 
+	// carry holds entries a flush could not write because batchCtx ended
+	// mid-write. They are handed to Cleanup with the unflushed batch so the
+	// drain, which has its own deadline, writes them instead of losing them.
+	var carry []*writeQueueEntry
+
 	flush := func() {
 		if timerRunning {
 			if !timer.Stop() {
@@ -91,24 +142,49 @@ func (p *LoggerPlugin) batchWriter() {
 			}
 			timerRunning = false
 		}
-		p.safeProcessBatch(batch)
+		// Hold the batch while another node runs schema migrations. The queue
+		// keeps buffering behind us (and drops when full, as always); nothing is
+		// written until the lock clears, the pause cap passes, or Cleanup cancels.
+		p.awaitMigrationWindow(p.batchCtx)
+		if p.batchCtx.Err() != nil {
+			// Cancelled during the pause: leave the batch intact so the caller's
+			// handoff hands it to Cleanup's drain instead of writing it here.
+			return
+		}
+		carry = append(carry, p.safeProcessBatch(p.batchCtx, batch)...)
 		clear(batch)
 		batch = batch[:0]
 		batchBytes = 0
+	}
+
+	// handoff parks everything this goroutine still owns in recoveredBatch
+	// and signals Cleanup, which owns the drain budget from this point on.
+	handoff := func() {
+		p.recoveredBatch = append(carry, batch...)
+		close(p.batchWriterDone)
 	}
 
 	for {
 		select {
 		case entry, ok := <-p.writeQueue:
 			if !ok {
-				// Channel closed - flush remaining batch and exit
-				p.safeProcessBatch(batch)
+				// Channel closed - flush remaining batch and exit. Nobody drains
+				// after this point, so anything the flush could not write is lost.
+				if left := p.safeProcessBatch(p.batchCtx, batch); len(left) > 0 {
+					p.droppedRequests.Add(int64(len(left)))
+				}
 				return
 			}
 			batch = append(batch, entry)
 			batchBytes += estimateWriteQueueEntrySize(entry)
 			if len(batch) >= writerConfig.MaxBatchSize || batchBytes >= writerConfig.MaxBatchBytes {
 				flush()
+				if p.batchCtx.Err() != nil {
+					// Cancelled during the flush: do not race the Done case below
+					// against a still-busy queue, hand off now.
+					handoff()
+					return
+				}
 			} else if !timerRunning {
 				timer.Reset(batchInterval)
 				timerRunning = true
@@ -118,77 +194,356 @@ func (p *LoggerPlugin) batchWriter() {
 			timerRunning = false
 			if len(batch) > 0 {
 				flush()
+				if p.batchCtx.Err() != nil {
+					handoff()
+					return
+				}
 			}
 
 		case <-p.batchCtx.Done():
 			// Cleanup is taking over: hand the local batch back via
 			// recoveredBatch, signal exit, and return without touching the
 			// store. Cleanup owns the drain budget from this point on.
-			p.recoveredBatch = batch
-			close(p.batchWriterDone)
+			handoff()
 			return
 		}
 	}
 }
 
+// migrationInProgress reports whether the store says another node holds the
+// logstore migration lock. A store without a MaintenanceGate never pauses.
+func (p *LoggerPlugin) migrationInProgress(ctx context.Context) bool {
+	return logstore.MigrationInProgressFor(ctx, p.store)
+}
+
+// awaitMigrationWindow blocks the batchWriter while a migration is in progress.
+// Every statement this process sends to the logs table during that window queues
+// behind the migrator's pending ALTER TABLE, and once the ALTER is queued every
+// later statement from every node queues behind it: the migration takes longer
+// and the pool drains. Holding the batch keeps this node out of that queue so the
+// DDL completes in milliseconds. It polls every maintenancePollInterval, gives up
+// after maintenanceMaxPause (and then stays given up, via maintenanceCapSpent,
+// until the lock is seen released), and returns at once when ctx ends so
+// Cleanup's handoff is never delayed. While paused, writerPaused is set so the enqueue
+// paths can attribute their drops to the migration window.
+func (p *LoggerPlugin) awaitMigrationWindow(ctx context.Context) {
+	if !p.migrationInProgress(ctx) {
+		if p.maintenanceCapSpent.Swap(false) {
+			p.logger.Info("logstore migration lock released; log writes are no longer being forced past the pause cap")
+		}
+		return
+	}
+	if p.maintenanceCapSpent.Load() {
+		// This migration window already cost its maximum pause. Pausing again for
+		// every batch would throttle the writer to one batch per cap while the
+		// lock stays held, so keep writing until the lock is seen released.
+		return
+	}
+	p.writerPaused.Store(true)
+	defer p.writerPaused.Store(false)
+	started := time.Now()
+	dropsBefore := p.droppedDuringMaintenance.Load()
+	p.logger.Warn("logstore migration lock is held by another node; pausing log writes (queue capacity %d, max pause %s)",
+		p.writerConfig.WriteQueueCapacity, maintenanceMaxPause)
+	timer := time.NewTimer(maintenancePollInterval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		if !p.migrationInProgress(ctx) {
+			p.logger.Info("logstore migration lock released; resuming log writes after %s (%d entries dropped during the pause)",
+				time.Since(started).Round(time.Millisecond), p.droppedDuringMaintenance.Load()-dropsBefore)
+			return
+		}
+		if time.Since(started) >= maintenanceMaxPause {
+			p.maintenanceCapSpent.Store(true)
+			p.logger.Warn("logstore migration lock still held after %s; resuming log writes anyway until it clears (%d entries dropped during the pause)",
+				maintenanceMaxPause, p.droppedDuringMaintenance.Load()-dropsBefore)
+			return
+		}
+		timer.Reset(maintenancePollInterval)
+	}
+}
+
+// countDrop records one entry dropped at enqueue time, attributing it to the
+// migration window as well when the writer is paused for one.
+func (p *LoggerPlugin) countDrop() {
+	p.droppedRequests.Add(1)
+	if p.writerPaused.Load() {
+		p.droppedDuringMaintenance.Add(1)
+	}
+}
+
 // safeProcessBatch wraps processBatch with panic recovery so a single
-// bad entry cannot kill the batchWriter goroutine.
-func (p *LoggerPlugin) safeProcessBatch(batch []*writeQueueEntry) {
+// bad entry cannot kill the batchWriter goroutine. ctx bounds every store call,
+// retry and split inside processBatch: batchWriter passes p.batchCtx so Cleanup
+// stops them promptly, drainPending passes its own deadline context. It returns
+// the entries processBatch could not write because ctx ended; a recovered panic
+// returns none, since the batch was counted as dropped.
+func (p *LoggerPlugin) safeProcessBatch(ctx context.Context, batch []*writeQueueEntry) (unwritten []*writeQueueEntry) {
 	defer func() {
 		if r := recover(); r != nil {
 			p.logger.Error("panic in batch writer processBatch (recovered, %d entries dropped): %v", len(batch), r)
 			p.droppedRequests.Add(int64(len(batch)))
+			unwritten = nil
 		}
 	}()
-	p.processBatch(batch)
+	return p.processBatch(ctx, batch)
 }
 
-// processBatch executes a batch of log entries in a single database transaction.
-func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
+// retryTransientBatch runs write and, while it fails with a transient error
+// (see logstore.IsTransientWriteError), retries the whole batch up to
+// batchWriteAttempts times with doubling backoff. It returns the last error;
+// the caller decides what a persistent failure means for the rows. A Postgres
+// statement timeout is returned at once without retrying, because the same
+// statement under the same statement_timeout will time out again and the caller
+// recovers by splitting instead. Any non-transient error is also returned at once so
+// the caller can isolate the offending row. Backoff aborts when ctx is done.
+func (p *LoggerPlugin) retryTransientBatch(ctx context.Context, size int, kind string, write func() error) error {
+	backoff := batchWriteBackoff
+	var err error
+	for attempt := 1; attempt <= batchWriteAttempts; attempt++ {
+		err = write()
+		if err == nil || !logstore.IsTransientWriteError(err) || logstore.IsPostgresStatementTimeoutError(err) {
+			return err
+		}
+		if attempt == batchWriteAttempts {
+			break
+		}
+		p.logger.Warn("batch insert of %d %s entries failed transiently (attempt %d/%d), retrying whole batch in %s: %v", size, kind, attempt, batchWriteAttempts, backoff, err)
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			p.logger.Warn("batch insert of %d %s entries abandoned, batch writer context done: %v", size, kind, err)
+			return err
+		}
+		backoff *= 2
+	}
+	p.logger.Warn("batch insert of %d %s entries failed after %d attempts: %v", size, kind, batchWriteAttempts, err)
+	return err
+}
+
+// writeWithRecovery writes entries as one batch and recovers from failure by
+// error class. ctx is the context every store call runs under, so Cleanup's
+// cancel or the drain deadline interrupts a blocked write instead of waiting on
+// it. Entries that could not be written because ctx ended are returned, not
+// dropped: the caller hands them to whoever owns the next context (the drain
+// after batchWriter is cancelled), and re-inserting them is idempotent.
+//
+//   - Postgres statement timeout (SQLSTATE 57014): the batch is split in half and each
+//     half written the same way, down to single rows, so a batch that is too
+//     large for statement_timeout still lands; a single row that times out is
+//     dropped.
+//   - any other transient error (connection lost, server shutting down, lock
+//     timeout): the batch was already retried whole by retryTransientBatch and
+//     is dropped; per-row retries cannot succeed against the same outage.
+//   - anything else: the existing per-row fallback, perRow, isolates the bad
+//     row so one poisoned entry does not drop its neighbours. perRow reports
+//     false when ctx ended before the row was settled.
+func writeWithRecovery[T any](p *LoggerPlugin, ctx context.Context, kind string, entries []T, write func(context.Context, []T) error, perRow func(context.Context, T) bool) (unwritten []T) {
+	if len(entries) == 0 {
+		return nil
+	}
+	err := p.retryTransientBatch(ctx, len(entries), kind, func() error { return write(ctx, entries) })
+	switch {
+	case err == nil:
+		return nil
+	case ctx.Err() != nil:
+		// The write was interrupted, not refused: hand the rows back whole.
+		p.logger.Warn("batch insert of %d %s entries interrupted (%v), handing them back for the drain", len(entries), kind, ctx.Err())
+		return entries
+	case logstore.IsPostgresStatementTimeoutError(err):
+		if len(entries) == 1 {
+			p.logger.Warn("batch insert of %d %s entries timed out and cannot be split further, dropping: %v", len(entries), kind, err)
+			p.droppedRequests.Add(int64(len(entries)))
+			return nil
+		}
+		mid := len(entries) / 2
+		p.logger.Warn("batch insert of %d %s entries hit statement_timeout, splitting into %d + %d: %v", len(entries), kind, mid, len(entries)-mid, err)
+		unwritten = append(unwritten, writeWithRecovery(p, ctx, kind, entries[:mid], write, perRow)...)
+		unwritten = append(unwritten, writeWithRecovery(p, ctx, kind, entries[mid:], write, perRow)...)
+		return unwritten
+	case logstore.IsTransientWriteError(err):
+		p.logger.Warn("batch insert of %d %s entries dropped after transient store failure (per-row retry cannot help): %v", len(entries), kind, err)
+		p.droppedRequests.Add(int64(len(entries)))
+		return nil
+	default:
+		p.logger.Warn("batch insert failed for %d %s entries, falling back to individual inserts: %v", len(entries), kind, err)
+		for i, entry := range entries {
+			if ctx.Err() != nil {
+				return append(unwritten, entries[i:]...)
+			}
+			if !perRow(ctx, entry) {
+				unwritten = append(unwritten, entry)
+			}
+		}
+		return unwritten
+	}
+}
+
+// insertLogIndividually is the per-row fallback for a log entry whose batch
+// failed with a row-level error. It isolates the bad entry instead of losing
+// the whole batch, and as a last resort strips the parsed payload fields (one
+// of them failed serialization) and keeps the scalar row: a log without
+// content beats a silently dropped request. It reports false when ctx ended
+// before the row was written or dropped, so the caller can hand it back.
+func (p *LoggerPlugin) insertLogIndividually(ctx context.Context, log *logstore.Log) bool {
+	err := p.store.BatchCreateIfNotExists(ctx, []*logstore.Log{log})
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	p.logger.Warn("individual insert failed for log %s, retrying without payload fields: %v", log.ID, err)
+	stripUnserializablePayloads(log)
+	err = p.store.BatchCreateIfNotExists(ctx, []*logstore.Log{log})
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	p.logger.Warn("payload-stripped insert failed for log %s: %v", log.ID, err)
+	p.droppedRequests.Add(1)
+	return true
+}
+
+// insertMCPLogIndividually is the per-row fallback for an MCP tool log entry.
+// It reports false when ctx ended before the row was written or dropped.
+func (p *LoggerPlugin) insertMCPLogIndividually(ctx context.Context, log *logstore.MCPToolLog) bool {
+	err := p.store.BatchCreateMCPToolLogsIfNotExists(ctx, []*logstore.MCPToolLog{log})
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	p.logger.Warn("individual insert failed for MCP tool log %s: %v", log.ID, err)
+	p.droppedRequests.Add(1)
+	return true
+}
+
+// insertAgentLogIndividually is the per-row fallback for an Agent log entry.
+// It reports false when ctx ended before the row was written or dropped.
+func (p *LoggerPlugin) insertAgentLogIndividually(ctx context.Context, log *logstore.AgentLog) bool {
+	_, err := p.store.BatchCreateAgentLogsIfNotExists(ctx, []*logstore.AgentLog{log})
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	p.logger.Warn("individual insert failed for Agent log %s: %v", log.ID, err)
+	p.droppedRequests.Add(1)
+	return true
+}
+
+// updateLogIndividually is the per-row fallback for a partial log update whose
+// batch failed with a row-level error. It reports false when ctx ended before
+// the row was written or dropped.
+func (p *LoggerPlugin) updateLogIndividually(ctx context.Context, log *logstore.Log) bool {
+	err := p.store.BatchUpdate(ctx, []*logstore.Log{log})
+	if err == nil {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	p.logger.Warn("individual update failed for log %s: %v", log.ID, err)
+	p.droppedRequests.Add(1)
+	return true
+}
+
+// processBatch writes a batch of log entries, chunked by the store, and
+// recovers from failures per writeWithRecovery. ctx bounds the store calls,
+// retries and splitting. It returns the entries that were not written because
+// ctx ended; their callbacks are not run, since nothing was persisted for them.
+func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntry) []*writeQueueEntry {
 	if len(batch) == 0 {
-		return
+		return nil
 	}
 
-	// Collect all log entries for batch insert
+	// Collect all log entries, separating inserts from partial updates
 	logs := make([]*logstore.Log, 0, len(batch))
+	logUpdates := make([]*logstore.Log, 0, len(batch))
 	mcpLogs := make([]*logstore.MCPToolLog, 0, len(batch))
+	agentLogs := make([]*logstore.AgentLog, 0, len(batch))
 	for _, entry := range batch {
 		if entry.log != nil {
+			omitBinaryBodies(entry.log)
 			logs = append(logs, entry.log)
+		}
+		if entry.logUpdate != nil {
+			omitBinaryBodies(entry.logUpdate)
+			logUpdates = append(logUpdates, entry.logUpdate)
 		}
 		if entry.mcpLog != nil {
 			mcpLogs = append(mcpLogs, entry.mcpLog)
 		}
+		if entry.agentLog != nil {
+			agentLogs = append(agentLogs, entry.agentLog)
+		}
 	}
 
-	if len(logs) > 0 {
-		if err := p.store.BatchCreateIfNotExists(p.ctx, logs); err != nil {
-			p.logger.Warn("batch insert failed for %d entries, falling back to individual inserts: %v", len(logs), err)
-			// Individual fallback — isolate the bad entry instead of losing the whole batch
-			for _, log := range logs {
-				if err := p.store.BatchCreateIfNotExists(p.ctx, []*logstore.Log{log}); err != nil {
-					p.logger.Warn("individual insert failed for log %s, retrying without payload fields: %v", log.ID, err)
-					// Last resort: strip the parsed payload fields (one of them
-					// failed serialization) and keep the scalar row — a log
-					// without content beats a silently dropped request.
-					stripUnserializablePayloads(log)
-					if err := p.store.BatchCreateIfNotExists(p.ctx, []*logstore.Log{log}); err != nil {
-						p.logger.Warn("payload-stripped insert failed for log %s: %v", log.ID, err)
-						p.droppedRequests.Add(1)
-					}
-				}
+	unwrittenLogs := writeWithRecovery(p, ctx, "log", logs, func(ctx context.Context, chunk []*logstore.Log) error {
+		return p.store.BatchCreateIfNotExists(ctx, chunk)
+	}, p.insertLogIndividually)
+	unwrittenMCP := writeWithRecovery(p, ctx, "MCP tool log", mcpLogs, func(ctx context.Context, chunk []*logstore.MCPToolLog) error {
+		return p.store.BatchCreateMCPToolLogsIfNotExists(ctx, chunk)
+	}, p.insertMCPLogIndividually)
+	unwrittenAgent := writeWithRecovery(p, ctx, "Agent log", agentLogs, func(ctx context.Context, chunk []*logstore.AgentLog) error {
+		_, err := p.store.BatchCreateAgentLogsIfNotExists(ctx, chunk)
+		return err
+	}, p.insertAgentLogIndividually)
+	// Updates run after the inserts so a partial-row insert and its reconciling
+	// update landing in the same batch resolve correctly: the row exists by the
+	// time the update runs. The queue is FIFO and the insert is always enqueued
+	// first (at eviction), so it is never in a later batch than its update.
+	unwrittenUpdates := writeWithRecovery(p, ctx, "log update", logUpdates, func(ctx context.Context, chunk []*logstore.Log) error {
+		return p.store.BatchUpdate(ctx, chunk)
+	}, p.updateLogIndividually)
+
+	// Map unwritten rows back to their queue entries. An entry carrying more
+	// than one log type is handed back whole if any part is unwritten; persisted
+	// parts are re-inserted as no-ops by conflict-safe insertion.
+	var unwritten []*writeQueueEntry
+	unwrittenCount := len(unwrittenLogs) + len(unwrittenUpdates) + len(unwrittenMCP) + len(unwrittenAgent)
+	skip := make(map[*writeQueueEntry]struct{}, unwrittenCount)
+	if unwrittenCount > 0 {
+		pending := make(map[any]struct{}, unwrittenCount)
+		for _, l := range unwrittenLogs {
+			pending[l] = struct{}{}
+		}
+		for _, u := range unwrittenUpdates {
+			pending[u] = struct{}{}
+		}
+		for _, m := range unwrittenMCP {
+			pending[m] = struct{}{}
+		}
+		for _, a := range unwrittenAgent {
+			pending[a] = struct{}{}
+		}
+		for _, entry := range batch {
+			_, logPending := pending[entry.log]
+			_, updatePending := pending[entry.logUpdate]
+			_, mcpPending := pending[entry.mcpLog]
+			_, agentPending := pending[entry.agentLog]
+			if (entry.log != nil && logPending) || (entry.logUpdate != nil && updatePending) || (entry.mcpLog != nil && mcpPending) || (entry.agentLog != nil && agentPending) {
+				skip[entry] = struct{}{}
+				unwritten = append(unwritten, entry)
 			}
 		}
 	}
-	if len(mcpLogs) > 0 {
-		if err := p.store.BatchCreateMCPToolLogsIfNotExists(p.ctx, mcpLogs); err != nil {
-			p.logger.Warn("batch insert failed for %d MCP tool logs, falling back to individual inserts: %v", len(mcpLogs), err)
-			for _, log := range mcpLogs {
-				if err := p.store.BatchCreateMCPToolLogsIfNotExists(p.ctx, []*logstore.MCPToolLog{log}); err != nil {
-					p.logger.Warn("individual insert failed for MCP tool log %s: %v", log.ID, err)
-					p.droppedRequests.Add(1)
-				}
-			}
+
+	if len(agentLogs) > 0 && len(unwrittenAgent) == 0 {
+		if err := p.store.ReconcileAgentCorrelation(ctx, agentLogs); err != nil {
+			p.logger.Warn("Agent correlation reconciliation failed for %d logs: %v", len(agentLogs), err)
 		}
 	}
 
@@ -207,8 +562,16 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 	var callbacks []cbPair
 	var mcpCallbacks []mcpCbPair
 	for _, entry := range batch {
+		if _, held := skip[entry]; held {
+			continue
+		}
 		if entry.callback != nil {
-			callbacks = append(callbacks, cbPair{cb: entry.callback, log: entry.log})
+			// Insert entries carry log; update entries carry logUpdate.
+			cbLog := entry.log
+			if cbLog == nil {
+				cbLog = entry.logUpdate
+			}
+			callbacks = append(callbacks, cbPair{cb: entry.callback, log: cbLog})
 		}
 		if entry.mcpCallback != nil {
 			mcpCallbacks = append(mcpCallbacks, mcpCbPair{cb: entry.mcpCallback, log: entry.mcpLog})
@@ -229,12 +592,16 @@ func (p *LoggerPlugin) processBatch(batch []*writeQueueEntry) {
 			}
 		}(callbacks, mcpCallbacks)
 	}
+	return unwritten
 }
 
 // cleanupStalePendingLogs removes stale in-memory pending log state.
-// Pending LLM entries are dropped to prevent unbounded memory growth. Pending
-// MCP entries are converted into terminal error rows and queued for persistence,
-// because PreMCPHook does not write a processing row to the database.
+// Before a stale LLM entry is dropped, its input is persisted as a partial
+// "processing" row so a request that finishes late can still be reconciled
+// onto it (see the evicted-partial path in PostLLMHook) instead of losing its
+// log entirely. Pending MCP entries are converted into terminal error rows and
+// queued for persistence, because PreMCPHook does not write a processing row
+// to the database.
 func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	cutoff := time.Now().Add(-pendingLogTTL)
 	p.pendingLogsEntries.Range(func(key, value any) bool {
@@ -248,7 +615,9 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 				lastActive = time.Unix(0, nanos)
 			}
 			if lastActive.Before(cutoff) {
-				p.pendingLogsEntries.Delete(key)
+				// persistEvictedPartial claims the entry itself; a claim that fails
+				// means PostLLMHook took it first and will write the full row.
+				p.persistEvictedPartial(key, pending)
 			}
 		}
 		return true
@@ -264,12 +633,8 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 	p.pendingMCPLogsToInject.Range(func(key, value any) bool {
 		if pending, ok := value.(*logstore.MCPToolLog); ok {
 			if pending.CreatedAt.Before(cutoff) {
-				actual, loaded := p.pendingMCPLogsToInject.LoadAndDelete(key)
-				if !loaded {
-					return true
-				}
-				stalePending, ok := actual.(*logstore.MCPToolLog)
-				if !ok || stalePending == nil {
+				stalePending, ok := p.claimStaleMCPEntry(key)
+				if !ok {
 					return true
 				}
 
@@ -281,6 +646,139 @@ func (p *LoggerPlugin) cleanupStalePendingLogs() {
 		}
 		return true
 	})
+	p.pendingAgentLogs.Range(func(key, value any) bool {
+		if pending, ok := value.(*logstore.AgentLog); ok && pending.Timestamp.Before(cutoff) {
+			p.pendingAgentLogs.Delete(key)
+		}
+		return true
+	})
+	p.pendingAgentLogsToInject.Range(func(key, value any) bool {
+		if pending, ok := value.(*pendingAgentInjectEntries); ok {
+			if pending.createdAt.Before(cutoff) {
+				p.pendingAgentLogsToInject.Delete(key)
+			}
+		}
+		return true
+	})
+	// Drop evicted-partial markers whose request never finished. A later finish
+	// still finds the row through the DB probe while flushStaleProcessingLogs
+	// has not reaped it yet.
+	p.evictedPartials.Range(func(key, value any) bool {
+		if ts, ok := value.(time.Time); ok && ts.Before(cutoff) {
+			p.evictedPartials.Delete(key)
+		}
+		return true
+	})
+}
+
+// maxEvictionAttempts caps how many sweeps may try to queue a stale entry's
+// partial row. A failed attempt keeps the entry in memory so its input is not
+// lost to a momentarily full write queue; past the cap it is dropped and
+// counted, so a queue that stays full cannot pin evicted entries forever.
+const maxEvictionAttempts = 3
+
+// pendingClaimShards is the number of locks pendingClaimLock stripes request
+// IDs over. Only eviction and terminal PostLLMHook calls take these locks, so
+// contention is negligible; the stripe count just bounds memory.
+const pendingClaimShards = 64
+
+// pendingClaimLock returns the lock that serializes who takes a request's
+// pending entry: the stale sweep (which then queues a partial row and a
+// marker) or the terminal PostLLMHook (which then reads the marker). Without
+// it the two can interleave so that the partial row lands after the completed
+// insert, or the marker is read before the partial is queued.
+func (p *LoggerPlugin) pendingClaimLock(requestID string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(requestID))
+	return &p.pendingClaimLocks[h.Sum32()%pendingClaimShards]
+}
+
+// persistEvictedPartial claims a stale pending entry and, when the claim
+// succeeds, queues a partial "processing" row for it and records the eviction
+// so a late finish can reconcile onto the row with an UPDATE. The claim is a
+// LoadAndDelete under the request's claim lock: if PostLLMHook took the entry
+// first nothing is written, since the completion will insert the full row.
+// The marker is set only when the partial insert was actually queued. When the
+// write queue is full the entry is put back and EvictionAttempts counts the
+// failure, so the next sweep retries and a completion can still take the entry
+// and write the full row; past maxEvictionAttempts the entry is dropped and
+// counted. Content follows the policy resolved for the request in PreLLMHook
+// (ContentPolicy; the global policy when none was recorded), because eviction
+// has no request context. Input captured provisionally, before the virtual
+// key's decision was known, is never kept: PostLLMHook's final-policy drop
+// cannot run for it. CreatedAt is reset to now so flushStaleProcessingLogs
+// gives the row a fresh window; Timestamp keeps the original request time. No
+// callback: PreLLMHook already announced the processing entry to subscribers.
+func (p *LoggerPlugin) persistEvictedPartial(key any, pending *PendingLogData) {
+	id, ok := key.(string)
+	if !ok {
+		p.pendingLogsEntries.Delete(key)
+		return
+	}
+	lock := p.pendingClaimLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	if _, claimed := p.pendingLogsEntries.LoadAndDelete(key); !claimed {
+		return
+	}
+	if pending.Live != nil {
+		// A GPT Live session's units are folded in by postLiveUnit, which runs before
+		// the reconcile path, so a partial row could never be reconciled; it would
+		// only sit in "processing" until the stale-row reaper removes it.
+		return
+	}
+	// Every captured input kind, not just chat history: a late speech, image or
+	// video completion has nothing else to recover its input from.
+	partial := buildCompleteLogEntryFromPending(pending)
+	// Request metadata (logging headers, isAsyncRequest) has no other source: the
+	// reconcile writes none, so the partial row must carry it.
+	partial.MetadataParsed = pending.InitialData.Metadata
+	partial.Status = logStatusProcessing
+	partial.CreatedAt = time.Now().UTC()
+	policy := p.resolveContentPolicy(nil)
+	if pending.ContentPolicy != nil {
+		policy = *pending.ContentPolicy
+	}
+	if pending.ProvisionalInput || !policy.storeContent {
+		dropCapturedInput(partial)
+	}
+	partial.ContentHidden = !policy.visible()
+	if !p.tryEnqueueLogEntry(partial, nil) {
+		// Nothing persisted: keep the entry so its input survives. The next sweep
+		// retries the insert, or a completion takes the entry and writes the full
+		// row. Still under the claim lock, so no terminal PostLLMHook can observe
+		// the gap between the claim above and this store.
+		pending.EvictionAttempts++
+		if pending.EvictionAttempts < maxEvictionAttempts {
+			p.pendingLogsEntries.Store(key, pending)
+			return
+		}
+		p.countDrop()
+		p.logger.Warn("log write queue full, dropping evicted request %s after %d attempts to persist its partial row", id, pending.EvictionAttempts)
+		return
+	}
+	// Queued before the marker is visible, so a finish that sees the marker
+	// enqueues its update behind the insert; processBatch also applies inserts
+	// before updates within a batch.
+	p.evictedPartials.Store(id, time.Now())
+}
+
+// claimStaleMCPEntry takes a pending MCP entry away from PostMCPHook for the stale-entry reaper.
+// It reports false when the entry is already gone, which means PostMCPHook claimed it first.
+func (p *LoggerPlugin) claimStaleMCPEntry(key any) (*logstore.MCPToolLog, bool) {
+	actual, loaded := p.pendingMCPLogsToInject.LoadAndDelete(key)
+	if !loaded {
+		// PostMCPHook claimed it first and still needs the held arguments.
+		return nil, false
+	}
+	// Arguments held back for an unresolved key go with the entry: a stale entry never
+	// learns its final content decision, so it never gets them.
+	p.provisionalMCPArguments.Delete(key)
+	entry, ok := actual.(*logstore.MCPToolLog)
+	if !ok || entry == nil {
+		return nil, false
+	}
+	return entry, true
 }
 
 // enqueueLogEntry pushes a complete log entry to the write queue.
@@ -290,19 +788,30 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 	if p.closed.Load() {
 		return
 	}
+	if !p.tryEnqueueLogEntry(entry, callback) {
+		p.countDrop()
+		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
+	}
+}
+
+// tryEnqueueLogEntry pushes a log entry to the write queue without blocking and
+// reports whether it was queued. It neither counts nor logs a failure, so a
+// caller that keeps the entry for a retry does not inflate droppedRequests.
+func (p *LoggerPlugin) tryEnqueueLogEntry(entry *logstore.Log, callback func(entry *logstore.Log)) (queued bool) {
+	if p.closed.Load() {
+		return false
+	}
 	defer func() {
 		if r := recover(); r != nil {
-			p.logger.Error("recovered from a panic %v. dropping log request", r)
-			// Channel was closed between the check and send; entry is dropped
-			p.droppedRequests.Add(1)
+			// Channel was closed between the check and send.
+			queued = false
 		}
 	}()
 	select {
 	case p.writeQueue <- &writeQueueEntry{log: entry, callback: callback}:
-		// enqueued successfully
+		return true
 	default:
-		p.droppedRequests.Add(1)
-		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
+		return false
 	}
 }
 
@@ -310,6 +819,31 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 // normal async write queue.
 func (p *LoggerPlugin) EnqueueLogEntry(entry *logstore.Log) {
 	p.enqueueLogEntry(entry, p.makePostWriteCallback(nil))
+}
+
+// enqueueLogUpdate pushes a partial log update (ID plus the non-zero output
+// fields) to the write queue. The batch writer applies it through
+// store.BatchUpdate after the batch's inserts, so it reconciles an existing row
+// (the partial persisted at eviction) instead of inserting. A full queue drops
+// the update, matching enqueueLogEntry's backpressure.
+func (p *LoggerPlugin) enqueueLogUpdate(entry *logstore.Log, callback func(entry *logstore.Log)) {
+	if p.closed.Load() {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			p.logger.Error("recovered from a panic %v. dropping log update", r)
+			// Channel was closed between the check and send; entry is dropped
+			p.droppedRequests.Add(1)
+		}
+	}()
+	select {
+	case p.writeQueue <- &writeQueueEntry{logUpdate: entry, callback: callback}:
+		// enqueued successfully
+	default:
+		p.countDrop()
+		p.logger.Warn("log write queue full, dropping log update %s", entry.ID)
+	}
 }
 
 // EnqueueMCPToolLogEntry pushes a completed MCP log through the normal async write queue.
@@ -335,8 +869,25 @@ func (p *LoggerPlugin) enqueueMCPToolLogEntry(entry *logstore.MCPToolLog, callba
 	select {
 	case p.writeQueue <- &writeQueueEntry{mcpLog: entry, mcpCallback: callback}:
 	default:
-		p.droppedRequests.Add(1)
+		p.countDrop()
 		p.logger.Warn("log write queue full, dropping MCP tool log entry %s", entry.ID)
+	}
+}
+
+func (p *LoggerPlugin) enqueueAgentLogEntry(entry *logstore.AgentLog) {
+	if entry == nil || p.closed.Load() {
+		return
+	}
+	defer func() {
+		if recover() != nil {
+			p.droppedRequests.Add(1)
+		}
+	}()
+	select {
+	case p.writeQueue <- &writeQueueEntry{agentLog: entry}:
+	default:
+		p.countDrop()
+		p.logger.Warn("log write queue full, dropping A2A log entry %s", entry.ID)
 	}
 }
 
@@ -346,10 +897,32 @@ func estimateWriteQueueEntrySize(entry *writeQueueEntry) int {
 	if entry == nil {
 		return 0
 	}
+	if entry.agentLog != nil {
+		size := len(entry.agentLog.PluginLogs) + len(entry.agentLog.ErrorDetails) + 512
+		if entry.agentLog.RawRequest != nil {
+			size += len(*entry.agentLog.RawRequest)
+		}
+		if entry.agentLog.RawResponse != nil {
+			size += len(*entry.agentLog.RawResponse)
+		}
+		if entry.agentLog.RequestBody != nil {
+			size += len(*entry.agentLog.RequestBody)
+		}
+		if entry.agentLog.ResponseBody != nil {
+			size += len(*entry.agentLog.ResponseBody)
+		}
+		if entry.agentLog.EventBody != nil {
+			size += len(*entry.agentLog.EventBody)
+		}
+		return size
+	}
 	if entry.mcpLog != nil {
 		return estimateMCPToolLogEntrySize(entry.mcpLog)
 	}
-	return estimateLogEntrySize(entry.log)
+	if entry.log != nil {
+		return estimateLogEntrySize(entry.log)
+	}
+	return estimateLogEntrySize(entry.logUpdate)
 }
 
 // estimateLogEntrySize returns a rough byte-size estimate for a log entry
@@ -370,6 +943,7 @@ func estimateLogEntrySize(log *logstore.Log) int {
 	// baseline below.
 	n := len(log.InputHistory) +
 		len(log.ResponsesInputHistory) +
+		len(log.EmbeddingInput) +
 		len(log.OutputMessage) +
 		len(log.ResponsesOutput) +
 		len(log.EmbeddingOutput) +
@@ -448,6 +1022,7 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 		CreatedAt:                   pending.Timestamp,
 		InputHistoryParsed:          pending.InitialData.InputHistory,
 		ResponsesInputHistoryParsed: pending.InitialData.ResponsesInputHistory,
+		EmbeddingInputParsed:        pending.InitialData.EmbeddingInput,
 		ParamsParsed:                pending.InitialData.Params,
 		ToolsParsed:                 pending.InitialData.Tools,
 		MetadataParsed:              pending.InitialData.Metadata,
@@ -461,6 +1036,7 @@ func buildInitialLogEntry(pending *PendingLogData) *logstore.Log {
 	}
 	applyUserAgent(entry, pending.InitialData.UserAgent)
 	applyApp(entry, pending.InitialData.App)
+	applyAgentCorrelationID(entry, pending.InitialData.AgentCorrelationID)
 	return entry
 }
 
@@ -479,6 +1055,7 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 		// Set parsed fields for serialization via GORM hooks
 		InputHistoryParsed:          pending.InitialData.InputHistory,
 		ResponsesInputHistoryParsed: pending.InitialData.ResponsesInputHistory,
+		EmbeddingInputParsed:        pending.InitialData.EmbeddingInput,
 		ParamsParsed:                pending.InitialData.Params,
 		ToolsParsed:                 pending.InitialData.Tools,
 		SpeechInputParsed:           pending.InitialData.SpeechInput,
@@ -499,7 +1076,15 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 	}
 	applyUserAgent(entry, pending.InitialData.UserAgent)
 	applyApp(entry, pending.InitialData.App)
+	applyAgentCorrelationID(entry, pending.InitialData.AgentCorrelationID)
 	return entry
+}
+
+func applyAgentCorrelationID(entry *logstore.Log, agentCorrelationID string) {
+	if agentCorrelationID != "" {
+		agentCorrelationID = clampString(agentCorrelationID, maxPersistedAgentCorrelationIDLen)
+		entry.AgentCorrelationID = &agentCorrelationID
+	}
 }
 
 // User-Agent and App map to fixed-width DB columns (varchar(512) / varchar(128)).
@@ -507,8 +1092,9 @@ func buildCompleteLogEntryFromPending(pending *PendingLogData) *logstore.Log {
 // persisting to avoid an insert that fails (and silently drops the log) when a
 // client sends an oversized header.
 const (
-	maxPersistedUserAgentLen = 512
-	maxPersistedAppLen       = 128
+	maxPersistedUserAgentLen          = 512
+	maxPersistedAppLen                = 128
+	maxPersistedAgentCorrelationIDLen = 255
 )
 
 // clampString truncates s to at most max bytes. The columns are sized in
@@ -692,4 +1278,39 @@ func applyUpstreamOverheadToEntry(entry *logstore.Log, ef *schemas.BifrostRespon
 		return
 	}
 	setUpstreamOverheadLatency(entry, ef.UpstreamLatency, ef.OverheadLatency)
+}
+
+// omitBinaryBodies replaces the body columns of log that hold binary data with
+// a size placeholder. Bodies are copied into the entry as raw bytes (audio
+// passthrough responses, multipart uploads, Bedrock event streams), and their
+// NUL bytes and invalid UTF-8 are rejected by Postgres TEXT, failing the whole
+// batch INSERT; even where a store accepts them they render as garbage.
+func omitBinaryBodies(log *logstore.Log) {
+	log.RawRequest = omitBinaryBody(log.RawRequest)
+	log.RawResponse = omitBinaryBody(log.RawResponse)
+	log.PassthroughRequestBody = omitBinaryBody(log.PassthroughRequestBody)
+	log.PassthroughResponseBody = omitBinaryBody(log.PassthroughResponseBody)
+}
+
+// omitBinaryBody returns s when it is text and a "<binary content omitted: N
+// bytes>" placeholder otherwise. A partial UTF-8 sequence at the very end is a
+// preview cut by byte count, not binary data, so it is dropped and the text
+// kept.
+func omitBinaryBody(s string) string {
+	if s == "" {
+		return s
+	}
+	text := s
+	for i := len(text) - 1; i >= 0 && i >= len(text)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(text[i]) {
+			if !utf8.FullRuneInString(text[i:]) {
+				text = text[:i]
+			}
+			break
+		}
+	}
+	if strings.IndexByte(text, 0) < 0 && utf8.ValidString(text) {
+		return text
+	}
+	return fmt.Sprintf("<binary content omitted: %d bytes>", len(s))
 }

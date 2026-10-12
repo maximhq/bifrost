@@ -1,3 +1,4 @@
+import { featureFlagsApi } from '../../core/actions/api'
 import { expect, test } from '../../core/fixtures/base.fixture'
 import { waitForNetworkIdle } from '../../core/utils/test-helpers'
 import { DashboardPage } from './pages/dashboard.page'
@@ -44,15 +45,16 @@ test.describe('Dashboard', () => {
         { timeout: 15000 }
       )
 
-      await dashboardPage.selectTimePeriod('1h')
+      // The dashboard opens on the last hour, so pick a different period to force a refetch.
+      await dashboardPage.selectTimePeriod('6h')
 
       // UI: trigger shows the selected period
       const label = await dashboardPage.getSelectedPeriodLabel()
-      expect(label).toContain('Last hour')
+      expect(label).toContain('Last 6 hours')
 
       // URL: selection is reflected in query state
       const url = dashboardPage.page.url()
-      expect(url).toMatch(/period=1h|start_time=\d+&end_time=\d+/)
+      expect(url).toMatch(/period=6h|start_time=\d+&end_time=\d+/)
 
       // Data: dashboard refetched with the new range
       await responsePromise
@@ -347,18 +349,14 @@ test.describe('Dashboard', () => {
     test('should open custom date range picker', async ({ dashboardPage }) => {
       await dashboardPage.waitForChartsToLoad()
 
-      // Look for date picker button
-      const datePicker = dashboardPage.page.getByRole('button').filter({ hasText: /Last|Custom/i }).first()
+      const datePicker = dashboardPage.getDatePickerTrigger()
       const isVisible = await datePicker.isVisible().catch(() => false)
 
       if (isVisible) {
         await datePicker.click()
 
-        // Should see date range options or calendar
-        const calendarVisible = await dashboardPage.page.locator('[role="dialog"], [role="listbox"]').isVisible().catch(() => false)
-        const optionsVisible = await dashboardPage.page.getByRole('option').first().isVisible().catch(() => false)
-
-        expect(calendarVisible || optionsVisible).toBe(true)
+        // Should see the presets and calendar popover
+        await expect(dashboardPage.page.locator('[data-radix-popper-content-wrapper]')).toBeVisible()
 
         // Close the picker
         await dashboardPage.page.keyboard.press('Escape')
@@ -379,6 +377,39 @@ test.describe('Dashboard', () => {
       const errorAlert = dashboardPage.page.locator('[role="alert"][data-variant="destructive"], .text-destructive, [data-sonner-toast][data-type="error"]')
       const hasErrorAlert = await errorAlert.count() > 0
       expect(hasErrorAlert).toBe(false)
+    })
+  })
+
+  test.describe('Topbar Warp Launcher', () => {
+    let warpWasEnabled = false
+
+    test.beforeEach(async ({ dashboardPage }) => {
+      // Waiting on the page first lets the auto-login handler run, so the flag
+      // calls below carry the session cookie that page.request shares.
+      await expect(dashboardPage.pageTitle).toBeVisible()
+      const { flags } = await featureFlagsApi.getAll(dashboardPage.page.request)
+      warpWasEnabled = flags.find((flag) => flag.id === 'warp')?.enabled ?? false
+      await featureFlagsApi.set(dashboardPage.page.request, 'warp', true)
+      await dashboardPage.page.reload()
+    })
+
+    test.afterEach(async ({ dashboardPage }) => {
+      await featureFlagsApi.set(dashboardPage.page.request, 'warp', warpWasEnabled)
+    })
+
+    test('should keep the warp button in the topbar and mark it selected while open', async ({ dashboardPage }) => {
+      const warpButton = dashboardPage.page.getByTestId('topbar-warp-btn')
+      await expect(warpButton).toBeVisible()
+      await expect(warpButton).toHaveAttribute('data-state', 'closed')
+
+      await warpButton.click()
+      await expect(warpButton).toBeVisible()
+      await expect(warpButton).toHaveAttribute('data-state', 'open')
+      await expect(warpButton).toHaveAttribute('aria-pressed', 'true')
+
+      await warpButton.click()
+      await expect(warpButton).toHaveAttribute('data-state', 'closed')
+      await expect(warpButton).toHaveAttribute('aria-pressed', 'false')
     })
   })
 

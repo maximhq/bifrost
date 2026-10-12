@@ -57,6 +57,92 @@ func TestValidateConfigSchema_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_AgentOAuthRequiresCompleteConfig(t *testing.T) {
+	validConfig := `{
+		"agents": [{
+			"name": "oauth-agent",
+			"agent_card_url": "https://agent.example/.well-known/agent-card.json",
+			"runtime_auth": {
+				"type": "oauth",
+				"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret"
+				}
+			}
+		}]
+	}`
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected complete Agent OAuth config to pass validation: %v", err)
+	}
+
+	invalidConfigs := map[string]string{
+		"missing oauth object": strings.Replace(validConfig, `,
+				"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret"
+				}`, "", 1),
+		"empty oauth object": strings.Replace(validConfig, `"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret"
+				}`, `"oauth": {}`, 1),
+		"missing client ID": strings.Replace(validConfig, `
+					"client_id": "client-id",`, "", 1),
+		"missing client secret": strings.Replace(validConfig, `
+					"client_secret": "client-secret"`, "", 1),
+		"missing OAuth endpoint": strings.Replace(validConfig, `
+					"token_url": "https://auth.example/token",`, "", 1),
+		"environment reference endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "env.OAUTH_TOKEN_URL", 1),
+		"vault reference endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "vault.oauth-token-url", 1),
+		"non-HTTP endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "ftp://auth.example/token", 1),
+		"endpoint with userinfo": strings.Replace(validConfig,
+			"https://auth.example/token", "https://user:pass@auth.example/token", 1),
+		"endpoint without host": strings.Replace(validConfig,
+			"https://auth.example/token", "https:///token", 1),
+		"malformed endpoint": strings.Replace(validConfig,
+			"https://auth.example/token", "not-a-url", 1),
+	}
+	for name, config := range invalidConfigs {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateConfigSchema([]byte(config), loadLocalSchema(t)); err == nil {
+				t.Fatal("expected incomplete Agent OAuth config to fail validation")
+			}
+		})
+	}
+}
+
+func TestValidateConfigSchema_AgentOAuthRejectsUnknownFields(t *testing.T) {
+	validConfig := `{
+		"agents": [{
+			"name": "oauth-agent",
+			"agent_card_url": "https://agent.example/.well-known/agent-card.json",
+			"runtime_auth": {
+				"type": "oauth",
+				"oauth": {
+					"token_url": "https://auth.example/token",
+					"client_id": "client-id",
+					"client_secret": "client-secret",
+					"scopes": ["agent.invoke"],
+					"resource": "https://agent.example"
+				}
+			}
+		}]
+	}`
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Fatalf("expected documented Agent OAuth fields to pass validation: %v", err)
+	}
+
+	invalidConfig := strings.Replace(validConfig, `"client_secret": "client-secret"`, `"client_secert": "client-secret"`, 1)
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Fatal("expected an unknown Agent OAuth field to fail validation")
+	}
+}
+
 func TestValidateConfigSchema_EmptyObject(t *testing.T) {
 	// Empty object should be valid (all properties are optional)
 	emptyConfig := `{}`
@@ -1230,6 +1316,22 @@ func TestValidateConfigSchema_SemanticCachePlugin_DirectModeValid(t *testing.T) 
 	}
 }
 
+// The identity-scoping opt-out is a documented config.json field, so the schema must accept it in
+// both modes; additionalProperties would otherwise reject a config that turns sharing back on.
+func TestValidateConfigSchema_SemanticCachePlugin_DisableIdentityScopingValid(t *testing.T) {
+	for name, config := range map[string]string{
+		"direct":   `{"dimension": 1, "disable_identity_scoping": true}`,
+		"semantic": `{"provider": "openai", "embedding_model": "text-embedding-3-small", "dimension": 1536, "disable_identity_scoping": false}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			validConfig := `{"plugins": [{"enabled": true, "name": "semantic_cache", "config": ` + config + `}]}`
+			if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+				t.Errorf("expected semantic cache config with disable_identity_scoping to pass validation, got error: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateConfigSchema_SemanticCachePlugin_DirectModeWithEmbeddingModelInvalid(t *testing.T) {
 	invalidConfig := `{
 		"plugins": [
@@ -1562,6 +1664,128 @@ func TestValidateConfigSchema_VertexKeyConfig_MissingRegion(t *testing.T) {
 	}
 }
 
+func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity(t *testing.T) {
+	// A federation block with only an audience is the minimal valid shape.
+	validConfig := `{
+		"providers": {
+			"vertex": {
+				"keys": [
+					{
+						"name": "vertex-eks-key",
+						"value": "",
+						"weight": 1.0,
+						"vertex_key_config": {
+							"project_id": "my-gcp-project",
+							"region": "us-central1",
+							"aws_workload_identity": {
+								"audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/eks/providers/aws",
+								"service_account_email": "vertex@my-gcp-project.iam.gserviceaccount.com",
+								"token_lifetime_seconds": 1800,
+								"aws_region": "us-east-1",
+								"aws_role_arn": "env.VERTEX_AWS_ROLE_ARN"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	if err := ValidateConfigSchema([]byte(validConfig), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected Vertex key with aws_workload_identity to pass validation, got: %v", err)
+	}
+}
+
+func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity_MissingAudience(t *testing.T) {
+	invalidConfig := `{
+		"providers": {
+			"vertex": {
+				"keys": [
+					{
+						"name": "vertex-eks-key",
+						"value": "",
+						"weight": 1.0,
+						"vertex_key_config": {
+							"project_id": "my-gcp-project",
+							"region": "us-central1",
+							"aws_workload_identity": {
+								"service_account_email": "vertex@my-gcp-project.iam.gserviceaccount.com"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Error("expected aws_workload_identity without 'audience' to fail validation")
+	}
+}
+
+func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity_UnknownField(t *testing.T) {
+	invalidConfig := `{
+		"providers": {
+			"vertex": {
+				"keys": [
+					{
+						"name": "vertex-eks-key",
+						"value": "",
+						"weight": 1.0,
+						"vertex_key_config": {
+							"project_id": "my-gcp-project",
+							"region": "us-central1",
+							"aws_workload_identity": {
+								"audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/eks/providers/aws",
+								"pool_id": "eks"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Error("expected unknown field inside aws_workload_identity to fail validation")
+	}
+}
+
+func TestValidateConfigSchema_VertexKeyConfig_AWSWorkloadIdentity_ExcludesAuthCredentials(t *testing.T) {
+	// Federation and a credentials JSON are two different identities; the schema must refuse both at once.
+	invalidConfig := `{
+		"providers": {
+			"vertex": {
+				"keys": [
+					{
+						"name": "vertex-eks-key",
+						"value": "",
+						"weight": 1.0,
+						"vertex_key_config": {
+							"project_id": "my-gcp-project",
+							"region": "us-central1",
+							"auth_credentials": "{\"type\":\"service_account\"}",
+							"aws_workload_identity": {
+								"audience": "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/eks/providers/aws"
+							}
+						}
+					}
+				]
+			}
+		}
+	}`
+
+	if err := ValidateConfigSchema([]byte(invalidConfig), loadLocalSchema(t)); err == nil {
+		t.Error("expected auth_credentials alongside aws_workload_identity to fail validation")
+	}
+
+	// An empty auth_credentials string, as written by the UI when it clears the JSON tab, is fine.
+	emptyCredentials := strings.Replace(invalidConfig, `"auth_credentials": "{\"type\":\"service_account\"}"`, `"auth_credentials": ""`, 1)
+	if err := ValidateConfigSchema([]byte(emptyCredentials), loadLocalSchema(t)); err != nil {
+		t.Errorf("expected empty auth_credentials alongside aws_workload_identity to pass validation, got: %v", err)
+	}
+}
+
 // =============================================================================
 // Bedrock Key Config Required Fields Tests
 // Note: Bedrock provider uses a special key schema that extends base_key
@@ -1603,6 +1827,31 @@ func TestValidateConfigSchema_BedrockKeyConfig_MissingRegion(t *testing.T) {
 // Guardrails tests are skipped for the public schema as guardrails_config
 // is an enterprise feature with a different schema structure.
 // Enterprise-specific tests should be added to the enterprise test suite.
+
+func TestValidateConfigSchema_VirtualKeyDeleteAfterExpireRequiresExpiresAt(t *testing.T) {
+	schema := loadLocalSchema(t)
+	withoutExpiry := `{
+		"governance": {
+			"virtual_keys": [
+				{"id": "vk-1", "name": "Test Key", "delete_after_expire": true}
+			]
+		}
+	}`
+	if err := ValidateConfigSchema([]byte(withoutExpiry), schema); err == nil {
+		t.Error("expected delete_after_expire without expires_at to fail validation")
+	}
+
+	withExpiry := `{
+		"governance": {
+			"virtual_keys": [
+				{"id": "vk-1", "name": "Test Key", "expires_at": "2027-01-01T00:00:00Z", "delete_after_expire": true}
+			]
+		}
+	}`
+	if err := ValidateConfigSchema([]byte(withExpiry), schema); err != nil {
+		t.Errorf("expected delete_after_expire with expires_at to pass validation, got error: %v", err)
+	}
+}
 
 // getSchemaPath returns the absolute path to config.schema.json.
 func getSchemaPath(t *testing.T) string {
@@ -1895,6 +2144,31 @@ func TestSchemaLogsStoreWriterConfig(t *testing.T) {
 				t.Fatal("config should be invalid")
 			}
 		})
+	}
+}
+
+// TestSchemaPostgresSessionTimeouts pins that both Postgres stores accept the
+// runtime-pool session timeouts postgresconn.Config reads (statement_timeout,
+// idle_in_transaction_session_timeout) with every value time.ParseDuration takes
+// there, including the documented "0" and negative values that keep the server
+// default, and still reject values it would refuse at startup.
+func TestSchemaPostgresSessionTimeouts(t *testing.T) {
+	compiled := compileSchema(t)
+	for _, store := range []string{"config_store", "logs_store"} {
+		for _, field := range []string{"statement_timeout", "idle_in_transaction_session_timeout"} {
+			for _, value := range []string{"30s", "60s", "1m30s", "1.5s", "0", "-1s", "+1s"} {
+				config := postgresStoreConfig(store, fmt.Sprintf(`"password": "secret", %q: %q`, field, value))
+				if err := validateConfig(t, compiled, config); err != nil {
+					t.Errorf("%s.config.%s = %q should be valid, got: %v", store, field, value, err)
+				}
+			}
+			for _, value := range []string{"30", "abc", "", "5 s"} {
+				config := postgresStoreConfig(store, fmt.Sprintf(`"password": "secret", %q: %q`, field, value))
+				if err := validateConfig(t, compiled, config); err == nil {
+					t.Errorf("%s.config.%s = %q should be rejected", store, field, value)
+				}
+			}
+		}
 	}
 }
 
@@ -3433,6 +3707,90 @@ func copilotKeyConfig(keyBody string) string {
 	}`, keyBody)
 }
 
+// TestSchemaOAuthKeyConfig pins that oauth_key_config is accepted on any key (the base key
+// definition carries it) and that the schema enforces the per-grant required fields, so a
+// half-configured block is refused by the schema rather than at boot.
+func TestSchemaOAuthKeyConfig(t *testing.T) {
+	compiled := compileSchema(t)
+
+	customProvider := func(keyBody string) string {
+		return fmt.Sprintf(`{
+		"providers": {
+			"openai": {
+				"keys": [{%s}]
+			},
+			"acme": {
+				"keys": [{%s}],
+				"custom_provider_config": {"base_provider_type": "openai"},
+				"network_config": {"base_url": "https://llm.acme.example/v1"}
+			}
+		}
+	}`, keyBody, keyBody)
+	}
+
+	const cc = `"oauth_key_config": {
+		"grant_type": "client_credentials",
+		"token_url": "https://idp.acme.example/oauth2/token",
+		"client_id": "env.ACME_CLIENT_ID",
+		"client_secret": "env.ACME_CLIENT_SECRET",
+		"scopes": ["inference"],
+		"auth_style": "body"
+	}`
+	const jb = `"oauth_key_config": {
+		"grant_type": "jwt_bearer",
+		"token_url": "https://idp.acme.example/oauth2/token",
+		"private_key": "env.ACME_PRIVATE_KEY",
+		"issuer": "svc-bifrost",
+		"audience": "https://idp.acme.example/oauth2/token",
+		"signing_algorithm": "ES256",
+		"assertion_lifetime_seconds": 120
+	}`
+
+	valid := []struct {
+		name   string
+		config string
+	}{
+		{"client_credentials", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, ` + cc)},
+		{"jwt_bearer", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, ` + jb)},
+		{"alongside a value", customProvider(`"name": "k", "value": "sk", "models": ["*"], "weight": 1.0, ` + cc)},
+		// OAuthKeyConfig.Validate treats 0 as "use the default lifetime", so the schema must too.
+		{"zero assertion lifetime means the default", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": 0}`)},
+	}
+	for _, tt := range valid {
+		t.Run("valid "+tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err != nil {
+				t.Fatalf("config should be valid: %v", err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name   string
+		config string
+	}{
+		{"client_credentials without secret", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id"}`)},
+		{"jwt_bearer without issuer", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "audience": "a"}`)},
+		{"unknown grant", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "password", "token_url": "https://idp/token"}`)},
+		{"symmetric algorithm", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "signing_algorithm": "HS256"}`)},
+		{"unknown field", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id", "client_secret": "s", "refresh_token": "x"}`)},
+		// Validate rejects a blank literal for every per-grant credential, so presence alone is
+		// not enough: an empty string must fail the schema the same way a missing field does.
+		{"blank client_id", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "", "client_secret": "s"}`)},
+		{"blank client_secret", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id", "client_secret": ""}`)},
+		{"blank private_key", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "", "issuer": "i", "audience": "a"}`)},
+		{"blank issuer", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "", "audience": "a"}`)},
+		{"blank audience", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": ""}`)},
+		{"negative assertion lifetime", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": -1}`)},
+	}
+	for _, tt := range invalid {
+		t.Run("invalid "+tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
 // TestSchemaGithubCopilotCredentialRequired pins that the schema demands one of the two
 // credential forms. core/utils.go rejects a key carrying neither, and the schema is the
 // source of truth for config fields, so it has to reject the same shape rather than
@@ -3640,5 +3998,114 @@ func TestValidateConfigSchema_IssuerURLRequiredForDiscovery(t *testing.T) {
 				t.Fatalf("expected config to pass schema validation, got: %v", err)
 			}
 		})
+	}
+}
+
+// TestSchemaCodeModeLimitsValueBytes keeps config.schema.json aligned with the server:
+// max_value_bytes is 0 (the default) or at least 1024, in both places the limits live.
+func TestSchemaCodeModeLimitsValueBytes(t *testing.T) {
+	wrap := map[string]func(string) string{
+		"client.mcp_code_mode_limits": func(limits string) string {
+			return `{"client": {"mcp_code_mode_limits": ` + limits + `}}`
+		},
+		"mcp.tool_manager_config.code_mode_limits": func(limits string) string {
+			return `{"mcp": {"tool_manager_config": {"code_mode_limits": ` + limits + `}}}`
+		},
+	}
+	for where, config := range wrap {
+		for _, tc := range []struct {
+			limits  string
+			wantErr bool
+		}{
+			{`{}`, false},
+			{`{"max_value_bytes": 0}`, false},
+			{`{"max_value_bytes": 1024}`, false},
+			{`{"max_value_bytes": 1048576}`, false},
+			{`{"max_value_bytes": 10}`, true},
+			{`{"max_value_bytes": 1023}`, true},
+		} {
+			err := ValidateConfigSchema([]byte(config(tc.limits)), loadLocalSchema(t))
+			if (err != nil) != tc.wantErr {
+				t.Errorf("%s %s: err=%v, wantErr=%v", where, tc.limits, err, tc.wantErr)
+			}
+		}
+	}
+}
+
+// TestValidateConfigSchema_InjectedTools pins injected_tools on every provider shape.
+// The provider_with_*_config variants set additionalProperties:false, so a field listed
+// only on the generic provider def is rejected for Bedrock, Azure, Vertex and the rest.
+func TestValidateConfigSchema_InjectedTools(t *testing.T) {
+	schema := loadLocalSchema(t)
+	const injected = `"injected_tools": [{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "search"}, {"name": "read_page", "mcp_client_name": "fetcher", "tool_name": "fetch"}]`
+	// Each base config must pass on its own. A base that fails for an unrelated reason
+	// fails identically with injected_tools added, which would hide a rejection.
+	keyConfigs := map[string]string{
+		"azure":      `, "azure_key_config": {"endpoint": "https://example.openai.azure.com"}`,
+		"vertex":     `, "vertex_key_config": {"project_id": "p", "region": "us-central1"}`,
+		"ollama":     `, "ollama_key_config": {"url": "http://localhost:11434"}`,
+		"sgl":        `, "sgl_key_config": {"url": "http://localhost:30000"}`,
+		"vllm":       `, "vllm_key_config": {"url": "http://localhost:8000", "model_name": "m"}`,
+		"databricks": `, "databricks_key_config": {"workspace_url": "https://dbc-1234abcd-5678.cloud.databricks.com"}`,
+	}
+	for _, provider := range []string{"openai", "anthropic", "bedrock", "bedrock_mantle", "azure", "vertex", "ollama", "sgl", "vllm", "replicate", "databricks", "deepseek", "fireworks", "github_copilot"} {
+		key := fmt.Sprintf(`{"name": "k", "value": "v", "weight": 1.0%s}`, keyConfigs[provider])
+		base := fmt.Sprintf(`{"providers": {%q: {"keys": [%s]}}}`, provider, key)
+		if err := ValidateConfigSchema([]byte(base), schema); err != nil {
+			t.Errorf("%s: base config must pass before injected_tools is checked: %v", provider, err)
+			continue
+		}
+		with := fmt.Sprintf(`{"providers": {%q: {"keys": [%s], %s}}}`, provider, key, injected)
+		if err := ValidateConfigSchema([]byte(with), schema); err != nil {
+			t.Errorf("%s: injected_tools rejected: %v", provider, err)
+		}
+	}
+
+	// governance.providers is loaded for governance settings only (budget, rate limit), so
+	// an injected_tools block there would be silently ignored. The schema must not
+	// advertise it there.
+	var doc struct {
+		Properties struct {
+			Governance struct {
+				Properties struct {
+					Providers struct {
+						Items struct {
+							Properties map[string]json.RawMessage `json:"properties"`
+						} `json:"items"`
+					} `json:"providers"`
+				} `json:"properties"`
+			} `json:"governance"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(schema, &doc); err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	if _, ok := doc.Properties.Governance.Properties.Providers.Items.Properties["injected_tools"]; ok {
+		t.Error("governance.providers must not declare injected_tools: its loader never reads it")
+	}
+
+	openaiBase := `{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}]}}}`
+	if err := ValidateConfigSchema([]byte(openaiBase), schema); err != nil {
+		t.Fatalf("openai base config must pass before the rejection cases mean anything: %v", err)
+	}
+	for _, block := range []string{`[]`, `[{"name": "read_page", "mcp_client_name": "fetcher", "tool_name": "fetch"}]`} {
+		config := fmt.Sprintf(`{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "injected_tools": %s}}}`, block)
+		if err := ValidateConfigSchema([]byte(config), schema); err != nil {
+			t.Errorf("%s: injected_tools rejected: %v", block, err)
+		}
+	}
+	for name, block := range map[string]string{
+		"old object shape":  `{"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}`,
+		"missing name":      `[{"mcp_client_name": "tavily", "tool_name": "search"}]`,
+		"name with a space": `[{"name": "web search", "mcp_client_name": "tavily", "tool_name": "search"}]`,
+		"missing tool_name": `[{"name": "web_search", "mcp_client_name": "tavily"}]`,
+		"empty client name": `[{"name": "web_search", "mcp_client_name": "", "tool_name": "search"}]`,
+		"unknown field":     `[{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "run", "max_results": 3}]`,
+		"null entry":        `[null]`,
+	} {
+		config := fmt.Sprintf(`{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "injected_tools": %s}}}`, block)
+		if err := ValidateConfigSchema([]byte(config), schema); err == nil {
+			t.Errorf("%s: expected injected_tools to fail validation", name)
+		}
 	}
 }

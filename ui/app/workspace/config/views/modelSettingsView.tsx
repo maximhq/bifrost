@@ -154,8 +154,7 @@ export default function ModelSettingsView() {
 										return (
 											value.startsWith("http://") ||
 											value.startsWith("https://") ||
-											value.startsWith("file://") ||
-											"URL must start with http://, https://, or file://"
+											"URL must start with http:// or https:// (file:// URLs can only be set in config.json)"
 										);
 									},
 								},
@@ -183,8 +182,7 @@ export default function ModelSettingsView() {
 										return (
 											value.startsWith("http://") ||
 											value.startsWith("https://") ||
-											value.startsWith("file://") ||
-											"URL must start with http://, https://, or file://"
+											"URL must start with http:// or https:// (file:// URLs can only be set in config.json)"
 										);
 									},
 								},

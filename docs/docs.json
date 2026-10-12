@@ -60,9 +60,7 @@
           {
             "group": "Overview",
             "icon": "book-open-cover",
-            "pages": [
-              "overview"
-            ]
+            "pages": ["overview"]
           },
           {
             "group": "Quick Start",
@@ -104,31 +102,22 @@
           {
             "group": "Release Cadence",
             "icon": "calendar",
-            "pages": [
-              "release-cadence"
-            ]
+            "pages": ["release-cadence"]
           },
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": [
-              "migration-guides/v2.0.0",
-              "migration-guides/v1.5.0"
-            ]
+            "pages": ["migration-guides/v2.0.0", "migration-guides/v1.5.0"]
           },
           {
             "group": "Migrate from other Gateway",
             "icon": "arrow-up",
-            "pages": [
-              "migration-guides/litellm"
-            ]
+            "pages": ["migration-guides/litellm"]
           },
           {
             "group": "SDK Integrations",
             "icon": "plug",
-            "pages": [
-              "integrations/what-is-an-integration"
-            ]
+            "pages": ["integrations/what-is-an-integration"]
           },
           {
             "group": "Providers & Guides",
@@ -145,6 +134,7 @@
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/cerebras",
+                  "providers/supported-providers/cloudflare",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/databricks",
                   "providers/supported-providers/deepseek",
@@ -181,6 +171,7 @@
               "providers/reasoning",
               "providers/performance",
               "providers/custom-providers",
+              "providers/self-hosted-decision-models",
               "providers/custom-pricing",
               "providers/request-options",
               "providers/test-harness-coverage"
@@ -226,10 +217,7 @@
               {
                 "group": "Writing Plugins",
                 "icon": "code",
-                "pages": [
-                  "plugins/writing-go-plugin",
-                  "plugins/writing-wasm-plugin"
-                ]
+                "pages": ["plugins/writing-go-plugin", "plugins/writing-wasm-plugin"]
               },
               "plugins/migration-guide"
             ]
@@ -240,6 +228,8 @@
             "pages": [
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
+              "features/complexity-router",
+              "features/warp",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
@@ -253,8 +243,7 @@
                   "features/governance/budget-and-limits",
                   "features/governance/model-limits",
                   "features/governance/mcp-tools",
-                  "features/governance/required-headers",
-                  "features/governance/complexity-router"
+                  "features/governance/required-headers"
                 ]
               },
               "features/telemetry",
@@ -275,10 +264,7 @@
               {
                 "group": "Plugins",
                 "icon": "puzzle-piece",
-                "pages": [
-                  "features/plugins/mocker",
-                  "features/plugins/jsonparser"
-                ]
+                "pages": ["features/plugins/mocker", "features/plugins/jsonparser"]
               }
             ]
           }
@@ -291,9 +277,7 @@
           {
             "group": "Getting Started",
             "icon": "rocket",
-            "pages": [
-              "enterprise/overview"
-            ]
+            "pages": ["enterprise/overview"]
           },
           {
             "group": "Moving from OSS",
@@ -309,17 +293,12 @@
           {
             "group": "Release Cadence",
             "icon": "calendar",
-            "pages": [
-              "enterprise/release-cadence"
-            ]
+            "pages": ["enterprise/release-cadence"]
           },
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": [
-              "enterprise/migration-guides/v2.0.0",
-              "enterprise/migration-guides/v1.4.0"
-            ]
+            "pages": ["enterprise/migration-guides/v2.0.0", "enterprise/migration-guides/v1.4.0"]
           },
           {
             "group": "Features",
@@ -327,6 +306,7 @@
             "pages": [
               "enterprise/user-provisioning",
               "enterprise/how-identity-sync-works",
+              "enterprise/teams-business-units-customers",
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
@@ -356,7 +336,8 @@
                       "integrations/guardrails/patronus-ai",
                       "integrations/guardrails/checkpoint",
                       "integrations/guardrails/repello-argus",
-                      "integrations/guardrails/singulr-ai"
+                      "integrations/guardrails/singulr-ai",
+                      "integrations/guardrails/a10"
                     ]
                   }
                 ]
@@ -383,9 +364,7 @@
           {
             "group": "Security",
             "icon": "shield",
-            "pages": [
-              "security"
-            ]
+            "pages": ["security"]
           }
         ]
       },
@@ -395,35 +374,22 @@
         "groups": [
           {
             "group": "Overview",
-            "pages": [
-              "edge/overview",
-              "edge/how-it-works"
-            ]
+            "pages": ["edge/overview", "edge/how-it-works"]
           },
           {
             "group": "Governance & Control",
             "icon": "shield-halved",
-            "pages": [
-              "edge/app-governance",
-              "edge/mcp-governance",
-              "edge/security"
-            ]
+            "pages": ["edge/app-governance", "edge/mcp-governance", "edge/security"]
           },
           {
             "group": "Admin controls",
             "icon": "sliders",
-            "pages": [
-              "edge/admin-devices",
-              "edge/admin-approvals",
-              "edge/admin-configurations"
-            ]
+            "pages": ["edge/admin-devices", "edge/admin-approvals", "edge/admin-configurations"]
           },
           {
             "group": "Deployment",
             "icon": "cloud-arrow-up",
-            "pages": [
-              "edge/deployment-mdm"
-            ]
+            "pages": ["edge/deployment-mdm"]
           },
           {
             "group": "Onboarding Instructions",
@@ -440,9 +406,7 @@
           {
             "group": "Reference",
             "icon": "list",
-            "pages": [
-              "edge/supported-applications"
-            ]
+            "pages": ["edge/supported-applications"]
           }
         ]
       },
@@ -453,10 +417,7 @@
           {
             "group": "Runbooks",
             "icon": "book-open",
-            "pages": [
-              "runbooks/claude-code-bedrock",
-              "runbooks/codex-bedrock"
-            ]
+            "pages": ["runbooks/claude-code-bedrock", "runbooks/codex-bedrock"]
           },
           {
             "group": "CLI Agents & Editors",
@@ -509,9 +470,7 @@
               {
                 "group": "GenAI SDK",
                 "icon": "diamond",
-                "pages": [
-                  "integrations/genai-sdk/overview"
-                ]
+                "pages": ["integrations/genai-sdk/overview"]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -528,50 +487,37 @@
                 "group": "Okta",
                 "icon": "/media/okta-icon.svg",
                 "collapsed": true,
-                "pages": [
-                  "enterprise/setting-up-okta/oidc",
-                  "enterprise/setting-up-okta/scim"
-                ]
+                "pages": ["enterprise/setting-up-okta/oidc", "enterprise/setting-up-okta/scim"]
               },
               {
                 "group": "Microsoft Entra",
                 "icon": "microsoft",
                 "collapsed": true,
-                "pages": [
-                  "enterprise/setting-up-entra/oidc"
-                ]
+                "pages": ["enterprise/setting-up-entra/oidc"]
               },
               {
                 "group": "Zitadel",
                 "icon": "/media/zitadel-icon.svg",
                 "collapsed": true,
-                "pages": [
-                  "enterprise/setting-up-zitadel/oidc"
-                ]
+                "pages": ["enterprise/setting-up-zitadel/oidc"]
               },
               {
                 "group": "Keycloak",
                 "icon": "/media/keycloak-icon.svg",
                 "collapsed": true,
-                "pages": [
-                  "enterprise/setting-up-keycloak/oidc"
-                ]
+                "pages": ["enterprise/setting-up-keycloak/oidc"]
               },
               {
                 "group": "Google Workspace",
                 "icon": "google",
                 "collapsed": true,
-                "pages": [
-                  "enterprise/setting-up-google-workspace"
-                ]
+                "pages": ["enterprise/setting-up-google-workspace"]
               },
               {
                 "group": "Auth0",
                 "icon": "/media/auth0-icon.svg",
                 "collapsed": true,
-                "pages": [
-                  "enterprise/setting-up-auth0/oidc"
-                ]
+                "pages": ["enterprise/setting-up-auth0/oidc"]
               },
               {
                 "group": "Generic OIDC",
@@ -611,7 +557,8 @@
               "integrations/guardrails/patronus-ai",
               "integrations/guardrails/checkpoint",
               "integrations/guardrails/repello-argus",
-              "integrations/guardrails/singulr-ai"
+              "integrations/guardrails/singulr-ai",
+              "integrations/guardrails/a10"
             ]
           },
           {
@@ -742,9 +689,7 @@
           {
             "group": "Authentication",
             "icon": "key",
-            "pages": [
-              "api/procuring-api-keys"
-            ]
+            "pages": ["api/procuring-api-keys"]
           },
           {
             "group": "Inference",
@@ -752,23 +697,17 @@
               {
                 "group": "Models",
                 "expanded": false,
-                "pages": [
-                  "GET /v1/models"
-                ]
+                "pages": ["GET /v1/models"]
               },
               {
                 "group": "Chat Completions",
                 "expanded": false,
-                "pages": [
-                  "POST /v1/chat/completions"
-                ]
+                "pages": ["POST /v1/chat/completions"]
               },
               {
                 "group": "Text Completions",
                 "expanded": false,
-                "pages": [
-                  "POST /v1/completions"
-                ]
+                "pages": ["POST /v1/completions"]
               },
               {
                 "group": "Responses",
@@ -785,16 +724,12 @@
               {
                 "group": "OCR",
                 "expanded": false,
-                "pages": [
-                  "POST /v1/ocr"
-                ]
+                "pages": ["POST /v1/ocr"]
               },
               {
                 "group": "Rerank",
                 "expanded": false,
-                "pages": [
-                  "POST /v1/rerank"
-                ]
+                "pages": ["POST /v1/rerank"]
               },
               {
                 "group": "Decisions",
@@ -806,17 +741,12 @@
               {
                 "group": "Embeddings",
                 "expanded": false,
-                "pages": [
-                  "POST /v1/embeddings"
-                ]
+                "pages": ["POST /v1/embeddings"]
               },
               {
                 "group": "Audio",
                 "expanded": false,
-                "pages": [
-                  "POST /v1/audio/speech",
-                  "POST /v1/audio/transcriptions"
-                ]
+                "pages": ["POST /v1/audio/speech", "POST /v1/audio/transcriptions"]
               },
               {
                 "group": "Images",
@@ -842,16 +772,12 @@
               {
                 "group": "Count Tokens",
                 "expanded": false,
-                "pages": [
-                  "POST /v1/responses/input_tokens"
-                ]
+                "pages": ["POST /v1/responses/input_tokens"]
               },
               {
                 "group": "Compaction",
                 "expanded": false,
-                "pages": [
-                  "POST /v1/responses/compact"
-                ]
+                "pages": ["POST /v1/responses/compact"]
               },
               {
                 "group": "Batch",
@@ -952,6 +878,7 @@
                   "POST /openai/v1/responses/compact",
                   "POST /openai/v1/embeddings",
                   "POST /openai/openai/deployments/{deployment-id}/embeddings",
+                  "POST /openai/v1/decisions",
                   "POST /openai/v1/audio/speech",
                   "POST /openai/openai/deployments/{deployment-id}/audio/speech",
                   "POST /openai/v1/audio/transcriptions",
@@ -1179,9 +1106,7 @@
               {
                 "group": "Health",
                 "expanded": false,
-                "pages": [
-                  "GET /health"
-                ]
+                "pages": ["GET /health"]
               },
               {
                 "group": "Configuration",
@@ -1248,9 +1173,11 @@
                   "PUT /api/mcp/client/{id}",
                   "DELETE /api/mcp/client/{id}",
                   "POST /api/mcp/client/{id}/reconnect",
+                  "POST /api/mcp/client/{id}/refresh-tools",
                   "POST /api/mcp/client/{id}/complete-oauth",
                   "POST /api/mcp/client/{id}/initiate-verification",
                   "POST /api/mcp/client/{id}/reauthorize",
+                  "POST /api/mcp/client/{id}/reregister",
                   "POST /api/mcp/client/{id}/verify-headers",
                   "POST /api/mcp/client/{id}/verify-exchange",
                   "GET /api/mcp/sessions",
@@ -1262,7 +1189,20 @@
                 ]
               },
               {
-                "group": "MCP Tool Groups",
+                "group": "Virtual MCPs",
+                "expanded": false,
+                "pages": [
+                  "GET /api/mcp/virtual-mcps",
+                  "POST /api/mcp/virtual-mcps",
+                  "GET /api/mcp/virtual-mcps/{id}",
+                  "PUT /api/mcp/virtual-mcps/{id}",
+                  "DELETE /api/mcp/virtual-mcps/{id}",
+                  "POST /api/mcp/virtual-mcps/{id}/virtual-keys/{vkId}",
+                  "DELETE /api/mcp/virtual-mcps/{id}/virtual-keys/{vkId}"
+                ]
+              },
+              {
+                "group": "MCP Tool Groups (deprecated)",
                 "expanded": false,
                 "pages": [
                   "GET /api/mcp/tool-groups",
@@ -1396,20 +1336,12 @@
               {
                 "group": "Vault",
                 "expanded": false,
-                "pages": [
-                  "POST /api/vault/flush-cache"
-                ]
+                "pages": ["POST /api/vault/flush-cache"]
               },
               {
                 "group": "Infrastructure",
                 "expanded": false,
-                "pages": [
-                  "GET /ws",
-                  "GET /mcp",
-                  "POST /mcp",
-                  "GET /metrics",
-                  "POST /inspect"
-                ]
+                "pages": ["GET /ws", "GET /mcp", "POST /mcp", "GET /metrics", "POST /inspect"]
               },
               {
                 "group": "API Keys",
@@ -1441,10 +1373,12 @@
               {
                 "group": "Notifications",
                 "expanded": false,
-                "pages": [
-                  "GET /api/notifications",
-                  "POST /api/notifications"
-                ]
+                "pages": ["GET /api/notifications", "POST /api/notifications"]
+              },
+              {
+                "group": "Warp",
+                "expanded": false,
+                "pages": ["GET /api/warp/config", "PUT /api/warp/config", "POST /api/warp/log-index/backfill", "GET /api/warp/log-index/backfill/status", "POST /api/warp/log-index/backfill/cancel", "POST /api/warp/chat", "GET /api/warp/log-index/status", "GET /api/warp/conversations", "GET /api/warp/conversations/{id}", "DELETE /api/warp/conversations/{id}"]
               }
             ]
           },
@@ -1615,10 +1549,7 @@
               {
                 "group": "Budgets & Rate Limits",
                 "expanded": false,
-                "pages": [
-                  "GET /api/governance/budgets",
-                  "GET /api/governance/rate-limits"
-                ]
+                "pages": ["GET /api/governance/budgets", "GET /api/governance/rate-limits"]
               },
               {
                 "group": "Model Configs",
@@ -1706,9 +1637,7 @@
               {
                 "group": "Customers",
                 "expanded": false,
-                "pages": [
-                  "GET /api/customers/{customer_id}/teams"
-                ]
+                "pages": ["GET /api/customers/{customer_id}/teams"]
               },
               {
                 "group": "RBAC",
@@ -2076,10 +2005,7 @@
               },
               {
                 "group": "September 2025",
-                "pages": [
-                  "changelogs/v1.2.22",
-                  "changelogs/v1.2.21"
-                ]
+                "pages": ["changelogs/v1.2.22", "changelogs/v1.2.21"]
               }
             ]
           },
@@ -2205,10 +2131,7 @@
               },
               {
                 "group": "August 2026",
-                "pages": [
-                  "changelogs/edge-v0.5.6",
-                  "changelogs/edge-v0.4.0"
-                ]
+                "pages": ["changelogs/edge-v0.5.6", "changelogs/edge-v0.4.0"]
               },
               {
                 "group": "July 2026",
@@ -2227,10 +2150,7 @@
               "changelogs/cli-v0.10.6",
               {
                 "group": "May 2026",
-                "pages": [
-                  "changelogs/cli-v0.10.5",
-                  "changelogs/cli-v0.10.4"
-                ]
+                "pages": ["changelogs/cli-v0.10.5", "changelogs/cli-v0.10.4"]
               },
               {
                 "group": "March 2026",
@@ -2247,6 +2167,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.44",
               "changelogs/helm-v2.1.43",
               "changelogs/helm-v2.1.42",
               "changelogs/helm-v2.1.41",
@@ -2349,6 +2270,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/features/governance/complexity-router",
+      "destination": "/features/complexity-router"
+    },
     {
       "source": "/integrations/guardrails/lakera",
       "destination": "/integrations/guardrails/checkpoint"

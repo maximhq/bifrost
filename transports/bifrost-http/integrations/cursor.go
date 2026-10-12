@@ -1065,6 +1065,7 @@ func NewCursorRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, acc
 
 	// Add OpenAI list models route for /cursor/v1/models
 	routes = append(routes, CreateOpenAIListModelsRouteConfigs("/cursor", handlerStore)...)
+	routes = append(routes, CreateOpenAIModelRetrieveRouteConfigs("/cursor", handlerStore)...)
 
 	// Add Anthropic routes for /cursor/anthropic/...
 	routes = append(routes, CreateAnthropicRouteConfigs("/cursor", logger)...)

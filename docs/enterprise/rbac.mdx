@@ -81,7 +81,10 @@ Bifrost protects access to the following resources:
 | **MCPGateway** | MCP Gateway configurations |
 | **VirtualMCPs** | Virtual MCP management (authorizes both `/api/mcp/virtual-mcps` and the deprecated `/api/mcp/tool-groups`) |
 | **MCPLogs** | MCP tool execution logs |
-| **AdaptiveRouter** | Adaptive routing settings |
+| **AdaptiveRouter** | Adaptive load balancing: **View** reads the adaptive routing dashboard and the load balancer settings; **Update** changes the settings and releases [held keys](/enterprise/adaptive-load-balancing#releasing-held-keys) |
+| **Warp** | Warp configuration and log index backfills. View reads the configuration; Update saves it, including which models Warp offers, and runs backfills |
+| **WarpSession** | Warp sessions: chat and conversation history (View), and deleting your own conversations (Delete). The chat panel also reads the Warp configuration, so chat users need Warp View too. Chat users can switch between the models a Warp Update holder has exposed, and cannot add to them |
+| **BackgroundJobs** | The background jobs list. View lists jobs and their progress; Update cancels a job. Only Admin holds it by default |
 
 ### Operations
 
@@ -95,6 +98,7 @@ Most resources support the standard CRUD operations. Some resources expose speci
 | **Delete** | Ability to remove resources |
 | **Download** | Ability to download resources, such as audit logs |
 | **Reveal** | Ability to reveal original values for reversible redactions in Bifrost logs |
+| **Create Standalone** | On **VirtualKeys** only. Lets members create keys that are not governed by their access profile. Without it, a key they create is owned by them, governed by their [access profiles](/enterprise/access-profiles#keys-members-create), and locked. A user who holds no access profile still gets a key, with no profile governing it. Granted to every role that can create keys until you remove it |
 | **Inference operations** | Ability to invoke specific inference surfaces, such as chat completions, embeddings, images, audio, and moderations |
 
 ---
@@ -174,13 +178,15 @@ Custom "Ops" role with:
 
 ## Integration with Identity Providers
 
-When using [User Provisioning (OIDC)](./user-provisioning) with Okta, Entra, Zitadel, Keycloak, or Google Workspace, roles can be automatically assigned based on:
+When using [User Provisioning](./user-provisioning) with Okta, Entra, Zitadel, Keycloak, Google Workspace, Auth0, SailPoint, or a generic OIDC provider, roles can be assigned automatically from:
 
 - **IdP Groups** - Map identity provider groups to Bifrost roles
 - **App Roles** - Sync application roles from your IdP
 - **Claims** - Use custom claims to determine role assignment
 
-Users authenticated via SSO receive their role assignments automatically on first login, with permissions synchronized on each session.
+A user's role is re-checked at every sign-in, session refresh, and SCIM push, so a role change in your IdP reaches Bifrost without any manual step. A role value that matches one of your attribute mappings for roles replaces the user's current role. A role attribute whose value matches no mapping removes the role, and the sign-in is refused. If neither the token nor what Bifrost remembers from earlier sign-ins has any attribute your role mappings read, Bifrost treats it as a misconfiguration: the sign-in is refused with a `403`, and the user's role and data are kept as they are. In **SCIM only** mode, sign-in ignores the token: the role comes from what SCIM last sent, and a user whose SCIM data resolves no role is refused. There is no default role. See [How roles are decided](/enterprise/how-identity-sync-works#how-roles-are-decided).
+
+What each role can **see** is set separately with its [data access scope](/enterprise/data-access-control).
 
 ---
 
@@ -225,7 +231,8 @@ curl -X POST http://localhost:8080/api/roles \
 
 ## Next Steps
 
-- **[Setting up Okta](./setting-up-okta)** - Configure Okta for SSO with role sync
-- **[Setting up Microsoft Entra](./setting-up-entra)** - Configure Entra ID for SSO with role sync
+- **[Data Access Control](./data-access-control)** - Decide which records each role can see
+- **[Access Profiles](./access-profiles)** - Attach provider, model, and budget policies to roles
+- **[Setting up Okta](./setting-up-okta/oidc)** - Configure Okta for SSO with role sync
+- **[Setting up Microsoft Entra](./setting-up-entra/oidc)** - Configure Entra ID for SSO with role sync
 - **[Audit Logs](./audit-logs)** - Track permission usage and access patterns
-- **[Advanced Governance](./advanced-governance)** - Learn about the complete governance framework

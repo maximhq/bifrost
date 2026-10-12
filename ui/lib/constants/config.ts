@@ -67,6 +67,7 @@ export const ModelPlaceholders = {
 	sarvam: "e.g. sarvam-30b, sarvam-105b",
 	wafer: "e.g. glm-5.2, kimi-k2.6",
 	databricks: "e.g. databricks-claude-sonnet-4-5, system.ai.claude-sonnet-4-5",
+	cloudflare: "e.g. @cf/meta/llama-4-scout-17b-16e-instruct, @cf/baai/bge-large-en-v1.5",
 	"github-copilot": "e.g. gpt-5.5, claude-sonnet-4-6",
 	typesafe: "e.g. jev-1.13.0, jev-latest, jev-preview",
 };
@@ -103,6 +104,7 @@ export const isKeyRequiredByProvider: Record<ProviderName, boolean> = {
 	sarvam: true,
 	wafer: true,
 	databricks: false,
+	cloudflare: true,
 	"github-copilot": false,
 	typesafe: true,
 };
@@ -139,9 +141,9 @@ export const MCP_STATUS_COLORS: Record<string, string> = {
 	// it self-heals on the next successful check. Same mild treatment as
 	// pending_verification, deliberately distinct from needs_reauth's red
 	// ("action required").
-	unstable: "bg-yellow-100 text-yellow-800 border-yellow-200",
-	pending_verification: "bg-yellow-100 text-yellow-800 border-yellow-200",
-	disabled: "bg-orange-100 text-orange-800 border-orange-200",
+	unstable: "bg-yellow-100 text-yellow-800 border-yellow-200 dark:border-yellow-800/40 dark:bg-yellow-950/40 dark:text-yellow-300",
+	pending_verification: "bg-yellow-100 text-yellow-800 border-yellow-200 dark:border-yellow-800/40 dark:bg-yellow-950/40 dark:text-yellow-300",
+	disabled: "bg-orange-100 text-orange-800 border-orange-200 dark:border-orange-800/40 dark:bg-orange-950/40 dark:text-orange-300",
 	// Same red as `error`: the client's credential has died and it can't be
 	// used until a human reauthorizes it, mirroring the "destructive" treatment
 	// this status already gets on the MCP sessions table.
@@ -151,7 +153,7 @@ export const MCP_STATUS_COLORS: Record<string, string> = {
 	// each other about the state," which needs its own visual signal to
 	// prompt a look at the per-instance breakdown rather than being read as
 	// just another flavor of unhealthy.
-	degraded: "bg-blue-100 text-blue-800 border-blue-200",
+	degraded: "bg-blue-100 text-blue-800 border-blue-200 dark:border-blue-800/40 dark:bg-blue-950/40 dark:text-blue-300",
 };
 
 // Credential row statuses (the admin/shared OAuth token or the admin header
@@ -163,18 +165,19 @@ export const MCP_CREDENTIAL_STATUS_COLORS: Record<string, string> = {
 	active: "border-chart-success/30 bg-chart-success/10 text-chart-success-ink",
 	needs_reauth: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
 	needs_update: "border-chart-error/30 bg-chart-error/10 text-chart-error-ink",
-	orphaned: "bg-yellow-100 text-yellow-800 border-yellow-200",
+	orphaned: "bg-yellow-100 text-yellow-800 border-yellow-200 dark:border-yellow-800/40 dark:bg-yellow-950/40 dark:text-yellow-300",
 	// Sessions table only: an OAuth flow that was started but not completed.
-	pending: "bg-gray-100 text-gray-800 border-gray-200",
+	pending: "bg-gray-100 text-gray-800 border-gray-200 dark:border-border dark:bg-muted dark:text-muted-foreground",
 	// Fallback for a status value this build does not know. Neutral on
 	// purpose: an unrecognized status must not read as usable.
-	unknown: "bg-gray-100 text-gray-800 border-gray-200",
+	unknown: "bg-gray-100 text-gray-800 border-gray-200 dark:border-border dark:bg-muted dark:text-muted-foreground",
 };
 
 // Mapping of what IS supported by each base provider
 export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 	openai: [
 		"list_models",
+		"model_retrieve",
 		"text_completion",
 		"text_completion_stream",
 		"chat_completion",
@@ -196,6 +199,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"image_edit_stream",
 		"image_variation",
 		"count_tokens",
+		"decisions",
 		"video_generation",
 		"video_edit",
 		"video_retrieve",
@@ -203,10 +207,20 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"video_delete",
 		"video_list",
 		"video_remix",
+		"live",
 	],
-	anthropic: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "count_tokens"],
+	anthropic: [
+		"list_models",
+		"model_retrieve",
+		"chat_completion",
+		"chat_completion_stream",
+		"responses",
+		"responses_stream",
+		"count_tokens",
+	],
 	gemini: [
 		"list_models",
+		"model_retrieve",
 		"chat_completion",
 		"chat_completion_stream",
 		"responses",
@@ -226,7 +240,16 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"video_list",
 		"video_remix",
 	],
-	cohere: ["list_models", "chat_completion", "chat_completion_stream", "responses", "responses_stream", "embedding", "count_tokens"],
+	cohere: [
+		"list_models",
+		"model_retrieve",
+		"chat_completion",
+		"chat_completion_stream",
+		"responses",
+		"responses_stream",
+		"embedding",
+		"count_tokens",
+	],
 	bedrock: [
 		"list_models",
 		"text_completion",
@@ -267,6 +290,7 @@ export const PROVIDER_SUPPORTED_REQUESTS: Record<BaseProvider, string[]> = {
 		"responses_stream",
 		"embedding",
 	],
+	typesafe: ["list_models", "decisions"],
 };
 
 export const IS_ENTERPRISE = process.env.BIFROST_IS_ENTERPRISE === "true";

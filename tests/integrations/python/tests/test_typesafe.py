@@ -13,6 +13,9 @@ Covered scenarios:
 3. Model alias resolution (jev-latest resolves to the versioned model)
 4. client.models.list() against Bifrost's synthesized native listing
 5. SDK exception parsing of Bifrost's native error body (TypeSafeBadRequestError)
+6. SDK fidelity (#7599): SDK-valid nullable inputs reach the endpoint, native
+   error detail and the x-typesafe-request-id header are relayed, extra body
+   fields are forwarded, and the live catalog carries release dates
 """
 
 import json
@@ -26,8 +29,10 @@ from typesafe_sdk import (
     Choice,
     Noul,
     Score,
+    TypeSafeAPIError,
     TypeSafeBadRequestError,
     TypeSafeClient,
+    TypeSafeUnprocessableEntityError,
 )
 
 from .utils.common import get_bifrost_base_url
@@ -198,6 +203,113 @@ class TestTypesafeErrors:
                 model="jev-1.13.0",
             )
         assert "criteria" in str(excinfo.value)
+
+
+class TestTypesafeSDKFidelity:
+    """#7599: what the official SDK sends must reach the endpoint unchanged, and
+    the endpoint's own verdict (status, native error detail, request id) must
+    come back unchanged. Bifrost's local validation is never stricter than the
+    SDK's types."""
+
+    def test_01_null_state_relays_endpoint_verdict(self, typesafe_client):
+        # The SDK's wire type excludes null, but a client can still send it and
+        # api.typesafe.ai answers 422 "Field required" for body.state
+        # (typesafe-ai/typesafe-sdk-js#6). Pre-fix Bifrost rejected the request
+        # locally with 400 "failed to convert request to Bifrost format" and the
+        # endpoint was never reached; it must forward and relay the native 422.
+        with pytest.raises(TypeSafeUnprocessableEntityError) as excinfo:
+            typesafe_client.system_one(
+                None,  # type: ignore[arg-type]
+                {"q": Noul(instructions="Evaluate this state.")},
+                model="jev-1.13.0",
+            )
+        err = excinfo.value
+        assert err.status == 422
+        assert "failed to convert" not in str(err)
+        assert "state" in json.dumps(err.body)
+        assert err.request_id, "x-typesafe-request-id must be forwarded on errors"
+
+    def test_02_noul_null_instructions_with_criteria(self, typesafe_client):
+        # Live-verified shape (typesafe-ai/typesafe-sdk-js#6): a noul with null
+        # instructions is accepted when criteria describes at least one side,
+        # and a description may itself be null. Pre-fix Bifrost rejected it
+        # locally with 'question "is_complaint" has no instructions'.
+        result = typesafe_client.system_one(
+            STATE,
+            {"is_complaint": Noul(criteria={"true": "the customer is complaining", "false": None})},
+            model="jev-1.13.0",
+        )
+        answer = result.answers["is_complaint"]
+        assert answer.type == "noul"
+        assert 0.0 <= answer.noul <= 1.0
+
+    def test_03_success_carries_upstream_request_id(self, typesafe_client):
+        result = typesafe_client.system_one(
+            STATE,
+            {"is_billing": Noul(instructions="Is this about billing?")},
+            model="jev-1.13.0",
+        )
+        # The SDK reads x-typesafe-request-id off the response; the property
+        # raises when the gateway dropped the header.
+        assert result.request_id
+
+    def test_04_bare_noul_relays_endpoint_verdict(self, typesafe_client):
+        # A noul with neither instructions nor criteria is SDK-valid but the
+        # endpoint refuses it: api.typesafe.ai answers 400 "Noul question must
+        # have criteria or instructions: q" (typesafe-ai/typesafe-sdk-js#6).
+        # Pre-fix Bifrost replaced that with its own local 400 ('question "q"
+        # has no instructions') and no request id; the endpoint's verdict, its
+        # native detail, and x-typesafe-request-id must all come back instead.
+        with pytest.raises(TypeSafeBadRequestError) as excinfo:
+            typesafe_client.system_one(STATE, {"q": Noul()}, model="jev-1.13.0")
+        err = excinfo.value
+        assert err.status == 400
+        assert "must have criteria or instructions" in str(err), str(err)
+        assert "has no instructions" not in str(err)
+        assert '"api_error"' not in json.dumps(err.body)
+        assert err.request_id, "x-typesafe-request-id must be forwarded on errors"
+
+    def test_05_extra_body_reaches_the_wire(self):
+        # The SDK forwards additional top-level fields (extra_body / spread).
+        # Whether the endpoint honours them is its call; Bifrost must not drop
+        # them. Observed through Bifrost's own raw_request capture on the
+        # /v1/decisions API (the shared profile enables send_back_raw_request),
+        # under the same passthrough header every other native surface uses.
+        config = get_config()
+        headers = {"Content-Type": "application/json", "x-bf-passthrough-extra-params": "true"}
+        if config.is_virtual_key_configured():
+            headers["x-bf-vk"] = config.get_virtual_key()
+        response = requests.post(
+            f"{get_bifrost_base_url()}/v1/decisions",
+            headers=headers,
+            json={
+                "model": "typesafe/jev-1.13.0",
+                "state": STATE,
+                "sdk_marker_7599": "forwarded",
+                "questions": {"is_billing": {"kind": "noul", "instructions": "Is this about billing?"}},
+            },
+            timeout=60,
+        )
+        # api.typesafe.ai currently refuses unknown top-level fields with
+        # 400 {"detail": {"error_type": "api_usage_error", ...}}; a compatible
+        # endpoint may accept them. Either way the field must have reached the
+        # wire and the endpoint's own verdict must come back, never a local
+        # drop-and-200.
+        body = response.json()
+        assert response.status_code in (200, 400), response.text
+        if response.status_code == 400:
+            assert body["error"]["type"] == "api_usage_error", response.text
+        raw_request = body.get("extra_fields", {}).get("raw_request")
+        assert raw_request is not None, response.text
+        assert "sdk_marker_7599" in json.dumps(raw_request)
+
+    def test_06_models_list_carries_release_dates(self, typesafe_client):
+        listing = typesafe_client.models.list()
+        assert listing.models
+        for model in listing.models:
+            assert model.name and "typesafe/" not in model.name
+            assert model.release_date
+        assert "jev-latest" in [m.name for m in listing.models]
 
 
 # LLM fallback / emulation: any tool-capable chat model answers a decision

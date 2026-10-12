@@ -1,0 +1,98 @@
+name: Live Tests
+
+# GPT Live e2e suite (tests/live) against a gateway built from the checkout. The fake upstream
+# needs no provider keys. The release pipeline runs the fake suite on every deployment; this
+# workflow runs the long sessions nightly and either mode on demand.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: live-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  live-fake:
+    name: GPT Live (fake upstream)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.0"
+
+      # The suite's OpenAI Python SDK leg runs `uv run pytest` from tests/live/python.
+      - name: Install uv
+        uses: step-security/setup-uv@ccf0a26ce9117d9e99292b0ce953ea5d9ffe778e # v7.3.0
+        with:
+          version: "0.11.0"
+          python-version: "3.12"
+
+      - name: Run GPT Live e2e tests
+        run: |
+          chmod +x .github/workflows/scripts/test-live.sh
+          ./.github/workflows/scripts/test-live.sh fake
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: live-test-report
+          path: |
+            test-reports/live.xml
+            tmp/live-gateway.log
+
+  live-long:
+    name: GPT Live (long sessions, fake upstream)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@fe104658747b27e96e4f7e80cd0a94068e53901d # v2.16.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: "1.27.0"
+
+      - name: Run long GPT Live sessions
+        run: |
+          chmod +x .github/workflows/scripts/test-live.sh
+          ./.github/workflows/scripts/test-live.sh long
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: live-long-test-report
+          path: |
+            test-reports/live-long.xml
+            tmp/live-gateway.log

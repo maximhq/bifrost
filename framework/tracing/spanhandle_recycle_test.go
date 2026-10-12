@@ -2,6 +2,8 @@ package tracing
 
 import (
 	"context"
+	"runtime/debug"
+	"sync"
 	"testing"
 	"time"
 
@@ -119,5 +121,73 @@ func TestSpanHandle_UseAfterTTLCleanupIsSafe(t *testing.T) {
 	tracer.SetAttribute(handle, "x", 1)
 	if got := tracer.SpanFromHandle(handle); got != nil {
 		t.Error("handle to a swept trace should resolve to nil")
+	}
+}
+
+// A late response racing ReleaseTrace used to segfault: PopulateLLMResponseAttributes
+// nil-guarded span.LLM on entry but dereferenced it again ~40 lines later, while
+// Span.Reset nils it on pool release. Regression test for that crash.
+// Skipped under -race: the trace-level recycling races (Trace.RootSpan, GetSpan vs
+// Span.Reset) predate this and are still open; see framework-test-failures.md.
+func TestPopulateLLMResponseAttributes_RacesReleaseTrace(t *testing.T) {
+	if raceEnabled() {
+		t.Skip("trace recycling races are still open; this guards the segfault in non-race builds")
+	}
+	for i := 0; i < 200; i++ {
+		store := NewTraceStore(time.Hour, nil)
+		tracer := NewTracer(store, nil, nil)
+
+		traceID, ctx := newHandleTestCtx(tracer)
+		bfCtx := schemas.NewBifrostContext(ctx, time.Now())
+		_, handle := tracer.StartSpanID(ctx, "llm", schemas.SpanKindLLMCall)
+		if span := tracer.SpanFromHandle(handle); span != nil {
+			span.LLM = &schemas.LLMSpanData{RequestType: schemas.ChatCompletionRequest}
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			tracer.PopulateLLMResponseAttributes(bfCtx, handle, nil, nil)
+		}()
+		go func() {
+			defer wg.Done()
+			if tr := store.CompleteTrace(traceID); tr != nil {
+				tracer.ReleaseTrace(tr)
+			}
+		}()
+		wg.Wait()
+	}
+}
+
+// raceEnabled reports whether the test binary was built with -race.
+func raceEnabled() bool {
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, setting := range info.Settings {
+			if setting.Key == "-race" {
+				return setting.Value == "true"
+			}
+		}
+	}
+	return false
+}
+
+// EnsureLLMIfMatch must refuse a recycled span rather than hand back a payload that
+// belongs to whichever trace reused it.
+func TestEnsureLLMIfMatchRejectsRecycledSpan(t *testing.T) {
+	s := &schemas.Span{SpanID: "abc"}
+	if llm := s.EnsureLLMIfMatch("abc"); llm == nil {
+		t.Fatal("EnsureLLMIfMatch should create the payload for the current owner")
+	}
+	s.Reset() // pool release
+	if llm := s.EnsureLLMIfMatch("abc"); llm != nil {
+		t.Error("stale handle got a payload from a reset span")
+	}
+	s.SpanID = "xyz" // reused by another trace
+	if llm := s.EnsureLLMIfMatch("abc"); llm != nil {
+		t.Error("stale handle got a payload from a reused span")
+	}
+	if llm := s.EnsureLLMIfMatch("xyz"); llm == nil {
+		t.Error("current owner was refused")
 	}
 }

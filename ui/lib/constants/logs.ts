@@ -31,6 +31,7 @@ export const KnownProvidersNames = [
 	"sarvam",
 	"wafer",
 	"databricks",
+	"cloudflare",
 	"github-copilot",
 	"typesafe",
 ] as const;
@@ -64,16 +65,19 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"ollama",
 	"openai",
 	"openrouter",
+	"parasail",
 	"sgl",
 	"vertex",
 	"vllm",
 	"databricks",
+	"cloudflare",
 ] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
 export const RequestTypes = [
 	"list_models",
+	"model_retrieve",
 	"text_completion",
 	"text_completion_stream",
 	"chat_completion",
@@ -138,6 +142,11 @@ export const RequestTypes = [
 	"websocket_responses",
 	"realtime",
 	"realtime.turn",
+	// GPT Live: one row per session, delegations inside it; a recording download is its own row
+	"live",
+	"live.session",
+	"live_content",
+	"live_sideband",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -172,6 +181,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	sarvam: "Sarvam AI",
 	wafer: "Wafer",
 	databricks: "Databricks",
+	cloudflare: "Cloudflare",
 	"github-copilot": "GitHub Copilot",
 	typesafe: "TypeSafe",
 } as const;
@@ -204,6 +214,7 @@ export interface ClientApp {
 // every release, so never match on an exact string. Identifiers are best-effort
 // and meant to be extended as new clients appear.
 const userAgentAppMatchers: { identifiers: string[]; app: ClientApp }[] = [
+	{ identifiers: ["bifrost-warp"], app: { name: "Warp", icon: "/images/warp.svg" } },
 	{ identifiers: ["chatgpt-web"], app: { name: "ChatGPT Web", icon: "/images/openai.png" } },
 	{ identifiers: ["claude-chat-web", "claude-web"], app: { name: "Claude Chat Web", icon: "/images/claude-desktop.png" } },
 	{ identifiers: ["claude-desktop"], app: { name: "Claude Desktop", icon: "/images/claude-desktop.png" } },
@@ -286,6 +297,7 @@ export const RequestTypeLabels = {
 
 	// Request Types
 	list_models: "List Models",
+	model_retrieve: "Retrieve Model",
 	text_completion: "Text",
 	text_completion_stream: "Text Stream",
 	chat_completion: "Chat",
@@ -357,6 +369,10 @@ export const RequestTypeLabels = {
 	websocket_responses: "WebSocket Responses",
 	realtime: "Realtime",
 	"realtime.turn": "Realtime Turn",
+	live: "Live",
+	"live.session": "Live Session",
+	live_content: "Live Recording",
+	live_sideband: "Live Sideband",
 } as const;
 
 export const RequestTypeColors = {
@@ -374,6 +390,7 @@ export const RequestTypeColors = {
 
 	// Request Types
 	list_models: "bg-green-100 text-green-800",
+	model_retrieve: "bg-green-100 text-green-800",
 	text_completion: "bg-green-100 text-green-800",
 	text_completion_stream: "bg-amber-100 text-amber-800",
 
@@ -448,6 +465,10 @@ export const RequestTypeColors = {
 	websocket_responses: "bg-teal-100 text-teal-800",
 	realtime: "bg-indigo-100 text-indigo-800",
 	"realtime.turn": "bg-cyan-100 text-cyan-800",
+	live: "bg-violet-100 text-violet-800",
+	"live.session": "bg-violet-100 text-violet-800",
+	live_content: "bg-blue-100 text-blue-800",
+	live_sideband: "bg-blue-100 text-blue-800",
 } as const;
 
 export const RoutingEngineUsedLabels = {

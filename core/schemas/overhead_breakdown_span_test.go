@@ -22,6 +22,7 @@ func TestIsOverheadBreakdownSpan(t *testing.T) {
 		{"other internal", &Span{Kind: SpanKindInternal, Name: "something-else"}, false},
 		{"plugin transport prehook", &Span{Kind: SpanKindPlugin, Name: "plugin.governance.transportprehook"}, true},
 		{"plugin transport posthook", &Span{Kind: SpanKindPlugin, Name: "plugin.governance.transportposthook"}, true},
+		{"plugin transport response headers hook", &Span{Kind: SpanKindPlugin, Name: "plugin.governance.transportresponseheadershook"}, true},
 		{"plugin normal prehook", &Span{Kind: SpanKindPlugin, Name: "plugin.governance.prehook"}, false},
 		{"llm call", &Span{Kind: SpanKindLLMCall, Name: "chat gpt-4o"}, false},
 		{"http request root", &Span{Kind: SpanKindHTTPRequest, Name: "/v1/chat/completions"}, false},

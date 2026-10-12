@@ -1,0 +1,87 @@
+- feat: persist agent registrations, virtual-key agent grants, push configs and push delivery outbox, and store and query agent operation and event logs
+- feat: add Warp agent, read-only log/metric/governance tools, chat history and asker-scoped visibility
+- feat: index completed logs for Warp semantic search with sidekiq backfill and visibility prefiltering
+- feat: price live voice seconds and bind live sessions to the opening virtual key
+- feat: persist cloudflare_key_config.account_id on provider keys
+- feat: persist injected_tools on providers as a list of named entries
+- feat: persist, validate and expose oauth_key_config on provider keys
+- feat: add compat_convert_decision_to_responses column (default false, no backfill)
+- feat: add decision-specific token rates and skip negative variable-price rates for decisions
+- feat: complexity router decision classifier config with per-tier guidance criteria, shipped defaults and decision cost tracking
+- feat: add framework/queue with memory, SQLite, Postgres and ClickHouse backends
+- feat: add embedding_input log column and span attributes for the new embedding input shape
+- feat: replace search_context_cost_per_query with web_search_cost_per_request priced from tool_usage.web_search.num_requests
+- feat: price from the catalog when ignore_provider_cost is on, including streamed cost
+- feat: add compat_force_reasoning_only_models_to_responses column and backfill it to true
+- feat: persist vertex aws_workload_identity as encrypted json
+- feat: accumulate shell and apply_patch stream items
+- feat: carry server_side_model in model capabilities
+- feat: failure attributes on the root span and end-to-end ttft for streams
+- feat: provider_objects ownership table, enforce_vk_object_ownership client config column and id-suffix lookups for provider jobs and objects
+- feat: AllowsEveryModel on grants
+- feat: require_public_target column on MCP clients
+- feat: MCP OAuth private network allowlist with separate public-only and allowlisted transports
+- feat: RevokeOAuth2GrantsBySubject for virtual key rotation
+- feat: persist discovered MCP server instructions and per-client max_instructions_length
+- feat: ReregisterDynamicClient for evicted dynamic client registrations
+- feat: access profiles held by teams, business units and customers; business_unit_id owner on virtual keys
+- feat: global proxy_config in config.json; webhooks, skills and plugin downloads through the HTTP client factory
+- feat: delete_after_expire on virtual keys and ListExpiredVirtualKeysForDeletion
+- feat: disable_content_logging column on virtual keys
+- feat: ttft_timeout_ms on routing rule targets
+- feat: hide every load balancer metadata key from log filters; logs registry for downstream routing panels
+- feat: team_count on paginated customer lists
+- feat: persist code mode limits in client config
+- feat: support HTTPTransportResponseHeadersHook in plugin loading
+- feat: add group_sessions log filter collapsing sessions to their earliest root with session rollups
+- feat: add ListSidekiqJobs and per-kind progress summarizers
+- feat: add object_storage_exclude_request_types to keep chosen request types out of object storage
+- feat: render raw payloads only when a connector opts in, and export the raw request and provider error body for failed requests
+- feat: compute per-category request cost breakdown in the model catalog
+- feat: produce trace data and plugin spans only when a connector consumes them
+- feat: add above-100k-token pricing tier
+- fix: use updated log retention for subsequent cleanup passes (#8212) (thanks [@Constantine3](https://github.com/Constantine3)!)
+- fix: transcription cost uses the provider-reported usage.cost when present, as chat already does (#7819) (thanks [@hmdsefi](https://github.com/hmdsefi)!)
+- fix: complexity router keeps custom provider name case so its config lookup succeeds (thanks [@MohammadHijjawi97](https://github.com/MohammadHijjawi97)!)
+- fix: config-driven skill updates serve the new version instead of failing on an unset LatestVersion (#8246) (thanks [@ozenyunus35](https://github.com/ozenyunus35)!)
+- fix: hash and merge the complexity analyzer config as written in config.json
+- fix: prefer realtime catalog rates for realtime requests
+- fix: parse the reasoning summary capability from the datasheet
+- fix: one terminal stream event per request
+- fix: responses streaming keeps the latest provider stop reason
+- fix: structured tool call summaries for custom, local shell and code interpreter calls
+- fix: tighter MCP OAuth2 server validation and redirect URI allowlist
+- fix: enforce the private-network dial policy on every redirect hop for pricing, model-parameter, MCP library and OAuth2 fetches
+- fix: match legacy plaintext lookups only against plaintext rows
+- fix: redact x-bf-vk in trace request headers
+- fix: move config.json virtual key and provider config limits to model config tiers (migration move_config_json_vk_limits_to_model_configs)
+- fix: wrap duplicate routing rule priority in ErrAlreadyExists and print the scope ID
+- fix: widen OAuth2 state, scope and client_name columns to text
+- fix: wrap ErrNotFound for unknown MCP client update and delete
+- fix: team, customer and business unit filters match multi-value owners on ClickHouse and SQLite
+- fix: read paginated model configs through ScopedDB
+- fix: count ranking rows the caller cannot name under a synthetic Other row
+- fix: always set http.response.status_code on error spans
+- fix: export gen_ai.request.tools on chat spans
+- fix: guard LLM span population against concurrent trace release
+- fix: dimension mismatch checks on every vector store and cosine scoring on Weaviate
+- fix: make ClickHouse max_query_size configurable, default 16 MiB
+- fix: keep millisecond precision in ClickHouse time filters and keyset cursor
+- fix: truncate ClickHouse input histories to the last message in list queries (thanks [@ege-arhan](https://github.com/ege-arhan)!)
+- fix: sanitize Postgres log text and JSON columns so one row cannot fail a batch, storing NUL-only values as U+FFFD
+- fix: add LogStore.BatchUpdate to reconcile late responses onto existing rows
+- fix: add MaintenanceGate to detect a running logstore migration
+- fix: classify transient Postgres write errors
+- fix: Postgres scale fixes for large logs, users and virtual keys, with runtime session timeouts and provider-object id lists bound as one parameter
+- fix: run only pending migration steps on startup
+- fix: begin sqlite config store transactions with an immediate write lock
+- fix: keep error_details in the database when object storage is enabled
+- fix: include plugin_logs in the object storage payload
+- fix: sort missing cost and latency last
+- fix: leave the cost split empty for opaque provider totals
+- fix: fall back to the lowercase model name in pricing lookup
+- fix: fall back to DB pricing when the datasheet URL hangs
+- fix: fire the after-sync hook only on the node that ran the sync
+- fix: serialize client config writers so metadata is carried forward
+- fix: bound agent log filter dropdowns by the DAC dimension ceiling
+- chore: upgraded core to v1.12.0

@@ -1,11 +1,13 @@
 package mcptests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
+	core "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -650,6 +652,143 @@ func TestReadToolFile_LineNumberBoundaries(t *testing.T) {
 				// Just verify we got some content back (tool handles gracefully)
 				t.Logf("%s: Got response with %d characters", tc.description, len(*result.Content.ContentStr))
 			}
+		})
+	}
+}
+
+// =============================================================================
+// GUARDRAIL LEAK REGRESSION
+// =============================================================================
+
+// blockingOutputPlugin emulates an MCP output guardrail: it blocks any tool
+// result containing secret, and reports every body it was given a chance to see.
+type blockingOutputPlugin struct {
+	secret    string
+	redact    bool
+	inspected []string
+}
+
+func (p *blockingOutputPlugin) GetName() string { return "blockingOutputPlugin" }
+func (p *blockingOutputPlugin) Cleanup() error  { return nil }
+
+func (p *blockingOutputPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, error) {
+	return req, nil, nil
+}
+
+func (p *blockingOutputPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostMCPResponse, *schemas.BifrostError, error) {
+	if resp == nil || resp.ChatMessage == nil || resp.ChatMessage.Content == nil || resp.ChatMessage.Content.ContentStr == nil {
+		return resp, bifrostErr, nil
+	}
+	// Scope to the probe tools so the executeToolCode envelope stays unguarded —
+	// the leak must be closed by code mode itself, not by a catch-all rule.
+	if !strings.HasPrefix(resp.ExtraFields.ToolName, "leak_") {
+		return resp, bifrostErr, nil
+	}
+	body := *resp.ChatMessage.Content.ContentStr
+	p.inspected = append(p.inspected, resp.ExtraFields.ToolName)
+	if !strings.Contains(body, p.secret) {
+		return resp, bifrostErr, nil
+	}
+	if p.redact {
+		cleaned := strings.ReplaceAll(body, p.secret, "[REDACTED]")
+		resp.ChatMessage.Content.ContentStr = &cleaned
+		return resp, bifrostErr, nil
+	}
+	return nil, &schemas.BifrostError{
+		IsBifrostError: false,
+		Error:          &schemas.ErrorField{Message: "regex pattern matched"},
+	}, nil
+}
+
+// TestExecuteToolCode_GuardrailedResultNeverReachesModel pins the fix for the
+// code-mode leak: the execution log is rendered into the tool message the model
+// receives, so a result an output guardrail blocked or redacted must not appear
+// there. Covers both result shapes, including the "Error: " text a server uses
+// for soft failures, which used to bypass PostMCPHook altogether.
+func TestExecuteToolCode_GuardrailedResultNeverReachesModel(t *testing.T) {
+	const secret = "PAGE-ID-998877-SECRET"
+	body := secret + " " + strings.Repeat("CONFIDENTIAL-BODY ", 200)
+
+	for _, tc := range []struct {
+		name   string
+		tool   string
+		text   string
+		redact bool
+	}{
+		{name: "blocked text result", tool: "leak_page", text: body},
+		{name: "blocked error result", tool: "leak_error", text: "Error: " + body},
+		{name: "redacted text result", tool: "leak_page", text: body, redact: true},
+		{name: "redacted error result", tool: "leak_error", text: "Error: " + body, redact: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager := setupMCPManager(t)
+			toolSchema := schemas.ChatTool{
+				Type: schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{
+					Name:        tc.tool,
+					Description: schemas.Ptr("returns a large confidential body"),
+					Parameters: &schemas.ToolFunctionParameters{
+						Type:       "object",
+						Properties: schemas.NewOrderedMapFromPairs(),
+					},
+				},
+			}
+			require.NoError(t, manager.RegisterTool(tc.tool, "returns a large confidential body",
+				func(any) (string, error) { return tc.text, nil }, toolSchema))
+
+			for _, client := range manager.GetClients() {
+				if client.ExecutionConfig.ID == "bifrostInternal" {
+					cfg := client.ExecutionConfig
+					cfg.IsCodeModeClient = true
+					cfg.ToolsToExecute = []string{"*"}
+					require.NoError(t, manager.UpdateClient(cfg.ID, cfg))
+				}
+			}
+
+			guard := &blockingOutputPlugin{secret: secret, redact: tc.redact}
+			b, err := core.Init(context.Background(), schemas.BifrostConfig{
+				Account:    &testAccount{},
+				MCPPlugins: []schemas.MCPPlugin{guard},
+				Logger:     core.NewDefaultLogger(schemas.LogLevelError),
+			})
+			require.NoError(t, err)
+			t.Cleanup(b.Shutdown)
+			b.SetMCPManager(manager)
+
+			args, err := json.Marshal(map[string]any{
+				"code": fmt.Sprintf("page = bifrostInternal.%s()\nresult = {\"len\": len(page)}", tc.tool),
+			})
+			require.NoError(t, err)
+			call := schemas.ChatAssistantMessageToolCall{
+				ID:   schemas.Ptr("guardrail-leak"),
+				Type: schemas.Ptr("function"),
+				Function: schemas.ChatAssistantMessageToolCallFunction{
+					Name:      schemas.Ptr("executeToolCode"),
+					Arguments: string(args),
+				},
+			}
+
+			msg, bifrostErr := b.ExecuteChatMCPTool(createTestContext(), &call)
+			require.Nil(t, bifrostErr)
+			require.NotNil(t, msg)
+			require.NotNil(t, msg.Content)
+			require.NotNil(t, msg.Content.ContentStr)
+
+			require.NotEmpty(t, guard.inspected, "guardrail must see the tool result before the model does")
+			assert.NotContains(t, *msg.Content.ContentStr, secret,
+				"guarded content reached the model through the code-mode execution log")
+			if tc.redact {
+				// Redaction rewrites the result rather than withholding it, so the
+				// surviving body is expected - only the matched span must be gone.
+				assert.Contains(t, *msg.Content.ContentStr, "[REDACTED]",
+					"the model should see the post-hook text, not the wire result")
+				// Bounded on both channels: the log preview and the raised error.
+				assert.Less(t, len(*msg.Content.ContentStr), 4096,
+					"approved tool text must stay bounded before it reaches the model")
+				return
+			}
+			assert.NotContains(t, *msg.Content.ContentStr, "CONFIDENTIAL-BODY",
+				"guarded content reached the model through the code-mode execution log")
 		})
 	}
 }

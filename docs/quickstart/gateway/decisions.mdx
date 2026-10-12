@@ -1,14 +1,38 @@
 ---
 title: "Decisions"
-description: "Evaluate state against named questions using /v1/decisions."
+description: "Ask questions about some input and get typed answers using /v1/decisions."
 icon: "scale-balanced"
 ---
 
-Use decisions to get structured judgments - probabilities, choices, and rubric scores - from judgment models like TypeSafe's jev family. A decision request carries a `state` (what to evaluate) and a map of named `questions`; every question produces one typed answer.
+Decision models answer typed questions about an input: the probability that something is true, which option fits, or where it lands on a rubric. Send an `input` and a list of `questions`; you get back one typed answer per question, in order.
 
-## Provider Model Examples
+## Endpoints
 
-- TypeSafe: `typesafe/jev-1.13.0`, `typesafe/jev-latest`, `typesafe/jev-preview`
+Bifrost serves decisions on three routes. Each one reaches **every** decision provider below; they differ only in the request and response shape, so pick the one that matches your client.
+
+| Route | Shape | Use it from | Bare model name goes to |
+|-------|-------|-------------|-------------------------|
+| `POST /v1/decisions` | Bifrost's unified shape (this page) | `curl`, any HTTP client, the [Go SDK](/quickstart/go-sdk/decisions) | A configured provider that serves it, picked by routing rules or the model catalog |
+| `POST /openai/v1/decisions` | OpenAI's Decisions API | [OpenAI SDKs](/integrations/openai-sdk/overview#decisions-api) | `openai` |
+| `POST /typesafe/v1/systemone` | TypeSafe's System One API | [TypeSafe SDK](/integrations/typesafe-sdk) | `typesafe` |
+
+## Providers
+
+Write models as `provider/model` to pick the provider explicitly. Switching providers only changes `model`.
+
+| Provider | Example models | Bifrost endpoint | Images |
+|----------|----------------|------------------|--------|
+| [TypeSafe](/providers/supported-providers/typesafe) | `typesafe/jev-latest`, `typesafe/jev-1.13.0` | `/v1/decisions`, or `/typesafe/v1/systemone` (TypeSafe's native API) | No |
+| [OpenAI](/providers/supported-providers/openai#15-decisions) | `openai/gpt-6-luna` | `/v1/decisions`, or `/openai/v1/decisions` (OpenAI's native API) | Yes |
+| [OpenRouter](/providers/supported-providers/openrouter#decisions) | `openrouter/~typesafe/jev-latest` | `/v1/decisions` | Depends on the model |
+| [Cloudflare](/providers/supported-providers/cloudflare#4-decisions) | `cloudflare/clef`, `cloudflare/clef-flash`, `cloudflare/clef-omni` | `/v1/decisions` | Yes |
+| [Perplexity](/providers/supported-providers/perplexity#3-decisions) | `perplexity/pplx-decider-v1.1-27b`, `perplexity/pplx-decider-v1-27b` | `/v1/decisions` | Yes |
+| [Ollama](/providers/supported-providers/ollama#6-decisions) | `ollama/nimble`, `ollama/clef-flash`, `ollama/tev1:0.8b` | `/v1/decisions` | Yes, base64 only |
+| [Laya, Nimble](/providers/self-hosted-decision-models) | `laya/english`, `nimble/nimble-latest` | `/v1/decisions` | No |
+
+Every provider also answers on `/openai/v1/decisions` and `/typesafe/v1/systemone` when you send a `provider/model` name, so an OpenAI or TypeSafe SDK can reach any of them. Each provider page covers its setup.
+
+Chat models (for example `openai/gpt-4o`) have no decisions endpoint. By default they return `400` with code `unsupported_operation`; with the compat setting `convert_decision_to_responses` on, Bifrost emulates the answer through the model's Responses API. See [Decision-to-Responses Emulation](/features/compat-plugin#4-decision-to-responses-emulation).
 
 ## Basic Request
 
@@ -17,12 +41,173 @@ curl --location 'http://localhost:8080/v1/decisions' \
 --header 'Content-Type: application/json' \
 --data '{
   "model": "typesafe/jev-1.13.0",
+  "input": "Customer message: I was double charged and nobody replied to my two emails. I want a refund today.",
+  "questions": [
+    { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" },
+    {
+      "type": "choice",
+      "name": "category",
+      "instructions": "Pick the ticket category",
+      "choices": [
+        { "value": "billing", "description": "charges and refunds" },
+        { "value": "bug", "description": "product defects" },
+        { "value": "other", "description": "anything else" }
+      ]
+    },
+    {
+      "type": "score",
+      "name": "urgency",
+      "instructions": "Rate how urgently this needs a human reply",
+      "levels": [
+        { "label": "low", "description": "can wait a week" },
+        { "label": "medium", "description": "should be answered soon" },
+        { "label": "high", "description": "needs a reply today" }
+      ]
+    }
+  ]
+}'
+```
+
+## Input
+
+`input` is what the questions are about. It takes one of four forms:
+
+**Text**: a string.
+
+```json
+"input": "Customer message: I was double charged and nobody replied."
+```
+
+**Messages**: an array of `{ "role", "content" }`. `content` is a string, or a list of parts. Use parts to send images:
+
+```json
+"input": [
+  {
+    "role": "user",
+    "content": [
+      { "type": "input_text", "text": "Is this receipt itemized?" },
+      { "type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo...", "detail": "high" }
+    ]
+  }
+]
+```
+
+- `image_url` is a base64 data URL or an `https` URL. Ollama reads base64 only.
+- `detail` is optional: `low`, `high`, `auto`, or `original`.
+- Only `input_text` and `input_image` parts are accepted. A provider that reads text only (TypeSafe, Laya, Nimble) rejects an image with a `400`, which lets a [fallback](#fallbacks) that reads images take the request.
+
+**Structured data**: an object, sent to System One models (TypeSafe, Clef, Perplexity, Ollama, Laya, Nimble) as is, and to OpenAI as JSON text.
+
+```json
+"input": { "ticket_id": 4812, "message": "I was double charged.", "plan": "pro" }
+```
+
+**`null`**: no input. OpenAI rejects it with a `400`, and Clef rejects it with a `422`.
+
+## Questions
+
+| Field | Meaning |
+|-------|---------|
+| `type` | `predicate`: probability that a statement is true. `choice`: which option fits. `score`: a level on an ordered scale (may fall between levels) |
+| `name` | Optional. Echoed on the answer so you can match it up |
+| `instructions` | A string, or structured data (object or array): sent as is to System One models, as JSON text to OpenAI |
+| `criteria` | Predicate only, optional: what `true` and `false` mean. Appended to the instructions for models without a criteria field |
+| `choices` | Choice only: each option's `value` (string or boolean) and optional `description` |
+| `levels` | Score only: the levels in order, each with a `label` and optional `description` |
+
+`safety_identifier` (optional) is a stable end-user ID. It is sent to OpenAI, and to OpenRouter as `user`; other providers do not take one.
+
+Provider-only fields, such as Laya's `min_confidence`, go at the top level of the body with the header `x-bf-passthrough-extra-params: true`.
+
+
+## Response
+
+```json
+{
+  "model": "jev-1.13.0",
+  "answers": [
+    { "type": "predicate", "name": "is_frustrated", "probability": 0.98 },
+    {
+      "type": "choice",
+      "name": "category",
+      "choice": "billing",
+      "confidence": 1,
+      "probabilities": [
+        { "value": "billing", "probability": 1 },
+        { "value": "bug", "probability": 0 },
+        { "value": "other", "probability": 0 }
+      ]
+    },
+    {
+      "type": "score",
+      "name": "urgency",
+      "score": 2,
+      "confidence": 1,
+      "probabilities": [
+        { "value": 0, "label": "low", "probability": 0 },
+        { "value": 1, "label": "medium", "probability": 0 },
+        { "value": 2, "label": "high", "probability": 1 }
+      ],
+      "legend": { "0": "low: can wait a week", "1": "medium: should be answered soon", "2": "high: needs a reply today" }
+    }
+  ],
+  "usage": { "prompt_tokens": 437, "completion_tokens": 72, "total_tokens": 509 }
+}
+```
+
+There is one answer per question, in question order, with the question's `type`. `confidence`, `probabilities`, and `legend` appear when the model supplies them. A model that declines a question answers it with `"type": "refusal"`.
+
+### Provider-Specific Fields
+
+Some providers return extra fields. They appear only when that provider supplies them.
+
+| Provider | Where | Fields |
+|----------|-------|--------|
+| Laya | Answer | `answer_confidence` (calibrated probability of the reported answer), `action`, and, when `min_confidence` is set, `abstention` (`passed`, `abstained`, or `unevaluated`), `abstention_threshold`, `low_confidence` |
+| Laya | Response | `routing`: the checkpoint that answered and why |
+| Laya | `usage` | `state_tokens`, `state_tokens_dropped`, `truncated`, `truncated_questions` |
+
+## Fallbacks
+
+Add `fallbacks` to try other models in order when one fails, including when it rejects an input it cannot read (an image sent to TypeSafe, for example). Fallbacks can cross providers:
+
+```json
+{
+  "model": "typesafe/jev-latest",
+  "fallbacks": ["cloudflare/clef-flash", "openai/gpt-6-luna"],
+  "input": "Customer message: I was double charged and nobody replied to my two emails.",
+  "questions": [
+    { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" }
+  ]
+}
+```
+
+## Validation
+
+Bifrost rejects these with a `400` before calling any provider:
+
+- An unknown question `type`
+- A `choice` question with no `choices`
+- Two questions with the same `name`
+
+The number of score levels is checked by each provider (TypeSafe accepts 2-10, Perplexity 1-10).
+
+An input part one model cannot read fails only that attempt, so a fallback can still serve it. If every attempt fails, you get the first attempt's error.
+
+## Map Form (Deprecated)
+
+<Warning>
+The map form is deprecated. It still works, but move to the request shape above.
+</Warning>
+
+Requests in the earlier map form are still served, and answered in the same form:
+
+```json
+{
+  "model": "typesafe/jev-1.13.0",
   "state": "Customer message: I was double charged and nobody replied to my two emails. I want a refund today.",
   "questions": {
-    "is_frustrated": {
-      "kind": "noul",
-      "instructions": "Is the customer frustrated?"
-    },
+    "is_frustrated": { "kind": "noul", "instructions": "Is the customer frustrated?" },
     "category": {
       "kind": "choice",
       "instructions": "Pick the ticket category",
@@ -34,61 +219,20 @@ curl --location 'http://localhost:8080/v1/decisions' \
       "criteria": ["can wait a week", "should be answered soon", "needs a reply today"]
     }
   }
-}'
+}
 ```
 
-## Question Kinds
-
-| Kind | Answer value | Criteria |
-|------|--------------|----------|
-| `noul` | Probability between 0 and 1 | Optional `true`/`false` descriptions |
-| `choice` | One option string | Required map of option to description (max 255 options) |
-| `score` | Probability-weighted rubric score, including fractions | Required ordered array of 2-10 level descriptions |
-
-`state` and `instructions` accept a plain string or structured data (object or array), preserved losslessly.
-
-## Response
+The response keys answers by question name, each with a `kind` and a `value`:
 
 ```json
 {
   "model": "jev-1.13.0",
   "answers": {
     "is_frustrated": { "kind": "noul", "value": 0.98 },
-    "category": {
-      "kind": "choice",
-      "value": "billing",
-      "confidence": 1,
-      "probabilities": { "billing": 1, "bug": 0, "other": 0 }
-    },
-    "urgency": {
-      "kind": "score",
-      "value": 2,
-      "confidence": 1,
-      "probabilities": { "0": 0, "1": 0, "2": 1 },
-      "legend": { "0": "can wait a week", "1": "should be answered soon", "2": "needs a reply today" }
-    }
-  },
-  "usage": { "prompt_tokens": 437, "completion_tokens": 72, "total_tokens": 509 }
+    "category": { "kind": "choice", "value": "billing", "confidence": 1, "probabilities": { "billing": 1, "bug": 0, "other": 0 } },
+    "urgency": { "kind": "score", "value": 2, "confidence": 1, "probabilities": { "0": 0, "1": 0, "2": 1 } }
+  }
 }
 ```
 
-Every declared question produces an answer of its declared kind. `confidence`, `probabilities`, and `legend` are included when the provider supplies them.
-
-## Fallbacks
-
-Standard fallback syntax applies:
-
-```json
-{
-  "model": "typesafe/jev-preview",
-  "fallbacks": ["typesafe/jev-1.13.0"]
-}
-```
-
-## Validation
-
-Requests are validated before dispatch and rejected with a `400` rather than silently approximated: unsupported kinds, missing instructions, missing choice criteria, score criteria outside 2-10 levels or with non-string entries, and states or instructions that are neither string, object, nor array.
-
-<Note>
-TypeSafe's native API is also available 1:1 at `POST /typesafe/v1/systemone` - see the [TypeSafe provider page](/providers/supported-providers/typesafe) for the mapping between the two.
-</Note>
+Bifrost treats a body as the map form when `questions` is an object keyed by name instead of a list. A `state` sent alongside `input` is ignored.

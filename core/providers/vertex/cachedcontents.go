@@ -12,6 +12,7 @@ import (
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 
+	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -97,12 +98,12 @@ func expandVertexModelPath(model, projectID, region string) string {
 // the Gemini generation endpoints) and any Authorization header already set from
 // context extra headers is left intact. Otherwise an OAuth bearer token is fetched
 // from the key credentials and set on the Authorization header.
-func vertexAuthHeaders(req *fasthttp.Request, key schemas.Key) *schemas.BifrostError {
+func (provider *VertexProvider) vertexAuthHeaders(req *fasthttp.Request, key schemas.Key) *schemas.BifrostError {
 	if key.Value.GetValue() != "" {
 		req.URI().QueryArgs().Set("key", key.Value.GetValue())
 		return nil
 	}
-	tokenSource, err := getAuthTokenSource(key)
+	tokenSource, err := provider.getAuthTokenSource(key)
 	if err != nil {
 		return providerUtils.NewBifrostOperationError("error creating auth token source", err)
 	}
@@ -182,7 +183,7 @@ func (provider *VertexProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, authErr
 	}
 	req.SetBody(jsonBody)
@@ -255,7 +256,7 @@ func (provider *VertexProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, 0, authErr
 	}
 
@@ -331,7 +332,7 @@ func (provider *VertexProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, 0, authErr
 	}
 
@@ -437,7 +438,7 @@ func (provider *VertexProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPatch)
 	req.Header.SetContentType("application/json")
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, 0, authErr
 	}
 	req.SetBody(jsonBody)
@@ -526,7 +527,7 @@ func (provider *VertexProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodDelete)
-	if authErr := vertexAuthHeaders(req, key); authErr != nil {
+	if authErr := provider.vertexAuthHeaders(req, key); authErr != nil {
 		return nil, 0, authErr
 	}
 
@@ -565,14 +566,21 @@ func (provider *VertexProvider) CachedContentDelete(ctx *schemas.BifrostContext,
 	return nil, lastErr
 }
 
-// parseVertexCachedContentError parses a Vertex API error response into a BifrostError.
+// parseVertexCachedContentError parses a Vertex API error response into a BifrostError, with
+// the retry hint from a google.rpc.RetryInfo error detail or the response headers.
 func parseVertexCachedContentError(resp *fasthttp.Response) *schemas.BifrostError {
 	respBody := resp.Body()
 	statusCode := resp.StatusCode()
 
+	// Fallback to the raw body, replaced below when the body carries a message.
+	message := string(respBody)
 	var errorResp VertexError
 	if err := sonic.Unmarshal(respBody, &errorResp); err == nil && errorResp.Error.Message != "" {
-		return providerUtils.NewProviderAPIError(errorResp.Error.Message, nil, statusCode, nil, nil)
+		message = errorResp.Error.Message
 	}
-	return providerUtils.NewProviderAPIError(string(respBody), nil, statusCode, nil, nil)
+
+	bifrostErr := providerUtils.NewProviderAPIError(message, nil, statusCode, nil, nil)
+	gemini.ApplyRetryInfo(bifrostErr, errorResp.Error.Details)
+	providerUtils.ApplyRetryAfter(bifrostErr, &resp.Header)
+	return bifrostErr
 }

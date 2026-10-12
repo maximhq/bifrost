@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -17,6 +18,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/cespare/xxhash/v2"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -3435,7 +3437,7 @@ func normalizeSchemaFromJSON(t *testing.T, raw string) (*schemas.ToolFunctionPar
 	if err := json.Unmarshal([]byte(raw), &params); err != nil {
 		t.Fatalf("failed to unmarshal schema: %v", err)
 	}
-	normalized, changed := RewriteToolSchemaPatterns(&params, NormalizeRegexNULEscape)
+	normalized, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{NormalizeNULEscape: true})
 	return &params, normalized, changed
 }
 
@@ -3530,7 +3532,7 @@ func TestNormalizeResponsesToolSchemas_CopiesOnlyTheRewrittenTool(t *testing.T) 
 			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &withNUL}},
 	}
 
-	updated, changed := RewriteResponsesToolSchemas(tools, NormalizeRegexNULEscape)
+	updated, changed := ApplyResponsesToolSchemaPolicy(tools, ToolSchemaPolicy{NormalizeNULEscape: true})
 	if !changed {
 		t.Fatal("expected the tool slice to be rewritten")
 	}
@@ -3546,10 +3548,10 @@ func TestNormalizeResponsesToolSchemas_CopiesOnlyTheRewrittenTool(t *testing.T) 
 }
 
 func TestNormalizeToolSchemas_NoToolsIsANoOp(t *testing.T) {
-	if tools, changed := RewriteResponsesToolSchemas(nil, NormalizeRegexNULEscape); changed || tools != nil {
+	if tools, changed := ApplyResponsesToolSchemaPolicy(nil, ToolSchemaPolicy{NormalizeNULEscape: true}); changed || tools != nil {
 		t.Fatal("nil responses tools must be returned unchanged")
 	}
-	if params, changed := RewriteToolSchemaPatterns(nil, NormalizeRegexNULEscape); changed || params != nil {
+	if params, changed := ApplyToolSchemaPolicy(nil, ToolSchemaPolicy{NormalizeNULEscape: true}); changed || params != nil {
 		t.Fatal("a nil schema must be returned unchanged")
 	}
 }
@@ -3605,26 +3607,29 @@ func TestStripRegexLookaround(t *testing.T) {
 	}
 }
 
-func TestComposePatternRewriters_AppliesInOrderAndStaysNoOpWhenIdle(t *testing.T) {
-	both := ComposePatternRewriters(NormalizeRegexNULEscape, StripRegexLookaround)
-	if got := both(`^(?!\0)[^\0]*$`); got != `^[^\x00]*$` {
-		t.Fatalf("composed rewrite = %q, want %q", got, `^[^\x00]*$`)
+func TestToolSchemaPolicy_RewritesPatternInOrderAndStaysNoOpWhenIdle(t *testing.T) {
+	both := ToolSchemaPolicy{NormalizeNULEscape: true, StripLookaround: true}
+	if got := both.rewritePattern(`^(?!\0)[^\0]*$`); got != `^[^\x00]*$` {
+		t.Fatalf("policy rewrite = %q, want %q", got, `^[^\x00]*$`)
 	}
-	if in := `^[a-z]+$`; both(in) != in {
-		t.Fatal("a composed rewriter must return its input unchanged when nothing applies")
+	if in := `^[a-z]+$`; both.rewritePattern(in) != in {
+		t.Fatal("a policy must return a pattern unchanged when nothing applies")
+	}
+	if !(ToolSchemaPolicy{}).IsZero() || both.IsZero() || (ToolSchemaPolicy{StringFormats: []string{"uuid"}}).IsZero() {
+		t.Fatal("IsZero must hold only for the policy that changes nothing")
 	}
 }
 
 // The lossy rewrite must go through the same copy-on-write walker as the
 // lossless one: nothing copied unless a pattern actually changed, and the
 // caller's schema never written through.
-func TestRewriteToolSchemaPatterns_LookaroundIsCopyOnWrite(t *testing.T) {
+func TestApplyToolSchemaPolicy_LookaroundIsCopyOnWrite(t *testing.T) {
 	raw := `{"type":"object","properties":{"doc_id":{"type":"string","pattern":"^(?!\\.\\.?$)[A-Za-z0-9_.]{1,200}$"},"note":{"type":"string","pattern":"^[a-z]+$"}}}`
 	var params schemas.ToolFunctionParameters
 	if err := json.Unmarshal([]byte(raw), &params); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	updated, changed := RewriteToolSchemaPatterns(&params, StripRegexLookaround)
+	updated, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{StripLookaround: true})
 	if !changed || updated == &params {
 		t.Fatal("expected a rewritten copy")
 	}
@@ -3649,7 +3654,7 @@ func TestRewriteToolSchemaPatterns_LookaroundIsCopyOnWrite(t *testing.T) {
 // additionalProperties keyword is a schema"), so a pattern under it is reachable
 // by the model and must be rewritten like any other. The boolean form has no
 // schema and must pass through as the caller's own pointer.
-func TestRewriteToolSchemaPatterns_CoversTopLevelAdditionalProperties(t *testing.T) {
+func TestApplyToolSchemaPolicy_CoversTopLevelAdditionalProperties(t *testing.T) {
 	extra := schemas.NewOrderedMap()
 	extra.Set("type", "string")
 	extra.Set("pattern", `^[^\0]*$`)
@@ -3659,7 +3664,7 @@ func TestRewriteToolSchemaPatterns_CoversTopLevelAdditionalProperties(t *testing
 		AdditionalProperties: &schemas.AdditionalPropertiesStruct{AdditionalPropertiesMap: extra},
 	}
 
-	updated, changed := RewriteToolSchemaPatterns(&params, NormalizeRegexNULEscape)
+	updated, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{NormalizeNULEscape: true})
 	if !changed {
 		t.Fatal("a pattern under additionalProperties was not rewritten")
 	}
@@ -3681,7 +3686,7 @@ func TestRewriteToolSchemaPatterns_CoversTopLevelAdditionalProperties(t *testing
 		Properties:           schemas.NewOrderedMap(),
 		AdditionalProperties: &schemas.AdditionalPropertiesStruct{AdditionalPropertiesBool: schemas.Ptr(false)},
 	}
-	if out, changed := RewriteToolSchemaPatterns(&boolParams, NormalizeRegexNULEscape); changed || out != &boolParams {
+	if out, changed := ApplyToolSchemaPolicy(&boolParams, ToolSchemaPolicy{NormalizeNULEscape: true}); changed || out != &boolParams {
 		t.Fatal("boolean additionalProperties must be returned as-is")
 	}
 }
@@ -3690,7 +3695,7 @@ func TestRewriteToolSchemaPatterns_CoversTopLevelAdditionalProperties(t *testing
 // maps: BuildDecisionSchema sets each question's schema into an OrderedMap as a
 // map[string]any. The walker must descend into those too, copy-on-write, and
 // must hand back the caller's own map when nothing inside it changes.
-func TestRewriteToolSchemaPatterns_DescendsIntoPlainMapSchemas(t *testing.T) {
+func TestApplyToolSchemaPolicy_DescendsIntoPlainMapSchemas(t *testing.T) {
 	dirty := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -3703,7 +3708,7 @@ func TestRewriteToolSchemaPatterns_DescendsIntoPlainMapSchemas(t *testing.T) {
 	props.Set("clean", clean)
 	params := schemas.ToolFunctionParameters{Type: "object", Properties: props}
 
-	updated, changed := RewriteToolSchemaPatterns(&params, NormalizeRegexNULEscape)
+	updated, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{NormalizeNULEscape: true})
 	if !changed {
 		t.Fatal("a pattern inside a plain-map nested schema was not rewritten")
 	}
@@ -3724,6 +3729,170 @@ func TestRewriteToolSchemaPatterns_DescendsIntoPlainMapSchemas(t *testing.T) {
 	}
 }
 
+// kimiSchemaFormats is the string-format allowlist moonshotai.kimi-k3 on Bedrock accepts.
+var kimiSchemaFormats = []string{"date", "date-time", "time", "duration", "email", "hostname", "ipv4", "ipv6", "uri", "uuid"}
+
+// A format outside the allowlist is dropped from every string or untyped schema at any
+// depth. Numeric formats, allowlisted ones, instance data, and properties merely named
+// "format" or "default" are schema-aware exceptions that must survive.
+func TestApplyToolSchemaPolicy_DropsFormatsOutsideAllowlist(t *testing.T) {
+	raw := `{"type":"object","format":"byte","properties":{` +
+		`"blob":{"type":"string","format":"byte"},` +
+		`"when":{"type":"string","format":"date-time"},` +
+		`"size":{"type":"integer","format":"int64"},` +
+		`"ratio":{"type":["number","null"],"format":"double"},` +
+		`"maybe":{"type":["string","null"],"format":"binary"},` +
+		`"untyped":{"format":"password"},` +
+		`"list":{"type":"array","items":{"type":"string","format":"base64"}},` +
+		`"either":{"anyOf":[{"type":"string","format":"int64"},{"type":"null"}]},` +
+		`"format":{"type":"object","default":{"format":"byte"},"examples":[{"format":"byte"}]},` +
+		`"default":{"type":"object","properties":{"inner":{"type":"string","format":"uri-reference"}}}},` +
+		`"$defs":{"Attachment":{"type":"object","properties":{"content":{"type":"string","format":"byte"}}}}}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	updated, changed := ApplyToolSchemaPolicy(&params, ToolSchemaPolicy{StringFormats: kimiSchemaFormats})
+	if !changed {
+		t.Fatal("expected the schema to be rewritten")
+	}
+	out, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, path := range []string{
+		"format",
+		"properties.blob.format",
+		"properties.maybe.format",
+		"properties.untyped.format",
+		"properties.list.items.format",
+		"properties.either.anyOf.0.format",
+		"properties.default.properties.inner.format",
+		`\$defs.Attachment.properties.content.format`,
+	} {
+		if v := gjson.GetBytes(out, path); v.Exists() {
+			t.Errorf("%s = %s survived: %s", path, v.Raw, out)
+		}
+	}
+	for path, want := range map[string]string{
+		"properties.when.format":              "date-time",
+		"properties.size.format":              "int64",
+		"properties.ratio.format":             "double",
+		"properties.format.default.format":    "byte",
+		"properties.format.examples.0.format": "byte",
+		"properties.blob.type":                "string",
+	} {
+		if got := gjson.GetBytes(out, path).String(); got != want {
+			t.Errorf("%s = %q, want %q: %s", path, got, want, out)
+		}
+	}
+	if s := string(out); strings.Index(s, `"blob"`) > strings.Index(s, `"when"`) {
+		t.Fatalf("property order changed: %s", s)
+	}
+	before, _ := json.Marshal(&params)
+	if got := gjson.GetBytes(before, `\$defs.Attachment.properties.content.format`).String(); got != "byte" {
+		t.Fatalf("caller's schema was mutated in place: %s", before)
+	}
+}
+
+// A schema whose formats are all allowed, or a policy without an allowlist, must hand
+// back the caller's own schema so its bytes and prompt-cache key stay identical.
+func TestApplyToolSchemaPolicy_AllowedFormatsAreNotCopied(t *testing.T) {
+	var allowed schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"when":{"type":"string","format":"date-time"},"size":{"type":"integer","format":"int64"}}}`), &allowed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out, changed := ApplyToolSchemaPolicy(&allowed, ToolSchemaPolicy{StringFormats: kimiSchemaFormats}); changed || out != &allowed {
+		t.Fatal("a schema with only allowed formats must be returned as-is")
+	}
+	var blob schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"blob":{"type":"string","format":"byte"}}}`), &blob); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out, changed := ApplyToolSchemaPolicy(&blob, ToolSchemaPolicy{NormalizeNULEscape: true}); changed || out != &blob {
+		t.Fatal("a policy with no allowlist must keep every format")
+	}
+}
+
+func TestApplyChatToolSchemaPolicy_CopiesOnlyTheChangedTool(t *testing.T) {
+	var clean, dirty schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"when":{"type":"string","format":"date-time"}}}`), &clean); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"blob":{"type":"string","format":"byte"}}}`), &dirty); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	tools := []schemas.ChatTool{
+		{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "clean", Parameters: &clean}},
+		{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "dirty", Parameters: &dirty}},
+		{Type: schemas.ChatToolTypeCustom},
+	}
+	updated, changed := ApplyChatToolSchemaPolicy(tools, ToolSchemaPolicy{StringFormats: kimiSchemaFormats})
+	if !changed {
+		t.Fatal("expected the tool slice to be rewritten")
+	}
+	if updated[0].Function != tools[0].Function {
+		t.Fatal("a tool with nothing to change must not be copied")
+	}
+	if updated[1].Function == tools[1].Function || updated[1].Function.Parameters.Properties == dirty.Properties {
+		t.Fatal("the changed tool must be copied, not written through")
+	}
+	out, _ := json.Marshal(updated[1].Function.Parameters)
+	if gjson.GetBytes(out, "properties.blob.format").Exists() {
+		t.Fatalf("byte format survived: %s", out)
+	}
+	if before, _ := json.Marshal(&dirty); !gjson.GetBytes(before, "properties.blob.format").Exists() {
+		t.Fatalf("caller's tool schema was mutated in place: %s", before)
+	}
+	if tools, changed := ApplyChatToolSchemaPolicy(nil, ToolSchemaPolicy{StringFormats: kimiSchemaFormats}); changed || tools != nil {
+		t.Fatal("nil chat tools must be returned unchanged")
+	}
+}
+
+// A namespace that stays intact on the wire still sends its members' schemas, so they
+// are normalized too, copy-on-write like top-level tools.
+func TestApplyResponsesToolSchemaPolicy_WalksNamespaceMembers(t *testing.T) {
+	var clean, dirty schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"when":{"type":"string","format":"date-time"}}}`), &clean); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"type":"object","properties":{"blob":{"type":"string","format":"byte"}}}`), &dirty); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	namespace := &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("list_labels"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &clean}},
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("send_message"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &dirty}},
+	}}
+	tools := []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: new("top"), ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &clean}},
+		{Type: schemas.ResponsesToolTypeNamespace, Name: new("gmail"), ResponsesToolNamespace: namespace},
+	}
+	updated, changed := ApplyResponsesToolSchemaPolicy(tools, ToolSchemaPolicy{StringFormats: kimiSchemaFormats})
+	if !changed {
+		t.Fatal("expected the namespace member to be rewritten")
+	}
+	if updated[0].ResponsesToolFunction != tools[0].ResponsesToolFunction {
+		t.Fatal("a tool with nothing to change must not be copied")
+	}
+	if updated[1].ResponsesToolNamespace == namespace {
+		t.Fatal("the changed namespace must be copied, not written through")
+	}
+	members := updated[1].ResponsesToolNamespace.Tools
+	if members[0].ResponsesToolFunction != namespace.Tools[0].ResponsesToolFunction {
+		t.Fatal("a member with nothing to change must not be copied")
+	}
+	out, _ := json.Marshal(members[1].ResponsesToolFunction.Parameters)
+	if gjson.GetBytes(out, "properties.blob.format").Exists() {
+		t.Fatalf("byte format survived in a namespace member: %s", out)
+	}
+	if namespace.Tools[1].ResponsesToolFunction.Parameters != &dirty {
+		t.Fatal("caller's namespace member was written through")
+	}
+	if before, _ := json.Marshal(&dirty); !gjson.GetBytes(before, "properties.blob.format").Exists() {
+		t.Fatalf("caller's member schema was mutated in place: %s", before)
+	}
+}
+
 // TestIsAbsoluteRequestURL pins the rule GetRequestPath and the management API's auth guard
 // share: only a scheme plus host makes a request-path override a full destination URL.
 func TestIsAbsoluteRequestURL(t *testing.T) {
@@ -3738,6 +3907,288 @@ func TestIsAbsoluteRequestURL(t *testing.T) {
 	for in, want := range cases {
 		if got := IsAbsoluteRequestURL(in); got != want {
 			t.Errorf("IsAbsoluteRequestURL(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestBuildPassthroughURL pins that the resolved passthrough URL always keeps the provider's
+// authority: a remainder that would turn the base host into userinfo or a scheme-relative
+// authority is refused, while ordinary rooted paths and queries are forwarded byte-for-byte.
+func TestBuildPassthroughURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		baseURL  string
+		path     string
+		rawQuery string
+		want     string
+		wantErr  bool
+	}{
+		{name: "rooted path on bare origin", baseURL: "https://api.anthropic.com", path: "/v1/messages", want: "https://api.anthropic.com/v1/messages"},
+		{name: "query appended", baseURL: "https://api.anthropic.com", path: "/v1/messages", rawQuery: "beta=true", want: "https://api.anthropic.com/v1/messages?beta=true"},
+		{name: "trailing slash on base trimmed", baseURL: "https://api.anthropic.com/", path: "/v1/messages", want: "https://api.anthropic.com/v1/messages"},
+		{name: "base with path", baseURL: "https://generativelanguage.googleapis.com/v1beta", path: "/models/gemini:generateContent", rawQuery: "alt=sse", want: "https://generativelanguage.googleapis.com/v1beta/models/gemini:generateContent?alt=sse"},
+		{name: "empty path hits base", baseURL: "https://api.runware.ai/v1", path: "", want: "https://api.runware.ai/v1"},
+		{name: "at sign past first segment is path", baseURL: "https://aiplatform.googleapis.com/v1", path: "/projects/p/locations/l/publishers/anthropic/models/claude@20250929:rawPredict", want: "https://aiplatform.googleapis.com/v1/projects/p/locations/l/publishers/anthropic/models/claude@20250929:rawPredict"},
+		{name: "decoded percent stays an encoded percent", baseURL: "https://api.anthropic.com", path: "/v1/files/a%2Fb", want: "https://api.anthropic.com/v1/files/a%252Fb"},
+		{name: "decoded percent before question mark", baseURL: "https://api.anthropic.com", path: "/v1/files/a%3F?b", want: "https://api.anthropic.com/v1/files/a%253F%3Fb"},
+		{name: "decoded question mark stays in the path", baseURL: "https://api.anthropic.com", path: "/v1/files/a?b", rawQuery: "beta=true", want: "https://api.anthropic.com/v1/files/a%3Fb?beta=true"},
+		{name: "decoded hash stays in the path", baseURL: "https://api.anthropic.com", path: "/v1/files/a#b", want: "https://api.anthropic.com/v1/files/a%23b"},
+		{name: "at sign in query is query", baseURL: "https://api.anthropic.com", path: "/v1/messages", rawQuery: "user=a@b", want: "https://api.anthropic.com/v1/messages?user=a@b"},
+		{name: "base with userinfo kept", baseURL: "https://user:pw@proxy.internal", path: "/v1/messages", want: "https://user:pw@proxy.internal/v1/messages"},
+		{name: "userinfo remainder rejected", baseURL: "https://api.anthropic.com", path: "@127.0.0.1/x", wantErr: true},
+		{name: "port smuggling remainder rejected", baseURL: "https://api.anthropic.com", path: ":8443@evil.example/x", wantErr: true},
+		{name: "unanchored remainder rejected", baseURL: "https://api.anthropic.com", path: "foo/x", wantErr: true},
+		{name: "scheme-relative remainder rejected", baseURL: "https://api.anthropic.com", path: "//evil.example/x", wantErr: true},
+		{name: "base without scheme rejected", baseURL: "api.anthropic.com", path: "/v1/messages", wantErr: true},
+		{name: "empty base rejected", baseURL: "", path: "/v1/messages", wantErr: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := BuildPassthroughURL(tc.baseURL, tc.path, tc.rawQuery)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("BuildPassthroughURL(%q, %q, %q) = %q, want error", tc.baseURL, tc.path, tc.rawQuery, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("BuildPassthroughURL(%q, %q, %q) unexpected error: %v", tc.baseURL, tc.path, tc.rawQuery, err)
+			}
+			if got != tc.want {
+				t.Fatalf("BuildPassthroughURL(%q, %q, %q) = %q, want %q", tc.baseURL, tc.path, tc.rawQuery, got, tc.want)
+			}
+		})
+	}
+}
+
+// newRoundTripperClient returns an *http.Client on fasthttpRoundTripper over a plain
+// fasthttp client, the way NewProviderHTTPClient and the fetch client wire it.
+func newRoundTripperClient(dial fasthttp.DialFunc) *http.Client {
+	client := &fasthttp.Client{Dial: dial, Transport: NewContextTransport()}
+	return &http.Client{Transport: &fasthttpRoundTripper{client: client}}
+}
+
+func TestFasthttpRoundTripper_MapsRequestAndResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Add("X-Echo-Method", r.Method)
+		w.Header().Add("X-Echo-Auth", r.Header.Get("Authorization"))
+		w.Header().Add("X-Multi", "a")
+		w.Header().Add("X-Multi", "b")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write(append([]byte("echo:"), body...))
+	}))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/token?grant_type=client_credentials", strings.NewReader("form=1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Basic c3A6c2VjcmV0")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := newRoundTripperClient(nil).Do(req)
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusCreated || resp.Status != "201 Created" {
+		t.Errorf("status = %d %q, want 201 Created", resp.StatusCode, resp.Status)
+	}
+	if string(body) != "echo:form=1" {
+		t.Errorf("body = %q, want the request body echoed", body)
+	}
+	if resp.ContentLength != int64(len(body)) {
+		t.Errorf("ContentLength = %d, want %d", resp.ContentLength, len(body))
+	}
+	if got := resp.Header.Get("X-Echo-Method"); got != http.MethodPost {
+		t.Errorf("method reached the server as %q", got)
+	}
+	if got := resp.Header.Get("X-Echo-Auth"); got != "Basic c3A6c2VjcmV0" {
+		t.Errorf("Authorization reached the server as %q", got)
+	}
+	if got := resp.Header.Values("X-Multi"); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("multi-valued header = %v, want [a b]", got)
+	}
+	if resp.Request != req {
+		t.Error("resp.Request must be the original request")
+	}
+}
+
+func TestFasthttpRoundTripper_RedirectsStayWithHTTPClient(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/start" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		_, _ = w.Write([]byte("final"))
+	}))
+	defer server.Close()
+
+	var hops int
+	client := newRoundTripperClient(nil)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error {
+		hops++
+		return nil
+	}
+	resp, err := client.Get(server.URL + "/start")
+	if err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "final" || hops != 1 {
+		t.Errorf("body = %q after %d CheckRedirect calls, want \"final\" after 1", body, hops)
+	}
+}
+
+// TestFasthttpRoundTripper_ContextEndsWhileDialing pins that RoundTrip returns as soon
+// as the request context ends, even though fasthttp cannot interrupt a dial. net/http
+// cancels dials through the context, and oauth2 and azidentity rely on that.
+func TestFasthttpRoundTripper_ContextEndsWhileDialing(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	client := newRoundTripperClient(func(string) (net.Conn, error) {
+		<-release
+		return nil, fmt.Errorf("dial released")
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://slow-dial.example/", nil)
+
+	start := time.Now()
+	_, err := client.Do(req)
+	if err == nil || !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("expected the context deadline, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("RoundTrip took %v after the context ended, want it to return promptly", elapsed)
+	}
+}
+
+// A provider-injected tool loop chains several upstream streams into one client stream.
+// While another turn will follow, an upstream stream's final chunk is not the end of the
+// request, so the request's single LLM span must stay open for the turns still to come.
+func TestCompleteDeferredSpan_LeavesSpanOpenWhileStreamTurnPending(t *testing.T) {
+	tracer := &finalizerTestTracer{parked: true}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	ctx.SetValue(schemas.BifrostContextKeyStreamTurnPending, true)
+
+	EnsureStreamFinalizerCalled(ctx, nil)
+	if tracer.GetDeferredSpanHandle("trace-1") == nil {
+		t.Fatal("the span must stay parked while another turn is pending")
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyStreamTurnPending, false)
+	EnsureStreamFinalizerCalled(ctx, nil)
+	if tracer.GetDeferredSpanHandle("trace-1") != nil {
+		t.Error("the span completes once no turn is pending")
+	}
+}
+
+func decisionUserMessage(parts ...schemas.DecisionInputPart) schemas.DecisionInputMessage {
+	return schemas.DecisionInputMessage{Role: "user", Content: schemas.DecisionInputContent{Parts: parts}}
+}
+
+func decisionTextPart(text string) schemas.DecisionInputPart {
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr(text)}
+}
+
+func decisionImagePart(url string, detail *string) schemas.DecisionInputPart {
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr(url), Detail: detail}
+}
+
+// TestExtractDecisionImages_LeavesImageFreeInputsAlone pins that an input without images
+// comes back unchanged with a nil state, so callers keep the state they already send.
+func TestExtractDecisionImages_LeavesImageFreeInputsAlone(t *testing.T) {
+	for name, input := range map[string]schemas.DecisionInput{
+		"empty":      {},
+		"text":       {Text: schemas.Ptr("The sky is blue.")},
+		"structured": {Structured: map[string]any{"ticket": "A-4021"}},
+		"messages":   {Messages: []schemas.DecisionInputMessage{decisionUserMessage(decisionTextPart("hi"))}},
+	} {
+		textOnly, state, err := ExtractDecisionImages(input)
+		if err != nil {
+			t.Fatalf("%s: unexpected error %v", name, err)
+		}
+		if state != nil {
+			t.Errorf("%s: state = %#v, want nil", name, state)
+		}
+		want, _ := json.Marshal(input)
+		got, _ := json.Marshal(textOnly)
+		if string(got) != string(want) {
+			t.Errorf("%s: input = %s, want it unchanged %s", name, got, want)
+		}
+	}
+}
+
+// TestExtractDecisionImages_SendsPlainTextAndImageItems pins the state layout: text as
+// plain strings and images as image_url items, in their original order across messages,
+// with roles dropped. Message objects would reach the model as JSON text.
+func TestExtractDecisionImages_SendsPlainTextAndImageItems(t *testing.T) {
+	second := "data:image/jpeg;base64,/9j/4AAQ"
+	input := schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		decisionUserMessage(decisionTextPart("Compare these"), decisionImagePart("data:image/png;base64,iVBORw0KGgo=", schemas.Ptr("high")), decisionTextPart("and this")),
+		{Role: "assistant", Content: schemas.DecisionInputContent{Text: schemas.Ptr("Send the next one")}},
+		decisionUserMessage(decisionImagePart(second, nil)),
+	}}
+	before, _ := json.Marshal(input)
+
+	textOnly, state, err := ExtractDecisionImages(input)
+	if err != nil {
+		t.Fatalf("unexpected error %v", err)
+	}
+
+	gotState, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantState := `["Compare these",` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo=","detail":"high"}},` +
+		`"and this",` +
+		`"Send the next one",` +
+		`{"type":"image_url","image_url":{"url":"data:image/jpeg;base64,/9j/4AAQ"}}]`
+	if string(gotState) != wantState {
+		t.Errorf("state =\n%s\nwant\n%s", gotState, wantState)
+	}
+	gotText, _ := json.Marshal(textOnly)
+	wantText := `[{"role":"user","content":[{"type":"input_text","text":"Compare these"},{"type":"input_text","text":"and this"}]},{"role":"assistant","content":"Send the next one"}]`
+	if string(gotText) != wantText {
+		t.Errorf("text-only input =\n%s\nwant\n%s", gotText, wantText)
+	}
+	after, _ := json.Marshal(input)
+	if string(before) != string(after) {
+		t.Errorf("extraction modified the input:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge pins that only a missing
+// image_url is rejected locally; a remote URL is passed on for the provider to accept or not.
+func TestExtractDecisionImages_ForwardsURLsForTheProviderToJudge(t *testing.T) {
+	_, state, err := ExtractDecisionImages(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		decisionUserMessage(decisionImagePart("https://example.com/red.png", nil)),
+	}})
+	if err != nil {
+		t.Fatalf("remote URL: unexpected error %v", err)
+	}
+	got, _ := json.Marshal(state)
+	if want := `[{"type":"image_url","image_url":{"url":"https://example.com/red.png"}}]`; string(got) != want {
+		t.Errorf("state = %s, want %s", got, want)
+	}
+
+	for name, part := range map[string]schemas.DecisionInputPart{
+		"nil image_url":   {Type: schemas.DecisionInputPartTypeImage},
+		"empty image_url": {Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("")},
+	} {
+		_, _, err := ExtractDecisionImages(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{decisionUserMessage(decisionTextPart("hi"), part)}})
+		if _, ok := AsBifrostBadRequestError(err); !ok {
+			t.Errorf("%s: err = %v, want a 400 invalid-request error", name, err)
 		}
 	}
 }

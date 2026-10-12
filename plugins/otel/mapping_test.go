@@ -2,7 +2,12 @@ package otel
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"reflect"
 	"strings"
+
+	"github.com/bytedance/sonic"
 	"testing"
 	"time"
 
@@ -247,7 +252,7 @@ func TestConvertTraceRequestHeaderFiltering(t *testing.T) {
 		},
 	}
 
-	rs := p.convertTraceToResourceSpan("svc", trace, []string{"x-tenant-id"}, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", trace, []string{"x-tenant-id"}, false, false, false, false)
 	spans := rs.ScopeSpans[0].Spans
 
 	rootOut := findRoot(spans)
@@ -389,7 +394,7 @@ func TestConvertTraceContentFidelity(t *testing.T) {
 	}
 
 	// Content logging enabled (disableContentLogging=false, disableRootSpanContent=false).
-	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false)
+	rs := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
 
 	// Find the fixture's llm.call span by its span ID, not by kind/position — other span
 	// kinds (MCP tool/client, embedding, speech, transcription) also map to CLIENT, so a
@@ -459,5 +464,405 @@ func TestKVMapKeysUnique(t *testing.T) {
 	kvs := convertAttributesToKeyValues(attrs, false)
 	if len(kvs) != len(kvMap(kvs)) {
 		t.Errorf("duplicate keys emitted: %d kvs collapsed to %d unique", len(kvs), len(kvMap(kvs)))
+	}
+}
+
+// TestExportNoContentLeakWithSharedFixture asserts the serialized ResourceSpan
+// carries no content when content logging is disabled. Unlike
+// TestConvertAttributesStripsContentAllSpans, which checks one attribute map,
+// this covers the whole export against the fixture every connector shares.
+func TestExportNoContentLeakWithSharedFixture(t *testing.T) {
+	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{})
+	p := &OtelPlugin{}
+
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, true, false, false, false)
+	payload, err := sonic.Marshal(resourceSpan)
+	if err != nil {
+		t.Fatalf("marshal ResourceSpan: %v", err)
+	}
+	for _, problem := range schemas.AssertNoContentLeak(payload) {
+		t.Error(problem)
+	}
+}
+
+// TestExportContentPresentWhenEnabled is the negative control: without it the
+// test above could pass on an empty payload.
+func TestExportContentPresentWhenEnabled(t *testing.T) {
+	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{})
+	p := &OtelPlugin{}
+
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
+	payload, err := sonic.Marshal(resourceSpan)
+	if err != nil {
+		t.Fatalf("marshal ResourceSpan: %v", err)
+	}
+	if !strings.Contains(string(payload), schemas.ExportFixtureSecret) {
+		t.Error("content sentinel absent with content logging enabled; the leak test proves nothing")
+	}
+	for _, problem := range schemas.AssertRedactionApplied(payload) {
+		t.Error(problem)
+	}
+}
+
+// TestExportSpanFilterDropsExcludedPlugins asserts no filtered span reaches the
+// serialized payload, in either filter mode.
+func TestExportSpanFilterDropsExcludedPlugins(t *testing.T) {
+	names := []string{"governance", "semanticcache", "logging"}
+	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{PluginNames: names})
+
+	for _, tc := range []struct {
+		name          string
+		filter        *schemas.PluginSpanFilter
+		dropped, kept []string
+	}{
+		{
+			name:    "exclude one plugin",
+			filter:  &schemas.PluginSpanFilter{Mode: schemas.PluginSpanFilterModeExclude, Plugins: []string{"governance"}},
+			dropped: schemas.ExportFixturePluginSpanNames("governance"),
+			kept: append(schemas.ExportFixturePluginSpanNames("semanticcache"),
+				schemas.ExportFixturePluginSpanNames("logging")...),
+		},
+		{
+			name:   "include one plugin",
+			filter: &schemas.PluginSpanFilter{Mode: schemas.PluginSpanFilterModeInclude, Plugins: []string{"logging"}},
+			dropped: append(schemas.ExportFixturePluginSpanNames("governance"),
+				schemas.ExportFixturePluginSpanNames("semanticcache")...),
+			kept: schemas.ExportFixturePluginSpanNames("logging"),
+		},
+		{
+			name:   "exclude all plugins",
+			filter: &schemas.PluginSpanFilter{Mode: schemas.PluginSpanFilterModeExclude, Plugins: names},
+			dropped: append(append(schemas.ExportFixturePluginSpanNames("governance"),
+				schemas.ExportFixturePluginSpanNames("semanticcache")...),
+				schemas.ExportFixturePluginSpanNames("logging")...),
+			kept: []string{"chat gpt-4o"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &OtelPlugin{pluginSpanFilter: tc.filter}
+			resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
+			payload, err := sonic.Marshal(resourceSpan)
+			if err != nil {
+				t.Fatalf("marshal ResourceSpan: %v", err)
+			}
+			for _, problem := range schemas.AssertSpanFilterApplied(payload, tc.dropped, tc.kept) {
+				t.Error(problem)
+			}
+		})
+	}
+}
+
+// TestExportWithholdsOverheadSpans asserts internal phase spans stay out of the
+// payload unless the connector opts in via OverheadSpanConsumer.
+func TestExportWithholdsOverheadSpans(t *testing.T) {
+	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{IncludeOverheadSpans: true})
+	p := &OtelPlugin{}
+
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
+	payload, err := sonic.Marshal(resourceSpan)
+	if err != nil {
+		t.Fatalf("marshal ResourceSpan: %v", err)
+	}
+	overhead := []string{"queue-wait", "request-marshal", "response-parse"}
+	for _, problem := range schemas.AssertSpanFilterApplied(payload, overhead, []string{"chat gpt-4o"}) {
+		t.Error(problem)
+	}
+}
+
+// TestExportCarriesCostBreakdown holds OTEL to the shared cost contract: the
+// exported span must carry every category with the right value, and the sums
+// must reconcile.
+func TestExportCarriesCostBreakdown(t *testing.T) {
+	trace := schemas.NewExportFixtureTrace(schemas.ExportFixtureOptions{})
+	p := &OtelPlugin{}
+	resourceSpan := p.convertTraceToResourceSpan("svc", trace, nil, false, false, false, false)
+
+	// Read the cost attributes off the LLM span specifically. Merging every span
+	// would accept cost split across spans, or attached to the wrong one.
+	var llmSpanID string
+	for _, sp := range trace.Spans {
+		if sp.Kind == schemas.SpanKindLLMCall {
+			llmSpanID = sp.SpanID
+			break
+		}
+	}
+	if llmSpanID == "" {
+		t.Fatal("fixture has no LLM span")
+	}
+
+	exported := map[string]any{}
+	var strays []string
+	for _, span := range resourceSpan.ScopeSpans[0].Spans {
+		isLLM := string(span.SpanId) == string(hexToBytes(llmSpanID, 8))
+		for _, kv := range span.Attributes {
+			dv, ok := kv.Value.Value.(*DoubleValue)
+			if !ok {
+				continue
+			}
+			if isLLM {
+				exported[kv.Key] = dv.DoubleValue
+				continue
+			}
+			if kv.Key == schemas.AttrUsageCost || strings.HasPrefix(kv.Key, "bifrost.cost.") {
+				strays = append(strays, fmt.Sprintf("%s on span %q", kv.Key, span.Name))
+			}
+		}
+	}
+	for _, stray := range strays {
+		t.Errorf("cost attribute on a non-LLM span: %s", stray)
+	}
+	for _, problem := range schemas.AssertCostBreakdown(schemas.CostAttributeLookup(exported)) {
+		t.Error(problem)
+	}
+}
+
+// A profile that did not opt in cannot emit raw, even when another caused it to be built.
+func TestOtelRawPayloadsAreOptIn(t *testing.T) {
+	newSpan := func() *schemas.Span {
+		return &schemas.Span{
+			SpanID: "aaaaaaaaaaaaaaaa", Kind: schemas.SpanKindLLMCall,
+			Attributes: map[string]any{schemas.AttrProviderName: "openai"},
+			LLM: &schemas.LLMSpanData{
+				RawRequest:  `{"prompt":"RAW-REQ-SENTINEL"}`,
+				RawResponse: `{"text":"RAW-RESP-SENTINEL"}`,
+			},
+		}
+	}
+	raw := []string{schemas.AttrBifrostRawRequest, schemas.AttrBifrostRawResponse}
+
+	for _, tc := range []struct {
+		name                      string
+		disableContent, exportRaw bool
+		want                      bool
+	}{
+		{"not opted in", false, false, false},
+		{"opted in", false, true, true},
+		{"content disabled wins", true, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := kvMap(convertSpanToOTELSpan("t1", newSpan(), tc.disableContent, tc.exportRaw).Attributes)
+			for _, k := range raw {
+				if _, ok := got[k]; ok != tc.want {
+					t.Errorf("%s present = %v, want %v", k, ok, tc.want)
+				}
+			}
+			if _, ok := got[schemas.AttrProviderName]; !ok {
+				t.Error("non-raw attributes were dropped")
+			}
+		})
+	}
+}
+
+// Raw must never reach span.Attributes — attribute-copying connectors would ship it.
+func TestRawPayloadsNeverEnterSpanAttributes(t *testing.T) {
+	d := &schemas.LLMSpanData{RawRequest: `{"a":1}`, RawResponse: `{"b":2}`}
+	for name, attrs := range map[string]map[string]any{"Attributes": d.Attributes(), "ResponseAttributes": d.ResponseAttributes()} {
+		for _, k := range []string{schemas.AttrBifrostRawRequest, schemas.AttrBifrostRawResponse} {
+			if _, ok := attrs[k]; ok {
+				t.Errorf("%s(): %s leaked into span attributes", name, k)
+			}
+		}
+	}
+}
+
+// The demand declaration must respect disable_content_logging, not just the
+// emit path: otherwise the tracer builds raw bodies this profile then drops.
+// stubOtelClient stands in for a built trace client; only its presence matters.
+type stubOtelClient struct{}
+
+// captureOtelClient records what Emit would have shipped.
+type captureOtelClient struct{ emitted []*ResourceSpan }
+
+func (c *captureOtelClient) Emit(_ context.Context, rs []*ResourceSpan) error {
+	c.emitted = append(c.emitted, rs...)
+	return nil
+}
+func (c *captureOtelClient) Close() error { return nil }
+
+func (stubOtelClient) Emit(context.Context, []*ResourceSpan) error { return nil }
+func (stubOtelClient) Close() error                                { return nil }
+
+func TestOtelRawDemandRespectsContentLogging(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		exportRaw, disableContent bool
+		want                      bool
+	}{
+		{"raw on, content on", true, false, true},
+		{"raw on, content disabled", true, true, false},
+		{"raw off", false, false, false},
+		{"both off", false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &OtelPlugin{targets: []*otelTarget{{
+				client:                stubOtelClient{},
+				exportRawPayloads:     tc.exportRaw,
+				disableContentLogging: tc.disableContent,
+			}}}
+			if got := p.ConsumesRawPayloads(); got != tc.want {
+				t.Errorf("ConsumesRawPayloads() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// One profile wanting raw is enough, but only if it also keeps content.
+	mixed := &OtelPlugin{targets: []*otelTarget{
+		{client: stubOtelClient{}, exportRawPayloads: true, disableContentLogging: true},
+		{client: stubOtelClient{}, exportRawPayloads: true, disableContentLogging: false},
+	}}
+	if !mixed.ConsumesRawPayloads() {
+		t.Error("a content-keeping profile wanting raw should demand it")
+	}
+	allStripped := &OtelPlugin{targets: []*otelTarget{
+		{client: stubOtelClient{}, exportRawPayloads: true, disableContentLogging: true},
+		{client: stubOtelClient{}, exportRawPayloads: true, disableContentLogging: true},
+	}}
+	if allStripped.ConsumesRawPayloads() {
+		t.Error("every profile strips content; raw must not be built")
+	}
+
+	// Metrics-only profiles (traces_enabled false) export no spans.
+	metricsOnly := &OtelPlugin{targets: []*otelTarget{
+		{client: nil, exportRawPayloads: true, disableContentLogging: false},
+	}}
+	if metricsOnly.ConsumesRawPayloads() {
+		t.Error("metrics-only profile demanded raw payloads it cannot export")
+	}
+}
+
+// profileForStorage mirrors Profile by hand, so a field added to one and not the
+// other is dropped on save — export_raw_payloads regressed this way.
+func TestProfileStorageKeepsEveryConfigField(t *testing.T) {
+	jsonTags := func(v any) []string {
+		rt := reflect.TypeOf(v)
+		var out []string
+		for i := 0; i < rt.NumField(); i++ {
+			tag := strings.Split(rt.Field(i).Tag.Get("json"), ",")[0]
+			if tag != "" && tag != "-" {
+				out = append(out, tag)
+			}
+		}
+		return out
+	}
+	stored := map[string]bool{}
+	for _, tag := range jsonTags(profileForStorage{}) {
+		stored[tag] = true
+	}
+	for _, tag := range jsonTags(Profile{}) {
+		if !stored[tag] {
+			t.Errorf("Profile field %q is missing from profileForStorage and will be dropped on save", tag)
+		}
+	}
+}
+
+// Attributes named in excluded_attributes must not reach the collector.
+func TestExcludedAttributesAreStripped(t *testing.T) {
+	trace := &schemas.Trace{
+		TraceID: "t1",
+		Spans: []*schemas.Span{{
+			SpanID:     "s1",
+			Attributes: map[string]any{schemas.AttrTools: "big", schemas.AttrRequestModel: "m"},
+		}},
+	}
+	out := schemas.StripTraceAttributes(trace, []string{schemas.AttrTools})
+	if _, ok := out.Spans[0].Attributes[schemas.AttrTools]; ok {
+		t.Error("excluded attribute survived")
+	}
+	if out.Spans[0].Attributes[schemas.AttrRequestModel] != "m" {
+		t.Error("unrelated attribute dropped")
+	}
+	if _, ok := trace.Spans[0].Attributes[schemas.AttrTools]; !ok {
+		t.Error("source trace mutated")
+	}
+}
+
+// The helper test covers the strip; this covers the export path, where the raw
+// fields actually become attributes.
+func TestExcludedAttributesClearRawPayloads(t *testing.T) {
+	newTrace := func() *schemas.Trace {
+		return &schemas.Trace{TraceID: "t1", Spans: []*schemas.Span{{
+			SpanID:     "s1",
+			Attributes: map[string]any{schemas.AttrProviderName: "openai"},
+			LLM: &schemas.LLMSpanData{
+				RawRequest:  `{"prompt":"RAW-REQ-SENTINEL"}`,
+				RawResponse: `{"text":"RAW-RESP-SENTINEL"}`,
+			},
+		}}}
+	}
+	for _, tc := range []struct {
+		name             string
+		deny             []string
+		wantReq, wantRsp bool
+	}{
+		{"no denylist", nil, true, true},
+		{"request excluded", []string{schemas.AttrBifrostRawRequest}, false, true},
+		{"both excluded", []string{schemas.AttrBifrostRawRequest, schemas.AttrBifrostRawResponse}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stripped := schemas.StripTraceAttributes(newTrace(), tc.deny)
+			got := kvMap(convertSpanToOTELSpan("t1", stripped.Spans[0], false, true).Attributes)
+			if _, ok := got[schemas.AttrBifrostRawRequest]; ok != tc.wantReq {
+				t.Errorf("raw_request exported = %v, want %v", ok, tc.wantReq)
+			}
+			if _, ok := got[schemas.AttrBifrostRawResponse]; ok != tc.wantRsp {
+				t.Errorf("raw_response exported = %v, want %v", ok, tc.wantRsp)
+			}
+			if _, ok := got[schemas.AttrProviderName]; !ok {
+				t.Error("unrelated attributes were dropped")
+			}
+		})
+	}
+}
+
+// The trace-level strip cannot reach attributes conversion adds afterwards.
+func TestExcludedAttributesDropConverterAddedKeys(t *testing.T) {
+	p := &OtelPlugin{}
+	trace := &schemas.Trace{
+		TraceID:        "t1",
+		RequestID:      "req-1",
+		Attributes:     map[string]any{schemas.TraceAttrSessionID: "sess-1"},
+		RequestHeaders: map[string]string{"Authorization": "Bearer secret"},
+	}
+	root := &schemas.Span{
+		SpanID:     "s1",
+		Attributes: map[string]any{schemas.AttrProviderName: "openai"},
+	}
+	trace.Spans = []*schemas.Span{root}
+	trace.RootSpan = root
+
+	rs := p.convertTraceToResourceSpan("svc", trace, []string{"*"}, false, false, false, false)
+	got := kvMap(rs.ScopeSpans[0].Spans[0].Attributes)
+	for _, k := range []string{"session.id", schemas.AttrBifrostRequestID, "http.request.header.Authorization"} {
+		if _, ok := got[k]; !ok {
+			t.Fatalf("baseline: converter did not add %s; test would prove nothing", k)
+		}
+	}
+
+	// Through Inject: covers the call site, not just the helper.
+	cap := &captureOtelClient{}
+	injected := &OtelPlugin{targets: []*otelTarget{{
+		serviceName:        "svc",
+		client:             cap,
+		requestHeaders:     []string{"*"},
+		exportTimeout:      5 * time.Second,
+		excludedAttributes: []string{"session.id", "http.request.header.Authorization"},
+	}}}
+	if err := injected.Inject(context.Background(), trace); err != nil {
+		t.Fatalf("Inject: %v", err)
+	}
+	if len(cap.emitted) != 1 {
+		t.Fatalf("expected 1 emitted ResourceSpan, got %d", len(cap.emitted))
+	}
+	got = kvMap(cap.emitted[0].ScopeSpans[0].Spans[0].Attributes)
+	for _, k := range []string{"session.id", "http.request.header.Authorization"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("%s survived the denylist", k)
+		}
+	}
+	if _, ok := got[schemas.AttrBifrostRequestID]; !ok {
+		t.Error("an undenied converter attribute was dropped")
+	}
+	if _, ok := got[schemas.AttrProviderName]; !ok {
+		t.Error("an undenied span attribute was dropped")
 	}
 }

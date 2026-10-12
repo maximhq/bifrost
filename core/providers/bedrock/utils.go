@@ -630,7 +630,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	// literally contain "nova-2" fails the check and drops web_search/code_execution
 	// instead of converting them. Mirrors ToBedrockResponsesRequest, which already
 	// passes the canonical model to the same check.
-	toolConfig, modelDropped := convertToolConfigFromFiltered(ctx, caps.Model(), caps, bifrostReq.Params, filteredTools)
+	toolConfig, modelDropped, err := convertToolConfigFromFiltered(ctx, caps.Model(), caps, bifrostReq.Params, filteredTools)
+	if err != nil {
+		return err
+	}
 	if toolConfig != nil {
 		bedrockReq.ToolConfig = toolConfig
 	}
@@ -897,7 +900,9 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
 		bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
-		applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq)
+		if err := applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq); err != nil {
+			return err
+		}
 		if len(bedrockReq.ExtraParams) == 0 {
 			bedrockReq.ExtraParams = nil
 		}
@@ -905,7 +910,411 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	return nil
 }
 
-func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *BedrockConverseRequest) {
+// bedrockGuardTagPrefix is the reserved prefix of the InvokeModel input-tagging XML tag; the
+// caller-chosen suffix is appended to it (see guardrails-tagging in the AWS user guide).
+const bedrockGuardTagPrefix = "amazon-bedrock-guardrails-guardContent_"
+
+// The contextual-grounding tags, which work like guardContent but name the grounding source and
+// the query (see guardrails-contextual-grounding-check in the AWS user guide).
+const (
+	bedrockGroundingSourceTagPrefix = "amazon-bedrock-guardrails-groundingSource_"
+	bedrockQueryTagPrefix           = "amazon-bedrock-guardrails-query_"
+)
+
+// bedrockGuardTagSuffixLength is the longest suffix AWS accepts (1-20 alphanumeric chars).
+const bedrockGuardTagSuffixLength = 20
+
+// bedrockGuardTags returns the opening and closing input-tagging tags for suffix.
+func bedrockGuardTags(suffix string) (string, string) {
+	return bedrockTags(bedrockGuardTagPrefix, suffix)
+}
+
+func bedrockTags(prefix, suffix string) (string, string) {
+	return "<" + prefix + suffix + ">", "</" + prefix + suffix + ">"
+}
+
+// bedrockTagGuardedText renders a guard-marked text block as InvokeModel input tags, carrying
+// the Converse qualifiers across. grounding_source and query become their own tags, which AWS
+// excludes from every policy but contextual grounding, as a Converse block with only that
+// qualifier is. guard_content, or no contextual-grounding qualifier at all, adds the guardContent
+// tag, wrapped outside so the other policies evaluate the text too.
+func bedrockTagGuardedText(text string, qualifiers []string, suffix string) string {
+	var grounding, query, guard bool
+	for _, qualifier := range qualifiers {
+		switch BedrockContentQualifier(qualifier) {
+		case ContentQualifierGrounding:
+			grounding = true
+		case ContentQualifierQuery:
+			query = true
+		default:
+			guard = true // guard_content, and anything unrecognised, stays plain guarded text
+		}
+	}
+	wrap := func(prefix string) {
+		open, closing := bedrockTags(prefix, suffix)
+		text = open + text + closing
+	}
+	if grounding {
+		wrap(bedrockGroundingSourceTagPrefix)
+	}
+	if query {
+		wrap(bedrockQueryTagPrefix)
+	}
+	if guard || (!grounding && !query) {
+		wrap(bedrockGuardTagPrefix)
+	}
+	return text
+}
+
+// newBedrockGuardContent builds the Converse guardContent entry for a guard-marked text block.
+func newBedrockGuardContent(text string, qualifiers []string) *BedrockGuardContent {
+	guard := &BedrockGuardContent{Text: &BedrockGuardContentText{Text: text}}
+	for _, qualifier := range qualifiers {
+		guard.Text.Qualifiers = append(guard.Text.Qualifiers, BedrockContentQualifier(qualifier))
+	}
+	return guard
+}
+
+// newBedrockGuardImage builds the Converse guardContent image entry for a guard-marked image
+// block. AWS assesses only inline png/jpeg bytes, so anything else is an explicit error rather
+// than a silently unguarded image.
+func newBedrockGuardImage(image *BedrockImageSource) (*BedrockGuardContent, error) {
+	if image == nil || image.Source.Bytes == nil {
+		return nil, fmt.Errorf("guard_content image requires inline image bytes (s3Location is not assessable)")
+	}
+	if image.Format != "png" && image.Format != "jpeg" {
+		return nil, fmt.Errorf("guard_content image format %q is not assessable: Bedrock guardrails accept png or jpeg", image.Format)
+	}
+	return &BedrockGuardContent{Image: &BedrockGuardContentImage{
+		Format: image.Format,
+		Source: BedrockGuardContentImageSource{Bytes: image.Source.Bytes},
+	}}, nil
+}
+
+// bedrockImageDataURL renders Converse image bytes as the data URL canonical image blocks carry.
+func bedrockImageDataURL(format, data string) string {
+	if strings.HasPrefix(data, "data:") {
+		return data
+	}
+	mediaType := "image/jpeg"
+	switch format {
+	case "png":
+		mediaType = "image/png"
+	case "gif":
+		mediaType = "image/gif"
+	case "webp":
+		mediaType = "image/webp"
+	}
+	return fmt.Sprintf("data:%s;base64,%s", mediaType, data)
+}
+
+// guardContentMarker is the canonical marker for a Converse guardContent entry.
+func guardContentMarker(guard *BedrockGuardContent) *schemas.GuardContent {
+	marker := &schemas.GuardContent{}
+	if guard != nil && guard.Text != nil {
+		for _, qualifier := range guard.Text.Qualifiers {
+			marker.Qualifiers = append(marker.Qualifiers, string(qualifier))
+		}
+	}
+	return marker
+}
+
+// guardTagSpan is one segment of a text split on input tags.
+type guardTagSpan struct {
+	text    string
+	guarded bool
+}
+
+// splitInlineGuardTags splits text on well-formed <amazon-bedrock-guardrails-guardContent_suffix>
+// pairs into guarded and unguarded spans. It returns nil when the text has no complete pair, so
+// an unterminated tag stays literal exactly as AWS would treat it. Blank spans are dropped
+// because Converse rejects blank text blocks.
+func splitInlineGuardTags(text, suffix string) []guardTagSpan {
+	open, closing := bedrockGuardTags(suffix)
+	if !strings.Contains(text, open) {
+		return nil
+	}
+	var spans []guardTagSpan
+	rest := text
+	found := false
+	for {
+		start := strings.Index(rest, open)
+		if start < 0 {
+			break
+		}
+		end := strings.Index(rest[start+len(open):], closing)
+		if end < 0 {
+			break
+		}
+		found = true
+		spans = appendGuardTagSpan(spans, rest[:start], false)
+		spans = appendGuardTagSpan(spans, rest[start+len(open):start+len(open)+end], true)
+		rest = rest[start+len(open)+end+len(closing):]
+	}
+	if !found {
+		return nil
+	}
+	return appendGuardTagSpan(spans, rest, false)
+}
+
+func appendGuardTagSpan(spans []guardTagSpan, text string, guarded bool) []guardTagSpan {
+	if strings.TrimSpace(text) == "" {
+		return spans
+	}
+	return append(spans, guardTagSpan{text: text, guarded: guarded})
+}
+
+// applyInlineGuardTags translates InvokeModel-style input tagging into Converse guardContent
+// entries. A client that speaks the InvokeModel dialect scopes its guardrail with inline
+// <amazon-bedrock-guardrails-guardContent_{suffix}> tags plus guardrailConfig.tagSuffix; Converse
+// has no tagSuffix (its GuardrailConfiguration carries only identifier, version and trace) and
+// would otherwise receive the tags as model-visible text (#7696). Every text block and system
+// entry holding a complete tag pair is split into alternating text / guardContent entries, and
+// TagSuffix is cleared so it is never marshalled into a Converse body.
+func applyInlineGuardTags(req *BedrockConverseRequest) {
+	if req == nil || req.GuardrailConfig == nil || req.GuardrailConfig.TagSuffix == "" {
+		return
+	}
+	suffix := req.GuardrailConfig.TagSuffix
+	req.GuardrailConfig.TagSuffix = ""
+
+	system := make([]BedrockSystemMessage, 0, len(req.System))
+	for _, sys := range req.System {
+		if sys.Text == nil {
+			system = append(system, sys)
+			continue
+		}
+		spans := splitInlineGuardTags(*sys.Text, suffix)
+		if spans == nil {
+			system = append(system, sys)
+			continue
+		}
+		for _, span := range spans {
+			if span.guarded {
+				system = append(system, BedrockSystemMessage{GuardContent: newBedrockGuardContent(span.text, nil)})
+			} else {
+				text := span.text
+				system = append(system, BedrockSystemMessage{Text: &text})
+			}
+		}
+	}
+	if len(req.System) > 0 {
+		req.System = system
+	}
+
+	for i := range req.Messages {
+		content := make([]BedrockContentBlock, 0, len(req.Messages[i].Content))
+		for _, block := range req.Messages[i].Content {
+			if block.Text == nil {
+				content = append(content, block)
+				continue
+			}
+			spans := splitInlineGuardTags(*block.Text, suffix)
+			if spans == nil {
+				content = append(content, block)
+				continue
+			}
+			for _, span := range spans {
+				if span.guarded {
+					content = append(content, BedrockContentBlock{GuardContent: newBedrockGuardContent(span.text, nil)})
+				} else {
+					text := span.text
+					content = append(content, BedrockContentBlock{Text: &text})
+				}
+			}
+		}
+		req.Messages[i].Content = content
+	}
+}
+
+// validateGuardTagSuffix enforces AWS's constraint on a caller-supplied tagSuffix: 1 to 20
+// alphanumeric characters. Anything else is rejected up front rather than spliced into a tag
+// name (InvokeModel) or used to split text (Converse), where it would silently misfire.
+func validateGuardTagSuffix(suffix string) error {
+	// InvalidRequestErrorf marks this as caller input: the Converse converters run under
+	// CheckContextAndGetRequestBody, which promotes it to a 400, and the InvokeModel and
+	// count-tokens paths map it with AsBifrostBadRequestError.
+	if suffix == "" || len(suffix) > bedrockGuardTagSuffixLength {
+		return providerUtils.InvalidRequestErrorf("guardrailConfig.tagSuffix %q is invalid: Bedrock accepts 1 to %d alphanumeric characters", suffix, bedrockGuardTagSuffixLength)
+	}
+	for _, r := range suffix {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')) {
+			return providerUtils.InvalidRequestErrorf("guardrailConfig.tagSuffix %q is invalid: Bedrock accepts 1 to %d alphanumeric characters", suffix, bedrockGuardTagSuffixLength)
+		}
+	}
+	return nil
+}
+
+// invokeGuardrailBodyConfig returns the InvokeModel amazon-bedrock-guardrailConfig body field
+// for the request's guardrailConfig extra param, or nil when the caller set neither a tagSuffix
+// nor a streamProcessingMode. A malformed tagSuffix is an error the caller surfaces as an
+// invalid request. The two ride in the same AWS object, so each is sent on its own merit.
+func invokeGuardrailBodyConfig(extraParams map[string]any) (map[string]any, error) {
+	config, _ := extraParams["guardrailConfig"].(map[string]any)
+	suffix, _ := config["tagSuffix"].(string)
+	mode, _ := config["streamProcessingMode"].(string)
+	if suffix == "" && mode == "" {
+		return nil, nil
+	}
+	body := make(map[string]any, 2)
+	if suffix != "" {
+		if err := validateGuardTagSuffix(suffix); err != nil {
+			return nil, err
+		}
+		body["tagSuffix"] = suffix
+	}
+	if mode != "" {
+		body["streamProcessingMode"] = mode
+	}
+	return body, nil
+}
+
+// ensureGuardTagSuffix gives a body that has no tagSuffix a fresh random one and returns it,
+// creating the body when the caller set nothing.
+func ensureGuardTagSuffix(body map[string]any) (map[string]any, string) {
+	if body == nil {
+		body = make(map[string]any, 1)
+	}
+	suffix, _ := body["tagSuffix"].(string)
+	if suffix == "" {
+		suffix = schemas.GetRandomString(bedrockGuardTagSuffixLength)
+		body["tagSuffix"] = suffix
+	}
+	return body, suffix
+}
+
+// invokeGuardTagging renders guard markers as InvokeModel input tags. It returns the request
+// to build the body from and the amazon-bedrock-guardrailConfig field to inject, or the
+// request unchanged and nil when nothing is marked and no tagSuffix was supplied. Marked
+// blocks are rewritten on a copy so the shared (possibly pooled) request is never mutated;
+// the suffix is the caller's tagSuffix or a fresh random one, as AWS recommends for
+// injection hardening. Only text blocks can be tagged, so a marked non-text block degrades
+// to its untagged form.
+func invokeGuardTagging(request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesRequest, map[string]any, error) {
+	var extraParams map[string]any
+	if request.Params != nil {
+		extraParams = request.Params.ExtraParams
+	}
+	body, err := invokeGuardrailBodyConfig(extraParams)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	marked := false
+	for _, msg := range request.Input {
+		if msg.Content == nil {
+			continue
+		}
+		for _, block := range msg.Content.ContentBlocks {
+			if block.GuardContent != nil && block.Text != nil {
+				marked = true
+				break
+			}
+		}
+		if marked {
+			break
+		}
+	}
+	if !marked {
+		return request, body, nil
+	}
+	body, suffix := ensureGuardTagSuffix(body)
+
+	input := make([]schemas.ResponsesMessage, len(request.Input))
+	for i, msg := range request.Input {
+		input[i] = msg
+		if msg.Content == nil {
+			continue
+		}
+		hasMarker := false
+		for _, block := range msg.Content.ContentBlocks {
+			if block.GuardContent != nil && block.Text != nil {
+				hasMarker = true
+				break
+			}
+		}
+		if !hasMarker {
+			continue
+		}
+		copied := schemas.DeepCopyResponsesMessage(msg)
+		for j := range copied.Content.ContentBlocks {
+			block := &copied.Content.ContentBlocks[j]
+			if block.GuardContent == nil || block.Text == nil {
+				continue
+			}
+			tagged := bedrockTagGuardedText(*block.Text, block.GuardContent.Qualifiers, suffix)
+			block.Text = &tagged
+			block.GuardContent = nil
+		}
+		input[i] = copied
+	}
+	reqCopy := *request
+	reqCopy.Input = input
+	return &reqCopy, body, nil
+}
+
+// invokeChatGuardTagging is invokeGuardTagging for the Chat path: guard-marked text blocks
+// are wrapped in input tags on a copy of the request, and the amazon-bedrock-guardrailConfig
+// field is returned. Marked image blocks cannot be tagged and degrade to plain images.
+func invokeChatGuardTagging(request *schemas.BifrostChatRequest) (*schemas.BifrostChatRequest, map[string]any, error) {
+	var extraParams map[string]any
+	if request.Params != nil {
+		extraParams = request.Params.ExtraParams
+	}
+	body, err := invokeGuardrailBodyConfig(extraParams)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	chatBlockMarked := func(msg schemas.ChatMessage) bool {
+		if msg.Content == nil {
+			return false
+		}
+		for _, block := range msg.Content.ContentBlocks {
+			if block.GuardContent != nil && block.Text != nil {
+				return true
+			}
+		}
+		return false
+	}
+	marked := false
+	for _, msg := range request.Input {
+		if chatBlockMarked(msg) {
+			marked = true
+			break
+		}
+	}
+	if !marked {
+		return request, body, nil
+	}
+	body, suffix := ensureGuardTagSuffix(body)
+
+	input := make([]schemas.ChatMessage, len(request.Input))
+	for i, msg := range request.Input {
+		input[i] = msg
+		if !chatBlockMarked(msg) {
+			continue
+		}
+		copied := schemas.DeepCopyChatMessage(msg)
+		for j := range copied.Content.ContentBlocks {
+			block := &copied.Content.ContentBlocks[j]
+			if block.GuardContent == nil || block.Text == nil {
+				continue
+			}
+			tagged := bedrockTagGuardedText(*block.Text, block.GuardContent.Qualifiers, suffix)
+			block.Text = &tagged
+			block.GuardContent = nil
+		}
+		input[i] = copied
+	}
+	reqCopy := *request
+	reqCopy.Input = input
+	return &reqCopy, body, nil
+}
+
+// applyBedrockExtraParams lifts the Bedrock-specific extra params into the typed request.
+// The only error is a malformed guardrailConfig.tagSuffix, which the converters return as-is.
+func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *BedrockConverseRequest) error {
 	if guardrailConfig, exists := extraParams["guardrailConfig"]; exists {
 		if gc, ok := guardrailConfig.(map[string]interface{}); ok {
 			config := &BedrockGuardrailConfig{}
@@ -921,8 +1330,20 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 			if mode, ok := gc["streamProcessingMode"].(string); ok {
 				config.StreamProcessingMode = &mode
 			}
+			if suffix, ok := gc["tagSuffix"].(string); ok && suffix != "" {
+				if err := validateGuardTagSuffix(suffix); err != nil {
+					return err
+				}
+				config.TagSuffix = suffix
+			}
 			delete(extraParams, "guardrailConfig")
-			bedrockReq.GuardrailConfig = config
+			// A config naming no guardrail (e.g. only a tagSuffix lifted from an InvokeModel
+			// body whose identifier travelled in headers) applies nothing, so the tags stay
+			// literal rather than becoming guardContent entries for a guardrail AWS never sees.
+			if config.GuardrailIdentifier != "" || config.GuardrailVersion != "" {
+				bedrockReq.GuardrailConfig = config
+				applyInlineGuardTags(bedrockReq)
+			}
 		}
 	}
 
@@ -990,6 +1411,7 @@ func applyBedrockExtraParams(extraParams map[string]interface{}, bedrockReq *Bed
 			bedrockReq.RequestMetadata = metadata
 		}
 	}
+	return nil
 }
 
 func setOutputConfigField(fields *schemas.OrderedMap, key string, value any) {
@@ -1373,24 +1795,44 @@ const foreignRedactedContentPrefix = "bifrost:redacted:v1:"
 // Bedrock blob) untouched and wraps anything else. Canonical, not merely decodable:
 // SDKs replay the decoded bytes re-encoded, so only a canonical blob comes back
 // byte-identical.
-func encodeRedactedContentForConverse(token string) string {
+//
+// A wrapped token also carries the reasoning item id it was issued under
+// (providerUtils.EmbedReasoningItemID). OpenAI and Azure bind encrypted reasoning
+// to that id and reject a replay under any other, and Converse has no field for it
+// (#7729). No provider gate is needed: the wrapper is Bifrost's own and is always
+// unwrapped on ingress, so the id never reaches an upstream inside a payload.
+//
+// The canonical check only guesses at origin from the token's characters. A caller
+// that knows a non-Bedrock upstream served the token wraps it with
+// wrapRedactedContentForConverse instead, since a foreign token can be canonical too.
+func encodeRedactedContentForConverse(id *string, token string) string {
 	if decoded, err := base64.StdEncoding.DecodeString(token); err == nil && base64.StdEncoding.EncodeToString(decoded) == token {
 		return token
 	}
-	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + token))
+	return wrapRedactedContentForConverse(id, token)
+}
+
+// wrapRedactedContentForConverse wraps token unconditionally, embedding id.
+func wrapRedactedContentForConverse(id *string, token string) string {
+	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + providerUtils.EmbedReasoningItemID(id, token)))
 }
 
 // decodeRedactedContentFromConverse unwraps a blob encodeRedactedContentForConverse
-// wrapped and returns every other blob unchanged.
-func decodeRedactedContentFromConverse(blob string) string {
+// wrapped, returning the reasoning item id it carried (nil if none) and the
+// upstream's token. Every other blob comes back unchanged with a nil id.
+func decodeRedactedContentFromConverse(blob string) (*string, string) {
 	decoded, err := base64.StdEncoding.DecodeString(blob)
 	if err != nil {
-		return blob
+		return nil, blob
 	}
-	if token, ok := strings.CutPrefix(string(decoded), foreignRedactedContentPrefix); ok {
-		return token
+	token, ok := strings.CutPrefix(string(decoded), foreignRedactedContentPrefix)
+	if !ok {
+		return nil, blob
 	}
-	return blob
+	if id, rest, found := providerUtils.ExtractReasoningItemID(token); found {
+		return id, rest
+	}
+	return nil, token
 }
 
 // newBedrockCachePoint builds a default cache point, attaching the TTL only for the values
@@ -1470,9 +1912,15 @@ func convertSystemMessages(msg schemas.ChatMessage) ([]BedrockSystemMessage, err
 			}
 
 			if blockType == schemas.ChatContentBlockTypeText && block.Text != nil {
-				systemMsgs = append(systemMsgs, BedrockSystemMessage{
-					Text: block.Text,
-				})
+				if block.GuardContent != nil {
+					systemMsgs = append(systemMsgs, BedrockSystemMessage{
+						GuardContent: newBedrockGuardContent(*block.Text, block.GuardContent.Qualifiers),
+					})
+				} else {
+					systemMsgs = append(systemMsgs, BedrockSystemMessage{
+						Text: block.Text,
+					})
+				}
 				if block.CacheControl != nil {
 					systemMsgs = append(systemMsgs, BedrockSystemMessage{
 						CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
@@ -1772,6 +2220,10 @@ func convertContentBlock(ctx context.Context, model string, block schemas.ChatCo
 				Text: block.Text,
 			},
 		}
+		if block.GuardContent != nil {
+			// Selectively-guarded text renders as a guardContent entry, not a text block.
+			blocks[0] = BedrockContentBlock{GuardContent: newBedrockGuardContent(*block.Text, block.GuardContent.Qualifiers)}
+		}
 		// Cache point must be in a separate block
 		if block.CacheControl != nil {
 			blocks = append(blocks, BedrockContentBlock{
@@ -1793,6 +2245,13 @@ func convertContentBlock(ctx context.Context, model string, block schemas.ChatCo
 			{
 				Image: imageSource,
 			},
+		}
+		if block.GuardContent != nil {
+			guard, err := newBedrockGuardImage(imageSource)
+			if err != nil {
+				return nil, err
+			}
+			blocks[0] = BedrockContentBlock{GuardContent: guard}
 		}
 		// Cache point must be in a separate block
 		if block.CacheControl != nil {
@@ -1822,7 +2281,14 @@ func convertContentBlock(ctx context.Context, model string, block schemas.ChatCo
 		// The Converse API rejects duplicate document names within a
 		// request (#7003): disambiguate via the request-scoped namer.
 		document.Name = docNamer.name(document.Name)
-		return []BedrockContentBlock{{Document: document}}, nil
+		blocks := []BedrockContentBlock{{Document: document}}
+		// Cache point must be in a separate block (#7613)
+		if block.CacheControl != nil {
+			blocks = append(blocks, BedrockContentBlock{
+				CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
+			})
+		}
+		return blocks, nil
 	case schemas.ChatContentBlockTypeInputAudio:
 		// Bedrock doesn't support audio input in Converse API
 		return nil, fmt.Errorf("audio input not supported in Bedrock Converse API")
@@ -2510,7 +2976,7 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 	}
 	// Strip unsupported server tools before the conversion loop.
 	filtered, _ := anthropic.ValidateChatToolsForProvider(params.Tools, schemas.ResolveModelCaps(schemas.Bedrock, model))
-	toolConfig, _ := convertToolConfigFromFiltered(nil, model, schemas.ResolveModelCaps(schemas.Bedrock, model), params, filtered)
+	toolConfig, _, _ := convertToolConfigFromFiltered(nil, model, schemas.ResolveModelCaps(schemas.Bedrock, model), params, filtered)
 	return toolConfig
 }
 
@@ -2542,9 +3008,9 @@ func convertToNovaSystemTool(systemToolName BedrockSystemToolType, isNova2 bool)
 // survive ValidateChatToolsForProvider via the Nova carve-out but only actually
 // work on Nova2 models). Callers combine this with ValidateChatToolsForProvider's
 // own dropped list for a complete picture.
-func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, caps schemas.ModelCaps, params *schemas.ChatParameters, filtered []schemas.ChatTool) (*BedrockToolConfig, []string) {
+func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, caps schemas.ModelCaps, params *schemas.ChatParameters, filtered []schemas.ChatTool) (*BedrockToolConfig, []string, error) {
 	if params == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	isNova2 := schemas.IsNova2Model(model)
@@ -2554,11 +3020,17 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		if tool.Function != nil {
 			// Serialize the parameters (or a default empty schema) to json.RawMessage
 			var schemaObjectBytes []byte
-			if tool.Function.Parameters != nil {
+			if parameters := tool.Function.Parameters; parameters != nil {
+				var err error
+				// Claude rejects oneOf/anyOf/allOf at the input_schema root.
+				if (len(parameters.OneOf) > 0 || len(parameters.AnyOf) > 0 || len(parameters.AllOf) > 0) && schemas.IsAnthropicModelFamily(ctx, model) {
+					if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
+						return nil, nil, err
+					}
+				}
 				// ToolFunctionParameters.MarshalJSON handles all fields including
 				// properties, required, enum, additionalProperties, $defs, etc.
-				var err error
-				schemaObjectBytes, err = providerUtils.MarshalSorted(tool.Function.Parameters)
+				schemaObjectBytes, err = providerUtils.MarshalSorted(parameters)
 				if err != nil {
 					continue
 				}
@@ -2615,7 +3087,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 	// doesn't support), omit ToolConfig entirely so the request is valid and
 	// the model simply answers without tool access.
 	if len(bedrockTools) == 0 {
-		return nil, droppedForModel
+		return nil, droppedForModel, nil
 	}
 
 	toolConfig := &BedrockToolConfig{
@@ -2672,7 +3144,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		}
 	}
 
-	return toolConfig, droppedForModel
+	return toolConfig, droppedForModel, nil
 }
 
 // convertToolChoice converts Bifrost tool choice to Bedrock format

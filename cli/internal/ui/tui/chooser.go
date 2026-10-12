@@ -40,16 +40,21 @@ type ChooserConfig struct {
 	UpdateVersion string
 	BaseURL       string
 	VirtualKey    string
-	Harness       string
-	Model         string
-	Worktree      string
-	Harnesses     []HarnessOption
-	AfterSession  bool          // true when returning from a harness session; blocks input until ready
-	ReservedRows  int           // rows reserved by the tab bar; subtracted from the available height
-	TabBarLine    func() string // returns the current tab bar content; rendered as the last line
-	FetchModels   func(ctx context.Context, baseURL, virtualKey string) ([]string, error)
-	Notify        func(message string, isError bool)
-	Input         io.Reader // optional stdin override; when nil, os.Stdin is used
+	// EnterpriseSSOAvailable is true only when the selected gateway confirms
+	// that its browser-based agent authentication flow is enabled.
+	EnterpriseSSOAvailable bool
+	AgentSignedIn          bool
+	AgentIdentity          string
+	Harness                string
+	Model                  string
+	Worktree               string
+	Harnesses              []HarnessOption
+	AfterSession           bool          // true when returning from a harness session; blocks input until ready
+	ReservedRows           int           // rows reserved by the tab bar; subtracted from the available height
+	TabBarLine             func() string // returns the current tab bar content; rendered as the last line
+	FetchModels            func(ctx context.Context, baseURL, virtualKey string) ([]string, error)
+	Notify                 func(message string, isError bool)
+	Input                  io.Reader // optional stdin override; when nil, os.Stdin is used
 }
 
 // ChooserResult holds the user's selections after the chooser TUI completes.
@@ -58,6 +63,8 @@ type ChooserResult struct {
 	BackToTabs      bool // true when the user pressed Ctrl+B to return to tab command mode
 	UpdateRequested bool
 	InstallHarness  bool // true when user selected a harness that needs installation
+	LoginRequested  bool // true when the user selected Enterprise SSO sign in
+	LogoutRequested bool // true when the user selected Enterprise SSO sign out
 	BaseURL         string
 	VirtualKey      string
 	Harness         string
@@ -82,6 +89,7 @@ const (
 	summaryActionLaunch summaryAction = iota
 	summaryActionBaseURL
 	summaryActionVirtualKey
+	summaryActionEnterpriseSSO
 	summaryActionWorktree
 	summaryActionHarness
 	summaryActionModel
@@ -108,6 +116,8 @@ type chooserModel struct {
 	done            bool
 	installHarness  bool
 	updateRequested bool
+	loginRequested  bool
+	logoutRequested bool
 	returnToSummary bool
 
 	width  int
@@ -131,6 +141,9 @@ type chooserModel struct {
 	summaryEditing      bool
 	summaryEditAction   summaryAction
 	summaryEditOriginal string
+	confirmingLogout    bool
+	logoutConfirmIdx    int
+	logoutReturnPhase   chooserPhase
 
 	message string
 	warming bool // true while ignoring input after session ended
@@ -170,12 +183,14 @@ func RunChooser(cfg ChooserConfig) (ChooserResult, error) {
 		return ChooserResult{Quit: true}, nil
 	}
 	return ChooserResult{
-		InstallHarness: fm.installHarness,
-		BaseURL:        strings.TrimSpace(fm.baseInput.Value()),
-		VirtualKey:     strings.TrimSpace(fm.vkInput.Value()),
-		Harness:        fm.currentHarness().ID,
-		Model:          strings.TrimSpace(fm.currentModel()),
-		Worktree:       strings.TrimSpace(fm.worktreeInput.Value()),
+		InstallHarness:  fm.installHarness,
+		LoginRequested:  fm.loginRequested,
+		LogoutRequested: fm.logoutRequested,
+		BaseURL:         strings.TrimSpace(fm.baseInput.Value()),
+		VirtualKey:      strings.TrimSpace(fm.vkInput.Value()),
+		Harness:         fm.currentHarness().ID,
+		Model:           strings.TrimSpace(fm.currentModel()),
+		Worktree:        strings.TrimSpace(fm.worktreeInput.Value()),
 	}, nil
 }
 
@@ -290,7 +305,38 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quit = true
 			return m, tea.Quit
 		}
-		if s == "ctrl+b" {
+		if m.confirmingLogout {
+			switch s {
+			case "left", "h", "right", "l", "tab":
+				if m.logoutConfirmIdx == 0 {
+					m.logoutConfirmIdx = 1
+				} else {
+					m.logoutConfirmIdx = 0
+				}
+				return m, nil
+			case "y", "Y":
+				m.logoutRequested = true
+				m.confirmingLogout = false
+				return m, tea.Quit
+			case "enter":
+				if m.logoutConfirmIdx == 0 {
+					m.logoutRequested = true
+					m.confirmingLogout = false
+					return m, tea.Quit
+				}
+				fallthrough
+			case "n", "N", "q", "esc":
+				m.confirmingLogout = false
+				m.phase = m.logoutReturnPhase
+				if m.phase == phaseVirtualKey {
+					m.vkInput.Focus()
+				}
+				return m, nil
+			default:
+				return m, nil
+			}
+		}
+		if s == "ctrl+b" && m.cfg.TabBarLine != nil {
 			m.backToTabs = true
 			return m, tea.Quit
 		}
@@ -337,6 +383,9 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 
 		case phaseVirtualKey:
+			if s == "f2" && m.enterpriseSSOVisible() {
+				return m.requestEnterpriseAuth()
+			}
 			if s == "enter" {
 				m.vkInput.Blur()
 				if m.returnToSummary {
@@ -612,6 +661,11 @@ func (m chooserModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.summaryEditOriginal = m.vkInput.Value()
 				m.vkInput.Focus()
 				return m, nil
+			case "a":
+				if m.enterpriseSSOVisible() {
+					return m.requestEnterpriseAuth()
+				}
+				return m, nil
 			case "w":
 				if m.currentHarness().SupportsWorktree {
 					m.phase = phaseWorktree
@@ -739,11 +793,21 @@ func (m chooserModel) View() string {
 
 	case phaseVirtualKey:
 		title = accent.Render("Virtual Key") + label.Render(" (optional)")
+		if m.enterpriseSSOVisible() {
+			title = accent.Render("Virtual Key") + label.Render(" (optional; Enterprise SSO is used when signed in)")
+		}
 		body.WriteString(m.vkInput.View())
+		ssoAction := ""
+		if m.enterpriseSSOVisible() {
+			ssoAction = "  f2: sign in with Enterprise SSO"
+			if m.enterpriseSignedIn() {
+				ssoAction = "  f2: sign out of Enterprise SSO"
+			}
+		}
 		if m.returnToSummary {
-			footer = hint.Render("enter: update  esc: cancel  f1: open dashboard")
+			footer = hint.Render("enter: update" + ssoAction + "  esc: cancel  f1: open dashboard")
 		} else {
-			footer = hint.Render("enter: continue  esc: back  f1: open dashboard")
+			footer = hint.Render("enter: continue" + ssoAction + "  esc: back  f1: open dashboard")
 		}
 
 	case phaseHarness:
@@ -813,6 +877,8 @@ func (m chooserModel) View() string {
 		}
 
 	case phaseSummary:
+		const summaryLabelWidth = len("Enterprise SSO")
+
 		ho := m.currentHarness()
 		baseURL := strings.TrimSpace(m.baseInput.Value())
 		model := m.currentModel()
@@ -831,7 +897,7 @@ func (m chooserModel) View() string {
 				nameStyle = lipgloss.NewStyle().Bold(true)
 				valueStyle = lipgloss.NewStyle().Bold(true)
 			}
-			body.WriteString(cursor + nameStyle.Render(fmt.Sprintf("%-12s", name)) + " " + valueStyle.Render(value) + "\n")
+			body.WriteString(cursor + nameStyle.Render(fmt.Sprintf("%-*s", summaryLabelWidth, name)) + " " + valueStyle.Render(value) + "\n")
 		}
 		baseURLValue := baseURL
 		if m.summaryEditing && m.currentSummaryAction() == summaryActionBaseURL {
@@ -853,11 +919,24 @@ func (m chooserModel) View() string {
 			body.WriteString(label.Render("               ") + " " + warnStyle.Render("⚠ Gemini function calling is not compatible with") + "\n")
 			body.WriteString(label.Render("               ") + " " + warnStyle.Render("  Claude Code and may not work as intended") + "\n")
 		}
-		vkValue := maskVirtualKey(strings.TrimSpace(m.vkInput.Value()))
-		if m.summaryEditing && m.currentSummaryAction() == summaryActionVirtualKey {
-			vkValue = m.vkInput.View()
+		if m.enterpriseSSOVisible() {
+			ssoValue := "sign in"
+			if m.enterpriseSignedIn() {
+				ssoValue = "signed in"
+				if identity := strings.TrimSpace(m.cfg.AgentIdentity); identity != "" {
+					ssoValue += " as " + identity
+				}
+			}
+			renderSummaryLine(summaryActionEnterpriseSSO, "Enterprise SSO", ssoValue)
 		}
-		renderSummaryLine(summaryActionVirtualKey, "Virtual Key", vkValue)
+		authValue := "none"
+		if strings.TrimSpace(m.vkInput.Value()) != "" {
+			authValue = maskVirtualKey(strings.TrimSpace(m.vkInput.Value()))
+		}
+		if m.summaryEditing && m.currentSummaryAction() == summaryActionVirtualKey {
+			authValue = m.vkInput.View()
+		}
+		renderSummaryLine(summaryActionVirtualKey, "Virtual key", authValue)
 		if ho.SupportsWorktree {
 			wtState := "no"
 			if wt := strings.TrimSpace(m.worktreeInput.Value()); wt != "" {
@@ -873,10 +952,32 @@ func (m chooserModel) View() string {
 		renderSummaryLine(summaryActionRepo, "Star", repoURL)
 		renderSummaryLine(summaryActionQuit, "Exit", "Bifrost CLI")
 
-		if m.summaryEditing {
+		if m.confirmingLogout {
+			yes := label.Render("[ Yes ]")
+			no := label.Render("[ No ]")
+			if m.logoutConfirmIdx == 0 {
+				yes = accent.Render("[ Yes ]")
+			} else {
+				no = accent.Render("[ No ]")
+			}
+			logoutIdentity := strings.TrimSpace(m.cfg.AgentIdentity)
+			if logoutIdentity == "" {
+				logoutIdentity = "Enterprise SSO"
+			}
+			body.Reset()
+			body.WriteString(renderChooserPopup("Sign out", "Sign out of "+logoutIdentity+"?\n\n"+yes+"  "+no, w))
+			title = accent.Render("Bifrost CLI")
+			footer = hint.Render("left/right: choose  enter: confirm  y/n: quick choice  esc: cancel")
+		} else if m.summaryEditing {
 			footer = hint.Render("editing  enter: save  esc: cancel")
+		} else if m.currentSummaryAction() == summaryActionEnterpriseSSO && m.enterpriseSignedIn() {
+			footer = hint.Render("Press Enter to sign out")
 		} else {
-			footer = hint.Render("up/down: move  enter: select  shortcuts: u/v/h/m/d/r/i/s/q")
+			shortcuts := "u/v/h/m/d/r/i/s/q"
+			if m.enterpriseSSOVisible() {
+				shortcuts = "u/a/v/h/m/d/r/i/s/q"
+			}
+			footer = hint.Render("up/down: move  enter: select  shortcuts: " + shortcuts)
 		}
 	}
 
@@ -1053,9 +1154,10 @@ func (m chooserModel) summaryActions() []summaryAction {
 	if ho.SupportsModelOverride {
 		actions = append(actions, summaryActionModel)
 	}
-	actions = append(actions,
-		summaryActionVirtualKey,
-	)
+	if m.enterpriseSSOVisible() {
+		actions = append(actions, summaryActionEnterpriseSSO)
+	}
+	actions = append(actions, summaryActionVirtualKey)
 	if ho.SupportsWorktree {
 		actions = append(actions, summaryActionWorktree)
 	}
@@ -1113,6 +1215,8 @@ func (m chooserModel) performSummaryAction(action summaryAction) (tea.Model, tea
 		m.summaryEditOriginal = m.vkInput.Value()
 		m.vkInput.Focus()
 		return m, nil
+	case summaryActionEnterpriseSSO:
+		return m.requestEnterpriseAuth()
 	case summaryActionWorktree:
 		if m.currentHarness().SupportsWorktree {
 			m.phase = phaseWorktree
@@ -1164,6 +1268,41 @@ func (m chooserModel) performSummaryAction(action summaryAction) (tea.Model, tea
 	default:
 		return m, nil
 	}
+}
+
+// enterpriseSignedIn reports whether the stored SSO session belongs to the
+// unchanged profile URL currently shown in the chooser.
+func (m chooserModel) enterpriseSignedIn() bool {
+	return m.cfg.AgentSignedIn &&
+		strings.TrimSpace(m.baseInput.Value()) == strings.TrimSpace(m.cfg.BaseURL)
+}
+
+// enterpriseSSOVisible keeps browser authentication out of gateways that do
+// not advertise support for it. A stored session remains visible even when
+// capability discovery later fails so the user can still sign out locally.
+func (m chooserModel) enterpriseSSOVisible() bool {
+	return m.enterpriseSignedIn() ||
+		(m.cfg.EnterpriseSSOAvailable &&
+			strings.TrimSpace(m.baseInput.Value()) == strings.TrimSpace(m.cfg.BaseURL))
+}
+
+// requestEnterpriseAuth starts login outside Bubble Tea or opens the in-place
+// confirmation required before returning a logout request to the application.
+func (m chooserModel) requestEnterpriseAuth() (tea.Model, tea.Cmd) {
+	if !m.enterpriseSSOVisible() {
+		return m, nil
+	}
+	if m.enterpriseSignedIn() {
+		m.logoutReturnPhase = m.phase
+		m.confirmingLogout = true
+		m.logoutConfirmIdx = 1
+		m.phase = phaseSummary
+		m.vkInput.Blur()
+		return m, nil
+	} else {
+		m.loginRequested = true
+	}
+	return m, tea.Quit
 }
 
 // renderModelPicker renders the model search box with the input above the

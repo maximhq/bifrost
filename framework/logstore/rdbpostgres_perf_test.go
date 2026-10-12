@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -654,4 +655,97 @@ func TestMCPContentSearch_Postgres(t *testing.T) {
 	}, PaginationOptions{Limit: 100})
 	require.NoError(t, err)
 	assert.Equal(t, 1, len(result.Logs), "Should find 1 MCP log matching 'temperature' in result")
+}
+
+// TestGetUserSpendMatViewPath checks that on Postgres with the matview ready, a window
+// of a day or more reads mv_logs_hourly: a row inserted after the refresh is not seen.
+func TestGetUserSpendMatViewPath(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	end := time.Now().UTC().Truncate(time.Hour)
+	start := end.Add(-7 * 24 * time.Hour)
+	insertSpendLog(t, db, "a1", "alice", end.Add(-3*time.Hour), 3)
+	insertSpendLog(t, db, "a2", "alice", end.Add(-5*24*time.Hour), 2)
+	insertSpendLog(t, db, "b1", "bob", end.Add(-2*time.Hour), 7)
+	insertSpendLog(t, db, "n1", "", end.Add(-time.Hour), 50)
+	refreshTestMatViews(t, db)
+	store.matViewsReady.Store(true)
+	insertSpendLog(t, db, "late", "carol", end.Add(-time.Hour), 9) // only in the raw table
+
+	filters := SearchFilters{StartTime: &start, EndTime: &end}
+	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	got, err := store.GetUserSpend(ctx, filters)
+	require.NoError(t, err)
+	assert.Equal(t, []UserSpendEntry{{UserID: "alice", TotalCost: 5}, {UserID: "bob", TotalCost: 7}}, sortedSpend(got))
+}
+
+// TestGetUserSpendMatViewTrimsBoundaryHours checks a window that starts and ends mid-hour
+// counts only rows inside it: whole hours come from the matview, and the two partial
+// boundary hours come from the raw table, so rows in those hours but outside the window
+// are not counted.
+func TestGetUserSpendMatViewTrimsBoundaryHours(t *testing.T) {
+	store, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	base := time.Now().UTC().Truncate(time.Hour).Add(-3 * 24 * time.Hour)
+	start := base.Add(30 * time.Minute)                                     // mid-hour
+	end := base.Add(2*24*time.Hour + 30*time.Minute)                        // mid-hour, a 48h window
+	insertSpendLog(t, db, "before", "alice", base.Add(10*time.Minute), 100) // start's hour, before start
+	insertSpendLog(t, db, "head", "alice", base.Add(45*time.Minute), 1)     // start's hour, inside
+	insertSpendLog(t, db, "mid", "alice", base.Add(24*time.Hour), 2)        // interior hour
+	insertSpendLog(t, db, "tail", "bob", end.Add(-10*time.Minute), 4)       // end's hour, inside
+	insertSpendLog(t, db, "after", "bob", end.Add(10*time.Minute), 200)     // end's hour, after end
+	refreshTestMatViews(t, db)
+	store.matViewsReady.Store(true)
+
+	filters := SearchFilters{StartTime: &start, EndTime: &end}
+	require.True(t, store.canUseMatViewForFreshAggregate(filters))
+	got, err := store.GetUserSpend(ctx, filters)
+	require.NoError(t, err)
+	assert.Equal(t, []UserSpendEntry{{UserID: "alice", TotalCost: 3}, {UserID: "bob", TotalCost: 4}}, sortedSpend(got))
+}
+
+// The cost and latency sorts order DESC NULLS LAST, which a plain btree on the
+// column cannot produce, so on Postgres they rely on the
+// idx_*_desc_nulls_last performance indexes. Without a matching index the
+// planner seq-scans every row that survives the WHERE clause to find the top
+// page. Row-order tests stay green either way, so this pins the plan: the
+// ORDER BY searchLogs builds must be served by an index, not a Seq Scan.
+func TestSearchLogsCostAndLatencySortUsesIndex_Postgres(t *testing.T) {
+	_, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	// Enough rows, 10% with no cost or latency, that a full scan plus top-N
+	// sort costs more than walking an index for one page.
+	require.NoError(t, db.Exec(`
+		INSERT INTO logs (id, timestamp, object_type, provider, model, status, created_at, cost, latency)
+		SELECT 'sort-plan-' || g, now() - g * interval '1 second', 'chat_completion', 'openai', 'gpt-4',
+			'success', now(),
+			CASE WHEN g % 10 = 0 THEN NULL ELSE (g % 997) * 0.001 END,
+			CASE WHEN g % 10 = 0 THEN NULL ELSE (g % 991) * 1.0 END
+		FROM generate_series(1, 50000) AS g
+	`).Error)
+
+	conn := acquirePerfTestSQLConn(t, ctx, db)
+	require.NoError(t, ensurePerformanceIndexes(ctx, conn, testLogger{}))
+	require.NoError(t, db.Exec("ANALYZE logs").Error)
+
+	cases := []struct {
+		sortBy, order, index string
+	}{
+		{"cost", "desc", "idx_logs_cost_desc_nulls_last"},
+		{"latency", "desc", "idx_logs_latency_desc_nulls_last"},
+		{"cost", "asc", "idx_logs_cost"},
+		{"latency", "asc", "idx_logs_latency"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.sortBy+"_"+tc.order, func(t *testing.T) {
+			var lines []string
+			require.NoError(t, db.Raw("EXPLAIN SELECT id FROM logs ORDER BY "+logsOrderClause(tc.sortBy, tc.order)+" LIMIT 50").Scan(&lines).Error)
+			plan := strings.Join(lines, "\n")
+			assert.NotContains(t, plan, "Seq Scan", "sort by %s %s should not scan the whole table:\n%s", tc.sortBy, tc.order, plan)
+			assert.Regexp(t, `Index (Only )?Scan( Backward)? using `+tc.index+` `, plan, "sort by %s %s should walk %s:\n%s", tc.sortBy, tc.order, tc.index, plan)
+		})
+	}
 }

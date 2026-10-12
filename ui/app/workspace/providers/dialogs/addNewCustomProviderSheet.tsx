@@ -1,7 +1,7 @@
+import { BaseProviderSelector } from "@/components/ui/baseProviderSelector";
 import { Button } from "@/components/ui/button";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
 import { DefaultNetworkConfig } from "@/lib/constants/config";
@@ -72,6 +72,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				image_edit_stream: true,
 				image_variation: true,
 				rerank: true,
+				decisions: true,
 				ocr: true,
 				ocr_stream: true,
 				video_generation: true,
@@ -85,6 +86,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				list_models: true,
 				websocket_responses: true,
 				realtime: false,
+				live: false,
 			},
 			request_path_overrides: undefined,
 			is_key_less: false,
@@ -188,19 +190,12 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 									<FormLabel>Base Format</FormLabel>
 									<div>
 										<FormControl>
-											<Select onValueChange={field.onChange} value={field.value} disabled={!hasProviderCreateAccess}>
-												<SelectTrigger className="w-full" data-testid="base-provider-select">
-													<SelectValue placeholder="Select base format" />
-												</SelectTrigger>
-												<SelectContent>
-													<SelectItem value="openai">OpenAI</SelectItem>
-													<SelectItem value="anthropic">Anthropic</SelectItem>
-													<SelectItem value="gemini">Gemini</SelectItem>
-													<SelectItem value="cohere">Cohere</SelectItem>
-													<SelectItem value="bedrock">AWS Bedrock</SelectItem>
-													<SelectItem value="replicate">Replicate</SelectItem>
-												</SelectContent>
-											</Select>
+											<BaseProviderSelector
+												data-testid="base-provider-select"
+												value={field.value}
+												onChange={field.onChange}
+												disabled={!hasProviderCreateAccess}
+											/>
 										</FormControl>
 										<FormMessage />
 									</div>

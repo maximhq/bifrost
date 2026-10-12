@@ -1,7 +1,10 @@
 package configstore
 
 import (
+	"github.com/maximhq/bifrost/core/schemas"
 	"testing"
+
+	"github.com/bytedance/sonic"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
@@ -43,4 +46,170 @@ func TestGenerateMCPClientHash_NeedsSessionStickiness_NilVsFalseVsTrue(t *testin
 	assert.NotEqual(t, nilHash, trueHash, "true must hash differently from nil")
 	assert.NotEqual(t, nilHash, falseHash, "false must hash differently from nil — otherwise a genuine config.json edit to false is silently ignored")
 	assert.NotEqual(t, trueHash, falseHash, "true and false must hash differently from each other")
+}
+
+// TestGenerateKeyHash_OAuthKeyConfigIsOrderIndependent pins that an unchanged OAuth key hashes
+// the same on every call. extra_params is a map; an encoder that walks it in iteration order
+// makes the hash differ between restarts, and reconcileProviderKeys then treats the stored key
+// as edited in config.json and replaces it, undoing dashboard edits.
+func TestGenerateKeyHash_OAuthKeyConfigIsOrderIndependent(t *testing.T) {
+	build := func(order []string) schemas.Key {
+		params := map[string]string{}
+		for _, k := range order {
+			params[k] = "v-" + k
+		}
+		return schemas.Key{
+			ID:   "k1",
+			Name: "oauth",
+			OAuthKeyConfig: &schemas.OAuthKeyConfig{
+				GrantType:    schemas.OAuthGrantClientCredentials,
+				TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+				ClientID:     schemas.NewSecretVar("id"),
+				ClientSecret: schemas.NewSecretVar("secret"),
+				ExtraParams:  params,
+			},
+		}
+	}
+	want, err := GenerateKeyHash(build([]string{"a", "b", "c", "d", "e"}))
+	require.NoError(t, err)
+	for i := 0; i < 40; i++ {
+		got, err := GenerateKeyHash(build([]string{"e", "d", "c", "b", "a"}))
+		require.NoError(t, err)
+		require.Equal(t, want, got, "iteration %d: the hash must not depend on map iteration order", i)
+	}
+}
+
+// TestGenerateKeyHash_OAuthSecretsHashByReference pins that rotating the environment value
+// behind an env-backed OAuth secret does not change the key's hash. The file itself is
+// unchanged, so reconciliation must keep the stored key and its dashboard edits, exactly as
+// it does for an env-backed top-level value. A changed literal is still an edit.
+func TestGenerateKeyHash_OAuthSecretsHashByReference(t *testing.T) {
+	build := func(secret, tokenURL string) schemas.Key {
+		return schemas.Key{ID: "k1", Name: "oauth", OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantClientCredentials,
+			TokenURL:     *schemas.NewSecretVar(tokenURL),
+			ClientID:     schemas.NewSecretVar("env.HASH_TEST_OAUTH_CLIENT_ID"),
+			ClientSecret: schemas.NewSecretVar(secret),
+		}}
+	}
+	t.Setenv("HASH_TEST_OAUTH_CLIENT_ID", "client-v1")
+	t.Setenv("HASH_TEST_OAUTH_SECRET", "secret-v1")
+	t.Setenv("HASH_TEST_OAUTH_TOKEN_URL", "https://idp-v1.example/token")
+	before, err := GenerateKeyHash(build("env.HASH_TEST_OAUTH_SECRET", "env.HASH_TEST_OAUTH_TOKEN_URL"))
+	require.NoError(t, err)
+
+	t.Setenv("HASH_TEST_OAUTH_CLIENT_ID", "client-v2")
+	t.Setenv("HASH_TEST_OAUTH_SECRET", "secret-v2")
+	t.Setenv("HASH_TEST_OAUTH_TOKEN_URL", "https://idp-v2.example/token")
+	after, err := GenerateKeyHash(build("env.HASH_TEST_OAUTH_SECRET", "env.HASH_TEST_OAUTH_TOKEN_URL"))
+	require.NoError(t, err)
+	require.Equal(t, before, after, "rotating env-backed OAuth secrets changed the hash of an unchanged file")
+
+	literalA, err := GenerateKeyHash(build("literal-a", "https://idp.example/token"))
+	require.NoError(t, err)
+	literalB, err := GenerateKeyHash(build("literal-b", "https://idp.example/token"))
+	require.NoError(t, err)
+	require.NotEqual(t, literalA, literalB, "a changed literal secret must still change the hash")
+
+	viaRef, err := GenerateKeyHash(build("env.HASH_TEST_OAUTH_SECRET", "https://idp.example/token"))
+	require.NoError(t, err)
+	viaLiteral, err := GenerateKeyHash(build("secret-v2", "https://idp.example/token"))
+	require.NoError(t, err)
+	require.NotEqual(t, viaRef, viaLiteral, "switching between a reference and a literal is an edit")
+}
+
+// TestGenerateKeyHash_AliasesIsOrderIndependent pins the same property for aliases, which is
+// also a map: a key whose only change is the encoder's walk order must not be treated as edited.
+func TestGenerateKeyHash_AliasesIsOrderIndependent(t *testing.T) {
+	build := func(order []string) schemas.Key {
+		aliases := schemas.KeyAliases{}
+		for _, name := range order {
+			aliases[name] = schemas.AliasConfig{ModelID: "upstream-" + name}
+		}
+		return schemas.Key{ID: "k1", Name: "aliased", Value: *schemas.NewSecretVar("sk"), Aliases: aliases}
+	}
+	want, err := GenerateKeyHash(build([]string{"a", "b", "c", "d", "e", "f"}))
+	require.NoError(t, err)
+	for i := 0; i < 40; i++ {
+		got, err := GenerateKeyHash(build([]string{"f", "e", "d", "c", "b", "a"}))
+		require.NoError(t, err)
+		require.Equal(t, want, got, "iteration %d: the hash must not depend on map iteration order", i)
+	}
+}
+
+// TestLegacyAliasOrderKeyHash_ReproducesTheUnsortedEncoding pins that the legacy hash is
+// rebuilt from the exact bytes sonic.Marshal used to feed the hasher before aliases were
+// sorted: for two aliases sonic emits one of two orders, and one of them must be ours.
+func TestLegacyAliasOrderKeyHash_ReproducesTheUnsortedEncoding(t *testing.T) {
+	canonical := "gpt-4o"
+	key := schemas.Key{ID: "k1", Name: "aliased", Value: *schemas.NewSecretVar("sk"), Weight: 1, Aliases: schemas.KeyAliases{
+		"plain": {ModelID: "upstream-plain"},
+		"rich":  {ModelID: "upstream-rich", ModelName: &canonical},
+	}}
+	unsorted, err := sonic.Marshal(key.Aliases)
+	require.NoError(t, err)
+	matched := false
+	for _, order := range [][]string{{"plain", "rich"}, {"rich", "plain"}} {
+		legacy, err := legacyAliasBytes(key.Aliases, order)
+		require.NoError(t, err)
+		if string(legacy) == string(unsorted) {
+			matched = true
+		}
+	}
+	require.True(t, matched, "no legacy ordering reproduces sonic's unsorted bytes %s", unsorted)
+}
+
+// TestKeyHashMatchesLegacyAliasOrder pins the upgrade path for keys stored before alias
+// hashing was sorted: a config_hash produced under any alias order is recognised as this
+// unchanged key, another key's hash is not, a single alias needs no search (both encodings
+// coincide), and the search is bounded.
+func TestKeyHashMatchesLegacyAliasOrder(t *testing.T) {
+	build := func(names ...string) schemas.Key {
+		aliases := schemas.KeyAliases{}
+		for _, name := range names {
+			aliases[name] = schemas.AliasConfig{ModelID: "upstream-" + name}
+		}
+		return schemas.Key{ID: "k1", Name: "aliased", Value: *schemas.NewSecretVar("sk"), Weight: 1, Aliases: aliases}
+	}
+	key := build("a", "b", "c", "d")
+	sorted, err := GenerateKeyHash(key)
+	require.NoError(t, err)
+
+	identity, err := LegacyAliasOrderKeyHash(key, []string{"a", "b", "c", "d"})
+	require.NoError(t, err)
+	require.Equal(t, sorted, identity, "the sorted order is one of the legacy orders")
+
+	for _, order := range [][]string{{"d", "c", "b", "a"}, {"b", "d", "a", "c"}} {
+		legacy, err := LegacyAliasOrderKeyHash(key, order)
+		require.NoError(t, err)
+		require.NotEqual(t, sorted, legacy, "order %v must hash differently from the sorted form", order)
+		ok, err := KeyHashMatchesLegacyAliasOrder(key, legacy)
+		require.NoError(t, err)
+		require.True(t, ok, "legacy hash for order %v must be recognised", order)
+	}
+
+	other, err := GenerateKeyHash(build("a", "b", "c", "x"))
+	require.NoError(t, err)
+	ok, err := KeyHashMatchesLegacyAliasOrder(key, other)
+	require.NoError(t, err)
+	require.False(t, ok, "another key's hash must not match")
+
+	edited := key
+	edited.Weight = 0.5
+	editedLegacy, err := LegacyAliasOrderKeyHash(edited, []string{"d", "c", "b", "a"})
+	require.NoError(t, err)
+	ok, err = KeyHashMatchesLegacyAliasOrder(key, editedLegacy)
+	require.NoError(t, err)
+	require.False(t, ok, "a real file edit must still be detected under every legacy order")
+
+	ok, err = KeyHashMatchesLegacyAliasOrder(build("a"), "not-a-hash")
+	require.NoError(t, err)
+	require.False(t, ok, "a single alias has one encoding, so a mismatch is a real change")
+
+	many := build("a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
+	manyLegacy, err := LegacyAliasOrderKeyHash(many, []string{"j", "i", "h", "g", "f", "e", "d", "c", "b", "a"})
+	require.NoError(t, err)
+	ok, err = KeyHashMatchesLegacyAliasOrder(many, manyLegacy)
+	require.NoError(t, err)
+	require.False(t, ok, "above maxLegacyAliasPermutations the search is skipped and the file wins")
 }

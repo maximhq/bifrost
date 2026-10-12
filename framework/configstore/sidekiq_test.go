@@ -533,6 +533,54 @@ func TestGetInFlightSidekiqJobByKindReturnsMostRecent(t *testing.T) {
 	assert.Equal(t, "new", job.ID, "most-recently-created in-flight job of the kind wins")
 }
 
+func TestGetLatestSidekiqJobByKindNoMatch(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+
+	job, err := store.GetLatestSidekiqJobByKind(ctx, "sync")
+	require.NoError(t, err)
+	assert.Nil(t, job, "no jobs of the kind at all")
+
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "other", Kind: "reindex"}))
+	job, err = store.GetLatestSidekiqJobByKind(ctx, "sync")
+	require.NoError(t, err)
+	assert.Nil(t, job, "a job of a different kind does not count")
+}
+
+func TestGetLatestSidekiqJobByKindIncludesTerminal(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "done", Kind: "sync"}))
+	_, err := store.ClaimSidekiqJob(ctx, "done", "owner-A", time.Now().Add(-time.Minute))
+	require.NoError(t, err)
+	require.NoError(t, store.CompleteSidekiqJob(ctx, "done", "owner-A", "{}"))
+	setCreatedAt(t, store, "done", time.Now().Add(-2*time.Hour))
+
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "failed", Kind: "sync"}))
+	_, err = store.ClaimSidekiqJob(ctx, "failed", "owner-A", time.Now().Add(-time.Minute))
+	require.NoError(t, err)
+	require.NoError(t, store.FailSidekiqJob(ctx, "failed", "owner-A", "{}", "boom"))
+	setCreatedAt(t, store, "failed", time.Now().Add(-time.Hour))
+
+	// A newer job of a different kind must not win.
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "newest-other", Kind: "reindex"}))
+
+	job, err := store.GetLatestSidekiqJobByKind(ctx, "sync")
+	require.NoError(t, err)
+	require.NotNil(t, job)
+	assert.Equal(t, "failed", job.ID, "most recently created job of the kind wins regardless of status")
+	assert.Equal(t, tables.SidekiqStatusFailed, job.Status)
+	assert.Equal(t, "boom", job.LastError)
+
+	// An in-flight job newer than the terminal ones is still the latest.
+	require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: "pending", Kind: "sync"}))
+	job, err = store.GetLatestSidekiqJobByKind(ctx, "sync")
+	require.NoError(t, err)
+	require.NotNil(t, job)
+	assert.Equal(t, "pending", job.ID)
+}
+
 func TestMarkStaleSidekiqJobsFailed(t *testing.T) {
 	store := setupSidekiqTestStore(t)
 	ctx := context.Background()
@@ -654,4 +702,44 @@ func TestClaimPartitionedSidekiqJobStaleRunnerDoesNotBlock(t *testing.T) {
 	claimed, err = store.ClaimPartitionedSidekiqJob(ctx, "j2", runner, stale, "g", getJob(t, store, "j2").CreatedAt)
 	require.NoError(t, err)
 	assert.True(t, claimed, "stale (dead-owner) running job must not block its key")
+}
+
+func TestListSidekiqJobs(t *testing.T) {
+	store := setupSidekiqTestStore(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	mk := func(id, status string, createdAgo time.Duration, completedAgo *time.Duration) {
+		t.Helper()
+		require.NoError(t, store.CreateSidekiqJob(ctx, &tables.TableSidekiqJob{ID: id, Kind: "k"}))
+		setCreatedAt(t, store, id, now.Add(-createdAgo))
+		updates := map[string]any{"status": status}
+		if completedAgo != nil {
+			updates["completed_at"] = now.Add(-*completedAgo)
+		}
+		require.NoError(t, store.DB().Model(&tables.TableSidekiqJob{}).Where("id = ?", id).Updates(updates).Error)
+	}
+	recent, old := time.Hour, 48*time.Hour
+	mk("old-running", tables.SidekiqStatusRunning, 72*time.Hour, nil)
+	mk("pending", tables.SidekiqStatusPending, time.Minute, nil)
+	mk("recent-done", tables.SidekiqStatusCompleted, 3*time.Hour, &recent)
+	mk("recent-failed", tables.SidekiqStatusFailed, 2*time.Hour, &recent)
+	mk("recent-cancelled", tables.SidekiqStatusCancelled, 4*time.Hour, &recent)
+	mk("old-done", tables.SidekiqStatusCompleted, 72*time.Hour, &old)
+
+	t.Run("active jobs always listed, finished jobs only inside the window, newest first", func(t *testing.T) {
+		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 50)
+		require.NoError(t, err)
+		ids := make([]string, 0, len(jobs))
+		for _, j := range jobs {
+			ids = append(ids, j.ID)
+		}
+		assert.Equal(t, []string{"pending", "recent-failed", "recent-done", "recent-cancelled", "old-running"}, ids)
+	})
+
+	t.Run("limit caps the result", func(t *testing.T) {
+		jobs, err := store.ListSidekiqJobs(ctx, now.Add(-24*time.Hour), 2)
+		require.NoError(t, err)
+		assert.Len(t, jobs, 2)
+	})
 }

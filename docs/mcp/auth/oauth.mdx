@@ -208,7 +208,7 @@ Bifrost will:
 4. Continue with the standard authorize / token exchange flow
 
 <Warning>
-The `redirect_uri` Bifrost registers with the upstream provider is locked to Bifrost's current public URL (`mcp_external_client_url`, or the request `Host` header if unset). If you change Bifrost's public URL later, the upstream provider will reject the next authorize call with **"Invalid redirect URI"**. Reauthorization reuses the registered client, so it cannot fix the mismatch on its own: delete the client and recreate it so Bifrost re-runs DCR against the new URL. (For manually registered credentials, add the new redirect URI in the provider's dashboard instead, then [reauthorize](#reauthorization).)
+The `redirect_uri` Bifrost registers with the upstream provider is locked to Bifrost's current public URL (`mcp_external_client_url`, or the request `Host` header if unset). If you change Bifrost's public URL later, the upstream provider will reject the next authorize call with **"Invalid redirect URI"**. Plain reauthorization reuses the registered client, so it cannot fix the mismatch on its own: use [Reauthorize with a new client](#reauthorizing-with-a-new-client) so Bifrost re-runs DCR against the new URL. (For manually registered credentials, add the new redirect URI in the provider's dashboard instead, then [reauthorize](#reauthorization).)
 </Warning>
 
 ---
@@ -230,6 +230,55 @@ If only `client_id` and `server_url` are provided, Bifrost will probe in order:
   }
 }
 ```
+
+---
+
+## OAuth servers on localhost or a private network
+
+Bifrost's OAuth requests to an MCP server (discovery, dynamic client registration, token exchange, and refresh) reach only public addresses by default. Every hop after the first comes from the previous response, so the MCP server decides where Bifrost sends them. To use an OAuth-protected MCP server that runs on the same host or inside your network, list its host, IP address, or CIDR range in the OAuth private network allowlist:
+
+- Entries are hostnames, IP addresses, or CIDR ranges, with no scheme or port (`localhost`, `127.0.0.1`, `::1`, `10.20.0.0/16`, `mcp.internal.example`).
+- The allowlist applies only to MCP servers added by an authenticated admin or declared in `config.json`. Servers added while dashboard authentication was off stay public-only.
+- Changing the allowlist over the API or in the UI requires dashboard authentication.
+- Link-local and cloud metadata addresses (for example `169.254.169.254`) are always refused, and an entry that covers them is rejected.
+- Plain MCP connections without OAuth are not affected: an authenticated admin can already add `http://localhost:...` servers.
+
+<Tabs>
+<Tab title="Web UI">
+
+Open **MCP Settings** and add each entry under **OAuth Private Network Allowlist** (press Enter or comma after each one), then save.
+
+</Tab>
+<Tab title="API">
+
+`PUT /api/config` takes the whole `client_config`, so read the current one, set `mcp_oauth_private_allowlist`, and send it back. Both calls need the admin credentials:
+
+```bash
+curl -s -u "$BIFROST_ADMIN_USER:$BIFROST_ADMIN_PASSWORD" http://localhost:8080/api/config \
+  | jq '{client_config: (.client_config + {mcp_oauth_private_allowlist: ["localhost", "127.0.0.1", "::1"]})}' \
+  | curl -X PUT -u "$BIFROST_ADMIN_USER:$BIFROST_ADMIN_PASSWORD" http://localhost:8080/api/config \
+      -H "Content-Type: application/json" -d @-
+```
+
+A `client_config` without `mcp_oauth_private_allowlist` keeps the current list; `"mcp_oauth_private_allowlist": []` clears it. Changing it while dashboard authentication is off returns `403`.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "mcp": {
+    "tool_manager_config": {
+      "oauth_private_allowlist": ["localhost", "127.0.0.1", "::1"]
+    }
+  }
+}
+```
+
+An invalid entry stops Bifrost at startup.
+
+</Tab>
+</Tabs>
 
 ---
 
@@ -327,6 +376,39 @@ curl -X POST http://localhost:8080/api/mcp/client/mcp_client_abc123/reauthorize
 The response is the same `pending_oauth` payload the create flow returns (`oauth_config_id`, `authorize_url`, `expires_at`, `complete_url`, `status_url`, `next_steps`): open `authorize_url` in a browser, poll `status_url` until `authorized`, then POST `complete_url`. On completion the client reconnects and the response reads `"MCP client re-authorized and reconnected successfully"`.
 
 Error cases: 400 if the client's `auth_type` is not OAuth-based, or if it never completed initial authorization (use `initiate-verification` instead); 404 for an unknown ID; 503 when no OAuth provider is configured. For `per_user_oauth` clients the endpoint repairs the retained admin discovery credential instead, and is gated accordingly; see [Per-User OAuth](./per-user-oauth#admin-discovery-credential).
+
+### Reauthorizing with a new client
+
+Reauthorization reuses the `client_id` already stored on the OAuth config. That is the right default, but it cannot recover a client whose provider has stopped recognising that `client_id` altogether. Authorization servers that hand out clients through [Dynamic Client Registration](#dynamic-client-registration-rfc-7591) commonly keep the registry in memory, so a provider restart can drop every client it ever issued.
+
+Once that happens the stored `client_id` is rejected everywhere it is used:
+
+- background refresh fails, and the credential lands in `needs_reauth` with a status reason like `provider rejected the refresh (HTTP 401, invalid_client: Invalid client_id)`
+- **Reauthorize** fails the same way, because the authorize request and the code exchange behind it both present the same unknown client
+
+The repair is to register a replacement client first. From the dashboard, open the server's actions menu and choose **Reauthorize with a new client**. Bifrost registers a fresh client at the provider's `registration_url`, writes it over the stored credentials, and then runs the normal consent flow against it. The credential block flags this case: when a `needs_reauth` credential's status reason names `invalid_client`, it says so and points at this action.
+
+<Warning>
+Replacing the `client_id` marks every credential Bifrost stored under the old one `needs_reauth` and stops using it, since none of them can be refreshed against a client the provider no longer associates them with. It does not revoke the access tokens the provider already issued: Bifrost never calls the provider's revocation endpoint (see [Revoke](#revoke)), so those can stay valid at the provider until they expire. On a shared `oauth` server that is the one connection credential. On a `per_user_oauth` server it is **every end user's credential as well**, and each of them will have to sign in again. Plain **Reauthorize** leaves end users alone; only this action touches them.
+</Warning>
+
+The same flow is scriptable via `POST /api/mcp/client/{id}/reregister` (`{id}` = MCP client ID):
+
+```bash
+curl -X POST http://localhost:8080/api/mcp/client/mcp_client_abc123/reregister
+```
+
+The response is the same `pending_oauth` payload as `reauthorize`, plus `registered_client_id` and `previous_client_id` so you can confirm which client the consent you are about to complete belongs to. Drive it identically: open `authorize_url`, poll `status_url` until `authorized`, then POST `complete_url`.
+
+It is a separate endpoint rather than a flag on `reauthorize` because the two differ in what they destroy, and that difference belongs somewhere access control and audit logs can see it.
+
+Error cases: 400 if the client's `auth_type` is not OAuth-based, if it never completed initial authorization (use `initiate-verification` instead), if the OAuth config has no `registration_url` (the provider offers nowhere to register, so only a manually issued `client_id` can be used), or if the provider refuses the registration request (answers it with a 4xx); 404 for an unknown ID; 503 when no OAuth provider is configured. A provider that cannot be reached, or that answers with a 5xx, is a 500: nothing in the request was wrong, and nothing was registered or changed, so it is safe to retry. So is a 500 whose message starts `failed to persist the newly registered oauth client`: Bifrost is unchanged (the stored `client_id` and every token are as they were), but the provider did register a replacement before the local store failed, so it holds a registration Bifrost will never use, and each retry adds one more. Bifrost cannot delete those; remove them at the provider if it lists registered clients.
+
+<Warning>
+One 500 is not safe to retry. The replacement client is registered and stored **before** the consent flow is opened, and a registration made at the provider cannot be undone. If opening the flow then fails, the new `client_id` is already installed and every token bound to the config is already `needs_reauth`. The error message says so and names both `client_id`s.
+
+Do not call `reregister` again from that state, because it would register yet another client. Call [`reauthorize`](#reauthorization) instead: it runs consent against whatever client is stored, which is now the replacement.
+</Warning>
 
 ### Revoke
 
@@ -442,7 +524,16 @@ See [Reverse Proxy configuration →](../../deployment-guides/config-json/client
 
 <Accordion title="`Invalid redirect URI` from the upstream provider">
 
-You changed Bifrost's public URL after the upstream client was registered. Delete and recreate the client so Bifrost re-runs DCR with the new URL; for manually registered credentials, add the new redirect URI at the provider's dashboard and then [reauthorize](#reauthorization).
+You changed Bifrost's public URL after the upstream client was registered. Use [Reauthorize with a new client](#reauthorizing-with-a-new-client) so Bifrost re-runs DCR with the new URL; for manually registered credentials, add the new redirect URI at the provider's dashboard and then [reauthorize](#reauthorization).
+</Accordion>
+
+<Accordion title="`invalid_client: Invalid client_id` on refresh, and Reauthorize does not help">
+
+The provider has stopped recognising the `client_id` itself, not just the token issued under it, so redoing consent with the same client fails at the code exchange the same way the refresh did. This is common with Dynamic Client Registration, where the provider's client registry is often in memory and does not survive a restart.
+
+Use [Reauthorize with a new client](#reauthorizing-with-a-new-client) to register a replacement client and run consent against it. Note that this signs out every credential bound to the server, including every end user's on a `per_user_oauth` server.
+
+If the provider has no `registration_url`, register a client in its dashboard by hand, set the new `client_id` / `client_secret` on the MCP client, and then [reauthorize](#reauthorization).
 </Accordion>
 </AccordionGroup>
 
@@ -456,6 +547,7 @@ You changed Bifrost's public URL after the upstream client was registered. Delet
 | `/api/mcp/client/{id}/initiate-verification`     | POST   | Start authorization for a `pending_verification` client declared in config.json (`{id}` = MCP client ID); returns `authorize_url` + `status_url` + `complete_url` |
 | `/api/mcp/client/{id}/complete-oauth`            | POST   | Finalize after upstream redirect lands on `/api/oauth/callback` (`{id}` = `oauth_config_id`) |
 | `/api/mcp/client/{id}/reauthorize`               | POST   | Redo consent for a `needs_reauth` client without delete-and-recreate (`{id}` = MCP client ID); returns the same `pending_oauth` payload as create |
+| `/api/mcp/client/{id}/reregister` | POST | Register a replacement OAuth client, then redo consent against it, for a provider that no longer recognises the `client_id` it issued (`{id}` = MCP client ID); same payload plus `registered_client_id` / `previous_client_id` |
 | `/api/oauth/callback`                            | GET    | Upstream provider redirects here; handled internally                   |
 | `/api/oauth/config/{oauth_config_id}/status`     | GET    | Current OAuth config status + token metadata                           |
 | `/api/oauth/config/{oauth_config_id}`            | DELETE | Revoke token + remove OAuth config                                     |

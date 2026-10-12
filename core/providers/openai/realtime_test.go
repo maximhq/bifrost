@@ -838,3 +838,29 @@ func TestInputAudioBufferAppendRoundtrip(t *testing.T) {
 		t.Fatalf("audio = %q, want %q", audioStr, b64Audio)
 	}
 }
+
+func TestRealtimeWebRTCUpstreamErrorCarriesRetryHint(t *testing.T) {
+	t.Parallel()
+
+	var resp fasthttp.Response
+	resp.SetStatusCode(fasthttp.StatusTooManyRequests)
+	resp.Header.Set("Retry-After", "7")
+	resp.SetBodyString(`{"error":{"message":"slow down"}}`)
+
+	provider := &OpenAIProvider{}
+	bifrostErr := provider.realtimeWebRTCUpstreamError(schemas.NewBifrostContext(nil, schemas.NoDeadline), &resp)
+	// The upstream status is carried through as ParseOpenAIError read it, so the retry
+	// hint sits beside the 429 that gave it meaning rather than a synthetic 502.
+	if bifrostErr.StatusCode == nil {
+		t.Fatalf("StatusCode = nil, want 429")
+	}
+	if *bifrostErr.StatusCode != fasthttp.StatusTooManyRequests {
+		t.Fatalf("StatusCode = %d, want 429", *bifrostErr.StatusCode)
+	}
+	if bifrostErr.Error == nil || bifrostErr.Error.Message != "slow down" {
+		t.Fatalf("Message = %+v, want upstream message", bifrostErr.Error)
+	}
+	if bifrostErr.ExtraFields.RetryAfter != 7000 {
+		t.Fatalf("RetryAfter = %d, want 7000", bifrostErr.ExtraFields.RetryAfter)
+	}
+}

@@ -39,9 +39,9 @@ Bifrost Code Mode was benchmarked against classic MCP across three controlled ro
 
 | Round | MCP footprint | Pass rate, classic MCP | Pass rate, Code Mode | Input tokens, classic MCP | Input tokens, Code Mode | Input token change | Est. cost, classic MCP | Est. cost, Code Mode | Cost change |
 |-------|---------------|------------------------|----------------------|---------------------------|-------------------------|--------------------|------------------------|----------------------|-------------|
-| 1 | 96 tools / 6 servers | 64/64 (100%) | 64/64 (100%) | 19.9M | 8.3M | -58.2% | $104.04 | $46.06 | -55.7% |
-| 2 | 251 tools / 11 servers | 64/65 (98.5%) | 65/65 (100%) | 35.7M | 5.5M | -84.5% | $180.07 | $29.80 | -83.4% |
-| 3 | 508 tools / 16 servers | 65/65 (100%) | 65/65 (100%) | 75.1M | 5.4M | -92.8% | $377.00 | $29.00 | -92.2% |
+| 1 | 96 tools / 6 servers | 64/64 (100%) | 64/64 (100%) | 19.9M | 8.3M | -58.2% | \$104.04 | \$46.06 | -55.7% |
+| 2 | 251 tools / 11 servers | 64/65 (98.5%) | 65/65 (100%) | 35.7M | 5.5M | -84.5% | \$180.07 | \$29.80 | -83.4% |
+| 3 | 508 tools / 16 servers | 65/65 (100%) | 65/65 (100%) | 75.1M | 5.4M | -92.8% | \$377.00 | \$29.00 | -92.2% |
 
 <Frame>
   <img src="/media/mcp-codemode-tokens-diff.png" alt="Code Mode input token usage compared to classic MCP as tool count increases" />
@@ -290,6 +290,10 @@ mcpConfig := &schemas.MCPConfig{
 
 When Code Mode clients are connected, Bifrost automatically adds four meta-tools to every request:
 
+<Note>
+When the request carries a virtual key, `listToolFiles`, `readToolFile`, and `getToolDocs` only show the tools that key is allowed to execute (its MCP `tools_to_execute` grant), on every route including `POST /v1/mcp/tool/execute`. A tool the key does not grant does not appear in discovery; grant it on the key to make it visible. Requests without a virtual key see every code mode tool, as before.
+</Note>
+
 ### 1. listToolFiles
 
 Lists all available virtual `.pyi` stub files for connected code mode servers.
@@ -326,10 +330,26 @@ Reads a virtual `.pyi` file to get compact Python function signatures for tools.
 # youtube server tools
 # Usage: youtube.tool_name(param=value)
 # For detailed docs: use getToolDocs(server="youtube", tool="tool_name")
+#
+# ---- server instructions (from the upstream handshake) ----
+# Prefer search for discovery; call get_video only with an id search returned.
+# ---- end server instructions ----
 
 def search(query: str, maxResults: int = None) -> dict:  # Search for videos
 def get_video(id: str) -> dict:  # Get video details
 ```
+
+If the server described how its tools should be used when it connected, that guidance appears
+above the signatures, so the model reads it right before writing the call. Servers that said
+nothing contribute no block. `listToolFiles` names which servers have guidance, and `getToolDocs`
+repeats it alongside the full tool documentation. Long guidance is trimmed to the server's
+instruction limit.
+
+This is the only place a code mode server's guidance appears. It is deliberately left out of the
+aggregate that non-code-mode servers contribute to (see
+[Server Instructions](/mcp/overview#server-instructions)), which every request carries: in code
+mode that would describe tools the model was not given, and would put back a per-server prompt
+cost that code mode exists to remove.
 
 ### 3. getToolDocs
 
@@ -580,14 +600,109 @@ results = youtube.search(query="AI news")
 **Code Processing:**
 1. Code is validated for syntax errors
 2. Tool calls are extracted and validated
-3. Code executes in isolated Starlark context
+3. Code executes in-process with a fresh, resource-budgeted Starlark thread
 4. Result variable is automatically serialized to JSON
 
 **Execution Limits:**
-- Default timeout: 30 seconds per tool execution
-- Memory isolation: Each execution gets its own context
-- No access to host file system or network
-- Logs captured from print() calls
+
+Every execution gets its own budget. The limits below are the defaults; each one is configurable (see [Configuring Execution Limits](#configuring-execution-limits)). There is no limit on how many executions run concurrently.
+
+| Limit | Field | Default |
+|-------|-------|---------|
+| Submitted source code size | `max_source_bytes` | 64 KiB (65536) |
+| Computation steps, including work performed inside builtins | `max_steps` | 1,000,000 |
+| Estimated allocation budget, enforced by the interpreter and gateway value converters before allocating | `max_memory_bytes` | 64 MiB (67108864) |
+| Print and tool log output, including newlines | `max_log_bytes` | 64 KiB (65536) |
+| Nested tool calls | `max_tool_calls` | 64 |
+| Size budget for each tool payload and converted result. Tool result strings count at their raw size; values leaving the interpreter (the `result` and tool arguments) count conservatively for JSON escaping, containers, and indentation | `max_value_bytes` | 1 MiB (1048576) |
+| Nesting depth of values crossing the tool boundary | `max_nesting_depth` | 64 |
+
+- Default timeout: 30 seconds per tool execution (`tool_execution_timeout`)
+- Arguments and results must be JSON-compatible values (tuples are converted to arrays) with scalar dictionary keys. Cycles and integers exceeding 4096 bits are always rejected
+- Starlark has no direct file system or network APIs. Nested tools run in the gateway with the original request's authorization and tool filters
+
+Execution stays inside the gateway: there is no child-process startup or IPC. The runtime uses Canonical's Starlark implementation with computation, allocation, and cancellation checks. These are cooperative limits on accounted work and allocations, not an OS-enforced limit on gateway RSS. Parsing is bounded by source size; MCP transports and tools retain responsibility for their own network buffers and external work.
+
+Exceeding a limit returns a tool error. Later executions start with a fresh scope and budget. Split large workloads into smaller executions. New host builtins must honor the same budgets and cancellation requirements.
+
+### Configuring Execution Limits
+
+Limits are a **global setting** applied to every code mode execution, and they reload without a restart. Set only the fields you want to change: an omitted field, or `0`, uses its default. Negative values are rejected, `max_value_bytes` must be `0` or at least 1024, and `max_nesting_depth` can be at most 1000, because value conversion recurses once per level.
+
+<Note>
+Raising `max_memory_bytes` raises the budget of every concurrent execution. Size it against the gateway's memory and the number of code mode requests you expect to run at once.
+</Note>
+
+<Tabs>
+<Tab title="Web UI">
+
+Open **MCP Settings** in the workspace configuration and edit the **Code Mode Limits** fields. Leave a field empty to use its default, then save.
+
+</Tab>
+<Tab title="API">
+
+`PUT /api/config` takes the whole `client_config`, so read the current one, set `mcp_code_mode_limits`, and send it back:
+
+```bash
+curl -s http://localhost:8080/api/config \
+  | jq '{client_config: (.client_config + {mcp_code_mode_limits: {max_steps: 5000000, max_memory_bytes: 268435456, max_tool_calls: 200}})}' \
+  | curl -X PUT http://localhost:8080/api/config -H "Content-Type: application/json" -d @-
+```
+
+A `client_config` without `mcp_code_mode_limits` keeps the current limits; `"mcp_code_mode_limits": {}` resets every limit to its default.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "mcp": {
+    "tool_manager_config": {
+      "code_mode_limits": {
+        "max_steps": 5000000,
+        "max_memory_bytes": 268435456,
+        "max_tool_calls": 200
+      }
+    }
+  }
+}
+```
+
+`client_config.mcp_code_mode_limits` is also accepted; `mcp.tool_manager_config.code_mode_limits` takes precedence when both are set.
+
+</Tab>
+<Tab title="Helm">
+
+```yaml
+bifrost:
+  mcp:
+    toolManagerConfig:
+      codeModeLimits:
+        maxSteps: 5000000
+        maxMemoryBytes: 268435456
+        maxToolCalls: 200
+```
+
+</Tab>
+<Tab title="Go SDK">
+
+```go
+mcpConfig := &schemas.MCPConfig{
+    ToolManagerConfig: &schemas.MCPToolManagerConfig{
+        CodeModeLimits: &schemas.MCPCodeModeLimits{
+            MaxSteps:       5_000_000,
+            MaxMemoryBytes: 256 << 20,
+            MaxToolCalls:   200,
+        },
+    },
+}
+
+// Change the limits at runtime; nil restores the defaults.
+err := client.UpdateCodeModeLimits(&schemas.MCPCodeModeLimits{MaxToolCalls: 500})
+```
+
+</Tab>
+</Tabs>
 
 ### Error Handling
 
@@ -615,7 +730,7 @@ Classic MCP injects every available tool definition on every model turn. As you 
 
 Code Mode keeps that catalog behind four meta-tools. The model discovers the relevant stub files, reads only the signatures and docs it needs, and executes the multi-tool workflow inside the sandbox. In the benchmark rounds above, that kept Code Mode input usage nearly flat while classic MCP grew from 19.9M to 75.1M input tokens.
 
-The effect is most visible at large scale: with **508 tools across 16 servers**, Code Mode cut input tokens from **75.1M to 5.4M** and estimated cost from **$377.00 to $29.00**, while preserving a **65/65 (100%)** pass rate.
+The effect is most visible at large scale: with **508 tools across 16 servers**, Code Mode cut input tokens from **75.1M to 5.4M** and estimated cost from **\$377.00 to \$29.00**, while preserving a **65/65 (100%)** pass rate.
 
 ---
 

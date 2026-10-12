@@ -1,10 +1,14 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "streamdown/styles.css";
 
 @source "../app/**/*.tsx";
 @source "../node_modules/streamdown/dist/*.js";
 @source "../../../bifrost-enterprise/ui/**/*.tsx";
-/* app/enterprise is a symlink the scanner won't follow — point at the real path */
+/* app/enterprise is a symlink the scanner won't follow while walking ../app, so name it as its own
+   source: rooted at the link, it resolves to whichever checkout (or worktree) the link points at.
+   The fixed path covers setups without the link. */
+@source "./enterprise/**/*.tsx";
 @source "../../../bifrost-enterprise/enterprise-ui/**/*.tsx";
 
 @custom-variant dark (&:is(.dark *));
@@ -74,10 +78,12 @@
 	--color-chart-success: var(--chart-success);
 	--color-chart-error: var(--chart-error);
 	--color-chart-warning: var(--chart-warning);
+	--color-chart-info: var(--chart-info);
 	--color-chart-neutral: var(--chart-neutral);
 	--color-chart-success-ink: var(--chart-success-ink);
 	--color-chart-error-ink: var(--chart-error-ink);
 	--color-chart-warning-ink: var(--chart-warning-ink);
+	--color-chart-info-ink: var(--chart-info-ink);
 	--color-chart-seq-1: var(--chart-seq-1);
 	--color-chart-seq-2: var(--chart-seq-2);
 	--color-chart-seq-3: var(--chart-seq-3);
@@ -181,7 +187,7 @@
 	--secondary: oklch(0.967 0.001 286.375);
 	--secondary-foreground: oklch(0.21 0.006 285.885);
 	--muted: oklch(0.967 0.001 286.375);
-	--muted-foreground: oklch(0.552 0.016 285.938);
+	--muted-foreground: oklch(0.52 0.016 285.938);
 	--accent: oklch(0.967 0.001 286.375);
 	--accent-foreground: oklch(0.21 0.006 285.885);
 	--destructive: oklch(0.577 0.245 27.325);
@@ -191,10 +197,14 @@
 	/* Chart color system. Semantic: status only. Sequential: one hue, stepped
 	   lightness, for ordered series (seq = teal, ord = indigo percentiles).
 	   Categorical: six hues assigned by rank, then grey for "Other". Hues 0-70
-	   are reserved for status, so no category can look like an error. */
+	   are reserved for status, so no category can look like an error. Info is
+	   the in-progress status (a check or a recovery under way); it shares the
+	   blue family with cat-1 and cat-5, so keep it to badges and state marks,
+	   not series that sit beside categorical ones. */
 	--chart-success: oklch(0.63 0.11 182);
 	--chart-error: oklch(0.6 0.16 27);
 	--chart-warning: oklch(0.74 0.13 62);
+	--chart-info: oklch(0.64 0.1 240);
 	--chart-neutral: oklch(0.8 0.012 200);
 	/* Text-safe versions of the status hues: same hue, lightness set so 12px
 	   text clears WCAG 4.5:1 on the card and on a 10% tint of itself. Fills,
@@ -202,6 +212,7 @@
 	--chart-success-ink: oklch(0.45 0.1 182);
 	--chart-error-ink: oklch(0.48 0.16 27);
 	--chart-warning-ink: oklch(0.5 0.12 62);
+	--chart-info-ink: oklch(0.47 0.11 245);
 	--chart-seq-1: oklch(0.38 0.085 205);
 	--chart-seq-2: oklch(0.48 0.115 200);
 	--chart-seq-3: oklch(0.6 0.115 190);
@@ -257,10 +268,12 @@
 	--chart-success: oklch(0.72 0.115 182);
 	--chart-error: oklch(0.68 0.155 27);
 	--chart-warning: oklch(0.8 0.125 62);
+	--chart-info: oklch(0.72 0.1 240);
 	--chart-neutral: oklch(0.55 0.015 220);
 	--chart-success-ink: oklch(0.84 0.1 182);
 	--chart-error-ink: oklch(0.82 0.12 27);
 	--chart-warning-ink: oklch(0.86 0.11 62);
+	--chart-info-ink: oklch(0.84 0.08 240);
 	--chart-seq-1: oklch(0.9 0.05 184);
 	--chart-seq-2: oklch(0.8 0.085 186);
 	--chart-seq-3: oklch(0.68 0.11 190);
@@ -394,6 +407,43 @@ body {
 .query-builder-wrapper {
 	padding: 1rem;
 	padding-inline: 0.5rem;
+}
+
+/* Shimmer for in-flight work. A sweeping highlight over the label reads as
+   "this is happening" without a spinner competing with the text beside it, and
+   it says what is happening rather than only that something is. */
+@keyframes warp-shimmer {
+	0% {
+		background-position: 150% 0;
+	}
+	100% {
+		background-position: -50% 0;
+	}
+}
+
+.warp-shimmer {
+	background: linear-gradient(
+		90deg,
+		var(--color-muted-foreground) 0%,
+		var(--color-muted-foreground) 35%,
+		var(--color-foreground) 50%,
+		var(--color-muted-foreground) 65%,
+		var(--color-muted-foreground) 100%
+	);
+	background-size: 200% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	color: transparent;
+	animation: warp-shimmer 1.6s linear infinite;
+}
+
+/* Respect a reduced-motion preference: the label still reads, it just stops
+   moving. */
+@media (prefers-reduced-motion: reduce) {
+	.warp-shimmer {
+		animation: none;
+		color: var(--color-muted-foreground);
+	}
 }
 
 [data-radix-scroll-area-viewport].no-table > div {
@@ -557,6 +607,22 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 	@apply rounded-sm!;
 }
 
+/* Streamdown's table and code controls ship without a pointer cursor */
+[data-streamdown="table-wrapper"] button:not(:disabled),
+[data-streamdown="code-block-actions"] button:not(:disabled) {
+	@apply cursor-pointer;
+}
+
+/* Copy/download dropdown: streamdown paints it bg-background, which is translucent in dark
+   mode and the same shade as bg-accent in light mode, so use the popover surface instead */
+[data-streamdown="table-wrapper"] div.absolute.top-full {
+	@apply bg-popover text-popover-foreground;
+}
+
+[data-streamdown="table-wrapper"] div.absolute.top-full > button:hover {
+	@apply bg-accent text-accent-foreground;
+}
+
 /* Ensure toasts remain clickable above modal overlays (radix react-remove-scroll) */
 [data-sonner-toaster] {
 	pointer-events: auto !important;
@@ -574,4 +640,168 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 	left: auto !important;
 	right: 0 !important;
 	transform: translate(35%, -35%) !important;
+}
+/* Warp motion.
+
+   An underdamped spring (bounce 0.22) sampled into linear(). It overshoots by 2%
+   and settles visually around 250ms; the 500ms durations below cover its tail.
+   Browsers without linear() leave the property unset and each rule falls back
+   to ease-out-quart. */
+@supports (animation-timing-function: linear(0, 1)) {
+	:root {
+		--warp-spring: linear(
+			0,
+			0.046,
+			0.154,
+			0.289,
+			0.43,
+			0.563,
+			0.679,
+			0.775,
+			0.852,
+			0.91,
+			0.952,
+			0.982,
+			1.001,
+			1.012,
+			1.018,
+			1.02,
+			1.019,
+			1.017,
+			1.015,
+			1.012,
+			1.009,
+			1.007,
+			1.005,
+			1.003,
+			1
+		);
+	}
+}
+
+/* A turn arriving in the Warp transcript.
+
+   It rises rather than fades alone: the transcript grows downward, so a message
+   that enters travelling the same way reads as having been added to a list,
+   where a pure fade reads as something that was always there and is only now
+   being revealed. The distance is deliberately small - 6px is enough to register
+   as motion without turning every message into an event. */
+@keyframes warp-message-in {
+	from {
+		opacity: 0;
+		transform: translateY(6px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+/* The reply waits a beat after the sent message, the way a typing indicator
+   follows a send, so the two do not land as one block. */
+.warp-message-in {
+	animation: warp-message-in 200ms ease-out 120ms both;
+}
+
+/* A message the user just sent. It springs up out of the composer with a small
+   overshoot, growing from the bottom right where the send button sits. */
+@keyframes warp-message-send {
+	from {
+		opacity: 0;
+		transform: translateY(20px) scale(0.94);
+	}
+	40% {
+		opacity: 1;
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.warp-message-send {
+	transform-origin: bottom right;
+	animation: warp-message-send 500ms var(--warp-spring, cubic-bezier(0.165, 0.84, 0.44, 1));
+}
+
+/* A piece of a live answer: a tool row, a chart. Shorter travel than a message,
+   since it lands inside one that is already on screen. */
+@keyframes warp-reveal {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.warp-reveal {
+	animation: warp-reveal 220ms cubic-bezier(0.165, 0.84, 0.44, 1) both;
+}
+
+/* A tool call's spinner resolving into a check or a warning. */
+@keyframes warp-pop {
+	from {
+		opacity: 0;
+		transform: scale(0.4);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.warp-pop {
+	animation: warp-pop 500ms var(--warp-spring, cubic-bezier(0.165, 0.84, 0.44, 1)) both;
+}
+
+/* A finished lookup's check drawing itself in, the way a pen stroke lands:
+   fast at the start, easing into the end of the tick. */
+@keyframes warp-check-draw {
+	from {
+		stroke-dashoffset: 1;
+	}
+	to {
+		stroke-dashoffset: 0;
+	}
+}
+
+.warp-check-draw {
+	stroke-dasharray: 1;
+	animation: warp-check-draw 320ms cubic-bezier(0.165, 0.84, 0.44, 1) both;
+}
+
+@keyframes warp-fade-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+.warp-fade-in {
+	animation: warp-fade-in 200ms ease-out both;
+}
+
+/* Thinking shows in the gaps between lookups. The delay keeps a gap shorter than
+   it from flashing the row in and straight back out. */
+.warp-thinking-in {
+	animation: warp-fade-in 200ms ease-out 200ms both;
+}
+
+/* [data-sd-animate] is the span streamdown wraps around each streamed word. */
+@media (prefers-reduced-motion: reduce) {
+	.warp-message-in,
+	.warp-message-send,
+	.warp-reveal,
+	.warp-pop,
+	.warp-check-draw,
+	.warp-fade-in,
+	.warp-thinking-in,
+	[data-sd-animate] {
+		animation: none;
+	}
 }

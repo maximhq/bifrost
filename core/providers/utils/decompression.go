@@ -3,6 +3,7 @@ package utils
 import (
 	"compress/gzip"
 	"compress/zlib"
+	"errors"
 	"io"
 	"sync"
 
@@ -150,26 +151,36 @@ func ReleaseBrotliReader(br *brotli.Reader) {
 
 // ---- zstd ----
 
-// zstdDecoderMaxMemory bounds the memory a single zstd decoder will
-// pre-allocate for its window buffer, based on the frame header's declared
-// Window_Descriptor - BEFORE any decompressed output exists. Without this,
-// klauspost/compress defaults maxWindowSize to 512 MiB: a ~9-byte frame that
-// just declares a 512 MiB window forces a ~512 MiB allocation per request,
-// and RequestDecompressionMiddleware runs before routing and auth, so this
-// is reachable pre-auth on every route. The existing ClientConfig.
-// MaxRequestBodySizeMB cap doesn't help here - it bounds decompressed output
-// via io.LimitedReader, which only applies after this allocation already
-// happened. Setting WithDecoderMaxMemory also clamps the decoder's effective
-// window cap to the same value (klauspost/compress rejects any frame whose
-// declared window exceeds it, at header-parse time, before allocating) - a
-// fixed ceiling independent of the runtime-configurable body-size limit,
-// generous enough for legitimate payloads while bounding a single hostile
-// request's worst case.
-const zstdDecoderMaxMemory = 100 * 1024 * 1024 // 100 MiB
+// Zstd decoder memory bounds. A zstd frame header declares the back-reference
+// window the decoder allocates up front, before a single output byte exists, so
+// an unbounded decoder lets a nine-byte body pin hundreds of MiB of heap per
+// request. ZstdDecoderMaxWindow covers every window a stock encoder emits for
+// HTTP payloads (zstd -19 tops out at 8 MiB; only --long/--ultra exceed it).
+// ZstdDecoderMaxMemory bounds the declared frame content size at 100 MiB, in
+// line with the default request body limit; callers still enforce their own
+// decompressed-output limit on the stream.
+const (
+	ZstdDecoderMaxWindow uint64 = 8 << 20
+	ZstdDecoderMaxMemory uint64 = 100 << 20
+)
+
+var zstdDecoderOptions = []zstd.DOption{
+	zstd.WithDecoderConcurrency(1),
+	zstd.WithDecoderMaxWindow(ZstdDecoderMaxWindow),
+	zstd.WithDecoderMaxMemory(ZstdDecoderMaxMemory),
+}
+
+// IsDecompressionSizeLimitError reports whether err is a decoder refusing a
+// stream whose declared window or content size exceeds the configured bounds.
+// Callers map it to a payload-too-large response rather than a generic
+// malformed-body error.
+func IsDecompressionSizeLimitError(err error) bool {
+	return errors.Is(err, zstd.ErrWindowSizeExceeded) || errors.Is(err, zstd.ErrDecoderSizeExceeded)
+}
 
 var zstdDecoderPool = sync.Pool{
 	New: func() any {
-		dec, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(zstdDecoderMaxMemory))
+		dec, err := zstd.NewReader(nil, zstdDecoderOptions...)
 		if err != nil {
 			// NewReader(nil) failing is unexpected; return nil so Acquire
 			// falls through to a fresh allocation with the real reader.
@@ -181,9 +192,9 @@ var zstdDecoderPool = sync.Pool{
 
 // AcquireZstdDecoder gets a zstd.Decoder from the pool and resets it to read
 // from r, or creates a new one if the pool is empty or reset fails.
-// Decoders are created with concurrency=1 to minimise goroutine overhead, and
-// a bounded max memory (see zstdDecoderMaxMemory) so a hostile frame's
-// declared window size cannot force an outsized pre-allocation.
+// Decoders are created with concurrency=1 to minimise goroutine overhead and
+// with the window/memory bounds above; a frame declaring a larger window is
+// refused here (IsDecompressionSizeLimitError) before anything is allocated.
 func AcquireZstdDecoder(r io.Reader) (*zstd.Decoder, error) {
 	if v := zstdDecoderPool.Get(); v != nil {
 		if dec, ok := v.(*zstd.Decoder); ok && dec != nil {
@@ -195,7 +206,14 @@ func AcquireZstdDecoder(r io.Reader) (*zstd.Decoder, error) {
 			_ = dec.Reset(nil)
 		}
 	}
-	return zstd.NewReader(r, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(zstdDecoderMaxMemory))
+	dec, err := zstd.NewReader(r, zstdDecoderOptions...)
+	if err != nil {
+		if dec != nil {
+			dec.Close()
+		}
+		return nil, err
+	}
+	return dec, nil
 }
 
 // ReleaseZstdDecoder returns a zstd.Decoder to the pool.

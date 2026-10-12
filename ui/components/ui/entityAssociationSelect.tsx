@@ -209,6 +209,7 @@ export function EntityAssociationSelect({
 									props.isFocused && "bg-background-highlight-primary/60",
 									props.isSelected && "bg-background-highlight-primary/40",
 								)}
+								role="presentation"
 								onClick={() => props.selectOption(props.data)}
 							>
 								<div className="flex items-center justify-between">

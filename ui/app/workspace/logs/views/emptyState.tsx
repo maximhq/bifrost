@@ -47,7 +47,7 @@ function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = fals
 			<div className="absolute top-4 right-4 z-10 flex items-center gap-2">
 				{showLanguageSelect && onLanguageChange && (
 					<Select value={language} onValueChange={onLanguageChange}>
-						<SelectTrigger className="h-8 w-fit text-xs">
+						<SelectTrigger className="h-8 w-fit text-xs" aria-label="Code language">
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>
@@ -60,8 +60,8 @@ function CodeBlock({ code, language, onLanguageChange, showLanguageSelect = fals
 						</SelectContent>
 					</Select>
 				)}
-				<Button variant="ghost" size="icon" onClick={() => copyToClipboard(code)}>
-					<Copy className="size-4" />
+				<Button variant="ghost" size="icon" aria-label="Copy code" onClick={() => copyToClipboard(code)}>
+					<Copy className="size-4" aria-hidden="true" />
 				</Button>
 			</div>
 			<CodeEditor className="w-full" code={code} lang={language} readonly={readonly} height={300} fontSize={14} options={EditorOptions} />

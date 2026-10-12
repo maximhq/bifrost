@@ -1,0 +1,2 @@
+- feat: implement HTTPTransportResponseHeadersHook as a no-op that leaves response headers unchanged
+- chore: upgraded core to v1.12.0 and framework to v1.9.0

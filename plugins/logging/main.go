@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -181,12 +182,19 @@ type contentPolicy struct {
 // visible reports whether logged content is served back through the API/UI.
 func (c contentPolicy) visible() bool { return c.storeContent && !c.hidden }
 
-// resolveContentPolicy resolves content handling for this request. Content
-// logging is disabled either by the static disable_content_logging config or
-// by the x-bf-disable-content-logging header (honored only when
-// BifrostContextKeyAllowPerRequestStorageOverride is true in context, set by
-// ConvertToBifrostContext from allow_per_request_content_storage_override
-// config). What "disabled" means depends on retain_content_in_object_storage:
+// resolveContentPolicy resolves content handling for this request. Three
+// layers decide whether content logging is disabled, each overriding the one
+// before it in both directions:
+//  1. the static disable_content_logging client config;
+//  2. the resolved virtual key's own disable_content_logging, stamped by
+//     governance as BifrostContextKeyGovernanceDisableContentLogging (absent
+//     when the key inherits). Admin configuration, so it needs no gate;
+//  3. the x-bf-disable-content-logging header, honored only when
+//     BifrostContextKeyAllowPerRequestStorageOverride is true in context (set
+//     by ConvertToBifrostContext from allow_per_request_content_storage_override
+//     config).
+//
+// What "disabled" means depends on retain_content_in_object_storage:
 //   - off (default) → content is not persisted anywhere.
 //   - on → content is offloaded to object storage as hidden: the DB row stays
 //     content-free and reads never hydrate the payload back, but the object
@@ -195,6 +203,9 @@ func (c contentPolicy) visible() bool { return c.storeContent && !c.hidden }
 func (p *LoggerPlugin) resolveContentPolicy(ctx *schemas.BifrostContext) contentPolicy {
 	disabled := p.disableContentLogging != nil && *p.disableContentLogging
 	if ctx != nil {
+		if virtualKeyDecision, ok := ctx.Value(schemas.BifrostContextKeyGovernanceDisableContentLogging).(bool); ok {
+			disabled = virtualKeyDecision
+		}
 		if perRequestAllowed, _ := ctx.Value(schemas.BifrostContextKeyAllowPerRequestStorageOverride).(bool); perRequestAllowed {
 			if override, ok := ctx.Value(schemas.BifrostContextKeyDisableContentLogging).(bool); ok {
 				disabled = override
@@ -221,6 +232,50 @@ func (p *LoggerPlugin) contentLoggingEnabled(ctx *schemas.BifrostContext) bool {
 	return p.resolveContentPolicy(ctx).storeContent
 }
 
+// dropCapturedInput removes everything PreLLMHook captured from the request. PreLLMHook decides
+// with the policy as the context stood then; on the passthrough path governance stamps the virtual
+// key's decision only in its own PreLLMHook, after ours, so the final policy in PostLLMHook can be
+// stricter than the one the inputs were captured under.
+func dropCapturedInput(entry *logstore.Log) {
+	if entry == nil {
+		return
+	}
+	entry.InputHistoryParsed = nil
+	entry.ResponsesInputHistoryParsed = nil
+	entry.ParamsParsed = nil
+	entry.ToolsParsed = nil
+	entry.SpeechInputParsed = nil
+	entry.TranscriptionInputParsed = nil
+	entry.OCRInputParsed = nil
+	entry.EmbeddingInputParsed = nil
+	entry.ImageGenerationInputParsed = nil
+	entry.ImageEditInputParsed = nil
+	entry.ImageVariationInputParsed = nil
+	entry.VideoGenerationInputParsed = nil
+	entry.VideoEditInputParsed = nil
+	entry.PassthroughRequestBody = ""
+}
+
+// virtualKeyStampPending reports whether the request presented a virtual key that governance has
+// not resolved onto the context yet, so the key's own content-logging decision is still unknown.
+// The presented key is read the way governance reads it: off the settled identity first, then off
+// the transport's context key.
+func virtualKeyStampPending(ctx *schemas.BifrostContext) bool {
+	if ctx == nil {
+		return false
+	}
+	if stamped, _ := ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID).(string); stamped != "" {
+		return false
+	}
+	if grant := ctx.Grant(); grant != nil {
+		if identity := grant.Identity(); identity != nil && identity.Credential().Kind == string(schemas.EntityVirtualKey) {
+			return true
+		}
+	}
+	presented, _ := ctx.Value(schemas.BifrostContextKeyVirtualKey).(string)
+	return presented != ""
+}
+
 // applyMCPGovernanceFieldsToEntry stamps MCP log ownership from the request context. Every dimension,
 // id and name alike, is recorded by the entry itself so the inspect and ingest paths in enterprise
 // stamp identically without repeating the field list.
@@ -229,6 +284,19 @@ func applyMCPGovernanceFieldsToEntry(ctx *schemas.BifrostContext, entry *logstor
 		return
 	}
 	entry.ApplyGovernanceContext(ctx)
+}
+
+func applyMCPCorrelationFieldsToEntry(ctx *schemas.BifrostContext, entry *logstore.MCPToolLog) {
+	if ctx == nil || entry == nil {
+		return
+	}
+	if sessionID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySessionID); sessionID != "" {
+		entry.SessionID = &sessionID
+	}
+	if agentCorrelationID := requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"); agentCorrelationID != "" {
+		agentCorrelationID = clampString(agentCorrelationID, maxPersistedAgentCorrelationIDLen)
+		entry.AgentCorrelationID = &agentCorrelationID
+	}
 }
 
 // scheduleDeferredUsageUpdate schedules a deferred usage update for the request.
@@ -244,6 +312,7 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	}
 	if entry.TokenUsageParsed == nil {
 		entry.TokenUsageParsed = billed.DeepCopy()
+		p.dropIgnoredProviderCost(entry)
 		entry.PromptTokens = billed.PromptTokens
 		entry.CompletionTokens = billed.CompletionTokens
 		entry.TotalTokens = billed.TotalTokens
@@ -274,9 +343,9 @@ func guardrailMetadataForLog(ctx *schemas.BifrostContext, result *schemas.Bifros
 }
 
 // routingMetadataForLog returns the request's routing-classification metadata
-// snapshot — the semantic classification embed, the llm classification
-// completion, or both. Classification runs once in PreRequestHook, before any
-// retry or fallback attempt, so the context snapshot is stable across every
+// snapshot — a semantic embed, LLM completion, decision-model call, or the embed plus
+// its configured classifier fallback. Classification runs once in PreRequestHook,
+// before any retry or fallback attempt, so the context snapshot is stable across every
 // PostLLMHook call for this request; unlike applyInternalCallCosts, this is
 // not gated to the initial attempt because it feeds display, not billing.
 func routingMetadataForLog(ctx *schemas.BifrostContext, result *schemas.BifrostResponse) *schemas.BifrostRoutingMetadata {
@@ -360,10 +429,21 @@ const (
 	// deferredUsageRetries / deferredUsageBackoff control how long we wait for the
 	// batch writer to land the row before giving up. Backoff doubles per attempt:
 	// 250ms, 500ms, 1s.
-	deferredUsageRetries   = 3
-	deferredUsageBackoff   = 250 * time.Millisecond
-	deferredUsageDBTimeout = 10 * time.Second
+	deferredUsageRetries = 3
+	deferredUsageBackoff = 250 * time.Millisecond
 )
+
+// deferredUsageDBTimeout is the single budget covering a deferred usage update's
+// wait for the migration window, the presence lookups and the UPDATE. A var so
+// tests can shrink it.
+var deferredUsageDBTimeout = 10 * time.Second
+
+// evictedPartialProbeTimeout bounds the IsLogEntryPresent probe PostLLMHook
+// runs synchronously on the terminal no-pending path when no in-memory
+// eviction marker exists. A store that stops answering must not hold the
+// response; past the bound the hook falls through to the ordinary no-pending
+// handling. A var so tests can shrink it.
+var evictedPartialProbeTimeout = 2 * time.Second
 
 // sleepCtx sleeps for d, returning false if the plugin context is cancelled first.
 // Cleanup waits on p.wg, so an uncancellable sleep here delays shutdown.
@@ -585,8 +665,15 @@ func (p *LoggerPlugin) emitSettlementSpan(ctx context.Context, entry *logstore.L
 		}
 	}
 
-	// Cost + usage — the point of the bridge.
-	tracer.SetAttribute(handle, schemas.AttrUsageCost, *entry.Cost)
+	// Cost + usage — the point of the bridge. The breakdown rides along when the
+	// row has one, so a settlement span carries the same split as a live call.
+	if entry.TokenUsageParsed != nil && entry.TokenUsageParsed.Cost != nil {
+		for k, v := range schemas.CostAttributes(entry.TokenUsageParsed.Cost) {
+			tracer.SetAttribute(handle, k, v)
+		}
+	} else {
+		tracer.SetAttribute(handle, schemas.AttrUsageCost, *entry.Cost)
+	}
 	if entry.PromptTokens > 0 {
 		tracer.SetAttribute(handle, schemas.AttrInputTokens, entry.PromptTokens)
 	}
@@ -603,6 +690,9 @@ func (p *LoggerPlugin) emitSettlementSpan(ctx context.Context, entry *logstore.L
 	setStr(schemas.AttrRequestModel, entry.Model)
 	setStr(schemas.AttrResponseModel, entry.Model)
 	setStr(schemas.AttrLegacyRequestType, entry.Object)
+	if entry.BatchDebugParsed != nil {
+		setStr(schemas.AttrBatchID, entry.BatchDebugParsed.BatchID)
+	}
 
 	// Enrichment dims from the log row (no request context at settlement time), so
 	// settled cost filters like live traffic.
@@ -958,6 +1048,21 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		// store hold a slot for ~30s and drop everything arriving in that window.
 		retryCtx, cancelRetry := context.WithTimeout(p.ctx, deferredUsageDBTimeout)
 		defer cancelRetry()
+		// Wait out another node's logstore migration inside the same budget: the
+		// lookup and UPDATE below would otherwise queue behind its ALTER TABLE.
+		// Then also wait for our own batch writer to leave its pause: it polls the
+		// same lock on its own cadence, so it can notice the release up to a poll
+		// interval after this goroutine does, and the row looked up below is still
+		// in its held batch until then. If either outlives the budget the update
+		// is dropped and counted as today.
+		for p.migrationInProgress(retryCtx) || p.writerPaused.Load() {
+			budgetLeft := retryCtx.Err() == nil && p.sleepCtx(maintenancePollInterval) && retryCtx.Err() == nil
+			if !budgetLeft {
+				p.droppedDeferredUsage.Add(1)
+				p.logger.Warn("deferred usage update dropped for request %s: logstore migration pause outlived the whole %s budget", requestID, deferredUsageDBTimeout)
+				return
+			}
+		}
 		var found bool
 		for attempt := range deferredUsageRetries {
 			presentResult, findErr := p.store.IsLogEntryPresent(retryCtx, requestID)
@@ -1047,6 +1152,7 @@ type InitialLogData struct {
 	Object                 string
 	InputHistory           []schemas.ChatMessage
 	ResponsesInputHistory  []schemas.ResponsesMessage
+	EmbeddingInput         []schemas.EmbeddingInputItem
 	Params                 any
 	SpeechInput            *schemas.SpeechInput
 	TranscriptionInput     *schemas.TranscriptionInput
@@ -1059,6 +1165,7 @@ type InitialLogData struct {
 	Tools                  []schemas.ChatTool
 	RoutingEngineUsed      []string
 	Metadata               map[string]any
+	AgentCorrelationID     string
 	PassthroughRequestBody string // Raw body for passthrough requests (UTF-8)
 	UserAgent              string // Raw HTTP User-Agent of the calling client; mapped to a client app in the UI
 	App                    string // Backend-detected client app derived from UserAgent
@@ -1138,31 +1245,41 @@ type LoggerPlugin struct {
 	wg                           sync.WaitGroup
 	logger                       schemas.Logger
 	logCallback                  LogCallback
+	logSubscribers               map[uint64]LogCallback
+	nextLogSubscriberID          uint64
 	batchUsageReporter           jobaccounting.UsageReporter
 	settlementTracer             schemas.Tracer     // tracer for settled batch/video cost spans; nil disables the bridge
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests              atomic.Int64
-	cleanupTicker                *time.Ticker          // Ticker for cleaning up old processing logs
-	logMsgPool                   sync.Pool             // Pool for reusing LogMessage structs
-	updateDataPool               sync.Pool             // Pool for reusing UpdateLogData structs
-	pendingLogsEntries           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
-	pendingLogsToInject          sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
-	pendingMCPLogsToInject       sync.Map              // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
-	writerConfig                 logstore.WriterConfig // Resolved async writer queue and batch settings
-	writeQueue                   chan *writeQueueEntry // Buffered channel for batch write queue
-	closed                       atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
-	deferredUsageSem             chan struct{}         // Limits concurrent deferred usage DB updates
-	deferredUsageWatchSem        chan struct{}         // Caps goroutines parked on a deferred-usage channel (see scheduleDeferredUsageUpdate)
-	droppedDeferredUsage         atomic.Int64          // Deferred usage updates dropped because a semaphore was full
-	clusterNodeID                atomic.Value          // Cluster node ID (string) for log attribution in clustered deployments
-	batchCtx                     context.Context       // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
-	batchCancel                  context.CancelFunc    // Cancels batchCtx
-	batchSweeperCancel           context.CancelFunc    // Cancels the batch accounting sweeper, when enabled
-	videoSweeperCancel           context.CancelFunc    // Cancels the video accounting sweeper, when enabled
-	batchWriterDone              chan struct{}         // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
-	recoveredBatch               []*writeQueueEntry    // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
-	userAgentMappings            atomic.Value          // []compiledUserAgentMapping, read from request hot paths
-	userAgentMappingMu           sync.Mutex            // serializes user-agent mapping write+reload sequences to keep the cache consistent
+	droppedDuringMaintenance     atomic.Int64                   // Subset of droppedRequests dropped while the writer was paused for a logstore migration
+	writerPaused                 atomic.Bool                    // Set by batchWriter while it waits out another node's logstore migration
+	maintenanceCapSpent          atomic.Bool                    // batchWriter already paused maintenanceMaxPause for the current migration window
+	cleanupTicker                *time.Ticker                   // Ticker for cleaning up old processing logs
+	logMsgPool                   sync.Pool                      // Pool for reusing LogMessage structs
+	updateDataPool               sync.Pool                      // Pool for reusing UpdateLogData structs
+	pendingLogsEntries           sync.Map                       // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
+	evictedPartials              sync.Map                       // Maps requestID -> time.Time: partial rows persisted at eviction, awaiting reconcile in PostLLMHook
+	pendingClaimLocks            [pendingClaimShards]sync.Mutex // Striped by requestID; serializes eviction vs terminal PostLLMHook claiming a pending entry
+	pendingLogsToInject          sync.Map                       // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
+	pendingMCPLogsToInject       sync.Map                       // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
+	provisionalMCPArguments      sync.Map                       // Maps mcpLogID -> tool arguments captured before governance stamped the presented key; attached in PostMCPHook only if content ends up visible
+	pendingAgentLogs             sync.Map                       // Maps request/operation key -> *logstore.AgentLog awaiting PostA2AHook
+	pendingAgentLogsToInject     sync.Map                       // Maps traceID -> *pendingAgentInjectEntries (A2A request rows awaiting Inject latency backfill)
+	writerConfig                 logstore.WriterConfig          // Resolved async writer queue and batch settings
+	writeQueue                   chan *writeQueueEntry          // Buffered channel for batch write queue
+	closed                       atomic.Bool                    // Set during cleanup to prevent sends on closed writeQueue
+	deferredUsageSem             chan struct{}                  // Limits concurrent deferred usage DB updates
+	deferredUsageWatchSem        chan struct{}                  // Caps goroutines parked on a deferred-usage channel (see scheduleDeferredUsageUpdate)
+	droppedDeferredUsage         atomic.Int64                   // Deferred usage updates dropped because a semaphore was full
+	clusterNodeID                atomic.Value                   // Cluster node ID (string) for log attribution in clustered deployments
+	batchCtx                     context.Context                // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
+	batchCancel                  context.CancelFunc             // Cancels batchCtx
+	batchSweeperCancel           context.CancelFunc             // Cancels the batch accounting sweeper, when enabled
+	videoSweeperCancel           context.CancelFunc             // Cancels the video accounting sweeper, when enabled
+	batchWriterDone              chan struct{}                  // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
+	recoveredBatch               []*writeQueueEntry             // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
+	userAgentMappings            atomic.Value                   // []compiledUserAgentMapping, read from request hot paths
+	userAgentMappingMu           sync.Mutex                     // serializes user-agent mapping write+reload sequences to keep the cache consistent
 }
 
 // Init creates new logger plugin with given log store. batchStore is the
@@ -1324,6 +1441,23 @@ func (p *LoggerPlugin) cleanupWorker() {
 // cleanupOldProcessingLogs removes processing logs older than 30 minutes
 // and stale pending log entries from the in-memory map
 func (p *LoggerPlugin) cleanupOldProcessingLogs() {
+	// The DB deletes are skipped while another node runs a logstore migration:
+	// a DELETE queued ahead of its pending ALTER TABLE stalls the migration, and
+	// the rows are already 30 minutes stale, so the next tick losing a minute is
+	// harmless. The in-memory sweep below never touches the DB and always runs.
+	if p.migrationInProgress(p.ctx) {
+		p.logger.Debug("skipping processing-log cleanup tick: logstore migration lock is held by another node")
+	} else {
+		p.flushStaleProcessingLogs()
+	}
+
+	// Clean up stale pending log entries (requests where a post-hook never fired)
+	p.cleanupStalePendingLogs()
+}
+
+// flushStaleProcessingLogs deletes LLM, MCP and A2A rows still marked
+// processing after 30 minutes.
+func (p *LoggerPlugin) flushStaleProcessingLogs() {
 	// Calculate timestamp for 30 minutes ago in UTC to match log entry timestamps
 	thirtyMinutesAgo := time.Now().UTC().Add(-1 * 30 * time.Minute)
 
@@ -1337,8 +1471,10 @@ func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 		p.logger.Warn("failed to cleanup old processing MCP tool logs: %v", err)
 	}
 
-	// Clean up stale pending log entries (requests where PostLLMHook never fired)
-	p.cleanupStalePendingLogs()
+	// Delete A2A processing logs older than 30 minutes.
+	if err := p.store.FlushAgentLogs(p.ctx, thirtyMinutesAgo); err != nil {
+		p.logger.Warn("failed to cleanup old processing A2A logs: %v", err)
+	}
 }
 
 // SetLogCallback sets a callback function that will be called for each log entry
@@ -1346,6 +1482,58 @@ func (p *LoggerPlugin) SetLogCallback(callback LogCallback) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.logCallback = callback
+}
+
+// SubscribeLogCallback adds an observer without replacing the transport's
+// primary callback. It returns an idempotent unsubscribe function for reloads.
+func (p *LoggerPlugin) SubscribeLogCallback(callback LogCallback) func() {
+	if callback == nil {
+		return func() {}
+	}
+	p.mu.Lock()
+	p.nextLogSubscriberID++
+	id := p.nextLogSubscriberID
+	if p.logSubscribers == nil {
+		p.logSubscribers = make(map[uint64]LogCallback)
+	}
+	p.logSubscribers[id] = callback
+	p.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			p.mu.Lock()
+			delete(p.logSubscribers, id)
+			p.mu.Unlock()
+		})
+	}
+}
+
+func (p *LoggerPlugin) notifyLogCallbacks(ctx context.Context, entry *logstore.Log) {
+	if entry == nil {
+		return
+	}
+	p.mu.Lock()
+	callbacks := make([]LogCallback, 0, len(p.logSubscribers)+1)
+	if p.logCallback != nil {
+		callbacks = append(callbacks, p.logCallback)
+	}
+	for _, callback := range p.logSubscribers {
+		callbacks = append(callbacks, callback)
+	}
+	p.mu.Unlock()
+	for _, callback := range callbacks {
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil && p.logger != nil {
+					// The value alone, not its contents: a callback can panic with
+					// something derived from the request or response, and that would
+					// put prompt text or credentials into the application log.
+					p.logger.Warn("log callback panicked and was recovered (value withheld: it can carry request content)")
+				}
+			}()
+			callback(ctx, entry)
+		}()
+	}
 }
 
 func (p *LoggerPlugin) SetBatchUsageReporter(reporter jobaccounting.UsageReporter) {
@@ -1472,9 +1660,27 @@ func (p *LoggerPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *s
 	return nil
 }
 
+// HTTPTransportResponseHeadersHook leaves response headers unchanged.
+func (p *LoggerPlugin) HTTPTransportResponseHeadersHook(_ *schemas.BifrostContext, _ *schemas.HTTPRequest, _ *schemas.HTTPResponseMetadata) error {
+	return nil
+}
+
 // HTTPTransportStreamChunkHook passes through streaming chunks unchanged
 func (p *LoggerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, chunk *schemas.BifrostStreamChunk) (*schemas.BifrostStreamChunk, error) {
 	return chunk, nil
+}
+
+func requestHeaderFromContext(ctx *schemas.BifrostContext, name string) string {
+	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	if value := allHeaders[strings.ToLower(name)]; value != "" {
+		return value
+	}
+	for key, value := range allHeaders {
+		if strings.EqualFold(key, name) && value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // userAgentFromContext returns the raw HTTP User-Agent of the calling client from
@@ -1482,23 +1688,16 @@ func (p *LoggerPlugin) HTTPTransportStreamChunkHook(ctx *schemas.BifrostContext,
 // the lookup is case-insensitive. The value is stored verbatim on the log entry;
 // mapping it to a client app happens in the UI.
 func userAgentFromContext(ctx *schemas.BifrostContext) string {
-	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
-	if allHeaders != nil {
-		if ua := allHeaders["user-agent"]; ua != "" {
-			return ua
-		}
-		for key, value := range allHeaders {
-			if strings.EqualFold(key, "user-agent") && value != "" {
-				return value
-			}
-		}
+	if ua := requestHeaderFromContext(ctx, "user-agent"); ua != "" {
+		return ua
 	}
 	ua, _ := ctx.Value(schemas.BifrostContextKeyUserAgent).(string)
 	return ua
 }
 
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
-// from the request context. Returns a new metadata map, or nil if no headers were captured.
+// from the request context, dropping any key under schemas.LoadBalancerMetadataPrefix.
+// Returns a new metadata map, or nil if no headers were captured.
 // System entries (e.g. isAsyncRequest) should be set AFTER calling this so they take precedence.
 func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[string]interface{} {
 	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
@@ -1545,6 +1744,16 @@ func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[st
 		}
 	}
 
+	// The load balancer's prefix is reserved for the routing decision mergeLoadBalancerMetadata
+	// adds from the context: a caller key under it would read as a decision that was never made.
+	for key := range metadata {
+		if strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix) {
+			delete(metadata, key)
+		}
+	}
+	if len(metadata) == 0 {
+		return nil
+	}
 	return metadata
 }
 
@@ -1577,6 +1786,16 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		return req, nil, nil
 	}
 
+	// A live session is one row: only the unit that opens it registers, under the session's id.
+	liveUnit := liveUnitKind(ctx)
+	if liveUnit != "" {
+		if !liveFlag(ctx, schemas.BifrostContextKeyLiveSessionStart) {
+			return req, nil, nil
+		}
+		if sessionID := liveSessionID(ctx); sessionID != "" {
+			requestID = sessionID
+		}
+	}
 	createdTimestamp := time.Now().UTC()
 
 	p.logger.Debug("PreLLMHook: request %s type=%q", requestID, req.RequestType)
@@ -1599,16 +1818,26 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	if req.RequestType == schemas.RealtimeRequest {
 		initialData.Object = "realtime.turn"
 	}
+	if liveUnit != "" {
+		initialData.Object = liveSessionObject
+	}
 
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
 	initialData.UserAgent = userAgentFromContext(ctx)
+	initialData.AgentCorrelationID = requestHeaderFromContext(ctx, "x-bf-agent-correlation-id")
 	initialData.App = p.detectAppFromUserAgent(initialData.UserAgent)
 	if appKey := schemas.AppKeyFromName(initialData.App); appKey != "" {
 		ctx.SetValue(schemas.BifrostContextKeyApp, appKey)
 	}
 
-	if p.contentLoggingEnabled(ctx) {
+	// Capture while content is on, and also while the presented virtual key is still unresolved:
+	// governance may stamp a decision that turns content on after ours runs (the passthrough path).
+	// PostLLMHook applies the final policy and drops whatever it does not allow, and the processing
+	// notification below never carries input captured this way.
+	captureProvisional := virtualKeyStampPending(ctx)
+	requestContentPolicy := p.resolveContentPolicy(ctx)
+	if requestContentPolicy.storeContent || captureProvisional {
 		inputHistory, responsesInputHistory := p.extractInputHistory(req)
 		initialData.InputHistory = inputHistory
 		initialData.ResponsesInputHistory = responsesInputHistory
@@ -1640,6 +1869,12 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 			}
 		case schemas.EmbeddingRequest:
 			initialData.Params = req.EmbeddingRequest.Params
+			items := extractEmbeddingInput(req)
+			reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+			if reqThreshold > 0 && embeddingMediaDataSize(items) > reqThreshold {
+				items = redactEmbeddingMediaData(items)
+			}
+			initialData.EmbeddingInput = items
 		case schemas.RerankRequest:
 			initialData.Params = req.RerankRequest.Params
 		case schemas.DecisionRequest:
@@ -1778,7 +2013,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// Determine effective request ID (fallback override)
 	effectiveRequestID := requestID
 	var parentRequestID string
-	if directParentRequestID, ok := ctx.Value(schemas.BifrostContextKeyParentRequestID).(string); ok && directParentRequestID != "" {
+	if directParentRequestID, ok := ctx.Value(schemas.BifrostContextKeyParentRequestID).(string); ok && directParentRequestID != "" && directParentRequestID != requestID {
+		// A live session's units name the session as their parent; the session row itself is the root.
 		parentRequestID = directParentRequestID
 	}
 	fallbackRequestID, ok := ctx.Value(schemas.BifrostContextKeyFallbackRequestID).(string)
@@ -1815,6 +2051,11 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		InitialData:        initialData,
 		CreatedAt:          time.Now(),
 		Status:             logStatusProcessing,
+		ProvisionalInput:   captureProvisional,
+		ContentPolicy:      &requestContentPolicy,
+	}
+	if liveUnit != "" {
+		pending.Live = &liveSessionState{}
 	}
 	// Seed LastActivity so the first idle-eviction check has a baseline even if no
 	// PostLLMHook chunk has fired yet.
@@ -1822,12 +2063,13 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	p.pendingLogsEntries.Store(effectiveRequestID, pending)
 	// Call callback synchronously for immediate UI feedback (WebSocket "processing" notification).
 	// The entry does not exist in the DB yet - it will be written when PostLLMHook fires.
-	p.mu.Lock()
-	callback := p.logCallback
-	p.mu.Unlock()
-	if callback != nil {
-		callback(p.ctx, buildInitialLogEntry(pending))
+	initialEntry := buildInitialLogEntry(pending)
+	if captureProvisional || !p.contentLoggingEnabled(ctx) {
+		// Subscribers see this entry before governance has decided for the key, so it carries
+		// no input until the final policy in PostLLMHook says it may.
+		dropCapturedInput(initialEntry)
 	}
+	p.notifyLogCallbacks(p.ctx, initialEntry)
 	return req, nil, nil
 }
 
@@ -1852,12 +2094,15 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		p.logger.Error("request-id not found in context or is empty")
 		return result, bifrostErr, nil
 	}
+	if kind := liveUnitKind(ctx); kind != "" {
+		return p.postLiveUnit(ctx, kind, result, bifrostErr)
+	}
 	// If fallback request ID is present, use it instead of the primary request ID
 	fallbackRequestID, ok := ctx.Value(schemas.BifrostContextKeyFallbackRequestID).(string)
 	if ok && fallbackRequestID != "" {
 		requestID = fallbackRequestID
 	}
-	requestType, _, originalModelRequested, resolvedModelUsed := bifrost.GetResponseFields(result, bifrostErr)
+	requestType, provider, originalModelRequested, resolvedModelUsed := bifrost.GetResponseFields(result, bifrostErr)
 	resolvedKeyAlias := bifrost.GetResponseRoutingInfo(result, bifrostErr).ResolvedKeyAlias
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
@@ -1874,16 +2119,76 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	p.logger.Debug("PostLLMHook: request %s type=%q isFinalChunk=%v hasError=%v", requestID, requestType, isFinalChunk, bifrostErr != nil)
 
-	// Retrieve pending input data from PreLLMHook
+	// Retrieve pending input data from PreLLMHook. A terminal call takes the entry
+	// under the request's claim lock together with the eviction marker, so the
+	// stale sweep can never interleave between the two (see persistEvictedPartial).
 	var pendingVal any
-	var hasPending bool
-	if !bifrost.IsStreamRequestType(requestType) || isFinalChunk || bifrostErr != nil {
+	var hasPending, evicted bool
+	isTerminal := !bifrost.IsStreamRequestType(requestType) || isFinalChunk || bifrostErr != nil
+	if isTerminal {
+		lock := p.pendingClaimLock(requestID)
+		lock.Lock()
 		pendingVal, hasPending = p.pendingLogsEntries.LoadAndDelete(requestID)
+		if !hasPending {
+			_, evicted = p.evictedPartials.LoadAndDelete(requestID)
+		}
+		lock.Unlock()
 	} else {
 		pendingVal, hasPending = p.pendingLogsEntries.Load(requestID)
 	}
 
 	p.logger.Debug("PostLLMHook: pending data lookup for request %s: found=%v", requestID, hasPending)
+
+	// A stream that resumes after its pending entry was evicted keeps feeding the
+	// accumulator from its non-final chunks, so the terminal reconcile below
+	// carries the resumed output too. Decided by the in-memory marker only; no
+	// chunk ever probes the DB.
+	if !hasPending && !isTerminal && result != nil && requestType != schemas.RealtimeRequest {
+		if _, marked := p.evictedPartials.Load(requestID); marked {
+			if tracer, traceID, err := bifrost.GetTracerFromContext(ctx); err == nil && tracer != nil && traceID != "" {
+				tracer.ProcessStreamingChunk(ctx, traceID, false, result, nil)
+			}
+			return result, bifrostErr, nil
+		}
+	}
+
+	// Evicted-pending recovery: a request idle past pendingLogTTL had its pending
+	// entry dropped, but cleanupStalePendingLogs persisted a partial "processing"
+	// row first. On a terminal call, run the normal completion flow on a stub
+	// pending with no input and reconcile the result onto that row with an UPDATE
+	// (see persistCompletedEntry) instead of losing the log. Presence is decided
+	// by the in-memory marker first (set at eviction only once the partial insert
+	// was queued, so it is reliable even while that insert is still in flight);
+	// only a miss, e.g. a row persisted by a previous process, falls back to a
+	// bounded DB probe on p.ctx, since the request ctx may already be cancelled on
+	// timeout.
+	if !hasPending && isTerminal {
+		present := evicted
+		if !present {
+			probeCtx, cancelProbe := context.WithTimeout(p.ctx, evictedPartialProbeTimeout)
+			ok, perr := p.store.IsLogEntryPresent(probeCtx, requestID)
+			cancelProbe()
+			if perr == nil && ok {
+				present = true
+			}
+		}
+		if present {
+			p.logger.Warn("no pending log data found for request %s, reconciling output onto persisted partial row", requestID)
+			// Object/Provider/Model are rewritten with the values the row already
+			// has; every other input column stays zero, so the UPDATE leaves the
+			// partial row's input and metadata intact.
+			pendingVal, hasPending = &PendingLogData{
+				RequestID:      requestID,
+				CreatedAt:      time.Now(),
+				EvictedPartial: true,
+				InitialData: &InitialLogData{
+					Object:   string(requestType),
+					Provider: string(provider),
+					Model:    originalModelRequested,
+				},
+			}, true
+		}
+	}
 
 	if !hasPending {
 		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
@@ -1900,13 +2205,17 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 				Timestamp: time.Now().UTC(),
 				CreatedAt: time.Now().UTC(),
 			}
+			if agentCorrelationID := requestHeaderFromContext(ctx, "x-bf-agent-correlation-id"); agentCorrelationID != "" {
+				agentCorrelationID = clampString(agentCorrelationID, maxPersistedAgentCorrelationIDLen)
+				entry.AgentCorrelationID = &agentCorrelationID
+			}
 			if ua := userAgentFromContext(ctx); ua != "" {
 				entry.UserAgent = &ua
 				if app := p.detectAppFromUserAgent(ua); app != "" {
 					entry.App = &app
 				}
 			}
-			entry.MetadataParsed = mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx)
+			entry.MetadataParsed = mergeLoadBalancerMetadata(mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx), ctx)
 			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
 				if entry.MetadataParsed == nil {
 					entry.MetadataParsed = make(map[string]interface{})
@@ -2038,6 +2347,11 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	// Build the complete log entry with input (from PreLLMHook) + output (from PostLLMHook)
 	entry := buildCompleteLogEntryFromPending(pending)
+	if !contentLoggingEnabled {
+		// The final policy is stricter than the one the inputs were captured under (a virtual key
+		// stamped after our PreLLMHook, as on the passthrough path): take them back out.
+		dropCapturedInput(entry)
+	}
 	entry.GuardrailDebugParsed = guardrailMetadata
 	entry.RoutingMetadataParsed = routingMetadata
 	// Apply common output fields. For cache hits, prefer the cache-serve
@@ -2113,6 +2427,12 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	}
 	entry.MetadataParsed = pending.InitialData.Metadata
 	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
+	entry.MetadataParsed = mergeLoadBalancerMetadata(entry.MetadataParsed, ctx)
+	if pending.EvictedPartial {
+		// The stub carries no request metadata; the merges above can still produce
+		// a small map, which would replace the partial row's metadata column.
+		entry.MetadataParsed = nil
+	}
 	entry.RoutingEngineLogs = routingEngineLogs
 
 	// Path A: Error with nil result
@@ -2159,7 +2479,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
 		p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
-		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+		p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
 	}
@@ -2263,7 +2583,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// Attach the per-category cost split to the accumulated stream usage so
 		// log detail views can surface input / output / cache costs.
 		p.attachCostBreakdown(ctx, entry, result)
-		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+		p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
 	}
@@ -2367,9 +2687,60 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			Name: *entry.RoutingRuleName,
 		}
 	}
-	p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+	p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)
 	p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 	return result, bifrostErr, nil
+}
+
+// persistCompletedEntry writes a completed log entry. The normal path inserts it
+// through storeOrEnqueueEntry. An entry built on an evicted-partial stub instead
+// reconciles onto the row persisted at eviction via the write queue's UPDATE
+// lane: storeOrEnqueueEntry must be bypassed because it parks entries for
+// Inject, which re-enqueues them as conflict-safe inserts that would no-op
+// against the existing row and lose the output. The content policy is applied
+// here since storeOrEnqueueEntry is skipped; Inject's plugin-log and overhead
+// backfill is not available on this path.
+func (p *LoggerPlugin) persistCompletedEntry(ctx *schemas.BifrostContext, entry *logstore.Log, reconcileFromPartial bool) {
+	if !reconcileFromPartial {
+		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+		return
+	}
+	policy := p.resolveContentPolicy(ctx)
+	entry.ContentHidden = !policy.visible()
+	attachLogRedactionData(ctx, entry, policy.visible())
+	p.enqueueLogUpdate(entry, p.makeReconcileCallback())
+}
+
+// makeReconcileCallback returns the post-write callback for a reconciling
+// update. The queued entry carries output fields only, so subscribers (the
+// websocket broadcast, indexers) are handed the full row re-read from the
+// store with the entry's own payload laid over it: on an object-storage-backed
+// store the re-read hydrates from the stored object, whose merge upload may not
+// have landed yet, so the output must come from the entry that was just
+// written or the notification would be missing the answer. The sparse entry is
+// the fallback when the read fails.
+func (p *LoggerPlugin) makeReconcileCallback() func(entry *logstore.Log) {
+	return func(entry *logstore.Log) {
+		if entry == nil {
+			return
+		}
+		full, err := p.store.FindByID(p.ctx, entry.ID)
+		if err != nil || full == nil {
+			p.logger.Debug("reconcile callback: re-read of log %s failed, notifying with partial entry: %v", entry.ID, err)
+			p.notifyLogCallbacks(p.ctx, entry)
+			return
+		}
+		if err := entry.SerializeFields(); err == nil {
+			if written, err := sonic.Marshal(logstore.ExtractPayload(entry)); err == nil {
+				if err := logstore.MergePayloadFromJSON(full, written); err == nil {
+					if err := full.DeserializeFields(); err != nil {
+						p.logger.Debug("reconcile callback: re-parse of log %s failed: %v", entry.ID, err)
+					}
+				}
+			}
+		}
+		p.notifyLogCallbacks(p.ctx, full)
+	}
 }
 
 // Cleanup is called when the plugin is being shut down. It stops the
@@ -2432,6 +2803,11 @@ func (p *LoggerPlugin) drainPending() {
 	deadline := time.Now().Add(cleanupDrainTimeout)
 	batch := p.recoveredBatch
 	p.recoveredBatch = nil
+	// p.batchCtx is already cancelled (that is how batchWriter was stopped), so
+	// retries and splitting inside processBatch get their own context bounded
+	// by the same wall-clock deadline instead.
+	drainCtx, cancelDrain := context.WithDeadline(p.ctx, deadline)
+	defer cancelDrain()
 
 	// Pull everything currently buffered in the channel. Non-blocking — we
 	// only want what is there right now; new sends are already blocked by
@@ -2459,8 +2835,17 @@ drainQueue:
 		if chunkSize > len(batch) {
 			chunkSize = len(batch)
 		}
-		p.safeProcessBatch(batch[:chunkSize])
+		left := p.safeProcessBatch(drainCtx, batch[:chunkSize])
 		batch = batch[chunkSize:]
+		if len(left) > 0 {
+			// Only returned when drainCtx ended: the deadline passed or the
+			// plugin's parent context was cancelled. Either way nothing further
+			// can be written, so count what is left and stop.
+			remaining := len(left) + len(batch)
+			p.droppedRequests.Add(int64(remaining))
+			p.logger.Warn("logging plugin cleanup drain interrupted (%v); dropping %d entries", drainCtx.Err(), remaining)
+			return
+		}
 	}
 }
 
@@ -2559,6 +2944,11 @@ func (p *LoggerPlugin) Inject(_ context.Context, trace *schemas.Trace) error {
 	if joinKey == "" {
 		joinKey = trace.TraceID
 	}
+	// A2A request rows parked by PostA2AHook are drained here too, so their
+	// upstream/overhead/breakdown come from the same authoritative root-span
+	// attributes as LLM rows. Done before the LLM early-return below: an A2A
+	// trace has no pending LLM entries.
+	p.injectAgentEntries(trace, joinKey)
 	entryVal, ok := p.pendingLogsToInject.LoadAndDelete(joinKey)
 	if !ok {
 		return nil
@@ -2678,6 +3068,373 @@ func serializePluginLogs(logs []schemas.PluginLogEntry) string {
 	return string(data)
 }
 
+// serializePluginLogsBounded drops the oldest entries until the complete JSON document fits.
+func serializePluginLogsBounded(logs []schemas.PluginLogEntry, maxLen int) string {
+	for len(logs) > 0 {
+		serialized := serializePluginLogs(logs)
+		if serialized == "" || len(serialized) <= maxLen {
+			return serialized
+		}
+		logs = logs[1:]
+	}
+	return ""
+}
+
+// A2A Plugin Interface Implementation
+
+const maxA2APluginLogsLen = 16 * 1024
+
+func a2aPendingKey(requestID string, requestType schemas.A2ARequestType) string {
+	return requestID + "\x00" + string(requestType)
+}
+
+func optionalBoundedA2AValue(value string, max int) *string {
+	if value == "" {
+		return nil
+	}
+	bounded := clampString(value, max)
+	return &bounded
+}
+
+func applyA2ARequestCorrelation(entry *logstore.AgentLog, req *schemas.BifrostA2ARequest) {
+	if entry == nil || req == nil {
+		return
+	}
+	if send := req.BifrostA2ASendMessageRequest; send != nil {
+		entry.RequestMessageID = optionalBoundedA2AValue(send.MessageID, 255)
+		entry.ContextID = optionalBoundedA2AValue(send.ContextID, 255)
+		entry.TaskID = optionalBoundedA2AValue(send.TaskID, 255)
+	}
+	if task := req.BifrostA2ATaskRequest; task != nil {
+		entry.TaskID = optionalBoundedA2AValue(task.TaskID, 255)
+	}
+	if push := req.BifrostA2APushRequest; push != nil {
+		entry.PushConfigID = optionalBoundedA2AValue(push.PushConfigID, 255)
+		entry.DeliveryID = optionalBoundedA2AValue(push.DeliveryID, 255)
+		entry.AttemptID = optionalBoundedA2AValue(push.AttemptID, 255)
+	}
+}
+
+func applyA2AResponseCorrelation(entry *logstore.AgentLog, resp *schemas.BifrostA2AResponse) {
+	if entry == nil || resp == nil {
+		return
+	}
+	if send := resp.BifrostA2ASendMessageResponse; send != nil {
+		entry.ResponseMessageID = optionalBoundedA2AValue(send.MessageID, 255)
+		if value := optionalBoundedA2AValue(send.ContextID, 255); value != nil {
+			entry.ContextID = value
+		}
+		if value := optionalBoundedA2AValue(send.TaskID, 255); value != nil {
+			entry.TaskID = value
+		}
+	}
+	if task := resp.BifrostA2ATaskResponse; task != nil {
+		if value := optionalBoundedA2AValue(task.TaskID, 255); value != nil {
+			entry.TaskID = value
+		}
+		if value := optionalBoundedA2AValue(task.ContextID, 255); value != nil {
+			entry.ContextID = value
+		}
+		entry.TaskState = optionalBoundedA2AValue(task.State, 64)
+	}
+	if push := resp.BifrostA2APushResponse; push != nil {
+		if value := optionalBoundedA2AValue(push.PushConfigID, 255); value != nil {
+			entry.PushConfigID = value
+		}
+		if value := optionalBoundedA2AValue(push.DeliveryID, 255); value != nil {
+			entry.DeliveryID = value
+		}
+		if value := optionalBoundedA2AValue(push.AttemptID, 255); value != nil {
+			entry.AttemptID = value
+		}
+	}
+}
+
+func applyA2ATransports(entry *logstore.AgentLog, ctx *schemas.BifrostContext) {
+	if entry == nil || ctx == nil {
+		return
+	}
+	if downstream, ok := ctx.Value(schemas.BifrostContextKeyA2ADownstreamTransport).(string); ok {
+		entry.DownstreamTransport = optionalBoundedA2AValue(downstream, 32)
+	}
+	if upstream, ok := ctx.Value(schemas.BifrostContextKeyA2AUpstreamTransport).(string); ok {
+		entry.UpstreamTransport = optionalBoundedA2AValue(upstream, 32)
+	}
+}
+
+func applyA2AContentPolicy(entry *logstore.AgentLog, policy contentPolicy) {
+	if entry == nil {
+		return
+	}
+	entry.ContentHidden = policy.hidden
+	if policy.storeContent {
+		return
+	}
+	entry.RequestBody = nil
+	entry.ResponseBody = nil
+	entry.EventBody = nil
+	entry.RawRequest = nil
+	entry.RawResponse = nil
+}
+
+// PreA2AHook records protocol-neutral correlation fields and the payload values
+// supplied by the A2A transport after its existing redaction policy is applied.
+func (p *LoggerPlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.BifrostA2ARequest) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
+	if ctx == nil || req == nil {
+		return req, nil, nil
+	}
+	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	if requestID == "" {
+		p.logger.Warn("request-id not found in context or is empty in PreA2AHook")
+		return req, nil, nil
+	}
+	entry := &logstore.AgentLog{
+		ID:         uuid.New().String(),
+		Timestamp:  time.Now().UTC(),
+		RecordKind: "request",
+		Operation:  clampString(req.RequestType.OperationName(), 128),
+		Status:     "processing",
+		AgentName:  clampString(req.AgentName, 255),
+		RequestID:  clampString(requestID, 255),
+	}
+	entry.ApplyGovernanceContext(ctx)
+	applyA2ATransports(entry, ctx)
+	entry.TraceID = optionalBoundedA2AValue(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyTraceID), 255)
+	entry.RequestBody = req.RequestBody
+	applyA2ARequestCorrelation(entry, req)
+	p.pendingAgentLogs.Store(a2aPendingKey(requestID, req.RequestType), entry)
+	return req, nil, nil
+}
+
+// PostA2AHook completes and asynchronously persists the operation log.
+func (p *LoggerPlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schemas.BifrostA2AResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostA2AResponse, *schemas.BifrostError, error) {
+	if ctx == nil {
+		return resp, bifrostErr, nil
+	}
+	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	requestType := schemas.A2ARequestType("")
+	agentName := ""
+	if resp != nil {
+		requestType = resp.ExtraFields.A2ARequestType
+		agentName = resp.ExtraFields.AgentName
+	} else if bifrostErr != nil {
+		requestType = bifrostErr.ExtraFields.A2ARequestType
+		agentName = bifrostErr.ExtraFields.A2AAgentName
+	}
+	pending, loaded := p.pendingAgentLogs.LoadAndDelete(a2aPendingKey(requestID, requestType))
+	entry, _ := pending.(*logstore.AgentLog)
+	if entry == nil {
+		entry = &logstore.AgentLog{
+			ID:         uuid.New().String(),
+			Timestamp:  time.Now().UTC(),
+			RecordKind: "request",
+			Operation:  clampString(requestType.OperationName(), 128),
+			Status:     "processing",
+			AgentName:  clampString(agentName, 255),
+			RequestID:  clampString(requestID, 255),
+		}
+		if !loaded {
+			entry.TraceID = optionalBoundedA2AValue(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyTraceID), 255)
+		}
+	}
+	// Governance may run after the logging pre-hook, so refresh the snapshot
+	// after every plugin has observed the request. Missing context values preserve
+	// attribution captured earlier in the operation.
+	entry.ApplyGovernanceContext(ctx)
+	applyA2ATransports(entry, ctx)
+	if resp != nil {
+		latency := float64(resp.ExtraFields.Latency)
+		entry.Latency = &latency
+		// Provisional upstream/overhead measured by the agent gate. Superseded by
+		// the root-span backfill in injectAgentEntries when the trace completes.
+		if resp.ExtraFields.UpstreamLatency != nil {
+			up := float64(*resp.ExtraFields.UpstreamLatency)
+			entry.UpstreamLatency = &up
+		}
+		if resp.ExtraFields.OverheadLatency != nil {
+			ov := float64(*resp.ExtraFields.OverheadLatency)
+			entry.OverheadLatency = &ov
+		}
+		entry.ResponseBody = resp.ResponseBody
+		applyA2AResponseCorrelation(entry, resp)
+	}
+	policy := p.resolveContentPolicy(ctx)
+	if bifrostErr != nil {
+		shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
+		entry.Status = "error"
+		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, policy.visible(), shouldStoreRaw)
+	} else {
+		entry.Status = "success"
+	}
+	if capture := schemas.GetA2ARawCapture(ctx); capture != nil {
+		entry.RawRequest, entry.RawResponse = capture.Snapshot()
+	}
+	applyA2AContentPolicy(entry, policy)
+	entry.PluginLogs = serializePluginLogsBounded(ctx.GetPluginLogs(), maxA2APluginLogsLen)
+	p.storeOrEnqueueAgentEntry(ctx, entry)
+	return resp, bifrostErr, nil
+}
+
+// storeOrEnqueueAgentEntry parks a terminal A2A request row for Inject() to
+// backfill authoritative latency numbers from the completed trace, mirroring
+// storeOrEnqueueEntry for LLM rows. Rows with no trace (or an already-ended
+// trace) are written directly without backfill.
+func (p *LoggerPlugin) storeOrEnqueueAgentEntry(ctx *schemas.BifrostContext, entry *logstore.AgentLog) {
+	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	if traceID == "" || p.traceAlreadyEnded(ctx, traceID) {
+		p.enqueueAgentLogEntry(entry)
+		return
+	}
+	existing, loaded := p.pendingAgentLogsToInject.LoadOrStore(traceID, &pendingAgentInjectEntries{entries: []*logstore.AgentLog{entry}, createdAt: time.Now()})
+	if !loaded {
+		// The trace may have ended between the check above and this store; a slot
+		// parked now would be orphaned. Reclaim it, exactly as storeOrEnqueueEntry does.
+		if p.traceAlreadyEnded(ctx, traceID) {
+			if val, ok := p.pendingAgentLogsToInject.LoadAndDelete(traceID); ok {
+				orphaned := val.(*pendingAgentInjectEntries)
+				orphaned.mu.Lock()
+				orphaned.drained = true
+				late := orphaned.entries
+				orphaned.mu.Unlock()
+				for _, e := range late {
+					p.enqueueAgentLogEntry(e)
+				}
+			}
+		}
+		return
+	}
+	pending := existing.(*pendingAgentInjectEntries)
+	pending.mu.Lock()
+	if pending.drained {
+		pending.mu.Unlock()
+		p.enqueueAgentLogEntry(entry)
+		return
+	}
+	pending.entries = append(pending.entries, entry)
+	pending.mu.Unlock()
+}
+
+// injectAgentEntries drains the A2A request rows parked for a completed trace and
+// backfills upstream/overhead from the root-span attributes plus the per-span
+// overhead breakdown, mirroring the LLM backfill in Inject. Request-level
+// numbers go on one row per trace (latest Timestamp, tie-broken by ID); any
+// other parked rows keep only their per-row latency.
+func (p *LoggerPlugin) injectAgentEntries(trace *schemas.Trace, joinKey string) {
+	val, ok := p.pendingAgentLogsToInject.LoadAndDelete(joinKey)
+	if !ok {
+		return
+	}
+	pending, ok := val.(*pendingAgentInjectEntries)
+	if !ok {
+		return
+	}
+	pending.mu.Lock()
+	pending.drained = true
+	entries := pending.entries
+	pending.mu.Unlock()
+	if len(entries) == 0 {
+		return
+	}
+	var upstreamMs, overheadMs float64
+	var upOK, ovOK bool
+	if trace.RootSpan != nil && trace.RootSpan.Attributes != nil {
+		upstreamMs, upOK = overhead.TraceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostUpstreamDurationMs)
+		overheadMs, ovOK = overhead.TraceAttrFloatMs(trace.RootSpan.Attributes, schemas.AttrBifrostOverheadDurationMs)
+	}
+	overheadBreakdown, measuredOverheadMs, isStreaming := overhead.Compute(trace, overheadMs, ovOK, upstreamMs, upOK)
+	// Prefer the parent request row over incremental stream-event rows. Within
+	// the same record kind, use the latest row for deterministic fallback.
+	stampIdx := 0
+	for i, entry := range entries {
+		best := entries[stampIdx]
+		entryIsRequest := entry.RecordKind == "request"
+		bestIsRequest := best.RecordKind == "request"
+		if (entryIsRequest && !bestIsRequest) ||
+			(entryIsRequest == bestIsRequest && (entry.Timestamp.After(best.Timestamp) ||
+				(entry.Timestamp.Equal(best.Timestamp) && entry.ID > best.ID))) {
+			stampIdx = i
+		}
+	}
+	for i, entry := range entries {
+		if i == stampIdx {
+			// Clear both provisional components before backfilling, so a partial
+			// root span never mixes the two sources.
+			if upOK || ovOK {
+				entry.UpstreamLatency = nil
+				entry.OverheadLatency = nil
+			}
+			if isStreaming && upOK && ovOK {
+				total := upstreamMs + overheadMs
+				measured := measuredOverheadMs
+				if measured > overheadMs {
+					measured = overheadMs
+				}
+				if measured < 0 {
+					measured = 0
+				}
+				up := total - measured
+				entry.UpstreamLatency = &up
+				entry.OverheadLatency = &measured
+				entry.Latency = &total
+			} else {
+				if upOK {
+					u := upstreamMs
+					entry.UpstreamLatency = &u
+				}
+				if ovOK {
+					o := overheadMs
+					entry.OverheadLatency = &o
+				}
+				if upOK && ovOK {
+					total := upstreamMs + overheadMs
+					entry.Latency = &total
+				}
+			}
+			if len(overheadBreakdown) > 0 {
+				entry.OverheadBreakdownParsed = overheadBreakdown
+			}
+		} else if upOK || ovOK {
+			entry.UpstreamLatency = nil
+			entry.OverheadLatency = nil
+		}
+		p.enqueueAgentLogEntry(entry)
+	}
+}
+
+func (p *LoggerPlugin) ObserveA2AEvent(ctx *schemas.BifrostContext, event *schemas.BifrostA2AEvent) {
+	if ctx == nil || event == nil {
+		return
+	}
+	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)
+	if requestID == "" {
+		return
+	}
+	sequence := event.Sequence
+	entry := &logstore.AgentLog{
+		ID:            uuid.New().String(),
+		Timestamp:     time.Now().UTC(),
+		RecordKind:    "event",
+		Operation:     clampString(event.RequestType.OperationName(), 128),
+		Status:        "success",
+		AgentName:     clampString(event.AgentName, 255),
+		RequestID:     clampString(requestID, 255),
+		EventSequence: &sequence,
+		EventType:     optionalBoundedA2AValue(string(event.EventType), 64),
+		TaskID:        optionalBoundedA2AValue(event.TaskID, 255),
+		ContextID:     optionalBoundedA2AValue(event.ContextID, 255),
+		MessageID:     optionalBoundedA2AValue(event.MessageID, 255),
+		ArtifactID:    optionalBoundedA2AValue(event.ArtifactID, 255),
+		TaskState:     optionalBoundedA2AValue(event.TaskState, 64),
+		ContentType:   optionalBoundedA2AValue(event.ContentType, 255),
+		EventBody:     event.Body,
+	}
+	entry.ApplyGovernanceContext(ctx)
+	applyA2ATransports(entry, ctx)
+	applyA2AContentPolicy(entry, p.resolveContentPolicy(ctx))
+	entry.TraceID = optionalBoundedA2AValue(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyTraceID), 255)
+	p.enqueueAgentLogEntry(entry)
+}
+
 // MCP Plugin Interface Implementation
 
 // SetMCPToolLogCallback sets a callback function that will be called for each MCP tool log entry
@@ -2771,6 +3528,7 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
+	applyMCPCorrelationFieldsToEntry(ctx, entry)
 
 	// Capture the raw User-Agent of the calling client (stored verbatim; the UI
 	// maps it to a client app such as Claude Code, Codex, or Cursor).
@@ -2781,8 +3539,16 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
-	// Set arguments if content logging is enabled
-	if p.contentLoggingEnabled(ctx) {
+	// Set arguments if content logging is enabled. Governance's PreMCPHook runs after ours, so a
+	// request that presents a virtual key governance has not stamped yet has no final content
+	// decision: hold the arguments aside instead of putting them on the pending entry, where the
+	// pre-hook callback and the stale-entry reaper would expose them. PostMCPHook attaches them once
+	// the policy is final; a stale entry never gets them.
+	// The hold does not depend on the current policy: a key that turns content on over a disabled
+	// client flag is entitled to its arguments once PostMCPHook sees the final decision.
+	if virtualKeyStampPending(ctx) {
+		p.provisionalMCPArguments.Store(mcpLogID, arguments)
+	} else if p.contentLoggingEnabled(ctx) {
 		entry.ArgumentsParsed = arguments
 	}
 
@@ -2865,6 +3631,18 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	}
 
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
+	// Resolved once here, after every pre-hook has run. PreMCPHook captured the arguments with
+	// whatever the context said at the time, and governance's PreMCPHook, which stamps the virtual
+	// key's content decision, runs after ours; a key that turns content off must take the
+	// arguments back out along with the result.
+	contentVisible := p.resolveContentPolicy(ctx).visible()
+	if held, ok := p.provisionalMCPArguments.LoadAndDelete(mcpLogID); ok && contentVisible {
+		entry.ArgumentsParsed = held
+	}
+	if !contentVisible {
+		entry.ArgumentsParsed = nil
+	}
+	applyMCPCorrelationFieldsToEntry(ctx, entry)
 	if resp != nil {
 		latency := float64(resp.ExtraFields.Latency)
 		entry.Latency = &latency
@@ -2882,12 +3660,12 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	if bifrostErr != nil {
 		entry.Status = "error"
 		shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
-		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, p.resolveContentPolicy(ctx).visible(), shouldStoreRaw)
+		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, contentVisible, shouldStoreRaw)
 	} else if resp != nil {
 		entry.Status = "success"
 		// MCP tool logs have no hidden-content mode, so content is only
 		// stored when it is also visible.
-		if p.resolveContentPolicy(ctx).visible() {
+		if contentVisible {
 			var result interface{}
 			if resp.ChatMessage != nil {
 				if resp.ChatMessage.Content != nil && resp.ChatMessage.Content.ContentStr != nil {
@@ -2921,7 +3699,7 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	p.mu.Lock()
 	callback := p.mcpToolLogCallback
 	p.mu.Unlock()
-	attachMCPLogRedactionData(ctx, entry, p.contentLoggingEnabled(ctx))
+	attachMCPLogRedactionData(ctx, entry, contentVisible)
 	entry.PluginLogs = serializePluginLogs(ctx.GetPluginLogs())
 	p.enqueueMCPToolLogEntry(entry, callback)
 

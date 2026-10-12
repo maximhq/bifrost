@@ -876,10 +876,12 @@ Once all approved changes are applied:
    make dev PORT=<port> APP_DIR=$(pwd)/tests/integrations/python   # in the background; wait for /health = 200
    ```
    ```bash
-   make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>"
+   make run-provider-harness-test PROVIDER=<provider> FEATURE="<keyword>" BASE_URL=http://localhost:<port>
    # cross-cutting change: the curated smoke set instead
-   make run-provider-harness-test SMOKE=1
+   make run-provider-harness-test SMOKE=1 BASE_URL=http://localhost:<port>
    ```
+   `<keyword>` is descriptive text that appears in the case or folder names (for example
+   `"sdk fidelity"`), never an issue or PR number; verify it with `filter-collection.mjs` first.
    Report the provider status table and `tmp/harness-failures.md` findings, and state exactly
    which scope ran. See AGENTS.md "Every wire-visible change ships with a provider-harness
    case" and "Every non-exempt wire-visible fix ends with unit tests, then a harness command

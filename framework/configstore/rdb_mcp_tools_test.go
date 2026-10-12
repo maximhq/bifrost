@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,7 +31,7 @@ func TestUpdateMCPClientTools_TargetedColumnUpdate(t *testing.T) {
 	}
 	mapping := map[string]string{"echo": "echo-server"}
 
-	require.NoError(t, s.UpdateMCPClientTools(ctx, "mcp-tools-client", tools, mapping))
+	require.NoError(t, s.UpdateMCPClientTools(ctx, "mcp-tools-client", tools, mapping, ""))
 
 	got, err := s.GetMCPClientByID(ctx, "mcp-tools-client")
 	require.NoError(t, err)
@@ -56,7 +57,7 @@ func TestUpdateMCPClientTools_EmptyMapPersistsAsLegitimateZeroTools(t *testing.T
 		DiscoveredTools:  map[string]schemas.ChatTool{"stale": {Type: "function"}},
 	}))
 
-	require.NoError(t, s.UpdateMCPClientTools(ctx, "mcp-empty-tools-client", map[string]schemas.ChatTool{}, map[string]string{}))
+	require.NoError(t, s.UpdateMCPClientTools(ctx, "mcp-empty-tools-client", map[string]schemas.ChatTool{}, map[string]string{}, ""))
 
 	got, err := s.GetMCPClientByID(ctx, "mcp-empty-tools-client")
 	require.NoError(t, err)
@@ -70,6 +71,22 @@ func TestUpdateMCPClientTools_UnknownClientReturnsNotFound(t *testing.T) {
 	s := setupRDBTestStore(t)
 	ctx := context.Background()
 
-	err := s.UpdateMCPClientTools(ctx, "does-not-exist", map[string]schemas.ChatTool{}, map[string]string{})
+	err := s.UpdateMCPClientTools(ctx, "does-not-exist", map[string]schemas.ChatTool{}, map[string]string{}, "")
 	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestMCPClientConfigUnknownIDReturnsNotFound pins that deleting or updating an MCP
+// client id with no row reports ErrNotFound, so a handler can answer 404 rather than
+// 500, while the message still names the id.
+func TestMCPClientConfigUnknownIDReturnsNotFound(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := s.DeleteMCPClientConfig(ctx, "does-not-exist")
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.ErrorContains(t, err, "does-not-exist")
+
+	err = s.UpdateMCPClientConfig(ctx, "does-not-exist", &tables.TableMCPClient{Name: "renamed"})
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.ErrorContains(t, err, "does-not-exist")
 }

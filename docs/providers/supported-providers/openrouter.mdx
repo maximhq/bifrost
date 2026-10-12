@@ -24,6 +24,7 @@ OpenRouter is an **OpenAI-compatible provider routing service** that accesses mo
 | Embeddings | ✅ | - | `/v1/embeddings` |
 | Speech (TTS) | ✅ | ❌ | `/v1/audio/speech` |
 | Transcriptions (STT) | ✅ | ❌ | `/v1/audio/transcriptions` |
+| Decisions | ✅ | - | `/v1/decisions` |
 | Image Generation | ❌ | ❌ | - |
 | Files | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
@@ -288,6 +289,33 @@ OpenRouter exposes OpenAI-compatible audio endpoints, so Bifrost routes Speech a
 | `language` | Optional ISO-639-1 code for Transcription; auto-detected if omitted |
 
 Streaming Speech and Transcription are not supported by the upstream OpenRouter API and return a `BifrostError` with `"unsupported_operation"`.
+
+---
+
+## Decisions
+
+OpenRouter hosts System One decision models, such as TypeSafe's jev family and Cloudflare's Clef. Call them on [`/v1/decisions`](/quickstart/gateway/decisions) with your OpenRouter key:
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "openrouter/~typesafe/jev-latest",
+    "input": "Customer message: I was double charged and nobody replied to my two emails.",
+    "questions": [
+      { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" }
+    ]
+  }'
+```
+
+Bifrost calls OpenRouter's `/api/alpha/decisions`, which uses TypeSafe's System One format, so questions are converted as on [TypeSafe](/providers/supported-providers/typesafe#field-mapping-reference). Differences from TypeSafe:
+
+- **Images are supported.** `input_image` parts are sent in order with the message text.
+- **`safety_identifier`** is sent as OpenRouter's `user`.
+- **Cost** comes from OpenRouter's billed amount (`usage.cost`), not a price estimate, and is used for logs and budgets.
+- **The response `model`** is the resolved version, for example `typesafe/jev-1.13-20260917`.
+
+OpenRouter decides which models it serves for decisions. A new decision model works as soon as OpenRouter lists it; any other model, such as a chat model, returns OpenRouter's own error. Decision models appear in Bifrost's model list even though OpenRouter's default model list omits them.
 
 ---
 

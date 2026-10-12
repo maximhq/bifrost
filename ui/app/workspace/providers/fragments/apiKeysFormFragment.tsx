@@ -1,6 +1,7 @@
 import { ModelAccessSelector } from "@/components/modelAccess";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { DefaultVertexAWSWorkloadIdentityConfig, OAuthSigningAlgorithms } from "@/lib/types/config";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
@@ -17,6 +18,10 @@ import { Control, UseFormReturn } from "react-hook-form";
 import { DeploymentsTable } from "./deploymentsTable";
 
 // Providers that support batch APIs
+// Vertex authentication methods offered by the key form. The backend picks the mode from which
+// fields are set; this discriminator only drives the tabs and validation.
+type VertexAuthType = "service_account" | "service_account_json" | "api_key" | "aws_workload_identity";
+
 const BATCH_SUPPORTED_PROVIDERS = ["openai", "bedrock", "anthropic", "gemini", "azure", "vertex", "wafer"];
 
 interface Props {
@@ -153,6 +158,10 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	const isFireworks = effectiveProvider === "fireworks";
 	const isDatabricks = effectiveProvider === "databricks";
 	const isGithubCopilot = effectiveProvider === "github-copilot";
+	const isCloudflare = effectiveProvider === "cloudflare";
+	// openai, and every custom provider built on the openai base, may mint its bearer from
+	// oauth_key_config instead of carrying a static API key.
+	const isOpenAICompatible = effectiveProvider === "openai";
 	// Reactive, so the App-credential labels stay truthful. Once a Copilot token is present
 	// those fields genuinely are optional, and a static "(Required)" would contradict the
 	// section note telling the operator they can leave them blank.
@@ -172,8 +181,13 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	// Auth type state for Databricks: 'pat' (personal access token) or 'oauth_m2m' (service principal)
 	const [databricksAuthType, setDatabricksAuthType] = useState<"pat" | "oauth_m2m">("pat");
 
-	// Auth type state for Vertex: 'service_account', 'service_account_json', or 'api_key'
-	const [vertexAuthType, setVertexAuthType] = useState<"service_account" | "service_account_json" | "api_key">("service_account");
+	// Auth type state for openai-based keys: a static API key, or an OAuth-minted bearer
+	const [openaiAuthType, setOpenaiAuthType] = useState<"api_key" | "oauth">("api_key");
+	const oauthGrantType = form.watch("key.oauth_key_config.grant_type") ?? "client_credentials";
+
+	// Auth type state for Vertex: 'service_account' (ADC), 'service_account_json', 'api_key', or
+	// 'aws_workload_identity' (GCP Workload Identity Federation from the workload's AWS identity)
+	const [vertexAuthType, setVertexAuthType] = useState<VertexAuthType>("service_account");
 
 	// Detect auth type from existing form values when editing
 	useEffect(() => {
@@ -200,12 +214,15 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 	useEffect(() => {
 		if (form.formState.isDirty) return;
 		if (isVertex) {
+			const wifAudience = form.getValues("key.vertex_key_config.aws_workload_identity.audience");
 			const authCredentials = form.getValues("key.vertex_key_config.auth_credentials")?.value;
 			const authCredentialsEnv = form.getValues("key.vertex_key_config.auth_credentials")?.ref;
 			const apiKey = form.getValues("key.value")?.value;
 			const apiKeyEnv = form.getValues("key.value")?.ref;
-			let detected: "service_account" | "service_account_json" | "api_key" = "service_account";
-			if (authCredentials || authCredentialsEnv) {
+			let detected: VertexAuthType = "service_account";
+			if (wifAudience?.value || wifAudience?.ref) {
+				detected = "aws_workload_identity";
+			} else if (authCredentials || authCredentialsEnv) {
 				detected = "service_account_json";
 			} else if (apiKey || apiKeyEnv) {
 				detected = "api_key";
@@ -230,6 +247,20 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 		// happens once the key resolves - after this effect has already run once against
 		// an empty form and settled on the personal access token tab.
 	}, [isDatabricks, form, databricksDefaults]);
+
+	const oauthDefaults = form.formState.defaultValues?.key?.oauth_key_config;
+	useEffect(() => {
+		if (form.formState.isDirty) return;
+		if (isOpenAICompatible) {
+			const grant = form.getValues("key.oauth_key_config.grant_type");
+			const tokenURL = form.getValues("key.oauth_key_config.token_url");
+			const detected: "api_key" | "oauth" = grant || tokenURL?.value || tokenURL?.ref ? "oauth" : "api_key";
+			setOpenaiAuthType(detected);
+			form.setValue("key.oauth_key_config._auth_type", detected);
+		}
+		// oauthDefaults re-runs detection after the key form resets itself once the key
+		// resolves, for the same reason as databricksDefaults above.
+	}, [isOpenAICompatible, form, oauthDefaults]);
 
 	useEffect(() => {
 		if (form.formState.isDirty) return;
@@ -273,7 +304,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 
 	return (
 		<div data-tab="api-keys" className="space-y-4 overflow-hidden">
-			<div className="flex items-start gap-4">
+			<div className="flex items-start gap-4 px-0.5">
 				<div className="flex-1">
 					<FormField
 						control={control}
@@ -342,12 +373,12 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 				/>
 			</div>
 			{/* Hide API Key field for providers with dedicated auth tabs */}
-			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && !isDatabricks && (
+			{!isAzure && !isBedrock && !isBedrockMantle && !isVertex && !isDatabricks && !isOpenAICompatible && (
 				<FormField
 					control={control}
 					name={`key.value`}
 					render={({ field }) => (
-						<FormItem>
+						<FormItem className="px-0.5">
 							<FormLabel>
 								{isGithubCopilot ? "Copilot API Token" : "API Key"} {isVLLM || isGithubCopilot ? "(Optional)" : ""}
 							</FormLabel>
@@ -375,7 +406,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					control={control}
 					name={`key.models`}
 					render={({ field }) => (
-						<FormItem>
+						<FormItem className="px-0.5">
 							<FormControl>
 								<ModelAccessSelector
 									mode="allow"
@@ -415,7 +446,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					control={control}
 					name={`key.blacklisted_models`}
 					render={({ field }) => (
-						<FormItem data-testid="apikey-blacklisted-models-field">
+						<FormItem data-testid="apikey-blacklisted-models-field" className="px-0.5">
 							<FormControl>
 								<ModelAccessSelector
 									mode="block"
@@ -455,7 +486,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 					control={control}
 					name={`key.aliases`}
 					render={({ field }) => (
-						<FormItem data-testid="apikey-deployments-field">
+						<FormItem data-testid="apikey-deployments-field" className="px-0.5">
 							<FormLabel>Deployments (Optional)</FormLabel>
 							<FormDescription>
 								Map a request model name to the provider&apos;s identifier (deployment name, inference profile ID, etc.). Expand a row for
@@ -487,7 +518,7 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 			</>
 			{supportsBatchAPI && !isBedrock && !isAzure && !isVertex && <BatchAPIFormField control={control} form={form} />}
 			{isAzure && (
-				<div className="space-y-4">
+				<div className="space-y-4 px-0.5">
 					<Separator className="my-6" />
 					<div className="space-y-2">
 						<FormLabel>Authentication Method</FormLabel>
@@ -648,15 +679,31 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						<Tabs
 							value={vertexAuthType}
 							onValueChange={(v) => {
-								setVertexAuthType(v as "service_account" | "service_account_json" | "api_key");
-								form.setValue("key.vertex_key_config._auth_type", v, { shouldDirty: true, shouldValidate: true });
-								if (v === "service_account" || v === "api_key") {
+								const next = v as VertexAuthType;
+								setVertexAuthType(next);
+								form.setValue("key.vertex_key_config._auth_type", next, { shouldDirty: true, shouldValidate: true });
+								if (next !== "service_account_json") {
 									// Clear auth credentials when switching away from service account JSON
 									form.setValue("key.vertex_key_config.auth_credentials", undefined, { shouldDirty: true });
 								}
-								if (v === "service_account" || v === "service_account_json") {
-									// Clear API key when switching away from API Key
-									form.setValue("key.value", undefined, { shouldDirty: true });
+								if (next !== "api_key") {
+									// Clear the API key when switching away from API Key. The update endpoint has patch
+									// semantics (an omitted field keeps its stored value), and the backend prefers a stored
+									// API key over federation or ADC, so this must be an explicit empty value, not undefined.
+									form.setValue("key.value", { value: "", ref: "" }, { shouldDirty: true });
+								}
+								if (next === "aws_workload_identity") {
+									// Seed the block so its inputs are controlled from the first keystroke
+									if (!form.getValues("key.vertex_key_config.aws_workload_identity")) {
+										form.setValue(
+											"key.vertex_key_config.aws_workload_identity",
+											{ ...DefaultVertexAWSWorkloadIdentityConfig },
+											{ shouldDirty: true },
+										);
+									}
+								} else {
+									// Drop the block entirely: an audience left behind would take precedence on the server
+									form.setValue("key.vertex_key_config.aws_workload_identity", undefined, { shouldDirty: true });
 								}
 							}}
 						>
@@ -667,6 +714,9 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								<TabsTrigger data-testid="apikey-vertex-service-account-json-tab" value="service_account_json">
 									Service Account (JSON)
 								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-vertex-aws-workload-identity-tab" value="aws_workload_identity">
+									Workload Identity (AWS)
+								</TabsTrigger>
 								<TabsTrigger data-testid="apikey-vertex-api-key-tab" value="api_key">
 									API Key
 								</TabsTrigger>
@@ -675,6 +725,12 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 						{vertexAuthType === "service_account" && (
 							<p className="text-muted-foreground text-sm">
 								Uses the service account attached to your environment (GCE, GKE, Cloud Run). No credentials required.
+							</p>
+						)}
+						{vertexAuthType === "aws_workload_identity" && (
+							<p className="text-muted-foreground text-sm">
+								Exchanges the AWS identity attached to this workload (EKS IRSA or Pod Identity, ECS task role, EC2 instance profile) for a
+								GCP token through a Workload Identity Pool AWS provider. No GCP service account key and no AWS access key required.
 							</p>
 						)}
 					</div>
@@ -751,6 +807,141 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 								</FormItem>
 							)}
 						/>
+					)}
+
+					{vertexAuthType === "aws_workload_identity" && (
+						<>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.audience`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Workload Identity Provider Audience (Required)</FormLabel>
+										<FormDescription>
+											The full resource name of the AWS provider in your Workload Identity Pool, shown as the audience in the GCP console.
+										</FormDescription>
+										<FormControl>
+											<SecretVarInput
+												data-testid="apikey-vertex-aws-wif-audience-input"
+												placeholder="//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/eks-pool/providers/aws or env.VERTEX_WIF_AUDIENCE"
+												inputClassName="font-mono text-sm"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.service_account_email`}
+								render={({ field }) => (
+									<FormItem>
+										<div className="flex items-center gap-2">
+											<FormLabel>Service Account to Impersonate (Optional)</FormLabel>
+											<TooltipProvider>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span>
+															<Info className="text-muted-foreground h-3 w-3" />
+														</span>
+													</TooltipTrigger>
+													<TooltipContent>
+														<p>
+															Leave empty to call Vertex AI as the federated principal directly (grant it roles/aiplatform.user). Set it to
+															impersonate a service account that has the Vertex AI role; the federated principal then needs
+															roles/iam.workloadIdentityUser on that service account.
+														</p>
+													</TooltipContent>
+												</Tooltip>
+											</TooltipProvider>
+										</div>
+										<FormControl>
+											<SecretVarInput
+												data-testid="apikey-vertex-aws-wif-service-account-email-input"
+												placeholder="vertex-caller@my-project.iam.gserviceaccount.com or env.VERTEX_WIF_SA"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.token_lifetime_seconds`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Impersonated Token Lifetime in Seconds (Optional)</FormLabel>
+										<FormDescription>Only used with a service account. 600 to 43200; the default is 3600.</FormDescription>
+										<FormControl>
+											<Input
+												data-testid="apikey-vertex-aws-wif-token-lifetime-input"
+												type="number"
+												min={600}
+												max={43200}
+												step={60}
+												placeholder="3600"
+												value={field.value ?? ""}
+												onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+												onBlur={field.onBlur}
+												name={field.name}
+												ref={field.ref}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.aws_region`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>AWS Region (Optional)</FormLabel>
+										<FormDescription>
+											Region used to sign the STS request. Defaults to AWS_REGION, then instance metadata. Set it when neither is available
+											in the pod.
+										</FormDescription>
+										<FormControl>
+											<SecretVarInput
+												data-testid="apikey-vertex-aws-wif-aws-region-input"
+												placeholder="us-east-1 or env.AWS_REGION"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name={`key.vertex_key_config.aws_workload_identity.aws_role_arn`}
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>AWS Role ARN to Assume (Optional)</FormLabel>
+										<FormDescription>
+											Assume this IAM role with the workload&apos;s credentials before the GCP exchange. Usually unnecessary: map the
+											workload&apos;s own role in the pool provider instead.
+										</FormDescription>
+										<FormControl>
+											<SecretVarInput
+												data-testid="apikey-vertex-aws-wif-aws-role-arn-input"
+												placeholder="arn:aws:iam::123456789012:role/VertexCaller or env.VERTEX_AWS_ROLE_ARN"
+												{...field}
+											/>
+										</FormControl>
+										{isRedacted(field.value?.value ?? "") && (
+											<div className="text-muted-foreground mt-1 flex items-center gap-1 text-xs">
+												<Info className="h-3 w-3" />
+												<span>Stored securely. Edit to update.</span>
+											</div>
+										)}
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+						</>
 					)}
 
 					{vertexAuthType === "api_key" && (
@@ -1030,6 +1221,352 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							</FormItem>
 						)}
 					/>
+				</div>
+			)}
+			{isCloudflare && (
+				<div className="space-y-4">
+					<FormField
+						control={control}
+						name="key.cloudflare_key_config.account_id"
+						render={({ field }) => (
+							<FormItem>
+								<FormLabel>Account ID (Required)</FormLabel>
+								<FormDescription>The Cloudflare account that runs Workers AI.</FormDescription>
+								<FormControl>
+									<SecretVarInput data-testid="key-input-cloudflare-account-id" placeholder="env.CLOUDFLARE_ACCOUNT_ID" {...field} />
+								</FormControl>
+								<FormMessage />
+							</FormItem>
+						)}
+					/>
+				</div>
+			)}
+			{isOpenAICompatible && (
+				<div className="space-y-4">
+					<div className="space-y-2">
+						<FormLabel>Authentication Method</FormLabel>
+						<Tabs
+							value={openaiAuthType}
+							onValueChange={(v) => {
+								const next = v as "api_key" | "oauth";
+								setOpenaiAuthType(next);
+								form.setValue("key.oauth_key_config._auth_type", next, { shouldDirty: true, shouldValidate: true });
+								if (next === "oauth") {
+									// The static key and the minted bearer are alternatives, never both.
+									form.setValue("key.value", undefined, { shouldDirty: true });
+									if (!form.getValues("key.oauth_key_config.grant_type")) {
+										form.setValue("key.oauth_key_config.grant_type", "client_credentials", { shouldDirty: true });
+									}
+								}
+							}}
+						>
+							<TabsList className="grid w-full grid-cols-2">
+								<TabsTrigger data-testid="apikey-openai-api-key-tab" value="api_key">
+									API Key
+								</TabsTrigger>
+								<TabsTrigger data-testid="apikey-openai-oauth-tab" value="oauth">
+									OAuth (minted token)
+								</TabsTrigger>
+							</TabsList>
+						</Tabs>
+					</div>
+					{openaiAuthType === "api_key" && (
+						<FormField
+							control={control}
+							name="key.value"
+							render={({ field }) => (
+								<FormItem>
+									<FormLabel>API Key</FormLabel>
+									<FormControl>
+										<SecretVarInput data-testid="key-input-openai-api-key" placeholder="API Key or env.MY_KEY" type="text" {...field} />
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					)}
+					{openaiAuthType === "oauth" && (
+						<>
+							<p className="text-muted-foreground text-sm">
+								Bifrost requests an access token from the token endpoint, sends it as the bearer, caches it per credential and refreshes it
+								before it expires. Use this for upstreams that issue short-lived tokens instead of a static key.
+							</p>
+							<FormField
+								control={control}
+								name="key.oauth_key_config.grant_type"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Grant Type</FormLabel>
+										<Select value={field.value ?? "client_credentials"} onValueChange={field.onChange}>
+											<FormControl>
+												<SelectTrigger className="w-full" data-testid="key-select-oauth-grant-type">
+													<SelectValue placeholder="Client credentials" />
+												</SelectTrigger>
+											</FormControl>
+											<SelectContent>
+												<SelectItem value="client_credentials">Client credentials (client ID + secret)</SelectItem>
+												<SelectItem value="jwt_bearer">JWT bearer (signed assertion, RFC 7523)</SelectItem>
+											</SelectContent>
+										</Select>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							<FormField
+								control={control}
+								name="key.oauth_key_config.token_url"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Token URL</FormLabel>
+										<FormDescription>The identity provider&apos;s token endpoint. Must be https.</FormDescription>
+										<FormControl>
+											<SecretVarInput
+												data-testid="key-input-oauth-token-url"
+												placeholder="https://idp.example.com/oauth2/token or env.IDP_TOKEN_URL"
+												{...field}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							{oauthGrantType === "client_credentials" && (
+								<>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.client_id"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>Client ID</FormLabel>
+												<FormControl>
+													<SecretVarInput data-testid="key-input-oauth-client-id" placeholder="Client ID or env.IDP_CLIENT_ID" {...field} />
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.client_secret"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>Client Secret</FormLabel>
+												<FormControl>
+													<SecretVarInput
+														data-testid="key-input-oauth-client-secret"
+														placeholder="Client secret or env.IDP_CLIENT_SECRET"
+														{...field}
+													/>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.auth_style"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>Credential Placement</FormLabel>
+												<FormDescription>
+													Where the token request carries the client ID and secret. Header (HTTP Basic) is the standard; some providers only
+													accept them as form fields.
+												</FormDescription>
+												<Select value={field.value ?? "header"} onValueChange={field.onChange}>
+													<FormControl>
+														<SelectTrigger className="w-full" data-testid="key-select-oauth-auth-style">
+															<SelectValue placeholder="Header" />
+														</SelectTrigger>
+													</FormControl>
+													<SelectContent>
+														<SelectItem value="header">Authorization header (HTTP Basic)</SelectItem>
+														<SelectItem value="body">Form body (client_id / client_secret)</SelectItem>
+													</SelectContent>
+												</Select>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+								</>
+							)}
+							{oauthGrantType === "jwt_bearer" && (
+								<>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.private_key"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>Private Key</FormLabel>
+												<FormDescription>RSA or EC private key in PEM form. Bifrost signs each assertion with it.</FormDescription>
+												<FormControl>
+													<SecretVarInput
+														data-testid="key-input-oauth-private-key"
+														variant="textarea"
+														rows={4}
+														placeholder="-----BEGIN PRIVATE KEY----- or env.IDP_PRIVATE_KEY"
+														{...field}
+													/>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.issuer"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>Issuer</FormLabel>
+												<FormDescription>The iss claim, usually the client or service account ID.</FormDescription>
+												<FormControl>
+													<Input data-testid="key-input-oauth-issuer" placeholder="client-id" {...field} value={field.value ?? ""} />
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.subject"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>Subject (Optional)</FormLabel>
+												<FormDescription>The sub claim. Defaults to the issuer.</FormDescription>
+												<FormControl>
+													<Input
+														data-testid="key-input-oauth-subject"
+														placeholder="service-account@example"
+														{...field}
+														value={field.value ?? ""}
+													/>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.audience"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>Audience</FormLabel>
+												<FormDescription>The aud claim, usually the token endpoint itself.</FormDescription>
+												<FormControl>
+													<Input
+														data-testid="key-input-oauth-audience"
+														placeholder="https://idp.example.com/oauth2/token"
+														{...field}
+														value={field.value ?? ""}
+													/>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.key_id"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>Key ID (Optional)</FormLabel>
+												<FormDescription>The kid header, when the identity provider selects keys by ID.</FormDescription>
+												<FormControl>
+													<Input data-testid="key-input-oauth-key-id" placeholder="kid-1" {...field} value={field.value ?? ""} />
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.signing_algorithm"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>Signing Algorithm</FormLabel>
+												<Select value={field.value ?? "RS256"} onValueChange={field.onChange}>
+													<FormControl>
+														<SelectTrigger className="w-full" data-testid="key-select-oauth-signing-algorithm">
+															<SelectValue placeholder="RS256" />
+														</SelectTrigger>
+													</FormControl>
+													<SelectContent>
+														{OAuthSigningAlgorithms.map((alg) => (
+															<SelectItem key={alg} value={alg}>
+																{alg}
+															</SelectItem>
+														))}
+													</SelectContent>
+												</Select>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+									<FormField
+										control={control}
+										name="key.oauth_key_config.assertion_lifetime_seconds"
+										render={({ field }) => (
+											<FormItem>
+												<FormLabel>Assertion Lifetime (seconds)</FormLabel>
+												<FormDescription>How long each signed assertion is valid for. Default 300.</FormDescription>
+												<FormControl>
+													<Input
+														data-testid="key-input-oauth-assertion-lifetime"
+														type="number"
+														min={0}
+														max={3600}
+														placeholder="300"
+														{...field}
+														value={field.value ?? ""}
+														onChange={(e) => field.onChange(e.target.value === "" ? undefined : Number(e.target.value))}
+													/>
+												</FormControl>
+												<FormMessage />
+											</FormItem>
+										)}
+									/>
+								</>
+							)}
+							<FormField
+								control={control}
+								name="key.oauth_key_config.scopes"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Scopes (Optional)</FormLabel>
+										<FormControl>
+											<TagInput
+												data-testid="key-input-oauth-scopes"
+												placeholder="Add scope (Enter or comma)"
+												value={field.value ?? []}
+												onValueChange={field.onChange}
+											/>
+										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+							{oauthGrantType === "client_credentials" && (
+								<FormField
+									control={control}
+									name="key.oauth_key_config.audience"
+									render={({ field }) => (
+										<FormItem>
+											<FormLabel>Audience (Optional)</FormLabel>
+											<FormDescription>Sent as the audience form parameter, for providers that scope tokens by API.</FormDescription>
+											<FormControl>
+												<Input
+													data-testid="key-input-oauth-cc-audience"
+													placeholder="api://my-llm-gateway"
+													{...field}
+													value={field.value ?? ""}
+												/>
+											</FormControl>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
+							)}
+						</>
+					)}
 				</div>
 			)}
 			{isGithubCopilot && (

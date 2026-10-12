@@ -3,8 +3,11 @@ package bifrost
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/cohere"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
@@ -12,12 +15,6 @@ import (
 // errDecisionNoContent is returned when an emulating response carries neither the
 // emit_decision function call nor a JSON-object message body.
 var errDecisionNoContent = errors.New("model returned no decision function call or structured output")
-
-// isUnsupportedOperation reports whether an error is a provider's
-// "operation not supported" signal (set by NewUnsupportedOperationError).
-func isUnsupportedOperation(err *schemas.BifrostError) bool {
-	return err != nil && err.Error != nil && err.Error.Code != nil && *err.Error.Code == "unsupported_operation"
-}
 
 // decisionSystemPrompt frames the judgment task for an emulating LLM.
 const decisionSystemPrompt = "You are a judgment engine. Read the given state and answer every question by " +
@@ -43,14 +40,38 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 	if req == nil || len(req.Questions) == 0 {
 		return nil, providerUtils.NewBifrostBadRequestError("decision request requires at least one question")
 	}
+	// Extensions the caller asked to reach the wire (e.g. images) have no
+	// meaning to an emulating chat model; refusing beats a silent text-only
+	// answer.
+	if len(req.ExtraParams) > 0 && ctx != nil {
+		if passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); passthrough {
+			keys := make([]string, 0, len(req.ExtraParams))
+			for key := range req.ExtraParams {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			return nil, providerUtils.NewBifrostBadRequestError("decision emulation cannot honor native request extensions (" + strings.Join(keys, ", ") + "); route the request to a provider that serves them natively")
+		}
+	}
 
-	tool, err := providerUtils.BuildDecisionResponsesTool(req.Questions)
+	// The state reaches the model as text, so an image, audio, or any other
+	// non-text part would be read as its encoding; refusing beats a silent
+	// answer that never saw the evidence.
+	if partType := req.Input.NonTextPartType(); partType != "" {
+		return nil, providerUtils.NewBifrostBadRequestError(fmt.Sprintf("decision emulation cannot read an %q part in the input; route the request to a provider that accepts it", partType))
+	}
+
+	names, err := schemas.DecisionQuestionNames(req.Questions)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
+	}
+	tool, err := providerUtils.BuildDecisionResponsesTool(req.Questions, names)
 	if err != nil {
 		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
 	}
 
-	// State as the user message: string verbatim, structured as sorted JSON.
-	stateText, marshalErr := decisionStateText(req.State)
+	// Input as the user message: text verbatim, anything else as sorted JSON.
+	stateText, marshalErr := decisionStateText(req.Input)
 	if marshalErr != nil {
 		return nil, providerUtils.NewBifrostBadRequestError("decision state could not be serialized: " + marshalErr.Error())
 	}
@@ -70,7 +91,7 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 		Params: &schemas.ResponsesParameters{
 			Instructions: &instructions,
 			Tools:        []schemas.ResponsesTool{*tool},
-			ToolChoice:   &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &toolChoice},
+			ToolChoice:   toolChoice,
 		},
 	}
 
@@ -84,7 +105,7 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 		return nil, providerUtils.NewBifrostOperationError(extractErr.Error(), nil)
 	}
 
-	answers, parseErr := providerUtils.ParseDecisionAnswers([]byte(argsJSON), req.Questions)
+	answers, parseErr := providerUtils.ParseDecisionAnswers([]byte(argsJSON), req.Questions, names)
 	if parseErr != nil {
 		return nil, providerUtils.NewBifrostOperationError(parseErr.Error(), nil)
 	}
@@ -121,19 +142,38 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 // OpenAI-compatible surface is the exception: it accepts only "auto" for gpt-oss
 // ("Supported options: [auto]"), so the call there rests on the system prompt,
 // and extraction already accepts a lone call or a JSON text body.
-func decisionToolChoice(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) string {
-	if provider == schemas.BedrockMantle && !schemas.IsAnthropicModelFamily(ctx, model) {
-		return string(schemas.ResponsesToolChoiceTypeAuto)
+//
+// A model that rejects tool_choice outright (supports_tool_choice=false on its
+// datasheet record, or a Cohere reasoning model when there is no record) gets
+// nil, so the field is omitted and the call rests on the system prompt the same
+// way.
+func decisionToolChoice(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) *schemas.ResponsesToolChoice {
+	canonicalModel := schemas.ResolveCanonicalModel(ctx, model)
+	fallback := true
+	if provider == schemas.Cohere {
+		fallback = cohere.DefaultSupportsToolChoice(canonicalModel)
 	}
-	return string(schemas.ResponsesToolChoiceTypeRequired)
+	if !schemas.ResolveModelCaps(provider, canonicalModel).SupportsToolChoice(fallback) {
+		return nil
+	}
+	choice := string(schemas.ResponsesToolChoiceTypeRequired)
+	if provider == schemas.BedrockMantle && !schemas.IsAnthropicModelFamily(ctx, model) {
+		choice = string(schemas.ResponsesToolChoiceTypeAuto)
+	}
+	return &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &choice}
 }
 
-// decisionStateText renders the state into a message body.
-func decisionStateText(state interface{}) (string, error) {
-	if s, ok := state.(string); ok {
-		return s, nil
+// decisionStateText renders the input into a message body: text verbatim,
+// and messages, a structured input, or null as sorted JSON.
+func decisionStateText(input schemas.DecisionInput) (string, error) {
+	var value interface{} = input.Structured
+	switch {
+	case input.Text != nil:
+		return *input.Text, nil
+	case input.Messages != nil:
+		value = input.Messages
 	}
-	raw, err := providerUtils.MarshalSorted(state)
+	raw, err := providerUtils.MarshalSorted(value)
 	if err != nil {
 		return "", err
 	}
