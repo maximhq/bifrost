@@ -730,6 +730,48 @@ func TestCreateVirtualKeyWithNullContentLoggingInherits(t *testing.T) {
 	assert.Nil(t, stored.DisableContentLogging, "null on create must store inherit, like omitting the field")
 }
 
+// TestVirtualKeyRefusesRemovedSingularBudget pins that the removed singular "budget" is a 400 on create
+// and update, not a 200 that drops it (#5673), while "budgets" and an explicit null keep working.
+func TestVirtualKeyRefusesRemovedSingularBudget(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := setupPricingOverrideHandlerStore(t)
+	handler := &GovernanceHandler{configStore: store, governanceManager: &budgetOverrideTestGovernanceManager{store: store}}
+
+	singular := newTestRequestCtx(`{"name":"vk-singular","budget":{"max_limit":0.0005,"reset_duration":"1M"}}`)
+	handler.createVirtualKey(singular)
+	assert.Equal(t, fasthttp.StatusBadRequest, singular.Response.StatusCode(), "resp=%s", singular.Response.Body())
+	assert.Contains(t, string(singular.Response.Body()), "budgets", "the error must point at the replacement")
+	keys, err := store.GetVirtualKeys(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, keys, "a refused create must not leave a key behind")
+
+	null := newTestRequestCtx(`{"name":"vk-null-budget","budget":null}`)
+	handler.createVirtualKey(null)
+	assert.Equal(t, fasthttp.StatusOK, null.Response.StatusCode(), "an explicit null names no budget, resp=%s", null.Response.Body())
+
+	plural := newTestRequestCtx(`{"name":"vk-plural","budgets":[{"max_limit":5,"reset_duration":"1M"}]}`)
+	handler.createVirtualKey(plural)
+	require.Equal(t, fasthttp.StatusOK, plural.Response.StatusCode(), "resp=%s", plural.Response.Body())
+	var created struct {
+		VirtualKey struct {
+			ID string `json:"id"`
+		} `json:"virtual_key"`
+	}
+	require.NoError(t, json.Unmarshal(plural.Response.Body(), &created))
+
+	update := newTestRequestCtx(`{"budget":{"max_limit":9}}`)
+	update.SetUserValue("vk_id", created.VirtualKey.ID)
+	handler.updateVirtualKey(update)
+	assert.Equal(t, fasthttp.StatusBadRequest, update.Response.StatusCode(), "resp=%s", update.Response.Body())
+	assert.Contains(t, string(update.Response.Body()), "budgets")
+
+	read := newTestRequestCtx(``)
+	read.SetUserValue("vk_id", created.VirtualKey.ID)
+	handler.getVirtualKey(read)
+	require.Equal(t, fasthttp.StatusOK, read.Response.StatusCode(), "resp=%s", read.Response.Body())
+	assert.Contains(t, string(read.Response.Body()), `"max_limit":5`, "a refused update must leave the budget as it was")
+}
+
 func TestApplyVirtualKeyOwnershipUpdatePreservesOmittedAssociation(t *testing.T) {
 	teamID := "team-1"
 	customerID := "customer-1"
