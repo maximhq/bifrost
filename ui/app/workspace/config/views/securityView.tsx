@@ -1,3 +1,4 @@
+import PageTitle from "@/components/pageTitle";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,18 +24,8 @@ import { AlertTriangle, Loader2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
-const PASSWORD_REQUIREMENTS = [
-	{ label: "at least 12 characters", test: (password: string) => password.length >= 12 },
-	{ label: "one uppercase letter", test: (password: string) => /[A-Z]/.test(password) },
-	{ label: "one lowercase letter", test: (password: string) => /[a-z]/.test(password) },
-	{ label: "one number", test: (password: string) => /\d/.test(password) },
-	{ label: "one special character", test: (password: string) => /[^A-Za-z0-9]/.test(password) },
-];
-
-const getPasswordPolicyFailures = (password?: string) => {
-	if (!password) return [];
-	return PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map((requirement) => requirement.label);
-};
+// Go duration string: one or more <number><unit> segments, e.g. "5m", "1h30m".
+const COOLDOWN_PATTERN = /^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/;
 
 export default function SecurityView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -53,11 +44,13 @@ export default function SecurityView() {
 		allowed_headers: string;
 		required_headers: string;
 		whitelisted_routes: string;
+		vk_rotation_cooldown: string;
 	}>({
 		allowed_origins: "",
 		allowed_headers: "",
 		required_headers: "",
 		whitelisted_routes: "",
+		vk_rotation_cooldown: "",
 	});
 
 	const [authConfig, setAuthConfig] = useState<AuthConfig>({
@@ -107,9 +100,11 @@ export default function SecurityView() {
 				allowed_headers: config?.allowed_headers?.join(", ") || "",
 				required_headers: config?.required_headers?.join(", ") || "",
 				whitelisted_routes: config?.whitelisted_routes?.join(", ") || "",
+				vk_rotation_cooldown: formatCooldown(config?.vk_rotation_cooldown),
 			});
 		}
 		if (bifrostConfig?.auth_config) {
+			passwordUnchangedRef.current = true;
 			setAuthConfig(bifrostConfig.auth_config);
 		}
 	}, [config, bifrostConfig]);
@@ -153,6 +148,7 @@ export default function SecurityView() {
 		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
 		const dualCredentialConflictBehaviorChanged =
 			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
+		const vkRotationCooldownChanged = formatCooldown(localConfig.vk_rotation_cooldown) !== formatCooldown(config.vk_rotation_cooldown);
 
 		return (
 			originsChanged ||
@@ -211,15 +207,11 @@ export default function SecurityView() {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
-	const handleAuthToggle = useCallback(
-		(checked: boolean) => {
-			setAuthConfig((prev) => ({ ...prev, is_enabled: checked }));
-			if (!isFirstTimeSetup || inferenceAuthTouchedRef.current) return;
-			// Untouched preselection follows the dashboard toggle both ways, so canceling setup restores the stored value.
-			setLocalConfig((prev) => ({ ...prev, enforce_auth_on_inference: checked || (config?.enforce_auth_on_inference ?? false) }));
-		},
-		[isFirstTimeSetup, config?.enforce_auth_on_inference],
-	);
+	const handleVkRotationCooldownChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, vk_rotation_cooldown: value }));
+		// The backend accepts Go duration strings; empty input means 0 (disabled).
+		setLocalConfig((prev) => ({ ...prev, vk_rotation_cooldown: value.trim() === "" ? 0 : value.trim() }));
+	}, []);
 
 	const handleAuthToggle = useCallback(
 		(checked: boolean) => {
@@ -244,7 +236,8 @@ export default function SecurityView() {
 
 	const handleAuthFieldChange = useCallback((field: "admin_username" | "admin_password", value: SecretVar) => {
 		if (field === "admin_password") {
-			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value) : [];
+			passwordUnchangedRef.current = false;
+			const passwordPolicyFailures = !value.ref && value.value ? getPasswordPolicyFailures(value.value, false) : [];
 			setPasswordError(passwordPolicyFailures.length > 0 ? `Password must include ${passwordPolicyFailures.join(", ")}.` : "");
 		}
 		setAuthConfig((prev) => ({ ...prev, [field]: value }));
@@ -260,16 +253,16 @@ export default function SecurityView() {
 				);
 				return;
 			}
+			const cooldownInput = localValues.vk_rotation_cooldown.trim();
+			if (cooldownInput !== "" && cooldownInput !== "0" && !COOLDOWN_PATTERN.test(cooldownInput)) {
+				toast.error('Rotation cooldown must be a duration like "30s", "5m", or "1h30m" (leave empty to disable).');
+				return;
+			}
 			const hasUsername = authConfig.admin_username?.value || authConfig.admin_username?.ref;
 			const hasPassword = authConfig.admin_password?.value || authConfig.admin_password?.ref;
-			const passwordChanged = authConfig.admin_password?.value !== bifrostConfig?.auth_config?.admin_password?.value;
 			const passwordPolicyFailures =
-				showPasswordSection &&
-				authConfig.is_enabled &&
-				!authConfig.admin_password?.ref &&
-				authConfig.admin_password?.value &&
-				passwordChanged
-					? getPasswordPolicyFailures(authConfig.admin_password.value)
+				showPasswordSection && authConfig.is_enabled && !authConfig.admin_password?.ref && authConfig.admin_password?.value
+					? getPasswordPolicyFailures(authConfig.admin_password.value, passwordUnchangedRef.current)
 					: [];
 
 			if (passwordPolicyFailures.length > 0) {
@@ -350,10 +343,7 @@ export default function SecurityView() {
 
 	return (
 		<div className="mx-auto w-full max-w-4xl space-y-4">
-			<div>
-				<h2 className="text-lg font-semibold tracking-tight">Security Settings</h2>
-				<p className="text-muted-foreground text-sm">Configure security and access control settings.</p>
-			</div>
+			<PageTitle title="Security Settings">Configure security and access control settings.</PageTitle>
 
 			<div className="space-y-4">
 				{/* Password Protect the Dashboard */}
@@ -580,7 +570,7 @@ export default function SecurityView() {
 							<SelectTrigger
 								id="dual-credential-conflict-behavior"
 								data-testid="dual-credential-conflict-behavior-select"
-								className="w-[180px]"
+								className="w-full sm:w-[180px]"
 							>
 								<SelectValue />
 							</SelectTrigger>
