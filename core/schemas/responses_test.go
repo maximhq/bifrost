@@ -938,6 +938,7 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 	category := "safety"
 	original := ResponsesMessage{
 		ProviderNativeParts: json.RawMessage(`{"thoughtSignature":"opaque"}`),
+		OutputConfig:        &ResponsesMessageOutputConfig{Effort: Ptr("high")},
 		Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{{
 			Type:                                  ResponsesOutputMessageContentTypeText,
 			ResponsesInputMessageContentBlockFile: &ResponsesInputMessageContentBlockFile{FileType: &fileType},
@@ -1030,6 +1031,12 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 	}
 	if original.ResponsesToolMessage.ToolsetName == copied.ResponsesToolMessage.ToolsetName {
 		t.Fatal("copy aliases toolset name")
+	}
+	if copied.OutputConfig == nil || copied.OutputConfig.Effort == nil || *copied.OutputConfig.Effort != "high" {
+		t.Fatal("copy dropped output_config")
+	}
+	if original.OutputConfig.Effort == copied.OutputConfig.Effort {
+		t.Fatal("copy aliases output_config effort")
 	}
 
 	copied.ProviderNativeParts[0] = '['

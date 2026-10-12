@@ -1410,6 +1410,12 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 		}
 		copy.CacheControl = copyCacheControl
 	}
+	if original.OutputConfig != nil {
+		copy.OutputConfig = &ResponsesMessageOutputConfig{}
+		if original.OutputConfig.Effort != nil {
+			copy.OutputConfig.Effort = new(*original.OutputConfig.Effort)
+		}
+	}
 
 	// Deep copy Author and Recipient (multi-agent collab_tool_call items).
 	// json.RawMessage is a []byte slice; copy the bytes so callers don't share
