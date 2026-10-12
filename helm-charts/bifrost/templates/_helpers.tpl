@@ -1547,6 +1547,10 @@ false
 {{- /* Render the key even when every limit is 0, so an explicit setting resets stored limits to defaults. */}}
 {{- $_ := set $tmConfig "code_mode_limits" $limits }}
 {{- end }}
+{{- if hasKey .Values.bifrost.mcp.toolManagerConfig "oauthPrivateAllowlist" }}
+{{- /* Render the key even when empty, so an explicit [] clears a stored allowlist. */}}
+{{- $_ := set $tmConfig "oauth_private_allowlist" (.Values.bifrost.mcp.toolManagerConfig.oauthPrivateAllowlist | default list) }}
+{{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
 {{- end }}

@@ -246,6 +246,10 @@ export const OPENROUTER_DECISION_MODEL = "~typesafe/jev-latest";
 // The picker lists every model the datasheet marks as serving decisions.
 export const OPENAI_DECISION_MODEL = "gpt-6-luna";
 
+// PERPLEXITY_DECISION_MODEL is the model a newly selected Perplexity provider starts on.
+// The picker lists the decider models Perplexity serves.
+export const PERPLEXITY_DECISION_MODEL = "pplx-decider-v1.1-27b";
+
 // CLOUDFLARE_DECISION_MODEL is the model a newly selected Cloudflare provider starts on.
 // The picker lists the Clef models Cloudflare Workers AI serves.
 export const CLOUDFLARE_DECISION_MODEL = "@cf/cloudflare/clef-flash";

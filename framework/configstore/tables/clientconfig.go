@@ -88,7 +88,8 @@ type TableClientConfig struct {
 	WebhookConfigJSON string `gorm:"column:webhook_config_json;type:text" json:"-"`
 	// MCPCodeModeLimitsJSON holds the per-execution code mode limits as a JSON blob,
 	// deserialized into MCPCodeModeLimits by AfterFind.
-	MCPCodeModeLimitsJSON string `gorm:"column:mcp_code_mode_limits_json;type:text" json:"-"`
+	MCPCodeModeLimitsJSON        string `gorm:"column:mcp_code_mode_limits_json;type:text" json:"-"`
+	MCPOAuthPrivateAllowlistJSON string `gorm:"column:mcp_oauth_private_allowlist_json;type:text" json:"-"` // JSON serialized []string
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -111,6 +112,8 @@ type TableClientConfig struct {
 	WebhookConfig      *WebhookConfig            `gorm:"-" json:"webhook_config,omitempty"`
 
 	MCPCodeModeLimits *schemas.MCPCodeModeLimits `gorm:"-" json:"mcp_code_mode_limits,omitempty"` // Virtual: per-execution code mode limits
+
+	MCPOAuthPrivateAllowlist []string `gorm:"-" json:"mcp_oauth_private_allowlist,omitempty"` // Virtual: private targets the MCP OAuth chain may reach
 }
 
 // WebhookConfig holds global webhook delivery settings. Delivery
@@ -257,6 +260,16 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 		cc.MCPCodeModeLimitsJSON = ""
 	}
 
+	if len(cc.MCPOAuthPrivateAllowlist) > 0 {
+		data, err := json.Marshal(cc.MCPOAuthPrivateAllowlist)
+		if err != nil {
+			return err
+		}
+		cc.MCPOAuthPrivateAllowlistJSON = string(data)
+	} else {
+		cc.MCPOAuthPrivateAllowlistJSON = ""
+	}
+
 	return nil
 }
 
@@ -350,6 +363,14 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 		cc.MCPCodeModeLimits = &limits
 	} else {
 		cc.MCPCodeModeLimits = nil
+	}
+
+	if cc.MCPOAuthPrivateAllowlistJSON != "" {
+		if err := json.Unmarshal([]byte(cc.MCPOAuthPrivateAllowlistJSON), &cc.MCPOAuthPrivateAllowlist); err != nil {
+			return err
+		}
+	} else {
+		cc.MCPOAuthPrivateAllowlist = nil
 	}
 
 	return nil

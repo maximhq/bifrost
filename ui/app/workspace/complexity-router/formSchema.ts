@@ -8,6 +8,7 @@ import {
 	CLOUDFLARE_DECISION_MODEL,
 	OPENAI_DECISION_MODEL,
 	OPENROUTER_DECISION_MODEL,
+	PERPLEXITY_DECISION_MODEL,
 	SELF_HOSTED_DECISION_MODELS,
 	MAX_DECISION_CRITERIA_ITEM_CHARACTERS,
 	MAX_DECISION_CRITERIA_ITEMS,
@@ -539,6 +540,8 @@ export function isDecisionProvider(provider: ModelProvider): boolean {
 		provider.name === "typesafe" ||
 		provider.name === "openrouter" ||
 		provider.name === "cloudflare" ||
+		provider.name === "perplexity" ||
+		provider.name === "ollama" ||
 		isOpenAIDecisionProvider(provider) ||
 		provider.custom_provider_config?.base_provider_type === "typesafe"
 	);
@@ -569,6 +572,8 @@ export function defaultDecisionModel(provider: ModelProvider | undefined): strin
 	if (provider?.name === "typesafe") return DEFAULT_DECISION_MODEL;
 	if (provider?.name === "openrouter") return OPENROUTER_DECISION_MODEL;
 	if (provider?.name === "cloudflare") return CLOUDFLARE_DECISION_MODEL;
+	if (provider?.name === "perplexity") return PERPLEXITY_DECISION_MODEL;
+	if (provider?.name === "ollama") return "";
 	if (provider?.name === "openai") return OPENAI_DECISION_MODEL;
 	if (isOpenAIDecisionProvider(provider)) return "";
 	return clefModelFromProvider(provider) ?? namedSelfHostedGroup(provider?.name ?? "")?.models[0] ?? "";

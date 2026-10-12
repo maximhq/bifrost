@@ -251591,6 +251591,307 @@
       ]
     },
     {
+      "name": "201. Ollama decisions (ollama-decisions)",
+      "description": "The ollama provider serves local System One decision models (nimble, tev1, clef, clef-flash, laya) natively on POST {key url}/v1/systemone, in Typesafe's systemone shape plus Ollama's top-level images and keep_alive. Questions and state go through Typesafe's converter; keep_alive (a duration string or a number of seconds) and native images are lifted out of extra params into typed fields, so they reach Ollama without x-bf-passthrough-extra-params. A keep_alive that is neither a string nor a number is a local 400. Ollama's own errors, which arrive as {\"error\":\"...\"}, are passed through with their status and plain message.\n\nEvery case is [PREVIEW]: it needs a local Ollama (v0.35.0 or later) on localhost:11434 with tev1:0.8b-q8_0 pulled (`ollama pull tev1:0.8b-q8_0`, about 800 MB, text-only), which the harness cannot provision. Run with INCLUDE_PREVIEW=1. The shared profile's ollama key lists its models explicitly instead of *, so prefix-less requests are never routed to Ollama; tev1:bifrost-harness-missing is listed only so case 5 reaches Ollama and gets its 404.\n\nNot covered here: input_image parts (moved into Ollama's images array, data URLs sent as raw base64) need a vision model such as clef-flash, so they are pinned by Go unit tests in core/providers/ollama only. The native /typesafe/v1/systemone route answers in Typesafe's shape without extra_fields, so case 6 pins routing and the native answer; keep_alive on the wire is pinned by cases 2 and 3. /v1/responses and /v1/chat/completions do not serve decisions.",
+      "item": [
+        {
+          "name": "[PREVIEW] /v1/decisions - mixed kinds return typed answers and usage - ollama/tev1:0.8b-q8_0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Ollama answers every kind natively, with usage', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  var a = body.answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(a.map(function (x) { return x.type; })).to.eql(['predicate', 'choice', 'score']);",
+                  "  pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "  pm.expect(['billing', 'bug', 'other'], 'the choice must be one of the submitted choices: ' + pm.response.text()).to.include(a[1].choice);",
+                  "  pm.expect(a[2].score).to.be.a('number');",
+                  "  pm.expect(body.usage.prompt_tokens, 'usage: ' + pm.response.text()).to.be.above(0);",
+                  "  var rr = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.state, 'text input is sent as a string state').to.be.a('string');",
+                  "  pm.expect(rr.questions, 'questions are sent as a named map').to.be.an('object').that.has.all.keys('is_frustrated', 'category', 'urgency');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"ollama/tev1:0.8b-q8_0\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges, refunds, invoices\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\",\n          \"description\": \"anything else\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"Rate how urgently this ticket needs a human reply\",\n      \"levels\": [\n        {\n          \"label\": \"0\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"1\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"2\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/decisions - keep_alive reaches the wire without passthrough - ollama/tev1:0.8b-q8_0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('keep_alive is lifted into the typed field and sent to Ollama', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "  var rr = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.keep_alive, 'keep_alive must reach Ollama without x-bf-passthrough-extra-params: ' + JSON.stringify(rr)).to.eql('1m');",
+                  "  pm.expect(rr.state, 'structured input is sent as an object state').to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"ollama/tev1:0.8b-q8_0\",\n  \"input\": {\n    \"ticket\": \"A-4021\",\n    \"text\": \"The sky is blue.\"\n  },\n  \"keep_alive\": \"1m\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_true\",\n      \"instructions\": \"Is the statement in the ticket true?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /v1/decisions - keep_alive seconds is sent as a number - ollama/tev1:0.8b-q8_0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a numeric keep_alive stays a number on the wire', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  var rr = (body.extra_fields || {}).raw_request;",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.keep_alive, 'keep_alive 300 must be sent as the number 300, not a string: ' + JSON.stringify(rr)).to.equal(300);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"ollama/tev1:0.8b-q8_0\",\n  \"input\": \"The sky is blue.\",\n  \"keep_alive\": 300,\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_true\",\n      \"instructions\": \"Is this statement true?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-400] /v1/decisions - mistyped keep_alive is rejected locally - ollama/tev1:0.8b-q8_0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a bool keep_alive is a local 400, not Ollama\\'s', function () {",
+                  "  pm.expect(pm.response.code, 'expected a local 400: ' + pm.response.text()).to.eql(400);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.is_bifrost_error, 'the 400 must come from Bifrost, not Ollama: ' + pm.response.text()).to.eql(true);",
+                  "  pm.expect(body.error.message).to.include('keep_alive must be a duration string');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"ollama/tev1:0.8b-q8_0\",\n  \"input\": \"hi\",\n  \"keep_alive\": true,\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_greeting\",\n      \"instructions\": \"Is this a greeting?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] [EXPECT-404] /v1/decisions - a model not pulled returns Ollama's own 404 - ollama/tev1:bifrost-harness-missing",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Ollama\\'s native {\"error\":\"...\"} 404 reaches the caller with its plain message', function () {",
+                  "  pm.expect(pm.response.code, 'expected Ollama\\'s 404: ' + pm.response.text()).to.eql(404);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.is_bifrost_error, 'the 404 must be Ollama\\'s: ' + pm.response.text()).to.eql(false);",
+                  "  pm.expect(body.error.message).to.include('not found');",
+                  "  pm.expect(body.error.message, 'the native error string must not be wrapped: ' + pm.response.text()).to.not.include('{\"error\"');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"ollama/tev1:bifrost-harness-missing\",\n  \"input\": \"hi\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_greeting\",\n      \"instructions\": \"Is this a greeting?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] /typesafe/v1/systemone - native body with keep_alive is answered natively - ollama/tev1:0.8b-q8_0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a native systemone body with keep_alive routes to Ollama and answers in the native shape', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  var answer = (body.answers || {}).is_frustrated;",
+                  "  pm.expect(answer, 'answers: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(answer.type).to.eql('noul');",
+                  "  pm.expect(answer.noul).to.be.within(0, 1);",
+                  "  pm.expect(body.usage.input_tokens, 'native usage: ' + pm.response.text()).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"ollama/tev1:0.8b-q8_0\",\n  \"state\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"keep_alive\": \"1m\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "201. Virtual key limits declared in config.json are enforced (#8266 / PR #8306)",
       "description": "Issue #8266 / PR #8306. config.json reconciliation used to store a virtual key budget on the key itself (governance_budgets.virtual_key_id) while the API stored it on a VK-scoped all-models model config. Only the model config form is stamped with the key calendar alignment when the governance store loads, so a budget declared in config.json reset on a rolling window after a restart. Every governance case in this collection creates its key through the API, so nothing covered the config.json path. This row drives a key the harness profile declares in config.json (vk-harness-cfgbudget, budget harness-cfgbudget-daily, max_limit 1e-7) and pins that the declared budget is enforced on inference. The prerequest primes the budget with one call so the assertion does not depend on usage left over from an earlier run. Spends two gpt-4o-mini calls of 3 tokens. Run with FEATURE=cfg-vk-budget.",
       "item": [
@@ -251660,7 +251961,109 @@
       ]
     },
     {
-      "name": "202. Client tool_use named web_search/web_fetch stays a function_call (#8078 / PR #8079)",
+      "name": "207. MCP OAuth server on localhost follows the private allowlist (mcp-oauth-private-allowlist)",
+      "description": "Management-endpoint checks with no live provider involved. The MCP OAuth chain (discovery, dynamic client registration, token requests) dials through a public-only guard, so an OAuth-protected MCP server on localhost could not be added by anyone, not even an authenticated admin. Hosts on mcp_oauth_private_allowlist (config.json mcp.tool_manager_config.oauth_private_allowlist) are now reachable for MCP clients registered by an authenticated caller; link-local and metadata addresses stay blocked and clients registered with auth bypassed stay public-only. The harness profile allowlists localhost, 127.0.0.1 and ::1, and every row carries the setup token, so these rows run as an authenticated caller.\n\nPrerequisite: examples/mcps/oauth-demo-server listening on localhost:3003 (cd examples/mcps/oauth-demo-server && go run .). Nothing in the harness runners starts it, so the second row is [PREVIEW]-tagged: run FEATURE=\"mcp-oauth-private-allowlist\" INCLUDE_PREVIEW=1 once the server is up. The first row reads the allowlist back from the store; the second registers an OAuth MCP client against the demo server and expects the pending_oauth response carrying the demo server's authorize URL. The consent is never completed, so no MCP client row is created; the pending OAuth config it leaves behind is inert.",
+      "item": [
+        {
+          "name": "GET /api/config · mcp_oauth_private_allowlist from config.json reaches the store",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The profile declares mcp.tool_manager_config.oauth_private_allowlist; config.json loading must",
+                  "// persist it so the dashboard and the OAuth client both see it.",
+                  "pm.test('config read is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('allowlist from config.json is stored', function () {",
+                  "  var cc = pm.response.json().client_config || {};",
+                  "  pm.expect(cc.mcp_oauth_private_allowlist, pm.response.text()).to.be.an('array');",
+                  "  pm.expect(cc.mcp_oauth_private_allowlist).to.include.members(['localhost', '127.0.0.1']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[PREVIEW] POST /api/mcp/client · OAuth MCP server on localhost returns an authorize URL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Before the allowlist existed this was a 500: 'OAuth discovery failed: ... blocked connection",
+                  "// to non-public address 127.0.0.1'. Discovery, dynamic client registration and the flow setup",
+                  "// must now reach the demo server on localhost.",
+                  "pm.test('registration starts the OAuth flow (200)', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('no SSRF refusal on the OAuth chain', function () {",
+                  "  pm.expect(pm.response.text()).to.not.include('blocked connection');",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json(); } catch (e) {}",
+                  "pm.test('pending_oauth with the demo server authorize URL', function () {",
+                  "  pm.expect(body.status, pm.response.text()).to.eql('pending_oauth');",
+                  "  pm.expect(String(body.authorize_url || ''), pm.response.text()).to.match(/^http:\\/\\/localhost:3003\\/authorize\\?/);",
+                  "  pm.expect(String(body.authorize_url || '')).to.include('code_challenge=');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"harness_oauth_loopback_{{$timestamp}}\",\n  \"connection_type\": \"http\",\n  \"connection_string\": \"http://localhost:3003/mcp\",\n  \"auth_type\": \"oauth\",\n  \"oauth_config\": {}\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "208. Client tool_use named web_search/web_fetch stays a function_call (#8078 / PR #8079)",
       "description": "Regression for #8078 / PR #8079. A client (function) tool_use named web_search or web_fetch was converted to a web_search_call / web_fetch_call because the grouped Anthropic converter matched on name only, orphaning its tool_result. Bedrock rejected the replay with 'The number of toolResult blocks ... exceeds the number of toolUse blocks of previous turn'. Each case replays an assistant turn with client tool_use blocks named web_search and web_fetch plus the matching tool_results through /anthropic/v1/messages and expects a successful reply.",
       "item": [
         {

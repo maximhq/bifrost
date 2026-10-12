@@ -1153,6 +1153,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := validateClientConfig(config.ClientConfig); err != nil {
 		return nil, err
 	}
+	if err := ApplyMCPOAuthPrivateAllowlist(config.ClientConfig.MCPOAuthPrivateAllowlist); err != nil {
+		return nil, fmt.Errorf("mcp_oauth_private_allowlist: %w", err)
+	}
 	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
 	// 4a. Global proxy (store only). Loaded before providers so the first
 	// GetConfigForProvider already sees it for providers that inherit it.
@@ -1462,6 +1465,30 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 			return fmt.Errorf("oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
 		}
 	}
+	// The allowlist relaxes an SSRF guard, so a typo must stop startup rather
+	// than leave an entry that silently matches nothing.
+	if _, err := network.ValidatePrivateTargetAllowlist(cc.MCPOAuthPrivateAllowlist); err != nil {
+		return fmt.Errorf("mcp_oauth_private_allowlist: %w", err)
+	}
+	return nil
+}
+
+// ApplyMCPOAuthPrivateAllowlist publishes entries as the private-target
+// allowlist the MCP OAuth chain (discovery, registration, token requests)
+// uses for clients registered with admin auth. Entries are validated where
+// they are accepted (validateClientConfig, PUT /api/config); if they still
+// fail to parse here the allowlist is cleared rather than left stale.
+func ApplyMCPOAuthPrivateAllowlist(entries []string) error {
+	if len(entries) == 0 {
+		oauth2.SetPrivateTargetAllowlist(nil)
+		return nil
+	}
+	allow, err := network.ValidatePrivateTargetAllowlist(entries)
+	if err != nil {
+		oauth2.SetPrivateTargetAllowlist(nil)
+		return err
+	}
+	oauth2.SetPrivateTargetAllowlist(allow)
 	return nil
 }
 
@@ -1589,27 +1616,44 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		} else {
 			config.ClientConfig = new(DefaultClientConfig)
 			applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
-			defaultHash, hashErr := config.ClientConfig.GenerateClientConfigHashWithToolManager(toolManagerFromFile)
+			defaultHash, hashErr := toolManagerOnlyHash(toolManagerFromFile)
 			if hashErr != nil {
 				logger.Warn("failed to generate default client config hash: %v", hashErr)
 			} else {
 				config.ClientConfig.ConfigHash = defaultHash
 			}
 		}
-		if config.ConfigStore != nil {
-			logger.Debug("updating client config in store")
-			if err = config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
-				return fmt.Errorf("failed to update client config: %w", err)
-			}
+		if err = persistReconciledClientConfig(ctx, config); err != nil {
+			return err
 		}
 		return nil
 	}
 	// Case 2: Config exists in DB
 	config.ClientConfig = clientConfig
 	applyClientConfigDefaults(config.ClientConfig)
-	// Case 2a: No file config - use DB config as-is
+	// Case 2a: No client section in the file. The DB config is kept, except that a
+	// tool_manager_config the file changed since it was stored is applied, the same
+	// file-wins rule Case 2b uses; an unchanged one keeps dashboard edits.
 	if configData.Client == nil {
-		logger.Debug("no client config in file, using DB config")
+		if toolManagerFromFile == nil {
+			logger.Debug("no client config in file, using DB config")
+			return nil
+		}
+		tmHash, hashErr := toolManagerOnlyHash(toolManagerFromFile)
+		if hashErr != nil {
+			return fmt.Errorf("failed to hash mcp.tool_manager_config: %w", hashErr)
+		}
+		forceToolManagerSync := configData.isConfigJSONSourceOfTruth() && configData.sectionPresent("mcp")
+		if !forceToolManagerSync && clientConfig.ConfigHash == tmHash {
+			logger.Debug("mcp.tool_manager_config unchanged, keeping DB config")
+			return nil
+		}
+		logger.Info("mcp.tool_manager_config was updated in config.json, syncing. Note that: file config takes precedence.")
+		applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
+		config.ClientConfig.ConfigHash = tmHash
+		if err = persistReconciledClientConfig(ctx, config); err != nil {
+			return err
+		}
 		return nil
 	}
 	// Case 2b: Both DB and file config exist - use hash-based reconciliation.
@@ -1630,10 +1674,8 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		logger.Info("upgrading config hash to include mcp.tool_manager_config; applying tool manager settings from file, client config preserved from DB")
 		applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
 		config.ClientConfig.ConfigHash = fileHash
-		if config.ConfigStore != nil {
-			if err = config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
-				return fmt.Errorf("failed to update client config: %w", err)
-			}
+		if err = persistReconciledClientConfig(ctx, config); err != nil {
+			return err
 		}
 	} else {
 		// Full hash mismatch - file changed, sync from file (file takes precedence)
@@ -1643,14 +1685,37 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 		config.ClientConfig.ConfigHash = fileHash
 		applyClientConfigDefaults(config.ClientConfig)
 		applyToolManagerToClientConfig(config.ClientConfig, toolManagerFromFile)
-		if config.ConfigStore != nil {
-			logger.Debug("updating client config in store from file")
-			if err = config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
-				return fmt.Errorf("failed to update client config: %w", err)
-			}
+		if err = persistReconciledClientConfig(ctx, config); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// persistReconciledClientConfig validates the client config loadClientConfig
+// settled on, then writes it to the store. LoadConfig validates it again once
+// loading finishes; checking first as well keeps a value startup would reject
+// out of the store, so correcting config.json is enough to recover.
+func persistReconciledClientConfig(ctx context.Context, config *Config) error {
+	if err := validateClientConfig(config.ClientConfig); err != nil {
+		return err
+	}
+	if config.ConfigStore == nil {
+		return nil
+	}
+	if err := config.ConfigStore.UpdateClientConfig(ctx, config.ClientConfig); err != nil {
+		return fmt.Errorf("failed to update client config: %w", err)
+	}
+	return nil
+}
+
+// toolManagerOnlyHash is the config hash of a file with an mcp.tool_manager_config
+// and no client section: the default client config with tm applied. Case 1 of
+// loadClientConfig stores it and Case 2a compares against it.
+func toolManagerOnlyHash(tm *schemas.MCPToolManagerConfig) (string, error) {
+	cc := new(DefaultClientConfig)
+	applyToolManagerToClientConfig(cc, tm)
+	return cc.GenerateClientConfigHashWithToolManager(tm)
 }
 
 // applyToolManagerToClientConfig copies tool manager settings from the file into ClientConfig.
@@ -1683,6 +1748,10 @@ func applyToolManagerToClientConfig(cc *configstore.ClientConfig, tm *schemas.MC
 	// tool_manager_config.code_mode_limits keeps it instead of resetting it.
 	if tm.CodeModeLimits != nil {
 		cc.MCPCodeModeLimits = tm.CodeModeLimits
+	}
+	// Same for client_config.mcp_oauth_private_allowlist.
+	if tm.OAuthPrivateAllowlist != nil {
+		cc.MCPOAuthPrivateAllowlist = tm.OAuthPrivateAllowlist
 	}
 }
 
@@ -2617,6 +2686,7 @@ func applyMCPGlobalSettingsToClientConfig(ctx context.Context, config *Config, m
 	mcpCfg.ToolManagerConfig.MaxInstructionsPerClient = config.ClientConfig.MCPMaxInstructionsPerClient
 	mcpCfg.ToolManagerConfig.MaxInstructionsTotal = config.ClientConfig.MCPMaxInstructionsTotal
 	mcpCfg.ToolManagerConfig.CodeModeLimits = config.ClientConfig.MCPCodeModeLimits
+	mcpCfg.ToolManagerConfig.OAuthPrivateAllowlist = config.ClientConfig.MCPOAuthPrivateAllowlist
 
 	// ToolSyncInterval is declared under the file's mcp section rather than
 	// client_config, so it sits outside the hash-driven client config load and

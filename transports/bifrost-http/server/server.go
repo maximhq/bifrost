@@ -1561,6 +1561,11 @@ func (s *BifrostHTTPServer) ReloadClientConfigFromConfigStore(ctx context.Contex
 	if s.LogsCleaner != nil {
 		s.LogsCleaner.UpdateRetentionDays(config.LogRetentionDays)
 	}
+	// This path also serves cluster peers, so one node's allowlist edit
+	// reaches every node's OAuth client.
+	if err := lib.ApplyMCPOAuthPrivateAllowlist(config.MCPOAuthPrivateAllowlist); err != nil {
+		logger.Warn("ignoring invalid mcp_oauth_private_allowlist during client config reload: %v", err)
+	}
 	// Reloading whitelisted routes from the client config
 	if s.AuthMiddleware != nil {
 		s.AuthMiddleware.UpdateWhitelistedRoutes(config.WhitelistedRoutes)

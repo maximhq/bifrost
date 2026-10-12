@@ -256,12 +256,12 @@ func TestConfigForceReasoningOnlyModelsToResponsesDefaultsOn(t *testing.T) {
 // on (config or x-bf-compat override), the compat plugin marks a decision for
 // emulation unless the model catalog lists the model as a native decisions model:
 // a supports_decisions row decides in either direction, and without a row the
-// gpt-6-luna outside OpenRouter, Typesafe, Clef on Cloudflare and deciders on Perplexity are native. Typesafe and other request types
+// gpt-6-luna outside OpenRouter, Typesafe, Clef on Cloudflare, deciders on Perplexity and System One models on Ollama are native. Typesafe and other request types
 // are never marked.
 func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 	rows := map[string]bool{"microsoft/decision-1": true, "typesafe/jev-router": false, "clef": false}
 	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
-		if provider == schemas.Ollama && model == "clef" {
+		if provider == schemas.Groq && model == "clef" {
 			return &schemas.ModelCapabilities{SupportsDecisions: schemas.Ptr(true)}
 		}
 		if supports, ok := rows[model]; ok {
@@ -303,16 +303,20 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 		{name: "false row overrides the typesafe name", enabled: true, req: decision(schemas.OpenRouter, "typesafe/jev-router"), wantConverted: true},
 		{name: "clef on cloudflare is native", enabled: true, req: decision(schemas.Cloudflare, "clef-flash")},
 		{name: "clef full id on cloudflare is native", enabled: true, req: decision(schemas.Cloudflare, "@cf/cloudflare/clef-flash")},
-		{name: "clef on ollama marked", enabled: true, req: decision(schemas.Ollama, "clef-flash"), wantConverted: true},
-		{name: "clef full id on ollama marked", enabled: true, req: decision(schemas.Ollama, "@cf/cloudflare/clef-flash"), wantConverted: true},
+		{name: "clef on groq marked", enabled: true, req: decision(schemas.Groq, "clef-flash"), wantConverted: true},
+		{name: "clef full id on groq marked", enabled: true, req: decision(schemas.Groq, "@cf/cloudflare/clef-flash"), wantConverted: true},
 		{name: "clef on openai marked by header", override: true, req: decision(schemas.OpenAI, "clef-flash"), wantConverted: true},
-		{name: "true row overrides provider-scoped clef fallback", enabled: true, req: decision(schemas.Ollama, "clef")},
+		{name: "true row overrides provider-scoped clef fallback", enabled: true, req: decision(schemas.Groq, "clef")},
 		{name: "chat model on cloudflare marked", enabled: true, req: decision(schemas.Cloudflare, "@cf/meta/llama-4-scout-17b-16e-instruct"), wantConverted: true},
 		{name: "false row overrides the clef name", enabled: true, req: decision(schemas.Cloudflare, "clef"), wantConverted: true},
 		{name: "decider on perplexity is native", enabled: true, req: decision(schemas.Perplexity, "pplx-decider-v1.1-27b")},
 		{name: "dated decider on perplexity is native", enabled: true, req: decision(schemas.Perplexity, "pplx-decider-v1.1-27b-20261006")},
 		{name: "chat model on perplexity marked", enabled: true, req: decision(schemas.Perplexity, "sonar-pro"), wantConverted: true},
 		{name: "decider on openai marked", enabled: true, req: decision(schemas.OpenAI, "pplx-decider-v1.1-27b"), wantConverted: true},
+		{name: "system one model on ollama is native", enabled: true, req: decision(schemas.Ollama, "nimble")},
+		{name: "tagged system one model on ollama is native", enabled: true, req: decision(schemas.Ollama, "tev1:0.8b")},
+		{name: "clef on ollama is native", enabled: true, req: decision(schemas.Ollama, "clef-flash")},
+		{name: "chat model on ollama marked", enabled: true, req: decision(schemas.Ollama, "llama3.1:latest"), wantConverted: true},
 		{name: "typesafe provider never marked", enabled: true, req: decision(schemas.Typesafe, "jev-latest")},
 		{name: "chat request untouched", enabled: true, req: chat},
 	}
