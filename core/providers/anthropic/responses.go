@@ -6635,6 +6635,18 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 							if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
 								toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesDocumentBlock())
 							}
+						case AnthropicContentBlockTypeToolReference:
+							// Client-side tool search (Claude Code's ToolSearch) answers with
+							// tool_reference blocks; Anthropic expands each into the deferred
+							// tool's definition. Dropping them leaves an empty tool_result, so
+							// the model never sees the tool it just loaded.
+							if contentBlock.ToolName != nil {
+								toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
+									Type:         schemas.ResponsesInputMessageContentBlockTypeToolReference,
+									ToolName:     contentBlock.ToolName,
+									CacheControl: contentBlock.CacheControl,
+								})
+							}
 						}
 					}
 					bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
@@ -7420,6 +7432,18 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 							// "Missing required parameter: 'input[N].content[0]'".
 							if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
 								toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesDocumentBlock())
+							}
+						case AnthropicContentBlockTypeToolReference:
+							// Client-side tool search (Claude Code's ToolSearch) answers with
+							// tool_reference blocks; Anthropic expands each into the deferred
+							// tool's definition. Dropping them leaves an empty tool_result, so
+							// the model never sees the tool it just loaded.
+							if contentBlock.ToolName != nil {
+								toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
+									Type:         schemas.ResponsesInputMessageContentBlockTypeToolReference,
+									ToolName:     contentBlock.ToolName,
+									CacheControl: contentBlock.CacheControl,
+								})
 							}
 						}
 					}
@@ -9877,6 +9901,14 @@ func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schema
 				block.Citations,
 			)
 			return &anthropicBlock
+		}
+	case schemas.ResponsesInputMessageContentBlockTypeToolReference:
+		if block.ToolName != nil {
+			return &AnthropicContentBlock{
+				Type:         AnthropicContentBlockTypeToolReference,
+				ToolName:     block.ToolName,
+				CacheControl: block.CacheControl,
+			}
 		}
 	case schemas.ResponsesInputMessageContentBlockTypeContainer:
 		if block.FileID != nil {

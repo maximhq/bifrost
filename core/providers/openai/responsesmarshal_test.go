@@ -730,6 +730,73 @@ func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputConcatenatesM
 	}
 }
 
+// An Anthropic client running client-side tool search (Claude Code's ToolSearch)
+// sends tool_reference blocks inside the tool_result. They only mean something to
+// Anthropic, which expands them into deferred tool definitions; OpenAI has no
+// equivalent and strict upstreams reject the unknown block. The OpenAI wire must
+// look exactly as it did before tool_reference was carried at all: the text
+// blocks flatten to a string, and a reference-only output carries no blocks.
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputDropsToolReferenceBlocks(t *testing.T) {
+	functionCallOutput := func(blocks []schemas.ResponsesMessageContentBlock) *OpenAIResponsesRequestInput {
+		return &OpenAIResponsesRequestInput{
+			OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+				{
+					Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+					Status: schemas.Ptr("completed"),
+					ResponsesToolMessage: &schemas.ResponsesToolMessage{
+						CallID: schemas.Ptr("toolu_search"),
+						Output: &schemas.ResponsesToolMessageOutputStruct{
+							ResponsesFunctionToolCallOutputBlocks: blocks,
+						},
+					},
+				},
+			},
+		}
+	}
+	toolReference := schemas.ResponsesMessageContentBlock{
+		Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
+		ToolName: schemas.Ptr("get_weather"),
+	}
+
+	t.Run("text and tool_reference flatten to the text", func(t *testing.T) {
+		jsonBytes, err := functionCallOutput([]schemas.ResponsesMessageContentBlock{
+			{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Loaded 1 tool")},
+			toolReference,
+		}).MarshalJSON()
+		if err != nil {
+			t.Fatalf("Failed to marshal: %v", err)
+		}
+		if strings.Contains(string(jsonBytes), "tool_reference") {
+			t.Fatalf("tool_reference must not reach the OpenAI wire: %s", string(jsonBytes))
+		}
+		var messages []map[string]interface{}
+		if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+			t.Fatalf("Failed to unmarshal: %v\nraw=%s", err, string(jsonBytes))
+		}
+		got, ok := messages[0]["output"].(string)
+		if !ok {
+			t.Fatalf("output must be string, got %T\nraw=%s", messages[0]["output"], string(jsonBytes))
+		}
+		if want := "Loaded 1 tool"; got != want {
+			t.Fatalf("flattened output mismatch: want %q, got %q", want, got)
+		}
+	})
+
+	t.Run("tool_reference only matches an output with no blocks", func(t *testing.T) {
+		got, err := functionCallOutput([]schemas.ResponsesMessageContentBlock{toolReference}).MarshalJSON()
+		if err != nil {
+			t.Fatalf("Failed to marshal: %v", err)
+		}
+		want, err := functionCallOutput(nil).MarshalJSON()
+		if err != nil {
+			t.Fatalf("Failed to marshal: %v", err)
+		}
+		if string(got) != string(want) {
+			t.Fatalf("reference-only output must marshal like an output with no blocks:\nwant %s\ngot  %s", want, got)
+		}
+	})
+}
+
 // When the tool result contains a non-text block (e.g. an image), flattening is
 // unsafe — preserve the array form and let the upstream handle it. This keeps
 // the fix scoped to the common text-only case without dropping rich content.
@@ -2749,4 +2816,78 @@ func TestOpenAIResponsesRequest_MarshalJSON_HistoryOutputTextDoesNotGainNullLogP
 	if ann := block.Get("annotations"); !ann.IsArray() {
 		t.Fatalf("annotations must stay an array, got %q. block=%s", ann.Raw, block.Raw)
 	}
+}
+
+// benchResponsesToolTurn is a user turn, the assistant's function_call and its
+// function_call_output, the shape every tool-using request repeats per call.
+func benchResponsesToolTurn(output *schemas.ResponsesToolMessageOutputStruct) *OpenAIResponsesRequestInput {
+	return &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("What's the weather in Tokyo?")},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr("toolu_bench"),
+					Name:      schemas.Ptr("get_weather"),
+					Arguments: schemas.Ptr(`{"city":"Tokyo"}`),
+				},
+			},
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("toolu_bench"),
+					Output: output,
+				},
+			},
+		},
+	}
+}
+
+func benchMarshalResponsesInput(b *testing.B, input *OpenAIResponsesRequestInput) {
+	b.Helper()
+	b.ReportAllocs()
+	for b.Loop() {
+		out, err := input.MarshalJSON()
+		if err != nil {
+			b.Fatalf("marshal OpenAI responses input: %v", err)
+		}
+		if len(out) == 0 {
+			b.Fatal("empty payload")
+		}
+	}
+}
+
+// BenchmarkOpenAIResponsesRequestInputMarshal measures the tool outputs that
+// carry no tool_reference: a string output (marshalled as-is) and Anthropic
+// text blocks (flattened to a string). Both now pass the tool_reference scan.
+func BenchmarkOpenAIResponsesRequestInputMarshal(b *testing.B) {
+	b.Run("string_output", func(b *testing.B) {
+		benchMarshalResponsesInput(b, benchResponsesToolTurn(&schemas.ResponsesToolMessageOutputStruct{
+			ResponsesToolCallOutputStr: schemas.Ptr("Sunny, 22°C"),
+		}))
+	})
+	b.Run("text_blocks", func(b *testing.B) {
+		benchMarshalResponsesInput(b, benchResponsesToolTurn(&schemas.ResponsesToolMessageOutputStruct{
+			ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Sunny, 22°C")},
+			},
+		}))
+	})
+}
+
+// BenchmarkOpenAIResponsesRequestInputMarshalToolReference measures a tool
+// output from client-side tool search, where the tool_reference is dropped
+// before the remaining text is flattened.
+func BenchmarkOpenAIResponsesRequestInputMarshalToolReference(b *testing.B) {
+	benchMarshalResponsesInput(b, benchResponsesToolTurn(&schemas.ResponsesToolMessageOutputStruct{
+		ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+			{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Loaded 1 tool")},
+			{Type: schemas.ResponsesInputMessageContentBlockTypeToolReference, ToolName: schemas.Ptr("get_weather")},
+		},
+	}))
 }

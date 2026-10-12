@@ -1901,6 +1901,10 @@ const (
 	ResponsesInputMessageContentBlockTypeFile      ResponsesMessageContentBlockType = "input_file"
 	ResponsesInputMessageContentBlockTypeAudio     ResponsesMessageContentBlockType = "input_audio"
 	ResponsesInputMessageContentBlockTypeContainer ResponsesMessageContentBlockType = "input_container" // Anthropic-only: file staged into the code-execution container input dir
+	// Anthropic-only: a tool_reference inside a client-side tool_result (custom tool search,
+	// e.g. Claude Code's ToolSearch). Anthropic expands it into the referenced deferred tool's
+	// definition; ToolName names the tools[] entry.
+	ResponsesInputMessageContentBlockTypeToolReference ResponsesMessageContentBlockType = "tool_reference"
 
 	ResponsesOutputMessageContentTypeText      ResponsesMessageContentBlockType = "output_text"
 	ResponsesOutputMessageContentTypeRefusal   ResponsesMessageContentBlockType = "refusal"
@@ -1967,7 +1971,8 @@ type ResponsesMessageContentBlock struct {
 	*ResponsesOutputMessageContentCompaction      // Compaction content from the model
 	*ResponsesOutputMessageContentFallback        // Server-side fallback handoff boundary (from/to model)
 
-	ToolChange *ResponsesToolChangeTarget `json:"tool,omitempty"` // tool_addition / tool_removal: the tool named or defined
+	ToolChange *ResponsesToolChangeTarget `json:"tool,omitempty"`      // tool_addition / tool_removal: the tool named or defined
+	ToolName   *string                    `json:"tool_name,omitempty"` // tool_reference: the deferred tool it points at
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`

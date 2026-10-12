@@ -2108,3 +2108,49 @@ func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 		t.Errorf("system content = %+v, want only the text sibling", blocks)
 	}
 }
+
+// TestToChatMessages_DropsToolReferenceBlocks: a tool_result from Anthropic client-side tool
+// search carries tool_reference blocks, which only Anthropic can expand. Chat has no such
+// content part, so the tool message must look as it did before the reference was carried:
+// the text flattens to a string, and a reference-only output carries no blocks (the tool
+// message is kept so its tool_call still has a response).
+func TestToChatMessages_DropsToolReferenceBlocks(t *testing.T) {
+	fcoType := ResponsesMessageTypeFunctionCallOutput
+	toolOutput := func(blocks []ResponsesMessageContentBlock) []ResponsesMessage {
+		return []ResponsesMessage{{
+			Type: &fcoType,
+			ResponsesToolMessage: &ResponsesToolMessage{
+				CallID: Ptr("toolu_search"),
+				Output: &ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: blocks},
+			},
+		}}
+	}
+	reference := ResponsesMessageContentBlock{Type: ResponsesInputMessageContentBlockTypeToolReference, ToolName: Ptr("get_weather")}
+
+	chat := ToChatMessages(toolOutput([]ResponsesMessageContentBlock{
+		{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("Loaded 1 tool")},
+		reference,
+	}))
+	raw, err := json.Marshal(chat)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "tool_reference") {
+		t.Fatalf("tool_reference forwarded as an unknown chat content part: %s", raw)
+	}
+	if len(chat) != 1 || chat[0].Content == nil || chat[0].Content.ContentStr == nil || *chat[0].Content.ContentStr != "Loaded 1 tool" {
+		t.Fatalf("tool message = %s, want content \"Loaded 1 tool\"", raw)
+	}
+
+	got, err := json.Marshal(ToChatMessages(toolOutput([]ResponsesMessageContentBlock{reference})))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want, err := json.Marshal(ToChatMessages(toolOutput(nil)))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("reference-only tool output must convert like an output with no blocks:\nwant %s\ngot  %s", want, got)
+	}
+}
