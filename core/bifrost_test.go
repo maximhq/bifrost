@@ -7658,3 +7658,102 @@ func TestBatchCreateRequest_RejectsFileAndInlineRequestsTogether(t *testing.T) {
 		})
 	}
 }
+
+// callerFaultBody is an OpenAI-shaped refusal of the request itself, the way Google answers a
+// logprobs value outside its range: no key or provider is at fault, the request is.
+const callerFaultBody = `{"error":{"message":"logprobs must be in the range [0, 20]","type":"invalid_request_error","param":"logprobs","code":"invalid_value"}}`
+
+// TestScenarioInferredFallbacksStopOnCallerFault pins which primary failures run a fallback chain
+// Bifrost inferred (the model-catalog resolver promoting every other provider that serves a bare
+// model) rather than one the caller or a routing config named. A refusal of the request itself
+// (a 400 with a provider error body) comes back to the caller instead of being answered by a
+// provider nobody asked for; a failure another provider or key can get past (5xx, 429, a rejected
+// key, a model this provider cannot reach) still falls back. A caller-named chain falls back on the
+// same 400, as it always has. Both orchestrator loops are covered.
+func TestScenarioInferredFallbacksStopOnCallerFault(t *testing.T) {
+	notFound := `{"error":{"message":"The model m does not exist or you do not have access to it.","type":"invalid_request_error","code":"model_not_found"}}`
+	for _, tc := range []struct {
+		name         string
+		reply        scenarioReply
+		inferred     bool
+		wantFallback bool
+	}{
+		{name: "inferred chain, caller fault 400 returns the primary error", reply: scenarioReply{status: http.StatusBadRequest, body: callerFaultBody}, inferred: true},
+		{name: "inferred chain, caller fault 422 returns the primary error", reply: scenarioReply{status: http.StatusUnprocessableEntity, body: callerFaultBody}, inferred: true},
+		{name: "inferred chain, 503 falls back", reply: scenarioReply{status: http.StatusServiceUnavailable, body: `{"error":{"message":"overloaded","type":"server_error"}}`}, inferred: true, wantFallback: true},
+		{name: "inferred chain, 429 falls back", reply: scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`}, inferred: true, wantFallback: true},
+		{name: "inferred chain, rejected key 401 falls back", reply: scenarioReply{status: http.StatusUnauthorized, body: `{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`}, inferred: true, wantFallback: true},
+		{name: "inferred chain, model not found 404 falls back", reply: scenarioReply{status: http.StatusNotFound, body: notFound}, inferred: true, wantFallback: true},
+		{name: "caller-named chain, caller fault 400 still falls back", reply: scenarioReply{status: http.StatusBadRequest, body: callerFaultBody}, wantFallback: true},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
+				u := newScenarioUpstream(t)
+				account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+					provA: {scenarioKey("a1", 1)},
+					provB: {scenarioKey("b1", 1)},
+				})
+				route := fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, schemas.Fallback{Provider: provB, Model: "m", Inferred: tc.inferred})
+				client := scenarioClient(t, account, &scenarioRouter{route: route}, nil)
+				u.reply("sk-a1", tc.reply)
+
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+				var bifrostErr *schemas.BifrostError
+				if stream {
+					var ch chan *schemas.BifrostStreamChunk
+					ch, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+					if bifrostErr == nil {
+						if _, errs := drainChatStream(ch); len(errs) > 0 {
+							t.Fatalf("stream emitted error chunks: %v", errs)
+						}
+					}
+				} else {
+					_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+				}
+
+				if tc.wantFallback {
+					if bifrostErr != nil {
+						t.Fatalf("want the fallback to serve, got error: %s", bifrostErr.GetErrorString())
+					}
+					if got := u.count("sk-b1"); got != 1 {
+						t.Fatalf("fallback reached the upstream %d times, want 1", got)
+					}
+					return
+				}
+				if bifrostErr == nil {
+					t.Fatalf("an inferred fallback answered a request the primary refused as malformed (fallback hits %d)", u.count("sk-b1"))
+				}
+				if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.reply.status {
+					t.Fatalf("status %v, want the primary's %d: %s", bifrostErr.StatusCode, tc.reply.status, bifrostErr.GetErrorString())
+				}
+				if got := u.count("sk-b1"); got != 0 {
+					t.Fatalf("fallback reached the upstream %d times, want 0", got)
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkShouldTryFallbacks measures the fallback decision on a failed primary, for a
+// caller-named chain (the common case, which must stay a field check) and an inferred chain
+// refused as a caller fault (which classifies the error).
+func BenchmarkShouldTryFallbacks(b *testing.B) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	status := http.StatusBadRequest
+	errType := "invalid_request_error"
+	primaryErr := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Type: &errType, Message: "logprobs must be in the range [0, 20]"}}
+	for _, bc := range []struct {
+		name     string
+		inferred bool
+	}{{"caller-named", false}, {"inferred", true}} {
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+			Provider: provA, Model: "m", Fallbacks: []schemas.Fallback{{Provider: provB, Model: "m", Inferred: bc.inferred}},
+		}}
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = bifrost.shouldTryFallbacks(nil, req, primaryErr)
+			}
+		})
+	}
+}

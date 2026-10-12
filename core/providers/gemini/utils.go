@@ -85,10 +85,12 @@ func NormalizeRawGenerateContentRequestForCompatibility(jsonBody []byte) []byte 
 		return jsonBody
 	}
 
+	// responseLogprobs/logprobs are forwarded as sent, as the typed path does: Google
+	// validates the range and returns logprobsResult. The penalties are still stripped:
+	// the typed path lets compat's drop-params remove them per model from the catalog,
+	// and this raw path has no such check. "fallbacks" is Bifrost's own key.
 	out := jsonBody
 	for _, path := range []string{
-		"generationConfig.responseLogprobs",
-		"generationConfig.logprobs",
 		"generationConfig.presencePenalty",
 		"generationConfig.frequencyPenalty",
 		"fallbacks",

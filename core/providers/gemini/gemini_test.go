@@ -4780,13 +4780,15 @@ func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
 			},
 		},
 		{
-			name:  "StripsGenerationConfigCompatFields",
+			// Logprobs reach Google as sent, as they do on the typed path: Google validates the
+			// range and answers with logprobsResult, so stripping them hid both the 400 and the result.
+			name:  "KeepsLogprobsAndStripsPenalties",
 			input: `{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"temperature":0.7,"responseLogprobs":true,"logprobs":5,"presencePenalty":0.5,"frequencyPenalty":0.3}}`,
 			validate: func(t *testing.T, m map[string]interface{}) {
 				gc := genConfig(m)
 				require.NotNil(t, gc)
-				assert.NotContains(t, gc, "responseLogprobs")
-				assert.NotContains(t, gc, "logprobs")
+				assert.Equal(t, true, gc["responseLogprobs"], "responseLogprobs must reach Google")
+				assert.Equal(t, float64(5), gc["logprobs"], "logprobs must reach Google unclamped")
 				assert.NotContains(t, gc, "presencePenalty")
 				assert.NotContains(t, gc, "frequencyPenalty")
 				assert.Contains(t, gc, "temperature", "valid fields must be preserved")
