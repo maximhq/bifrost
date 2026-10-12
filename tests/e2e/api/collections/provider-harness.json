@@ -282114,6 +282114,241 @@
           }
         }
       ]
+    },
+    {
+      "name": "273. Virtual key create and update refuse the removed singular budget (vk-legacy-budget)",
+      "description": "POST and PUT /api/governance/virtual-keys take budgets, an array; the singular budget field was removed and the OpenAPI spec says so. The request structs had no such field, so the JSON decoder dropped it: the call returned 200, the key had no budget and nothing was enforced, while the same request with rate_limit worked because that field exists. A removed field that is silently accepted looks like a saved budget to the caller. Both calls now answer 400 naming budgets, and an explicit null still means no budget. Red before the change: both singular-budget calls returned 200, the create left a key with no budget, and the update changed nothing. The cases call only the management API, so no model tokens are spent; the word openai is in the case names for the provider filter. A control creates a key with budgets, the refused update must leave its budget as it was, and the run-scoped key is deleted at the end.",
+      "item": [
+        {
+          "name": "[EXPECT-400] openai virtual key create: the removed singular budget is refused, not dropped - vk-legacy-budget - #5673",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-legacy-budget: create with the removed singular budget is a 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error does not point at budgets: ' + pm.response.text()).to.contain('budgets');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness-vk-legacy-budget-refused-{{$guid}}\",\"budget\":{\"max_limit\":0.0005,\"reset_duration\":\"1M\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "openai virtual key create: budgets, the array, is still saved - vk-legacy-budget - #5673",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('vkLegacyBudgetId');",
+                  "  pm.collectionVariables.set('vkLegacyBudgetName', 'harness-vk-legacy-budget-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('vkLegacyBudgetId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('vk-legacy-budget: the retained virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-legacy-budget: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "var budgets = vk.budgets || [];",
+                  "if (vk.id) { pm.collectionVariables.set('vkLegacyBudgetId', vk.id); }",
+                  "pm.test('vk-legacy-budget: the budget was saved', function () {",
+                  "  pm.expect(budgets.length, 'no budget saved: ' + pm.response.text()).to.equal(1);",
+                  "  pm.expect(budgets[0].max_limit, 'wrong max_limit: ' + pm.response.text()).to.equal(0.0005);",
+                  "  pm.expect(budgets[0].reset_duration, 'wrong reset_duration: ' + pm.response.text()).to.equal('1M');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{vkLegacyBudgetName}}\",\"budgets\":[{\"max_limit\":0.0005,\"reset_duration\":\"1M\"}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "[EXPECT-400] openai virtual key update: the removed singular budget is refused, not dropped - vk-legacy-budget - #5673",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('vkLegacyBudgetId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-legacy-budget: update with the removed singular budget is a 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error does not point at budgets: ' + pm.response.text()).to.contain('budgets');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"budget\":{\"max_limit\":0.001}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{vkLegacyBudgetId}}"
+          }
+        },
+        {
+          "name": "openai virtual key read: the refused update left the budget as it was - vk-legacy-budget - #5673",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('vkLegacyBudgetId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-legacy-budget: virtual key read', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "var budgets = vk.budgets || [];",
+                  "pm.test('vk-legacy-budget: the budget is unchanged', function () {",
+                  "  pm.expect(budgets.length, 'expected one budget: ' + pm.response.text()).to.equal(1);",
+                  "  pm.expect(budgets[0].max_limit, 'limit changed: ' + pm.response.text()).to.equal(0.0005);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{vkLegacyBudgetId}}"
+          }
+        },
+        {
+          "name": "openai virtual key cleanup: delete the legacy-budget key - vk-legacy-budget - #5673",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('vkLegacyBudgetId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-legacy-budget: virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the key is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('vkLegacyBudgetId');",
+                  "  pm.collectionVariables.unset('vkLegacyBudgetName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{vkLegacyBudgetId}}"
+          }
+        }
+      ]
     }
   ]
 }
