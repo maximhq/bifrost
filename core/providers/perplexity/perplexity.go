@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -337,13 +338,13 @@ func (provider *PerplexityProvider) Decision(ctx *schemas.BifrostContext, key sc
 		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
-	var response PerplexityDecisionResponse
+	var response typesafe.TypesafeDecisionResponse
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, &response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
 
-	bifrostResponse, bifrostErr := response.ToBifrostDecisionResponse(request, decisionRequestID(providerResponseHeaders))
+	bifrostResponse, bifrostErr := ToBifrostDecisionResponse(&response, request, decisionRequestID(providerResponseHeaders))
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}

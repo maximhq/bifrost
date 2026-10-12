@@ -15,10 +15,11 @@ const perplexityDecisionPath = "/v1/decisions"
 const perplexityRequestIDHeader = "x-request-id"
 
 // ToPerplexityDecisionRequest converts a normalized decision request into Perplexity's
-// body. Questions go through Typesafe's converter, so they validate exactly as they do on
-// Typesafe, and input_image parts become image_url items in the state, after the text of
-// the message they came from. The request is not modified.
-func ToPerplexityDecisionRequest(request *schemas.BifrostDecisionRequest) (*PerplexityDecisionRequest, error) {
+// body, which is Typesafe's systemone request. Questions go through Typesafe's converter,
+// so they validate exactly as they do on Typesafe, and input_image parts become image_url
+// items in the state, after the text of the message they came from. The request is not
+// modified.
+func ToPerplexityDecisionRequest(request *schemas.BifrostDecisionRequest) (*typesafe.TypesafeDecisionRequest, error) {
 	input, state, err := providerUtils.ExtractDecisionImages(request.Input)
 	if err != nil {
 		return nil, err
@@ -32,13 +33,14 @@ func ToPerplexityDecisionRequest(request *schemas.BifrostDecisionRequest) (*Perp
 	if state != nil {
 		native.State = state
 	}
-	return &PerplexityDecisionRequest{TypesafeDecisionRequest: native}, nil
+	return native, nil
 }
 
-// ToBifrostDecisionResponse converts Perplexity's response into the normalized shape.
-// The body carries no id, so the caller passes the one from the x-request-id header.
-func (resp *PerplexityDecisionResponse) ToBifrostDecisionResponse(request *schemas.BifrostDecisionRequest, id string) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	bifrostResp, bifrostErr := typesafe.ToBifrostDecisionResponse(&resp.TypesafeDecisionResponse, request)
+// ToBifrostDecisionResponse converts Perplexity's response, which is Typesafe's systemone
+// response, into the normalized shape. The body carries no id, so the caller passes the
+// one from the x-request-id header.
+func ToBifrostDecisionResponse(resp *typesafe.TypesafeDecisionResponse, request *schemas.BifrostDecisionRequest, id string) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	bifrostResp, bifrostErr := typesafe.ToBifrostDecisionResponse(resp, request)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
