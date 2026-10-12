@@ -14,15 +14,6 @@ const openRouterDecisionPath = "/alpha/decisions"
 // OpenRouter's default /v1/models omits them, so ListModels merges them in.
 const openRouterDecisionModelsPath = "/v1/models?output_modalities=decisions"
 
-// OpenRouterDecisionRequest is the body of POST /alpha/decisions: Typesafe's
-// systemone request, with images sent as image_url items in the state, plus
-// OpenRouter's end-user id. It is only ever encoded; decoding it would run
-// Typesafe's UnmarshalJSON on the embedded pointer and fail.
-type OpenRouterDecisionRequest struct {
-	*typesafe.TypesafeDecisionRequest
-	User *string `json:"user,omitempty"` // from SafetyIdentifier
-}
-
 // ToOpenRouterDecisionRequest converts a normalized decision request into
 // OpenRouter's body. Questions go through Typesafe's converter, so they
 // validate exactly as they do on Typesafe. An input with images is sent as
@@ -44,21 +35,6 @@ func ToOpenRouterDecisionRequest(request *schemas.BifrostDecisionRequest) (*Open
 		native.State = state
 	}
 	return &OpenRouterDecisionRequest{TypesafeDecisionRequest: native, User: request.SafetyIdentifier}, nil
-}
-
-// OpenRouterDecisionUsage is Typesafe's usage plus the billed cost in USD.
-type OpenRouterDecisionUsage struct {
-	typesafe.TypesafeUsage
-	Cost *float64 `json:"cost,omitempty"`
-}
-
-// OpenRouterDecisionResponse is the native decisions response shape.
-type OpenRouterDecisionResponse struct {
-	ID       string                             `json:"id,omitempty"`
-	Provider string                             `json:"provider,omitempty"`
-	Model    string                             `json:"model"`
-	Answers  map[string]typesafe.TypesafeAnswer `json:"answers"`
-	Usage    *OpenRouterDecisionUsage           `json:"usage,omitempty"`
 }
 
 // ToBifrostDecisionResponse converts a native decisions response into
