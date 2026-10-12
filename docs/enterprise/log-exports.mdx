@@ -224,8 +224,9 @@ bifrost migrate-offload --app-dir /path/to/bifrost-data --older-than 24h
 ```
 
 The command uploads each payload before replacing the database row with the
-lightweight hybrid form. It is resumable and skips rows whose `has_object` flag
-is already set. Useful options:
+lightweight hybrid form. It is resumable, skips rows whose `has_object` flag is
+already set, and honors both `object_storage_exclude_fields` and
+`object_storage_exclude_request_types`. Useful options:
 
 | Flag | Description |
 |---|---|

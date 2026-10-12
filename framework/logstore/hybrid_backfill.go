@@ -329,11 +329,20 @@ func (h *HybridLogStore) backfillLogRow(ctx context.Context, row backfillRow, dr
 		// itself); nothing to do.
 		return 0, errBackfillNothingToOffload
 	}
+	if h.skipsOffload(entry) {
+		return 0, errBackfillNothingToOffload
+	}
 	if err := entry.DeserializeFields(); err != nil {
 		return 0, fmt.Errorf("failed to deserialize row: %w", err)
 	}
 
+	// Build the payload and lightweight row exactly the way the current online
+	// hybrid write path does, including DB-resident error_details with raw
+	// request/response bodies moved into the object payload.
 	payload := h.extractUploadPayload(entry)
+	dbEntry := *entry
+	prepareDBEntry(&dbEntry, h.excludedPayloadFields)
+	h.moveErrorRawBodiesToObject(&dbEntry, payload)
 	if isPayloadEmpty(payload) {
 		return 0, errBackfillNothingToOffload
 	}
@@ -350,9 +359,6 @@ func (h *HybridLogStore) backfillLogRow(ctx context.Context, row backfillRow, dr
 		return 0, fmt.Errorf("object upload failed: %w", err)
 	}
 
-	// Build the lightweight DB row exactly the way the online write path does.
-	dbEntry := *entry
-	prepareDBEntry(&dbEntry, h.excludedPayloadFields)
 	// has_object is set explicitly (prepareDBEntry does not touch it) so
 	// subsequent reads hydrate from the object store.
 	dbEntry.HasObject = true

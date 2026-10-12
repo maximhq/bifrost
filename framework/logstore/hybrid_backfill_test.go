@@ -16,11 +16,16 @@ import (
 
 func newBackfillHybrid(t *testing.T, excludeFields []string) (*HybridLogStore, LogStore, *objectstore.InMemoryObjectStore, func()) {
 	t.Helper()
+	return newBackfillHybridWithOptions(t, excludeFields, nil)
+}
+
+func newBackfillHybridWithOptions(t *testing.T, excludeFields, excludeRequestTypes []string) (*HybridLogStore, LogStore, *objectstore.InMemoryObjectStore, func()) {
+	t.Helper()
 	ctx := context.Background()
 	inner, err := newSqliteLogStore(ctx, &SQLiteConfig{Path: filepath.Join(t.TempDir(), "backfill.db")}, hybridTestLogger{})
 	require.NoError(t, err)
 	objStore := objectstore.NewInMemoryObjectStore()
-	hybrid := newHybridLogStore(inner, objStore, "bf", hybridTestLogger{}, excludeFields)
+	hybrid := newHybridLogStore(inner, objStore, "bf", hybridTestLogger{}, excludeFields, excludeRequestTypes)
 	cleanup := func() { _ = hybrid.Close(context.Background()) }
 	return hybrid, inner, objStore, cleanup
 }
@@ -190,6 +195,63 @@ func TestBackfill_RespectsExcludedFields(t *testing.T) {
 	assert.NotContains(t, string(raw), `"raw_request"`)
 }
 
+func TestBackfill_RespectsExcludedRequestTypes(t *testing.T) {
+	hybrid, inner, objStore, cleanup := newBackfillHybridWithOptions(t, nil, []string{"chat.completion"})
+	defer cleanup()
+	ctx := context.Background()
+
+	seedLegacyLog(t, inner, "bf-excluded-type", time.Now().UTC().Add(-24*time.Hour), false)
+	result, err := hybrid.BackfillObjects(ctx, BackfillOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), result.Skipped)
+	assert.Zero(t, result.Migrated)
+	assert.Zero(t, objStore.Len())
+
+	row, err := inner.FindByID(ctx, "bf-excluded-type")
+	require.NoError(t, err)
+	assert.False(t, row.HasObject)
+	assert.NotEmpty(t, row.RawRequest)
+	assert.NotEmpty(t, row.OutputMessage)
+}
+
+func TestBackfill_MovesErrorRawBodiesToObject(t *testing.T) {
+	hybrid, inner, objStore, cleanup := newBackfillHybrid(t, nil)
+	defer cleanup()
+	ctx := context.Background()
+
+	entry := &Log{
+		ID:           "bf-error-raw",
+		Timestamp:    time.Now().UTC().Add(-24 * time.Hour),
+		Provider:     "openai",
+		Model:        "gpt-4o",
+		Status:       "error",
+		Object:       "chat.completion",
+		ErrorDetails: `{"error":{"message":"provider failed"},"extra_fields":{"raw_request":"secret-request","raw_response":"secret-response"}}`,
+	}
+	require.NoError(t, inner.Create(ctx, entry))
+
+	result, err := hybrid.BackfillObjects(ctx, BackfillOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), result.Migrated)
+
+	row, err := inner.FindByID(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.True(t, row.HasObject)
+	assert.Contains(t, row.ErrorDetails, "provider failed")
+	assert.NotContains(t, row.ErrorDetails, "secret-request")
+	assert.NotContains(t, row.ErrorDetails, "secret-response")
+
+	raw, err := objStore.Get(ctx, ObjectKey("bf", entry.Timestamp, entry.ID))
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), "secret-request")
+	assert.Contains(t, string(raw), "secret-response")
+
+	hydrated, err := hybrid.FindByID(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Contains(t, hydrated.ErrorDetails, "secret-request")
+	assert.Contains(t, hydrated.ErrorDetails, "secret-response")
+}
+
 func TestBackfill_HandlesContentHiddenRows(t *testing.T) {
 	hybrid, inner, objStore, cleanup := newBackfillHybrid(t, nil)
 	defer cleanup()
@@ -332,7 +394,7 @@ func TestBackfill_ContextCancellationFinishesAcceptedWork(t *testing.T) {
 		started:             make(chan struct{}),
 		release:             make(chan struct{}),
 	}
-	hybrid := newHybridLogStore(inner, objects, "bf", hybridTestLogger{}, nil)
+	hybrid := newHybridLogStore(inner, objects, "bf", hybridTestLogger{}, nil, nil)
 	defer hybrid.Close(context.Background())
 
 	ts := time.Now().UTC().Add(-24 * time.Hour)
