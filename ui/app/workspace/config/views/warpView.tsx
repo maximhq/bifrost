@@ -968,7 +968,7 @@ export default function WarpView() {
 								</p>
 							)}
 
-							<div className="-mx-4 space-y-3 border-t px-4 pt-4" data-testid="warp-backfill-section">
+							<div className="@container/backfill -mx-4 space-y-3 border-t px-4 pt-4" data-testid="warp-backfill-section">
 								<div className="space-y-0.5">
 									<h4 className="text-sm font-medium">Backfill embeddings</h4>
 									<p className="text-muted-foreground text-xs">
@@ -977,7 +977,7 @@ export default function WarpView() {
 									</p>
 								</div>
 
-								<div className="flex flex-col gap-2 md:flex-row md:items-center">
+								<div className="flex flex-col gap-2 @2xl/backfill:flex-row @2xl/backfill:items-center">
 									<div className="min-w-0 flex-1">
 										<DateTimePickerWithRange
 											buttonClassName="w-full"
@@ -1007,7 +1007,7 @@ export default function WarpView() {
 										/>
 									</div>
 
-									<div className="flex shrink-0 items-center justify-end gap-2">
+									<div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
 										{isBackfillActive ? (
 											<Button
 												type="button"
