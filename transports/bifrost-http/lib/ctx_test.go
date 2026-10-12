@@ -2716,6 +2716,38 @@ func TestGatewayPinOutsideKeyIDsFallsBackOnAnAllowedKey(t *testing.T) {
 	requireGWHits(t, u, map[string]int{"sk-a1": 0, "sk-a2": 0, "sk-b1": 0, "sk-b2": 1})
 }
 
+// A virtual key whose key_ids shrink to one key under a bound session drops the binding to the key
+// it lost: vk1 allows a1 and a2 on A, and a1 weighs 0, so the first turn binds a2. Once vk1 allows
+// only a1, the pool has one key and the session cannot choose, but the next turn still reports the
+// binding to a2 as no longer eligible and rebinds to a1, and the turn after that stays on a1 with
+// nothing left to report (plan row KS-21).
+func TestGatewayKeyIDsShrunkToOneKeyDropsTheSessionsKey(t *testing.T) {
+	u := newGWUpstream(t)
+	g := newGateway(t, u, gwSetup{
+		keys:       map[schemas.ModelProvider][]schemas.Key{gwA: {gwKey("a1", 0), gwKey("a2", 1)}},
+		governance: configstore.GovernanceConfig{VirtualKeys: []configstoreTables.TableVirtualKey{gwVK("vk1", onlyKeys(gwVKProvider(gwA, schemas.Ptr(1.0)), "a1", "a2"))}},
+	})
+	r := g.send(gwCall{model: "gw-a/m", headers: vkHeaders("vk1", "s")})
+	requireServedBy(t, r, gwA)
+	g.requireBinding(r, bifrost.SessionStateKindKey, gwA, "m", "a2")
+
+	edited := gwVK("vk1", onlyKeys(gwVKProvider(gwA, schemas.Ptr(1.0)), "a1"))
+	g.governance.GetGovernanceStore().UpdateVirtualKeyInMemory(t.Context(), &edited, nil, nil, nil)
+	u.clearHits()
+	for turn := 1; turn <= 2; turn++ {
+		r = g.send(gwCall{model: "gw-a/m", headers: vkHeaders("vk1", "s")})
+		requireServedBy(t, r, gwA)
+		if r.info.Key != "a1" {
+			t.Fatalf("turn %d was served on %s, want a1, the only key vk1 still allows", turn, r.info.Key)
+		}
+		if reported := strings.Contains(r.trail(), "no longer eligible"); reported != (turn == 1) {
+			t.Fatalf("turn %d: the trail should report the dropped binding to a2 on the first turn only:\n%s", turn, r.trail())
+		}
+		g.requireBinding(r, bifrost.SessionStateKindKey, gwA, "m", "a1")
+	}
+	requireGWHits(t, u, map[string]int{"sk-a1": 2, "sk-a2": 0})
+}
+
 // A governance refusal drops the binding the refused turn followed. vk1 weights A=1, B=0 and allows
 // two requests: turn 1 binds the session to A; with the weights then moved to A=0, B=1, turn 2
 // still follows the binding to A against routing's proposal of B. The third turn finds vk1's request
