@@ -12,7 +12,7 @@
 
 ## The fastest way to build AI applications that never go down
 
-Bifrost is a high-performance AI gateway that unifies access to 23+ providers (OpenAI, Anthropic, AWS Bedrock, Google Vertex, and more) through a single OpenAI-compatible API. Deploy in seconds with zero configuration and get automatic failover, load balancing, semantic caching, and enterprise-grade features.
+Open-source, high-performance AI gateway by Maxim AI: LLM gateway, MCP gateway and agent gateway in Go. OpenAI-compatible API for 10,000+ models across 25+ providers. Failover, load balancing, semantic caching, virtual keys, budgets, MCP Code Mode. Works with any SDK or agent, like Claude Code. ~11µs overhead at 5k RPS. Auto-migrates from LiteLLM.
 
 ## Quick Start
 
