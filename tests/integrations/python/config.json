@@ -654,6 +654,97 @@
         }
       ]
     },
+    "openai_injectedtools": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "lighthouse_lookup",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        }
+      ]
+    },
+    "openai_injectedalias": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "lighthouse_lookup",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        },
+        {
+          "name": "sse_mcp-web_search",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "echo"
+        }
+      ]
+    },
+    "openai_injectedfirstrow": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "web_search",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "no_such_tool"
+        },
+        {
+          "name": "web_search",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        }
+      ]
+    },
     "anthropic_websearch": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,

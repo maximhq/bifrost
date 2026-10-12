@@ -1,4 +1,6 @@
 import { expect, test } from "../../core/fixtures/base.fixture";
+import type { Page } from "@playwright/test";
+import { createHTTPClientData } from "../mcp-registry/mcp-registry.data";
 
 // All describes below mutate config fields on the same shared singleton
 // "openai" provider row (concurrency, buffer size, timeouts, proxy/network
@@ -489,27 +491,181 @@ test.describe("Provider Settings", () => {
     });
   });
 
-  test.describe("Web Search Tab", () => {
+  test.describe("Tools Tab", () => {
     test.beforeEach(async ({ providersPage }) => {
       await providersPage.goto();
       await providersPage.selectProvider("openai");
     });
 
-    test("should navigate to the web search tab", async ({ providerSettingsPage }) => {
-      await providerSettingsPage.selectConfigTab("web-search");
+    test("should navigate to the tools tab", async ({ providerSettingsPage }) => {
+      await providerSettingsPage.selectConfigTab("tools");
 
       const page = providerSettingsPage.page;
-      await expect(page.getByTestId("provider-tab-web-search")).toHaveAttribute("data-state", "active");
-      await expect(page.getByTestId("provider-config-web-search-content")).toBeVisible();
-      await expect(page.getByTestId("provider-web-search-client-select")).toBeVisible();
+      await expect(page.getByTestId("provider-tab-tools")).toHaveAttribute("data-state", "active");
+      await expect(page.getByTestId("provider-config-tools-content")).toBeVisible();
+      await expect(page.getByTestId("provider-tools-add-btn")).toBeVisible();
     });
 
-    test("should require an MCP server before a tool can be picked", async ({ providerSettingsPage }) => {
-      await providerSettingsPage.selectConfigTab("web-search");
+    test("should require an MCP server before a row's tool can be picked", async ({ providerSettingsPage }) => {
+      await providerSettingsPage.selectConfigTab("tools");
 
       const page = providerSettingsPage.page;
-      await expect(page.getByTestId("provider-web-search-tool-select")).toBeDisabled();
-      await expect(page.getByTestId("provider-web-search-save-btn")).toBeDisabled();
+      const rows = page.getByTestId("provider-tools-table").locator("tbody tr");
+      const before = await rows.count();
+      await page.getByTestId("provider-tools-add-btn").click();
+      await expect(rows).toHaveCount(before + 1);
+
+      const row = `provider-tools-row-${before}`;
+      await expect(page.getByTestId(`${row}-client-select`)).toBeVisible();
+      await expect(page.getByTestId(`${row}-tool-select`)).toBeDisabled();
+      await expect(page.getByTestId("provider-tools-save-btn")).toBeDisabled();
+    });
+
+    test("should mark a row named web_search as replacing native web search", async ({ providerSettingsPage }) => {
+      await providerSettingsPage.selectConfigTab("tools");
+
+      const page = providerSettingsPage.page;
+      const before = await page.getByTestId("provider-tools-table").locator("tbody tr").count();
+      await page.getByTestId("provider-tools-add-btn").click();
+      const row = `provider-tools-row-${before}`;
+
+      await page.getByTestId(`${row}-name`).fill("lookup");
+      await expect(page.getByTestId(`${row}-replaces-web-search`)).toHaveCount(0);
+      await page.getByTestId(`${row}-name`).fill("web_search");
+      await expect(page.getByTestId(`${row}-replaces-web-search`)).toBeVisible();
+    });
+
+    test("should flag an invalid or repeated tool name inline", async ({ providerSettingsPage }) => {
+      await providerSettingsPage.selectConfigTab("tools");
+
+      const page = providerSettingsPage.page;
+      const before = await page.getByTestId("provider-tools-table").locator("tbody tr").count();
+      await page.getByTestId("provider-tools-add-btn").click();
+      await page.getByTestId("provider-tools-add-btn").click();
+      const first = `provider-tools-row-${before}`;
+      const second = `provider-tools-row-${before + 1}`;
+
+      await page.getByTestId(`${first}-name`).fill("web search");
+      await expect(page.getByTestId(first)).toContainText("Use 1-64 letters, digits, _ or -");
+
+      await page.getByTestId(`${first}-name`).fill("lookup");
+      await page.getByTestId(`${second}-name`).fill("lookup");
+      await expect(page.getByTestId(second)).toContainText("Another tool already uses this name");
+      await expect(page.getByTestId("provider-tools-save-btn")).toBeDisabled();
+    });
+
+    test("should save two named tools and show them after a reload", async ({
+      providersPage,
+      providerSettingsPage,
+      mcpRegistryPage,
+    }) => {
+      // Creating an MCP client waits for the backend to connect to the fixture server.
+      test.setTimeout(180000);
+      const page = providerSettingsPage.page;
+      // http-no-ping-server (examples/mcps, started by global setup on :3001) exposes echo, add and greet.
+      const clientData = createHTTPClientData({ name: `tools_tab_${Date.now()}` });
+      await mcpRegistryPage.goto();
+      expect(await mcpRegistryPage.createClient(clientData)).toBe(true);
+
+      const openToolsTab = async () => {
+        await providersPage.goto();
+        await providersPage.selectProvider("openai");
+        await providerSettingsPage.selectConfigTab("tools");
+      };
+      const rows = page.getByTestId("provider-tools-table").locator("tbody tr");
+      // Rows that existed before this test; null until counted, so cleanup never removes them.
+      let before: number | null = null;
+      try {
+        await openToolsTab();
+        const initial = await rows.count();
+        before = initial;
+        await addToolRow(page, `provider-tools-row-${initial}`, clientData.name, "echo", "say_back");
+        await addToolRow(
+          page,
+          `provider-tools-row-${initial + 1}`,
+          clientData.name,
+          "greet",
+          "web_search",
+        );
+
+        const saved = page.waitForResponse(
+          (response) =>
+            response.url().includes("/api/providers/openai") &&
+            response.request().method() === "PUT",
+        );
+        await page.getByTestId("provider-tools-save-btn").click();
+        const response = await saved;
+        expect(response.status(), await response.text()).toBe(200);
+
+        await page.reload();
+        await openToolsTab();
+        await expect(rows).toHaveCount(initial + 2);
+        for (const [offset, name, tool] of [
+          [0, "say_back", "echo"],
+          [1, "web_search", "greet"],
+        ] as const) {
+          const row = `provider-tools-row-${initial + offset}`;
+          await expect(page.getByTestId(`${row}-name`)).toHaveValue(name);
+          // The saved server is resolved by name, so its label coming back proves the stored client name.
+          await expect(page.getByTestId(`${row}-client-select`)).toContainText(clientData.name);
+          await expect(page.getByTestId(`${row}-tool-select`)).toContainText(tool);
+        }
+        await expect(
+          page.getByTestId(`provider-tools-row-${initial + 1}-replaces-web-search`),
+        ).toBeVisible();
+      } finally {
+        // Put the provider's tools back the way they were, then drop the client. Without an
+        // initial count there is no telling which rows are ours, so the rows are left alone.
+        if (before !== null) {
+          await openToolsTab();
+          const count = await rows.count();
+          for (let index = count - 1; index >= before; index--) {
+            await page.getByTestId(`provider-tools-row-${index}-remove-btn`).click();
+          }
+          const saveBtn = page.getByTestId("provider-tools-save-btn");
+          if (count > before && (await saveBtn.isEnabled())) {
+            // The button is also disabled while the PUT is in flight, so wait for the response:
+            // leaving early could cut the save off and strand the provider on the deleted client.
+            const restored = page.waitForResponse(
+              (response) => response.url().includes("/api/providers/openai") && response.request().method() === "PUT",
+            );
+            await saveBtn.click();
+            const response = await restored;
+            expect(response.status(), await response.text()).toBe(200);
+          }
+        }
+        await mcpRegistryPage.goto();
+        await mcpRegistryPage.cleanupMCPClients([clientData.name]);
+      }
+    });
+
+    test("should remove a row that was added", async ({ providerSettingsPage }) => {
+      await providerSettingsPage.selectConfigTab("tools");
+
+      const page = providerSettingsPage.page;
+      const rows = page.getByTestId("provider-tools-table").locator("tbody tr");
+      const before = await rows.count();
+      await page.getByTestId("provider-tools-add-btn").click();
+      await expect(rows).toHaveCount(before + 1);
+
+      await page.getByTestId(`provider-tools-row-${before}-remove-btn`).click();
+      if (before === 0) {
+        await expect(page.getByTestId("provider-tools-empty")).toBeVisible();
+      } else {
+        await expect(rows).toHaveCount(before);
+      }
     });
   });
 });
+
+// addToolRow appends a Tools row and fills it: the MCP server by name through its
+// search picker, then the tool, then the name the model will see.
+async function addToolRow(page: Page, row: string, clientName: string, tool: string, name: string) {
+  await page.getByTestId("provider-tools-add-btn").click();
+  await page.getByTestId(`${row}-client-select`).getByRole("combobox").click();
+  await page.locator("[cmdk-input]").fill(clientName);
+  await page.getByRole("option", { name: clientName }).click();
+  await page.getByTestId(`${row}-tool-select`).click();
+  await page.getByTestId(`${row}-tool-option-${tool}`).click();
+  await page.getByTestId(`${row}-name`).fill(name);
+}
