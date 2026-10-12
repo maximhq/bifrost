@@ -4,8 +4,9 @@ set -euo pipefail
 # Run the GPT Live e2e suite (tests/live) against a gateway built from this checkout and
 # started from the live profile, which points the OpenAI provider at the suite's fake upstream.
 # Same path as locally: `make dev APP_DIR=$(pwd)/tests/live` then `make test-live`.
-# Usage: ./test-live.sh [fake|long]   fake: make test-live (the PR gate, ~2 min)
+# Usage: ./test-live.sh [fake|long]   fake: make test-live (~2 min)
 #                                    long: make test-live-long (two 17-minute calls)
+# LIVE_PREBUILT=1 runs the tmp/bifrost-http the release pipeline already built instead of building.
 
 # Setup Go workspace for CI
 source "$(dirname "$0")/setup-go-workspace.sh"
@@ -14,8 +15,12 @@ MODE="${1:-fake}"
 PORT="${LIVE_GATEWAY_PORT:-8080}"
 mkdir -p tmp
 
-echo "🔨 Building bifrost-http..."
-(cd transports && go build -o ../tmp/bifrost-http ./bifrost-http)
+if [ "${LIVE_PREBUILT:-}" = "1" ] && [ -x tmp/bifrost-http ]; then
+  echo "📦 Using the prebuilt tmp/bifrost-http"
+else
+  echo "🔨 Building bifrost-http..."
+  (cd transports && go build -o ../tmp/bifrost-http ./bifrost-http)
+fi
 
 # The suite would otherwise run against whatever already answers on the port, as a stale
 # local gateway does, and fail on the wrong profile.
