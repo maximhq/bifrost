@@ -495,6 +495,56 @@ func TestExtractResultFromResponsesMessage(t *testing.T) {
 		}
 	})
 
+	// The responses path decodes through the same helper as the chat path, so a server
+	// whose text content is a JSON-encoded string has to land as a container here too.
+	t.Run("Extract JSON string wrapped in a JSON string from ResponsesMessage", func(t *testing.T) {
+		outputStr := `"{\"title\":\"Example Domain\"}"`
+		msg := &schemas.ResponsesMessage{
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesToolCallOutputStr: &outputStr,
+				},
+			},
+		}
+
+		result, err := extractResultFromResponsesMessage(msg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		resultMap, ok := result.(map[string]interface{})
+		if !ok {
+			t.Fatalf("Expected map, got %T", result)
+		}
+		if resultMap["title"] != "Example Domain" {
+			t.Errorf("Expected title 'Example Domain', got '%v'", resultMap["title"])
+		}
+	})
+
+	t.Run("Extract JSON string wrapped in a JSON string from OutputBlocks", func(t *testing.T) {
+		jsonText := `"{\"key\":\"value\"}"`
+		msg := &schemas.ResponsesMessage{
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				Output: &schemas.ResponsesToolMessageOutputStruct{
+					ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+						{Text: &jsonText},
+					},
+				},
+			},
+		}
+
+		result, err := extractResultFromResponsesMessage(msg)
+		if err != nil {
+			t.Fatalf("Unexpected error: %v", err)
+		}
+		resultMap, ok := result.(map[string]interface{})
+		if !ok {
+			t.Fatalf("Expected map, got %T", result)
+		}
+		if resultMap["key"] != "value" {
+			t.Errorf("Expected key 'value', got '%v'", resultMap["key"])
+		}
+	})
+
 	t.Run("Handle nil message", func(t *testing.T) {
 		result, err := extractResultFromResponsesMessage(nil)
 		if err != nil {

@@ -105,7 +105,7 @@ func extractResultFromResponsesMessage(msg *schemas.ResponsesMessage) (interface
 				if err := sonic.Unmarshal([]byte(rawResult), &finalResult); err != nil {
 					return rawResult, nil
 				}
-				return finalResult, nil
+				return decodeNestedJSONString(finalResult), nil
 			}
 
 			if len(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) > 0 {
@@ -121,7 +121,7 @@ func extractResultFromResponsesMessage(msg *schemas.ResponsesMessage) (interface
 					if err := sonic.Unmarshal([]byte(result), &finalResult); err != nil {
 						return result, nil
 					}
-					return finalResult, nil
+					return decodeNestedJSONString(finalResult), nil
 				}
 			}
 		}
