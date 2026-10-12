@@ -254384,7 +254384,7 @@
       ]
     },
     {
-      "name": "NaN. Client tool_use named web_search/web_fetch stays a function_call (#8078 / PR #8079)",
+      "name": "211. Client tool_use named web_search/web_fetch stays a function_call (#8078 / PR #8079)",
       "description": "Regression for #8078 / PR #8079. A client (function) tool_use named web_search or web_fetch was converted to a web_search_call / web_fetch_call because the grouped Anthropic converter matched on name only, orphaning its tool_result. Bedrock rejected the replay with 'The number of toolResult blocks ... exceeds the number of toolUse blocks of previous turn'. Each case replays an assistant turn with client tool_use blocks named web_search and web_fetch plus the matching tool_results through /anthropic/v1/messages and expects a successful reply.",
       "item": [
         {
