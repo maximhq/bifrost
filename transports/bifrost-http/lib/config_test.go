@@ -2359,6 +2359,285 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONMissingComplexityLeavesDBC
 	require.Equal(t, "stored", entry.Value)
 }
 
+// File defaults may initialize a new analyzer, but must not become overrides of
+// existing UI/API settings when split reconciliation sees an omitted field.
+func TestMergeGovernanceConfig_ComplexityFilePresence(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		current                  string
+		file                     string
+		previousFile             string
+		forceFile                bool
+		missingSection           bool
+		fresh                    bool
+		explicitDecision         bool
+		emptyDecision            bool
+		semanticFallbackDecision bool
+		invalid                  bool
+		wantClassifier           string
+		wantDecisionHistory      int
+	}{
+		{name: "omitted_classifier_with_legacy_hash", current: "decision", wantClassifier: "decision", wantDecisionHistory: 5},
+		{name: "omitted_classifier_after_explicit_decision_file", current: "decision", previousFile: "decision", wantClassifier: "decision", wantDecisionHistory: 5},
+		{name: "omitted_classifier_with_prior_normalized_hash", current: "decision", previousFile: "normalized", wantClassifier: "decision", wantDecisionHistory: 5},
+		{name: "explicit_semantic_replaces_decision", current: "decision", file: "semantic", wantClassifier: "semantic", wantDecisionHistory: 5},
+		{name: "explicit_decision_preserves_omitted_decision_settings", current: "semantic", file: "decision", wantClassifier: "decision", wantDecisionHistory: 5},
+		{name: "semantic_fallback_preserves_omitted_decision_settings", current: "semantic", file: "semantic", semanticFallbackDecision: true, wantClassifier: "semantic", wantDecisionHistory: 5},
+		{name: "explicit_decision_settings_apply", current: "semantic", file: "decision", explicitDecision: true, wantClassifier: "decision", wantDecisionHistory: 3},
+		{name: "explicit_empty_decision_applies_defaults", current: "semantic", file: "decision", emptyDecision: true, wantClassifier: "decision", wantDecisionHistory: 1},
+		{name: "classifier_case_and_space_normalize", current: "semantic", file: "  DECISION ", wantClassifier: "decision", wantDecisionHistory: 5},
+		{name: "explicit_blank_classifier_defaults_to_semantic", current: "decision", file: " ", wantClassifier: "semantic", wantDecisionHistory: 5},
+		{name: "invalid_classifier_leaves_database_untouched", current: "decision", file: "invalid", invalid: true, wantClassifier: "decision", wantDecisionHistory: 5},
+		{name: "new_analyzer_defaults_to_semantic", fresh: true, wantClassifier: "semantic"},
+		{name: "config_json_defaults_to_semantic", current: "decision", forceFile: true, wantClassifier: "semantic"},
+		{name: "missing_analyzer_section_preserves_decision", current: "decision", missingSection: true, wantClassifier: "decision", wantDecisionHistory: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			initTestLogger()
+			file := testFileComplexityAnalyzerConfig()
+			previous := testFileComplexityAnalyzerConfig()
+			if tc.previousFile == "normalized" {
+				var err error
+				previous, err = complexity.ValidateAndNormalize(previous)
+				require.NoError(t, err)
+			} else {
+				previous.Classifier = tc.previousFile
+			}
+			previousHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(previous)
+			require.NoError(t, err)
+			current := testRuntimeComplexityAnalyzerConfig()
+			current.Classifier = tc.current
+			history := 5
+			current.Decision = &configstore.ComplexityDecisionConfig{PreviousMessageCount: &history, Timeout: 900 * time.Millisecond}
+			current, err = complexity.ValidateAndNormalize(current)
+			require.NoError(t, err)
+			current.ConfigHashes = previousHashes
+			if tc.fresh {
+				current = nil
+			}
+			file.Classifier = tc.file
+			if tc.semanticFallbackDecision {
+				require.Nil(t, previous.Semantic)
+				require.Empty(t, previousHashes.SemanticSettings)
+				file.Semantic = &configstore.ComplexitySemanticConfig{
+					Provider:       "openai",
+					EmbeddingModel: "text-embedding-3-small",
+					Fallback:       configstore.ComplexitySemanticFallbackDecision,
+				}
+			}
+			if tc.explicitDecision {
+				fileHistory := 3
+				file.Decision = &configstore.ComplexityDecisionConfig{PreviousMessageCount: &fileHistory}
+			}
+			if tc.emptyDecision {
+				file.Decision = &configstore.ComplexityDecisionConfig{}
+			}
+			// Exercise a real section update as well as classifier reconciliation.
+			if !tc.missingSection && tc.previousFile != "normalized" {
+				file.Keywords.MediumKeywords = append(file.Keywords.MediumKeywords, "new-file-keyword")
+			}
+			governance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: current}
+			store := NewMockConfigStore()
+			store.governanceConfig = governance
+			config := &Config{ConfigStore: store, GovernanceConfig: governance}
+			data := &ConfigData{Governance: &configstore.GovernanceConfig{ComplexityAnalyzerConfig: file}}
+			if tc.forceFile {
+				data.SourceOfTruth = SourceOfTruthConfigJSON
+			}
+			if tc.missingSection {
+				data.Governance.ComplexityAnalyzerConfig = nil
+			}
+
+			mergeGovernanceConfig(context.Background(), config, data, governance)
+
+			stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			require.Equal(t, tc.wantClassifier, stored.Classifier)
+			require.Equal(t, stored, config.GovernanceConfig.ComplexityAnalyzerConfig)
+			if tc.semanticFallbackDecision {
+				require.NotNil(t, stored.Semantic)
+				require.Equal(t, configstore.ComplexitySemanticFallbackDecision, stored.Semantic.Fallback)
+				require.NotEmpty(t, stored.ConfigHashes.SemanticSettings)
+			}
+			if tc.missingSection || tc.invalid || tc.previousFile == "normalized" {
+				require.Same(t, current, stored, "an unchanged plan must avoid persistence")
+			}
+			if tc.wantDecisionHistory != 0 {
+				require.NotNil(t, stored.Decision)
+				require.NotNil(t, stored.Decision.PreviousMessageCount)
+				require.Equal(t, tc.wantDecisionHistory, *stored.Decision.PreviousMessageCount)
+				if tc.wantDecisionHistory == 5 {
+					require.Equal(t, current.Decision, stored.Decision)
+					require.Equal(t, previousHashes.DecisionSettings, stored.ConfigHashes.DecisionSettings)
+				}
+			}
+			if tc.file == "" && !tc.forceFile && !tc.fresh {
+				require.Equal(t, previousHashes.ClassifierSettings, stored.ConfigHashes.ClassifierSettings)
+			}
+			if !tc.missingSection && !tc.invalid && tc.previousFile != "normalized" {
+				require.Contains(t, stored.Keywords.MediumKeywords, "new-file-keyword")
+			}
+			// Normalizing defaults must not erase the original file's omission.
+			require.Equal(t, tc.file, file.Classifier)
+			if !tc.explicitDecision && !tc.emptyDecision {
+				require.Nil(t, file.Decision)
+			}
+		})
+	}
+}
+
+// LoadConfig must retain stored classifier choices and Decision settings when a
+// subsequent raw config.json omits them, including across another restart.
+func TestLoadConfig_ComplexityFilePresence(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		initialClassifier string
+		nextClassifier    string
+		legacyHash        bool
+	}{
+		{name: "omitted_classifier_with_legacy_hash", initialClassifier: "decision", legacyHash: true},
+		{name: "omitted_classifier_after_explicit_decision_file", initialClassifier: "decision"},
+		{name: "explicit_decision_preserves_omitted_decision_settings", initialClassifier: "semantic", nextClassifier: "decision"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			initTestLogger()
+			for _, key := range []string{"OPENAI_API_KEY", "OPENAI_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_KEY", "MISTRAL_API_KEY", "MISTRAL_KEY"} {
+				t.Setenv(key, "")
+			}
+			dir := createTempDir(t)
+			ctx := context.Background()
+			data := makeMinimalConfigData(dir)
+			data.SourceOfTruth = SourceOfTruthSplit
+			file := testFileComplexityAnalyzerConfig()
+			file.Classifier = tc.initialClassifier
+			initialHistory := 2
+			file.Decision = &configstore.ComplexityDecisionConfig{
+				PreviousMessageCount: &initialHistory,
+				Timeout:              1200 * time.Millisecond,
+			}
+			data.Governance = &configstore.GovernanceConfig{ComplexityAnalyzerConfig: file}
+			createConfigFile(t, dir, data)
+
+			// Register a close before any fatal assertion, and guard explicit closes
+			// so cleanup neither leaks workers nor closes the same store twice.
+			load := func() (*Config, func()) {
+				config, err := LoadConfig(ctx, dir)
+				closed := false
+				closeConfig := func() {
+					if config != nil && !closed {
+						config.Close(ctx)
+						closed = true
+					}
+				}
+				t.Cleanup(closeConfig)
+				require.NoError(t, err)
+				require.NotNil(t, config)
+				return config, closeConfig
+			}
+			first, closeFirst := load()
+			stored, err := first.ConfigStore.GetComplexityAnalyzerConfig(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			require.Equal(t, tc.initialClassifier, stored.Classifier)
+			require.NotEmpty(t, stored.ConfigHashes.ClassifierSettings)
+			require.NotEmpty(t, stored.ConfigHashes.DecisionSettings)
+
+			if tc.legacyHash {
+				legacy := *stored
+				legacy.ConfigHashes.ClassifierSettings = ""
+				// An entirely empty hash struct is carried over by the store; retain
+				// the other actual file hashes to persist this specific legacy state.
+				require.NotEmpty(t, legacy.ConfigHashes.MediumKeywords)
+				require.False(t, legacy.ConfigHashes.Empty())
+				require.NoError(t, first.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, &legacy))
+				stored, err = first.ConfigStore.GetComplexityAnalyzerConfig(ctx)
+				require.NoError(t, err)
+				require.NotNil(t, stored)
+				require.Empty(t, stored.ConfigHashes.ClassifierSettings)
+			}
+			previousHashes := stored.ConfigHashes
+
+			// A normal UI save carries no file-sync hashes and must keep those
+			// from the last file import while changing the runtime Decision settings.
+			ui := *stored
+			ui.ConfigHashes = configstore.ComplexityAnalyzerConfigHashes{}
+			history := 5
+			ui.Decision = &configstore.ComplexityDecisionConfig{
+				PreviousMessageCount: &history,
+				Timeout:              900 * time.Millisecond,
+			}
+			require.NoError(t, first.ConfigStore.UpdateComplexityAnalyzerConfig(ctx, &ui))
+			beforeRestart, err := first.ConfigStore.GetComplexityAnalyzerConfig(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, beforeRestart)
+			require.Equal(t, previousHashes, beforeRestart.ConfigHashes)
+			require.Equal(t, tc.initialClassifier, beforeRestart.Classifier)
+			require.NotNil(t, beforeRestart.Decision)
+			require.NotNil(t, beforeRestart.Decision.PreviousMessageCount)
+			require.Equal(t, 5, *beforeRestart.Decision.PreviousMessageCount)
+			require.Equal(t, 900*time.Millisecond, beforeRestart.Decision.Timeout)
+			closeFirst()
+
+			// Write an unnormalized file and verify the serialized field absence
+			// before LoadConfig decodes it through the real startup path.
+			file.Classifier = tc.nextClassifier
+			file.Decision = nil
+			file.Keywords.MediumKeywords = append(file.Keywords.MediumKeywords, "restart-file-keyword")
+			createConfigFile(t, dir, data)
+			raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
+			require.NoError(t, err)
+			var top map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(raw, &top))
+			var governance map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(top["governance"], &governance))
+			var analyzer map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(governance["complexity_analyzer_config"], &analyzer))
+			require.NotContains(t, analyzer, "decision")
+			if tc.nextClassifier == "" {
+				require.NotContains(t, analyzer, "classifier")
+			} else {
+				var classifier string
+				require.NoError(t, json.Unmarshal(analyzer["classifier"], &classifier))
+				require.Equal(t, tc.nextClassifier, classifier)
+			}
+
+			fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(file)
+			require.NoError(t, err)
+			wantHashes := previousHashes
+			wantHashes.MediumKeywords = fileHashes.MediumKeywords
+			wantClassifier := tc.initialClassifier
+			if tc.nextClassifier != "" {
+				wantClassifier = tc.nextClassifier
+				wantHashes.ClassifierSettings = fileHashes.ClassifierSettings
+			}
+			check := func(config *Config) *configstore.ComplexityAnalyzerConfig {
+				got, err := config.ConfigStore.GetComplexityAnalyzerConfig(ctx)
+				require.NoError(t, err)
+				require.NotNil(t, got)
+				require.Equal(t, wantClassifier, got.Classifier)
+				require.NotNil(t, got.Decision)
+				require.NotNil(t, got.Decision.PreviousMessageCount)
+				require.Equal(t, 5, *got.Decision.PreviousMessageCount)
+				require.Equal(t, 900*time.Millisecond, got.Decision.Timeout)
+				require.Equal(t, beforeRestart.Decision, got.Decision)
+				require.Equal(t, wantHashes, got.ConfigHashes)
+				require.Contains(t, got.Keywords.MediumKeywords, "restart-file-keyword")
+				require.NotNil(t, config.GovernanceConfig)
+				require.Equal(t, got, config.GovernanceConfig.ComplexityAnalyzerConfig)
+				return got
+			}
+
+			second, closeSecond := load()
+			afterRestart := check(second)
+			closeSecond()
+			third, closeThird := load()
+			require.Equal(t, afterRestart, check(third), "another startup must retain the persisted reconciliation result")
+			closeThird()
+		})
+	}
+}
+
 func testRuntimeComplexityAnalyzerConfig() *configstore.ComplexityAnalyzerConfig {
 	return &configstore.ComplexityAnalyzerConfig{
 		TierBoundaries: configstore.ComplexityTierBoundaries{
