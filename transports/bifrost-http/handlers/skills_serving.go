@@ -1720,26 +1720,11 @@ func forwardedPort(ctx *fasthttp.RequestCtx) string {
 	if raw == "" {
 		return ""
 	}
-	port := strings.TrimSpace(strings.Split(raw, ",")[0])
-	n, err := strconv.Atoi(port)
-	if err != nil || n < 1 || n > 65535 || !decimalPort(port) {
+	n, err := strconv.ParseUint(strings.TrimSpace(strings.Split(raw, ",")[0]), 10, 16)
+	if err != nil || n == 0 {
 		return ""
 	}
-	return port
-}
-
-// decimalPort reports whether port is made only of digits, so values such as
-// "+8443" are not treated as a port.
-func decimalPort(port string) bool {
-	if port == "" {
-		return false
-	}
-	for _, c := range port {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
+	return strconv.FormatUint(n, 10)
 }
 
 // hostHasPort reports whether host already includes a port. An IPv6 host counts

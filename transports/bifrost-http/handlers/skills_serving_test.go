@@ -594,6 +594,9 @@ func TestResolveBaseURLUsesForwardedPort(t *testing.T) {
 		{name: "port with a suffix", proto: "https", host: "gateway.example.com", port: "8443@evil.example", want: "https://gateway.example.com"},
 		{name: "zero port", proto: "https", host: "gateway.example.com", port: "0", want: "https://gateway.example.com"},
 		{name: "port above the range", proto: "https", host: "gateway.example.com", port: "65536", want: "https://gateway.example.com"},
+		{name: "signed port", proto: "https", host: "gateway.example.com", port: "+8443", want: "https://gateway.example.com"},
+		{name: "leading zero", proto: "https", host: "gateway.example.com", port: "08443", want: "https://gateway.example.com:8443"},
+		{name: "default port with a leading zero", proto: "https", host: "gateway.example.com", port: "0443", want: "https://gateway.example.com"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
