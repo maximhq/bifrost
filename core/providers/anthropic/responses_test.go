@@ -3404,3 +3404,49 @@ func TestToolResultToolReferenceSurvivesConversion(t *testing.T) {
 	msgs := convertAnthropicContentBlocksToResponsesMessages(nil, toolResultWithToolReference(), &role, false, "")
 	assertToolReferenceRoundTrips(t, msgs)
 }
+
+func toolResultWithText() []AnthropicContentBlock {
+	return []AnthropicContentBlock{
+		{
+			Type:      AnthropicContentBlockTypeToolResult,
+			ToolUseID: schemas.Ptr("toolu_test_1"),
+			Content: &AnthropicContent{
+				ContentBlocks: []AnthropicContentBlock{
+					{Type: AnthropicContentBlockTypeText, Text: schemas.Ptr("Sunny, 22°C")},
+				},
+			},
+		},
+	}
+}
+
+// BenchmarkAnthropicToolResultToResponses measures both anthropic->responses
+// converters on a text tool_result (the common case, untouched by the new
+// tool_reference case) and on a tool_reference one (now kept instead of dropped).
+func BenchmarkAnthropicToolResultToResponses(b *testing.B) {
+	cases := []struct {
+		name   string
+		blocks []AnthropicContentBlock
+	}{
+		{"text", toolResultWithText()},
+		{"tool_reference", toolResultWithToolReference()},
+	}
+	role := schemas.ResponsesInputMessageRoleUser
+	for _, c := range cases {
+		b.Run("grouped/"+c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if msgs := convertAnthropicContentBlocksToResponsesMessagesGrouped(c.blocks, &role, false); len(msgs) == 0 {
+					b.Fatal("no messages")
+				}
+			}
+		})
+		b.Run("ordered/"+c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if msgs := convertAnthropicContentBlocksToResponsesMessages(nil, c.blocks, &role, false, ""); len(msgs) == 0 {
+					b.Fatal("no messages")
+				}
+			}
+		})
+	}
+}

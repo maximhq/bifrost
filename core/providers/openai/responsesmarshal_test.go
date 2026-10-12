@@ -2817,3 +2817,77 @@ func TestOpenAIResponsesRequest_MarshalJSON_HistoryOutputTextDoesNotGainNullLogP
 		t.Fatalf("annotations must stay an array, got %q. block=%s", ann.Raw, block.Raw)
 	}
 }
+
+// benchResponsesToolTurn is a user turn, the assistant's function_call and its
+// function_call_output, the shape every tool-using request repeats per call.
+func benchResponsesToolTurn(output *schemas.ResponsesToolMessageOutputStruct) *OpenAIResponsesRequestInput {
+	return &OpenAIResponsesRequestInput{
+		OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+			{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("What's the weather in Tokyo?")},
+			},
+			{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID:    schemas.Ptr("toolu_bench"),
+					Name:      schemas.Ptr("get_weather"),
+					Arguments: schemas.Ptr(`{"city":"Tokyo"}`),
+				},
+			},
+			{
+				Type:   schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+				Status: schemas.Ptr("completed"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("toolu_bench"),
+					Output: output,
+				},
+			},
+		},
+	}
+}
+
+func benchMarshalResponsesInput(b *testing.B, input *OpenAIResponsesRequestInput) {
+	b.Helper()
+	b.ReportAllocs()
+	for b.Loop() {
+		out, err := input.MarshalJSON()
+		if err != nil {
+			b.Fatalf("marshal OpenAI responses input: %v", err)
+		}
+		if len(out) == 0 {
+			b.Fatal("empty payload")
+		}
+	}
+}
+
+// BenchmarkOpenAIResponsesRequestInputMarshal measures the tool outputs that
+// carry no tool_reference: a string output (marshalled as-is) and Anthropic
+// text blocks (flattened to a string). Both now pass the tool_reference scan.
+func BenchmarkOpenAIResponsesRequestInputMarshal(b *testing.B) {
+	b.Run("string_output", func(b *testing.B) {
+		benchMarshalResponsesInput(b, benchResponsesToolTurn(&schemas.ResponsesToolMessageOutputStruct{
+			ResponsesToolCallOutputStr: schemas.Ptr("Sunny, 22°C"),
+		}))
+	})
+	b.Run("text_blocks", func(b *testing.B) {
+		benchMarshalResponsesInput(b, benchResponsesToolTurn(&schemas.ResponsesToolMessageOutputStruct{
+			ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+				{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Sunny, 22°C")},
+			},
+		}))
+	})
+}
+
+// BenchmarkOpenAIResponsesRequestInputMarshalToolReference measures a tool
+// output from client-side tool search, where the tool_reference is dropped
+// before the remaining text is flattened.
+func BenchmarkOpenAIResponsesRequestInputMarshalToolReference(b *testing.B) {
+	benchMarshalResponsesInput(b, benchResponsesToolTurn(&schemas.ResponsesToolMessageOutputStruct{
+		ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+			{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Loaded 1 tool")},
+			{Type: schemas.ResponsesInputMessageContentBlockTypeToolReference, ToolName: schemas.Ptr("get_weather")},
+		},
+	}))
+}
