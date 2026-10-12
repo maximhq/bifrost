@@ -93,12 +93,21 @@ func dbForUpdate(db *gorm.DB) *gorm.DB {
 // clientConfigAdvisoryLockKey serializes config_client writers across replicas; 1000001 is the configstore migration lock.
 const clientConfigAdvisoryLockKey = 1000002
 
-// lockClientConfigRow takes a transaction-scoped advisory lock so a concurrent DELETE+CREATE of config_client cannot hide metadata_json from the carry-forward read.
+// lockClientConfigRow serializes config_client writers for the rest of the transaction so a
+// concurrent DELETE+CREATE cannot hide metadata_json from the carry-forward read. Postgres takes a
+// transaction-scoped advisory lock. SQLite has no row locks: its transactions start as readers, and
+// a reader that later writes after another connection committed is refused at once with "database
+// is locked" (the busy timeout is not applied to that upgrade). A no-op write as the first statement
+// takes the write lock up front, where the busy timeout does apply.
 func lockClientConfigRow(tx *gorm.DB) error {
-	if tx.Dialector.Name() != "postgres" {
+	switch tx.Dialector.Name() {
+	case "postgres":
+		return tx.Exec("SELECT pg_advisory_xact_lock(?)", clientConfigAdvisoryLockKey).Error
+	case "sqlite":
+		return tx.Exec("UPDATE config_client SET id = id WHERE 1 = 0").Error
+	default:
 		return nil
 	}
-	return tx.Exec("SELECT pg_advisory_xact_lock(?)", clientConfigAdvisoryLockKey).Error
 }
 
 // lockBudgetOwner locks the owning governance parent before mutating a budget row.
