@@ -630,7 +630,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	// literally contain "nova-2" fails the check and drops web_search/code_execution
 	// instead of converting them. Mirrors ToBedrockResponsesRequest, which already
 	// passes the canonical model to the same check.
-	toolConfig, modelDropped := convertToolConfigFromFiltered(ctx, caps.Model(), caps, bifrostReq.Params, filteredTools)
+	toolConfig, modelDropped, err := convertToolConfigFromFiltered(ctx, caps.Model(), caps, bifrostReq.Params, filteredTools)
+	if err != nil {
+		return err
+	}
 	if toolConfig != nil {
 		bedrockReq.ToolConfig = toolConfig
 	}
@@ -2973,7 +2976,7 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 	}
 	// Strip unsupported server tools before the conversion loop.
 	filtered, _ := anthropic.ValidateChatToolsForProvider(params.Tools, schemas.ResolveModelCaps(schemas.Bedrock, model))
-	toolConfig, _ := convertToolConfigFromFiltered(nil, model, schemas.ResolveModelCaps(schemas.Bedrock, model), params, filtered)
+	toolConfig, _, _ := convertToolConfigFromFiltered(nil, model, schemas.ResolveModelCaps(schemas.Bedrock, model), params, filtered)
 	return toolConfig
 }
 
@@ -3005,9 +3008,9 @@ func convertToNovaSystemTool(systemToolName BedrockSystemToolType, isNova2 bool)
 // survive ValidateChatToolsForProvider via the Nova carve-out but only actually
 // work on Nova2 models). Callers combine this with ValidateChatToolsForProvider's
 // own dropped list for a complete picture.
-func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, caps schemas.ModelCaps, params *schemas.ChatParameters, filtered []schemas.ChatTool) (*BedrockToolConfig, []string) {
+func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, caps schemas.ModelCaps, params *schemas.ChatParameters, filtered []schemas.ChatTool) (*BedrockToolConfig, []string, error) {
 	if params == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	isNova2 := schemas.IsNova2Model(model)
@@ -3017,11 +3020,17 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		if tool.Function != nil {
 			// Serialize the parameters (or a default empty schema) to json.RawMessage
 			var schemaObjectBytes []byte
-			if tool.Function.Parameters != nil {
+			if parameters := tool.Function.Parameters; parameters != nil {
+				var err error
+				// Claude rejects oneOf/anyOf/allOf at the input_schema root.
+				if (len(parameters.OneOf) > 0 || len(parameters.AnyOf) > 0 || len(parameters.AllOf) > 0) && schemas.IsAnthropicModelFamily(ctx, model) {
+					if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
+						return nil, nil, err
+					}
+				}
 				// ToolFunctionParameters.MarshalJSON handles all fields including
 				// properties, required, enum, additionalProperties, $defs, etc.
-				var err error
-				schemaObjectBytes, err = providerUtils.MarshalSorted(tool.Function.Parameters)
+				schemaObjectBytes, err = providerUtils.MarshalSorted(parameters)
 				if err != nil {
 					continue
 				}
@@ -3078,7 +3087,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 	// doesn't support), omit ToolConfig entirely so the request is valid and
 	// the model simply answers without tool access.
 	if len(bedrockTools) == 0 {
-		return nil, droppedForModel
+		return nil, droppedForModel, nil
 	}
 
 	toolConfig := &BedrockToolConfig{
@@ -3135,7 +3144,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		}
 	}
 
-	return toolConfig, droppedForModel
+	return toolConfig, droppedForModel, nil
 }
 
 // convertToolChoice converts Bifrost tool choice to Bedrock format

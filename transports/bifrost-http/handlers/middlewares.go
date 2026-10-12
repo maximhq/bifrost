@@ -383,7 +383,7 @@ const (
 	// small, well-compressed request is never refused for compressing well.
 	requestDecompressionFloor = 1 << 20
 	// requestDecompressionBudgetFactor sizes the process-wide budget of decompressed bytes in
-	// flight, as a multiple of the request body cap.
+	// flight, as a multiple of the request body cap. Bodies are charged what they inflate to.
 	requestDecompressionBudgetFactor = 4
 )
 
@@ -428,10 +428,13 @@ func decompressionAllowance(compressedLen, maxRequestBodyBytes int) int {
 // middleware, for anyone who can reach the listener. The work it does must therefore stay in
 // proportion to what the caller sent: the cap alone is the wire cap too, and lets a few hundred
 // bytes become a 100 MiB buffer. Two bounds keep it proportional. Each body may expand only to
-// its decompressionAllowance, and each buffered decompression reserves that allowance from a
-// process-wide budget for the life of the request, so maximum-size buffers cannot stack up
-// without bound; a request that cannot reserve is answered 503 at once. Streaming bodies are
-// not buffered here and take no reservation.
+// its decompressionAllowance, and each buffered decompression charges the bytes it actually
+// inflates to a process-wide budget, as they are produced, for the life of the request, so
+// buffers cannot stack up without bound; a request that cannot be charged is answered 503 at
+// once. The allowance is not reserved up front: past cap/requestDecompressionMaxRatio
+// compressed it is the whole cap, and booking that for every multi-MB SDK body would refuse
+// the fifth concurrent one while the process holds a fraction of the budget. Streaming bodies
+// are not buffered here and take no charge.
 func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
 	budget := semaphore.NewWeighted(int64(requestDecompressionBudgetFactor) * int64(requestBodyCap(config)))
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
@@ -479,12 +482,12 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// Buffered path: small compressed request — materialize fully. The body is in hand
 			// now, so the allowance follows its real length rather than the declared one.
 			allowed = decompressionAllowance(len(ctx.Request.Body()), maxRequestBodyBytes)
-			if !budget.TryAcquire(int64(allowed)) {
+			body, charged, err := decodeRequestBodyWithLimit(&ctx.Request, allowed, budget)
+			defer budget.Release(charged)
+			if errors.Is(err, errDecompressionBudgetExhausted) {
 				SendError(ctx, fasthttp.StatusServiceUnavailable, "too many compressed request bodies are being decompressed at once; retry shortly or send the body uncompressed")
 				return
 			}
-			defer budget.Release(int64(allowed))
-			body, err := decodeRequestBodyWithLimit(&ctx.Request, allowed)
 			if errors.Is(err, errRequestBodyTooLarge) {
 				refuseExpansion(len(ctx.Request.Body()))
 				return
@@ -588,27 +591,57 @@ func (l *limitedBodyReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// decodeRequestBodyWithLimit decodes the request body with a limit on the size of the body.
-func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int) ([]byte, error) {
+var errDecompressionBudgetExhausted = errors.New("decompressed request bytes in flight exceed the process budget")
+
+// budgetedReader charges every byte it hands out to budget, failing with
+// errDecompressionBudgetExhausted once the budget cannot cover them. The caller releases charged.
+type budgetedReader struct {
+	r       io.Reader
+	budget  *semaphore.Weighted
+	charged int64
+}
+
+func (b *budgetedReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if n > 0 {
+		if !b.budget.TryAcquire(int64(n)) {
+			return 0, errDecompressionBudgetExhausted
+		}
+		b.charged += int64(n)
+	}
+	return n, err
+}
+
+// decodeRequestBodyWithLimit decodes the request body with a limit on the size of the body. With
+// a non-nil budget the decoded bytes are charged to it as they are produced; charged is what the
+// caller must release, whether or not decoding succeeded.
+func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int, budget *semaphore.Weighted) (body []byte, charged int64, err error) {
 	encoding := strings.ToLower(strings.TrimSpace(string(req.Header.ContentEncoding())))
 	bodyReader := bytes.NewReader(req.Body())
 
 	var reader io.Reader = bodyReader
 	cleanup := func() {}
 	if encoding != "" {
-		var err error
 		reader, cleanup, err = newDecompressReader(bodyReader, encoding)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	defer cleanup()
 
-	body, err := io.ReadAll(newLimitedBodyReader(reader, maxRequestBodyBytes))
-	if err != nil {
-		return nil, err
+	var budgeted *budgetedReader
+	if budget != nil {
+		budgeted = &budgetedReader{r: reader, budget: budget}
+		reader = budgeted
 	}
-	return body, nil
+	body, err = io.ReadAll(newLimitedBodyReader(reader, maxRequestBodyBytes))
+	if budgeted != nil {
+		charged = budgeted.charged
+	}
+	if err != nil {
+		return nil, charged, err
+	}
+	return body, charged, nil
 }
 
 // newDecompressReader wraps r with a decompression reader for the given encoding.

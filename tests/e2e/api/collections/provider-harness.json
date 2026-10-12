@@ -258958,7 +258958,7 @@
     },
     {
       "name": "220. Compressed request bodies may only expand in proportion to what was sent (decompression-expansion)",
-      "description": "Request decompression runs ahead of routing and auth for anyone who can reach the listener. A body may expand to at most 100 times its compressed size, with a 1 MiB floor and the configured cap as the ceiling, and buffered decompressions reserve their allowance from a process-wide budget. The fixture is the gzip of 2 MiB of zeros, about two kilobytes on the wire, posted with no credential: it is answered 413 naming the expansion bound before the route or auth sees it, and the gateway keeps serving. Red before the change: the 2 MiB was inflated under the 100 MiB cap and the request reached auth, answering 401. The fixture file keeps the exact bytes on the wire; the openai keyword is only the harness filter label, no provider is called.",
+      "description": "Request decompression runs ahead of routing and auth for anyone who can reach the listener. A body may expand to at most 100 times its compressed size, with a 1 MiB floor and the configured cap as the ceiling, and buffered decompressions charge the bytes they actually inflate to a process-wide budget of four times the cap (that concurrent requests are not refused is pinned by TestRequestDecompressionMiddleware_ConcurrentMultiMBGzipNotRefused, since the harness sends requests one at a time). The fixture is the gzip of 2 MiB of zeros, about two kilobytes on the wire, posted with no credential: it is answered 413 naming the expansion bound before the route or auth sees it, and the gateway keeps serving. Red before the change: the 2 MiB was inflated under the 100 MiB cap and the request reached auth, answering 401. The fixture file keeps the exact bytes on the wire; the openai keyword is only the harness filter label, no provider is called.",
       "item": [
         {
           "name": "[EXPECT-413] openai decompression-expansion: a gzip body expanding far past its size is refused before routing and auth",
@@ -259156,6 +259156,390 @@
             }
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "222. Bedrock Converse Claude tool-schema compatibility (tool-schema-compat)",
+      "description": "Claude on Bedrock rejects oneOf/anyOf/allOf at the root of a tool input_schema (\"input_schema does not support oneOf, allOf, or anyOf at the top level\"). Folder 99 pins the Anthropic converter, which bedrock_mantle and the Bedrock InvokeModel egress reuse; Bedrock's default Converse egress forwarded toolSpec.inputSchema verbatim, so Codex tools like automation_update failed on bedrock/ but not on bedrock_mantle/. Every inbound route that reaches Converse for Claude is covered: /v1/responses, /openai/v1/responses streaming (Codex's route), /v1/chat/completions, /anthropic/v1/messages, and the native /bedrock converse and invoke routes. The raw_request cases pin the flattened wire schema; the branch-limit case pins the gateway-side 400; the Nova case pins that non-Claude Converse models keep the root composition, which they accept.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses Codex root oneOf flattened on Converse - tool-schema-compat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Codex root oneOf tool schema is accepted by Claude on Bedrock Converse', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(text, 'Claude rejected the Converse tool schema: ' + text).to.not.include('input_schema does not support oneOf, allOf, or anyOf at the top level');",
+                  "});",
+                  "pm.test('Converse toolSpec.inputSchema reaches Bedrock without a root oneOf', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var schema = raw.toolConfig.tools[0].toolSpec.inputSchema.json;",
+                  "  pm.expect(schema, 'raw_request: ' + JSON.stringify(raw)).to.not.have.any.keys('oneOf', 'anyOf', 'allOf');",
+                  "  pm.expect(schema.required, 'required must be the intersection of the alternatives').to.eql(['mode']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"automation_update\",\n      \"description\": \"Schema compatibility regression tool.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {},\n        \"$defs\": {\n          \"view\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"mode\": {\n                \"type\": \"string\",\n                \"enum\": [\n                  \"view\"\n                ]\n              },\n              \"id\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"mode\",\n              \"id\"\n            ],\n            \"additionalProperties\": false\n          },\n          \"create\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"mode\": {\n                \"type\": \"string\",\n                \"enum\": [\n                  \"create\"\n                ]\n              },\n              \"name\": {\n                \"type\": \"string\"\n              },\n              \"notificationPolicy\": {\n                \"anyOf\": [\n                  {\n                    \"type\": \"string\"\n                  },\n                  {\n                    \"type\": \"null\"\n                  }\n                ]\n              }\n            },\n            \"required\": [\n              \"mode\",\n              \"name\"\n            ],\n            \"additionalProperties\": false\n          },\n          \"createGroup\": {\n            \"oneOf\": [\n              {\n                \"$ref\": \"#/$defs/create\"\n              }\n            ]\n          }\n        },\n        \"oneOf\": [\n          {\n            \"$ref\": \"#/$defs/view\"\n          },\n          {\n            \"$ref\": \"#/$defs/createGroup\"\n          }\n        ]\n      },\n      \"strict\": false\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /openai/v1/responses streaming Codex root oneOf - tool-schema-compat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Streaming Codex root oneOf on Bedrock Converse completes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(text, 'Claude rejected the Converse tool schema: ' + text).to.not.include('input_schema does not support oneOf, allOf, or anyOf at the top level');",
+                  "  pm.expect(text, 'stream did not complete: ' + text).to.include('response.completed');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_output_tokens\": 64,\n  \"stream\": true,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"automation_update\",\n      \"description\": \"Schema compatibility regression tool.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {},\n        \"$defs\": {\n          \"view\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"mode\": {\n                \"type\": \"string\",\n                \"enum\": [\n                  \"view\"\n                ]\n              },\n              \"id\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"mode\",\n              \"id\"\n            ],\n            \"additionalProperties\": false\n          },\n          \"create\": {\n            \"type\": \"object\",\n            \"properties\": {\n              \"mode\": {\n                \"type\": \"string\",\n                \"enum\": [\n                  \"create\"\n                ]\n              },\n              \"name\": {\n                \"type\": \"string\"\n              },\n              \"notificationPolicy\": {\n                \"anyOf\": [\n                  {\n                    \"type\": \"string\"\n                  },\n                  {\n                    \"type\": \"null\"\n                  }\n                ]\n              }\n            },\n            \"required\": [\n              \"mode\",\n              \"name\"\n            ],\n            \"additionalProperties\": false\n          },\n          \"createGroup\": {\n            \"oneOf\": [\n              {\n                \"$ref\": \"#/$defs/create\"\n              }\n            ]\n          }\n        },\n        \"oneOf\": [\n          {\n            \"$ref\": \"#/$defs/view\"\n          },\n          {\n            \"$ref\": \"#/$defs/createGroup\"\n          }\n        ]\n      },\n      \"strict\": false\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/chat/completions root anyOf flattened on Converse - tool-schema-compat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Root anyOf tool schema is accepted by Claude on Bedrock Converse', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(text, 'Claude rejected the Converse tool schema: ' + text).to.not.include('input_schema does not support oneOf, allOf, or anyOf at the top level');",
+                  "});",
+                  "pm.test('Converse toolSpec.inputSchema reaches Bedrock without a root anyOf', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var schema = raw.toolConfig.tools[0].toolSpec.inputSchema.json;",
+                  "  pm.expect(schema, 'raw_request: ' + JSON.stringify(raw)).to.not.have.any.keys('oneOf', 'anyOf', 'allOf');",
+                  "  pm.expect(schema.required, 'required must be the intersection of the alternatives').to.eql(['mode']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply briefly. Use the available tool only if useful.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"route_request\",\n        \"description\": \"Schema compatibility regression tool.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {},\n          \"anyOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"mode\": {\n                  \"type\": \"string\",\n                  \"enum\": [\n                    \"left\"\n                  ]\n                },\n                \"left\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"mode\",\n                \"left\"\n              ],\n              \"additionalProperties\": false\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"mode\": {\n                  \"type\": \"string\",\n                  \"enum\": [\n                    \"right\"\n                  ]\n                },\n                \"right\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"mode\",\n                \"right\"\n              ],\n              \"additionalProperties\": false\n            }\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /anthropic/v1/messages root allOf input_schema - tool-schema-compat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Root allOf input_schema is accepted by Claude on Bedrock Converse', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(text, 'Claude rejected the Converse tool schema: ' + text).to.not.include('input_schema does not support oneOf, allOf, or anyOf at the top level');",
+                  "});",
+                  "pm.test('Anthropic-shaped message comes back', function () {",
+                  "  pm.expect(pm.response.json().type, 'failed: ' + text).to.equal('message');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply briefly. Use the available tool only if useful.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"set_name\",\n      \"description\": \"Schema compatibility regression tool.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"allOf\": [\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"name\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"name\"\n            ]\n          },\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"name\": {\n                \"maxLength\": 5\n              }\n            }\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /bedrock/model/global.anthropic.claude-sonnet-4-6/converse root oneOf toolSpec - tool-schema-compat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Root oneOf toolSpec is accepted by Claude on the Bedrock Converse route', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(text, 'Claude rejected the Converse tool schema: ' + text).to.not.include('input_schema does not support oneOf, allOf, or anyOf at the top level');",
+                  "});",
+                  "pm.test('Converse output message comes back', function () {",
+                  "  pm.expect(pm.response.json().output.message.role, 'failed: ' + text).to.equal('assistant');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply briefly. Use the available tool only if useful.\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 64\n  },\n  \"toolConfig\": {\n    \"tools\": [\n      {\n        \"toolSpec\": {\n          \"name\": \"automation_update\",\n          \"description\": \"Schema compatibility regression tool.\",\n          \"inputSchema\": {\n            \"json\": {\n              \"type\": \"object\",\n              \"oneOf\": [\n                {\n                  \"type\": \"object\",\n                  \"properties\": {\n                    \"mode\": {\n                      \"const\": \"create\"\n                    },\n                    \"name\": {\n                      \"type\": \"string\"\n                    }\n                  },\n                  \"required\": [\n                    \"mode\",\n                    \"name\"\n                  ],\n                  \"additionalProperties\": false\n                },\n                {\n                  \"type\": \"object\",\n                  \"properties\": {\n                    \"mode\": {\n                      \"const\": \"update\"\n                    },\n                    \"id\": {\n                      \"type\": \"string\"\n                    }\n                  },\n                  \"required\": [\n                    \"mode\",\n                    \"id\"\n                  ],\n                  \"additionalProperties\": false\n                }\n              ]\n            }\n          }\n        }\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-4-6/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-4-6",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "POST /bedrock/model/global.anthropic.claude-sonnet-4-6/invoke root oneOf input_schema - tool-schema-compat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Root oneOf input_schema is accepted by Claude on the Bedrock invoke route', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "  pm.expect(text, 'Claude rejected the Converse tool schema: ' + text).to.not.include('input_schema does not support oneOf, allOf, or anyOf at the top level');",
+                  "});",
+                  "pm.test('Anthropic-shaped message comes back', function () {",
+                  "  pm.expect(pm.response.json().type, 'failed: ' + text).to.equal('message');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"anthropic_version\": \"bedrock-2023-05-31\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply briefly. Use the available tool only if useful.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"name\": \"automation_update\",\n      \"description\": \"Schema compatibility regression tool.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"oneOf\": [\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"mode\": {\n                \"const\": \"create\"\n              },\n              \"name\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"mode\",\n              \"name\"\n            ],\n            \"additionalProperties\": false\n          },\n          {\n            \"type\": \"object\",\n            \"properties\": {\n              \"mode\": {\n                \"const\": \"update\"\n              },\n              \"id\": {\n                \"type\": \"string\"\n              }\n            },\n            \"required\": [\n              \"mode\",\n              \"id\"\n            ],\n            \"additionalProperties\": false\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/global.anthropic.claude-sonnet-4-6/invoke",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "global.anthropic.claude-sonnet-4-6",
+                "invoke"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-4XX] bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses branch expansion limit returns gateway 400 - tool-schema-compat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Excessive tool-schema branch expansion is rejected by the gateway before Bedrock', function () {",
+                  "  pm.expect(pm.response.code, 'expected local schema-complexity rejection: ' + text).to.equal(400);",
+                  "  pm.expect(text).to.include('anthropic tool input schema is too complex');",
+                  "  pm.expect(text).to.include('branch count');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"max_output_tokens\": 64,\n  \"input\": \"Reply briefly. Use the available tool only if useful.\",\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"too_many_branches\",\n      \"description\": \"Schema compatibility regression tool.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"allOf\": [\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_1\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_1\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          },\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_2\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_2\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          },\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_3\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_3\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          },\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_4\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_4\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          },\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_5\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_5\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          },\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_6\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_6\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          },\n          {\n            \"anyOf\": [\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"left_7\": {\n                    \"type\": \"string\"\n                  }\n                }\n              },\n              {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"right_7\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            ]\n          }\n        ]\n      },\n      \"strict\": false\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/us.amazon.nova-pro-v1:0 /v1/chat/completions root oneOf forwarded unchanged (non-Claude) - tool-schema-compat",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('Nova accepts the root oneOf tool schema', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('Non-Claude Converse toolSpec keeps the root oneOf', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var schema = raw.toolConfig.tools[0].toolSpec.inputSchema.json;",
+                  "  pm.expect(schema.oneOf, 'raw_request: ' + JSON.stringify(raw)).to.be.an('array').with.lengthOf(2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/us.amazon.nova-pro-v1:0\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply briefly. Use the available tool only if useful.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"automation_update\",\n        \"description\": \"Schema compatibility regression tool.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"oneOf\": [\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"mode\": {\n                  \"const\": \"create\"\n                },\n                \"name\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"mode\",\n                \"name\"\n              ],\n              \"additionalProperties\": false\n            },\n            {\n              \"type\": \"object\",\n              \"properties\": {\n                \"mode\": {\n                  \"const\": \"update\"\n                },\n                \"id\": {\n                  \"type\": \"string\"\n                }\n              },\n              \"required\": [\n                \"mode\",\n                \"id\"\n              ],\n              \"additionalProperties\": false\n            }\n          ]\n        }\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
         }
       ]
     }
