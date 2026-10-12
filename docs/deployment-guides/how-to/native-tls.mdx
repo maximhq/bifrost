@@ -51,8 +51,10 @@ sudo ufw deny 8080/tcp
 ```
 
 ```bash
-# nftables equivalent, in an inet filter input chain
-tcp dport 8080 ip saddr != { 127.0.0.0/8, 10.0.0.0/8 } drop
+# nftables equivalent, in an inet filter input chain: allow, then drop the rest (IPv4 and IPv6)
+tcp dport 8080 ip saddr { 127.0.0.0/8, 10.0.0.0/8 } accept
+tcp dport 8080 ip6 saddr ::1 accept
+tcp dport 8080 drop
 ```
 
 If nothing needs plain HTTP, leave out `-tls-port` and serve HTTPS only.

@@ -228,14 +228,17 @@ install -d -m 0755 "$out/$gen"
 install -m 0600 "$key" "$out/$gen/tls.key"
 install -m 0644 "$crt" "$out/$gen/tls.crt"
 apply_owner "$out/$gen"
+previous="$(readlink "$out/.live" 2>/dev/null || true)"
 swap_link "$gen" "$out/.live"
 # First run, or an install from before generations: turn the files into links.
 for f in tls.key tls.crt; do
   [ "$(readlink "$out/$f" 2>/dev/null)" = ".live/$f" ] || swap_link ".live/$f" "$out/$f"
 done
-# Keep the live generation and the one before it, for recovery.
+# Keep the live generation and the one it replaced, for recovery. Anything
+# else, such as a directory left by an interrupted run, is removed.
 current="$(readlink "$out/.live")"
-find "$out" -maxdepth 1 -name '.gen-*' -type d | sort -r | tail -n +3 | while read -r old; do
-  [ "$(basename "$old")" = "$current" ] || rm -rf "$old"
+find "$out" -maxdepth 1 -name '.gen-*' -type d | while read -r old; do
+  name="$(basename "$old")"
+  [ "$name" = "$current" ] || [ "$name" = "$previous" ] || rm -rf "$old"
 done
 log "installed $out/tls.crt and $out/tls.key (expires $(openssl x509 -in "$out/tls.crt" -noout -enddate | cut -d= -f2)); Bifrost picks them up within a minute"
