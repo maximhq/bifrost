@@ -131,6 +131,24 @@ func main() {
 
 A model that cannot read part of a request (an image or any other non-text part sent to a TypeSafe or chat model) rejects that attempt with a 400, so a fallback can serve it. Fallbacks work like every other request type via the `Fallbacks` field.
 
+A chat model with no native decisions endpoint (for example `openai/gpt-4o-mini`) returns `unsupported_operation` by default. To have it answer through structured output on its Responses API, register the compat plugin with [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, as the gateway does:
+
+```go
+import "github.com/maximhq/bifrost/plugins/compat"
+
+compatPlugin, err := compat.Init(compat.Config{ConvertDecisionToResponses: true}, bifrost.NewDefaultLogger(schemas.LogLevelInfo), nil)
+if err != nil {
+	panic(err)
+}
+
+client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+	Account:    &MyAccount{},
+	LLMPlugins: []schemas.LLMPlugin{compatPlugin},
+})
+```
+
+The plugin checks every attempt, fallbacks included, and leaves native decisions models (such as `gpt-6-luna` and TypeSafe models) on their decisions endpoint. Setting `schemas.BifrostContextKeyChangeRequestType` to `schemas.ResponsesRequest` on the request context yourself skips that check and emulates the request directly, so set it only for a model without a native decisions endpoint. It covers the first attempt only: Bifrost clears it before each fallback.
+
 ## Answers
 
 `response.Answers` follows the order of the questions. Each `schemas.DecisionAnswer` carries:

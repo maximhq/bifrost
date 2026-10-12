@@ -1326,6 +1326,33 @@ func TestStreamWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 	}
 }
 
+// TestStreamWithDefaultsPreservesExtraFields pins parity with the non-streaming
+// WithDefaults: provider-format stream routes must not zero the chunk's extra_fields.
+func TestStreamWithDefaultsPreservesExtraFields(t *testing.T) {
+	extra := BifrostResponseExtraFields{
+		RequestType: ResponsesStreamRequest,
+		RoutingInfo: RoutingInfo{Provider: Vertex, Model: "claude-sonnet-5-5", Key: "vertex-key"},
+		Provider:    Vertex,
+		Latency:     42,
+		ChunkIndex:  5,
+	}
+	src := &BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeOutputTextDelta,
+		Delta:       new("hi"),
+		ExtraFields: extra,
+	}
+
+	out := src.WithDefaults()
+	require.NotNil(t, out)
+	assert.Equal(t, extra, out.ExtraFields)
+
+	encoded, err := Marshal(out)
+	require.NoError(t, err)
+	assert.Equal(t, string(ResponsesStreamRequest), gjson.GetBytes(encoded, "extra_fields.request_type").String(), string(encoded))
+	assert.Equal(t, string(Vertex), gjson.GetBytes(encoded, "extra_fields.routing_info.provider").String(), string(encoded))
+	assert.Equal(t, int64(5), gjson.GetBytes(encoded, "extra_fields.chunk_index").Int(), string(encoded))
+}
+
 // TestCustomToolInputDoneRoundTrip preserves the terminal input clients compare with streamed custom-tool deltas.
 func TestCustomToolInputDoneRoundTrip(t *testing.T) {
 	raw := []byte(`{"type":"response.custom_tool_call_input.done","item_id":"tool1","output_index":0,"input":"grep alice@example.com"}`)
@@ -2313,5 +2340,42 @@ func TestResponsesComputerCallSingularActionStillWorks(t *testing.T) {
 	}
 	if got := msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction.Type; got != "screenshot" {
 		t.Fatalf("action type = %q, want screenshot", got)
+	}
+}
+
+// TestDeepCopyResponsesMessagePreservesToolChanges: cache-breakpoint injection copies the whole
+// message, so a tool_addition / tool_removal block must keep its tool target (and a compaction
+// block its tool_changes) through DeepCopyResponsesMessage, without sharing pointers.
+func TestDeepCopyResponsesMessagePreservesToolChanges(t *testing.T) {
+	def := &ResponsesTool{Type: ResponsesToolTypeFunction, Name: Ptr("get_weather"), ResponsesToolFunction: &ResponsesToolFunction{}}
+	msg := ResponsesMessage{
+		Role: Ptr(ResponsesInputMessageRoleSystem),
+		Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+			{Type: ResponsesInputMessageContentBlockTypeToolAddition, ToolChange: &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolDefinition, Definition: def}},
+			{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolReference, Name: Ptr("echo")}},
+			{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("Weather lookups are disabled.")},
+			{Type: ResponsesOutputMessageContentTypeCompaction, ResponsesOutputMessageContentCompaction: &ResponsesOutputMessageContentCompaction{
+				Summary:     "summary",
+				ToolChanges: []ResponsesMessageContentBlock{{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolReference, Name: Ptr("echo")}}},
+			}},
+		}},
+	}
+	copied := DeepCopyResponsesMessage(msg)
+	blocks := copied.Content.ContentBlocks
+	if blocks[0].ToolChange == nil || blocks[0].ToolChange.Type != ResponsesToolChangeTargetTypeToolDefinition {
+		t.Fatalf("tool_addition lost its tool target on copy: %+v", blocks[0])
+	}
+	if blocks[0].ToolChange == msg.Content.ContentBlocks[0].ToolChange {
+		t.Errorf("tool_addition target pointer shared with the original")
+	}
+	if blocks[0].ToolChange.Definition == nil || blocks[0].ToolChange.Definition.Name == nil || *blocks[0].ToolChange.Definition.Name != "get_weather" {
+		t.Errorf("tool_addition definition not copied: %+v", blocks[0].ToolChange)
+	}
+	if blocks[1].ToolChange == nil || blocks[1].ToolChange.Name == nil || *blocks[1].ToolChange.Name != "echo" {
+		t.Fatalf("tool_removal lost its tool reference on copy: %+v", blocks[1])
+	}
+	cmp := blocks[3].ResponsesOutputMessageContentCompaction
+	if cmp == nil || len(cmp.ToolChanges) != 1 || cmp.ToolChanges[0].ToolChange == nil {
+		t.Fatalf("compaction tool_changes lost on copy: %+v", cmp)
 	}
 }

@@ -189,7 +189,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	}
 
 	// Generate compact Python signatures
-	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel)
+	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(matchedClientName))
 	lines := strings.Split(fileContent, "\n")
 	totalLines := len(lines)
 
@@ -282,7 +282,7 @@ func parseVFSFilePath(fileName string) (serverName, toolName string, isToolLevel
 }
 
 // generateCompactSignatures generates compact Python function signatures for tools.
-func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isToolLevel bool) string {
+func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isToolLevel bool, instructions string) string {
 	var sb strings.Builder
 
 	// Minimal header
@@ -296,7 +296,12 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 	sb.WriteString("# The def names below are the exact callable names to use in executeToolCode.\n")
 	sb.WriteString("# Read this file before executeToolCode to confirm parameters and return shape.\n")
 	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"tool_name\")\n", clientName))
-	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n\n")
+	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n")
+	if instructions != "" {
+		sb.WriteString("#\n")
+		sb.WriteString(instructions)
+	}
+	sb.WriteString("\n")
 
 	for _, tool := range tools {
 		if tool.Function == nil || tool.Function.Name == "" {

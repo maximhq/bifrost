@@ -77,11 +77,20 @@ func (m *Manager) RunWithPluginPipeline(
 	req *schemas.BifrostA2ARequest,
 	op A2AOpFunc,
 ) (finalResponse *schemas.BifrostA2AResponse, finalError *schemas.BifrostError) {
-	// Ensure a request ID exists so plugin hooks have something to correlate on.
-	// Card and background operations often arrive without one.
+	// Card and background operations may arrive without a request ID.
 	if ctx != nil {
-		if _, ok := ctx.Value(schemas.BifrostContextKeyRequestID).(string); !ok {
-			ctx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
+		requestID, _ := ctx.Value(schemas.BifrostContextKeyRequestID).(string)
+		if requestID == "" {
+			requestID = uuid.New().String()
+			ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
+		}
+		if m.rawCaptureFn != nil && m.rawCaptureFn() {
+			captureID := uuid.New().String()
+			ctx.SetValue(schemas.A2ARawCaptureContextKey, m.rawCaptures.Start(captureID))
+			// Registered before recovery and post-hooks so cleanup runs last.
+			defer m.rawCaptures.Delete(captureID)
+		} else {
+			ctx.SetValue(schemas.A2ARawCaptureContextKey, nil)
 		}
 	}
 

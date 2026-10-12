@@ -16,7 +16,7 @@ import type { WarpConversation } from "@/lib/types/warp";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
-import { ArrowDown, Database, History, Loader2, SquarePen, X } from "lucide-react";
+import { ArrowDown, Clock, Database, History, Loader2, SquarePen, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 const STARTERS = [
@@ -104,7 +104,9 @@ export default function WarpPanel() {
 	// A missing chip reads as "all fine", so a failed status request shows an explicit notice instead.
 	const indexStatusUnavailable = !indexChip && isIndexStatusError;
 
-	const [queue, setQueue] = useState<string[]>([]);
+	// Ids, not positions: removing or draining one must not remount, and so re-animate, the rest.
+	const [queue, setQueue] = useState<{ id: number; text: string }[]>([]);
+	const nextQueueId = useRef(0);
 	// Blocks the drain during a stored load, or a follow-up is filed under the thread being left.
 	const [isOpeningStored, setIsOpeningStored] = useState(false);
 	// ask closes over the transcript, so the drain effect reads it via a ref to avoid rerunning every render.
@@ -125,7 +127,7 @@ export default function WarpPanel() {
 		if (!drain) return;
 		const [next, ...rest] = queue;
 		setQueue(rest);
-		askRef.current?.(next);
+		askRef.current?.(next.text);
 	}, [isStreaming, queue, question, error, isOpeningStored]);
 
 	if (!warp) return null;
@@ -177,7 +179,7 @@ export default function WarpPanel() {
 		const [next, ...rest] = queue;
 		if (next === undefined) return;
 		setQueue(rest);
-		askRef.current?.(next);
+		askRef.current?.(next.text);
 	};
 
 	return (
@@ -333,24 +335,27 @@ export default function WarpPanel() {
 												Resume queued messages
 											</Button>
 										)}
-										<ul className="space-y-2" data-testid="warp-queued">
-											{queue.map((text, index) => (
-												<li
-													key={`${index}-${text}`}
-													className="flex items-start gap-2 rounded-md border border-dashed px-3 py-2 text-sm"
-													data-testid="warp-queued-item"
-												>
-													<span className="text-muted-foreground min-w-0 flex-1 whitespace-pre-wrap">{text}</span>
-													<span className="text-muted-foreground shrink-0 text-[10px] tracking-wide uppercase">Queued</span>
-													<button
-														type="button"
-														aria-label="Remove queued message"
-														data-testid="warp-queued-remove"
-														onClick={() => setQueue((current) => current.filter((_, position) => position !== index))}
-														className="text-muted-foreground hover:text-foreground shrink-0 cursor-pointer"
-													>
-														<X className="size-3" />
-													</button>
+										{/* Drawn as the message it will become, dimmed until it sends, with a status line under it like a chat app's. */}
+										<ul className="space-y-3" data-testid="warp-queued">
+											{queue.map((item, index) => (
+												<li key={item.id} className="warp-message-send space-y-1" data-testid="warp-queued-item">
+													<div className="bg-muted/20 text-muted-foreground rounded-md border px-3 py-2 text-sm break-words whitespace-pre-wrap">
+														{item.text}
+													</div>
+													<div className="text-muted-foreground flex items-center justify-end gap-1.5 text-[11px]">
+														<Clock aria-hidden="true" className="size-3 shrink-0" />
+														<span>{index === 0 && isStreaming ? "Sends when this answer finishes" : "Queued"}</span>
+														<span aria-hidden="true">·</span>
+														<button
+															type="button"
+															aria-label="Remove queued message"
+															data-testid="warp-queued-remove"
+															onClick={() => setQueue((current) => current.filter((queued) => queued.id !== item.id))}
+															className="hover:text-foreground cursor-pointer rounded-sm px-1 py-0.5 transition-colors"
+														>
+															Remove
+														</button>
+													</div>
 												</li>
 											))}
 										</ul>
@@ -359,24 +364,27 @@ export default function WarpPanel() {
 							</div>
 						</ScrollArea>
 
-						{!isPinned && (
-							<Button
-								type="button"
-								size="icon"
-								variant="secondary"
-								onClick={scrollToBottom}
-								aria-label="Jump to latest"
-								data-testid="warp-jump-to-latest"
-								// Measured offset: a pending question makes the controls taller than any fixed value.
-								style={{ bottom: controlsHeight + 16 }}
-								className="absolute left-1/2 size-7 -translate-x-1/2 rounded-full shadow-md"
-							>
-								<ArrowDown className="size-3.5" />
-							</Button>
-						)}
+						{/* Always mounted so it can scale out as well as in; invisible takes it out of the tab order and hit testing. */}
+						<Button
+							type="button"
+							size="icon"
+							variant="secondary"
+							onClick={scrollToBottom}
+							aria-label="Jump to latest"
+							aria-hidden={isPinned}
+							data-testid="warp-jump-to-latest"
+							// Measured offset: a pending question makes the controls taller than any fixed value.
+							style={{ bottom: controlsHeight + 16 }}
+							className={cn(
+								"absolute left-1/2 size-7 -translate-x-1/2 rounded-full shadow-md transition-[opacity,scale,visibility] duration-200 ease-out motion-reduce:transition-none",
+								isPinned && "invisible scale-75 opacity-0",
+							)}
+						>
+							<ArrowDown className="size-3.5" />
+						</Button>
 					</div>
 
-					<div className="absolute inset-x-0 bottom-0 bg-card" ref={setControlsNode}>
+					<div className="bg-card absolute inset-x-0 bottom-0" ref={setControlsNode}>
 						{question && !isStreaming && (
 							<div className="px-3 pt-3 pb-2">
 								<WarpQuestionCard
@@ -405,7 +413,7 @@ export default function WarpPanel() {
 							onSelectModel={(model) => warp.selectModel(warpModelKey(model))}
 							canConfigure={canConfigure}
 							onSend={ask}
-							onQueue={(text) => setQueue((current) => [...current, text])}
+							onQueue={(text) => setQueue((current) => [...current, { id: nextQueueId.current++, text }])}
 							// Stopping also drops queued follow-ups so they don't fire right after the cut.
 							onStop={() => {
 								setQueue([]);

@@ -2,12 +2,16 @@ package handlers
 
 import (
 	"bytes"
+	"crypto"
+	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"regexp"
 	"slices"
@@ -116,6 +120,10 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
+	if err := rejectUnknownOAuthKeyConfigFields(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 
 	providerConfig, err := h.inMemoryStore.GetProviderConfigRaw(provider)
 	if err != nil {
@@ -141,7 +149,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && key.Value.GetValue() == "" {
+	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && key.Value.GetValue() == "" && key.OAuthKeyConfig == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
 		return
 	}
@@ -255,6 +263,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := rejectUnknownOAuthKeyConfigFields(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 	updateKey, err := decodeKeyUpdate(ctx.PostBody(), *oldRawKey)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
@@ -276,7 +288,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && mergedKey.Value.GetValue() == "" {
+	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && mergedKey.Value.GetValue() == "" && mergedKey.OAuthKeyConfig == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
 		return
 	}
@@ -509,6 +521,8 @@ func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
 		"sgl_key_config":            func() { updateKey.SGLKeyConfig = oldRawKey.SGLKeyConfig },
 		"databricks_key_config":     func() { updateKey.DatabricksKeyConfig = oldRawKey.DatabricksKeyConfig },
 		"github_copilot_key_config": func() { updateKey.GithubCopilotKeyConfig = oldRawKey.GithubCopilotKeyConfig },
+		"cloudflare_key_config":     func() { updateKey.CloudflareKeyConfig = oldRawKey.CloudflareKeyConfig },
+		"oauth_key_config":          func() { updateKey.OAuthKeyConfig = oldRawKey.OAuthKeyConfig },
 		"enabled":                   func() { updateKey.Enabled = oldRawKey.Enabled },
 		"use_for_batch_api":         func() { updateKey.UseForBatchAPI = oldRawKey.UseForBatchAPI },
 		"use_anthropic_endpoints":   func() { updateKey.UseAnthropicEndpoints = oldRawKey.UseAnthropicEndpoints },
@@ -699,6 +713,16 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 		}
 	}
 
+	if mergedKey.CloudflareKeyConfig != nil {
+		var stored *schemas.SecretVar
+		if oldRawKey.CloudflareKeyConfig != nil {
+			stored = &oldRawKey.CloudflareKeyConfig.AccountID
+		}
+		if err := preserve(&mergedKey.CloudflareKeyConfig.AccountID, stored, "cloudflare_key_config.account_id"); err != nil {
+			return schemas.Key{}, err
+		}
+	}
+
 	if mergedKey.DatabricksKeyConfig != nil {
 		var workspaceURL, clientID, clientSecret *schemas.SecretVar
 		if oldRawKey.DatabricksKeyConfig != nil {
@@ -740,6 +764,46 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 
 				return schemas.Key{}, err
 			}
+		}
+	}
+
+	if mergedKey.OAuthKeyConfig != nil {
+		var tokenURL, clientID, clientSecret, privateKey *schemas.SecretVar
+		if old := oldRawKey.OAuthKeyConfig; old != nil {
+			tokenURL = &old.TokenURL
+			clientID = old.ClientID
+			clientSecret = old.ClientSecret
+			privateKey = old.PrivateKey
+		}
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{&mergedKey.OAuthKeyConfig.TokenURL, tokenURL, "oauth_key_config.token_url"},
+			{mergedKey.OAuthKeyConfig.ClientID, clientID, "oauth_key_config.client_id"},
+			{mergedKey.OAuthKeyConfig.ClientSecret, clientSecret, "oauth_key_config.client_secret"},
+			{mergedKey.OAuthKeyConfig.PrivateKey, privateKey, "oauth_key_config.private_key"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
+		}
+		// extra_params values come back masked from a GET; a mask resolves to the stored value.
+		// The value is a literal form parameter, never a secret reference, so it is inspected as
+		// the string it is (Redacted masks it the same way).
+		for name, value := range mergedKey.OAuthKeyConfig.ExtraParams {
+			if !(&schemas.SecretVar{Val: value}).IsMaskedPlaceholder() {
+				continue
+			}
+			stored, ok := "", false
+			if old := oldRawKey.OAuthKeyConfig; old != nil {
+				stored, ok = old.ExtraParams[name]
+			}
+			if !ok || stored == "" {
+				return schemas.Key{}, fmt.Errorf("masked preview cannot be used for oauth_key_config.extra_params.%s without a stored value", name)
+			}
+			mergedKey.OAuthKeyConfig.ExtraParams[name] = stored
 		}
 	}
 
@@ -951,6 +1015,10 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsSet() {
 			return fmt.Errorf("sgl_key_config.url is required for SGL keys")
 		}
+	case schemas.Cloudflare:
+		if key.CloudflareKeyConfig == nil || !key.CloudflareKeyConfig.AccountID.IsSet() {
+			return fmt.Errorf("cloudflare_key_config.account_id is required for Cloudflare keys")
+		}
 	case schemas.GithubCopilot:
 		// A Copilot API token in value is a valid alternative to the GitHub App bundle. But a
 		// supplied App config is checked either way: a half-filled block sitting behind a
@@ -1034,6 +1102,108 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 			return fmt.Errorf("databricks_key_config.client_id and databricks_key_config.client_secret must be set together")
 		}
 	}
+	// oauth_key_config is accepted on any provider's key and must be whole when present: a
+	// half-filled block behind a value persists silently and only surfaces once the value
+	// is removed and the key falls back to credentials that were never valid.
+	if cfg := key.OAuthKeyConfig; cfg != nil {
+		if !bifrost.ProviderSupportsOAuthKeyConfig(provider) {
+			return fmt.Errorf("oauth_key_config is only supported on openai and on custom providers whose base_provider_type is openai")
+		}
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		// Literal values are shape-checked too; secret references resolve elsewhere.
+		if !cfg.TokenURL.IsFromSecret() && !isHTTPSOrLoopbackURL(cfg.TokenURL.GetValue()) {
+			return fmt.Errorf("oauth_key_config.token_url must use https (http is allowed for loopback hosts only)")
+		}
+		if cfg.GrantType == schemas.OAuthGrantJWTBearer && cfg.PrivateKey != nil && !cfg.PrivateKey.IsFromSecret() {
+			key, ok := parseAsymmetricPEMPrivateKey(cfg.PrivateKey.GetValue())
+			if !ok {
+				return fmt.Errorf("oauth_key_config.private_key must be an RSA or EC private key in PEM form")
+			}
+			if err := keyMatchesSigningAlgorithm(key, cfg.SigningAlgorithm); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// isHTTPSOrLoopbackURL reports whether a token endpoint is https, or http on a loopback
+// host, which is the only place a client secret may travel in the clear.
+func isHTTPSOrLoopbackURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		// Case-insensitive, as in core's OAuthKeyConfig.Validate and the token cache, so a URL
+		// accepted from config.json is not refused through the API.
+		host := u.Hostname()
+		return strings.EqualFold(host, "localhost") || net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()
+	default:
+		return false
+	}
+}
+
+// parseAsymmetricPEMPrivateKey parses s as an RSA or EC private key Bifrost can sign a
+// JWT bearer assertion with: PKCS#1, SEC 1, or a PKCS#8 container holding either. Literal
+// backslash-n is repaired first, as in isPEMPrivateKey.
+func parseAsymmetricPEMPrivateKey(s string) (crypto.PrivateKey, bool) {
+	if !strings.Contains(s, "\n") && strings.Contains(s, `\n`) {
+		s = strings.ReplaceAll(s, `\n`, "\n")
+	}
+	block, rest := pem.Decode([]byte(strings.TrimSpace(s)))
+	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
+		return nil, false
+	}
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		return key, err == nil
+	case "EC PRIVATE KEY":
+		key, err := x509.ParseECPrivateKey(block.Bytes)
+		return key, err == nil
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, false
+		}
+		switch key.(type) {
+		case *rsa.PrivateKey, *ecdsa.PrivateKey:
+			return key, true
+		}
+		return nil, false
+	default:
+		return nil, false
+	}
+}
+
+// keyMatchesSigningAlgorithm checks a parsed literal key against the algorithm it will sign
+// with (RS256 when unset): RSA for RS*/PS*, and for ES* an EC key on the curve the algorithm
+// names. The signer selects its key parser from the algorithm, so a mismatch saves cleanly and
+// then fails at the first token mint, far from the field that caused it.
+func keyMatchesSigningAlgorithm(key crypto.PrivateKey, alg string) error {
+	if alg == "" {
+		alg = "RS256"
+	}
+	if strings.HasPrefix(alg, "ES") {
+		ec, ok := key.(*ecdsa.PrivateKey)
+		if !ok {
+			return fmt.Errorf("oauth_key_config.signing_algorithm %s needs an EC private key; private_key is RSA", alg)
+		}
+		want := map[string]string{"ES256": "P-256", "ES384": "P-384", "ES512": "P-521"}[alg]
+		if got := ec.Curve.Params().Name; want != "" && got != want {
+			return fmt.Errorf("oauth_key_config.signing_algorithm %s needs a %s key; private_key is on %s", alg, want, got)
+		}
+		return nil
+	}
+	if _, ok := key.(*rsa.PrivateKey); !ok {
+		return fmt.Errorf("oauth_key_config.signing_algorithm %s needs an RSA private key; private_key is EC (set an ES* algorithm)", alg)
+	}
 	return nil
 }
 
@@ -1041,7 +1211,16 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 // credentials, keyed by its JSON path. It reads every provider's config block, not just the
 // key's own provider: an unused block is harmless to include and fails closed, while a
 // provider-type list silently misses new fields (Databricks workspace_url, Bedrock endpoints,
-// Copilot github_domain and the per-alias Azure endpoint were all missed that way). Unset values are omitted.
+// Copilot github_domain, the per-alias Azure endpoint and the Vertex credential JSON were all
+// missed that way). Unset values are omitted.
+//
+// A Vertex auth_credentials JSON is a dial target as a whole, not only a secret: the Google
+// client takes its destinations from it (a service account's token_uri, an impersonated
+// account's impersonation URL, an external account's token_url and a credential_source file or
+// url it reads and posts there). The value may be an env or vault reference the handler cannot
+// open, and every accepted credential type carries a destination, so the field is compared
+// whole rather than parsed for URLs. The aws_workload_identity block is not listed: its
+// exchange goes to Google's fixed STS endpoint and it holds no URL.
 func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
 	targets := make(map[string]*schemas.SecretVar)
 	add := func(name string, v *schemas.SecretVar) {
@@ -1076,6 +1255,12 @@ func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
 	}
 	if c := key.GithubCopilotKeyConfig; c != nil {
 		add("github_copilot_key_config.github_domain", &c.GithubDomain)
+	}
+	if c := key.OAuthKeyConfig; c != nil {
+		add("oauth_key_config.token_url", &c.TokenURL)
+	}
+	if c := key.VertexKeyConfig; c != nil {
+		add("vertex_key_config.auth_credentials", &c.AuthCredentials)
 	}
 	if c := key.BedrockKeyConfig; c != nil {
 		addBedrockEndpoints("bedrock_key_config.endpoints", c.Endpoints)
@@ -1133,7 +1318,7 @@ func requireGenuineAuthForEndpointChange(ctx *fasthttp.RequestCtx, oldKey *schem
 	if len(changed) == 0 {
 		return false
 	}
-	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing a provider key's endpoint (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing where a provider key dials (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
 	return true
 }
 
@@ -1158,6 +1343,25 @@ func validateVertexKeyAuth(provider schemas.ModelProvider, key schemas.Key) erro
 	}
 	if cfg.AuthCredentials.IsSet() {
 		return fmt.Errorf("vertex_key_config.auth_credentials must be empty when vertex_key_config.aws_workload_identity is configured: a key authenticates with either a credentials JSON or AWS workload identity federation, not both")
+	}
+	return nil
+}
+
+// rejectUnknownOAuthKeyConfigFields gives the API the strictness config.schema.json already
+// has for oauth_key_config (additionalProperties: false). sonic drops unknown fields, so a
+// misspelled "scope" would otherwise save a block that never requests its scopes and only
+// fails at the first token exchange. Only the oauth block is checked: the rest of the key
+// keeps its lenient decoding.
+func rejectUnknownOAuthKeyConfigFields(body []byte) error {
+	raw := gjson.GetBytes(body, "oauth_key_config")
+	if !raw.Exists() || raw.Type == gjson.Null {
+		return nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw.Raw))
+	decoder.DisallowUnknownFields()
+	var cfg schemas.OAuthKeyConfig
+	if err := decoder.Decode(&cfg); err != nil {
+		return fmt.Errorf("oauth_key_config: %s", strings.TrimPrefix(err.Error(), "json: "))
 	}
 	return nil
 }

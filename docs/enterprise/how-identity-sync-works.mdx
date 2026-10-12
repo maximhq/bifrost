@@ -1,185 +1,270 @@
 ---
 title: "How Identity Sync Works"
-description: "A behind-the-scenes look at how Bifrost keeps users, roles, teams, and business units in sync with your identity provider - the sync paths, how often each runs, how claims are read, and what changes when SCIM is enabled."
+description: "How Bifrost keeps users, roles, teams, business units, and access profiles in step with your identity provider: what happens at sign-in, over SCIM, and in the background, and what happens when access is removed."
 icon: "arrows-rotate"
 ---
 
 ## Overview
 
-This page explains **how** Bifrost keeps its picture of your organization in sync with your identity provider (IdP). If you're setting up a provider for the first time, start with [User Provisioning](./user-provisioning) and your [IdP setup guide](./user-provisioning#supported-identity-providers). This page is for teams who want to understand the mechanics: which events trigger a sync, how often each runs, how a user's roles and teams are actually decided, and what changes when you turn on SCIM.
+Once you connect an identity provider (IdP), your IdP decides who can use Bifrost and what they get. This page explains how that works day to day: what happens when someone signs in, when your IdP pushes a change over SCIM, when someone's role or group is removed, and when someone leaves.
 
-**Inbound SCIM** gives your IdP a second, real-time channel to push user and group changes directly. When SCIM is enabled, it can become the authoritative source and the claim engine steps back - described in [When SCIM is enabled](#when-scim-is-enabled).
+Customers are the one exception. You manage them in Bifrost, and users reach them through their teams and business units.
+
+If you are setting up a provider for the first time, start with [User Provisioning](/enterprise/user-provisioning) and your [IdP setup guide](/enterprise/user-provisioning#supported-identity-providers).
 
 ---
 
-## The sync paths at a glance
+## The three ways changes arrive
 
-Bifrost updates a user's identity through five distinct paths. Four are **pull** paths (Bifrost reads claims from an IdP token or directory); one is a **push** path (your IdP sends changes to Bifrost).
+| Channel | When it runs | What it does |
+| --- | --- | --- |
+| **Sign-in** | Every time a user signs in, and when their session refreshes | Reads the claims in the user's sign-in token and applies your mapping rules. |
+| **SCIM push** | In real time, whenever your IdP sends a change | Applies the user attributes and group memberships your IdP pushes. |
+| **Background sync** | On a schedule (only when SCIM Provisioning is off) | Re-reads users from your IdP so changes land even for people who haven't signed in. |
 
-| Path | What triggers it | How often | What it does |
+You choose how sign-in and SCIM share the work with the **claims sync mode**, described in [Choosing a sync mode](#choosing-a-sync-mode).
+
+---
+
+## Choosing a sync mode
+
+| Mode | Shown as | Who decides | Best for |
 | --- | --- | --- | --- |
-| **1. Login** | A user completes SSO sign-in | Once per interactive login | Creates or updates the user, then derives role + teams + business units from the sign-in token's claims. |
-| **2. Dashboard token refresh** | The dashboard's access token nears expiry | On demand, as sessions age | Silently refreshes the token server-side and re-derives role/teams/BUs, so an IdP change lands without forcing the user to sign in again. |
-| **3. In-request session refresh** | An authenticated request arrives after the session's lifetime has elapsed | On demand, driven by session lifetime (not a timer) | Same as token refresh, but happens inline on a live request. While the session is still valid, Bifrost trusts it with **zero** IdP round-trips. |
-| **4. Background reconciliation** | A scheduled sweep | Every **24 hours** | Re-derives role/teams/BUs for active users and deprovisions users the IdP no longer recognizes. Skipped entirely when SCIM is configured. |
-| **5. SCIM push** | Your IdP sends a SCIM operation | Real time | Applies user attributes or group memberships from the SCIM payload and recomputes the user's role from everything SCIM currently knows. |
-
-There is also **bulk directory import** - an admin-triggered action that pages through your IdP's directory API to import many users at once. It's on-demand rather than a recurring path, and is covered in [Bulk user provisioning](./user-provisioning#bulk-user-provisioning).
-
-<Note>
-Paths 1–4 read **claims** - the fields inside a signed token or a directory record. Path 5 reads a **SCIM resource** your IdP sends. They converge on the same data model but take different routes to get there.
-</Note>
-
----
-
-## How claims become roles, teams, and business units
-
-When Bifrost reads a token, it looks at specific **claims** (fields) and translates them into Bifrost concepts using the **attribute mappings** you configure per provider.
-
-| Bifrost concept | Where it comes from | How multiple matches resolve |
-| --- | --- | --- |
-| **Role** | `attributeRoleMappings` - rules matching a claim value to a role | Highest-privilege role wins (by default), so a user matching both Viewer and Admin becomes Admin. |
-| **Teams** | `attributeTeamMappings` - rules matching claim values (often IdP groups) to teams | **All** matching rules apply; a user can be on many teams. |
-| **Business units** | `attributeBusinessUnitMappings` | **All** matching rules apply. |
-| **Access profiles** | Auto-attached from the resolved **role** by default; also directly mappable via `attributeAccessProfileMappings` | By default, access profiles follow the resolved **role** - change the role and the matching access profiles follow. `attributeAccessProfileMappings` lets you map claim values straight to an access profile instead, bypassing the role-derived default. Unlike team/BU mappings, this is first-match-wins - a user holds a single access profile. |
-| **Identity (name, email, picture)** | Standard profile claims (`sub`, `email`, `name`, `preferred_username`, …) | Stored on the user record; protected from being overwritten by attribute mappings. |
-
-Claim reading is flexible: values can be strings, arrays, or nested objects, and Bifrost resolves dotted paths like `realm_access.roles`. The group and role claim names default to `groups` and `roles` and are overridable per provider (`teamIdsField`, `rolesField`). See [Attribute mappings](./user-provisioning#attribute-mappings) for the full rule syntax.
-
----
-
-## The sync engine, step by step
-
-Every pull path (login, refresh, sweep) runs the same ordered sequence. Understanding it explains most of Bifrost's behavior around edge cases like partial tokens and IdP changes.
-
-<Steps>
-<Step title="Check the freeze gate">
-If SCIM is enabled **and** set to SCIM-only mode, the engine stops here - no claim-driven change is applied. SCIM is the source of truth. (See [When SCIM is enabled](#when-scim-is-enabled).)
-</Step>
-<Step title="Enrich the claims">
-Bifrost runs an idempotent directory lookup where the provider supports it (for example, expanding a user's group membership). This runs on every path, so no single entry point sees a different view.
-</Step>
-<Step title="Resolve the user - fail closed">
-Bifrost identifies which local user this token belongs to. If that lookup fails, the sync **aborts** rather than risk applying changes to the wrong (or an unverifiable) user.
-</Step>
-<Step title="Reconcile claim memory">
-This is the key to handling partial tokens. Bifrost remembers, per attribute, what your IdP last told it. If a mapping attribute is **entirely absent** from this token, the last known value is carried forward. If it's **present** - even if empty - that value is treated as authoritative and can remove memberships. This prevents a degraded or slimmed-down token from silently stripping a user's roles and teams.
-</Step>
-<Step title="Apply teams, then business units, then role">
-Team memberships are reconciled first, then business units, then the role. Resolving the role last is what drives access-profile auto-assignment and refreshes the user's effective permissions.
-</Step>
-</Steps>
-
-A few consequences worth calling out:
-
-- **A login that resolves to no role is rejected.** If the sign-in token carries no mapping to any Bifrost role, sign-in is denied (HTTP 403) and no session is created - there is no implicit fallback role. This applies to *every* user, including the very first one: Admin must be established deliberately (via a claim→role mapping or by seeding the first admin through provisioning), never implicitly by who signs in first.
-- **A returning user whose login token omits the role attribute entirely still logs in - and keeps their existing role.** An *absent* attribute is treated as "the IdP said nothing," not as a removal, so Bifrost preserves the role it already trusts. This is deliberately different from an attribute that is *present but matches no mapping* - that's an authoritative "this user has no role," which clears the role and rejects the login. In short: **omitted → keep the current role and sign in; present-but-unmatched → denied.** (This preservation applies to returning users only; a brand-new user with no role attribute has nothing to preserve and is rejected.)
-- **The order (teams → business units → role) is identical on the SCIM push path**, so both channels produce the same end state.
-- **Removal requires an authoritative signal.** A membership is only removed when the token actually carried the relevant attribute and it no longer matches - never because a claim happened to be missing.
-
----
-
-## Claims across the user lifecycle
-
-The same engine behaves slightly differently depending on *when* it runs. Here's how claims come into play at each stage.
-
-### At login
-
-The user completes SSO, Bifrost exchanges the authorization code for tokens, validates the token signature against your IdP's published keys (JWKS), and creates or updates the user. Then the full engine runs on the sign-in token's claims. This is the most complete picture Bifrost will have of the user, because the sign-in token typically carries the richest set of claims.
-
-### At token refresh
-
-Dashboard sessions don't force a re-login every time a token expires. Instead, Bifrost uses a stored refresh token to silently obtain a fresh token in the background, then re-runs the engine on the **fresh** claims. The effect: **a change you make in the IdP (a new group, a role change) lands on the next refresh - you don't have to wait for the user to sign out and back in.**
-
-### At in-request session refresh
-
-For live API/dashboard requests, Bifrost keeps a session record with its own lifetime. **While that session is valid, Bifrost trusts it and makes no call to your IdP** - this keeps the request path fast. Only once the session lifetime has elapsed does an incoming request trigger a refresh-and-resync inline, using the same mechanism as above.
-
-To avoid hammering your IdP, the session lifetime has a **30-minute floor**. Some providers (Keycloak, for example) issue very short-lived tokens; without the floor, nearly every request would trigger a refresh. Sessions are also hard-capped at **30 days**, after which a full re-login is required.
-
-<Note>
-**Why partial tokens don't break things:** refresh and session-refresh tokens sometimes carry fewer claims than the original sign-in token. The claim-memory step (step 4 above) is what lets Bifrost tell the difference between "the IdP removed this" and "this token just didn't include it" - so a slim refresh token never accidentally strips a user's access.
-</Note>
-
-### ID token vs. access token
-
-Bifrost reads claims from whichever token actually carries the authoritative identity information for your provider:
-
-- **For most providers** (Google, Okta, Entra, Auth0, generic OIDC) Bifrost reads the **ID token**. Its issuer is guaranteed to match the OIDC discovery document, which some access tokens don't.
-- **For Keycloak** (and any unrecognized provider) Bifrost reads the **access token**, because Keycloak places its role claims (`realm_access` / `resource_access`) there - reading the ID token would lose them.
-
-If a refresh returns no usable token for a provider that needs the ID token, Bifrost keeps the session valid but **skips** claim reconciliation for that cycle rather than sync off the wrong token and drop the user's access.
-
----
-
-## How often each thing happens
-
-| Mechanism | Cadence | Notes |
-| --- | --- | --- |
-| **Login sync** | Once per sign-in | Full engine run. |
-| **Token / session refresh** | On demand, session-lifetime driven | Not a timer. Session lifetime floored at 30 min, capped at 30 days. |
-| **Background reconciliation** (role/team/BU + deprovisioning) | Every **24 hours** | Plus once at startup. **Skipped when SCIM is configured.** |
-| **Permission cache refresh** | Every **5 minutes** | A safety net that propagates role/permission changes across cluster nodes. This is *not* an identity sync - it doesn't call your IdP. |
-| **Bulk directory import** | On demand | Admin-triggered from the dashboard. |
-| **SCIM push** | Real time | Whenever your IdP sends an operation. |
+| **SCIM Provisioning off** | - | Sign-in claims, plus background sync | IdPs without SCIM, or setups that don't need real-time push |
+| **SCIM Provisioning on: both** | SCIM and login claims (default) | Sign-in claims **and** SCIM. Whichever ran last wins. | IdPs that send the same user data over SCIM and in the sign-in token, such as when moving onto SCIM gradually |
+| **SCIM Provisioning on: SCIM only** | SCIM only - ignore login claims | **SCIM alone.** Sign-in ignores the token's claims and re-applies your mapping rules to what SCIM last sent. | Organizations that want one source of truth, with deprovisioning fully owned by SCIM |
 
 <Warning>
-The 24-hour background reconciliation only runs when **no** SCIM provider is configured. If you rely on SCIM for provisioning, deprovisioning happens over the SCIM channel instead - see below.
+	In **both** mode, your IdP's SCIM push and its sign-in token must agree. Any attribute or group you send over SCIM should also
+	appear in the sign-in claims, with the same values. Bifrost keeps one stored copy of each user's attributes and doesn't merge
+	the two: a SCIM push overwrites what the token sent, and the next sign-in overwrites what SCIM sent. A mismatch makes a user's
+	role, teams, or business units flip each time they sign in and each time your IdP pushes. If you can't keep the two in sync,
+	use **SCIM only**.
+</Warning>
+
+What changes between the modes:
+
+| | SCIM Provisioning off | Both | SCIM only |
+| --- | --- | --- | --- |
+| A user who hasn't been provisioned yet signs in | Created on the spot | Created on the spot | **Refused** until your IdP pushes them over SCIM |
+| Sign-in updates role, teams, business units, profiles | Yes, from the token claims | Yes, from the token claims | Yes, from what SCIM last sent. Token claims are ignored. |
+| Sign-in can remove a membership SCIM created | - | Yes, when the token sends a new value for an attribute your rules map | Only when you've changed your mapping rules since SCIM's last push. Team and business unit memberships from SCIM groups are kept. |
+| Background sync runs | Yes | No | No |
+| What can remove a user | Background sync, or a failed session refresh when your IdP reports the user inactive | SCIM, or a failed session refresh when your IdP reports the user inactive | **SCIM only** |
+
+---
+
+## What happens at sign-in
+
+Every time someone signs in, Bifrost:
+
+1. **Verifies the sign-in** with your IdP.
+2. **Finds the user**, or creates them if they're new (not in SCIM-only mode).
+3. **Combines the token with what it remembers.** Bifrost keeps a memory of the last value your IdP sent for each attribute. If this token **leaves an attribute out**, the remembered value is used. If the token **includes the attribute**, even as an empty value, the new value replaces the old one. This stops a slimmed-down token from accidentally stripping someone's access, while still letting your IdP remove access deliberately.
+4. **Decides the user's role** from your attribute mappings for roles. If no role can be decided, the sign-in is refused (see below).
+5. **Updates teams, business units, projects, and access profiles** from your mapping rules.
+
+In **SCIM only** mode the token's claims are ignored: steps 3 to 5 use what SCIM last sent for the user instead.
+
+### When a sign-in is refused
+
+There is **no default role** in Bifrost, not even for the very first user. Every sign-in must resolve to a role, or Bifrost refuses it. A refused sign-in never deletes an account, and a new user who is refused is not created.
+
+Whether a returning user keeps their role depends on why the sign-in was refused:
+
+| Situation | Signed in? | The user's current role |
+| --- | --- | --- |
+| The token (or memory) has a role attribute that matches an attribute mapping for roles | Yes | Set from the matching mapping |
+| You have no attribute mappings for roles, the IdP sends no role claim, and the user already has a role | Yes | **Kept** |
+| Neither the token nor memory has any attribute your attribute mappings for roles look at | **Refused** | **Kept.** The token is not applied, so nothing about the user changes. |
+| The token has a role attribute, but its value matches no attribute mapping for roles | **Refused** | **Removed** |
+| An attribute mapping for roles matches, but names a role that doesn't exist in Bifrost | **Refused** | **Removed** |
+| SCIM-only mode, and what SCIM last sent for the user resolves no role | **Refused** | **Kept, but not used.** The user can't sign in until SCIM sends data that resolves a role. |
+
+When a role is **removed**:
+
+- The access profiles that role gave the user are removed with it.
+- Their teams, business units, projects, and other access profiles are still updated from the token, as on a successful sign-in.
+- Their account is kept. Once your IdP sends a value that matches an attribute mapping for roles, their next sign-in gives them a role again.
+
+Admins with **User Provisioning: Update** permission get a **Sign-in refused** notification explaining why, at most once an hour per user and reason.
+
+To set up your first admin, map an IdP group or attribute to the Admin role before anyone signs in.
+
+---
+
+## How roles are decided
+
+### From your attribute mappings for roles
+
+Each attribute mapping for roles says "when attribute X has value Y, give role Z". When a user matches more than one mapping, your **role resolution** setting decides:
+
+- **The role with the most permissions, ties by list order** (default) - someone matching both Viewer and Admin becomes Admin.
+- **The first matching role, by list order** - the order of your mappings decides.
+
+A mapping with the value `*` matches **any** value of that attribute. It is an ordinary mapping, not a fallback: it only matches when the attribute is present.
+
+If you have **no attribute mappings for roles**, Bifrost reads the role claim your IdP sends and matches it to a Bifrost role of the same name (ignoring case).
+
+### When your IdP changes a role
+
+A user's role always follows your IdP. Each time your IdP sends new data for a user, Bifrost works out their role again from your attribute mappings for roles, and changes or removes the current role to match. A role is never locked in once it's set.
+
+| What your IdP sends | At sign-in | Over SCIM |
+| --- | --- | --- |
+| A value that matches an attribute mapping for roles | The user gets that role, **replacing** their current one | The user gets that role, **replacing** their current one |
+| The attribute, with a value that matches no attribute mapping for roles | The role is **removed**, and the sign-in is refused | The role is **removed**. In SCIM only mode, the user's sign-ins are refused until SCIM sends a value that matches. In both mode, their next sign-in decides the role from the token. |
+| Nothing about the role at all (attribute left out of a refreshed token) | The role is **kept** | - |
+| Bifrost couldn't read your roles or the user's data | Nothing changes | Nothing changes |
+
+When a role is removed:
+
+- Access profiles given by that role are removed.
+- If the user is left with no access profile at all, their virtual keys are removed too.
+- Access profiles, teams, and business units from other sources are unaffected.
+
+---
+
+## Teams and business units
+
+### Where a membership comes from
+
+Bifrost records where each team and business unit membership came from, and shows it on the member as **Manual** or **Synced**:
+
+| Source | Added by | Removed by |
+| --- | --- | --- |
+| **Manual** | An admin, in the dashboard or API | An admin. Syncs never remove it, unless your IdP takes it over (below). |
+| **Sign-in claims** | A mapping rule matching a claim in the user's token | The next sign-in where the attribute is present and no longer matches |
+| **SCIM user attribute** | A mapping rule matching an attribute pushed over SCIM | The next SCIM push where the attribute no longer matches. A sign-in can also remove it (below). |
+| **SCIM group** | Your IdP adding the user to a pushed group | Your IdP removing the user from the group, or deleting the group. In **both** mode, a sign-in can also remove it (below). |
+
+Things to know:
+
+- **Admins can still add members in Bifrost.** A membership added in the dashboard or API is kept through every sync, so you can put people in teams and business units your IdP doesn't know about.
+- **Your IdP takes over a membership it also grants.** If an admin adds someone to Platform and your IdP later grants Platform too, the membership becomes Synced and follows your IdP from then on, including removal.
+- **Sign-in can remove SCIM memberships.** In **both** mode, a sign-in whose token sends a new value for a mapped attribute removes any SCIM membership that value no longer matches, whether it came from a SCIM user attribute or a SCIM group. In **SCIM only** mode, a sign-in re-applies your current rules to what SCIM last sent, so it removes SCIM user-attribute memberships only when you've changed your rules since the last push. SCIM group memberships are kept until your IdP changes them.
+- **Missing teams and business units are created.** If a rule names a team or business unit that doesn't exist, it is created on first use.
+- **Removing all your team rules** removes the memberships those rules created.
+
+---
+
+## Access profiles from your IdP
+
+Access profile mapping rules **add** profiles. Every rule a user matches applies, and the user holds every profile they match **in addition to** the profiles from their role and any assigned by hand. See [Multiple profiles](/enterprise/access-profiles#multiple-profiles-what-a-user-can-do-and-who-pays).
+
+- A profile the user still matches is left alone, keeping its budget and usage.
+- A profile they stop matching is removed.
+- If an admin assigned a profile by hand and a rule later grants it, the rule takes it over.
+
+---
+
+## When someone leaves
+
+### What removes a user
+
+| Event | SCIM Provisioning off | Both | SCIM only |
+| --- | --- | --- | --- |
+| SCIM deactivates the user (`active: false`) | - | Removed | Removed |
+| SCIM deletes the user | - | Removed | Removed |
+| A session refresh fails and your IdP reports the user inactive | Removed | Removed | Not removed |
+| Background sync finds the user disabled, unassigned, or gone | Removed | - | - |
+| An admin deletes the user in the dashboard or API | Removed | Removed | Removed |
+| A sign-in is refused | **Not removed** | **Not removed** | **Not removed** |
+
+A failed session refresh on its own never removes anyone. The user is signed out and asked to sign in again. Bifrost removes the user only when, after the refresh fails, it checks with your IdP's directory and your IdP reports the user as inactive or gone. If your IdP has no directory API, or the check fails, the user is kept.
+
+### What removal does
+
+When a user is removed, Bifrost:
+
+- Removes their virtual keys and all their access profiles.
+- Removes their team, business unit, and MCP memberships.
+- Ends their dashboard and desktop-agent sessions.
+- Removes their personal budget and rate limit.
+
+Service accounts are never removed this way.
+
+---
+
+## Background sync and sessions
+
+| Mechanism | How often | Notes |
+| --- | --- | --- |
+| **Sign-in** | Every sign-in | Full update. |
+| **Session refresh** | When a session expires | Bifrost silently refreshes the session with your IdP and re-applies the token. |
+| **Session sweep** | Every 24 hours | Refreshes sessions about to expire and removes users your IdP reports as gone. **Skipped when SCIM Provisioning is on.** |
+| **Directory sync** | Every **Directory sync interval** (default 24 hours, from 1 hour to 30 days) | Re-reads users from your IdP's directory: creates, updates, and removes users. Needs directory API credentials. **Skipped when SCIM Provisioning is on.** |
+| **SCIM push** | Real time | Whenever your IdP sends a change. |
+
+<Warning>
+	When SCIM Provisioning is on, the background jobs are off and the dashboard's **Sync users** and bulk import are unavailable. Your IdP must push every
+	change, including removals. Check that your IdP's SCIM connector has deprovisioning turned on.
+</Warning>
+
+A refresh token can carry fewer claims than the original sign-in token. Because Bifrost remembers each attribute and only treats an attribute as changed when it is actually present, a slim refresh token never strips anyone's access.
+
+### Which token Bifrost reads
+
+- **Most providers** (Google, Okta, Entra, Auth0, generic OIDC): the **ID token**.
+- **Keycloak**: the **access token**, because Keycloak puts its roles there.
+
+---
+
+## Applying rule changes to existing users
+
+Mapping rules apply to each user at their next sign-in or SCIM push. To apply them to everyone now, save your rules and choose one of:
+
+- **Reconcile existing users** - Re-evaluates every user against the new rules, using the data Bifrost stored at their last sign-in or SCIM push. In SCIM-only mode it uses what SCIM sent.
+- **Sync users from your IdP** - Re-reads users from your IdP's directory (SCIM Provisioning off only). Best when stored data may be out of date.
+- **Not now** - Users pick up the rules at their next sign-in or SCIM push.
+
+Before running a reconcile:
+
+- **Preview changes for existing users** shows a sample of users who would gain or lose a role, team, business unit, access profile, or project, including anyone who would lose every access profile and with it their keys.
+- **Check a specific user** shows exactly what would change for one person.
+- **Keep users with missing data unchanged** - When on, a user whose stored data lacks an attribute is left alone. When off (default), a missing attribute counts as empty, so whatever it granted is removed.
+
+Reconcile skips service accounts, users an admin created by hand, and users with no stored data. A preview is tied to the rules it was made with, so if the rules change before you apply it, Bifrost asks you to preview again.
+
+---
+
+## Switching modes
+
+| From → to | What to expect |
+| --- | --- |
+| **SCIM Provisioning off → SCIM Provisioning on** | Background sync and dashboard imports stop. Your IdP's next push takes over memberships that came from sign-in. |
+| **Both → SCIM only** | Sign-in stops reading the token's claims and re-applies your mapping rules to what SCIM last sent. Users created at sign-in can still sign in if what SCIM knows about them resolves a role. New users must be pushed first. |
+| **SCIM only → both** | Sign-in drives access again. Users SCIM deactivated can be restored by signing in with a valid role. |
+
+A reconcile running when the mode changes stops, and should be run again.
+
+<Warning>
+	Switching from **both** to **SCIM only** assumes your sign-in token and SCIM have been sending the same attributes and groups,
+	with the same values, from the start. Bifrost doesn't merge the two: it stores the attributes from sign-in claims and overwrites
+	them with the ones SCIM pushes. After the switch, roles, teams, and business units come only from that stored SCIM data. A user
+	whose role came from a token claim that SCIM never sent is refused at their next sign-in, until SCIM sends a value that matches.
+	Check that both carry the same data before you switch.
 </Warning>
 
 ---
 
-## When SCIM is enabled
+## Troubleshooting
 
-Turning on inbound SCIM gives your IdP a real-time push channel. How it interacts with claim-based sync depends on the mode you choose:
-
-| Mode | Who is authoritative | Behavior |
-| --- | --- | --- |
-| **SCIM off** | OIDC claims | Claims always drive sync. Background reconciliation and OIDC-based deprovisioning are active. |
-| **SCIM on - Both** (default) | OIDC **and** SCIM | Both channels sync. A team assigned by SCIM can still be reclaimed by OIDC if an authoritative claim no longer matches it. |
-| **SCIM on - SCIM only** | SCIM | The freeze: claim-driven paths apply **no** role/team/BU changes. SCIM is the single source of truth. |
-
-In **SCIM-only** mode specifically:
-
-- **Login and refresh make no role/team/BU changes** - they stop at the engine's freeze gate. The background sweep remains disabled while SCIM is configured.
-- **User profiles are frozen** - an OIDC login won't overwrite the identity attributes SCIM provisioned.
-- **New users must be pushed via SCIM.** An OIDC login for an unknown user is rejected with a "provision via SCIM" error rather than creating the account just-in-time.
-- **Only SCIM deprovisions.** A failed token refresh will **never** delete a user; only a SCIM deactivation (`active: false`) or DELETE removes them. This is what we mean by *SCIM owns deprovisioning*.
-
-### The SCIM push path
-
-SCIM writes don't go through the claim engine - they're the SCIM-native equivalent:
-
-1. Your IdP sends a user create/update or a group membership change.
-2. Bifrost applies the attributes or memberships from the SCIM payload.
-3. Bifrost **recomputes the user's role from the union of everything SCIM currently knows** - all group memberships plus all stored user attributes. Because it reconsiders the complete picture rather than just the incoming delta, the result is the same regardless of the order operations arrive in.
-4. Group changes are also mirrored into the user's claim memory, so if a later (degraded) OIDC token ever does flow through, it reconciles against SCIM's current view rather than an outdated one.
-
-Every SCIM write commits to the database and broadcasts to all cluster nodes before the response is returned, and only SCIM-managed memberships are touched - manually assigned roles and teams are preserved. See [Inbound SCIM 2.0 provisioning](./user-provisioning#inbound-scim-20-provisioning).
-
----
-
-## What Bifrost stores
-
-To make the paths above concrete, here's the data Bifrost keeps for each user. You don't interact with these directly, but knowing what's stored explains the behavior.
-
-| Record | What it holds |
+| Symptom | What to check |
 | --- | --- |
-| **User** | Identity (email, name), the assigned role, the IdP identity key that ties the user back to your provider, plus two snapshots: the **profile** (identity attributes from the IdP) and the **claim memory** (the per-attribute record of what your IdP last told us). |
-| **Team membership** | One record per user↔team link, tagged with its **source** - whether it came from an attribute mapping, a SCIM group, a SCIM user attribute, or was assigned manually. The source tag is how Bifrost knows which memberships it may reconcile and which to leave alone. |
-| **Business unit** | The business units a user belongs to, likewise tagged by source. |
-| **Role & permissions** | The role definitions and the resource/operation permissions behind them (see [RBAC](./rbac)). |
-| **Access profiles** | Reusable bundles of access, and the role→profile links that drive auto-assignment (see [Access Profiles](./access-profiles)). |
-| **OIDC session** | The stored refresh token, when the session expires, and when it was last refreshed - the record the refresh and sweep paths work from. |
-| **Provider config** | Your IdP connection settings and all attribute mappings, including the SCIM mode and provisioning token. |
-
-The **source tag** on memberships is what makes coexistence safe: a manually granted team survives every automated sync, and a SCIM-pushed team is only reclaimed by OIDC under the rules described above.
+| "Access denied" at sign-in | The user's token has no role attribute, or its value matches no attribute mapping for roles. Check the **Sign-in refused** notification and your attribute mappings for roles. |
+| "Provisioning is managed by SCIM" | SCIM-only mode is on and your IdP hasn't pushed this user yet. Assign them to the Bifrost app in your IdP. |
+| A user's role changed or was removed | Roles follow your IdP. Check what your IdP sends for the user, and which of your attribute mappings for roles it matches. |
+| A user kept access after leaving a group | With SCIM Provisioning off, removal happens at their next sign-in or session refresh, or at the next background sync. With SCIM Provisioning on, check your IdP pushes group removals. |
+| A team appeared that nobody created | A mapping rule named a team that didn't exist, so it was created. |
+| Bulk import or **Sync users** is unavailable | SCIM Provisioning is on. Your IdP pushes users instead. |
 
 ---
 
 ## Related
 
-- [User Provisioning (OIDC + SCIM)](./user-provisioning) - setup, configuration reference, and per-IdP guides
-- [Role-Based Access Control](./rbac) - the permissions model behind roles
-- [Access Profiles](./access-profiles) - reusable access bundles auto-assigned by role
-- [Audit Logs](./audit-logs) - track authentication events and role/team changes
+- [User Provisioning (OIDC + SCIM)](/enterprise/user-provisioning) - Setup, mapping rules, and per-IdP guides.
+- [Access Profiles](/enterprise/access-profiles) - What users get from their profiles, and who pays.
+- [Teams, Business Units & Customers](/enterprise/teams-business-units-customers) - The groups your IdP fills.
+- [Role-Based Access Control](/enterprise/rbac) - The permissions behind each role.
+- [Audit Logs](/enterprise/audit-logs) - Sign-in history and every role and membership change.

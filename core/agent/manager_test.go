@@ -96,6 +96,7 @@ func TestInspectCardIncludesAdvertisedMetadata(t *testing.T) {
 	}
 
 	result := inspectCard(card, map[string]bool{"streaming": true, "pushNotifications": true, "futureCapability": false})
+	require.Equal(t, card, result.Card)
 	require.Equal(t, "metadata-agent", result.Name)
 	require.Equal(t, "2.1.0", result.Version)
 	require.Equal(t, "Example Corp", result.Provider)

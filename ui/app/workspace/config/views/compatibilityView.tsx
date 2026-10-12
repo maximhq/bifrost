@@ -30,7 +30,9 @@ export default function CompatibilityView() {
 			localCompatConfig.should_drop_params !== baseline.should_drop_params ||
 			localCompatConfig.should_convert_params !== baseline.should_convert_params ||
 			(localCompatConfig.azure_deepseek ?? true) !== (baseline.azure_deepseek ?? true) ||
-			(localCompatConfig.force_reasoning_only_models_to_responses ?? true) !== (baseline.force_reasoning_only_models_to_responses ?? true)
+			(localCompatConfig.force_reasoning_only_models_to_responses ?? true) !==
+				(baseline.force_reasoning_only_models_to_responses ?? true) ||
+			(localCompatConfig.convert_decision_to_responses ?? false) !== (baseline.convert_decision_to_responses ?? false)
 		);
 	}, [config, localCompatConfig]);
 
@@ -179,6 +181,26 @@ export default function CompatibilityView() {
 						size="md"
 						checked={localCompatConfig.force_reasoning_only_models_to_responses ?? true}
 						onCheckedChange={(checked) => handleCompatChange("force_reasoning_only_models_to_responses", checked)}
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				<div className="flex items-center justify-between space-x-2">
+					<div className="space-y-0.5">
+						<label htmlFor="compat-convert-decision-to-responses" className="text-sm font-medium">
+							Emulate Decisions API on non-decision models
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Answer decision requests for models without a native decisions endpoint by prompting the model through the Responses API with
+							a forced function tool. When off, those requests fail as unsupported.
+						</p>
+					</div>
+					<Switch
+						id="compat-convert-decision-to-responses"
+						data-testid="compat-convert-decision-to-responses"
+						size="md"
+						checked={localCompatConfig.convert_decision_to_responses ?? false}
+						onCheckedChange={(checked) => handleCompatChange("convert_decision_to_responses", checked)}
 						disabled={!hasSettingsUpdateAccess}
 					/>
 				</div>

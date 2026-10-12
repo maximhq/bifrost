@@ -1575,3 +1575,60 @@ func TestClickHouseWarpWriteStopsWhenTheLeaseIsLost(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, counts[owner+"-c"], "nothing was written without the lock")
 }
+
+func TestClickHouseBatchUpdate(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+
+	for i := 0; i < 3; i++ {
+		entry := chTestLog(fmt.Sprintf("ch-upd-%d", i), ts.Add(time.Duration(i)*time.Millisecond))
+		entry.Status = "processing"
+		require.NoError(t, store.CreateIfNotExists(ctx, entry))
+	}
+	before, err := store.FindByID(ctx, "ch-upd-0")
+	require.NoError(t, err)
+
+	output := "late output"
+	require.NoError(t, store.BatchUpdate(ctx, []*Log{
+		// Two entries for one id in a single batch: both overlays must apply, in order.
+		{ID: "ch-upd-0", TotalTokens: 15},
+		{ID: "ch-upd-0", Status: "success", OutputMessageParsed: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}},
+		{ID: "ch-upd-1", Status: "error", ContentHidden: true},
+		{ID: "ch-upd-missing", Status: "success"}, // skipped, never inserted
+		nil,
+	}))
+	require.NoError(t, store.BatchUpdate(ctx, nil)) // no-op
+
+	found, err := store.FindByID(ctx, "ch-upd-0")
+	require.NoError(t, err)
+	assert.Equal(t, "success", found.Status)
+	assert.Equal(t, 15, found.TotalTokens)
+	assert.Contains(t, found.OutputMessage, output)
+	// Only non-zero fields overlay; the rest of the row is reproduced as it was.
+	assert.Equal(t, before.Provider, found.Provider)
+	assert.Equal(t, before.Model, found.Model)
+	assert.Equal(t, before.InputHistory, found.InputHistory)
+	assert.Equal(t, before.ContentSummary, found.ContentSummary, "content_summary is left as the row had it")
+	assert.True(t, before.Timestamp.Equal(found.Timestamp))
+	assert.Equal(t, int64(1), chCountRows(t, store.db, "logs", "ch-upd-0"), "re-insert supersedes the old row")
+
+	errRow, err := store.FindByID(ctx, "ch-upd-1")
+	require.NoError(t, err)
+	assert.Equal(t, "error", errRow.Status)
+	assert.True(t, errRow.ContentHidden)
+
+	// A final visible decision clears the flag again.
+	require.NoError(t, store.BatchUpdate(ctx, []*Log{{ID: "ch-upd-1", ContentHidden: false}}))
+	errRow, err = store.FindByID(ctx, "ch-upd-1")
+	require.NoError(t, err)
+	assert.False(t, errRow.ContentHidden, "content_hidden is written even when false")
+
+	untouched, err := store.FindByID(ctx, "ch-upd-2")
+	require.NoError(t, err)
+	assert.Equal(t, "processing", untouched.Status)
+
+	_, err = store.FindByID(ctx, "ch-upd-missing")
+	require.ErrorIs(t, err, ErrNotFound)
+}

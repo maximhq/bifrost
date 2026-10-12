@@ -1125,6 +1125,7 @@ append_v220_fixtures() {
     fi
   done <<'V220_COLUMNS'
 config_keys|use_openai_endpoints|false|name = 'migration-test-key-anthropic'
+config_keys|cloudflare_account_id|NULL|name = 'migration-test-key-anthropic'
 governance_model_pricing|off_peak_cost_multiplier|NULL|id = 1
 governance_model_pricing|peak_hours|NULL|id = 1
 mcp_tool_logs|user_name|'Migration Test User'|id = 'mcp-log-migration-001'

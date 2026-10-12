@@ -2313,6 +2313,8 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' ""                                "  Absent means 'this run measured none'; a leftover from an earlier run reads as current and contradicts"; \
 		printf '  %-30s %s\n' ""                                "  the freshly written tmp/harness-failures.md, which is rewritten unconditionally on every run."; \
 		printf '  %-30s %s\n' "tmp/newman-report-cache-parity.json" "Newman report for the deferred sequential cache pass (merged into tmp/newman-report.json)."; \
+		printf '  %-30s %s\n' "tmp/newman-report-serial.json" "Newman report for the serial pass: [SERIAL] folders run after the parallel sweep, alone against the gateway (merged into tmp/newman-report.json)."; \
+		printf '  %-30s %s\n' "tmp/newman-cli-serial.log" "Newman CLI output of the serial pass (also appended to tmp/newman-cli.log)."; \
 		printf '  %-30s %s\n' "tmp/newman-merge.jq"            "jq program used to merge per-provider + cache-pass reports into tmp/newman-report.json."; \
 		printf '\n'; \
 		exit 0; \
@@ -2649,6 +2651,12 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 	fi; \
 	FEATURE_ANY_FLAG=""; \
 	if [ -n "$$MAIN_FEATURES" ]; then FEATURE_ANY_FLAG="--feature-any $$MAIN_FEATURES"; fi; \
+	: "[SERIAL] folders change gateway-wide state (a feature flag, client config) around the request"; \
+	: "under test. The parallel forks would run other rows against the gateway while one of them has"; \
+	: "it changed, so a parallel run carves them out of the forks and runs them afterwards in a pass"; \
+	: "of their own, alone against the gateway. A sequential run already sends one request at a time."; \
+	SERIAL_PASS=0; SERIAL_EXCLUDE_FLAG=""; SERIAL_RAN=0; MAIN_EMPTY=0; \
+	if [ "$(or $(PARALLEL),1)" != "0" ] && [ "$$SKIP_MAIN" != "1" ]; then SERIAL_PASS=1; SERIAL_EXCLUDE_FLAG="--exclude-serial"; fi; \
 	: "The main pass merges its shards over tmp/newman-report.json before the cache pass runs, so"; \
 	: "a rerun's selection for that pass is read from a snapshot taken now. Dot-prefixed so the"; \
 	: "tmp/newman-report-*.json merge glob never sweeps it in."; \
@@ -2664,6 +2672,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			$(if $(FOLDER),--folder "$(FOLDER)",) \
 			$$FEATURE_ANY_FLAG \
 			$$EXCLUDE_FLAG \
+			$$SERIAL_EXCLUDE_FLAG \
 			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
 			$(if $(RERUN_FAILED),--rerun-failed --report tmp/newman-report.json,) || { say "$(RED)Filter step failed$(NC)"; exit 1; }; \
 		COLLECTION_FILE="tmp/harness-filtered.json"; \
@@ -2866,14 +2875,28 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		done; \
 		done; \
 		done; \
+		MAIN_EMPTY=0; \
 		if [ "$$LAUNCHED" -eq 0 ]; then \
 			if [ "$$BUDGET_EXCEEDED" = "1" ]; then \
 				say "$(RED)Aborted before any launch: every shard would exceed HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS). Raise the cap or narrow PROVIDER/FEATURE.$(NC)"; \
 				exit 3; \
 			fi; \
-			say "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
-			exit 1; \
+			: "A filter that matches only [SERIAL] rows launches no fork: those rows were carved out"; \
+			: "for the serial pass below, which decides after it runs whether anything ran at all."; \
+			if [ "$$SERIAL_PASS" != "1" ]; then \
+				say "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
+				exit 1; \
+			fi; \
+			MAIN_EMPTY=1; \
+			say "$(CYAN)No parallel rows match the filters; going straight to the serial pass.$(NC)"; \
 		fi; \
+		if [ "$$MAIN_EMPTY" = "1" ]; then \
+		: "Nothing to drain, retry or merge. The serial pass merges its report over this empty one,"; \
+		: "so the final report is the serial report (the same skeleton a cache-only run starts from)."; \
+		printf '%s' '{"collection":{},"environment":{},"run":{"executions":[],"failures":[],"stats":{"iterations":{"total":1,"pending":0,"failed":0},"items":{"total":0},"requests":{"total":0,"failed":0}},"timings":{}}}' > tmp/newman-report.json; \
+		: > tmp/newman-cli.log; \
+		NEWMAN_EXIT=$$FILTER_FAILED; \
+		else \
 		add_pass "$$(printf '{"t":"pass","id":"main","mode":"parallel","statusFile":"tmp/parallel-status","launched":%s}' "$$LAUNCHED")"; \
 		: "Drain the shards, then read verdicts from the exit files rather than from wait's status:"; \
 		: "the cap loop above already reaped an unknown subset with 'wait -n', so a status here is"; \
@@ -3019,6 +3042,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			say "$(RED)$$FILTER_FAILED shard(s) skipped - their filter step failed, so those requests never ran. See $$QUIET_LOG$(NC)"; \
 		fi; \
 		NEWMAN_EXIT=$$((PFAILED+FILTER_FAILED)); \
+		fi; \
 	else \
 		SEQ_PROVIDERS="$(or $(PROVIDER),$(HARNESS_PROVIDERS))"; \
 		: > tmp/newman-cli.log; \
@@ -3121,6 +3145,62 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 					|| say "$(YELLOW)Cache pass report merge failed; it remains at tmp/newman-report-cache-parity.json$(NC)"; \
 			fi; \
 		fi; \
+	fi; \
+	if [ "$$SERIAL_PASS" = "1" ]; then \
+		say "$(CYAN)Serial pass ([SERIAL] folders, one newman, alone against the gateway)...$(NC)"; \
+		rm -f tmp/harness-serial-filtered.json; SERIAL_FILTER_FAILED=0; \
+		$(USE_NODE); run_quiet node tests/e2e/api/runners/filter-collection.mjs \
+			--source tmp/harness-augmented.json \
+			--out tmp/harness-serial-filtered.json \
+			--only-serial \
+			$(if $(PROVIDER),--provider $(PROVIDER),) \
+			$(if $(FEATURE),--feature "$(FEATURE)",) \
+			$(if $(FOLDER),--folder "$(FOLDER)",) \
+			$$FEATURE_ANY_FLAG \
+			$$EXCLUDE_FLAG \
+			$${SMOKE_MANIFEST:+--smoke "$$SMOKE_MANIFEST"} \
+			$(if $(RERUN_FAILED),--rerun-failed --report tmp/.newman-report-prior.json,) || { say "$(RED)Serial pass filter step failed - the [SERIAL] folders did not run$(NC)"; NEWMAN_EXIT=$$((NEWMAN_EXIT+1)); SERIAL_FILTER_FAILED=1; }; \
+		SERIAL_COUNT="$$(grep -c '"request":' tmp/harness-serial-filtered.json 2>/dev/null || true)"; SERIAL_COUNT="$${SERIAL_COUNT:-0}"; \
+		if [ "$$SERIAL_FILTER_FAILED" = "1" ]; then \
+			:; \
+		elif [ "$$SERIAL_COUNT" -eq 0 ]; then \
+			say "$(CYAN)Serial pass: the scope selects no [SERIAL] folder - nothing to run.$(NC)"; \
+		elif [ -f tmp/harness-serial-filtered.json ] && budget_ok "$$SERIAL_COUNT" serial; then \
+			: > tmp/newman-cli-serial.log; \
+			add_pass '{"t":"pass","id":"serial","mode":"sequential","log":"tmp/newman-cli-serial.log","collection":"tmp/harness-serial-filtered.json"}'; \
+			newman run tmp/harness-serial-filtered.json \
+				--env-var "baseUrl=$$BASE_URL_VAL" \
+				$(if $(filter on true 1 yes YES y Y,$(COMPAT)),--env-var "compat=true",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_PREVIEW)),--env-var "include_preview=1",) \
+				$(if $(filter 1 true TRUE yes YES y Y,$(INCLUDE_SKIP)),--env-var "include_skip=1",) \
+				$${OPENAI_API_KEY:+--env-var "openaiKey=$$OPENAI_API_KEY"} \
+				$${ANTHROPIC_API_KEY:+--env-var "anthropicKey=$$ANTHROPIC_API_KEY"} \
+				$${GEMINI_API_KEY:+--env-var "genaiKey=$$GEMINI_API_KEY"} \
+				$(if $(ENV_FILE),--environment $(ENV_FILE),) \
+				--reporters cli,json \
+				--reporter-json-export tmp/newman-report-serial.json > tmp/newman-cli-serial.log 2>&1; \
+			SERIAL_EXIT=$$?; \
+			SERIAL_RAN=1; \
+			end_pass serial; \
+			cat tmp/newman-cli-serial.log >> tmp/newman-cli.log 2>/dev/null || true; \
+			if [ "$$HARNESS_MONITORED" != "1" ] && [ "$$HARNESS_QUIET" != "1" ]; then cat tmp/newman-cli-serial.log; fi; \
+			if [ "$$SERIAL_EXIT" -ne 0 ]; then NEWMAN_EXIT=$$((NEWMAN_EXIT+1)); fi; \
+			if command -v jq >/dev/null 2>&1 && [ -f tmp/newman-report-serial.json ]; then \
+				jq -c -s -f tmp/newman-merge.jq tmp/newman-report.json tmp/newman-report-serial.json > tmp/newman-report-combined.json \
+					&& mv tmp/newman-report-combined.json tmp/newman-report.json \
+					|| say "$(YELLOW)Serial pass report merge failed; it remains at tmp/newman-report-serial.json$(NC)"; \
+			fi; \
+		elif [ "$${MAIN_EMPTY:-0}" = "1" ] && [ "$${BUDGET_EXCEEDED:-0}" = "1" ]; then \
+			: "budget_ok refused the serial pass, and the main pass had nothing: nothing ran at all."; \
+			stop_monitor; \
+			say "$(RED)Aborted before any launch: the serial pass would exceed HARNESS_MAX_REQUESTS=$(HARNESS_MAX_REQUESTS). Raise the cap or narrow PROVIDER/FEATURE.$(NC)"; \
+			exit 3; \
+		fi; \
+	fi; \
+	if [ "$${MAIN_EMPTY:-0}" = "1" ] && [ "$${SERIAL_RAN:-0}" != "1" ]; then \
+		stop_monitor; \
+		say "$(RED)No provider runs were launched. Check PROVIDER/FEATURE/FOLDER filters.$(NC)"; \
+		exit 1; \
 	fi; \
 	stop_monitor; \
 	: "The single teardown for the whole run: one alt-screen exit, one persistent"; \

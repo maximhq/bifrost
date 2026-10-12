@@ -1167,7 +1167,7 @@ You can override this per request using the `x-bf-store-raw-request-response` he
 
 ### Ignore provider-reported cost
 
-Some OpenAI-compatible providers return their own `usage.cost` in the response. When that figure is above zero, Bifrost uses it as the request cost and skips its own pricing, so pricing overrides have no effect for that provider. A reported cost of zero falls through to catalog pricing and overrides. The figure isn't always USD. Cortecs, for example, reports credits, where 1 EUR is 1,000,000 credits, so a request that cost EUR 0.001067 shows up as $1067 in logs and budgets.
+Some OpenAI-compatible providers return their own `usage.cost` in the response. When that figure is above zero, Bifrost uses it as the request cost and skips its own pricing, so pricing overrides have no effect for that provider. A reported cost of zero falls through to catalog pricing and overrides. The figure isn't always USD. Cortecs, for example, reports credits, where 1 EUR is 1,000,000 credits, so a request that cost EUR 0.001067 shows up as \$1067 in logs and budgets.
 
 Turn on `ignore_provider_cost` to discard that value. Bifrost then prices the request from model pricing and any [pricing overrides](../../providers/custom-pricing), and logs, budgets and telemetry use that cost. The response returned to your client still carries the provider's `usage.cost` unchanged. If a model has neither catalog pricing nor an override, the model call itself gets no cost. A request can still log a cost and count toward budgets when it includes separately priced guardrail judge or routing-classification calls.
 

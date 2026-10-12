@@ -1086,7 +1086,7 @@ func TestDeleteMCPLogsRequiresAuthenticatedAdmin(t *testing.T) {
 			am.UpdateWhitelistedRoutes(tc.whitelist)
 			middleware := am.APIMiddleware()
 			if tc.noConfigStore {
-				middleware = AuthBypassedMiddleware()
+				middleware = AuthBypassedMiddleware(nil, tc.whitelist)
 			}
 			r := router.New()
 			h.RegisterRoutes(r, middleware)
