@@ -515,6 +515,63 @@ func TestRecoveryMiddleware_DoesNotLogPanicValue(t *testing.T) {
 	}
 }
 
+// TestRecoverWebSocketSession_RecoversAndRedactsPanic pins the helper every WebSocket
+// upgrade callback defers: a panic on the hijacked session goroutine is swallowed (so the
+// process keeps serving), logged once, and never logged with the panic value itself.
+func TestRecoverWebSocketSession_RecoversAndRedactsPanic(t *testing.T) {
+	capLogger := &captureLogger{}
+	SetLogger(capLogger)
+	defer SetLogger(&mockLogger{})
+
+	session := func() {
+		defer recoverWebSocketSession(nil)
+		panic(errors.New("upstream rejected key sk-secret-456"))
+	}
+	session() // must return normally
+
+	if len(capLogger.errors) != 1 {
+		t.Fatalf("error logs = %d, want 1", len(capLogger.errors))
+	}
+	if strings.Contains(capLogger.errors[0], "sk-secret-456") {
+		t.Errorf("websocket recovery log leaked the panic value: %q", capLogger.errors[0])
+	}
+	if !strings.Contains(capLogger.errors[0], "websocket session") || !strings.Contains(capLogger.errors[0], "*errors.errorString") {
+		t.Errorf("websocket recovery log = %q, want the session marker and the panic value type", capLogger.errors[0])
+	}
+
+	quiet := func() {
+		defer recoverWebSocketSession(nil)
+	}
+	quiet()
+	if len(capLogger.errors) != 1 {
+		t.Fatalf("error logs after a non-panicking session = %d, want 1", len(capLogger.errors))
+	}
+
+	// A runtime.Error is summarized by type alone on the WebSocket paths too: its text can carry
+	// whatever a plugin put in it.
+	runtimeSession := func() {
+		defer recoverWebSocketSession(nil)
+		panic(secretRuntimeError{})
+	}
+	runtimeSession()
+	if len(capLogger.errors) != 2 {
+		t.Fatalf("error logs = %d, want 2", len(capLogger.errors))
+	}
+	if strings.Contains(capLogger.errors[1], "sk-secret-789") {
+		t.Errorf("websocket recovery log leaked a runtime.Error's text: %q", capLogger.errors[1])
+	}
+	err := runWebSocketRelay(nil, func() error { panic(secretRuntimeError{}) })
+	if err == nil || strings.Contains(err.Error(), "sk-secret-789") {
+		t.Errorf("relay error leaked a runtime.Error's text: %v", err)
+	}
+}
+
+// secretRuntimeError is a runtime.Error whose text carries something that must not be echoed.
+type secretRuntimeError struct{}
+
+func (secretRuntimeError) Error() string { return "index out of range for key sk-secret-789" }
+func (secretRuntimeError) RuntimeError() {}
+
 // TestRecoveryMiddleware_PassesThroughNormalRequests confirms the middleware is
 // a no-op for handlers that don't panic.
 func TestRecoveryMiddleware_PassesThroughNormalRequests(t *testing.T) {

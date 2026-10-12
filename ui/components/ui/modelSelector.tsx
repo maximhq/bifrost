@@ -14,6 +14,7 @@ import { useDebouncedValue } from "@/hooks/useDebounce";
 import { getProviderLabel } from "@/lib/constants/logs";
 import { useGetBaseModelsQuery, useGetModelsQuery } from "@/lib/store/apis/providersApi";
 import { cn } from "@/lib/utils";
+import { isSentinelValue } from "@/lib/utils/strings";
 import { ChevronDownIcon, Loader2Icon, PlusIcon, SearchIcon, XIcon } from "lucide-react";
 import type React from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -84,6 +85,8 @@ interface ModelSelectorBaseProps {
 	renderValueLabel?: (value: string) => React.ReactNode;
 	/** Drops the magnifier from the trigger. The one in the search field stays either way. */
 	hideSearchIcon?: boolean;
+	/** Single select only: open with an empty search showing the full list, instead of seeding it with the current model. */
+	openWithEmptySearch?: boolean;
 	/** id for the trigger, so a form label and its error message can point at it. */
 	inputId?: string;
 	ariaLabelledBy?: string;
@@ -151,6 +154,7 @@ export function ModelSelector(props: ModelSelectorProps) {
 		extraOptions,
 		renderValueLabel,
 		hideSearchIcon = false,
+		openWithEmptySearch = false,
 		inputId,
 		ariaLabelledBy,
 		ariaDescribedBy,
@@ -248,10 +252,12 @@ export function ModelSelector(props: ModelSelectorProps) {
 	// A selected model can sit outside the loaded page — it was picked under a different
 	// search, or saved before the catalog changed. Pin it so it stays visible and
 	// deselectable instead of silently vanishing from the list.
+	// A placeholder like "__none__" that no extra row claims is treated as no selection, never rendered raw.
+	const shown = useMemo(() => selected.filter((v) => extraValues.has(v) || !isSentinelValue(v)), [selected, extraValues]);
 	const pinned = useMemo<ModelSelectorOption[]>(() => {
 		const loaded = new Set(options.map((o) => o.value));
-		return selected.filter((v) => !loaded.has(v) && !extraValues.has(v)).map((v) => ({ value: v, label: v }));
-	}, [options, selected, extraValues]);
+		return shown.filter((v) => !loaded.has(v) && !extraValues.has(v)).map((v) => ({ value: v, label: v }));
+	}, [options, shown, extraValues]);
 
 	const loadedCount = rows.length + pinned.length + visibleExtras.length;
 	const hasMore = rows.length < total;
@@ -353,13 +359,13 @@ export function ModelSelector(props: ModelSelectorProps) {
 			 * gets back to the full list in one click. Multi keeps its empty field: its search is
 			 * for the next pick, not the ones already made.
 			 */
-			const seed = !isMulti && selected[0] && !extraValues.has(selected[0]) ? selected[0] : "";
+			const seed = !isMulti && !openWithEmptySearch && shown[0] && !extraValues.has(shown[0]) ? shown[0] : "";
 			setSeededSearch(seed);
 			setSearch(seed);
 			setOpen(true);
 			setHasOpened(true);
 		},
-		[closeAndResetSearch, isMulti, selected, extraValues],
+		[closeAndResetSearch, isMulti, openWithEmptySearch, shown, extraValues],
 	);
 
 	// Paging happens on scroll rather than through a button, so the list stays a list.
@@ -421,16 +427,16 @@ export function ModelSelector(props: ModelSelectorProps) {
 					data-testid={props["data-testid"] ?? "model-selector-trigger"}
 					className={cn(
 						"h-auto min-h-9 w-full justify-between !bg-transparent py-1.5 font-normal active:scale-none",
-						selected.length === 0 && "text-muted-foreground",
+						shown.length === 0 && "text-muted-foreground",
 						className,
 					)}
 				>
 					{/* Multi keeps every chip on the trigger: the row wraps and the trigger grows to fit. */}
-					{selected.length === 0 ? (
+					{shown.length === 0 ? (
 						<span className="min-w-0 truncate">{placeholder}</span>
 					) : isMulti ? (
 						<span className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
-							{selected.map((value) => (
+							{shown.map((value) => (
 								<span key={value} className="bg-accent dark:bg-card flex max-w-[180px] items-center gap-1 rounded-sm px-1 py-0.5 text-xs">
 									{renderValueLabel ? renderValueLabel(value) : <span className="min-w-0 truncate">{labelFor(value)}</span>}
 									{/*
@@ -464,9 +470,9 @@ export function ModelSelector(props: ModelSelectorProps) {
 							))}
 						</span>
 					) : renderValueLabel ? (
-						renderValueLabel(selected[0])
+						renderValueLabel(shown[0])
 					) : (
-						<span className="min-w-0 truncate">{labelFor(selected[0])}</span>
+						<span className="min-w-0 truncate">{labelFor(shown[0])}</span>
 					)}
 					<span className="ml-2 flex shrink-0 items-center gap-1">
 						{/* The magnifier on the closed trigger is what tells the user this opens into a search. */}

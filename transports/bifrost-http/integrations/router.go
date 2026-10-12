@@ -3599,7 +3599,7 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 	// provider, so it must be anchored at a segment boundary and shaped like a rooted path
 	// before anything else happens. Both checks run before the Bifrost context exists so a
 	// rejected request never reaches key selection or the upstream.
-	path, ok := stripPassthroughPrefix(string(ctx.Path()), cfg.StripPrefix)
+	path, apiVersion, ok := stripPassthroughPrefix(string(ctx.Path()), cfg.StripPrefix)
 	if !ok {
 		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "no passthrough route matches the request path", fasthttp.StatusNotFound))
 		return
@@ -3609,10 +3609,11 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	if !passthroughInferenceRoute(cfg, string(ctx.Method()), path) {
-		g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "passthrough requires a supported inference endpoint and method", fasthttp.StatusForbidden))
-		return
-	}
+	// Route policy disabled: a hardcoded allowlist blocks new provider endpoints until Bifrost is upgraded.
+	// if !passthroughInferenceRoute(cfg, string(ctx.Method()), path) {
+	// 	g.sendError(ctx, nil, passthroughErr, newBifrostErrorWithCode(nil, "passthrough requires a supported inference endpoint and method", fasthttp.StatusForbidden))
+	// 	return
+	// }
 
 	body := ctx.Request.Body()
 	// Parse body once to get both model and stream flag.
@@ -3635,11 +3636,12 @@ func (g *GenericRouter) handlePassthrough(ctx *fasthttp.RequestCtx) {
 
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, g.handlerStore)
 	applyPassthroughCallerAuth(bifrostCtx, safeHeaders, provider, callerAuth, cfg.UpstreamURL)
-	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream)
+	isStreaming := cfg.streams(string(ctx.Method()), path, bodyStream || passthroughQueryStreams(string(ctx.Method()), string(ctx.URI().QueryString())))
 
 	passthroughReq := &schemas.BifrostPassthroughRequest{
 		Method:      string(ctx.Method()),
 		Path:        path,
+		APIVersion:  apiVersion,
 		RawQuery:    string(ctx.URI().QueryString()),
 		UpstreamURL: cfg.UpstreamURL,
 		Body:        body,

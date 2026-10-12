@@ -3313,3 +3313,99 @@ func TestAnthropicRoundTrip_TextEditorKeepsMaxCharacters(t *testing.T) {
 		}
 	})
 }
+
+// claudeCodeCachingTurn is the request shape Claude Code sends on every agent turn:
+// two system blocks marked for caching, then the conversation, with a single rolling
+// marker on the newest tool_result.
+const claudeCodeCachingTurn = `{
+	"model": "%s",
+	"max_tokens": 1024,
+	"system": [
+		{"type": "text", "text": "You are Claude Code.", "cache_control": {"type": "ephemeral"}},
+		{"type": "text", "text": "Project instructions.", "cache_control": {"type": "ephemeral"}}
+	],
+	"tools": [{"name": "Read", "description": "Read a file", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}}],
+	"messages": [
+		{"role": "user", "content": [{"type": "text", "text": "Read main.go"}]},
+		{"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"path": "main.go"}}]},
+		{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "package main", "cache_control": {"type": "ephemeral"}}]}
+	]
+}`
+
+// TestClaudeCodeCacheMarkersOnGPTKeepImplicitMode pins the request Claude Code sends
+// through /anthropic/v1/messages to a gpt-5.6+ model. Its markers must translate to
+// prompt_cache_breakpoint, and the request must NOT be switched to
+// prompt_cache_options.mode=explicit.
+//
+// Explicit-only mode looks up only the breakpoints in the current request
+// (https://developers.openai.com/api/docs/guides/prompt-caching). Claude Code's
+// tool_result marker moves forward every turn, so the previous turn's cache entry is
+// never a lookup candidate: the whole conversation is rewritten at the 1.25x write rate
+// every turn. The default implicit mode honours the same explicit breakpoints and also
+// looks back over up to 20 earlier message endings, which is the reuse Claude Code
+// relies on.
+func TestClaudeCodeCacheMarkersOnGPTKeepImplicitMode(t *testing.T) {
+	for _, tc := range []struct {
+		name, model string
+	}{
+		{"bedrock gpt-5.6", "bedrock/openai.gpt-5.6-sol"},
+		{"bedrock gpt-6", "bedrock/openai.gpt-6-astra"},
+		{"bedrock mantle gpt-5.6", "bedrock_mantle/openai.gpt-5.6-terra"},
+		{"openai gpt-5.6", "openai/gpt-5.6-sol"},
+		{"azure gpt-5.6", "azure/gpt-5.6-sol"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var req AnthropicMessageRequest
+			body := strings.Replace(claudeCodeCachingTurn, "%s", tc.model, 1)
+			if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			openaiReq := openai.ToOpenAIResponsesRequest(ctx, bifrostReq)
+			if openaiReq == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+			wire, err := openaiReq.MarshalJSON()
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			raw := string(wire)
+
+			if got := strings.Count(raw, `"prompt_cache_breakpoint"`); got != 3 {
+				t.Errorf("want 3 prompt_cache_breakpoint (2 system + tool_result), got %d; raw=%s", got, raw)
+			}
+			if strings.Contains(raw, `"cache_control"`) {
+				t.Errorf("cache_control must not reach an OpenAI-shaped endpoint; raw=%s", raw)
+			}
+			if strings.Contains(raw, `"prompt_cache_options"`) {
+				t.Errorf("Bifrost must not switch a Claude Code request to explicit-only caching; "+
+					"it disables the implicit lookback the rolling tool_result marker relies on; raw=%s", raw)
+			}
+		})
+	}
+}
+
+// TestClaudeCodeCacheMarkersOnGPTCallerExplicitModeWins checks the opt-in: a caller
+// that sets prompt_cache_options itself gets it forwarded unchanged.
+func TestClaudeCodeCacheMarkersOnGPTCallerExplicitModeWins(t *testing.T) {
+	var req AnthropicMessageRequest
+	body := strings.Replace(claudeCodeCachingTurn, "%s", "bedrock/openai.gpt-5.6-sol", 1)
+	if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	bifrostReq := req.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Params.PromptCacheOptions = &schemas.PromptCacheOptions{Mode: schemas.Ptr("explicit")}
+	wire, err := openai.ToOpenAIResponsesRequest(ctx, bifrostReq).MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	raw := string(wire)
+	if !strings.Contains(raw, `"prompt_cache_options":{"mode":"explicit"}`) {
+		t.Errorf("caller's explicit mode must be forwarded; raw=%s", raw)
+	}
+	if got := strings.Count(raw, `"prompt_cache_breakpoint"`); got != 3 {
+		t.Errorf("want 3 prompt_cache_breakpoint, got %d; raw=%s", got, raw)
+	}
+}

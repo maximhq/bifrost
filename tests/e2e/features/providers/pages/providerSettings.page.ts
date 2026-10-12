@@ -47,7 +47,7 @@ export class ProviderSettingsPage extends BasePage {
   /**
    * Select a configuration tab
    */
-  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging' | 'web-search'): Promise<void> {
+  async selectConfigTab(tabName: 'network' | 'proxy' | 'performance' | 'governance' | 'debugging' | 'tools'): Promise<void> {
     await this.openConfigSheet()
 
     const tab = this.page.getByTestId(`provider-tab-${tabName}`)

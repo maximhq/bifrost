@@ -107,7 +107,7 @@ func (g *liveGateway) resolveSession(ctx *fasthttp.RequestCtx, req *liveRequest)
 	if req.sessionID == "" {
 		return refuse(newRealtimeWireBifrostError(400, "invalid_request_error", "a session id is required"))
 	}
-	provider, providerKey, bifrostErr := g.controlProvider(req.path)
+	provider, providerKey, bifrostErr := g.controlProvider(req.path, liveControlProviderName(ctx))
 	if bifrostErr != nil {
 		return refuse(bifrostErr)
 	}
@@ -185,12 +185,28 @@ func (g *liveGateway) sessionContext(auth *authHeaders, preReqCtx *schemas.Bifro
 	return ctx, cancel
 }
 
+// liveControlProviderName is the provider a caller names on a route that only carries a session
+// id: the ?provider= query parameter, else the x-model-provider header, as the file, batch and
+// video routes accept.
+func liveControlProviderName(ctx *fasthttp.RequestCtx) string {
+	if named := strings.TrimSpace(string(ctx.QueryArgs().Peek("provider"))); named != "" {
+		return named
+	}
+	return strings.TrimSpace(string(ctx.Request.Header.Peek("x-model-provider")))
+}
+
 // controlProvider resolves the provider a route on an existing session names: the integration
-// prefix, or, on the bare route, the standard OpenAI provider when configured, else the one
-// configured provider that serves live sessions. Custom OpenAI-based providers serve live
-// sessions too, so the bare route cannot be left to a scan alone.
-func (g *liveGateway) controlProvider(path string) (schemas.LiveProvider, schemas.ModelProvider, *schemas.BifrostError) {
+// prefix, else the provider the caller named, else, on the bare route, the standard OpenAI
+// provider when configured, else the one configured provider that serves live sessions. Custom
+// OpenAI-based providers serve live sessions too, so the bare route cannot be left to a scan alone.
+func (g *liveGateway) controlProvider(path, named string) (schemas.LiveProvider, schemas.ModelProvider, *schemas.BifrostError) {
 	providerKey := realtimeDefaultProviderForPath(path)
+	if providerKey == "" && named != "" {
+		providerKey = schemas.ModelProvider(named)
+		if g.client.GetProviderByKey(providerKey) == nil {
+			return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", fmt.Sprintf("provider %q is not configured", named))
+		}
+	}
 	if providerKey == "" {
 		configured, err := g.client.GetConfiguredProviders()
 		if err != nil {
@@ -218,6 +234,64 @@ func (g *liveGateway) controlProvider(path string) (schemas.LiveProvider, schema
 		return nil, "", newRealtimeWireBifrostError(400, "invalid_request_error", "provider does not support live sessions: "+string(providerKey))
 	}
 	return provider, providerKey, nil
+}
+
+// admitSideband opens a sideband as a request of its own through the plugin pipeline. Governance
+// holds it to the caller's virtual key as the primary session is held: the provider must be
+// allowed, and the keys the caller may use are published for selection. Budgets and request
+// limits are skipped: a sideband spends nothing, and the session it joins is what they govern, so
+// an exhausted key keeps control of the session it already has. Logging gives it a row naming the
+// provider session. The caller settles the row with closeSideband.
+func (g *liveGateway) admitSideband(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, sessionID string) (*bifrost.RealtimeTurnHooks, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyHTTPRequestType, schemas.LiveSidebandRequest)
+	ctx.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, sessionID)
+	ctx.SetValue(schemas.BifrostContextKeySkipBudgetAndRateLimits, true)
+	// The sideband outlives the attach request: its row is delivered when its own trace completes,
+	// so it must not inherit the transport's, as live units and realtime turns do not.
+	ctx.ClearValue(schemas.BifrostContextKeyTraceID)
+	ctx.ClearValue(schemas.BifrostContextKeyExportTraceID)
+	setRealtimeTurnStreamContext(ctx, time.Now(), false)
+	return g.client.RunRealtimeTurnPreHooks(ctx, &schemas.BifrostRequest{
+		RequestType:      schemas.LiveSidebandRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: providerKey},
+	})
+}
+
+// closeSideband settles a sideband's row: the key it dialed with and how long it stayed
+// attached, or why it never was.
+func closeSideband(ctx *schemas.BifrostContext, hooks *bifrost.RealtimeTurnHooks, providerKey schemas.ModelProvider, key schemas.Key, startedAt time.Time, bifrostErr *schemas.BifrostError) {
+	if hooks == nil {
+		return
+	}
+	defer func() {
+		if hooks.Cleanup != nil {
+			hooks.Cleanup()
+		}
+	}()
+	if hooks.PostHookRunner == nil {
+		return
+	}
+	setRealtimeTurnStreamContext(ctx, startedAt, true)
+	// The key is chosen after the pre-hooks ran; the row names it, as a unit's does.
+	if strings.TrimSpace(key.ID) != "" {
+		ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, key.ID)
+	}
+	if strings.TrimSpace(key.Name) != "" {
+		ctx.SetValue(schemas.BifrostContextKeySelectedKeyName, key.Name)
+	}
+	// The row is delivered when the sideband's trace completes, as a turn's is.
+	defer completeRealtimeTurnTrace(ctx)
+	if bifrostErr != nil {
+		postErr := *bifrostErr
+		postErr.ExtraFields.RequestType = schemas.LiveSidebandRequest
+		postErr.ExtraFields.Provider = providerKey
+		hooks.PostHookRunner(ctx, nil, &postErr)
+		return
+	}
+	hooks.PostHookRunner(ctx, &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Object:      "live.sideband",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.LiveSidebandRequest, Provider: providerKey, Latency: time.Since(startedAt).Milliseconds()},
+	}}, nil)
 }
 
 // controlKey selects the key a route on an existing session acts with. Sessions are not yet
@@ -345,15 +419,17 @@ type liveSessionController struct {
 	drainTimeout    time.Duration
 	staleCheckEvery time.Duration
 
+	upstreamMu       sync.Mutex // serializes provider events with finalization
 	upstreamDone     chan struct{}
 	upstreamDoneOnce sync.Once
 	clientGone       atomic.Bool
+	sessionClosed    atomic.Bool // the provider sent session.closed
 	closeOnce        sync.Once
 	refusalOnce      sync.Once
 	drainMu          sync.Mutex
 	drainTimer       *time.Timer
-	transcript       liveTranscript // written on the upstream pump only
-	startedAt        time.Time      // when session.started arrived: zero of the session timeline
+	transcript       liveTranscript // guarded by upstreamMu
+	startedAt        time.Time      // guarded by upstreamMu; session timeline origin
 
 	delegationMu    sync.Mutex
 	delegations     map[string]*liveDelegationRecord // a delegation's output so far, until its terminal event
@@ -490,9 +566,17 @@ func (c *liveSessionController) fromClient(message []byte) ([]byte, bool) {
 	return message, true
 }
 
-// fromUpstream meters an upstream control event and reports whether it ended the session. The
-// frame itself is forwarded unchanged by the transport.
+// fromUpstream meters an upstream control event and reports whether the session has ended. The
+// frame itself is forwarded unchanged by the transport. WebRTC close callbacks run independently
+// of provider messages, so processing an event and finalizing the session share one lock.
 func (c *liveSessionController) fromUpstream(message []byte) bool {
+	c.upstreamMu.Lock()
+	defer c.upstreamMu.Unlock()
+	select {
+	case <-c.upstreamDone:
+		return true
+	default:
+	}
 	switch schemas.LiveEventTypeOf(message) {
 	case schemas.LiveEventSessionStarted:
 		c.startedAt = time.Now()
@@ -502,7 +586,7 @@ func (c *liveSessionController) fromUpstream(message []byte) bool {
 	case schemas.LiveEventSessionUpdated:
 		// A sideband can switch the backend too; the primary bills whatever the session now runs.
 		if model := providerUtils.GetJSONField(message, "session.delegation.responses.model").Str; model != "" {
-			if refusal := c.meter.switchBackend(model); refusal != nil {
+			if refusal := c.meter.confirmBackend(model); refusal != nil {
 				c.endForRefusal(refusal)
 			}
 		}
@@ -540,13 +624,33 @@ func (c *liveSessionController) fromUpstream(message []byte) bool {
 				c.endForRefusal(refusal)
 			}
 		}
+	case schemas.LiveEventError:
+		// A delegation the provider refuses to run never opens; the session goes on without it.
+		if bifrostErr := delegationError(message); bifrostErr != nil {
+			if refusal := c.meter.failBackend(bifrostErr); refusal != nil {
+				c.endForRefusal(refusal)
+			}
+		}
 	case schemas.LiveEventSessionClosed:
+		c.sessionClosed.Store(true)
 		c.meter.setEnding(c.transcript.snapshot())
 		c.meter.finish(providerUtils.GetJSONField(message, "usage.seconds").Float())
 		c.markUpstreamDone()
 		return true
 	}
 	return false
+}
+
+// delegationError reads an upstream error frame about the session's delegation; nil for any other.
+func delegationError(message []byte) *schemas.BifrostError {
+	if !strings.HasPrefix(providerUtils.GetJSONField(message, "error.param").Str, "session.delegation") {
+		return nil
+	}
+	code := providerUtils.GetJSONField(message, "error.code").Str
+	if code == "" {
+		code = "invalid_request_error"
+	}
+	return newRealtimeWireBifrostError(400, code, providerUtils.GetJSONField(message, "error.message").Str)
 }
 
 // appendTranscript records one transcript fragment with its place on the session timeline.
@@ -573,9 +677,29 @@ func (c *liveSessionController) clientLeft() {
 
 // upstreamEnded bills what OpenAI last reported when the upstream ended without session.closed.
 func (c *liveSessionController) upstreamEnded() {
+	c.upstreamMu.Lock()
+	defer c.upstreamMu.Unlock()
+	select {
+	case <-c.upstreamDone:
+		return
+	default:
+	}
+	// The watcher is released even if billing panics: the session is over either way, and a
+	// watcher left behind would outlive it.
+	defer c.markUpstreamDone()
 	c.meter.setEnding(c.transcript.snapshot())
 	c.meter.finish(c.meter.lastReportedSeconds())
-	c.markUpstreamDone()
+}
+
+// upstreamEndedEarly is upstreamEnded for an upstream that ended without session.closed: a
+// client still connected is told, since nothing else will tell it. Reports whether it was.
+func (c *liveSessionController) upstreamEndedEarly() bool {
+	c.upstreamEnded()
+	if c.clientGone.Load() || c.sessionClosed.Load() {
+		return false
+	}
+	c.sendError(newRealtimeWireBifrostError(502, "server_error", "the live session's upstream connection ended before session.closed"))
+	return true
 }
 
 func (c *liveSessionController) markUpstreamDone() {

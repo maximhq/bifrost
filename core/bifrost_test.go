@@ -4160,9 +4160,9 @@ func lookaroundToolParams() *schemas.ToolFunctionParameters {
 	return &schemas.ToolFunctionParameters{Type: "object", Properties: props}
 }
 
-// Only Moonshot and DeepSeek models get their tool-schema patterns rewritten.
-// Every other model, on every provider, must reach the wire byte-identical, and
-// the no-op path must hand back the caller's request itself so nothing is copied.
+// Without a datasheet row, only Moonshot and DeepSeek models get their tool-schema
+// patterns rewritten. Every other model must reach the wire byte-identical, and the
+// no-op path must hand back the caller's request itself so nothing is copied.
 func TestToolSchemaPatternRewriteAppliesOnlyToMoonshotAndDeepSeek(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	cases := []struct {
@@ -4192,7 +4192,7 @@ func TestToolSchemaPatternRewriteAppliesOnlyToMoonshotAndDeepSeek(t *testing.T) 
 					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: lookaroundToolParams()},
 				}}},
 			}
-			out := normalizeResponsesToolSchemas(ctx, req)
+			out := normalizeResponsesToolSchemas(ctx, schemas.Bedrock, req)
 			got := patternOf(t, out.Params.Tools[0].ResponsesToolFunction.Parameters)
 			if !tc.rewritten {
 				if out != req {
@@ -4211,6 +4211,210 @@ func TestToolSchemaPatternRewriteAppliesOnlyToMoonshotAndDeepSeek(t *testing.T) 
 			}
 		})
 	}
+}
+
+// kimiRejectedToolParams mirrors the Claude Code tools moonshotai.kimi-k3 on Bedrock
+// rejected (Gmail's nested `format: byte`, Artifact's `\0` and lookahead), next to
+// formats it accepts.
+func kimiRejectedToolParams(t *testing.T) *schemas.ToolFunctionParameters {
+	t.Helper()
+	raw := `{"type":"object","properties":{` +
+		`"attachments":{"type":"array","items":{"$ref":"#/$defs/Attachment"}},` +
+		`"send_at":{"type":"string","format":"date-time"},` +
+		`"size":{"type":"integer","format":"int64"},` +
+		`"path":{"type":"string","pattern":"^(?!\\.\\.?$)[^\\0]{1,200}$"}},` +
+		`"$defs":{"Attachment":{"type":"object","properties":{"content":{"type":"string","format":"byte"}},"required":["content"]}}}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return &params
+}
+
+// assertKimiToolParamsNormalized checks the rejected constructs are gone, the accepted
+// ones survive, and the caller's schema was not written through.
+func assertKimiToolParamsNormalized(t *testing.T, caller, sent *schemas.ToolFunctionParameters) {
+	t.Helper()
+	out, err := json.Marshal(sent)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rendered := string(out)
+	for _, gone := range []string{`"byte"`, `(?!`, `\\0`} {
+		if strings.Contains(rendered, gone) {
+			t.Fatalf("%s reached the provider: %s", gone, rendered)
+		}
+	}
+	for _, kept := range []string{`"date-time"`, `"int64"`, `[^\\x00]{1,200}`} {
+		if !strings.Contains(rendered, kept) {
+			t.Fatalf("%s was lost before the provider: %s", kept, rendered)
+		}
+	}
+	if before, _ := json.Marshal(caller); !strings.Contains(string(before), `"byte"`) {
+		t.Fatalf("caller's schema was mutated in place: %s", before)
+	}
+}
+
+// kimi-k3 on Bedrock answers a nested non-standard `format` with HTTP 200 and an empty
+// stream, so the Responses path drops it alongside the regex rewrites.
+func TestPrepareResponsesRequest_NormalizesToolSchemasForKimi(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	params := kimiRejectedToolParams(t)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.moonshotai.kimi-k3",
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type:                  schemas.ResponsesToolTypeFunction,
+			Name:                  new("send_message"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params},
+		}}},
+	}
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Bedrock}, schemas.Key{}, req)
+	if bifrostErr != nil {
+		t.Fatalf("prepare failed: %v", bifrostErr.Error)
+	}
+	assertKimiToolParamsNormalized(t, params, prepared.Params.Tools[0].ResponsesToolFunction.Parameters)
+}
+
+// Codex also declares tools inside namespaces and additional_tools input items. Converse
+// has no namespace container, so both are hoisted to the top level; a wire that has one
+// keeps the namespace. Either way the schemas kimi-k3 receives are normalized.
+func TestPrepareResponsesRequest_NormalizesEmbeddedToolSchemasForKimi(t *testing.T) {
+	sendMessage := func(params *schemas.ToolFunctionParameters) schemas.ResponsesTool {
+		return schemas.ResponsesTool{
+			Type:                  schemas.ResponsesToolTypeFunction,
+			Name:                  new("send_message"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params},
+		}
+	}
+	namespaced := func(t *testing.T, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type:                   schemas.ResponsesToolTypeNamespace,
+			Name:                   new("gmail"),
+			ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{sendMessage(params)}},
+		}}}}
+	}
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		wantType schemas.ResponsesToolType
+		build    func(t *testing.T, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest
+	}{
+		{"additional_tools item hoisted for Converse", schemas.Bedrock, "us.moonshotai.kimi-k3", schemas.ResponsesToolTypeFunction,
+			func(t *testing.T, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest {
+				declared, err := json.Marshal([]schemas.ResponsesTool{sendMessage(params)})
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				return &schemas.BifrostResponsesRequest{Input: []schemas.ResponsesMessage{{
+					Type:            new(schemas.ResponsesMessageTypeAdditionalTools),
+					AdditionalTools: declared,
+				}}}
+			}},
+		{"namespace flattened for Converse", schemas.Bedrock, "us.moonshotai.kimi-k3", schemas.ResponsesToolTypeFunction, namespaced},
+		{"namespace kept by an OpenAI-compatible wire", schemas.OpenAI, "kimi-k3", schemas.ResponsesToolTypeNamespace, namespaced},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := kimiRejectedToolParams(t)
+			req := tc.build(t, params)
+			req.Provider, req.Model = tc.provider, tc.model
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: tc.provider}, schemas.Key{}, req)
+			if bifrostErr != nil {
+				t.Fatalf("prepare failed: %v", bifrostErr.Error)
+			}
+			if len(prepared.Params.Tools) != 1 || prepared.Params.Tools[0].Type != tc.wantType {
+				t.Fatalf("want one %s tool on the wire, got %+v", tc.wantType, prepared.Params.Tools)
+			}
+			sent := prepared.Params.Tools[0]
+			if sent.ResponsesToolNamespace != nil {
+				sent = sent.ResponsesToolNamespace.Tools[0]
+			}
+			assertKimiToolParamsNormalized(t, params, sent.ResponsesToolFunction.Parameters)
+		})
+	}
+}
+
+// The Chat Completions path reaches kimi-k3 too and must normalize the same way.
+func TestHandleProviderRequest_ChatNormalizesToolSchemasForKimi(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	params := kimiRejectedToolParams(t)
+	provider := &chatCapturingProvider{stubProvider: stubProvider{key: schemas.Bedrock}}
+	msg := &ChannelMessage{
+		Context: ctx,
+		BifrostRequest: schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "us.moonshotai.kimi-k3",
+				Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+					Type:     schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{Name: "send_message", Parameters: params},
+				}}},
+			},
+		},
+	}
+	if _, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, &schemas.ProviderConfig{}, msg, schemas.Key{}, nil); bifrostErr != nil {
+		t.Fatalf("dispatch failed: %v", bifrostErr.Error)
+	}
+	if provider.got == nil {
+		t.Fatal("the provider never received the request")
+	}
+	assertKimiToolParamsNormalized(t, params, provider.got.Params.Tools[0].Function.Parameters)
+}
+
+// A datasheet row decides in either direction: it restricts a model the fallback leaves
+// alone, and lifts a restriction the fallback would apply. A model with neither row nor
+// fallback gets the zero policy, which skips the walk.
+func TestToolSchemaPolicy_DatasheetRowWins(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		switch model {
+		case "xai.grok-4.7":
+			return &schemas.ModelCapabilities{SupportsRegexLookaround: new(false), SupportedSchemaFormats: []string{"date-time"}}
+		case "us.moonshotai.kimi-k3":
+			return &schemas.ModelCapabilities{SupportsRegexLookaround: new(true), SupportsRegexNULEscape: new(true), SupportedSchemaFormats: []string{"byte"}}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	grok := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "xai.grok-4.7"))
+	if !grok.StripLookaround || grok.NormalizeNULEscape || !slices.Equal(grok.StringFormats, []string{"date-time"}) {
+		t.Fatalf("grok row not applied: %+v", grok)
+	}
+	kimi := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "us.moonshotai.kimi-k3"))
+	if kimi.StripLookaround || kimi.NormalizeNULEscape || !slices.Equal(kimi.StringFormats, []string{"byte"}) {
+		t.Fatalf("kimi row did not override the fallback: %+v", kimi)
+	}
+	if claude := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "global.anthropic.claude-sonnet-5")); !claude.IsZero() {
+		t.Fatalf("a model with no row and no fallback must get the zero policy: %+v", claude)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-5",
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:     schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{Name: "send_message", Parameters: kimiRejectedToolParams(t)},
+		}}},
+	}
+	if out := prepareChatRequest(ctx, nil, schemas.Bedrock, req); out != req {
+		t.Fatal("a chat request for an unrestricted model must be returned as-is")
+	}
+}
+
+// chatCapturingProvider records the Chat request dispatch hands the provider.
+type chatCapturingProvider struct {
+	stubProvider
+	got *schemas.BifrostChatRequest
+}
+
+func (p *chatCapturingProvider) ChatCompletion(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	p.got = req
+	return &schemas.BifrostChatResponse{}, nil
 }
 
 // TestSetFallbackPinnedAPIKeyID_SurvivesBlockedWrites covers the streaming race, where a prior attempt's async post-hooks hold blockRestrictedWrites.
@@ -4714,6 +4918,121 @@ func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
 	if len(bodies) != 1 || !strings.Contains(bodies[0], `"state":null`) {
 		t.Errorf("provider must receive state null, got bodies %v", bodies)
 	}
+}
+
+// TestDecisionEmulationRequiresCompatOptIn pins that core emulates a decision
+// only when the compat plugin marks it (ChangeRequestType = ResponsesRequest, set
+// by convert_decision_to_responses for a model the catalog does not list as a
+// native decisions model). Unmarked, the provider answers: natively for a
+// decisions model, and with an unsupported_operation that names the setting for
+// any other model, without calling the emulating model.
+func TestDecisionEmulationRequiresCompatOptIn(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/decisions" {
+			_, _ = w.Write([]byte(`{"id":"dec_1","model":"gpt-6-luna","answers":[{"type":"predicate","name":"approve","probability":0.9}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}`))
+			return
+		}
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"model":"gpt-4o","status":"completed","output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"emit_decision","arguments":"{\"approve\":{\"value\":0.9,\"confidence\":0.8}}","status":"completed"}],"usage":{"input_tokens":5,"output_tokens":5,"total_tokens":10}}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID:     "test-key-openai",
+		Value:  *schemas.NewSecretVar("sk-test-openai"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 100,
+	}})
+
+	initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	client, err := Init(initCtx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	newRequest := func(model ...string) *schemas.BifrostDecisionRequest {
+		m := "gpt-4o"
+		if len(model) > 0 {
+			m = model[0]
+		}
+		return &schemas.BifrostDecisionRequest{
+			Provider: schemas.OpenAI,
+			Model:    m,
+			Input:    schemas.DecisionInput{Text: schemas.Ptr("Customer message: I was double charged.")},
+			Questions: []schemas.DecisionQuestion{
+				{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("approve"), Instructions: schemas.NewDecisionText("Approve a billing review?")},
+			},
+		}
+	}
+
+	t.Run("disabled", func(t *testing.T) {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := client.DecisionRequest(ctx, newRequest())
+		if bifrostErr == nil {
+			t.Fatalf("expected unsupported_operation without compat opt-in, got response %+v", resp)
+		}
+		if bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
+			t.Fatalf("expected unsupported_operation code, got %+v", bifrostErr.Error)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(paths) != 0 {
+			t.Errorf("no upstream call expected without opt-in, got %v", paths)
+		}
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+		resp, bifrostErr := client.DecisionRequest(ctx, newRequest())
+		if bifrostErr != nil {
+			t.Fatalf("expected emulated decision, got error: %+v", bifrostErr.Error)
+		}
+		if resp == nil || len(resp.Answers) != 1 {
+			t.Fatalf("expected one emulated answer, got %+v", resp)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(paths) != 1 || paths[0] != "/v1/responses" {
+			t.Errorf("emulation must call the Responses API once, got %v", paths)
+		}
+	})
+
+	t.Run("unmarked native model is served natively", func(t *testing.T) {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := client.DecisionRequest(ctx, newRequest("gpt-6-luna")); bifrostErr != nil {
+			t.Fatalf("expected a native decision, got error: %+v", bifrostErr.Error)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(paths) != 1 || paths[0] != "/v1/decisions" {
+			t.Errorf("a native model must call the decisions endpoint once, got %v", paths)
+		}
+	})
 }
 
 // An attempt that already ran a provider-injected MCP tool is not retried: a retry would
@@ -6756,6 +7075,134 @@ func TestScenarioSingleKeyProviderSkipsTheKeyLevel(t *testing.T) {
 	}
 	// A free pick would leave c1 for c2 at least once in five turns 31 times in 32.
 	requireHits(t, u, map[string]int{"sk-c1": 5, "sk-c2": 0})
+}
+
+// A session's key removed from its provider is dropped on the next turn, and the session rebinds to
+// the key that served, whether one key or several are left. Added back, the removed key does not
+// take the session back: it stays on the key it rebound to, though a free pick would land on the
+// returning key (plan row KS-22; one subtest per pool size).
+func TestScenarioSessionKeyRemovedThenAddedBack(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		left []string // the keys left once a2 is removed
+	}{
+		{"one key left", []string{"a1"}},
+		{"two keys left", []string{"a1", "a3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			kv := newMockKVStore()
+			all := append([]string{"a2"}, tc.left...)
+			keysOf := func(names []string, weightOf func(string) float64) []schemas.Key {
+				keys := make([]schemas.Key, 0, len(names))
+				for _, name := range names {
+					keys = append(keys, scenarioKey(name, weightOf(name)))
+				}
+				return keys
+			}
+			even := func(string) float64 { return 1 }
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{provA: keysOf(all, even)})
+			client := scenarioClient(t, account, nil, kv)
+			bindSession(t, kv, "s", SessionStateKindKey, provA, "m", "a2")
+
+			account.SetKeysForProvider(provA, keysOf(tc.left, even))
+			ctx := sessionCtx("s")
+			served, err := scenarioChat(client, ctx, provA, "m")
+			requireServed(t, served, err, provA)
+			if !strings.Contains(routingLogs(ctx), "no longer eligible") {
+				t.Fatalf("the removed key's binding should be reported as dropped:\n%s", routingLogs(ctx))
+			}
+			rebound, _ := sessionState(kv, "s", SessionStateKindKey, provA, "m")
+			if !slices.Contains(tc.left, rebound) {
+				t.Fatalf("the session should rebind to a key left on the provider, holds %q", rebound)
+			}
+
+			// a2 returns as the only key with weight, so only the binding keeps a turn off it.
+			account.SetKeysForProvider(provA, keysOf(all, func(name string) float64 {
+				if name == "a2" {
+					return 1
+				}
+				return 0
+			}))
+			u.clearHits()
+			for range 5 {
+				served, err := scenarioChat(client, sessionCtx("s"), provA, "m")
+				requireServed(t, served, err, provA)
+			}
+			requireHits(t, u, map[string]int{"sk-" + rebound: 5, "sk-a2": 0})
+			requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", rebound)
+		})
+	}
+}
+
+// batchOnlyA2 is a provider whose keys both serve chat, but only a2 is enabled for the batch and file
+// APIs, so a batch or file pool holds a2 alone.
+func batchOnlyA2() []schemas.Key {
+	a2 := scenarioKey("a2", 1)
+	a2.UseForBatchAPI = schemas.Ptr(true)
+	return []schemas.Key{scenarioKey("a1", 1), a2}
+}
+
+// A one-key pool that does not hold the session's key leaves the binding alone when the pool says
+// nothing about the session's own requests, each case on its own guard: a pool a second model
+// narrowed, or a batch or file pool cut to its batch-enabled keys, where the bound key still serves
+// the session's HTTP turns, and a realtime or WebSocket Responses pick, which never writes the
+// session's bindings, though there the bound key is gone (plan rows KS-20 and KS-22).
+func TestScenarioOneKeyPoolKeepsTheSessionKeyWhenItSaysNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		requestType schemas.RequestType
+		keys        func() []schemas.Key
+		extraModels []string
+	}{
+		{
+			name:        "a chat pool a second model narrowed",
+			requestType: schemas.ChatCompletionRequest,
+			keys: func() []schemas.Key {
+				a1 := scenarioKey("a1", 1)
+				a1.Models = schemas.WhiteList{"m"}
+				return []schemas.Key{a1, scenarioKey("a2", 1)}
+			},
+			extraModels: []string{"m2"},
+		},
+		{
+			name:        "a realtime pick",
+			requestType: schemas.RealtimeRequest,
+			keys:        func() []schemas.Key { return []schemas.Key{scenarioKey("a2", 1)} },
+		},
+		{
+			name:        "a WebSocket Responses pick",
+			requestType: schemas.WebSocketResponsesRequest,
+			keys:        func() []schemas.Key { return []schemas.Key{scenarioKey("a2", 1)} },
+		},
+		{
+			name:        "a batch pool of the one batch-enabled key",
+			requestType: schemas.BatchCreateRequest,
+			keys:        batchOnlyA2,
+		},
+		{
+			name:        "a file pool of the one batch-enabled key",
+			requestType: schemas.FileUploadRequest,
+			keys:        batchOnlyA2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			kv := newMockKVStore()
+			client := scenarioClient(t, scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{provA: tc.keys()}), nil, kv)
+			bindSession(t, kv, "s", SessionStateKindKey, provA, "m", "a1")
+
+			ctx := sessionCtx("s")
+			key, err := client.SelectKeyForProviderRequestType(ctx, tc.requestType, provA, "m", tc.extraModels...)
+			if err != nil || key.ID != "a2" {
+				t.Fatalf("the pick got %q (err %v), want a2, the one key in the pool", key.ID, err)
+			}
+			requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", "a1")
+			if logs := routingLogs(ctx); strings.Contains(logs, "no longer eligible") {
+				t.Fatalf("the pool should not judge the session's key:\n%s", logs)
+			}
+		})
+	}
 }
 
 // A fallback picks its key without the session, so the key binding the session already held on the

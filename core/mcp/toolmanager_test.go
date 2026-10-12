@@ -48,6 +48,8 @@ func (m *mockToolClientManager) GetToolPerClient(ctx context.Context) map[string
 	}
 }
 
+func (m *mockToolClientManager) InstructionCaps() InstructionCaps { return InstructionCaps{} }
+
 func (m *mockToolClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
 	return m.instructions
 }
