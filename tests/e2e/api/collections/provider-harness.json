@@ -9324,6 +9324,64 @@
       "description": "Catch-all routes that forward the request body byte-for-byte to the upstream provider, with Bifrost injecting its own configured key. The handler at transports/bifrost-http/integrations/router.go:604 strips Authorization / API-Key / X-API-Key / X-Goog-API-Key from the inbound request - so these requests intentionally omit those headers. Bedrock and Vertex have no passthrough variant (AWS SigV4 / Google OAuth can't be bridged this way).",
       "item": [
         {
+          "name": "POST /openai_passthrough/v1/audio/speech: binary response body logged as placeholder",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('binary passthrough body: speech succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('binary passthrough body: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// The upstream returns MP3 bytes (NUL bytes, invalid UTF-8). The logging writer must store a",
+                  "// size placeholder instead of the raw bytes, which Postgres rejects with SQLSTATE 22021 and",
+                  "// which fail the whole batch INSERT. Poll: the row is written by the batching writer.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    // A pending request evicted while idle is stored first as a partial row without the response",
+                  "    // body, so keep polling while the field is absent; a present value is asserted at once.",
+                  "    if (j && j.passthrough_response_body !== undefined) {",
+                  "      pm.test('binary passthrough body: response body stored as placeholder', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j.passthrough_response_body)).to.match(/^<binary content omitted: \\d+ bytes>$/); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('binary passthrough body: log row with response body appeared', function () { pm.expect.fail('log ' + reqId + ' has no passthrough_response_body after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini-tts\",\n  \"input\": \"Hi\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
           "name": "POST /openai_passthrough/v1/chat/completions",
           "request": {
             "method": "POST",
