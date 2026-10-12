@@ -568,6 +568,7 @@ func TestWarpFilterAcceptsPreviouslyMissingFields(t *testing.T) {
 		"stop_reasons":       []any{"length", "content_filter"},
 		"objects":            []any{"embedding"},
 		"project_ids":        []any{"proj-1"},
+		"topic_ids":          []any{"topic-1"},
 		"min_tokens":         float64(10),
 		"max_tokens":         float64(5000),
 		"cache_hit_types":    []any{"semantic"},
@@ -577,6 +578,7 @@ func TestWarpFilterAcceptsPreviouslyMissingFields(t *testing.T) {
 	require.Equal(t, []string{"length", "content_filter"}, filters.StopReasons)
 	require.Equal(t, []string{"embedding"}, filters.Objects)
 	require.Equal(t, []string{"proj-1"}, filters.ProjectIDs)
+	require.Equal(t, []string{"topic-1"}, filters.TopicIDs)
 	require.NotNil(t, filters.MinTokens)
 	require.Equal(t, 10, *filters.MinTokens)
 	require.NotNil(t, filters.MaxTokens)

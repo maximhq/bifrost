@@ -129,6 +129,9 @@ type Topic struct {
 	// centre. Named as examples on the wire, because a link on a row is
 	// otherwise read as "the requests behind this row".
 	SampleLinks []string `json:"example_links,omitempty"`
+	// Link opens the topic's requests in the Logs view, with the window and
+	// filters the count ran under. Set by the tool, which has the filters.
+	Link string `json:"link,omitempty"`
 }
 
 // TopicTrend is a topic against the period of equal length before the
@@ -166,6 +169,9 @@ type TopicQuery struct {
 	Limit int
 	// BucketSeconds, when positive, gives each returned topic its series.
 	BucketSeconds int64
+	// NameContains keeps only topics whose name contains it, ignoring case
+	// and surrounding space, before Limit applies. Empty keeps every topic.
+	NameContains string
 }
 
 // TopicList is the reader's answer.
@@ -323,10 +329,14 @@ func (r *TopicReader) ListTopics(ctx context.Context, query TopicQuery) (*TopicL
 		}
 	}
 
+	needle := strings.ToLower(strings.TrimSpace(query.NameContains))
 	topics := make([]Topic, 0, len(rows))
 	for _, row := range rows {
 		entry, ok := usage[row.ID]
 		if !ok {
+			continue
+		}
+		if needle != "" && !strings.Contains(strings.ToLower(row.Label), needle) {
 			continue
 		}
 		topic := Topic{
@@ -655,6 +665,7 @@ func listTopicsTool() Tool {
 		name: "list_topics",
 		description: "List the topics people talk to the models about in a time window, largest first, counted from the topic each indexed request was filed under. " +
 			"Use this first for questions about what users ask, what conversations are about, which topics are most common, whether a topic is growing or shrinking, what is new, and what a topic costs. " +
+			"Each topic's id goes into the topic_ids filter of query_logs, count_logs and the other tools to reach the requests behind it. " +
 			"The window defaults to the last 7 days; filters narrow it to a team, customer, user, virtual key, model, provider, app, status or session, like the other tools. " +
 			"Each topic carries requests, share, distinct sessions, errors, cost, tokens, average latency, a trend block against the period of equal length before the window (has_previous_period, requests_trend, tokens_trend, cost_trend), when it was first seen (new_in_window marks one that appeared inside the window), " +
 			"and example_links that each open one example request. With interval, each topic also carries its series, bucket by bucket. " +
@@ -706,6 +717,11 @@ func listTopicsTool() Tool {
 			if err != nil {
 				return nil, err
 			}
+			for index := range list.Topics {
+				narrowed := *filters
+				narrowed.TopicIDs = []string{list.Topics[index].ID}
+				list.Topics[index].Link = logsViewLink(&narrowed)
+			}
 			out := map[string]any{
 				"topics":             list.Topics,
 				"returned":           len(list.Topics),
@@ -727,10 +743,11 @@ func listTopicsTool() Tool {
 					"or an agent making five calls is five. Say requests, not conversations or people. Share is of total_requests, which includes the unmatched_requests that fell under no topic."
 				out["trend"] = "Each topic's trend compares it with previous_window, the period of equal length just before window. " +
 					"A null tokens_trend or cost_trend means that metric was zero in the previous period and is not now: describe it as new rather than as a change."
-				out["links"] = "Each entry of example_links opens one example request from its topic, not the topic. " +
-					"The Logs page cannot show a topic's requests, so leave topic names unlinked and offer the examples as examples."
-				out["cannot_answer"] = "Not available yet: every request in a topic (the Logs page cannot filter by topic), how many people asked about one (sessions are sessions, not people), " +
-					"and topics grouped into broader themes. Asked for one of those, answer what the topics do show, then say it is not available yet; do not approximate it from other tools."
+				out["links"] = "Each topic's link opens its requests in the Logs view, over this window and these filters: link the topic's name to it. " +
+					"Each entry of example_links opens one example request from the topic; offer those as examples, after the name."
+				out["requests"] = "For the requests behind a topic - a list, a count, a breakdown, who sent them - call query_logs, count_logs or query_usage_by with topic_ids set to the topic's id and the same window and filters."
+				out["cannot_answer"] = "Not available yet: how many people asked about a topic (sessions are sessions, not people; a query_usage_by user ranking with topic_ids counts the users with a request in it), " +
+					"and topics grouped into broader themes. Asked for one of those, answer what the topics do show, then say it is not available yet."
 			}
 			return out, nil
 		},

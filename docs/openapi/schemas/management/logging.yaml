@@ -479,6 +479,14 @@ SearchFilters:
       description: >-
         Governance projects to narrow to. A request is scoped to at most one
         project, so this filter selects rows rather than intersecting sets.
+    topic_ids:
+      type: array
+      items:
+        type: string
+      description: >-
+        Warp topics to narrow to, by the ids Warp's list_topics reports: the
+        requests filed under any of them. A topic merged into one of these
+        counts as it.
     providers:
       type: array
       items:
@@ -692,6 +700,14 @@ FilterDataResponse:
       description: >-
         Governance projects that appear in the logs, for the `projects`
         dimension. Only projects whose rows carry a name are listed.
+    topics:
+      type: array
+      items:
+        $ref: '#/FilterKeyPair'
+      description: >-
+        Warp topics with a request the caller may see in the last 30 days,
+        largest first, for the `topics` dimension. Empty when Warp has no
+        topics, and narrowed by `q` against the topic's name.
 
 DeleteLogsRequest:
   type: object
