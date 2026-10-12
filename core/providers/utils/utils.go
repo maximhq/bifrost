@@ -5567,8 +5567,8 @@ func regexGroupEnd(pattern string, start int) int {
 	return -1
 }
 
-// DecisionImageURLItem is a standalone image in a decision state array, as Perplexity and
-// OpenRouter read it: {"type":"image_url","image_url":{"url":...,"detail":...}}.
+// DecisionImageURLItem is an image in a decision state array, as Perplexity and OpenRouter
+// read it: {"type":"image_url","image_url":{"url":...,"detail":...}}.
 type DecisionImageURLItem struct {
 	Type     string               `json:"type"` // always "image_url"
 	ImageURL DecisionImageURLBody `json:"image_url"`
@@ -5580,14 +5580,19 @@ type DecisionImageURLBody struct {
 	Detail *string `json:"detail,omitempty"`
 }
 
-// ExtractDecisionImages pulls input_image parts out of decision messages for providers
-// that read images as standalone {"type":"image_url"} items in the state array (Perplexity,
-// OpenRouter). It returns the input without images, which the Typesafe converter validates
-// as usual, and the state to send: each message without its images, followed by those
-// images in order. A message that held only images contributes only its images. state is
-// nil when the input carries no images, so the caller keeps the state it already builds.
-// Only a missing image_url is rejected here; whether a URL or detail is accepted is the
-// provider's call. The input is not modified.
+// ExtractDecisionImages lays out a decision input that carries images for providers whose
+// state is not a message list but an array of plain-string text items and
+// {"type":"image_url"} image items (Perplexity, OpenRouter). Any other object in that array
+// reaches the model as JSON text, so a message object next to an image skews the answer
+// (gpt-6-luna on OpenRouter reads a red image as 0.03 red that way, and as 1.0 with plain
+// strings). Each message contributes its text and images in their original order; roles are
+// dropped, since the format has no place for them.
+//
+// It returns the input without images, which the Typesafe converter validates as usual
+// (rejecting any other part type), and the state to send. state is nil when the input
+// carries no images, so the caller keeps the state it already builds. Only a missing
+// image_url is rejected here; whether a URL or detail is accepted is the provider's call.
+// The input is not modified.
 func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.DecisionInput, state interface{}, err error) {
 	if !hasDecisionImage(input.Messages) {
 		return input, nil, nil
@@ -5597,30 +5602,34 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 	for _, message := range input.Messages {
 		if message.Content.Parts == nil {
 			messages = append(messages, message)
-			items = append(items, message)
+			if message.Content.Text != nil {
+				items = append(items, *message.Content.Text)
+			}
 			continue
 		}
 		parts := make([]schemas.DecisionInputPart, 0, len(message.Content.Parts))
-		var images []interface{}
 		for _, part := range message.Content.Parts {
-			if part.Type != schemas.DecisionInputPartTypeImage {
-				parts = append(parts, part)
+			switch part.Type {
+			case schemas.DecisionInputPartTypeImage:
+				if part.ImageURL == nil || *part.ImageURL == "" {
+					return schemas.DecisionInput{}, nil, InvalidRequestErrorf("decision input carries an input_image part without an image_url")
+				}
+				items = append(items, DecisionImageURLItem{
+					Type:     "image_url",
+					ImageURL: DecisionImageURLBody{URL: *part.ImageURL, Detail: part.Detail},
+				})
 				continue
+			case schemas.DecisionInputPartTypeText:
+				if part.Text != nil {
+					items = append(items, *part.Text)
+				}
 			}
-			if part.ImageURL == nil || *part.ImageURL == "" {
-				return schemas.DecisionInput{}, nil, InvalidRequestErrorf("decision input carries an input_image part without an image_url")
-			}
-			images = append(images, DecisionImageURLItem{
-				Type:     "image_url",
-				ImageURL: DecisionImageURLBody{URL: *part.ImageURL, Detail: part.Detail},
-			})
+			parts = append(parts, part)
 		}
 		if len(parts) > 0 {
 			message.Content.Parts = parts
 			messages = append(messages, message)
-			items = append(items, message)
 		}
-		items = append(items, images...)
 	}
 	return schemas.DecisionInput{Messages: messages}, items, nil
 }

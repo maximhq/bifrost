@@ -16,9 +16,9 @@ const perplexityRequestIDHeader = "x-request-id"
 
 // ToPerplexityDecisionRequest converts a normalized decision request into Perplexity's
 // body, which is Typesafe's systemone request. Questions go through Typesafe's converter,
-// so they validate exactly as they do on Typesafe, and input_image parts become image_url
-// items in the state, after the text of the message they came from. The request is not
-// modified.
+// so they validate exactly as they do on Typesafe. An input with images is sent as
+// plain-string text items and image_url items in their original order (see
+// providerUtils.ExtractDecisionImages). The request is not modified.
 func ToPerplexityDecisionRequest(request *schemas.BifrostDecisionRequest) (*typesafe.TypesafeDecisionRequest, error) {
 	input, state, err := providerUtils.ExtractDecisionImages(request.Input)
 	if err != nil {

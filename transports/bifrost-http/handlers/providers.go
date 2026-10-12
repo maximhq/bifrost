@@ -1129,7 +1129,9 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // serving Laya, Nimble, or Clef), and otherwise a model the datasheet marks
 // supports_decisions, or without a row the provider's name-based fallback (a
 // TypeSafe System One model on OpenRouter, a Clef model on Cloudflare, a decider
-// model on Perplexity, the gpt-6-luna family elsewhere). A
+// model on Perplexity, the gpt-6-luna family elsewhere). OpenRouter serves
+// gpt-6-luna's decisions under its own id (openai/gpt-6-luna-decisions, marked by
+// its datasheet row), so the gpt-6-luna name rule would list its chat models. A
 // key alias is checked as the model it points at, as the request path checks it.
 func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, model string) bool {
 	custom := h.customProviderConfig(provider)
