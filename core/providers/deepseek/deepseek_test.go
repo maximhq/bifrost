@@ -2,7 +2,9 @@ package deepseek_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -415,4 +417,109 @@ func TestChatCompletion_ResponseWithoutModelIgnoresDatasheet(t *testing.T) {
 	if got := resp.ExtraFields.RoutingInfo.ServerSideFallbackModel; got != nil {
 		t.Fatalf("ServerSideFallbackModel = %q, want nil when the response names no model", *got)
 	}
+}
+
+// newCapturingServer answers like newServedModelServer and records the last
+// request body it received.
+func newCapturingServer(t *testing.T, contentType, body string, captured *[]byte) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		*captured = raw
+		w.Header().Set("Content-Type", contentType)
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+const personSchema = `{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"]}`
+
+// assertJSONSchemaDowngraded checks a DeepSeek chat body: response_format is
+// json_object and the schema rides in a system message that mentions json.
+func assertJSONSchemaDowngraded(t *testing.T, body []byte) {
+	t.Helper()
+	var wire struct {
+		ResponseFormat map[string]json.RawMessage `json:"response_format"`
+		Messages       []struct {
+			Role    string          `json:"role"`
+			Content json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("decode wire body: %v\n%s", err, body)
+	}
+	if got := string(wire.ResponseFormat["type"]); got != `"json_object"` {
+		t.Fatalf("response_format.type = %s, want json_object; body: %s", got, body)
+	}
+	if _, ok := wire.ResponseFormat["json_schema"]; ok {
+		t.Fatalf("json_schema reached DeepSeek: %s", body)
+	}
+	for _, message := range wire.Messages {
+		var text string
+		if message.Role != "system" || json.Unmarshal(message.Content, &text) != nil {
+			continue
+		}
+		if strings.Contains(text, "json") && strings.Contains(text, personSchema) {
+			return
+		}
+	}
+	t.Fatalf("no system message carries the schema and the word json: %s", body)
+}
+
+func TestChatCompletion_DowngradesJSONSchemaResponseFormat(t *testing.T) {
+	t.Parallel()
+
+	var captured []byte
+	server := newCapturingServer(t, "application/json", newOpenAIChatResponse(), &captured)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	request := servedModelChatRequest()
+	var format interface{} = map[string]interface{}{
+		"type": "json_schema",
+		"json_schema": map[string]interface{}{
+			"name":   "person",
+			"schema": json.RawMessage(personSchema),
+		},
+	}
+	request.Params = &schemas.ChatParameters{ResponseFormat: &format}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if _, bifrostErr := provider.ChatCompletion(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, request); bifrostErr != nil {
+		t.Fatalf("ChatCompletion: %v", bifrostErr.Error.Message)
+	}
+	assertJSONSchemaDowngraded(t, captured)
+}
+
+func TestResponses_DowngradesJSONSchemaTextFormat(t *testing.T) {
+	t.Parallel()
+
+	var captured []byte
+	server := newCapturingServer(t, "application/json", newOpenAIChatResponse(), &captured)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	var text schemas.ResponsesTextConfig
+	if err := schemas.Unmarshal([]byte(`{"format":{"type":"json_schema","name":"person","schema":`+personSchema+`}}`), &text); err != nil {
+		t.Fatalf("decode text config: %v", err)
+	}
+	msg := "Ada is 36."
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.Responses(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostResponsesRequest{
+		Provider: schemas.DeepSeek,
+		Model:    requestedModel,
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: &msg},
+		}},
+		Params: &schemas.ResponsesParameters{Text: &text},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Responses: %v", bifrostErr.Error.Message)
+	}
+	assertJSONSchemaDowngraded(t, captured)
 }
