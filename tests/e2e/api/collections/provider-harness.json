@@ -258804,6 +258804,213 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "219. Vertex key credential changes need a genuine credential check (key-credential-dial-targets) [SERIAL]",
+      "description": "Management-plane regression for the default harness profile (tests/integrations/python/config.json: dashboard auth unconfigured, setup lock active with a configured setup token). A Vertex key whose auth_credentials JSON is an external-account document names its own token_url and a credential_source file: the Google client would read that file and post it to that host on the key's first use. Under this profile no request reaches the provider-key handler without a credential check: a request without the setup token is refused at the setup lock with 401 and nothing is saved, and a request carrying the setup token passed a credential check, so it may set the credential JSON. The handler's own 403 for a request admitted without any check (auth bypassed or a whitelisted route) cannot be reached from this profile; it is pinned by TestProviderKeyEndpointGuard_CoversEveryDialTarget in provider_keys_test.go. Key names carry a per-run id so an earlier run's leftovers never fail this one, and the admitted key is created disabled and scoped to an unused model so no other request can select it before it is deleted.",
+      "item": [
+        {
+          "name": "[EXPECT-401] vertex key-credential-dial-targets: a key whose credential JSON names its own token and credential-source URLs is refused without the setup token",
+          "protocolProfileBehavior": {
+            "disableCookies": true
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs and an earlier run's leftovers from colliding on the key name.",
+                  "pm.collectionVariables.set('kcdtKeyName', 'harness-credential-guard-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "// The collection pre-request adds the setup token to every request; this one must carry no credential at all.",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// With no credential the setup lock answers before the handler: 401, never a 200 that would mean an",
+                  "// unauthenticated caller chose where the key's credential goes.",
+                  "pm.test('key-credential-dial-targets: a credential JSON key create without the setup token is 401', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(401);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{kcdtKeyName}}\",\n  \"weight\": 1,\n  \"vertex_key_config\": {\n    \"project_id\": \"harness-project\",\n    \"region\": \"us-central1\",\n    \"auth_credentials\": \"{\\\"type\\\":\\\"external_account\\\",\\\"audience\\\":\\\"//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/harness/providers/harness\\\",\\\"subject_token_type\\\":\\\"urn:ietf:params:oauth:token-type:jwt\\\",\\\"token_url\\\":\\\"https://harness-credential-guard.example.invalid/token\\\",\\\"credential_source\\\":{\\\"file\\\":\\\"/etc/hostname\\\"}}\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/providers/vertex/keys"
+          },
+          "response": []
+        },
+        {
+          "name": "[EXPECT-200] vertex key-credential-dial-targets: the refused key was not persisted",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('kcdtKeyName')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('key-credential-dial-targets: key list is readable', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "var j = null;",
+                  "try { j = pm.response.json(); } catch (e) { j = null; }",
+                  "// A list that cannot be read proves nothing about what was stored, so it fails rather than reading as empty.",
+                  "// The handler answers {keys, total}; a provider with no keys may carry keys: null with total 0.",
+                  "var keys = Array.isArray(j) ? j : (j && Array.isArray(j.keys) ? j.keys : (j && j.keys === null && j.total === 0 ? [] : null));",
+                  "pm.test('key-credential-dial-targets: the response is a key list', function () {",
+                  "  pm.expect(keys, 'not a key list: ' + txt.slice(0, 400)).to.be.an('array');",
+                  "});",
+                  "var name = pm.collectionVariables.get('kcdtKeyName');",
+                  "var leaked = (keys || []).filter(function (k) { return k && k.name === name; });",
+                  "pm.test('key-credential-dial-targets: the refused key does not exist', function () {",
+                  "  pm.expect(keys, 'not a key list: ' + txt.slice(0, 400)).to.be.an('array');",
+                  "  pm.expect(leaked.length, 'key ' + name + ' was saved: ' + txt.slice(0, 400)).to.equal(0);",
+                  "});",
+                  "pm.collectionVariables.unset('kcdtKeyName');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/vertex/keys"
+          },
+          "response": []
+        },
+        {
+          "name": "vertex key-credential-dial-targets: a request carrying the setup token may set a credential JSON",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('kcdtAdminKeyId');",
+                  "  pm.collectionVariables.set('kcdtAdminKeyName', 'harness-credential-guard-admin-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key an earlier run failed to delete is retained; delete it before this run creates another.",
+                  "var staleKeyId = pm.collectionVariables.get('kcdtAdminKeyId');",
+                  "if (!staleKeyId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/providers/vertex/keys/' + staleKeyId, method: 'DELETE', header: {'X-Bifrost-Setup-Token': pm.variables.get('setupToken') || ''}}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('key-credential-dial-targets: the retained key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleKeyId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleKeyId + ' not deleted: ' + response.text()).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "// The setup token is a credential check, so the guard for requests admitted without one does not apply:",
+                  "// the key is saved. It is disabled and scoped to an unused model, so nothing selects it before cleanup.",
+                  "pm.test('key-credential-dial-targets: a credential JSON key create with the setup token is 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt.slice(0, 400)).to.equal(200);",
+                  "});",
+                  "var j = {};",
+                  "try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
+                  "if (j.id) { pm.collectionVariables.set('kcdtAdminKeyId', j.id); }",
+                  "pm.test('key-credential-dial-targets: the saved key has an id', function () {",
+                  "  pm.expect(j.id, 'no id: ' + txt.slice(0, 400)).to.be.a('string').and.not.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{kcdtAdminKeyName}}\",\n  \"weight\": 1,\n  \"enabled\": false,\n  \"models\": [\n    \"harness-credential-guard-unused\"\n  ],\n  \"vertex_key_config\": {\n    \"project_id\": \"harness-project\",\n    \"region\": \"us-central1\",\n    \"auth_credentials\": \"{\\\"type\\\":\\\"external_account\\\",\\\"audience\\\":\\\"//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/harness/providers/harness\\\",\\\"subject_token_type\\\":\\\"urn:ietf:params:oauth:token-type:jwt\\\",\\\"token_url\\\":\\\"https://harness-credential-guard.example.invalid/token\\\",\\\"credential_source\\\":{\\\"file\\\":\\\"/etc/hostname\\\"}}\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/providers/vertex/keys"
+          },
+          "response": []
+        },
+        {
+          "name": "vertex key-credential-dial-targets cleanup: delete the key the setup-token request saved",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('kcdtAdminKeyId')) { pm.execution.skipRequest(); return; }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('key-credential-dial-targets: the saved key is deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('kcdtAdminKeyId');",
+                  "  pm.collectionVariables.unset('kcdtAdminKeyName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/providers/vertex/keys/{{kcdtAdminKeyId}}"
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
