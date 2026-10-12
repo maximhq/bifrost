@@ -568,16 +568,14 @@ export interface PromptCacheConfig {
 	cache_control_injection_points?: CacheControlInjectionPoint[];
 }
 
-// InjectedToolRef names one MCP tool by client name and its unprefixed tool name.
-export interface InjectedToolRef {
+// InjectedTool is one MCP tool Bifrost adds to every chat and responses request for the
+// provider and executes server side when the model calls it. name is what the model
+// sees: it replaces a client tool of the same name, and web_search also replaces native
+// web search.
+export interface InjectedTool {
+	name: string;
 	mcp_client_name: string;
 	tool_name: string;
-}
-
-// InjectedToolsConfig names MCP tools Bifrost adds to every chat and responses request
-// for the provider and executes server side when the model calls them.
-export interface InjectedToolsConfig {
-	web_search?: InjectedToolRef;
 }
 
 // ProviderConfig matching Go's lib.ProviderConfig
@@ -592,7 +590,7 @@ export interface ModelProviderConfig {
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
-	injected_tools?: InjectedToolsConfig | null;
+	injected_tools?: InjectedTool[] | null;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -623,7 +621,7 @@ export interface AddProviderRequest {
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
-	injected_tools?: InjectedToolsConfig | null;
+	injected_tools?: InjectedTool[] | null;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -638,7 +636,7 @@ export interface UpdateProviderRequest {
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
-	injected_tools?: InjectedToolsConfig | null;
+	injected_tools?: InjectedTool[] | null;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}

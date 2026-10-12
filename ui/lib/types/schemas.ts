@@ -1014,25 +1014,60 @@ export const promptCacheFormSchema = z.object({
 
 export type PromptCacheFormSchema = z.infer<typeof promptCacheFormSchema>;
 
-export const injectedToolsConfigSchema = z.object({
-	web_search: z
-		.object({
-			mcp_client_name: z.string().min(1, "Pick an MCP server"),
-			tool_name: z.string().min(1, "Pick a tool"),
-		})
-		.optional(),
-});
+// INJECTED_TOOL_NAME_PATTERN mirrors config.schema.json: the function name every
+// supported provider accepts.
+export const INJECTED_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
-// The web search tab saves one injected tool. Removing it is the Remove button's job, so
-// a form is savable only with a server, its resolved name and a tool: a half-filled form
-// must never reach Save, which would otherwise clear the saved setting.
-export const injectedWebSearchFormSchema = z.object({
+// The saved injected_tools list, as the provider API returns and accepts it.
+export const injectedToolsConfigSchema = z.array(
+	z.object({
+		name: z.string().regex(INJECTED_TOOL_NAME_PATTERN, "Use 1-64 letters, digits, _ or -"),
+		mcp_client_name: z.string().min(1, "Pick an MCP server"),
+		tool_name: z.string().min(1, "Pick a tool"),
+	}),
+);
+
+// One row of the provider Tools tab. mcp_client_id drives the server picker; only the
+// name, client name and tool name are saved. A row is savable only once its server's
+// name has resolved and a tool is picked, so Save never writes a half-filled row.
+export const injectedToolRowSchema = z.object({
+	name: z.string().regex(INJECTED_TOOL_NAME_PATTERN, "Use 1-64 letters, digits, _ or -"),
 	mcp_client_id: z.string().min(1, "Pick an MCP server"),
 	mcp_client_name: z.string().min(1, "Waiting for the MCP server to load"),
-	tool_name: z.string().min(1, "Pick the tool this MCP server should run as web search"),
+	tool_name: z.string().min(1, "Pick a tool"),
 });
 
-export type InjectedWebSearchFormSchema = z.infer<typeof injectedWebSearchFormSchema>;
+// The name is what the model calls and what decides which client tool a row replaces,
+// so it must be unique. The same MCP tool twice would offer the model one tool under two
+// names. The server rejects both; these flag them on the row instead.
+export const injectedToolsFormSchema = z
+	.object({
+		tools: z.array(injectedToolRowSchema),
+	})
+	.superRefine((data, ctx) => {
+		const names = new Map<string, number>();
+		const refs = new Map<string, number>();
+		data.tools.forEach((tool, index) => {
+			if (tool.name !== "") {
+				if (names.has(tool.name)) {
+					ctx.addIssue({ code: "custom", path: ["tools", index, "name"], message: "Another tool already uses this name" });
+				} else {
+					names.set(tool.name, index);
+				}
+			}
+			if (tool.mcp_client_name !== "" && tool.tool_name !== "") {
+				const ref = `${tool.mcp_client_name}\u0000${tool.tool_name}`;
+				if (refs.has(ref)) {
+					ctx.addIssue({ code: "custom", path: ["tools", index, "tool_name"], message: "This MCP tool is already injected" });
+				} else {
+					refs.set(ref, index);
+				}
+			}
+		});
+	});
+
+export type InjectedToolRowSchema = z.infer<typeof injectedToolRowSchema>;
+export type InjectedToolsFormSchema = z.infer<typeof injectedToolsFormSchema>;
 
 // Allowed requests schema
 export const allowedRequestsSchema = z.object({

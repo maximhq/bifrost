@@ -1,17 +1,24 @@
 import { describe, expect, it } from "vitest";
 import {
+	defaultToolName,
+	emptyToolRow,
 	findClientByExactName,
 	hydratedValues,
 	lookupSavedClient,
+	nameAfterServerChange,
 	nextLookupOffset,
 	nextSavedClientState,
 	pickersDisabled,
+	prefilledName,
+	replacesNativeWebSearch,
 	savedFormValues,
 	startedSavedClientState,
+	toInjectedTools,
 	toolMenuState,
+	withResolvedClientId,
 } from "./injectedToolsForm.utils";
 
-const saved = { mcp_client_id: "id-1", mcp_client_name: "tavily", tool_name: "search" };
+const saved = { tools: [{ name: "web_search", mcp_client_id: "id-1", mcp_client_name: "tavily", tool_name: "search" }] };
 
 describe("hydratedValues", () => {
 	it("hydrates an untouched form once the saved client id resolves", () => {
@@ -49,16 +56,88 @@ describe("saved client lookup", () => {
 	});
 });
 describe("savedFormValues", () => {
-	it("keeps the resolved id when the saved client is unchanged (provider switch, tool-only save)", () => {
-		expect(savedFormValues("tavily", "crawl", { name: "tavily", id: "id-1" })).toEqual({
-			mcp_client_id: "id-1",
-			mcp_client_name: "tavily",
-			tool_name: "crawl",
+	it("loads each saved row with an unresolved client id", () => {
+		expect(
+			savedFormValues([
+				{ name: "web_search", mcp_client_name: "tavily", tool_name: "search" },
+				{ name: "read_page", mcp_client_name: "fetcher", tool_name: "fetch" },
+			]),
+		).toEqual({
+			tools: [
+				{ name: "web_search", mcp_client_id: "", mcp_client_name: "tavily", tool_name: "search" },
+				{ name: "read_page", mcp_client_id: "", mcp_client_name: "fetcher", tool_name: "fetch" },
+			],
 		});
 	});
 
-	it("never carries an id resolved for a different client name", () => {
-		expect(savedFormValues("exa", "search", { name: "tavily", id: "id-1" }).mcp_client_id).toBe("");
+	it("loads nothing for a provider without injected tools", () => {
+		expect(savedFormValues(undefined)).toEqual({ tools: [] });
+		expect(savedFormValues(null)).toEqual({ tools: [] });
+	});
+});
+
+describe("toInjectedTools", () => {
+	it("drops the picker-only client id", () => {
+		expect(toInjectedTools(saved)).toEqual([{ name: "web_search", mcp_client_name: "tavily", tool_name: "search" }]);
+	});
+
+	it("writes null for an empty table, which clears the provider's tools", () => {
+		expect(toInjectedTools({ tools: [] })).toBeNull();
+	});
+
+	it("appends empty rows", () => {
+		expect(emptyToolRow()).toEqual({ name: "", mcp_client_id: "", mcp_client_name: "", tool_name: "" });
+	});
+});
+
+describe("withResolvedClientId", () => {
+	const unresolved = savedFormValues([
+		{ name: "web_search", mcp_client_name: "tavily", tool_name: "search" },
+		{ name: "read_page", mcp_client_name: "fetcher", tool_name: "fetch" },
+	]);
+
+	it("fills only the row the id was resolved for", () => {
+		const next = withResolvedClientId(unresolved, 1, "fetcher", "id-f");
+		expect(next?.tools.map((tool) => tool.mcp_client_id)).toEqual(["", "id-f"]);
+	});
+
+	it("ignores an id for a row that was edited, removed or already resolved", () => {
+		expect(withResolvedClientId(unresolved, 1, "tavily", "id-t")).toBeNull();
+		expect(withResolvedClientId(unresolved, 5, "fetcher", "id-f")).toBeNull();
+		expect(withResolvedClientId(saved, 0, "tavily", "id-2")).toBeNull();
+	});
+});
+
+describe("tool names", () => {
+	it("suggests the MCP tool's own name, made safe for a provider", () => {
+		expect(defaultToolName("search")).toBe("search");
+		expect(defaultToolName("web.search v2")).toBe("web_search_v2");
+		expect(defaultToolName("x".repeat(80))).toHaveLength(64);
+	});
+
+	it("follows the tool until the user types a name", () => {
+		expect(prefilledName("", "", "search")).toBe("search");
+		expect(prefilledName("search", "search", "crawl")).toBe("crawl");
+		expect(prefilledName("web_search", "search", "crawl")).toBe("web_search");
+	});
+
+	it("drops a suggested name when the server changes, so the next tool suggests its own", () => {
+		// Pick search (suggested "search"), switch server, pick crawl: the row must end up "crawl".
+		const afterSwitch = nameAfterServerChange("search", "search");
+		expect(afterSwitch).toBe("");
+		expect(prefilledName(afterSwitch, "", "crawl")).toBe("crawl");
+	});
+
+	it("keeps a typed name when the server changes", () => {
+		expect(nameAfterServerChange("web_search", "search")).toBe("web_search");
+		expect(nameAfterServerChange("lookup", "")).toBe("lookup");
+		expect(nameAfterServerChange("", "search")).toBe("");
+	});
+
+	it("marks only web_search as replacing native web search", () => {
+		expect(replacesNativeWebSearch("web_search")).toBe(true);
+		expect(replacesNativeWebSearch("search")).toBe(false);
+		expect(replacesNativeWebSearch("Web_Search")).toBe(false);
 	});
 });
 describe("lookupSavedClient", () => {
