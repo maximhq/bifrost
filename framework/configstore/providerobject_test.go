@@ -2,6 +2,8 @@ package configstore
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"testing"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -110,6 +112,60 @@ func TestGetProviderJobsByFileIDs(t *testing.T) {
 	jobs, err = store.GetProviderJobsByFileIDs(ctx, "", []string{"file-in"})
 	require.NoError(t, err)
 	assert.Nil(t, jobs, "no provider, no lookup")
+}
+
+// A list filter looks up every item of a provider page, under every provider name that shares the
+// upstream, so one lookup can carry tens of thousands of ids: more than SQLite binds in one
+// statement (32766) and more than Postgres accepts (65535). The lookups split the ids across
+// queries, and a job that names files in two of those queries comes back once.
+func TestProviderLookupsAcceptMoreIDsThanOneStatementBinds(t *testing.T) {
+	store := setupProviderObjectTestStore(t)
+	ctx := context.Background()
+	const total = 40000
+	ids := make([]string, total)
+	fileIDs := make([]string, total)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("file:openai:file-%05d", i)
+		fileIDs[i] = fmt.Sprintf("file-%05d", i)
+	}
+
+	for _, i := range []int{0, 17000, total - 1} {
+		require.NoError(t, store.UpsertProviderObject(ctx, &tables.TableProviderObject{
+			ID: ids[i], Kind: tables.ProviderObjectKindFile, Provider: "openai", ObjectID: fileIDs[i], VirtualKeyID: "vk-a",
+		}))
+	}
+	objects, err := store.GetProviderObjectsByIDs(ctx, ids)
+	require.NoError(t, err)
+	got := make([]string, 0, len(objects))
+	for _, object := range objects {
+		got = append(got, object.ObjectID)
+	}
+	sort.Strings(got)
+	assert.Equal(t, []string{fileIDs[0], fileIDs[17000], fileIDs[total-1]}, got)
+
+	// The batch names its input file early in the list and its output file late, so the two
+	// matches fall in different queries.
+	output := fileIDs[total-1]
+	batch := &tables.TableProviderJob{
+		ID: tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "batch-wide"), Kind: tables.ProviderJobKindBatch,
+		Provider: "openai", JobID: "batch-wide", InputFileID: fileIDs[1], OutputFileID: &output,
+		AccountingStatus: tables.ProviderJobAccountingStatusPending,
+	}
+	require.NoError(t, store.UpsertProviderJob(ctx, batch))
+	jobs, err := store.GetProviderJobsByFileIDs(ctx, "openai", fileIDs)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1, "the batch is returned once though two queries matched it")
+	assert.Equal(t, "batch-wide", jobs[0].JobID)
+
+	jobIDs := make([]string, total)
+	for i := range jobIDs {
+		jobIDs[i] = tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", fmt.Sprintf("batch-%05d", i))
+	}
+	jobIDs[total-1] = batch.ID
+	jobs, err = store.GetProviderJobsByIDs(ctx, jobIDs)
+	require.NoError(t, err)
+	require.Len(t, jobs, 1)
+	assert.Equal(t, "batch-wide", jobs[0].JobID)
 }
 
 // A delete that names a full resource name by its last segment forgets the row the full name

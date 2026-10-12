@@ -487,6 +487,53 @@ func TestUpdateConfig_A2AExternalClientURLPresence(t *testing.T) {
 	assert.Empty(t, persisted.A2AExternalClientURL.GetValue())
 }
 
+// enforce_vk_object_ownership defaults to true when a body omits it, so the handler copies it only
+// when sent: a partial save from an API client must not turn a stored false back on.
+func TestUpdateConfig_EnforceVKObjectOwnershipPresence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.EnforceVKObjectOwnership = false
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() bool {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.EnforceVKObjectOwnership
+	}
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.False(t, cfg.ClientConfig.EnforceVKObjectOwnership, "an omitted field keeps the live value")
+	assert.False(t, stored(), "an omitted field keeps the stored value")
+
+	enabled := putConfigCtx(`{"client_config":{"log_retention_days":8,"enforce_vk_object_ownership":true}}`)
+	h.updateConfig(enabled)
+	require.Equal(t, fasthttp.StatusOK, enabled.Response.StatusCode(), string(enabled.Response.Body()))
+	assert.True(t, cfg.ClientConfig.EnforceVKObjectOwnership)
+	assert.True(t, stored())
+
+	disabled := putConfigCtx(`{"client_config":{"log_retention_days":8,"enforce_vk_object_ownership":false}}`)
+	h.updateConfig(disabled)
+	require.Equal(t, fasthttp.StatusOK, disabled.Response.StatusCode(), string(disabled.Response.Body()))
+	assert.False(t, cfg.ClientConfig.EnforceVKObjectOwnership)
+	assert.False(t, stored())
+	// null would decode as the default (true) and pass the presence check, so it is refused
+	// before anything changes; other non-boolean values already fail decoding.
+	for _, body := range []string{
+		`{"client_config":{"log_retention_days":8,"enforce_vk_object_ownership":null}}`,
+		`{"client_config":{"log_retention_days":8,"enforce_vk_object_ownership":"yes"}}`,
+	} {
+		refused := putConfigCtx(body)
+		h.updateConfig(refused)
+		assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), "%s: %s", body, refused.Response.Body())
+		assert.False(t, cfg.ClientConfig.EnforceVKObjectOwnership, "%s left the live value unchanged", body)
+		assert.False(t, stored(), "%s left the stored value unchanged", body)
+	}
+}
+
 // TestUpdateConfig_MCPOAuthPrivateAllowlist pins how PUT /api/config handles
 // mcp_oauth_private_allowlist: an authenticated admin sets it and it is
 // persisted; an omitted field keeps it; a caller admitted with auth bypassed
