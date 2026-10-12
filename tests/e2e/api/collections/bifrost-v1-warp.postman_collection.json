@@ -4668,7 +4668,7 @@
     {
       "id": "folder-topics",
       "name": "Topics",
-      "description": "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with topic names left unlinked - a name linked to a single example says how many requests the topic holds and opens one. What it still cannot show - every request in a topic, a count of people - is declined with the feature-request link, without rebuilding a breakdown by slicing the logs with other tools.",
+      "description": "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with each topic's name linked to its own requests in the Logs view - never to a single example, which says how many requests the topic holds and opens one. The requests behind a topic are reached through the topic_ids filter the other tools take. What topics still cannot show - a count of people - is declined with the feature-request link, without rebuilding a breakdown by slicing the logs.",
       "item": [
         {
           "id": "topics-overview",
@@ -4680,7 +4680,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Lists what people ask about from the topic clusters\",\"ask\":\"What are people asking about the most, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerAll\":[\"\\\\brequests?\\\\b\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
+                  "warp.prerequest({\"name\":\"Lists what people ask about from the topic clusters\",\"ask\":\"What are people asking about the most, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerAll\":[\"\\\\brequests?\\\\b\",\"\\\\]\\\\([^)]*topic_ids=\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
                 ]
               }
             },
@@ -4690,7 +4690,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Lists what people ask about from the topic clusters\",\"ask\":\"What are people asking about the most, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerAll\":[\"\\\\brequests?\\\\b\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
+                  "warp.test({\"name\":\"Lists what people ask about from the topic clusters\",\"ask\":\"What are people asking about the most, across the whole deployment?\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerAll\":[\"\\\\brequests?\\\\b\",\"\\\\]\\\\([^)]*topic_ids=\"],\"answerNone\":[\"\\\\|\\\\s*\\\\[[^\\\\]|]+\\\\]\\\\([^)]*selected_log=\",\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
                 ]
               }
             }
@@ -4822,7 +4822,7 @@
         },
         {
           "id": "topics-drill-down",
-          "name": "Declines to list every request in a topic",
+          "name": "Lists the requests in a topic through the topic filter",
           "event": [
             {
               "listen": "prerequest",
@@ -4830,7 +4830,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.prerequest({\"name\":\"Declines to list every request in a topic\",\"ask\":\"List every request in the largest topic.\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
+                  "warp.prerequest({\"name\":\"Lists the requests in a topic through the topic filter\",\"ask\":\"List the requests in the largest topic.\",\"expect\":{\"toolsAll\":[\"list_topics\",\"query_logs\"],\"maxToolCalls\":4,\"argsMatch\":[{\"tool\":\"query_logs\",\"pattern\":\"\\\"topic_ids\\\"\"}],\"answerNone\":[\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
                 ]
               }
             },
@@ -4840,7 +4840,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "var warp = eval('(' + pm.collectionVariables.get('warp_lib') + ')')(pm);",
-                  "warp.test({\"name\":\"Declines to list every request in a topic\",\"ask\":\"List every request in the largest topic.\",\"expect\":{\"toolsAll\":[\"list_topics\"],\"toolsOnly\":[\"list_topics\"],\"maxToolCalls\":1,\"answerAll\":[\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
+                  "warp.test({\"name\":\"Lists the requests in a topic through the topic filter\",\"ask\":\"List the requests in the largest topic.\",\"expect\":{\"toolsAll\":[\"list_topics\",\"query_logs\"],\"maxToolCalls\":4,\"argsMatch\":[{\"tool\":\"query_logs\",\"pattern\":\"\\\"topic_ids\\\"\"}],\"answerNone\":[\"github\\\\.com/maximhq/bifrost/issues/new\"]}});"
                 ]
               }
             }

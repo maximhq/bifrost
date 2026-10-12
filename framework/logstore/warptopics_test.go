@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -468,6 +469,65 @@ func TestWarpTopicAssignmentsRespectAccessScope(t *testing.T) {
 		topics, err := store.ListWarpTopics(scoped, WarpTopicFilter{})
 		require.NoError(t, err)
 		assert.Len(t, topics, 1)
+	})
+}
+
+// A topic filter on the logs API reaches the requests Warp filed under the
+// topic, through the assignments table, and counts a topic merged into it as
+// it. It composes with the other filters and the caller's scope like any
+// other predicate.
+func TestLogsFilterByWarpTopic(t *testing.T) {
+	forEachWarpTopicStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		base := warpTopicTestTime()
+		require.NoError(t, store.UpsertWarpTopics(ctx, []WarpTopic{
+			{ID: "billing", Label: "Billing", EmbeddingSignature: "sig"},
+			{ID: "invoices", Label: "Invoices", EmbeddingSignature: "sig", Status: WarpTopicStatusMerged, MergedInto: "billing"},
+			{ID: "sql", Label: "SQL", EmbeddingSignature: "sig"},
+		}))
+		rows := map[string]string{"b1": "billing", "b2": "billing", "i1": "invoices", "s1": "sql", "n1": "", "x1": "retired-topic"}
+		var assignments []WarpTopicAssignment
+		for id, topic := range rows {
+			entry := &Log{ID: id, Timestamp: base, CreatedAt: base, Object: "chat.completion", Status: "success", Provider: "openai", Model: "gpt-4o"}
+			if id == "b2" {
+				entry.Model = "claude"
+				team := "team-b"
+				entry.TeamID = &team
+			}
+			require.NoError(t, store.Create(ctx, entry))
+			assignments = append(assignments, warpTestAssignment(id, topic, base))
+		}
+		// A request that was indexed by nothing has no assignment at all.
+		require.NoError(t, store.Create(ctx, &Log{ID: "unindexed", Timestamp: base, CreatedAt: base, Object: "chat.completion", Status: "success"}))
+		require.NoError(t, store.UpsertWarpTopicAssignments(ctx, assignments))
+
+		ids := func(filters SearchFilters) []string {
+			result, err := store.SearchLogs(ctx, filters, PaginationOptions{Limit: 50, SortBy: "timestamp", Order: "desc"})
+			require.NoError(t, err)
+			var out []string
+			for _, entry := range result.Logs {
+				out = append(out, entry.ID)
+			}
+			sort.Strings(out)
+			require.EqualValues(t, len(out), result.Pagination.TotalCount, "the count agrees with the rows")
+			return out
+		}
+		assert.Equal(t, []string{"b1", "b2", "i1"}, ids(SearchFilters{TopicIDs: []string{"billing"}}), "the merged topic's request counts under its survivor")
+		assert.Equal(t, []string{"b1", "b2", "i1", "s1"}, ids(SearchFilters{TopicIDs: []string{"billing", "sql"}}), "several topics union")
+		assert.Equal(t, []string{"b2"}, ids(SearchFilters{TopicIDs: []string{"billing"}, Models: []string{"claude"}}), "the other filters still narrow")
+		assert.Empty(t, ids(SearchFilters{TopicIDs: []string{"nothing"}}))
+		assert.Len(t, ids(SearchFilters{}), 7, "no topic filter hides nothing")
+
+		stats, err := store.GetStats(ctx, SearchFilters{TopicIDs: []string{"billing"}})
+		require.NoError(t, err)
+		assert.EqualValues(t, 3, stats.TotalRequests, "the totals read the same rows")
+
+		// The caller's scope applies to the log rows, as it does without a topic.
+		scoped := queryscope.WithQueryScope(ctx, func(db *gorm.DB) *gorm.DB { return db.Where("team_id IN ?", []string{"team-b"}) })
+		result, err := store.SearchLogs(scoped, SearchFilters{TopicIDs: []string{"billing"}}, PaginationOptions{Limit: 50})
+		require.NoError(t, err)
+		require.Len(t, result.Logs, 1)
+		assert.Equal(t, "b2", result.Logs[0].ID)
 	})
 }
 

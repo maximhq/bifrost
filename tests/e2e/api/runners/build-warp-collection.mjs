@@ -65,8 +65,12 @@ const FEATURE_LINK = "github\\.com/maximhq/bifrost/issues/new";
 // points - an unexpanded "chart-1" id alone would not match '"points"'.
 const CHART_BLOCK = ["```warp-chart", '"points":\\['];
 // A topic's name linked to one request: it says how many requests the topic
-// holds and opens one. Examples are linked; names are not.
+// holds and opens one. Names link to the topic's requests (TOPIC_LINKED);
+// examples are the only links to a single request.
 const TOPIC_NAME_LINKED = "\\|\\s*\\[[^\\]|]+\\]\\([^)]*selected_log=";
+// A link into the Logs view narrowed to a topic, which is what a topic's name
+// links to.
+const TOPIC_LINKED = "\\]\\([^)]*topic_ids=";
 // Wording of an off-topic decline - a greeting must never read like one.
 const REFUSAL_WORDING = ["only (answer|help with|discuss)", "outside (of )?(what|my)", "can['’]t help with that", "not able to help"];
 // A failures chart's "Open in Logs" must open the failures, not every request.
@@ -301,13 +305,13 @@ const FOLDERS = [
   {
     name: "Topics",
     description:
-      "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with topic names left unlinked - a name linked to a single example says how many requests the topic holds and opens one. What it still cannot show - every request in a topic, a count of people - is declined with the feature-request link, without rebuilding a breakdown by slicing the logs with other tools.",
+      "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with each topic's name linked to its own requests in the Logs view - never to a single example, which says how many requests the topic holds and opens one. The requests behind a topic are reached through the topic_ids filter the other tools take. What topics still cannot show - a count of people - is declined with the feature-request link, without rebuilding a breakdown by slicing the logs.",
     cases: [
       {
         id: "topics-overview",
         name: "Lists what people ask about from the topic clusters",
         ask: "What are people asking about the most, across the whole deployment?",
-        expect: { ...ONE_LIST_TOPICS, answerAll: ["\\brequests?\\b"], answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK] },
+        expect: { ...ONE_LIST_TOPICS, answerAll: ["\\brequests?\\b", TOPIC_LINKED], answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK] },
       },
       {
         id: "topics-past-day",
@@ -327,9 +331,14 @@ const FOLDERS = [
       },
       {
         id: "topics-drill-down",
-        name: "Declines to list every request in a topic",
-        ask: "List every request in the largest topic.",
-        expect: { ...ONE_LIST_TOPICS, answerAll: [FEATURE_LINK] },
+        name: "Lists the requests in a topic through the topic filter",
+        ask: "List the requests in the largest topic.",
+        expect: {
+          toolsAll: ["list_topics", "query_logs"],
+          maxToolCalls: 4,
+          argsMatch: [{ tool: "query_logs", pattern: "\"topic_ids\"" }],
+          answerNone: [FEATURE_LINK],
+        },
       },
       {
         id: "topics-people",

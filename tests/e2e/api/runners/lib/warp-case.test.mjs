@@ -139,14 +139,15 @@ test("toolsOnly rejects a forbidden call even when it failed", () => {
   assert.match(missed[0], /did not call list_topics/);
 });
 
-// Every topic case is answered from one list_topics call and nothing else: a
-// second call returns the same snapshot, and any other data tool is the model
-// rebuilding a breakdown the topics do not hold.
+// A topic case answered from the topics is one list_topics call and nothing
+// else: a second call returns the same answer, and any other data tool is the
+// model rebuilding a breakdown the topics do not hold. Drill-down is not one of
+// them - it reaches a topic's requests through query_logs' topic_ids filter.
 test("topic cases allow exactly one list_topics call and no other tool", () => {
   const { pm } = fakePm();
   const lib = createWarpLib(pm);
   const toolFailure = /tool calls, want at most|no use for|did not call/;
-  for (const id of ["topics-overview", "topics-past-day", "topics-trend", "topics-drill-down", "topics-people"]) {
+  for (const id of ["topics-overview", "topics-past-day", "topics-trend", "topics-people"]) {
     const { expect } = caseFromCollection(id);
     const tools = (calls) => lib.evaluate(answered("x", calls), expect).filter((f) => toolFailure.test(f));
     assert.deepStrictEqual(tools(["list_topics"]), [], `${id}: one list_topics call`);
