@@ -111,6 +111,20 @@ func TestResponses_AgentAPIForwardsExtraParamsAutomatically(t *testing.T) {
 	if got, want := capturedBody["max_steps"], float64(3); got != want {
 		t.Fatalf("expected max_steps=%v to be forwarded, got %v (body: %#v)", want, got, capturedBody)
 	}
+	// A fallback reuses this ctx, so the Agent API's passthrough must not outlive the attempt.
+	if got := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams); got != nil {
+		t.Fatalf("expected passthrough flag to be restored after the call, got %v", got)
+	}
+
+	// A caller-set value survives the attempt unchanged.
+	ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, false)
+	if _, bifrostErr := provider.Responses(ctx, key, req); bifrostErr != nil {
+		t.Fatalf("Responses returned error: %v", bifrostErr.Error.Message)
+	}
+	if got := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams); got != false {
+		t.Fatalf("expected caller's passthrough=false to be restored, got %v", got)
+	}
 }
 
 // TestResponses_AgentAPIForwardsPerplexitySpecificWebSearchFilters verifies that a
@@ -409,5 +423,8 @@ func TestResponsesStream_AgentAPIOmitsModelForPresetAndForwardsExtraParams(t *te
 	// The caller's own request object must not be mutated.
 	if req.Model != "preset" {
 		t.Fatalf("caller's request.Model was mutated: got %q, want \"preset\"", req.Model)
+	}
+	if got := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams); got != nil {
+		t.Fatalf("expected passthrough flag to be restored after the call, got %v", got)
 	}
 }

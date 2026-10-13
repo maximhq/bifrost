@@ -465,7 +465,7 @@ An explicit `model` always wins over a `preset`'s own default model (live-verifi
 
 | Tool `type` | Support | Notes |
 |-------------|---------|-------|
-| `web_search` | ✅ Extended | `filters.search_domain_filter`, `filters.search_recency_filter`, `filters.search_after_date_filter`, `filters.search_before_date_filter`, `filters.last_updated_after_filter`, `filters.last_updated_before_filter`, plus top-level `max_results`, `max_tokens`, `max_tokens_per_page` on `schemas.ResponsesToolWebSearch` / `ResponsesToolWebSearchFilters` |
+| `web_search` | ✅ Extended | `filters.search_domain_filter`, `filters.search_recency_filter`, `filters.search_after_date_filter`, `filters.search_before_date_filter`, `filters.last_updated_after_filter`, `filters.last_updated_before_filter`, plus top-level `max_results`, `max_tokens`, `max_tokens_per_page` on `schemas.ResponsesToolWebSearch` / `ResponsesToolWebSearchFilters`. The cross-provider `filters.allowed_domains` / `filters.blocked_domains` are mapped onto `search_domain_filter` (blocked entries get a `-` prefix; an explicit `search_domain_filter` wins, and the allowlist wins when both lists are set, since Perplexity accepts only one mode). `max_uses`, `time_range_filter`, `external_web_access` and `search_content_types` are dropped |
 | `fetch_url` | ✅ | `schemas.ResponsesToolTypeFetchURL` / `ResponsesToolFetchURL{MaxURLs}` |
 | `sandbox` | ✅ | `schemas.ResponsesToolTypeSandbox` (no configurable fields; code execution is driven by the prompt) |
 | `mcp` | ✅ | Already covered by Bifrost's generic `schemas.ResponsesToolMCP` (server_label, server_url, authorization, allowed_tools, defer_loading all match Perplexity's wire fields) |

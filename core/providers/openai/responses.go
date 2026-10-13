@@ -1380,6 +1380,45 @@ func isOpenAISupportedToolType(t schemas.ResponsesToolType, provider schemas.Mod
 	return false
 }
 
+// toPerplexityWebSearch returns a copy of webSearch shaped for Perplexity's Agent API
+// web_search tool (docs.perplexity.ai/docs/agent-api/tools/web-search). Perplexity
+// accepts its own superset of fields (search_domain_filter and the date/recency
+// filters, max_results, max_tokens, max_tokens_per_page), so those pass through. The
+// cross-provider domain lists are mapped onto search_domain_filter, which is either an
+// allowlist or a "-"-prefixed denylist but never both: an explicit native filter wins,
+// then AllowedDomains, then BlockedDomains, so a request carrying both generic lists
+// keeps the (still restrictive) allowlist. Fields only other providers understand
+// (Gemini time_range_filter, Anthropic max_uses, OpenAI external_web_access and
+// search_content_types) are dropped. The input is never mutated.
+func toPerplexityWebSearch(webSearch *schemas.ResponsesToolWebSearch) *schemas.ResponsesToolWebSearch {
+	out := *webSearch
+	out.MaxUses = nil
+	out.ExternalWebAccess = nil
+	out.SearchContentTypes = nil
+	if webSearch.Filters == nil {
+		return &out
+	}
+	filters := *webSearch.Filters
+	filters.TimeRangeFilter = nil
+	if len(filters.SearchDomainFilter) == 0 {
+		if len(filters.AllowedDomains) > 0 {
+			filters.SearchDomainFilter = append([]string(nil), filters.AllowedDomains...)
+		} else if len(filters.BlockedDomains) > 0 {
+			filters.SearchDomainFilter = make([]string, len(filters.BlockedDomains))
+			for i, domain := range filters.BlockedDomains {
+				if !strings.HasPrefix(domain, "-") {
+					domain = "-" + domain
+				}
+				filters.SearchDomainFilter[i] = domain
+			}
+		}
+	}
+	filters.AllowedDomains = nil
+	filters.BlockedDomains = nil
+	out.Filters = &filters
+	return &out
+}
+
 func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypesSupported bool, baseProvider schemas.ModelProvider) {
 	if len(resp.Tools) == 0 {
 		return
@@ -1409,26 +1448,8 @@ func (resp *OpenAIResponsesRequest) filterUnsupportedTools(webSearchContentTypes
 				newTool.ResponsesToolComputerUsePreview = newComputerUse
 				filteredTools = append(filteredTools, newTool)
 			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil && baseProvider == schemas.Perplexity {
-				// Perplexity's Agent API web_search tool accepts its own superset of
-				// fields (search_domain_filter, search_recency_filter, date filters,
-				// max_results, max_tokens, max_tokens_per_page — see
-				// docs.perplexity.ai/docs/agent-api/tools/web-search), so none of the
-				// OpenAI-specific stripping below applies. The one bridge still needed:
-				// AllowedDomains is Bifrost's cross-provider allow-list field, but
-				// Perplexity's wire format only understands search_domain_filter, so map
-				// it across (without clobbering an explicitly-set native value) and drop
-				// the field Perplexity doesn't recognize.
 				newTool := *tool
-				if filters := tool.ResponsesToolWebSearch.Filters; filters != nil && len(filters.AllowedDomains) > 0 {
-					newFilters := *filters
-					if len(newFilters.SearchDomainFilter) == 0 {
-						newFilters.SearchDomainFilter = append([]string(nil), filters.AllowedDomains...)
-					}
-					newFilters.AllowedDomains = nil
-					newWebSearch := *tool.ResponsesToolWebSearch
-					newWebSearch.Filters = &newFilters
-					newTool.ResponsesToolWebSearch = &newWebSearch
-				}
+				newTool.ResponsesToolWebSearch = toPerplexityWebSearch(tool.ResponsesToolWebSearch)
 				filteredTools = append(filteredTools, newTool)
 			} else if tool.Type == schemas.ResponsesToolTypeWebSearch && tool.ResponsesToolWebSearch != nil {
 				// Create a proper deep copy with new nested pointers to avoid mutating the original

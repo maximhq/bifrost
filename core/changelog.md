@@ -1,7 +1,7 @@
 - feat: Perplexity Agent API tools on the Responses API (sandbox, fetch_url, finance_search, people_search, extended web_search filters) with default ExtraParams passthrough for preset/max_steps (thanks [@hnoguchigr](https://github.com/hnoguchigr)!)
 - feat: Perplexity `perplexity/preset` model sentinel omits `model` from the wire so a `preset` selects Perplexity's own default model (thanks [@hnoguchigr](https://github.com/hnoguchigr)!)
 - fix: the generic OpenAI-compatible Responses tool filter keeps non-OpenAI tool types and fields for providers that support them, including custom providers backed by Perplexity (thanks [@hnoguchigr](https://github.com/hnoguchigr)!)
-- fix: Perplexity web_search maps the cross-provider `allowed_domains` filter onto its native `search_domain_filter` (thanks [@hnoguchigr](https://github.com/hnoguchigr)!)
+- fix: Perplexity web_search maps the cross-provider `allowed_domains` / `blocked_domains` filters onto its native allowlist / denylist `search_domain_filter` and drops other providers' web_search fields; Responses passthrough of Perplexity-only ExtraParams no longer leaks into fallback providers (thanks [@hnoguchigr](https://github.com/hnoguchigr)!)
 - fix: preserve Perplexity Agent API `skill_loaded` output items verbatim (thanks [@hnoguchigr](https://github.com/hnoguchigr)!)
 - feat: agent gateway runtime with A2A request, event and trace contracts, card discovery, A2A plugin pipeline, streaming, durable push delivery and opt-in private push callbacks; `schemas.Tracer` gains `ReleaseTrace`
 - feat: gpt live session schemas, live provider interface and openai implementation, with sideband attach routes, the `live_sideband` request type and delegation error recording

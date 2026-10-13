@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -2376,6 +2377,94 @@ func TestToOpenAIResponsesRequest_PerplexityWebSearchMapsAllowedDomainsToSearchD
 		}
 		if len(filters.AllowedDomains) != 0 {
 			t.Fatalf("expected AllowedDomains to still be cleared, got %v", filters.AllowedDomains)
+		}
+	})
+
+	t.Run("maps BlockedDomains onto denylist search_domain_filter entries", func(t *testing.T) {
+		bifrostReq := buildRequest(&schemas.ResponsesToolWebSearchFilters{
+			BlockedDomains: []string{"reddit.com", "-pinterest.com"},
+		})
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		filters := result.Tools[0].ResponsesToolWebSearch.Filters
+		if want := []string{"-reddit.com", "-pinterest.com"}; len(filters.SearchDomainFilter) != len(want) ||
+			filters.SearchDomainFilter[0] != want[0] || filters.SearchDomainFilter[1] != want[1] {
+			t.Fatalf("expected SearchDomainFilter=%v, got %v", want, filters.SearchDomainFilter)
+		}
+		if len(filters.BlockedDomains) != 0 {
+			t.Fatalf("expected BlockedDomains to be cleared, got %v", filters.BlockedDomains)
+		}
+		if got := bifrostReq.Params.Tools[0].ResponsesToolWebSearch.Filters.BlockedDomains; got[0] != "reddit.com" {
+			t.Fatalf("caller's BlockedDomains was mutated: %v", got)
+		}
+	})
+
+	// Perplexity's search_domain_filter is allowlist or denylist, never both, so a
+	// request carrying both lists keeps the allowlist (still restrictive) and drops
+	// the denylist instead of sending a mixed filter.
+	t.Run("allowlist wins when AllowedDomains and BlockedDomains are both set", func(t *testing.T) {
+		bifrostReq := buildRequest(&schemas.ResponsesToolWebSearchFilters{
+			AllowedDomains: []string{"wikipedia.org"},
+			BlockedDomains: []string{"reddit.com"},
+		})
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		filters := result.Tools[0].ResponsesToolWebSearch.Filters
+		if len(filters.SearchDomainFilter) != 1 || filters.SearchDomainFilter[0] != "wikipedia.org" {
+			t.Fatalf("expected allowlist-only SearchDomainFilter, got %v", filters.SearchDomainFilter)
+		}
+		if len(filters.AllowedDomains) != 0 || len(filters.BlockedDomains) != 0 {
+			t.Fatalf("expected generic domain lists to be cleared, got %+v", filters)
+		}
+	})
+
+	t.Run("native search_domain_filter wins over BlockedDomains", func(t *testing.T) {
+		bifrostReq := buildRequest(&schemas.ResponsesToolWebSearchFilters{
+			BlockedDomains:     []string{"reddit.com"},
+			SearchDomainFilter: []string{"nasa.gov"},
+		})
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		filters := result.Tools[0].ResponsesToolWebSearch.Filters
+		if len(filters.SearchDomainFilter) != 1 || filters.SearchDomainFilter[0] != "nasa.gov" {
+			t.Fatalf("expected native SearchDomainFilter to win, got %v", filters.SearchDomainFilter)
+		}
+		if len(filters.BlockedDomains) != 0 {
+			t.Fatalf("expected BlockedDomains to be cleared, got %v", filters.BlockedDomains)
+		}
+	})
+
+	t.Run("drops other providers' web_search fields and keeps Perplexity's", func(t *testing.T) {
+		bifrostReq := buildRequest(&schemas.ResponsesToolWebSearchFilters{
+			TimeRangeFilter:     &schemas.Interval{StartTime: time.Unix(0, 0), EndTime: time.Unix(1, 0)},
+			SearchRecencyFilter: schemas.Ptr("week"),
+		})
+		webSearch := bifrostReq.Params.Tools[0].ResponsesToolWebSearch
+		webSearch.MaxUses = schemas.Ptr(3)
+		webSearch.ExternalWebAccess = schemas.Ptr(true)
+		webSearch.SearchContentTypes = []string{"text"}
+		webSearch.SearchContextSize = schemas.Ptr("high")
+		webSearch.MaxResults = schemas.Ptr(5)
+		webSearch.UserLocation = &schemas.ResponsesToolWebSearchUserLocation{Country: schemas.Ptr("US")}
+
+		result := ToOpenAIResponsesRequest(nil, bifrostReq)
+		data, err := json.Marshal(result.Tools[0])
+		if err != nil {
+			t.Fatalf("marshal failed: %v", err)
+		}
+		body := string(data)
+		for _, dropped := range []string{"time_range_filter", "max_uses", "external_web_access", "search_content_types"} {
+			if strings.Contains(body, dropped) {
+				t.Fatalf("expected %s to be absent from the wire payload, got %s", dropped, body)
+			}
+		}
+		for _, kept := range []string{`"search_recency_filter":"week"`, `"search_context_size":"high"`, `"max_results":5`, `"user_location":{`} {
+			if !strings.Contains(body, kept) {
+				t.Fatalf("expected %s on the wire payload, got %s", kept, body)
+			}
+		}
+		if webSearch.MaxUses == nil || webSearch.Filters.TimeRangeFilter == nil {
+			t.Fatal("caller's web_search tool was mutated")
 		}
 	})
 

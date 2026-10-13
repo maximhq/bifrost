@@ -246,7 +246,9 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 // (docs.perplexity.ai/docs/agent-api/quickstart), so this is also the Agent API path.
 // Agent-only fields with no typed Bifrost equivalent (e.g. `preset`, `max_steps`) are
 // forwarded as-is via ExtraParams; passthrough is always on for this path so callers
-// don't need the x-bf-passthrough-extra-params header just to reach them.
+// don't need the x-bf-passthrough-extra-params header just to reach them. The caller's
+// value is restored on return, since a fallback provider reuses this ctx and must not
+// inherit Perplexity-only ExtraParams.
 func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	if !isPerplexityResponsesSupported(schemas.ResolveCanonicalModel(ctx, request.Model)) {
 		chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
@@ -256,7 +258,9 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 		return chatResponse.ToBifrostResponsesResponse(), nil
 	}
 
+	previousPassthrough := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, previousPassthrough)
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
@@ -323,7 +327,9 @@ func (provider *PerplexityProvider) ResponsesStream(ctx *schemas.BifrostContext,
 		)
 	}
 
+	previousPassthrough := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams)
 	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	defer ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, previousPassthrough)
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
