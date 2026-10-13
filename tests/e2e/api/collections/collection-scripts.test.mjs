@@ -314,6 +314,50 @@ test("proxy teardown runs in the authenticated pass and disables the proxy for e
   assert.strictEqual(body.enable_for_api, false);
 });
 
+// ── Governance - VK Allow All Providers / per-provider catalog counts ─────────
+function modelsBody(provider, n) {
+  const models = Array.from({ length: n }, (_, i) => ({ name: `${provider}-m${i}`, provider }));
+  return JSON.stringify({ models, total: n });
+}
+
+test("allow-all baselines store each provider's filtered count, not a share of one capped page", () => {
+  for (const provider of ["anthropic", "openai"]) {
+    const src = scriptFor(`Governance - VK Allow All Providers / Baseline - ${provider} catalog size with no VK`, "test");
+    const ctx = run(src, { responseBody: modelsBody(provider, 26) });
+    assert.strictEqual(ctx.vars[`vkall_base_${provider}`], "26");
+  }
+});
+
+test("allow-all baselines and VK checks survive a non-JSON body without a script error", () => {
+  for (const name of [
+    "Baseline - anthropic catalog size with no VK",
+    "Baseline - openai catalog size with no VK",
+    "/api/models/details - unnamed provider is granted in full",
+    "/api/models/details - overridden provider stays narrowed",
+  ]) {
+    const ctx = run(scriptFor(`Governance - VK Allow All Providers / ${name}`, "test"), {
+      responseBody: SPA_FALLBACK,
+      variables: { vkall_base_anthropic: "26", vkall_base_openai: "163" },
+    });
+    assert.ok(ctx.state.tests.length > 0, `${name} must reach its named assertions`);
+  }
+});
+
+test("allow-all VK checks query one provider each", () => {
+  const folder = collection.item.find((f) => f.name === "Governance - VK Allow All Providers");
+  for (const [name, provider] of [
+    ["Baseline - anthropic catalog size with no VK", "anthropic"],
+    ["Baseline - openai catalog size with no VK", "openai"],
+    ["/api/models/details - unnamed provider is granted in full", "anthropic"],
+    ["/api/models/details - overridden provider stays narrowed", "openai"],
+  ]) {
+    const item = folder.item.find((i) => i.name === name);
+    assert.ok(item, `request not found: ${name}`);
+    const q = Object.fromEntries(item.request.url.query.map((p) => [p.key, p.value]));
+    assert.strictEqual(q.provider, provider, `${name} must filter by provider`);
+  }
+});
+
 // ── MCP Clients / Add MCP Client and its dependents ───────────────────────────
 const addMCPClientTest = scriptFor("MCP Clients / Add MCP Client", "test");
 

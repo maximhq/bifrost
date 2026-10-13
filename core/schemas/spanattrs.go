@@ -284,6 +284,9 @@ func (d *LLMSpanData) appendResponseEnvelope(attrs map[string]any) {
 		setIfNotEmpty(attrs, AttrServiceTier, d.ServiceTier)
 		d.appendOutputMessagesJSON(attrs, AttrOutputMessages)
 		d.appendResponsesEcho(attrs)
+		if len(d.FinishReasons) > 0 {
+			attrs[AttrFinishReasons] = d.FinishReasons
+		}
 
 	case TextCompletionRequest, TextCompletionStreamRequest:
 		attrs[AttrResponseID] = d.ResponseID
