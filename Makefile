@@ -600,6 +600,7 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 	fi; \
 	TEST_FAILED=0; \
 	REPORT_FILE=""; \
+	SAFE_PATTERN=$$(printf '%s' "$(PATTERN)" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_'); \
 	if [ -n "$(PROVIDER)" ]; then \
 		$(ECHO) "$(CYAN)Running tests for provider: $(PROVIDER)$(NC)"; \
 		if [ ! -f "core/providers/$(PROVIDER)/$(PROVIDER)_test.go" ]; then \
@@ -621,21 +622,22 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			CLEAN_TESTCASE=$${CLEAN_TESTCASE#$${PROVIDER_TEST_NAME}Tests/}; \
 			CLEAN_TESTCASE=$$($(ECHO) "$$CLEAN_TESTCASE" | sed 's|^Test[A-Z][A-Za-z]*/[A-Z][A-Za-z]*Tests/||'); \
 			$(ECHO) "$(CYAN)Running Test$${PROVIDER_TEST_NAME}/$${PROVIDER_TEST_NAME}Tests/$$CLEAN_TESTCASE...$(NC)"; \
-			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER)-$$(echo $$CLEAN_TESTCASE | sed 's|/|_|g').xml"; \
+			SAFE_TESTCASE=$$(printf '%s' "$$CLEAN_TESTCASE" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_'); \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER)-$$SAFE_TESTCASE.xml"; \
 			if [ -n "$(DEBUG)" ]; then \
 				cd core/providers/$(PROVIDER) && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
 			else \
 				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
-					--junitfile=../../../$$REPORT_FILE \
+					--junitfile="../../../$$REPORT_FILE" \
 					-- -v -timeout 20m -run "^Test$${PROVIDER_TEST_NAME}$$/.*Tests/$$CLEAN_TESTCASE$$" || TEST_FAILED=1; \
 			fi; \
 			cd ../../..; \
-			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+			$(MAKE) cleanup-junit-xml REPORT_FILE="$$REPORT_FILE"; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 				if which junit-viewer > /dev/null 2>&1; then \
 					$(ECHO) "$(YELLOW)Generating HTML report...$(NC)"; \
-					junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+					junit-viewer --results="$$REPORT_FILE" --save="$${REPORT_FILE%.xml}.html" 2>/dev/null || true; \
 					$(ECHO) ""; \
 					$(ECHO) "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
 					$(ECHO) "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
@@ -649,21 +651,21 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			fi; \
 		elif [ -n "$(PATTERN)" ]; then \
 			$(ECHO) "$(CYAN)Running tests matching '$(PATTERN)' for $${PROVIDER_TEST_NAME}...$(NC)"; \
-			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER)-$(PATTERN).xml"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/core-$(PROVIDER)-$$SAFE_PATTERN.xml"; \
 			if [ -n "$(DEBUG)" ]; then \
 				cd core/providers/$(PROVIDER) && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
 			else \
 				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
-					--junitfile=../../../$$REPORT_FILE \
+					--junitfile="../../../$$REPORT_FILE" \
 					-- -v -timeout 20m -run ".*$(PATTERN).*" || TEST_FAILED=1; \
 			fi; \
 			cd ../../..; \
-			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+			$(MAKE) cleanup-junit-xml REPORT_FILE="$$REPORT_FILE"; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 				if which junit-viewer > /dev/null 2>&1; then \
 					$(ECHO) "$(YELLOW)Generating HTML report...$(NC)"; \
-					junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+					junit-viewer --results="$$REPORT_FILE" --save="$${REPORT_FILE%.xml}.html" 2>/dev/null || true; \
 					$(ECHO) ""; \
 					$(ECHO) "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
 					$(ECHO) "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
@@ -683,15 +685,15 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			else \
 				cd core/providers/$(PROVIDER) && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
-					--junitfile=../../../$$REPORT_FILE \
+					--junitfile="../../../$$REPORT_FILE" \
 					-- -v -timeout 20m -run "^Test$${PROVIDER_TEST_NAME}$$" || TEST_FAILED=1; \
 			fi; \
 			cd ../../..; \
-			$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+			$(MAKE) cleanup-junit-xml REPORT_FILE="$$REPORT_FILE"; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 				if which junit-viewer > /dev/null 2>&1; then \
 					$(ECHO) "$(YELLOW)Generating HTML report...$(NC)"; \
-					junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+					junit-viewer --results="$$REPORT_FILE" --save="$${REPORT_FILE%.xml}.html" 2>/dev/null || true; \
 					$(ECHO) ""; \
 					$(ECHO) "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
 					$(ECHO) "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
@@ -712,13 +714,13 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 		fi; \
 		if [ -n "$(PATTERN)" ]; then \
 			$(ECHO) "$(CYAN)Running tests matching '$(PATTERN)' across core and all providers...$(NC)"; \
-			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all-$(PATTERN).xml"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/core-all-$$SAFE_PATTERN.xml"; \
 			if [ -n "$(DEBUG)" ]; then \
 				cd core && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 . ./providers/... -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
 			else \
 				cd core && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
-					--junitfile=../$$REPORT_FILE \
+					--junitfile="../$$REPORT_FILE" \
 					-- -v -timeout 20m -run ".*$(PATTERN).*" . ./providers/... || TEST_FAILED=1; \
 			fi; \
 		else \
@@ -728,16 +730,16 @@ test-core: install-gotestsum $(if $(DEBUG),install-delve) ## Run core tests (Usa
 			else \
 				cd core && GOWORK=off gotestsum \
 					--format=$(GOTESTSUM_FORMAT) \
-					--junitfile=../$$REPORT_FILE \
+					--junitfile="../$$REPORT_FILE" \
 					-- -v ./providers/... || TEST_FAILED=1; \
 			fi; \
 		fi; \
 		cd ..; \
-		$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+		$(MAKE) cleanup-junit-xml REPORT_FILE="$$REPORT_FILE"; \
 		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 			if which junit-viewer > /dev/null 2>&1; then \
 				$(ECHO) "$(YELLOW)Generating HTML report...$(NC)"; \
-				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				junit-viewer --results="$$REPORT_FILE" --save="$${REPORT_FILE%.xml}.html" 2>/dev/null || true; \
 				$(ECHO) ""; \
 				$(ECHO) "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
 				$(ECHO) "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
@@ -992,27 +994,29 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 	fi; \
 	TEST_FAILED=0; \
 	REPORT_FILE=""; \
+	SAFE_PATTERN=$$(printf '%s' "$(PATTERN)" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_'); \
+	SAFE_TESTCASE=$$(printf '%s' "$(TESTCASE)" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_'); \
 	if [ -n "$(DEBUG)" ]; then \
 		$(ECHO) "$(CYAN)Debug mode enabled - delve debugger will listen on port 2345$(NC)"; \
 		$(ECHO) "$(YELLOW)Attach your debugger to localhost:2345$(NC)"; \
 	fi; \
 	if [ -n "$(TESTCASE)" ]; then \
 		$(ECHO) "$(CYAN)Running test case: $(TESTCASE)$(NC)"; \
-		REPORT_FILE="$(TEST_REPORTS_DIR)/governance-$$(echo $(TESTCASE) | sed 's|/|_|g').xml"; \
+		REPORT_FILE="$(TEST_REPORTS_DIR)/governance-$$SAFE_TESTCASE.xml"; \
 		if [ -n "$(DEBUG)" ]; then \
 			cd tests/governance && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run "^$(TESTCASE)$$" || TEST_FAILED=1; \
 		else \
 			cd tests/governance && GOWORK=off gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../$$REPORT_FILE \
+				--junitfile="../../$$REPORT_FILE" \
 				-- -v -run "^$(TESTCASE)$$" || TEST_FAILED=1; \
 		fi; \
 		cd ../..; \
-		$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+		$(MAKE) cleanup-junit-xml REPORT_FILE="$$REPORT_FILE"; \
 		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 			if which junit-viewer > /dev/null 2>&1; then \
 				$(ECHO) "$(YELLOW)Generating HTML report...$(NC)"; \
-				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				junit-viewer --results="$$REPORT_FILE" --save="$${REPORT_FILE%.xml}.html" 2>/dev/null || true; \
 				$(ECHO) ""; \
 				$(ECHO) "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
 				$(ECHO) "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
@@ -1026,21 +1030,21 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 		fi; \
 	elif [ -n "$(PATTERN)" ]; then \
 		$(ECHO) "$(CYAN)Running tests matching '$(PATTERN)'...$(NC)"; \
-		REPORT_FILE="$(TEST_REPORTS_DIR)/governance-$(PATTERN).xml"; \
+		REPORT_FILE="$(TEST_REPORTS_DIR)/governance-$$SAFE_PATTERN.xml"; \
 		if [ -n "$(DEBUG)" ]; then \
 			cd tests/governance && GOWORK=off dlv test --headless --listen=:2345 --api-version=2 -- -test.v -test.run ".*$(PATTERN).*" || TEST_FAILED=1; \
 		else \
 			cd tests/governance && GOWORK=off gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../$$REPORT_FILE \
+				--junitfile="../../$$REPORT_FILE" \
 				-- -v -run ".*$(PATTERN).*" || TEST_FAILED=1; \
 		fi; \
 		cd ../..; \
-		$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+		$(MAKE) cleanup-junit-xml REPORT_FILE="$$REPORT_FILE"; \
 		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 			if which junit-viewer > /dev/null 2>&1; then \
 				$(ECHO) "$(YELLOW)Generating HTML report...$(NC)"; \
-				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				junit-viewer --results="$$REPORT_FILE" --save="$${REPORT_FILE%.xml}.html" 2>/dev/null || true; \
 				$(ECHO) ""; \
 				$(ECHO) "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
 				$(ECHO) "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
@@ -1060,15 +1064,15 @@ test-governance: install-gotestsum $(if $(DEBUG),install-delve) ## Run governanc
 		else \
 			cd tests/governance && GOWORK=off gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../$$REPORT_FILE \
+				--junitfile="../../$$REPORT_FILE" \
 				-- -v || TEST_FAILED=1; \
 		fi; \
 		cd ../..; \
-		$(MAKE) cleanup-junit-xml REPORT_FILE=$$REPORT_FILE; \
+		$(MAKE) cleanup-junit-xml REPORT_FILE="$$REPORT_FILE"; \
 		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 			if which junit-viewer > /dev/null 2>&1; then \
 				$(ECHO) "$(YELLOW)Generating HTML report...$(NC)"; \
-				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				junit-viewer --results="$$REPORT_FILE" --save="$${REPORT_FILE%.xml}.html" 2>/dev/null || true; \
 				$(ECHO) ""; \
 				$(ECHO) "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
 				$(ECHO) "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
@@ -1176,6 +1180,8 @@ test-mcp: install-gotestsum setup-mcp-tests ## Run MCP tests (Usage: make test-m
 	fi; \
 	TEST_FAILED=0; \
 	REPORT_FILE=""; \
+	SAFE_PATTERN=$$(printf '%s' "$(PATTERN)" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_'); \
+	SAFE_TESTCASE=$$(printf '%s' "$(TESTCASE)" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_'); \
 	if [ -n "$(TYPE)" ]; then \
 		TYPE_CLEAN=$$(echo $(TYPE) | sed 's/_test\.go$$//'); \
 		TEST_FILE="core/internal/mcptests/$${TYPE_CLEAN}_test.go"; \
@@ -1188,33 +1194,31 @@ test-mcp: install-gotestsum setup-mcp-tests ## Run MCP tests (Usage: make test-m
 		TEST_PATTERN=$$(grep -h "^func Test" $$TEST_FILE 2>/dev/null | sed 's/func \(Test[^(]*\).*/\1/' | paste -sd '|' - || $(ECHO) "^Test"); \
 		if [ -n "$(TESTCASE)" ]; then \
 			$(ECHO) "$(CYAN)Running $(TYPE) test: $(TESTCASE)...$(NC)"; \
-			SAFE_TESTCASE=$$($(ECHO) "$(TESTCASE)" | sed 's|/|_|g'); \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-$(TYPE)-$$SAFE_TESTCASE.xml"; \
 			cd core/internal/mcptests && GOWORK=off gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../../$$REPORT_FILE \
+				--junitfile="../../../$$REPORT_FILE" \
 				-- -v -race -run "^$(TESTCASE)$$" . || TEST_FAILED=1; \
 		elif [ -n "$(PATTERN)" ]; then \
 			$(ECHO) "$(CYAN)Running $(TYPE) tests matching '$(PATTERN)'...$(NC)"; \
-			SAFE_PATTERN=$$($(ECHO) "$(PATTERN)" | sed 's|/|_|g'); \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-$(TYPE)-$$SAFE_PATTERN.xml"; \
 			cd core/internal/mcptests && GOWORK=off gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../../$$REPORT_FILE \
+				--junitfile="../../../$$REPORT_FILE" \
 				-- -v -race -run ".*$(PATTERN).*" . || TEST_FAILED=1; \
 		else \
 			$(ECHO) "$(CYAN)Running all $(TYPE) tests (pattern: $$TEST_PATTERN)...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-$(TYPE).xml"; \
 			cd core/internal/mcptests && GOWORK=off gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../../$$REPORT_FILE \
+				--junitfile="../../../$$REPORT_FILE" \
 				-- -v -race -run "$$TEST_PATTERN" . || TEST_FAILED=1; \
 		fi; \
 		cd ../../..; \
 		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 			if which junit-viewer > /dev/null 2>&1; then \
 				$(ECHO) "$(YELLOW)Generating HTML report...$(NC)"; \
-				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				junit-viewer --results="$$REPORT_FILE" --save="$${REPORT_FILE%.xml}.html" 2>/dev/null || true; \
 				$(ECHO) ""; \
 				$(ECHO) "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
 				$(ECHO) "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
@@ -1229,31 +1233,31 @@ test-mcp: install-gotestsum setup-mcp-tests ## Run MCP tests (Usage: make test-m
 	else \
 		if [ -n "$(TESTCASE)" ]; then \
 			$(ECHO) "$(CYAN)Running test case: $(TESTCASE) across all MCP tests...$(NC)"; \
-			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all-$(TESTCASE).xml"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all-$$SAFE_TESTCASE.xml"; \
 			cd core/internal/mcptests && GOWORK=off gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../../$$REPORT_FILE \
+				--junitfile="../../../$$REPORT_FILE" \
 				-- -v -race -run "^$(TESTCASE)$$" || TEST_FAILED=1; \
 		elif [ -n "$(PATTERN)" ]; then \
 			$(ECHO) "$(CYAN)Running tests matching '$(PATTERN)' across all MCP tests...$(NC)"; \
-			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all-$(PATTERN).xml"; \
+			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all-$$SAFE_PATTERN.xml"; \
 			cd core/internal/mcptests && GOWORK=off gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../../$$REPORT_FILE \
+				--junitfile="../../../$$REPORT_FILE" \
 				-- -v -race -run ".*$(PATTERN).*" || TEST_FAILED=1; \
 		else \
 			$(ECHO) "$(CYAN)Running all MCP tests...$(NC)"; \
 			REPORT_FILE="$(TEST_REPORTS_DIR)/mcp-all.xml"; \
 			cd core/internal/mcptests && GOWORK=off gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
-				--junitfile=../../../$$REPORT_FILE \
+				--junitfile="../../../$$REPORT_FILE" \
 				-- -v -race || TEST_FAILED=1; \
 		fi; \
 		cd ../../..; \
 		if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 			if which junit-viewer > /dev/null 2>&1; then \
 				$(ECHO) "$(YELLOW)Generating HTML report...$(NC)"; \
-				junit-viewer --results=$$REPORT_FILE --save=$${REPORT_FILE%.xml}.html 2>/dev/null || true; \
+				junit-viewer --results="$$REPORT_FILE" --save="$${REPORT_FILE%.xml}.html" 2>/dev/null || true; \
 				$(ECHO) ""; \
 				$(ECHO) "$(CYAN)HTML report: $${REPORT_FILE%.xml}.html$(NC)"; \
 				$(ECHO) "$(CYAN)Open with: open $${REPORT_FILE%.xml}.html$(NC)"; \
