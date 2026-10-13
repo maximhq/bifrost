@@ -17,6 +17,10 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 
 <Note>Old virtual keys(without `sk-bf-*` prefix) are only supported by `x-bf-vk` header.</Note>
 
+<Info>
+**Enterprise: IdP tokens are also accepted.** Virtual keys remain the standard way to authenticate. On Bifrost Enterprise with [SSO configured](/enterprise/user-provisioning), you can also authenticate with a token issued by your identity provider: `Authorization: Bearer <idp-token>`. Bifrost validates the token and attributes the request to that user, applying their access profile, budgets, and rate limits. Use the `Authorization` header for IdP tokens; the other headers above carry virtual keys only. See [Setting up auth](/quickstart/gateway/setting-up-auth#api-calls) for details.
+</Info>
+
 **Key Features:**
 - **Access Control** - Model and provider filtering
 - **Cost Management** - Independent budgets (checked along with team/customer budgets if attached)
@@ -866,7 +870,7 @@ Virtual keys and HTTP authentication are **independent layers** that can work to
 
 | Layer | Purpose | Headers |
 |-------|---------|---------|
-| **Authentication** | Validates user identity | `Authorization: Basic/Bearer <credentials>` |
+| **Authentication** | Validates user identity | `Authorization: Basic/Bearer <credentials>`, or on Enterprise, `Authorization: Bearer <idp-token>` |
 | **Virtual Keys** | Request routing and governance | `x-bf-vk`, `Authorization`[^1], `x-api-key`, `x-goog-api-key` |
 
 [^1]: Authorization can carry virtual keys only when auth is disabled (`disable_auth_on_inference: true`). When auth is enabled, Authorization is consumed by authentication and cannot be used for virtual keys.

@@ -2,15 +2,14 @@ package handlers
 
 import (
 	"strings"
-	"time"
 
 	"github.com/fasthttp/router"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/pion/webrtc/v4"
 	"github.com/valyala/fasthttp"
 )
@@ -226,11 +225,8 @@ func (m *liveWebRTCMessages) fromProvider(r *webrtcRelay, msg webrtc.DataChannel
 	sessionClosed := m.fromUpstream(msg.Data)
 	m.forwardToClient(msg.Data)
 	if sessionClosed {
-		// Let session.closed reach the browser before the relay goes.
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			r.close()
-		}()
+		// The relay drains browser output before closing the data channel.
+		go r.close()
 	}
 }
 
@@ -247,8 +243,5 @@ func (m *liveWebRTCMessages) closed() {
 	if m.relay.closedDuringSetup() {
 		return
 	}
-	if m.upstreamEndedEarly() {
-		// Let the frame reach the browser before the relay closes the channel.
-		time.Sleep(100 * time.Millisecond)
-	}
+	m.upstreamEndedEarly()
 }

@@ -1911,6 +1911,8 @@ jobs:
           BIFROST_SETUP_TOKEN: bifrost-e2e-setup-token
           # Synthetic, non-secret canary for every provider's API redaction tests.
           BIFROST_SECRET_REDACTION_CANARY: synthetic-secretvar-harness-canary-0123456789
+          # Key server URLs (ollama/sgl/vllm) must resolve to http(s), so they use a URL canary.
+          BIFROST_SECRET_REDACTION_URL_CANARY: http://127.0.0.1/synthetic-secretvar-harness-canary-0123456789
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

@@ -368,6 +368,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	mcpserver "github.com/mark3labs/mcp-go/server"
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -386,6 +389,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"sync/atomic"
 )
 
 // First-admin file setup must default inference auth on without changing existing
@@ -3546,6 +3550,34 @@ func TestSourceOfTruthConfigJSON_MCPPresentEmptyPrunesDB(t *testing.T) {
 	require.NotNil(t, cfg.MCPConfig)
 	require.Empty(t, cfg.MCPConfig.ClientConfigs)
 	require.Empty(t, store.mcpConfig.ClientConfigs)
+}
+
+// TestSourceOfTruthConfigJSON_InvalidOpenAPIDeclarationKeepsStoredClient: when
+// an existing OpenAPI client's declaration in config.json cannot be prepared
+// (its document no longer parses), the stored client and its last valid
+// configuration are kept instead of the client being pruned.
+func TestSourceOfTruthConfigJSON_InvalidOpenAPIDeclarationKeepsStoredClient(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+		ID: "openapi-db", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
+		OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "stored valid document"},
+	}}}
+	cfg := &Config{ConfigStore: store}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
+			OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "not: openapi"},
+		}}},
+	}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.Len(t, store.mcpConfig.ClientConfigs, 1, "the stored client must not be pruned")
+	require.NotNil(t, cfg.MCPConfig)
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
+	assert.Equal(t, "stored valid document", cfg.MCPConfig.ClientConfigs[0].OpenAPIConfig.Spec, "the runtime keeps the last valid configuration")
 }
 
 // TestLoadConfig_Governance_Merge tests governance config merge from DB and file
@@ -25218,4 +25250,133 @@ func TestReconcileProviderKeys_LegacyAliasHashKeepsStoredEdits(t *testing.T) {
 		require.Len(t, merged, 1)
 		require.Equal(t, float64(2), merged[0].Weight, "a changed config.json must still replace the stored key")
 	})
+}
+
+// TestPrepareOpenAPIClientFromFile covers how an openapi client declared in
+// config.json is normalized at load: spec_file is read relative to the config
+// directory and inlined, the server-computed metadata is filled from a parse,
+// a spec_url-only entry is left for connect time, and the auth types the
+// synthesized server cannot honor are refused.
+func TestPrepareOpenAPIClientFromFile(t *testing.T) {
+	dir := t.TempDir()
+	spec := "openapi: 3.0.3\ninfo:\n  title: Petstore\n  version: 1.0.0\nservers:\n  - url: https://petstore.example.com/v1\npaths:\n  /pets:\n    get:\n      operationId: listPets\n      responses:\n        '200':\n          description: ok\n"
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "specs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "specs", "petstore.yaml"), []byte(spec), 0o644))
+	str := func(s string) *string { return &s }
+
+	fromFile := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("specs/petstore.yaml")}}
+	require.NoError(t, prepareOpenAPIClientFromFile(fromFile, dir))
+	assert.Equal(t, spec, fromFile.OpenAPIConfig.Spec, "spec_file is inlined so the persisted row carries the document")
+	assert.Equal(t, "Petstore", fromFile.OpenAPIConfig.SpecTitle)
+	assert.Equal(t, "3.0.3", fromFile.OpenAPIConfig.OpenAPIVersion)
+	assert.Equal(t, 1, fromFile.OpenAPIConfig.OperationCount)
+	assert.NotEmpty(t, fromFile.OpenAPIConfig.SpecHash)
+
+	urlOnly := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeHeaders, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: str("https://api.example.com/openapi.json")}}
+	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir))
+	assert.Empty(t, urlOnly.OpenAPIConfig.Spec, "a spec_url is fetched at connect time, not at load")
+
+	for name, cfg := range map[string]*schemas.MCPClientConfig{
+		"missing block":  {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI},
+		"no source":      {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{}},
+		"oauth":          {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeOauth, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}},
+		"token exchange": {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeTokenExchange, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}},
+		"missing file":   {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("specs/nope.yaml")}},
+		"escaping file":  {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("../../etc/passwd")}},
+		"unparseable":    {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "not: openapi"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Error(t, prepareOpenAPIClientFromFile(cfg, dir))
+		})
+	}
+}
+
+// newOpenAPIUpdateTestConfig builds a Config backed by a real Bifrost engine
+// with one registered openapi client. Its server factory succeeds on the first
+// connect and fails every rebuild after it when failRebuilds is set.
+func newOpenAPIUpdateTestConfig(t *testing.T, failRebuilds bool) (*Config, *schemas.MCPClientConfig) {
+	t.Helper()
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: NewBaseAccount(&Config{}), Logger: logger})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	var calls atomic.Int32
+	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*mcpserver.MCPServer, error) {
+		if calls.Add(1) > 1 && failRebuilds {
+			return nil, fmt.Errorf("%w: rebuild refused by test factory", schemas.ErrMCPOpenAPIConfigInvalid)
+		}
+		return mcpserver.NewMCPServer("openapi-test", "1", mcpserver.WithToolCapabilities(false)), nil
+	}
+	client.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: factory}, nil, logger, nil))
+	stored := &schemas.MCPClientConfig{
+		ID: "openapi-1", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
+		ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "spec-a"},
+	}
+	runtime := *stored
+	runtime.OpenAPIConfig = stored.OpenAPIConfig.Clone()
+	require.NoError(t, client.AddMCPClient(context.Background(), &runtime))
+	return &Config{client: client, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{stored}}}, stored
+}
+
+// TestUpdateMCPClient_SharedConnectFailureStillAppliesFields: when the runtime
+// saved an update but could not reconnect with it, the management copy takes
+// the update too, so it agrees with the database and the runtime instead of
+// serving the old document and merging later edits against it.
+func TestUpdateMCPClient_SharedConnectFailureStillAppliesFields(t *testing.T) {
+	cfg, stored := newOpenAPIUpdateTestConfig(t, true)
+	update := *stored
+	update.OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: "spec-b"}
+	update.ToolsToExecute = schemas.WhiteList{"listPets"}
+	err := cfg.UpdateMCPClient(context.Background(), stored.ID, &update)
+	require.ErrorIs(t, err, mcp.ErrMCPSharedConnectFailedAfterUpdate)
+	got := cfg.MCPConfig.ClientConfigs[0]
+	assert.Equal(t, "spec-b", got.OpenAPIConfig.Spec)
+	assert.Equal(t, schemas.WhiteList{"listPets"}, got.ToolsToExecute)
+}
+
+// TestUpdateMCPClient_RequirePublicTargetOnlyTightens: the management copy can
+// gain the public-target restriction from an update but never loses it.
+func TestUpdateMCPClient_RequirePublicTargetOnlyTightens(t *testing.T) {
+	cfg, stored := newOpenAPIUpdateTestConfig(t, false)
+	update := *stored
+	update.RequirePublicTarget = true
+	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
+	assert.True(t, cfg.MCPConfig.ClientConfigs[0].RequirePublicTarget)
+
+	update.RequirePublicTarget = false
+	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
+	assert.True(t, cfg.MCPConfig.ClientConfigs[0].RequirePublicTarget)
+}
+
+// TestGetMCPClientOpenAPISpec_ReadsUnderLock: the stored document is copied out
+// under the MCP config lock, so a concurrent update that replaces the block
+// cannot race the read (run with -race).
+func TestGetMCPClientOpenAPISpec_ReadsUnderLock(t *testing.T) {
+	c := &Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+		ID: "oa", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "v0"},
+	}}}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			c.muMCP.Lock()
+			c.MCPConfig.ClientConfigs[0].OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: fmt.Sprintf("v%d", i)}
+			c.muMCP.Unlock()
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		spec, isOpenAPI, found := c.GetMCPClientOpenAPISpec("oa")
+		require.True(t, found)
+		require.True(t, isOpenAPI)
+		require.NotEmpty(t, spec)
+	}
+	<-done
+	_, isOpenAPI, found := c.GetMCPClientOpenAPISpec("missing")
+	assert.False(t, found)
+	assert.False(t, isOpenAPI)
+
+	// A nil entry in the client list is skipped, not dereferenced.
+	c.MCPConfig.ClientConfigs = append([]*schemas.MCPClientConfig{nil}, c.MCPConfig.ClientConfigs...)
+	require.NotPanics(t, func() { _, _, found = c.GetMCPClientOpenAPISpec("oa") })
+	assert.True(t, found)
 }

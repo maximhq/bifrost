@@ -6631,6 +6631,13 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 							if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
 								toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesDocumentBlock())
 							}
+						case AnthropicContentBlockTypeToolReference:
+							if contentBlock.ToolName != nil {
+								toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
+									Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
+									ToolName: contentBlock.ToolName,
+								})
+							}
 						}
 					}
 					bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
@@ -7416,6 +7423,13 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 							// "Missing required parameter: 'input[N].content[0]'".
 							if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
 								toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesDocumentBlock())
+							}
+						case AnthropicContentBlockTypeToolReference:
+							if contentBlock.ToolName != nil {
+								toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
+									Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
+									ToolName: contentBlock.ToolName,
+								})
 							}
 						}
 					}
@@ -9878,6 +9892,13 @@ func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schema
 				Type:         AnthropicContentBlockTypeContainerUpload,
 				FileID:       block.FileID,
 				CacheControl: block.CacheControl,
+			}
+		}
+	case schemas.ResponsesInputMessageContentBlockTypeToolReference:
+		if block.ToolName != nil {
+			return &AnthropicContentBlock{
+				Type:     AnthropicContentBlockTypeToolReference,
+				ToolName: block.ToolName,
 			}
 		}
 	case schemas.ResponsesOutputMessageContentTypeReasoning:

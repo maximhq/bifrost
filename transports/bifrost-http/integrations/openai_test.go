@@ -564,3 +564,67 @@ func TestOpenAISpeechRoutesReturnRawAudio(t *testing.T) {
 		})
 	}
 }
+
+// A request Bifrost converted to another API (chat served through Responses, text
+// through chat, Responses through chat) carries that API's raw upstream bytes. The
+// OpenAI raw passthrough must not echo them: a chat client reading
+// {"type":"response.created",...} on a chat stream fails its schema check. Every
+// chat, text and Responses converter on every OpenAI route is checked, unary and
+// streaming, plus the unconverted control that must still pass raw bytes through.
+func TestOpenAIRawPassthroughSkipsConvertedRequests(t *testing.T) {
+	foreignRaw := `{"type":"response.created","response":{"id":"resp_1","object":"response"}}`
+	extra := func(converted schemas.RequestType) schemas.BifrostResponseExtraFields {
+		return schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: foreignRaw, ConvertedRequestType: converted}
+	}
+	checked := 0
+	for _, prefix := range []string{"", "/openai"} {
+		for _, route := range CreateOpenAIRouteConfigs(prefix, &mockHandlerStore{}) {
+			for _, converted := range []schemas.RequestType{schemas.ResponsesRequest, ""} {
+				name := route.Path + "/converted=" + string(converted)
+				wantRaw := converted == ""
+				check := func(kind string, got interface{}) {
+					t.Helper()
+					checked++
+					if wantRaw {
+						require.Equal(t, foreignRaw, got, "%s %s: unconverted response must pass raw bytes through", name, kind)
+					} else {
+						require.NotEqual(t, foreignRaw, got, "%s %s: converted response echoed the other API's raw bytes", name, kind)
+					}
+				}
+				if route.ChatResponseConverter != nil {
+					got, err := route.ChatResponseConverter(nil, &schemas.BifrostChatResponse{ExtraFields: extra(converted)})
+					require.NoError(t, err)
+					check("chat", got)
+				}
+				if route.TextResponseConverter != nil {
+					got, err := route.TextResponseConverter(nil, &schemas.BifrostTextCompletionResponse{ExtraFields: extra(converted)})
+					require.NoError(t, err)
+					check("text", got)
+				}
+				if route.ResponsesResponseConverter != nil {
+					got, err := route.ResponsesResponseConverter(nil, &schemas.BifrostResponsesResponse{ExtraFields: extra(converted)})
+					require.NoError(t, err)
+					check("responses", got)
+				}
+				if sc := route.StreamConfig; sc != nil {
+					if sc.ChatStreamResponseConverter != nil {
+						_, got, err := sc.ChatStreamResponseConverter(nil, &schemas.BifrostChatResponse{ExtraFields: extra(converted)})
+						require.NoError(t, err)
+						check("chat stream", got)
+					}
+					if sc.TextStreamResponseConverter != nil {
+						_, got, err := sc.TextStreamResponseConverter(nil, &schemas.BifrostTextCompletionResponse{ExtraFields: extra(converted)})
+						require.NoError(t, err)
+						check("text stream", got)
+					}
+					if sc.ResponsesStreamResponseConverter != nil {
+						_, got, err := sc.ResponsesStreamResponseConverter(nil, &schemas.BifrostResponsesStreamResponse{Type: schemas.ResponsesStreamResponseTypeCreated, ExtraFields: extra(converted)})
+						require.NoError(t, err)
+						check("responses stream", got)
+					}
+				}
+			}
+		}
+	}
+	require.Positive(t, checked, "no OpenAI chat/text/responses converters found")
+}
