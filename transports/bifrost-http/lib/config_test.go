@@ -439,6 +439,54 @@ func TestLoadClientConfig_InferenceAuthSetup(t *testing.T) {
 	}
 }
 
+// Adding allowed_redirect_uris (or disable_vk_identity) to config.json on a
+// deployment whose DB row already holds the rest of oauth2_server_config must
+// reach the runtime config instead of being masked by a matching hash.
+func TestLoadClientConfig_OAuth2ServerConfigPolicyFieldsSyncFromFile(t *testing.T) {
+	SetLogger(&testLogger{})
+	const callback = "https://www.cursor.com/agents/mcp/oauth/callback"
+	before := `{"client":{"mcp_server_auth_mode":"both","oauth2_server_config":{"issuer_url":"https://issuer.example.com"}}}`
+	after := `{"client":{"mcp_server_auth_mode":"both","oauth2_server_config":{"issuer_url":"https://issuer.example.com","allowed_redirect_uris":["` + callback + `"],"disable_vk_identity":true}}}`
+
+	store := &MockConfigStore{}
+	cfg := &Config{ConfigStore: store}
+	var first ConfigData
+	require.NoError(t, json.Unmarshal([]byte(before), &first))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &first))
+	require.NotNil(t, cfg.ClientConfig.OAuth2ServerConfig)
+	require.Empty(t, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs)
+
+	var second ConfigData
+	require.NoError(t, json.Unmarshal([]byte(after), &second))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &second))
+	require.NotNil(t, cfg.ClientConfig.OAuth2ServerConfig)
+	assert.Equal(t, []string{callback}, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs, "file allowed_redirect_uris must be synced over the DB row")
+	assert.True(t, cfg.ClientConfig.OAuth2ServerConfig.DisableVKIdentity, "file disable_vk_identity must be synced over the DB row")
+}
+
+// A partial wildcard in config.json must stop the file sync before it reaches the
+// store, so the previously stored allowlist stays in effect and fixing the file
+// is enough to recover.
+func TestLoadClientConfig_PartialWildcardRedirectFromFileIsRejected(t *testing.T) {
+	SetLogger(&testLogger{})
+	withRedirect := func(uri string) string {
+		return `{"client":{"mcp_server_auth_mode":"both","oauth2_server_config":{"issuer_url":"https://issuer.example.com","allowed_redirect_uris":["` + uri + `"]}}}`
+	}
+	store := &MockConfigStore{}
+	cfg := &Config{ConfigStore: store}
+	var first ConfigData
+	require.NoError(t, json.Unmarshal([]byte(withRedirect("*")), &first))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &first))
+	require.Equal(t, []string{"*"}, store.clientConfig.OAuth2ServerConfig.AllowedRedirectURIs)
+
+	var bad ConfigData
+	require.NoError(t, json.Unmarshal([]byte(withRedirect("https://*.example.com/cb")), &bad))
+	err := loadClientConfig(context.Background(), cfg, &bad)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "allowed_redirect_uris")
+	assert.Equal(t, []string{"*"}, store.clientConfig.OAuth2ServerConfig.AllowedRedirectURIs, "a rejected file must not overwrite the stored allowlist")
+}
+
 func TestLoadClientConfig_InferenceAuthExistingAndAbsentClient(t *testing.T) {
 	SetLogger(&testLogger{})
 	for _, existing := range []bool{false, true} {
@@ -2758,6 +2806,31 @@ func TestValidateClientConfig_VKRotationCooldown(t *testing.T) {
 				require.NoError(t, err)
 			}
 		})
+	}
+}
+
+// TestValidateClientConfig_AllowedRedirectURIsWildcard locks in that a
+// config.json or DB entry can use only a bare "*" wildcard: a partial pattern
+// is matched literally, so it would silently approve nothing.
+func TestValidateClientConfig_AllowedRedirectURIsWildcard(t *testing.T) {
+	for _, tc := range []struct {
+		uris    []string
+		wantErr bool
+	}{
+		{nil, false},
+		{[]string{"*"}, false},
+		{[]string{"https://www.cursor.com/agents/mcp/oauth/callback", "*"}, false},
+		{[]string{"https://*.example.com/cb"}, true},
+		{[]string{"https://app.example.com/*"}, true},
+		{[]string{"**"}, true},
+	} {
+		err := validateClientConfig(&configstore.ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{AllowedRedirectURIs: tc.uris}})
+		if tc.wantErr {
+			require.Error(t, err, "%v", tc.uris)
+			require.Contains(t, err.Error(), "allowed_redirect_uris")
+		} else {
+			require.NoError(t, err, "%v", tc.uris)
+		}
 	}
 }
 

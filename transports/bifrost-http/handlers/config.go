@@ -505,6 +505,14 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			return
 		}
 		for _, uri := range effectiveOAuth2Config.AllowedRedirectURIs {
+			if uri == configstoreTables.AllowAnyRedirectURI {
+				continue
+			}
+			// Entries match exactly, so a partial pattern would silently match nothing.
+			if strings.Contains(uri, "*") {
+				SendError(ctx, fasthttp.StatusBadRequest, `allowed_redirect_uris supports only a bare "*" wildcard`)
+				return
+			}
 			if !isAllowedRedirectScheme(uri) {
 				SendError(ctx, fasthttp.StatusBadRequest, "allowed_redirect_uris contains an invalid callback URI")
 				return

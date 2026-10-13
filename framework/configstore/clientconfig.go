@@ -543,6 +543,14 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		}
 		hash.Write([]byte("oauth2AuthCodeTTL:" + strconv.Itoa(oc.AuthCodeTTL)))
 		hash.Write([]byte("oauth2AccessTokenTTL:" + strconv.Itoa(oc.AccessTokenTTL)))
+		// Unset policy fields contribute nothing so rows stored before they were
+		// hashed keep their hash; once set, a file edit must win over the DB row.
+		for _, uri := range oc.AllowedRedirectURIs {
+			hash.Write([]byte("oauth2AllowedRedirectURI:" + uri))
+		}
+		if oc.DisableVKIdentity {
+			hash.Write([]byte("oauth2DisableVKIdentity:true"))
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

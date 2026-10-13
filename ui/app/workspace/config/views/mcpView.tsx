@@ -96,7 +96,8 @@ export default function MCPView() {
 			issuerURLChanged ||
 			(localConfig.oauth2_server_config?.auth_code_ttl ?? 300) !== (config.oauth2_server_config?.auth_code_ttl ?? 300) ||
 			(localConfig.oauth2_server_config?.access_token_ttl ?? 600) !== (config.oauth2_server_config?.access_token_ttl ?? 600) ||
-			(localConfig.oauth2_server_config?.disable_vk_identity ?? false) !== (config.oauth2_server_config?.disable_vk_identity ?? false)
+			(localConfig.oauth2_server_config?.disable_vk_identity ?? false) !== (config.oauth2_server_config?.disable_vk_identity ?? false) ||
+			!stringListEquals(localConfig.oauth2_server_config?.allowed_redirect_uris, config.oauth2_server_config?.allowed_redirect_uris)
 		);
 	}, [config, localConfig]);
 
@@ -225,6 +226,13 @@ export default function MCPView() {
 		setLocalConfig((prev) => ({
 			...prev,
 			oauth2_server_config: { ...prev.oauth2_server_config, disable_vk_identity: checked },
+		}));
+	}, []);
+
+	const handleAllowedRedirectURIsChange = useCallback((value: string[]) => {
+		setLocalConfig((prev) => ({
+			...prev,
+			oauth2_server_config: { ...prev.oauth2_server_config, allowed_redirect_uris: value },
 		}));
 	}, []);
 
@@ -715,6 +723,39 @@ export default function MCPView() {
 												disabled={!hasSettingsUpdateAccess}
 											/>
 										</div>
+									</div>
+
+									{/* Allowed redirect URIs */}
+									<div className="space-y-1.5">
+										<label htmlFor="oauth2-allowed-redirect-uris" className="text-sm font-medium">
+											Allowed redirect URIs
+										</label>
+										<p className="text-muted-foreground text-sm">
+											Exact callback URIs remote MCP clients may use, e.g.{" "}
+											<code className="text-xs">https://www.cursor.com/agents/mcp/oauth/callback</code>. Add{" "}
+											<code className="text-xs">*</code> to allow any https callback; partial wildcards are not supported. Loopback
+											callbacks and <code className="text-xs">cursor://anysphere.cursor-mcp</code> are always allowed. Changing this list
+											requires dashboard authentication.
+										</p>
+										<TagInput
+											id="oauth2-allowed-redirect-uris"
+											data-testid="oauth2-allowed-redirect-uris-input"
+											placeholder="Add callback URI (Enter)"
+											submitOnComma={false}
+											value={localConfig.oauth2_server_config?.allowed_redirect_uris ?? []}
+											onValueChange={handleAllowedRedirectURIsChange}
+											readOnly={!hasSettingsUpdateAccess}
+										/>
+										{localConfig.oauth2_server_config?.allowed_redirect_uris?.includes("*") && (
+											<Alert variant="warning" data-testid="oauth2-allowed-redirect-uris-wildcard-warning">
+												<AlertTriangle className="size-4" />
+												<AlertTitle>Any callback is allowed</AlertTitle>
+												<AlertDescription>
+													Any MCP client can register with a callback on any host, so the consent page is the only check against a client
+													that sends authorization codes to an attacker. Prefer listing exact callback URIs.
+												</AlertDescription>
+											</Alert>
+										)}
 									</div>
 
 									{/* Require identity-provider login. Enterprise-only and only
