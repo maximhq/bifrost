@@ -86,6 +86,10 @@ func TestBilling_WebRTCFilteredEvents(t *testing.T) {
 				waitBudgetUsage(t, vk.BudgetID, cost)
 
 				frames := c.Frames("")
+				assert.Empty(t, c.Frames("error"), "an orderly close must not become an upstream-disconnected error")
+				if strings.HasPrefix(tc.name, "status only") {
+					require.Len(t, c.Frames("session.closed"), 1, "the final event must reach the browser before shutdown")
+				}
 				if tc.allowed == `[]` {
 					assert.Empty(t, frames, "an empty list hides every event, including close and gateway errors")
 				} else {

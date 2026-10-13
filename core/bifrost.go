@@ -120,36 +120,38 @@ func (m *ChannelMessage) abandonDelivery() bool {
 // Bifrost manages providers and maintains specified open channels for concurrent processing.
 // It handles request routing, provider management, and response processing.
 type Bifrost struct {
-	ctx                 *schemas.BifrostContext
-	cancel              context.CancelFunc
-	account             schemas.Account                     // account interface
-	llmPlugins          atomic.Pointer[[]schemas.LLMPlugin] // list of llm plugins
-	mcpPlugins          atomic.Pointer[[]schemas.MCPPlugin] // list of mcp plugins
-	a2aPlugins          atomic.Pointer[[]schemas.A2APlugin] // list of a2a (agent gateway) plugins
-	providers           atomic.Pointer[[]schemas.Provider]  // list of providers
-	requestQueues       sync.Map                            // provider request queues (thread-safe), stores *ProviderQueue
-	waitGroups          sync.Map                            // wait groups for each provider (thread-safe)
-	oldWorkerCleanups   sync.WaitGroup                      // tracks async cleanup of old workers after provider updates
-	retiredWorkerWaits  sync.Map                            // provider old-worker cleanup wait groups (thread-safe), stores *sync.WaitGroup
-	providerLifecycleMu sync.RWMutex                        // prevents provider updates from racing with shutdown cleanup waits
-	providerMutexes     sync.Map                            // mutexes for each provider to prevent concurrent updates (thread-safe)
-	channelMessagePool  sync.Pool                           // Pool for ChannelMessage objects, initial pool size is set in Init
-	responseChannelPool sync.Pool                           // Pool for response channels, initial pool size is set in Init
-	errorChannelPool    sync.Pool                           // Pool for error channels, initial pool size is set in Init
-	responseStreamPool  sync.Pool                           // Pool for response stream channels, initial pool size is set in Init
-	pluginPipelinePool  sync.Pool                           // Pool for PluginPipeline objects
-	bifrostRequestPool  sync.Pool                           // Pool for BifrostRequest objects
-	logger              schemas.Logger                      // logger instance, default logger is used if not provided
-	tracer              atomic.Value                        // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
-	modelCatalog        schemas.ModelInfoProvider           // model pricing/capability catalog exposed to plugins via ctx.GetModelInfo (nil if not configured); set once from BifrostConfig at Init
-	MCPManager          mcp.MCPManagerInterface             // MCP integration manager (nil if MCP not configured)
-	mcpCredStore        schemas.MCPCredentialStore          // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
-	mcpInitOnce         sync.Once                           // Ensures MCP manager is initialized only once
-	dropExcessRequests  atomic.Bool                         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	keySelector         schemas.KeySelector                 // Custom key selector function
-	keyPoolFilter       schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
-	kvStore             schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
-	sessionAffinity     schemas.SessionAffinity             // decides which key a session stays on; never nil after Init
+	ctx                       *schemas.BifrostContext
+	cancel                    context.CancelFunc
+	account                   schemas.Account                     // account interface
+	llmPlugins                atomic.Pointer[[]schemas.LLMPlugin] // list of llm plugins
+	mcpPlugins                atomic.Pointer[[]schemas.MCPPlugin] // list of mcp plugins
+	a2aPlugins                atomic.Pointer[[]schemas.A2APlugin] // list of a2a (agent gateway) plugins
+	providers                 atomic.Pointer[[]schemas.Provider]  // list of providers
+	requestQueues             sync.Map                            // provider request queues (thread-safe), stores *ProviderQueue
+	waitGroups                sync.Map                            // wait groups for each provider (thread-safe)
+	oldWorkerCleanups         sync.WaitGroup                      // tracks async cleanup of old workers after provider updates
+	retiredWorkerWaits        sync.Map                            // provider old-worker cleanup wait groups (thread-safe), stores *sync.WaitGroup
+	providerLifecycleMu       sync.RWMutex                        // prevents provider updates from racing with shutdown cleanup waits
+	providerMutexes           sync.Map                            // mutexes for each provider to prevent concurrent updates (thread-safe)
+	channelMessagePool        sync.Pool                           // Pool for ChannelMessage objects, initial pool size is set in Init
+	responseChannelPool       sync.Pool                           // Pool for response channels, initial pool size is set in Init
+	errorChannelPool          sync.Pool                           // Pool for error channels, initial pool size is set in Init
+	responseStreamPool        sync.Pool                           // Pool for response stream channels, initial pool size is set in Init
+	pluginPipelinePool        sync.Pool                           // Pool for PluginPipeline objects
+	bifrostRequestPool        sync.Pool                           // Pool for BifrostRequest objects
+	logger                    schemas.Logger                      // logger instance, default logger is used if not provided
+	tracer                    atomic.Value                        // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
+	modelCatalog              schemas.ModelInfoProvider           // model pricing/capability catalog exposed to plugins via ctx.GetModelInfo (nil if not configured); set once from BifrostConfig at Init
+	MCPManager                mcp.MCPManagerInterface             // MCP integration manager (nil if MCP not configured)
+	mcpCredStore              schemas.MCPCredentialStore          // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
+	mcpInProcessServerFactory schemas.InProcessServerFactory      // Carried from MCPConfig so a lazily created manager still synthesizes openapi servers
+	mcpInitOnce               sync.Once                           // Ensures MCP manager is initialized only once
+	mcpFactoryMu              sync.Mutex                          // Orders factory registration against lazy MCP manager creation
+	dropExcessRequests        atomic.Bool                         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	keySelector               schemas.KeySelector                 // Custom key selector function
+	keyPoolFilter             schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
+	kvStore                   schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
+	sessionAffinity           schemas.SessionAffinity             // decides which key a session stays on; never nil after Init
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -389,6 +391,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 
 	// Initialize MCP manager if configured
 	if config.MCPConfig != nil {
+		bifrost.mcpInProcessServerFactory = config.MCPConfig.InProcessServerFactory
 		bifrost.mcpInitOnce.Do(func() {
 			// Set up plugin pipeline provider functions for executeCode tool hooks
 			mcpConfig := *config.MCPConfig
@@ -583,11 +586,57 @@ func (bifrost *Bifrost) lastKnownModelsFromCatalog(providerKey schemas.ModelProv
 	return models
 }
 
+// listModelsContextKey keys core-internal list-models state on the context.
+type listModelsContextKey string
+
+// listAllModelsFallbackKey marks a per-provider poll started by ListAllModels, the only caller
+// whose failed poll may be answered from the model catalog.
+const listAllModelsFallbackKey listModelsContextKey = "list-all-models-catalog-fallback"
+
+// isExpectedListModelsError reports whether a per-provider list failure is one the aggregate
+// stays silent about: the provider has no keys, does not support listing, or is blocked.
+func isExpectedListModelsError(err *schemas.BifrostError) bool {
+	if err == nil {
+		return false
+	}
+	if err.Type != nil && *err.Type == "provider_blocked" {
+		return true
+	}
+	if err.Error == nil {
+		return false
+	}
+	return strings.Contains(err.Error.Message, "no keys found") || strings.Contains(err.Error.Message, "not supported")
+}
+
+// lastKnownListModelsResponse answers a failed first-page poll from ListAllModels with the
+// provider's last-known models from the catalog, or returns nil to keep the error. It runs in
+// the worker after retries and before the post-hooks, so plugins narrow the last-known list
+// exactly as they narrow a live one: a virtual key's model allow and block lists still apply.
+func (bifrost *Bifrost) lastKnownListModelsResponse(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, req *schemas.BifrostListModelsRequest, err *schemas.BifrostError) *schemas.BifrostResponse {
+	if req == nil || req.PageToken != "" || isExpectedListModelsError(err) {
+		return nil
+	}
+	if fallback, _ := ctx.Value(listAllModelsFallbackKey).(bool); !fallback {
+		return nil
+	}
+	models := bifrost.lastKnownModelsFromCatalog(providerKey, req.Unfiltered)
+	if len(models) == 0 {
+		return nil
+	}
+	bifrost.logger.Warn("serving %d last-known models for provider %s from the model catalog after its live poll failed: %s", len(models), providerKey, err.GetErrorString())
+	return &schemas.BifrostResponse{ListModelsResponse: &schemas.BifrostListModelsResponse{
+		Data:        models,
+		KeyStatuses: err.ExtraFields.KeyStatuses,
+	}}
+}
+
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
 // Each provider poll is bounded by listAllModelsProviderTimeout so one unreachable provider
-// cannot block the aggregate; a provider whose poll fails contributes its last-known models
-// from the model catalog (when one with per-provider listings is configured) instead.
+// cannot block the aggregate. A provider whose poll fails contributes its last-known models
+// from the model catalog (when one with per-provider listings is configured) instead; that
+// list is substituted in the worker, so the plugin post-hooks filter it like a live listing.
+// A poll still running at the deadline contributes nothing, since no post-hook has seen it.
 func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if req == nil {
 		req = &schemas.BifrostListModelsRequest{}
@@ -667,6 +716,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			providerCtx := schemas.NewBifrostContext(ctx, time.Now().Add(listAllModelsProviderTimeout))
 			defer providerCtx.Cancel()
 			providerCtx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
+			providerCtx.SetValue(listAllModelsFallbackKey, true)
 
 			providerModels := make([]schemas.Model, 0)
 			var providerKeyStatuses []schemas.KeyStatus
@@ -699,18 +749,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 				if bifrostErr != nil {
 					// Some per-provider failures are expected when fanning out across all
 					// configured providers and must not be surfaced as a top-level error
-					errType := ""
-					if bifrostErr.Type != nil {
-						errType = *bifrostErr.Type
-					}
-					errMsg := ""
-					if bifrostErr.Error != nil {
-						errMsg = bifrostErr.Error.Message
-					}
-					isExpected := strings.Contains(errMsg, "no keys found") ||
-						strings.Contains(errMsg, "not supported") ||
-						errType == "provider_blocked"
-					if !isExpected {
+					if !isExpectedListModelsError(bifrostErr) {
 						providerErr = bifrostErr
 						bifrost.logger.Warn("failed to list models for provider %s: %s", providerKey, bifrostErr.GetErrorString())
 					}
@@ -738,20 +777,6 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 
 				// Set the page token for the next request
 				providerRequest.PageToken = response.NextPageToken
-			}
-
-			// A provider whose live poll failed shouldn't vanish from the
-			// aggregate while the catalog still remembers its models: serve
-			// the last-known list (kept fresh by the transport's background
-			// refresher) instead of nothing. Expected failures (no keys, not
-			// supported, blocked) leave providerErr nil and stay silent as
-			// before, and the poll error still propagates so an
-			// all-providers-down setup without a catalog keeps erroring.
-			if providerErr != nil && len(providerModels) == 0 {
-				if cached := bifrost.lastKnownModelsFromCatalog(providerKey, req.Unfiltered); len(cached) > 0 {
-					bifrost.logger.Warn("serving %d last-known models for provider %s from the model catalog after its live poll failed", len(cached), providerKey)
-					providerModels = cached
-				}
 			}
 
 			results <- providerResult{
@@ -4627,28 +4652,61 @@ func (bifrost *Bifrost) ConnectConfiguredMCPClients(ctx context.Context) {
 	}
 }
 
-func (bifrost *Bifrost) AddMCPClient(ctx context.Context, config *schemas.MCPClientConfig) error {
-	if bifrost.MCPManager == nil {
-		// Use sync.Once to ensure thread-safe initialization
-		bifrost.mcpInitOnce.Do(func() {
-			// Initialize with empty config - client will be added via AddClient below
-			mcpConfig := schemas.MCPConfig{
-				ClientConfigs: []*schemas.MCPClientConfig{},
+// lazyMCPConfig is the MCPConfig used when the manager is created on first use
+// rather than at Init (no mcp block in the config). It carries the same plugin
+// pipeline hooks Init wires and the in-process server factory, so an openapi
+// client added at runtime synthesizes its server exactly as a boot-time one would.
+func (bifrost *Bifrost) lazyMCPConfig() schemas.MCPConfig {
+	return schemas.MCPConfig{
+		ClientConfigs: []*schemas.MCPClientConfig{},
+		PluginPipelineProvider: func() interface{} {
+			return bifrost.getPluginPipeline()
+		},
+		ReleasePluginPipeline: func(pipeline interface{}) {
+			if pp, ok := pipeline.(*PluginPipeline); ok {
+				bifrost.releasePluginPipeline(pp)
 			}
-			// Set up plugin pipeline provider functions for executeCode tool hooks
-			mcpConfig.PluginPipelineProvider = func() interface{} {
-				return bifrost.getPluginPipeline()
-			}
-			mcpConfig.ReleasePluginPipeline = func(pipeline interface{}) {
-				if pp, ok := pipeline.(*PluginPipeline); ok {
-					bifrost.releasePluginPipeline(pp)
-				}
-			}
-			// Create Starlark CodeMode for code execution (with default config)
-			codeMode := starlark.NewStarlarkCodeMode(nil, bifrost.logger)
-			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
-		})
+		},
+		InProcessServerFactory: bifrost.mcpInProcessServerFactory,
 	}
+}
+
+// SetMCPInProcessServerFactory registers (or replaces) the factory that
+// synthesizes in-process MCP servers for openapi clients. It applies to the
+// running manager when one exists and to any manager created lazily afterwards,
+// so callers that configure MCP after Init (the HTTP transport registers the
+// framework factory this way) get the same behavior as passing it on MCPConfig.
+//
+// Registration and lazy manager creation (ensureLazyMCPManager) hold the same
+// lock, so the setter either runs first and the new manager reads the factory,
+// or runs after and finds the manager to forward it to.
+func (bifrost *Bifrost) SetMCPInProcessServerFactory(factory schemas.InProcessServerFactory) {
+	bifrost.mcpFactoryMu.Lock()
+	defer bifrost.mcpFactoryMu.Unlock()
+	bifrost.mcpInProcessServerFactory = factory
+	if bifrost.MCPManager != nil {
+		bifrost.MCPManager.SetInProcessServerFactory(factory)
+	}
+}
+
+// ensureLazyMCPManager creates the MCP manager on first use when Init did not
+// (no mcp block in the config). Callers run it before reading MCPManager, so
+// the sync.Once publishes the manager to every caller; a manager injected with
+// SetMCPManager is kept.
+func (bifrost *Bifrost) ensureLazyMCPManager() {
+	bifrost.mcpInitOnce.Do(func() {
+		bifrost.mcpFactoryMu.Lock()
+		defer bifrost.mcpFactoryMu.Unlock()
+		if bifrost.MCPManager != nil {
+			return
+		}
+		bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, bifrost.lazyMCPConfig(), bifrost.mcpCredStore, bifrost.logger, starlark.NewStarlarkCodeMode(nil, bifrost.logger))
+	})
+}
+
+func (bifrost *Bifrost) AddMCPClient(ctx context.Context, config *schemas.MCPClientConfig) error {
+	// Initialize with empty config - client will be added via AddClient below
+	bifrost.ensureLazyMCPManager()
 
 	// Handle case where initialization succeeded elsewhere but manager is still nil
 	if bifrost.MCPManager == nil {
@@ -4686,10 +4744,19 @@ func (bifrost *Bifrost) RemoveMCPClient(id string) error {
 // If the provided manager is a concrete *mcp.MCPManager, Bifrost's plugin pipeline is injected
 // into the manager's CodeMode so that nested tool calls run through the plugin hooks.
 //
+// A factory registered with SetMCPInProcessServerFactory is forwarded to it.
+//
 // Parameters:
 //   - manager: The MCP manager to set (must implement MCPManagerInterface)
 func (bifrost *Bifrost) SetMCPManager(manager mcp.MCPManagerInterface) {
+	// Under the factory lock, so a factory registered before or concurrently
+	// with the injection reaches the injected manager.
+	bifrost.mcpFactoryMu.Lock()
 	bifrost.MCPManager = manager
+	if manager != nil && bifrost.mcpInProcessServerFactory != nil {
+		manager.SetInProcessServerFactory(bifrost.mcpInProcessServerFactory)
+	}
+	bifrost.mcpFactoryMu.Unlock()
 	// Inject Bifrost's plugin pipeline into the manager's CodeMode so that
 	// nested tool calls (e.g. via Starlark executeCode) run through plugin hooks.
 	if m, ok := manager.(*mcp.MCPManager); ok {
@@ -4818,23 +4885,7 @@ func (bifrost *Bifrost) EnableMCPClient(id string) error {
 // initialized, it is lazily created (same as AddMCPClient).
 func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config *schemas.MCPClientConfig, accessToken string) (map[string]schemas.ChatTool, map[string]string, string, error) {
 	// Ensure MCP manager is initialized (lazy init, same pattern as AddMCPClient)
-	if bifrost.MCPManager == nil {
-		bifrost.mcpInitOnce.Do(func() {
-			mcpConfig := schemas.MCPConfig{
-				ClientConfigs: []*schemas.MCPClientConfig{},
-			}
-			mcpConfig.PluginPipelineProvider = func() interface{} {
-				return bifrost.getPluginPipeline()
-			}
-			mcpConfig.ReleasePluginPipeline = func(pipeline interface{}) {
-				if pp, ok := pipeline.(*PluginPipeline); ok {
-					bifrost.releasePluginPipeline(pp)
-				}
-			}
-			codeMode := starlark.NewStarlarkCodeMode(nil, bifrost.logger)
-			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
-		})
-	}
+	bifrost.ensureLazyMCPManager()
 	if bifrost.MCPManager == nil {
 		return nil, nil, "", fmt.Errorf("MCP manager is not initialized")
 	}
@@ -4846,23 +4897,7 @@ func (bifrost *Bifrost) VerifyPerUserOAuthConnection(ctx context.Context, config
 // and discover available tools. Mirrors VerifyPerUserOAuthConnection's lazy
 // MCP-manager init.
 func (bifrost *Bifrost) VerifyHeadersConnection(ctx context.Context, config *schemas.MCPClientConfig, userHeaders map[string]string) (map[string]schemas.ChatTool, map[string]string, string, error) {
-	if bifrost.MCPManager == nil {
-		bifrost.mcpInitOnce.Do(func() {
-			mcpConfig := schemas.MCPConfig{
-				ClientConfigs: []*schemas.MCPClientConfig{},
-			}
-			mcpConfig.PluginPipelineProvider = func() interface{} {
-				return bifrost.getPluginPipeline()
-			}
-			mcpConfig.ReleasePluginPipeline = func(pipeline interface{}) {
-				if pp, ok := pipeline.(*PluginPipeline); ok {
-					bifrost.releasePluginPipeline(pp)
-				}
-			}
-			codeMode := starlark.NewStarlarkCodeMode(nil, bifrost.logger)
-			bifrost.MCPManager = mcp.NewMCPManager(bifrost.ctx, mcpConfig, bifrost.mcpCredStore, bifrost.logger, codeMode)
-		})
-	}
+	bifrost.ensureLazyMCPManager()
 	if bifrost.MCPManager == nil {
 		return nil, nil, "", fmt.Errorf("MCP manager is not initialized")
 	}
@@ -8307,6 +8342,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
+			if bifrostError != nil && req.RequestType == schemas.ListModelsRequest {
+				if fallback := bifrost.lastKnownListModelsResponse(req.Context, provider.GetProviderKey(), req.BifrostRequest.ListModelsRequest, bifrostError); fallback != nil {
+					result, bifrostError = fallback, nil
+				}
+			}
 		}
 
 		// For streaming with an error, route release through the LAST attempt's
@@ -8871,7 +8911,12 @@ func (bifrost *Bifrost) dispatchChat(ctx *schemas.BifrostContext, provider schem
 			if bifrostError != nil {
 				return nil, bifrostError
 			}
-			return responsesResponse.ToBifrostChatResponse(), nil
+			chatResponse := responsesResponse.ToBifrostChatResponse()
+			if chatResponse != nil {
+				// RawResponse is still the Responses body; integrations must not echo it as chat.
+				chatResponse.ExtraFields.ConvertedRequestType = schemas.ResponsesRequest
+			}
+			return chatResponse, nil
 		}
 	}
 	chatCompletionResponse, bifrostError := provider.ChatCompletion(ctx, key, prepareChatRequest(ctx, config, provider.GetProviderKey(), chatRequest))
@@ -8900,6 +8945,8 @@ func (bifrost *Bifrost) dispatchResponses(ctx *schemas.BifrostContext, provider 
 			}
 			responsesResponse := chatCompletionResponse.ToBifrostResponsesResponse()
 			responsesResponse.BackfillParams(original)
+			// RawResponse is still the chat body; integrations must not echo it as Responses.
+			responsesResponse.ExtraFields.ConvertedRequestType = schemas.ChatCompletionRequest
 			response.ResponsesResponse = responsesResponse
 			providerUtils.RestoreResponsesNamespaceToolCalls(preparedRequest.NamespaceToolAliases, response)
 			return response.ResponsesResponse, nil
@@ -8984,6 +9031,10 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 					return nil, bifrostError
 				}
 				response.TextCompletionResponse = chatCompletionResponse.ToBifrostTextCompletionResponse()
+				if response.TextCompletionResponse != nil {
+					// RawResponse is still the chat body; integrations must not echo it as text.
+					response.TextCompletionResponse.ExtraFields.ConvertedRequestType = schemas.ChatCompletionRequest
+				}
 				break
 			}
 		}

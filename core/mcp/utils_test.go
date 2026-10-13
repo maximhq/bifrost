@@ -456,3 +456,66 @@ func TestCheckToolExecutionPermitted_PluginCannotCopyInjectedMarker(t *testing.T
 	assert.ErrorContains(t, checkToolExecutionPermitted(other, state, "tavily-search", m.logger), "ToolsToExecute",
 		"values copied out of an injected execution must not authorize another context")
 }
+
+// TestValidateMCPClientConfig_OpenAPI pins the config rules for the openapi
+// connection type: a spec source is mandatory, connection_string is not the way
+// to name the upstream, base_url must be absolute http(s), and the auth types
+// that drive an MCP handshake against a remote server are refused because the
+// synthesized server has no such remote.
+func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
+	str := func(s string) *string { return &s }
+	base := func(mutate func(c *schemas.MCPClientConfig)) *schemas.MCPClientConfig {
+		c := &schemas.MCPClientConfig{
+			ID:             "openapi-1",
+			Name:           "petstore",
+			ConnectionType: schemas.MCPConnectionTypeOpenAPI,
+			AuthType:       schemas.MCPAuthTypeNone,
+			OpenAPIConfig:  &schemas.MCPOpenAPIConfig{Spec: `{"openapi":"3.0.3","info":{"title":"p","version":"1"},"paths":{}}`},
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+	for _, tc := range []struct {
+		name    string
+		cfg     *schemas.MCPClientConfig
+		wantErr string
+	}{
+		{name: "inline spec, no auth", cfg: base(nil)},
+		{name: "spec_url only", cfg: base(func(c *schemas.MCPClientConfig) {
+			c.OpenAPIConfig = &schemas.MCPOpenAPIConfig{SpecURL: str("https://api.example.com/openapi.json")}
+		})},
+		{name: "spec_file only", cfg: base(func(c *schemas.MCPClientConfig) {
+			c.OpenAPIConfig = &schemas.MCPOpenAPIConfig{SpecFile: str("specs/petstore.yaml")}
+		})},
+		{name: "headers auth", cfg: base(func(c *schemas.MCPClientConfig) { c.AuthType = schemas.MCPAuthTypeHeaders })},
+		{name: "empty auth type", cfg: base(func(c *schemas.MCPClientConfig) { c.AuthType = "" })},
+		{name: "per-user headers", cfg: base(func(c *schemas.MCPClientConfig) {
+			c.AuthType = schemas.MCPAuthTypePerUserHeaders
+			c.PerUserHeaderKeys = []string{"X-User-Token"}
+		})},
+		{name: "absolute base url", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig.BaseURL = str("https://api.example.com/v1") })},
+		{name: "missing openapi_config", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig = nil }), wantErr: "openapi_config is required"},
+		{name: "no spec source", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig = &schemas.MCPOpenAPIConfig{} }), wantErr: "one of spec, spec_file or spec_url"},
+		{name: "connection_string set", cfg: base(func(c *schemas.MCPClientConfig) { c.ConnectionString = schemas.NewSecretVar("https://api.example.com") }), wantErr: "connection_string must not be set"},
+		{name: "relative base url", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig.BaseURL = str("/v1") }), wantErr: "base_url must be an absolute http(s) URL"},
+		{name: "non-http base url", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig.BaseURL = str("ftp://api.example.com") }), wantErr: "base_url must be an absolute http(s) URL"},
+		{name: "negative response cap", cfg: base(func(c *schemas.MCPClientConfig) { c.OpenAPIConfig.MaxResponseBytes = -1 }), wantErr: "max_response_bytes must not be negative"},
+		{name: "oauth refused", cfg: base(func(c *schemas.MCPClientConfig) { c.AuthType = schemas.MCPAuthTypeOauth }), wantErr: `auth_type "oauth" is not supported for openapi`},
+		{name: "per-user oauth refused", cfg: base(func(c *schemas.MCPClientConfig) { c.AuthType = schemas.MCPAuthTypePerUserOauth }), wantErr: "not supported for openapi"},
+		{name: "token exchange refused", cfg: base(func(c *schemas.MCPClientConfig) {
+			c.AuthType = schemas.MCPAuthTypeTokenExchange
+			c.TokenExchange = &schemas.MCPTokenExchangeConfig{Audience: "aud", UseIdPCredentials: true}
+		}), wantErr: "not supported for openapi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateMCPClientConfig(tc.cfg)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
