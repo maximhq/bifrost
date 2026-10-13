@@ -3711,6 +3711,7 @@ func (h *GovernanceHandler) createCustomer(ctx *fasthttp.RequestCtx) {
 		budgetRequests = []CreateBudgetRequest{{
 			MaxLimit:      req.Budget.MaxLimit,
 			ResetDuration: req.Budget.ResetDuration,
+			ResetConfig:   req.Budget.ResetConfig,
 		}}
 	}
 	var customer configstoreTables.TableCustomer

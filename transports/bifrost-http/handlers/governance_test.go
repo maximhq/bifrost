@@ -4040,7 +4040,10 @@ func TestCreateCustomer_CalendarAligned_SnapsBudgetLastReset(t *testing.T) {
 		"calendar_aligned": true,
 		"budget": map[string]any{
 			"max_limit":      100.0,
-			"reset_duration": "1M",
+			"reset_duration": "1Q",
+			"reset_config": map[string]any{
+				"quarter_start_month": 4,
+			},
 		},
 	})
 	ctx := &fasthttp.RequestCtx{}
@@ -4056,6 +4059,12 @@ func TestCreateCustomer_CalendarAligned_SnapsBudgetLastReset(t *testing.T) {
 		t.Fatalf("expected 1 created budget, got %d", len(store.createdBudgets))
 	}
 	b := store.createdBudgets[0]
+	if b.ResetConfig == nil {
+		t.Fatalf("expected ResetConfig to be preserved, got nil")
+	}
+	if b.ResetConfig.QuarterStartMonth != 4 {
+		t.Errorf("expected QuarterStartMonth=4, got %d", b.ResetConfig.QuarterStartMonth)
+	}
 	// Calendar-aligned LastReset must be at the start of the calendar period,
 	// which is always <= the beginning of the test, never a rolling time.Now().
 	if b.LastReset.After(before) {
