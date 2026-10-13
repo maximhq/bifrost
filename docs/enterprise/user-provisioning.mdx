@@ -420,6 +420,51 @@ When configuring attribute mappings for SCIM-provisioned users, the following at
 
 ---
 
+## Authenticate inference requests
+
+With a provider configured, inference requests can authenticate as an individual user, not only with a virtual key. Bifrost accepts these credentials on inference routes:
+
+| Credential | Sent as | Governed by |
+| --- | --- | --- |
+| Virtual key (`sk-bf-*`) | `Authorization: Bearer`, `x-bf-vk`, `x-api-key`, `x-goog-api-key`, or `api-key` | The virtual key |
+| Identity-provider access token | `Authorization: Bearer <token>` | The user the token identifies |
+| Bifrost session token, from [Bifrost CLI](/quickstart/cli/getting-started) or [Bifrost Edge](/edge/overview) sign-in | `Authorization: Bearer ck-bf-agent-…` | The signed-in user |
+
+Bifrost validates an identity-provider token with the configured provider on every request. When [`enforce_auth_on_inference`](/deployment-guides/config-json/client#security--cors) is on:
+
+- An invalid or expired token is rejected with `401`. Bifrost does not refresh tokens sent in a header; the client must send a current one.
+- A valid token for a user Bifrost does not know yet provisions that user, the same way an SSO sign-in does. The request is rejected with `403` if the token maps to no role or the user was deprovisioned.
+
+When enforcement is off, a token that fails validation does not block the request, and the request continues without a user identity.
+
+### Requests with both an identity token and a virtual key
+
+A request can carry an identity-provider token in `Authorization` and a virtual key in another header, for example `x-bf-vk`. **Dual Credential Conflict Behavior** decides which one Bifrost uses. Set it in the dashboard under **Settings → Security**, or with `client.dual_credential_conflict_behavior` in `config.json`.
+
+| Value | Dashboard label | Behavior | Use when |
+| --- | --- | --- | --- |
+| `prefer_idp` (default) | Prefer IDP token | Bifrost validates the token and attributes the request to the user. The virtual key is ignored for that request. | Usage, budgets, and rate limits should follow the individual user |
+| `prefer_vk` | Prefer virtual key | Bifrost authenticates and governs the request with the virtual key. The identity token is used only for [MCP token exchange](/mcp/auth/token-exchange). | A shared application authenticates with its own virtual key but forwards each user's token for MCP token exchange |
+| `error` | Reject request | Bifrost rejects the request with `400`. | You require exactly one credential per request |
+
+```json
+{
+  "client": {
+    "dual_credential_conflict_behavior": "prefer_idp"
+  }
+}
+```
+
+With Helm, set `bifrost.client.dualCredentialConflictBehavior`.
+
+<Note>
+  Under `prefer_idp`, the virtual key is not a fallback. If the identity token is invalid or expired and inference authentication is enforced, the request fails with `401` even though it also carries a valid virtual key.
+</Note>
+
+The setting applies only when the bearer token is an identity-provider JWT and another header carries a virtual key. Sending the same virtual key in both `Authorization` and `x-bf-vk` is not a conflict. Bifrost session tokens (`ck-bf-agent-…`) are also not subject to this setting.
+
+You cannot choose `error` while any MCP client uses `token_exchange` authentication, because token exchange relies on requests that carry both credentials. Bifrost rejects the change until those clients are removed.
+
 ## Inbound SCIM 2.0 provisioning
 
 Bifrost exposes a SCIM 2.0 endpoint that identity providers can use to push user and group changes in real time, without waiting for the next 24-hour reconciliation cycle.

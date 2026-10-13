@@ -10,18 +10,9 @@ Verify a pilot device before expanding the rollout. A connected tray state is ne
 
 Open the Bifrost Edge tray or menu-bar icon and select **Sign in**.
 
-<Tabs>
-  <Tab title="Identity provider">
-    Edge opens the Bifrost login page in the default browser. Complete your organization's identity-provider flow. When authorization succeeds, the browser hands the session back to the local Edge agent.
+Edge opens the Bifrost login page in the default browser. Complete your organization's SSO flow. When authorization succeeds, the browser hands the session back to the local Edge agent and the tray shows the signed-in user and **Connected**.
 
-    The tray shows the signed-in user and **Connected**.
-  </Tab>
-  <Tab title="Virtual key">
-    When no IdP is configured and **Allow virtual key sign-in** is enabled, select **Use Virtual Key**, enter an active Bifrost virtual key, and submit it.
-
-    The agent validates the key before storing it. The tray shows **Connected (virtual key)** after validation succeeds.
-  </Tab>
-</Tabs>
+If the tray reports **User provisioning not set up - contact your Bifrost admin**, the identity provider is not configured yet. Complete [Prepare identity and access](/edge/setup-bifrost) and sign in again.
 
 <Frame>
   <img src="/media/edge/edge-agent.png" alt="Connected Bifrost Edge menu showing budget usage, top models, top applications, and account, diagnostics, and support controls" />
@@ -31,11 +22,11 @@ Open the Bifrost Edge tray or menu-bar icon and select **Sign in**.
 
 On a direct macOS installation, approve the Bifrost certificate when prompted and complete the administrator authorization. A managed macOS device should already trust the CA through its device-scoped profile. Windows and Linux establish trust from the elevated agent.
 
-Until the active CA is trusted and remote signing is available, Edge passes traffic through without inspecting it.
+Until the certificate is trusted, Edge passes traffic through without inspecting it.
 
 ## 3. Restart the computer
 
-Restart the computer after the active CA is installed and trusted. This restart is required for the CA certificate change to take effect. If the active CA is replaced later, restart the computer again after it trusts the replacement.
+Restart the computer after the Edge certificate is trusted. The restart is required for the certificate change to take effect. If the certificate is replaced later, restart again after the device trusts the replacement.
 
 Do not continue to traffic verification until the computer has restarted.
 
@@ -52,9 +43,9 @@ Confirm the following groups have no unresolved failures:
 | Check | Healthy result |
 | --- | --- |
 | Background service | Running with system privileges |
-| Account | Signed in, or using a validated virtual key |
+| Account | Signed in as the expected user |
 | Configuration | A recent configuration version was fetched |
-| Certificate | The active certificate is installed, trusted, and ready for remote signing; applications accept the certificate |
+| Certificate | The active certificate is installed and trusted, and applications accept it |
 | Traffic capture | Interception is switched on, configured domains resolve, and network routes are installed |
 | Gateway | The configured Bifrost gateway responds |
 | MCP | The shim is running when MCP capture is configured |
@@ -83,7 +74,7 @@ Go to **Edge Control → Devices**. Find the pilot device and confirm:
 1. After the computer restarts, open the test AI application.
 2. Use an application listed in [Supported applications](/edge/supported-applications).
 3. Send a small test request.
-4. Confirm the request is visible in Bifrost logs with the intended user or virtual key.
+4. Confirm the request is visible in Bifrost logs, attributed to the signed-in user and their governed virtual key.
 5. Confirm the request receives the access-profile, budget, rate-limit, and guardrail behavior expected for that identity.
 
 <Note>
