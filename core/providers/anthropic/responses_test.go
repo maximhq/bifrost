@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -3323,5 +3324,151 @@ func TestClaudeCodeCacheMarkersOnGPTCallerExplicitModeWins(t *testing.T) {
 	}
 	if got := strings.Count(raw, `"prompt_cache_breakpoint"`); got != 3 {
 		t.Errorf("want 3 prompt_cache_breakpoint, got %d; raw=%s", got, raw)
+	}
+}
+
+// parallelToolsResponsesReq builds a two-tool Responses request for the parallel_tool_calls tests.
+func parallelToolsResponsesReq(choice *schemas.ResponsesToolChoice, parallel *bool) *schemas.BifrostResponsesRequest {
+	tool := func(name string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{
+			Type:                  schemas.ResponsesToolTypeFunction,
+			Name:                  schemas.Ptr(name),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+		}
+	}
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-5",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Tokyo, Paris and Lima?")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools:             []schemas.ResponsesTool{tool("get_weather"), tool("get_time")},
+			ToolChoice:        choice,
+			ParallelToolCalls: parallel,
+		},
+	}
+}
+
+// parallel_tool_calls: false on /v1/responses must reach Anthropic as
+// tool_choice.disable_parallel_tool_use, as it already does on the chat path.
+func TestToAnthropicResponsesRequest_ParallelToolCalls(t *testing.T) {
+	auto := string(schemas.ResponsesToolChoiceTypeAuto)
+	required := string(schemas.ResponsesToolChoiceTypeRequired)
+	none := string(schemas.ResponsesToolChoiceTypeNone)
+
+	tests := []struct {
+		name        string
+		choice      *schemas.ResponsesToolChoice
+		parallel    *bool
+		wantType    string // "" means no tool_choice is sent
+		wantDisable bool
+	}{
+		{"false with no tool choice synthesizes auto", nil, schemas.Ptr(false), "auto", true},
+		{"false with auto", &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &auto}, schemas.Ptr(false), "auto", true},
+		{"false with required", &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &required}, schemas.Ptr(false), "any", true},
+		{"false with none is not sent", &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &none}, schemas.Ptr(false), "none", false},
+		{"true sends nothing", nil, schemas.Ptr(true), "", false},
+		{"unset sends nothing", nil, nil, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			out, err := ToAnthropicResponsesRequest(ctx, parallelToolsResponsesReq(tt.choice, tt.parallel))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantType == "" {
+				if out.ToolChoice != nil {
+					t.Fatalf("expected no tool_choice, got %+v", out.ToolChoice)
+				}
+				return
+			}
+			if out.ToolChoice == nil {
+				t.Fatalf("expected tool_choice type %q, got nil", tt.wantType)
+			}
+			if out.ToolChoice.Type != tt.wantType {
+				t.Errorf("tool_choice.type = %q, want %q", out.ToolChoice.Type, tt.wantType)
+			}
+			gotDisable := out.ToolChoice.DisableParallelToolUse != nil && *out.ToolChoice.DisableParallelToolUse
+			if gotDisable != tt.wantDisable {
+				t.Errorf("disable_parallel_tool_use = %s, want %v", boolPtrString(out.ToolChoice.DisableParallelToolUse), tt.wantDisable)
+			}
+		})
+	}
+}
+
+// tool_choice.disable_parallel_tool_use on /anthropic/v1/messages must become
+// ParallelToolCalls so non-Anthropic targets (Bedrock Converse, OpenAI) honor it too.
+func TestAnthropicIngress_DisableParallelToolUseMapsToParallelToolCalls(t *testing.T) {
+	tests := []struct {
+		name    string
+		disable *bool
+		want    *bool
+	}{
+		{"disable true", schemas.Ptr(true), schemas.Ptr(false)},
+		{"disable false", schemas.Ptr(false), schemas.Ptr(true)},
+		{"absent", nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &AnthropicMessageRequest{
+				Model:      "claude-sonnet-5",
+				MaxTokens:  256,
+				Messages:   []AnthropicMessage{{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentStr: schemas.Ptr("Weather in Tokyo and Paris?")}}},
+				Tools:      []AnthropicTool{{Name: "get_weather", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}}},
+				ToolChoice: &AnthropicToolChoice{Type: "auto", DisableParallelToolUse: tt.disable},
+			}
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			got := bifrostReq.Params.ParallelToolCalls
+			if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
+				t.Fatalf("ParallelToolCalls = %s, want %s", boolPtrString(got), boolPtrString(tt.want))
+			}
+
+			// Round trip back to Anthropic keeps the instruction.
+			out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("egress error: %v", err)
+			}
+			if out.ToolChoice == nil || out.ToolChoice.Type != "auto" {
+				t.Fatalf("expected tool_choice auto after round trip, got %+v", out.ToolChoice)
+			}
+			gotDisable := out.ToolChoice.DisableParallelToolUse != nil && *out.ToolChoice.DisableParallelToolUse
+			wantDisable := tt.disable != nil && *tt.disable
+			if gotDisable != wantDisable {
+				t.Errorf("round-trip disable_parallel_tool_use = %s, want %v", boolPtrString(out.ToolChoice.DisableParallelToolUse), wantDisable)
+			}
+		})
+	}
+}
+
+func boolPtrString(b *bool) string {
+	if b == nil {
+		return "<nil>"
+	}
+	return fmt.Sprint(*b)
+}
+
+// BenchmarkToAnthropicResponsesRequestParallelToolCalls measures the Responses
+// conversion with parallel_tool_calls unset (the common case) and false.
+func BenchmarkToAnthropicResponsesRequestParallelToolCalls(b *testing.B) {
+	for _, bc := range []struct {
+		name     string
+		parallel *bool
+	}{
+		{"unset", nil},
+		{"false", schemas.Ptr(false)},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := ToAnthropicResponsesRequest(ctx, parallelToolsResponsesReq(nil, bc.parallel)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }
