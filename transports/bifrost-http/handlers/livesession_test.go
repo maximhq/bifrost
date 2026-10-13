@@ -2,19 +2,472 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
+
+// liveOwnerStore is a config store that only remembers provider objects, the way the real one
+// records which virtual key opened a live session.
+type liveOwnerStore struct {
+	configstore.ConfigStore
+	mu        sync.Mutex
+	objects   map[string]*tables.TableProviderObject
+	err       error // returned by every call when set
+	upsertErr error // returned by writes alone when set
+}
+
+func (s *liveOwnerStore) UpsertProviderObject(_ context.Context, object *tables.TableProviderObject) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	if s.upsertErr != nil {
+		return s.upsertErr
+	}
+	if s.objects == nil {
+		s.objects = make(map[string]*tables.TableProviderObject)
+	}
+	if _, exists := s.objects[object.ID]; !exists {
+		copied := *object
+		s.objects[object.ID] = &copied
+	}
+	return nil
+}
+
+func (s *liveOwnerStore) GetProviderObjectsByIDs(_ context.Context, ids []string) ([]*tables.TableProviderObject, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	var objects []*tables.TableProviderObject
+	for _, id := range ids {
+		if object, ok := s.objects[id]; ok {
+			objects = append(objects, object)
+		}
+	}
+	return objects, nil
+}
+
+func (s *liveOwnerStore) GetProviderObjectsByObjectID(_ context.Context, kind, objectID string) ([]*tables.TableProviderObject, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return nil, s.err
+	}
+	var objects []*tables.TableProviderObject
+	for _, object := range s.objects {
+		if object.Kind == kind && object.ObjectID == objectID {
+			objects = append(objects, object)
+		}
+	}
+	return objects, nil
+}
+
+func (s *liveOwnerStore) owner(kind, provider, id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if object, ok := s.objects[tables.ProviderObjectID(kind, provider, id)]; ok {
+		return object.VirtualKeyID
+	}
+	return ""
+}
+
+// nopLiveIO is a session transport that drops every write.
+type nopLiveIO struct{}
+
+func (nopLiveIO) sendUpstream([]byte) error { return nil }
+func (nopLiveIO) sendClient([]byte) error   { return nil }
+func (nopLiveIO) abandonUpstream()          {}
+
+// capturingLiveIO is a session transport that keeps every write.
+type capturingLiveIO struct {
+	mu       sync.Mutex
+	upstream []string
+	client   []string
+}
+
+func (r *capturingLiveIO) sendUpstream(message []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.upstream = append(r.upstream, string(message))
+	return nil
+}
+
+func (r *capturingLiveIO) sendClient(message []byte) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.client = append(r.client, string(message))
+	return nil
+}
+
+func (r *capturingLiveIO) abandonUpstream() {}
+
+func (r *capturingLiveIO) sent() (upstream, client []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.upstream...), append([]string(nil), r.client...)
+}
+
+// newLiveOwnerTestGateway returns a gateway over a real client with one OpenAI key, so admission
+// selects a key and opens billing the way the handlers do, and the given store for ownership.
+// Each extra name is configured as a custom provider on OpenAI's API with its own key.
+func newLiveOwnerTestGateway(t *testing.T, store configstore.ConfigStore, extra ...schemas.ModelProvider) *liveGateway {
+	t.Helper()
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{EnforceVKObjectOwnership: true}, // the default; ClientConfig{} literals are off
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-1", Name: "openai", Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}}},
+		},
+	}
+	for _, name := range extra {
+		config.Providers[name] = configstore.ProviderConfig{
+			Keys:                 []schemas.Key{{ID: "key-" + string(name), Name: string(name), Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}},
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI},
+		}
+	}
+	if store != nil {
+		config.ConfigStore = store
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(config),
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	config.SetBifrostClient(client)
+	return &liveGateway{client: client, config: config, handlerStore: config}
+}
+
+// liveCallerCtx is the pre-request context of a caller, as the pre-request pipeline leaves it:
+// with a Grant whose identity carries the resolved virtual key when the caller presented one.
+func liveCallerCtx(t *testing.T, vkID string) *schemas.BifrostContext {
+	t.Helper()
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	t.Cleanup(cancel)
+	ctx.SetGrant(grant.New())
+	if vkID != "" {
+		ctx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-"+vkID)
+		ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-"+vkID), nil, &schemas.EntityRef{ID: vkID, Name: vkID}, nil, nil, nil, nil))
+	}
+	return ctx
+}
+
+// TestLiveSessionsBindToTheVirtualKeyThatOpenedThem pins that a live session belongs to the
+// virtual key that opened it, as batches and files do: the provider's session id is recorded
+// under that key when it becomes known, on the WebRTC create response and on the WebSocket
+// session.started frame, and a route on the session from another virtual key is refused as not
+// found before a key is selected or anything is dialed.
+func TestLiveSessionsBindToTheVirtualKeyThatOpenedThem(t *testing.T) {
+	t.Parallel()
+
+	store := &liveOwnerStore{}
+	g := newLiveOwnerTestGateway(t, store)
+	const path = "/v1/live/sessions"
+	open := func(t *testing.T, vkID string) *liveAdmission {
+		t.Helper()
+		target := liveTarget{provider: &fakeLiveWebRTCProvider{}, providerKey: schemas.OpenAI, voiceModel: "gpt-live-1"}
+		admission, bifrostErr := g.admit(&authHeaders{}, liveCallerCtx(t, vkID), map[any]any{}, path, target, "bf-"+vkID)
+		if bifrostErr != nil {
+			t.Fatalf("admission refused: %d %s", *bifrostErr.StatusCode, bifrostErr.Error.Message)
+		}
+		t.Cleanup(admission.cancel)
+		return admission
+	}
+
+	// A WebRTC session is bound when the create response names it.
+	webrtc := open(t, "vk-a")
+	created, _, bifrostErr := createLiveWebRTCSession(webrtc, []byte(`{"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"offer"}}`), "bifrost offer")
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "vk-a", store.owner(tables.ProviderObjectKindLiveSession, "openai", created.Session.ID), "the WebRTC create binds the session to the key that opened it")
+
+	// A WebSocket session is bound when session.started names it.
+	websocket := open(t, "vk-a")
+	websocket.controller(g, nopLiveIO{}).fromUpstream([]byte(`{"type":"session.started","session":{"id":"live_ws"}}`))
+	assert.Equal(t, "vk-a", store.owner(tables.ProviderObjectKindLiveSession, "openai", "live_ws"), "session.started binds the session to the key that opened it")
+
+	// A session opened with no virtual key is nobody's.
+	anonymous := open(t, "")
+	anonymous.controller(g, nopLiveIO{}).fromUpstream([]byte(`{"type":"session.started","session":{"id":"live_open"}}`))
+	assert.Empty(t, store.owner(tables.ProviderObjectKindLiveSession, "openai", "live_open"))
+
+	resolve := func(t *testing.T, g *liveGateway, route, vkID, sessionID string) (*fasthttp.RequestCtx, bool) {
+		t.Helper()
+		preReqCtx := liveCallerCtx(t, vkID)
+		req := &liveRequest{path: path + "/" + sessionID + "/" + route, auth: &authHeaders{}, preReqCtx: preReqCtx, cancel: func() {}, middlewareValues: map[any]any{}}
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(req.path)
+		ctx.SetUserValue("session_id", sessionID)
+		return ctx, g.resolveSession(ctx, req)
+	}
+	for _, route := range []string{"content", "attach"} {
+		t.Run(route, func(t *testing.T) {
+			for _, sessionID := range []string{created.Session.ID, "live_ws"} {
+				ctx, ok := resolve(t, g, route, "vk-b", sessionID)
+				assert.False(t, ok, "%s of %s by another key must be refused", route, sessionID)
+				assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+				assert.Contains(t, string(ctx.Response.Body()), "live session not found")
+
+				ctx, ok = resolve(t, g, route, "vk-a", sessionID)
+				assert.True(t, ok, "the key that opened %s keeps it; body=%s", sessionID, ctx.Response.Body())
+			}
+			// A caller with no virtual key is unrestricted, and a session nobody recorded stays reachable.
+			_, ok := resolve(t, g, route, "", created.Session.ID)
+			assert.True(t, ok)
+			_, ok = resolve(t, g, route, "vk-b", "live_open")
+			assert.True(t, ok)
+			_, ok = resolve(t, g, route, "vk-b", "live_never_opened")
+			assert.True(t, ok)
+		})
+	}
+
+	// A virtual-key caller cannot be checked without a config store, or when the store fails.
+	ctx, ok := resolve(t, newLiveOwnerTestGateway(t, nil), "content", "vk-b", "live_ws")
+	assert.False(t, ok)
+	assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+	assert.Contains(t, string(ctx.Response.Body()), "config store")
+	ctx, ok = resolve(t, newLiveOwnerTestGateway(t, &liveOwnerStore{err: errors.New("db down")}), "attach", "vk-b", "live_ws")
+	assert.False(t, ok)
+	assert.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+	assert.NotContains(t, string(ctx.Response.Body()), "db down", "store errors stay in the server log")
+}
+
+// With client.enforce_vk_object_ownership turned off a live session is reachable by every
+// virtual key, but its opener is still recorded, so turning the setting back on binds it. Recording
+// does not depend on the setting: a virtual-key session that cannot be recorded (no config store,
+// or a failed owner write) is refused either way, so no session exists that a later switch-on
+// could not bind.
+func TestLiveSessionOwnershipFollowsTheClientSetting(t *testing.T) {
+	t.Parallel()
+
+	const path = "/v1/live/sessions"
+	target := liveTarget{provider: &fakeLiveWebRTCProvider{}, providerKey: schemas.OpenAI, voiceModel: "gpt-live-1"}
+	offer := []byte(`{"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"offer"}}`)
+	gatewayOff := func(t *testing.T, store configstore.ConfigStore) *liveGateway {
+		g := newLiveOwnerTestGateway(t, store)
+		g.config.ClientConfig.EnforceVKObjectOwnership = false
+		return g
+	}
+	resolve := func(t *testing.T, g *liveGateway, vkID, sessionID string) (*fasthttp.RequestCtx, bool) {
+		t.Helper()
+		req := &liveRequest{path: path + "/" + sessionID + "/content", auth: &authHeaders{}, preReqCtx: liveCallerCtx(t, vkID), cancel: func() {}, middlewareValues: map[any]any{}}
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(req.path)
+		ctx.SetUserValue("session_id", sessionID)
+		return ctx, g.resolveSession(ctx, req)
+	}
+
+	store := &liveOwnerStore{}
+	g := gatewayOff(t, store)
+	admission, bifrostErr := g.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-off")
+	require.Nil(t, bifrostErr)
+	t.Cleanup(admission.cancel)
+	created, _, bifrostErr := createLiveWebRTCSession(admission, offer, "bifrost offer")
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "vk-a", store.owner(tables.ProviderObjectKindLiveSession, "openai", created.Session.ID), "the opener is recorded while the setting is off")
+	ctx, ok := resolve(t, g, "vk-b", created.Session.ID)
+	assert.True(t, ok, "another key reaches the session while the setting is off; body=%s", ctx.Response.Body())
+
+	g.config.ClientConfig.EnforceVKObjectOwnership = true
+	ctx, ok = resolve(t, g, "vk-b", created.Session.ID)
+	assert.False(t, ok, "another key is refused once the setting is on")
+	assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+
+	// No config store: a virtual-key session is refused at admission while the setting is off.
+	noStore := gatewayOff(t, nil)
+	admission, bifrostErr = noStore.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-off-nostore")
+	if admission != nil {
+		t.Cleanup(admission.cancel)
+	}
+	require.NotNil(t, bifrostErr, "a virtual-key session without a config store is refused while the setting is off")
+	assert.Equal(t, 403, *bifrostErr.StatusCode)
+
+	// A failed owner write ends the session while the setting is off.
+	failing := gatewayOff(t, &liveOwnerStore{upsertErr: errors.New("db down")})
+	admission, bifrostErr = failing.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-off-failing")
+	require.Nil(t, bifrostErr)
+	t.Cleanup(admission.cancel)
+	_, _, bifrostErr = createLiveWebRTCSession(admission, offer, "bifrost offer")
+	require.NotNil(t, bifrostErr, "a session whose owner cannot be recorded is refused while the setting is off")
+}
+
+// A config save copies the whole client config in under Config.Mu while live routes read the
+// ownership setting. The read must take the same lock, or the race detector reports the two.
+func TestLiveSessionOwnershipReadIsOrderedWithConfigSaves(t *testing.T) {
+	t.Parallel()
+
+	g := newLiveOwnerTestGateway(t, &liveOwnerStore{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			updated := *g.config.ClientConfig
+			updated.EnforceVKObjectOwnership = i%2 == 0
+			g.config.Mu.Lock()
+			*g.config.ClientConfig = updated
+			g.config.Mu.Unlock()
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		_ = g.ownershipEnforced()
+	}
+	<-done
+}
+
+// The control routes resolve their provider by the path and, off a provider route, prefer openai
+// among the configured providers that serve live sessions. A session opened on another such
+// provider (a custom provider on OpenAI's API) is recorded under that provider's name, and must
+// still be found when the control route resolves to openai: the id names the same upstream session.
+func TestLiveSessionOwnerIsFoundUnderEveryLiveProvider(t *testing.T) {
+	t.Parallel()
+
+	store := &liveOwnerStore{}
+	g := newLiveOwnerTestGateway(t, store, "custom-live")
+	require.NoError(t, store.UpsertProviderObject(context.Background(), &tables.TableProviderObject{
+		ID:           tables.ProviderObjectID(tables.ProviderObjectKindLiveSession, "custom-live", "live_custom"),
+		Kind:         tables.ProviderObjectKindLiveSession,
+		Provider:     "custom-live",
+		ObjectID:     "live_custom",
+		VirtualKeyID: "vk-a",
+	}))
+	resolve := func(t *testing.T, vkID string) (*fasthttp.RequestCtx, bool) {
+		t.Helper()
+		req := &liveRequest{path: "/v1/live/sessions/live_custom/content", auth: &authHeaders{}, preReqCtx: liveCallerCtx(t, vkID), cancel: func() {}, middlewareValues: map[any]any{}}
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(req.path)
+		ctx.SetUserValue("session_id", "live_custom")
+		ok := g.resolveSession(ctx, req)
+		if ok {
+			assert.Equal(t, schemas.OpenAI, req.providerKey, "the control route resolves to openai")
+		}
+		return ctx, ok
+	}
+
+	ctx, ok := resolve(t, "vk-b")
+	assert.False(t, ok, "another key must not reach a session recorded under the custom provider's name; body=%s", ctx.Response.Body())
+	assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode())
+
+	_, ok = resolve(t, "vk-a")
+	assert.True(t, ok, "the key that opened it keeps it")
+}
+
+// A session's owner record outlives the provider name it was recorded under. If the custom
+// provider that opened a session is deleted while another provider still reaches the same
+// upstream, the session must stay its opener's: the owner is looked up by the session id, not by
+// the provider names configured now.
+func TestLiveSessionOwnerSurvivesRemovalOfTheOpeningProvider(t *testing.T) {
+	t.Parallel()
+
+	store := &liveOwnerStore{}
+	g := newLiveOwnerTestGateway(t, store) // custom-live is no longer configured; only openai is
+	require.NoError(t, store.UpsertProviderObject(context.Background(), &tables.TableProviderObject{
+		ID:           tables.ProviderObjectID(tables.ProviderObjectKindLiveSession, "custom-live", "live_orphaned"),
+		Kind:         tables.ProviderObjectKindLiveSession,
+		Provider:     "custom-live",
+		ObjectID:     "live_orphaned",
+		VirtualKeyID: "vk-a",
+	}))
+	resolve := func(t *testing.T, vkID string) (*fasthttp.RequestCtx, bool) {
+		t.Helper()
+		req := &liveRequest{path: "/v1/live/sessions/live_orphaned/content", auth: &authHeaders{}, preReqCtx: liveCallerCtx(t, vkID), cancel: func() {}, middlewareValues: map[any]any{}}
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(req.path)
+		ctx.SetUserValue("session_id", "live_orphaned")
+		return ctx, g.resolveSession(ctx, req)
+	}
+
+	ctx, ok := resolve(t, "vk-b")
+	assert.False(t, ok, "another key must not reach a session whose opening provider was removed; body=%s", ctx.Response.Body())
+	assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode())
+
+	_, ok = resolve(t, "vk-a")
+	assert.True(t, ok, "the key that opened it keeps it")
+}
+
+// A session whose opener cannot be recorded is refused, not opened unbound: a WebRTC create
+// answers an error, and a WebSocket session is ended with an error to the client before the
+// provider's session id is forwarded, so no other key can ever address it.
+func TestLiveSessionIsRefusedWhenItsOwnerCannotBeRecorded(t *testing.T) {
+	t.Parallel()
+
+	store := &liveOwnerStore{upsertErr: errors.New("db down")}
+	g := newLiveOwnerTestGateway(t, store)
+	const path = "/v1/live/sessions"
+	open := func(t *testing.T) *liveAdmission {
+		t.Helper()
+		target := liveTarget{provider: &fakeLiveWebRTCProvider{}, providerKey: schemas.OpenAI, voiceModel: "gpt-live-1"}
+		admission, bifrostErr := g.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-refused")
+		if bifrostErr != nil {
+			t.Fatalf("admission refused: %d %s", *bifrostErr.StatusCode, bifrostErr.Error.Message)
+		}
+		t.Cleanup(admission.cancel)
+		return admission
+	}
+
+	created, _, bifrostErr := createLiveWebRTCSession(open(t), []byte(`{"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"offer"}}`), "bifrost offer")
+	require.NotNil(t, bifrostErr, "a WebRTC session whose owner cannot be recorded is refused")
+	assert.Nil(t, created)
+	assert.Equal(t, 500, *bifrostErr.StatusCode)
+	assert.NotContains(t, bifrostErr.Error.Message, "db down", "store errors stay in the server log")
+
+	io := &capturingLiveIO{}
+	controller := open(t).controller(g, io)
+	controller.fromUpstream([]byte(`{"type":"session.started","session":{"id":"live_unrecorded"}}`))
+	upstream, client := io.sent()
+	require.Len(t, client, 1, "the client is told the session is ending")
+	assert.Contains(t, client[0], `"type":"error"`)
+	assert.NotContains(t, client[0], "db down")
+	assert.Equal(t, []string{`{"type":"session.close"}`}, upstream, "the session is closed upstream")
+	assert.Empty(t, store.owner(tables.ProviderObjectKindLiveSession, "openai", "live_unrecorded"))
+}
+
+// Without a config store a session cannot be bound to the virtual key that opened it, and the
+// control routes refuse virtual keys there, so the opener could never reach its own session again.
+// A virtual-key session is refused at admission, with the reason, before the provider is called or
+// the session's billing is opened, so the refused caller is never charged the minimum; a session
+// opened with no virtual key is nobody's and still opens.
+func TestLiveSessionWithAVirtualKeyIsRefusedWithoutAConfigStore(t *testing.T) {
+	t.Parallel()
+
+	g := newLiveOwnerTestGateway(t, nil)
+	const path = "/v1/live/sessions"
+	provider := &fakeLiveWebRTCProvider{}
+	target := liveTarget{provider: provider, providerKey: schemas.OpenAI, voiceModel: "gpt-live-1"}
+
+	admission, bifrostErr := g.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-nostore-vk-a")
+	if admission != nil {
+		t.Cleanup(admission.cancel)
+	}
+	require.NotNil(t, bifrostErr, "a virtual-key session is refused at admission without a config store")
+	assert.Nil(t, admission, "no admission, so no billing is opened and no provider is called")
+	assert.Equal(t, 403, *bifrostErr.StatusCode)
+	assert.Contains(t, bifrostErr.Error.Message, "config store")
+	assert.Nil(t, provider.body, "the provider was never asked to open the session")
+
+	admission, bifrostErr = g.admit(&authHeaders{}, liveCallerCtx(t, ""), map[any]any{}, path, target, "bf-nostore-none")
+	require.Nil(t, bifrostErr, "a session opened with no virtual key is admitted without a config store")
+	t.Cleanup(admission.cancel)
+	created, _, bifrostErr := createLiveWebRTCSession(admission, []byte(`{"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"offer"}}`), "bifrost offer")
+	require.Nil(t, bifrostErr, "a session opened with no virtual key still opens without a config store")
+	assert.NotNil(t, created)
+}
 
 func TestLiveBackendModelAndRewrite(t *testing.T) {
 	t.Parallel()
@@ -460,4 +913,55 @@ func TestLiveControlProviderNameReadsQueryThenHeader(t *testing.T) {
 	assert.Equal(t, "openai-custom", liveControlProviderName(ctx))
 	ctx.Request.SetRequestURI("/v1/live/sessions/live_1/content?provider=openai")
 	assert.Equal(t, "openai", liveControlProviderName(ctx), "the query parameter wins over the header")
+}
+
+// BenchmarkLiveSessionControlRoute measures resolving a control route on an existing live session
+// (GET /v1/live/sessions/{id}/content) for a caller with a virtual key, against a real SQLite
+// config store: the route's provider resolution and the session ownership check.
+func BenchmarkLiveSessionControlRoute(b *testing.B) {
+	SetLogger(&mockLogger{})
+	store, err := configstore.NewConfigStore(context.Background(), &configstore.Config{
+		Enabled: true,
+		Type:    configstore.ConfigStoreTypeSQLite,
+		Config:  &configstore.SQLiteConfig{Path: b.TempDir() + "/bench.db"},
+	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer store.Close(context.Background())
+	config := &lib.Config{
+		ClientConfig: &configstore.ClientConfig{},
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-1", Name: "openai", Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}}},
+		},
+		ConfigStore: store,
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: lib.NewBaseAccount(config), Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer client.Shutdown()
+	config.SetBifrostClient(client)
+	g := &liveGateway{client: client, config: config, handlerStore: config}
+	const path = "/v1/live/sessions/live_bench/content"
+	// "on" is the default and runs the ownership lookup; "off" is client.enforce_vk_object_ownership: false.
+	for _, mode := range []string{"off", "on"} {
+		b.Run(mode, func(b *testing.B) {
+			config.ClientConfig.EnforceVKObjectOwnership = mode == "on"
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				preReqCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				preReqCtx.SetGrant(grant.New())
+				preReqCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-vk-a")
+				preReqCtx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-vk-a"), nil, &schemas.EntityRef{ID: "vk-a", Name: "vk-a"}, nil, nil, nil, nil))
+				req := &liveRequest{path: path, auth: &authHeaders{}, preReqCtx: preReqCtx, cancel: func() {}, middlewareValues: map[any]any{}}
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.SetRequestURI(path)
+				ctx.SetUserValue("session_id", "live_bench")
+				g.resolveSession(ctx, req)
+				cancel()
+			}
+		})
+	}
 }

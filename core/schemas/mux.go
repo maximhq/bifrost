@@ -1627,6 +1627,9 @@ func (cr *BifrostChatResponse) ToBifrostResponsesResponse() *BifrostResponsesRes
 		Object:        "response",
 		CreatedAt:     cr.Created,
 		Model:         cr.Model,
+		ServiceTier:   cr.ServiceTier,
+		Speed:         cr.Speed,
+		InferenceGeo:  cr.InferenceGeo,
 		Citations:     cr.Citations,
 		SearchResults: cr.SearchResults,
 		Videos:        cr.Videos,
@@ -1696,6 +1699,9 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 		Created:       responsesResp.CreatedAt,
 		Object:        "chat.completion",
 		Model:         responsesResp.Model,
+		ServiceTier:   responsesResp.ServiceTier,
+		Speed:         responsesResp.Speed,
+		InferenceGeo:  responsesResp.InferenceGeo,
 		Citations:     responsesResp.Citations,
 		SearchResults: responsesResp.SearchResults,
 		Videos:        responsesResp.Videos,
@@ -1744,27 +1750,30 @@ func (responsesResp *BifrostResponsesResponse) ToBifrostChatResponse() *BifrostC
 
 // ChatToResponsesStreamState tracks state during Chat-to-Responses streaming conversion
 type ChatToResponsesStreamState struct {
-	ToolArgumentBuffers   map[string]string // Maps tool call ID to accumulated argument JSON
-	ItemIDs               map[string]string // Maps tool call ID to item ID
-	ToolCallNames         map[string]string // Maps tool call ID to tool name
-	ToolCallIndexToID     map[uint16]string // Maps tool call index to tool call ID (for lookups when ID is missing)
-	MessageID             *string           // Message ID from first chunk
-	Model                 *string           // Model name
-	CreatedAt             int               // Timestamp for created_at consistency
-	HasEmittedCreated     bool              // Whether we've emitted response.created
-	HasEmittedInProgress  bool              // Whether we've emitted response.in_progress
-	TextItemAdded         bool              // Whether text item has been added
-	TextItemClosed        bool              // Whether text item has been closed
-	TextItemHasContent    bool              // Whether text item has received any content deltas
-	TextBuffer            strings.Builder   // Accumulated text deltas for output_text.done/content_part.done
-	TextOutputIndex       int               // Output index assigned to the text/message item
-	ReasoningItemAdded    bool              // Whether the reasoning item has been opened
-	ReasoningItemClosed   bool              // Whether the reasoning item has been closed
-	ReasoningOutputIndex  int               // Output index assigned to the reasoning item
-	ReasoningBuffer       strings.Builder   // Accumulated reasoning deltas for reasoning output_item.done
-	CurrentOutputIndex    int               // Current output index counter
-	ToolCallOutputIndices map[string]int    // Maps tool call ID to output index
-	SequenceNumber        int               // Monotonic sequence number across all chunks
+	ToolArgumentBuffers   map[string]string   // Maps tool call ID to accumulated argument JSON
+	ItemIDs               map[string]string   // Maps tool call ID to item ID
+	ToolCallNames         map[string]string   // Maps tool call ID to tool name
+	ToolCallIndexToID     map[uint16]string   // Maps tool call index to tool call ID (for lookups when ID is missing)
+	MessageID             *string             // Message ID from first chunk
+	Model                 *string             // Model name
+	CreatedAt             int                 // Timestamp for created_at consistency
+	HasEmittedCreated     bool                // Whether we've emitted response.created
+	HasEmittedInProgress  bool                // Whether we've emitted response.in_progress
+	TextItemAdded         bool                // Whether text item has been added
+	TextItemClosed        bool                // Whether text item has been closed
+	TextItemHasContent    bool                // Whether text item has received any content deltas
+	TextBuffer            strings.Builder     // Accumulated text deltas for output_text.done/content_part.done
+	TextOutputIndex       int                 // Output index assigned to the text/message item
+	ReasoningItemAdded    bool                // Whether the reasoning item has been opened
+	ReasoningItemClosed   bool                // Whether the reasoning item has been closed
+	ReasoningOutputIndex  int                 // Output index assigned to the reasoning item
+	ReasoningBuffer       strings.Builder     // Accumulated reasoning deltas for reasoning output_item.done
+	CurrentOutputIndex    int                 // Current output index counter
+	ToolCallOutputIndices map[string]int      // Maps tool call ID to output index
+	SequenceNumber        int                 // Monotonic sequence number across all chunks
+	ServiceTier           *BifrostServiceTier // Served tier from the latest chunk that carried one
+	Speed                 *string             // Served speed from the latest chunk that carried one
+	InferenceGeo          *string             // Served inference geo from the latest chunk that carried one
 }
 
 // chatToResponsesStreamStatePool provides a pool for ChatToResponsesStreamState objects.
@@ -1836,6 +1845,9 @@ func AcquireChatToResponsesStreamState() *ChatToResponsesStreamState {
 	state.ReasoningOutputIndex = 0
 	state.ReasoningBuffer = strings.Builder{}
 	state.SequenceNumber = 0
+	state.ServiceTier = nil
+	state.Speed = nil
+	state.InferenceGeo = nil
 	return state
 }
 
@@ -1875,6 +1887,9 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 		state.ReasoningOutputIndex = 0
 		state.ReasoningBuffer = strings.Builder{}
 		state.SequenceNumber = 0
+		state.ServiceTier = nil
+		state.Speed = nil
+		state.InferenceGeo = nil
 		chatToResponsesStreamStatePool.Put(state)
 	}
 }
@@ -1885,6 +1900,19 @@ func ReleaseChatToResponsesStreamState(state *ChatToResponsesStreamState) {
 func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToResponsesStreamState) []*BifrostResponsesStreamResponse {
 	if cr == nil || state == nil {
 		return nil
+	}
+
+	// OpenAI sends the served tier on every chunk and Anthropic-shaped upstreams on
+	// only some, so remember the latest one seen for the terminal response, including
+	// from a chunk that carries no choices.
+	if cr.ServiceTier != nil {
+		state.ServiceTier = cr.ServiceTier
+	}
+	if cr.Speed != nil {
+		state.Speed = cr.Speed
+	}
+	if cr.InferenceGeo != nil {
+		state.InferenceGeo = cr.InferenceGeo
 	}
 
 	// If no choices to convert, return early
@@ -2459,6 +2487,9 @@ func (cr *BifrostChatResponse) ToBifrostResponsesStreamResponse(state *ChatToRes
 			Status:            &responseStatus,
 			StopReason:        responsesStopReasonFromChatFinishReason(choice.FinishReason),
 			IncompleteDetails: terminalIncompleteDetails,
+			ServiceTier:       state.ServiceTier,
+			Speed:             state.Speed,
+			InferenceGeo:      state.InferenceGeo,
 		}
 
 		if state.Model != nil {
@@ -2607,6 +2638,9 @@ func (rsr *BifrostResponsesStreamResponse) ToBifrostChatResponse() *BifrostChatR
 		}
 		resp.Created = rsr.Response.CreatedAt
 		resp.Model = rsr.Response.Model
+		resp.ServiceTier = rsr.Response.ServiceTier
+		resp.Speed = rsr.Response.Speed
+		resp.InferenceGeo = rsr.Response.InferenceGeo
 	}
 
 	switch rsr.Type {

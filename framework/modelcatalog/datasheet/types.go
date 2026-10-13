@@ -651,6 +651,15 @@ func extractSupportedParams(parsed *schemas.ModelCapabilities) []string {
 	if parsed.SupportsNoneReasoningEffort != nil && *parsed.SupportsNoneReasoningEffort {
 		addParam("supports_none_reasoning_effort")
 	}
+	if parsed.SupportsReasoningSummaryDetailed == nil || *parsed.SupportsReasoningSummaryDetailed {
+		addParam("reasoning_summary_detailed")
+	}
+	if parsed.SupportsReasoningSummaryConcise == nil || *parsed.SupportsReasoningSummaryConcise {
+		addParam("reasoning_summary_concise")
+	}
+	if parsed.SupportsReasoningSummaryAuto == nil || *parsed.SupportsReasoningSummaryAuto {
+		addParam("reasoning_summary_auto")
+	}
 	if parsed.SupportsResponseSchema != nil && *parsed.SupportsResponseSchema {
 		addParam("response_format")
 		addParam("text")

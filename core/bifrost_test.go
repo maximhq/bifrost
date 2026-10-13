@@ -17,8 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/keyselectors"
+	"github.com/maximhq/bifrost/core/mcp"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/text/cases"
@@ -807,6 +809,22 @@ func BenchmarkCalculateBackoff(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		calculateBackoff(i%10, config)
+	}
+}
+
+// BenchmarkAgentContinuationChecksOnPlainRequest measures what the MCP agent-loop continuation
+// and MCP-instructions cache-placement checks add to a request that uses neither: one context
+// lookup each, expected to allocate nothing.
+func BenchmarkAgentContinuationChecksOnPlainRequest(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-4o-mini")
+	input := []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if agentContinuationRoute(ctx) != nil || injectedMCPInstructionsChatIndex(ctx, input) != -1 {
+			b.Fatal("plain request read as an agent continuation")
+		}
 	}
 }
 
@@ -3491,6 +3509,171 @@ func TestRequestedRouteSurvivesPreRequestRewrite(t *testing.T) {
 				t.Errorf("RoutingInfo requested route = (%q, %q), want (openai, gpt-4o-mini)", got.RequestedProvider, got.RequestedModel)
 			}
 		})
+	}
+}
+
+// agentLoopServer is an OpenAI-compatible upstream for one MCP agent loop: the first turn calls
+// the in-process echo tool, and a turn that carries the tool result answers. It records the
+// model of every request it serves.
+func agentLoopServer(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var models []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var parsed struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &parsed)
+		mu.Lock()
+		models = append(models, parsed.Model)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), `"role":"tool"`) {
+			fmt.Fprint(w, `{"id":"chatcmpl-2","object":"chat.completion","created":1,"model":"m",`+
+				`"choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],`+
+				`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"m",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function",`+
+			`"function":{"name":"bifrostInternal-echo","arguments":"{\"message\":\"hi\"}"}}]},"finish_reason":"tool_calls"}],`+
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), models...)
+	}
+}
+
+// newAgentLoopClient initializes Bifrost with MCP and an auto-executed in-process echo tool.
+func newAgentLoopClient(t *testing.T, account *MockAccount, plugins ...schemas.LLMPlugin) *Bifrost {
+	t.Helper()
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		LLMPlugins: plugins,
+		MCPConfig:  &schemas.MCPConfig{},
+	})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+	echo := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+		Name:       "echo",
+		Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("message", map[string]interface{}{"type": "string"}))},
+	}}
+	if err := client.RegisterMCPTool("echo", "Echoes the message", func(args any) (string, error) { return "echoed", nil }, echo); err != nil {
+		t.Fatalf("RegisterMCPTool failed: %v", err)
+	}
+	for _, state := range client.MCPManager.GetClients() {
+		if state.ExecutionConfig.ID == "bifrostInternal" {
+			state.ExecutionConfig.ToolsToAutoExecute = []string{"*"}
+			if err := client.MCPManager.UpdateClient(state.ExecutionConfig.ID, state.ExecutionConfig); err != nil {
+				t.Fatalf("UpdateClient failed: %v", err)
+			}
+		}
+	}
+	return client
+}
+
+// TestAgentLoopContinuationKeepsRequestedRoute pins that an MCP agent loop's later turns report
+// the route the caller sent, not the one a routing rule rewrote it to on turn 1, and stay on the
+// routed model.
+func TestAgentLoopContinuationKeepsRequestedRoute(t *testing.T) {
+	server, models := agentLoopServer(t)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newAgentLoopClient(t, account, &modelRewritingPlugin{routedModel: "gpt-4o"})
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "requested-alias",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("echo hi")}},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+	}
+	if got := models(); !reflect.DeepEqual(got, []string{"gpt-4o", "gpt-4o"}) {
+		t.Fatalf("upstream models = %v, want both turns on the routed gpt-4o", got)
+	}
+	info := resp.ExtraFields.RoutingInfo
+	if info.RequestedProvider != schemas.OpenAI || info.RequestedModel != "requested-alias" {
+		t.Errorf("final RoutingInfo requested route = (%q, %q), want (openai, requested-alias)", info.RequestedProvider, info.RequestedModel)
+	}
+	if info.Model != "gpt-4o" {
+		t.Errorf("final RoutingInfo.Model = %q, want gpt-4o", info.Model)
+	}
+}
+
+// TestAgentLoopContinuationStaysOnServingFallback pins that when a fallback served turn 1 of an
+// MCP agent loop, later turns go straight to that fallback instead of retrying the primary, and
+// the final response still reports it as the fallback it is.
+func TestAgentLoopContinuationStaysOnServingFallback(t *testing.T) {
+	var primaryHits atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+	}))
+	t.Cleanup(primary.Close)
+	fallback, models := agentLoopServer(t)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, primary.URL)
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, fallback.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newAgentLoopClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-3-5-haiku-20241022",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("echo hi")}},
+		},
+		Fallbacks: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+	}
+	if got := primaryHits.Load(); got != 1 {
+		t.Errorf("primary was called %d times, want 1: the continuation turn must not retry the primary turn 1 fell back from", got)
+	}
+	if got := models(); !reflect.DeepEqual(got, []string{"gpt-4o-mini", "gpt-4o-mini"}) {
+		t.Fatalf("fallback upstream models = %v, want both turns on gpt-4o-mini", got)
+	}
+	info := resp.ExtraFields.RoutingInfo
+	if info.Provider != schemas.OpenAI || !info.IsFallback {
+		t.Errorf("final RoutingInfo = provider %q is_fallback %v, want the openai fallback", info.Provider, info.IsFallback)
+	}
+	if info.PrimaryProvider == nil || *info.PrimaryProvider != schemas.Anthropic {
+		t.Errorf("final RoutingInfo.PrimaryProvider = %v, want anthropic", info.PrimaryProvider)
+	}
+	if idx, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); idx != 1 {
+		t.Errorf("fallback index on the context = %d, want 1 (the transport's x-bifrost-fallback-index header reads it)", idx)
+	}
+	if info.RequestedProvider != schemas.Anthropic || info.RequestedModel != "claude-3-5-haiku-20241022" {
+		t.Errorf("final RoutingInfo requested route = (%q, %q), want the caller's anthropic route", info.RequestedProvider, info.RequestedModel)
 	}
 }
 
@@ -7449,4 +7632,242 @@ func TestScenarioKeyBindingsArePerModel(t *testing.T) {
 	})
 	requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", "a1")
 	requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m2", "a2")
+}
+
+// A batch names its work once: an input file (or blob) or inline requests. No provider runs inline
+// requests beside a file, so the mix is refused at the core entrypoint, which every route reaches
+// (the /v1/batches handler, the OpenAI, Azure and GenAI SDK batch routes, and the Go SDK), before
+// a provider is looked up. Each input on its own still passes this check.
+func TestBatchCreateRequest_RejectsFileAndInlineRequestsTogether(t *testing.T) {
+	blob := "eyJjdXN0b21faWQiOiAiYSJ9"
+	inline := []schemas.BatchRequestItem{{CustomID: "a", Body: map[string]interface{}{"model": "gpt-4o-mini"}}}
+	b := &Bifrost{}
+	for name, req := range map[string]*schemas.BifrostBatchCreateRequest{
+		"file and requests": {Provider: schemas.OpenAI, InputFileID: "file-abc", Requests: inline},
+		"blob and requests": {Provider: schemas.OpenAI, InputBlob: &blob, Requests: inline},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, bifrostErr := b.BatchCreateRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			if resp != nil || bifrostErr == nil {
+				t.Fatalf("a batch naming a file and inline requests must be refused, got resp=%v err=%v", resp, bifrostErr)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+				t.Fatalf("the refusal must carry status 400, got %v (%s)", bifrostErr.StatusCode, bifrostErr.Error.Message)
+			}
+			if !strings.Contains(bifrostErr.Error.Message, "exclusive") {
+				t.Fatalf("the refusal must say the inputs are exclusive, got %q", bifrostErr.Error.Message)
+			}
+		})
+	}
+}
+
+// callerFaultBody is an OpenAI-shaped refusal of the request itself, the way Google answers a
+// logprobs value outside its range: no key or provider is at fault, the request is.
+const callerFaultBody = `{"error":{"message":"logprobs must be in the range [0, 20]","type":"invalid_request_error","param":"logprobs","code":"invalid_value"}}`
+
+// TestScenarioInferredFallbacksStopOnCallerFault pins which primary failures run a fallback chain
+// Bifrost inferred (the model-catalog resolver promoting every other provider that serves a bare
+// model) rather than one the caller or a routing config named. A refusal of the request itself
+// (a 400 with a provider error body) comes back to the caller instead of being answered by a
+// provider nobody asked for; a failure another provider or key can get past (5xx, 429, a rejected
+// key, a model this provider cannot reach) still falls back. A caller-named chain falls back on the
+// same 400, as it always has. Both orchestrator loops are covered.
+func TestScenarioInferredFallbacksStopOnCallerFault(t *testing.T) {
+	notFound := `{"error":{"message":"The model m does not exist or you do not have access to it.","type":"invalid_request_error","code":"model_not_found"}}`
+	for _, tc := range []struct {
+		name         string
+		reply        scenarioReply
+		inferred     bool
+		wantFallback bool
+	}{
+		{name: "inferred chain, caller fault 400 returns the primary error", reply: scenarioReply{status: http.StatusBadRequest, body: callerFaultBody}, inferred: true},
+		{name: "inferred chain, caller fault 422 returns the primary error", reply: scenarioReply{status: http.StatusUnprocessableEntity, body: callerFaultBody}, inferred: true},
+		{name: "inferred chain, 503 falls back", reply: scenarioReply{status: http.StatusServiceUnavailable, body: `{"error":{"message":"overloaded","type":"server_error"}}`}, inferred: true, wantFallback: true},
+		{name: "inferred chain, 429 falls back", reply: scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`}, inferred: true, wantFallback: true},
+		{name: "inferred chain, rejected key 401 falls back", reply: scenarioReply{status: http.StatusUnauthorized, body: `{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`}, inferred: true, wantFallback: true},
+		{name: "inferred chain, model not found 404 falls back", reply: scenarioReply{status: http.StatusNotFound, body: notFound}, inferred: true, wantFallback: true},
+		{name: "caller-named chain, caller fault 400 still falls back", reply: scenarioReply{status: http.StatusBadRequest, body: callerFaultBody}, wantFallback: true},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
+				u := newScenarioUpstream(t)
+				account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+					provA: {scenarioKey("a1", 1)},
+					provB: {scenarioKey("b1", 1)},
+				})
+				route := fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, schemas.Fallback{Provider: provB, Model: "m", Inferred: tc.inferred})
+				client := scenarioClient(t, account, &scenarioRouter{route: route}, nil)
+				u.reply("sk-a1", tc.reply)
+
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+				var bifrostErr *schemas.BifrostError
+				if stream {
+					var ch chan *schemas.BifrostStreamChunk
+					ch, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+					if bifrostErr == nil {
+						if _, errs := drainChatStream(ch); len(errs) > 0 {
+							t.Fatalf("stream emitted error chunks: %v", errs)
+						}
+					}
+				} else {
+					_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+				}
+
+				if tc.wantFallback {
+					if bifrostErr != nil {
+						t.Fatalf("want the fallback to serve, got error: %s", bifrostErr.GetErrorString())
+					}
+					if got := u.count("sk-b1"); got != 1 {
+						t.Fatalf("fallback reached the upstream %d times, want 1", got)
+					}
+					return
+				}
+				if bifrostErr == nil {
+					t.Fatalf("an inferred fallback answered a request the primary refused as malformed (fallback hits %d)", u.count("sk-b1"))
+				}
+				if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.reply.status {
+					t.Fatalf("status %v, want the primary's %d: %s", bifrostErr.StatusCode, tc.reply.status, bifrostErr.GetErrorString())
+				}
+				if got := u.count("sk-b1"); got != 0 {
+					t.Fatalf("fallback reached the upstream %d times, want 0", got)
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkShouldTryFallbacks measures the fallback decision on a failed primary, for a
+// caller-named chain (the common case, which must stay a field check) and an inferred chain
+// refused as a caller fault (which classifies the error).
+func BenchmarkShouldTryFallbacks(b *testing.B) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	status := http.StatusBadRequest
+	errType := "invalid_request_error"
+	primaryErr := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Type: &errType, Message: "logprobs must be in the range [0, 20]"}}
+	for _, bc := range []struct {
+		name     string
+		inferred bool
+	}{{"caller-named", false}, {"inferred", true}} {
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+			Provider: provA, Model: "m", Fallbacks: []schemas.Fallback{{Provider: provB, Model: "m", Inferred: bc.inferred}},
+		}}
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = bifrost.shouldTryFallbacks(nil, req, primaryErr)
+			}
+		})
+	}
+}
+
+// TestSetMCPManager_ReceivesTheRegisteredFactory: an SDK caller may register
+// the openapi factory before injecting its own manager; the injected manager
+// gets the factory, and the two setters do not race (run with -race).
+func TestSetMCPManager_ReceivesTheRegisteredFactory(t *testing.T) {
+	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		return server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false)), nil
+	}
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer b.Shutdown()
+	b.SetMCPInProcessServerFactory(factory)
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	b.SetMCPManager(injected)
+	err = b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{ID: "oa-id", Name: "oa", ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}})
+	if err != nil {
+		t.Fatalf("the injected manager did not get the registered factory: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); b.SetMCPInProcessServerFactory(factory) }()
+	go func() {
+		defer wg.Done()
+		b.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil))
+	}()
+	wg.Wait()
+}
+
+// TestLazyMCPManager_ConcurrentFirstCallersDoNotRace: the first MCP calls on a
+// Bifrost without an mcp block create the manager lazily. Concurrent first
+// callers must not read the manager field while another publishes it (run
+// with -race), and a manager injected with SetMCPManager is never replaced.
+func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
+	client := func(name string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{ID: name + "-id", Name: name, ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}}
+	}
+	for i := 0; i < 10; i++ {
+		b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() { defer wg.Done(); _ = b.AddMCPClient(context.Background(), client("a")) }()
+		go func() {
+			defer wg.Done()
+			_, _, _, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
+		}()
+		go func() {
+			defer wg.Done()
+			_, _, _, _ = b.VerifyPerUserOAuthConnection(context.Background(), client("c"), "token")
+		}()
+		wg.Wait()
+		b.Shutdown()
+	}
+
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer b.Shutdown()
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	b.SetMCPManager(injected)
+	_ = b.AddMCPClient(context.Background(), client("d"))
+	if b.MCPManager != mcp.MCPManagerInterface(injected) {
+		t.Fatal("an injected MCP manager was replaced by the lazy one")
+	}
+}
+
+// TestSetMCPInProcessServerFactory_RacesLazyManagerCreation: the HTTP transport
+// registers the openapi factory after Init, while a request may be lazily
+// creating the MCP manager. Whichever wins, the manager that ends up serving
+// must carry the factory, and the registration must not race the creation.
+func TestSetMCPInProcessServerFactory_RacesLazyManagerCreation(t *testing.T) {
+	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		return server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false)), nil
+	}
+	openAPIClient := func(name string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID:             name + "-id",
+			Name:           name,
+			ConnectionType: schemas.MCPConnectionTypeOpenAPI,
+			ToolsToExecute: schemas.WhiteList{"*"},
+			OpenAPIConfig:  &schemas.MCPOpenAPIConfig{Spec: "unused by the stub"},
+		}
+	}
+	for i := 0; i < 20; i++ {
+		// No MCPConfig: the manager is created lazily by the first MCP call.
+		b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			b.SetMCPInProcessServerFactory(factory)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = b.AddMCPClient(context.Background(), openAPIClient("first"))
+		}()
+		wg.Wait()
+		if err := b.AddMCPClient(context.Background(), openAPIClient("second")); err != nil {
+			t.Fatalf("iteration %d: the manager lost the registered factory: %v", i, err)
+		}
+		b.Shutdown()
+	}
 }

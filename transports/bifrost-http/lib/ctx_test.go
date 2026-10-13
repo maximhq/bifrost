@@ -1325,10 +1325,19 @@ func TestConvertToBifrostContextCancelsSeededContextWhenClientDisconnects(t *tes
 // finishing at the wrong moment makes a whole-process count flap. That is fatal for a
 // release gate: a flaky assertion trains people to rerun until green. Naming the frame
 // makes the measurement immune to every goroutine that is not the subject.
+// countWatcherGoroutines counts the disconnect-watcher goroutines in a dump of every goroutine.
+// The dump grows with whatever the rest of the package left running, so the buffer is grown until
+// the whole dump fits: a truncated dump drops the goroutines past its end, the new watcher among
+// them, and the count then misses it.
 func countWatcherGoroutines() int {
 	buf := make([]byte, 1<<20)
-	buf = buf[:runtime.Stack(buf, true)]
-	return bytes.Count(buf, []byte("startClientDisconnectWatcher"))
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			return bytes.Count(buf[:n], []byte("startClientDisconnectWatcher"))
+		}
+		buf = make([]byte, 2*len(buf))
+	}
 }
 
 // waitForWatchers polls until the watcher count drops to want, returning the final count.

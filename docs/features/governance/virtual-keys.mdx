@@ -17,6 +17,10 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 
 <Note>Old virtual keys(without `sk-bf-*` prefix) are only supported by `x-bf-vk` header.</Note>
 
+<Info>
+**Enterprise: IdP tokens are also accepted.** Virtual keys remain the standard way to authenticate. On Bifrost Enterprise with [SSO configured](/enterprise/user-provisioning), you can also authenticate with a token issued by your identity provider: `Authorization: Bearer <idp-token>`. Bifrost validates the token and attributes the request to that user, applying their access profile, budgets, and rate limits. Use the `Authorization` header for IdP tokens; the other headers above carry virtual keys only. See [Setting up auth](/quickstart/gateway/setting-up-auth#api-calls) for details.
+</Info>
+
 **Key Features:**
 - **Access Control** - Model and provider filtering
 - **Cost Management** - Independent budgets (checked along with team/customer budgets if attached)
@@ -361,7 +365,13 @@ A batch created from `input_file_id` or `input_blob` names its models inside the
 - **OpenAI and Azure** run the models named in each input row and ignore the `model` on the batch request, so creating a file- or blob-based batch requires a key that allows every model of that provider. Otherwise the request is refused with `403` (`model_blocked`), even if an allowed `model` is supplied.
 - **Gemini, Vertex, and Bedrock** run the model named on the batch request, so that `model` must be supplied and allowed by the key.
 
+A custom provider is held to the rule of its base provider type, since it runs that provider's batch API. A request that names a file or blob and inline `requests` together is refused with `400`: no provider runs inline requests beside a file, so the batch's work must be named once.
+
 Inline batches (`requests`) are checked per item and are unaffected, as are keys that allow every model of the provider.
+
+#### Passthrough requests
+
+A passthrough route forwards the request body as the provider reads it. When a key restricts models on the provider, every model the body names is checked: the `model` of a JSON object body, or the `model` of each task in a task array (Runware). A passthrough request that names no model anywhere, neither in its path nor in its body, is refused with `403` (`model_blocked`) under such a key, since the provider would still run a model the key never allowed. Keys that allow every model of the provider forward every passthrough body as before.
 
 ## User Groups
 
@@ -860,7 +870,7 @@ Virtual keys and HTTP authentication are **independent layers** that can work to
 
 | Layer | Purpose | Headers |
 |-------|---------|---------|
-| **Authentication** | Validates user identity | `Authorization: Basic/Bearer <credentials>` |
+| **Authentication** | Validates user identity | `Authorization: Basic/Bearer <credentials>`, or on Enterprise, `Authorization: Bearer <idp-token>` |
 | **Virtual Keys** | Request routing and governance | `x-bf-vk`, `Authorization`[^1], `x-api-key`, `x-goog-api-key` |
 
 [^1]: Authorization can carry virtual keys only when auth is disabled (`disable_auth_on_inference: true`). When auth is enabled, Authorization is consumed by authentication and cannot be used for virtual keys.

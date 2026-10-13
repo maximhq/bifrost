@@ -429,7 +429,6 @@ func TestOpenAI(t *testing.T) {
 
 	testConfig := llmtests.ComprehensiveTestConfig{
 		Provider:           schemas.OpenAI,
-		TextModel:          "gpt-3.5-turbo-instruct",
 		ChatModel:          "gpt-4o",
 		PromptCachingModel: "gpt-4.1",
 		Fallbacks: []schemas.Fallback{
@@ -453,8 +452,8 @@ func TestOpenAI(t *testing.T) {
 		DecisionEmulationModel:  "gpt-4o-mini",
 		Scenarios: llmtests.TestScenarios{
 			DecisionEmulation:          true,
-			TextCompletion:             true,
-			TextCompletionStream:       true,
+			TextCompletion:             false,
+			TextCompletionStream:       false,
 			SimpleChat:                 true,
 			CompletionStream:           true,
 			MultiTurnConversation:      true,

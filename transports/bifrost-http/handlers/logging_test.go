@@ -23,7 +23,7 @@ import (
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -1086,7 +1086,7 @@ func TestDeleteMCPLogsRequiresAuthenticatedAdmin(t *testing.T) {
 			am.UpdateWhitelistedRoutes(tc.whitelist)
 			middleware := am.APIMiddleware()
 			if tc.noConfigStore {
-				middleware = AuthBypassedMiddleware()
+				middleware = AuthBypassedMiddleware(nil, tc.whitelist)
 			}
 			r := router.New()
 			h.RegisterRoutes(r, middleware)

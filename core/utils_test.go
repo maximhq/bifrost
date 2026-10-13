@@ -734,3 +734,48 @@ func TestWrapConvertedStreamPostHookRunnerSendsAssistantRoleOnce(t *testing.T) {
 		})
 	}
 }
+
+// A converted stream chunk still carries the upstream API's raw bytes, so it must
+// say it was converted: integrations echo RawResponse only for unconverted chunks.
+func TestWrapConvertedStreamPostHookRunnerMarksConvertedChunks(t *testing.T) {
+	tests := []struct {
+		name       string
+		targetType schemas.RequestType
+		result     *schemas.BifrostResponse
+		extra      func(*schemas.BifrostResponse) *schemas.BifrostResponseExtraFields
+	}{
+		{
+			name:       "chat served through responses",
+			targetType: schemas.ResponsesRequest,
+			result: &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:        schemas.ResponsesStreamResponseTypeCreated,
+				ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: `{"type":"response.created"}`},
+			}},
+			extra: func(r *schemas.BifrostResponse) *schemas.BifrostResponseExtraFields {
+				return &r.ChatResponse.ExtraFields
+			},
+		},
+		{
+			name:       "text served through chat",
+			targetType: schemas.ChatCompletionRequest,
+			result: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: `{"object":"chat.completion.chunk"}`},
+			}},
+			extra: func(r *schemas.BifrostResponse) *schemas.BifrostResponseExtraFields {
+				return &r.TextCompletionResponse.ExtraFields
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got *schemas.BifrostResponse
+			runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				got = result
+				return result, bifrostErr
+			}, tt.targetType)
+			runner(schemas.NewBifrostContext(context.Background(), time.Time{}), tt.result, nil)
+			require.NotNil(t, got)
+			assert.Equal(t, tt.targetType, tt.extra(got).ConvertedRequestType)
+		})
+	}
+}
