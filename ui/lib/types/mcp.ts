@@ -77,6 +77,8 @@ export interface MCPOpenAPIPreviewRequest {
 	spec_url?: string;
 	base_url?: string;
 	include_deprecated?: boolean;
+	// The name the client will have, so tool names are shortened as create shortens them.
+	client_name?: string;
 }
 
 export interface MCPOpenAPIPreviewResponse {
@@ -86,6 +88,8 @@ export interface MCPOpenAPIPreviewResponse {
 	description?: string;
 	servers: string[];
 	base_url?: string;
+	// No base URL needed: every operation declares its own server.
+	operation_servers?: boolean;
 	security_schemes: MCPOpenAPISecurityScheme[];
 	tools: MCPOpenAPIPreviewTool[];
 	unsupported: MCPOpenAPIUnsupportedOperation[];

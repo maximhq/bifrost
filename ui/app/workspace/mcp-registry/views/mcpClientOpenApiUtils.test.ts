@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { MCPOpenAPIPreviewResponse, MCPOpenAPISecurityScheme } from "@/lib/types/mcp";
 import {
+	applyParsedPreview,
+	openAPIBaseUrlRequired,
+	autoParseStep,
 	buildOpenAPIConfigPayload,
+	needsHeadersVerification,
 	collapseToolSelection,
 	detectSpecLanguage,
 	expandToolSelection,
@@ -9,11 +13,19 @@ import {
 	isSpecTooLarge,
 	mergePreviewRows,
 	pruneCredentials,
+	readUploadedSpec,
 	reconcileToolSelection,
+	selectableServers,
 	securitySchemeToInputs,
 	specFingerprint,
 	summarizeSpecSource,
 	supportedToolNames,
+	applyUploadedSpec,
+	openAPIParseControls,
+	visibleUploadError,
+	defaultSchemeHeader,
+	perUserSchemeHeaders,
+	mergePerUserHeaderKeys,
 } from "./mcpClientOpenApiUtils";
 
 const preview: MCPOpenAPIPreviewResponse = {
@@ -286,5 +298,316 @@ describe("formatting helpers", () => {
 		);
 		expect(summarizeSpecSource({ spec_url: "https://x/openapi.json", operation_count: 1 })).toBe("https://x/openapi.json · 1 operation");
 		expect(summarizeSpecSource(undefined)).toBe("-");
+	});
+});
+describe("applyParsedPreview", () => {
+	const twoServers: MCPOpenAPIPreviewResponse = {
+		...preview,
+		servers: ["https://petstore.example.com/v1", "https://staging.petstore.example.com/v1"],
+		base_url: "https://petstore.example.com/v1",
+	};
+	it("keeps a server the user picked from the list when the re-parsed document still lists it", () => {
+		const next = applyParsedPreview(
+			{ selection: ["listPets"], baseUrl: "https://staging.petstore.example.com/v1", baseUrlChoice: "server", credentials: {} },
+			twoServers,
+			twoServers,
+		);
+		expect(next.baseUrl).toBe("https://staging.petstore.example.com/v1");
+		expect(next.baseUrlChoice).toBe("server");
+	});
+	it("falls back to the document default when the picked server is gone", () => {
+		const next = applyParsedPreview(
+			{ selection: [], baseUrl: "https://removed.example.com", baseUrlChoice: "server", credentials: {} },
+			null,
+			twoServers,
+		);
+		expect(next.baseUrl).toBe("https://petstore.example.com/v1");
+	});
+	it("keeps a custom base URL and reconciles the latest selection", () => {
+		const next = applyParsedPreview(
+			{
+				selection: ["listPets"],
+				baseUrl: "https://mine.example.com",
+				baseUrlChoice: "custom",
+				credentials: { ApiKeyAuth: { value: { value: "k" } }, Gone: { value: { value: "x" } } },
+			},
+			preview,
+			preview,
+		);
+		expect(next.baseUrl).toBe("https://mine.example.com");
+		expect(next.selection).toEqual(["listPets"]);
+		expect(next.credentials).toEqual({ ApiKeyAuth: { value: { value: "k" } } });
+	});
+	it("keeps the credential of a scheme named __proto__ across a re-parse", () => {
+		const protoPreview: MCPOpenAPIPreviewResponse = {
+			...preview,
+			security_schemes: [{ name: "__proto__", type: "apiKey", in: "header", param_name: "X-Key", supported: true }],
+		};
+		const credentials = JSON.parse('{"__proto__":{"value":{"value":"k"}}}');
+		const next = applyParsedPreview({ selection: [], baseUrl: "", baseUrlChoice: "server", credentials }, protoPreview, protoPreview);
+		expect(Object.keys(next.credentials)).toEqual(["__proto__"]);
+		expect(Object.getOwnPropertyDescriptor(next.credentials, "__proto__")?.value).toEqual({ value: { value: "k" } });
+	});
+});
+
+describe("readUploadedSpec", () => {
+	const file = (size: number, text: () => Promise<string>) => ({ size, text });
+	it("reads a document", async () => {
+		expect(await readUploadedSpec(file(10, async () => "openapi: 3.0.0"))).toEqual({ text: "openapi: 3.0.0", error: null });
+	});
+	it("refuses an oversized file without reading it", async () => {
+		const result = await readUploadedSpec(
+			file(6 * 1024 * 1024, async () => {
+				throw new Error("must not read");
+			}),
+		);
+		expect(result.error).toContain("exceeds");
+	});
+	it("says an empty file is empty, not too large", async () => {
+		const result = await readUploadedSpec(file(0, async () => ""));
+		expect(result.error).toContain("empty");
+		expect(result.error).not.toContain("exceeds");
+	});
+	it("reports a failed read instead of rejecting", async () => {
+		const result = await readUploadedSpec(
+			file(10, async () => {
+				throw new Error("permission denied");
+			}),
+		);
+		expect(result.text).toBe("");
+		expect(result.error).toContain("permission denied");
+	});
+});
+describe("applyUploadedSpec and visibleUploadError", () => {
+	it("accepts a file that was read", () => {
+		expect(applyUploadedSpec("old.json", { text: "openapi: 3.0.0", error: null })).toEqual({ accept: true, error: null });
+	});
+	it("keeps the current document when a file is rejected, and reports why against the file still shown", () => {
+		const outcome = applyUploadedSpec("old.json", { text: "", error: "The file is empty." });
+		expect(outcome.accept).toBe(false);
+		expect(visibleUploadError(outcome.error, "old.json")).toBe("The file is empty.");
+	});
+	it("shows a rejection even when no file was loaded before", () => {
+		const outcome = applyUploadedSpec("", { text: "", error: "The file is empty." });
+		expect(visibleUploadError(outcome.error, "")).toBe("The file is empty.");
+	});
+	it("hides a rejection once the shown file changes (another file, or the form was reset)", () => {
+		const outcome = applyUploadedSpec("old.json", { text: "", error: "The file is empty." });
+		expect(visibleUploadError(outcome.error, "")).toBeNull();
+		expect(visibleUploadError(outcome.error, "new.json")).toBeNull();
+	});
+});
+
+describe("openAPIParseControls", () => {
+	const base = { isCurrent: false, hasError: false, canParse: true, isParsing: false };
+	it("parses a pasted or uploaded document on its own and offers no button while that works", () => {
+		for (const mode of ["paste", "upload"] as const) {
+			const pending = openAPIParseControls({ ...base, mode });
+			expect(pending).toMatchObject({ autoParse: true, showButton: false, showPending: true });
+			const parsed = openAPIParseControls({ ...base, mode, isCurrent: true });
+			expect(parsed).toMatchObject({ autoParse: true, showButton: false, showPending: false });
+		}
+	});
+	it("offers the button again after a failed parse, and stops auto-parsing the same source", () => {
+		const failed = openAPIParseControls({ ...base, mode: "paste", hasError: true });
+		expect(failed).toMatchObject({ showButton: true, showPending: false, buttonLabel: "Parse again" });
+	});
+	it("shows a parse in flight as pending", () => {
+		expect(openAPIParseControls({ ...base, mode: "paste", isParsing: true, hasError: true }).showPending).toBe(true);
+	});
+	it("fetches a URL only on request, and hides the button once the fetched document is current", () => {
+		expect(openAPIParseControls({ ...base, mode: "url" })).toMatchObject({
+			autoParse: false,
+			showButton: true,
+			showPending: false,
+			buttonLabel: "Fetch spec",
+		});
+		expect(openAPIParseControls({ ...base, mode: "url", isCurrent: true }).showButton).toBe(false);
+		expect(openAPIParseControls({ ...base, mode: "url", isCurrent: true, hasError: true }).showButton).toBe(true);
+	});
+	it("does not show pending for an empty or oversized source", () => {
+		expect(openAPIParseControls({ ...base, mode: "paste", canParse: false }).showPending).toBe(false);
+	});
+});
+
+describe("per-user scheme headers", () => {
+	const schemes: MCPOpenAPIPreviewResponse = {
+		...preview,
+		security_schemes: [
+			{ name: "ApiKeyAuth", type: "apiKey", in: "header", param_name: "api_key", supported: true },
+			{ name: "Bearer", type: "http", scheme: "bearer", supported: true },
+			{ name: "QueryKey", type: "apiKey", in: "query", param_name: "key", supported: true },
+			{ name: "OAuth", type: "oauth2", supported: false },
+		],
+	};
+	it("suggests the header a scheme travels in, and none for query, cookie or unsupported schemes", () => {
+		const [apiKey, bearer, query, oauth] = schemes.security_schemes!;
+		expect(defaultSchemeHeader(apiKey)).toBe("api_key");
+		expect(defaultSchemeHeader(bearer)).toBe("Authorization");
+		expect(defaultSchemeHeader(query)).toBeNull();
+		expect(defaultSchemeHeader(oauth)).toBeNull();
+	});
+	it("uses the typed header name over the suggestion, and drops a cleared one", () => {
+		expect(perUserSchemeHeaders(schemes, { ApiKeyAuth: "X-Petstore-Key" })).toEqual({
+			ApiKeyAuth: "X-Petstore-Key",
+			Bearer: "Authorization",
+		});
+		expect(perUserSchemeHeaders(schemes, { Bearer: "  " })).toEqual({ ApiKeyAuth: "api_key" });
+	});
+	it("adds scheme headers to the required headers without duplicates", () => {
+		expect(mergePerUserHeaderKeys(["X-Tenant", "authorization"], ["api_key", "Authorization"])).toEqual([
+			"X-Tenant",
+			"authorization",
+			"api_key",
+		]);
+	});
+	it("leaves out the stored credential of a scheme each caller supplies", () => {
+		const out = buildOpenAPIConfigPayload(
+			{ spec: "x", security_credentials: { ApiKeyAuth: { value: { value: "stored" } }, QueryKey: { value: { value: "q" } } } },
+			"paste",
+			schemes,
+			"server",
+			["ApiKeyAuth"],
+		);
+		expect(Object.keys(out.security_credentials ?? {})).toEqual(["QueryKey"]);
+	});
+});
+
+describe("document and operation servers", () => {
+	const opServers: MCPOpenAPIPreviewResponse = { ...preview, servers: [], base_url: undefined, operation_servers: true };
+	it("needs no base URL when every operation declares its own server", () => {
+		expect(openAPIBaseUrlRequired("server", opServers)).toBe(false);
+		expect(openAPIBaseUrlRequired("server", { ...preview, servers: [] })).toBe(true);
+		expect(openAPIBaseUrlRequired("server", preview)).toBe(false);
+	});
+	it("does not require a base URL for an operation-servers document, even after one was typed and cleared", () => {
+		expect(openAPIBaseUrlRequired("custom", opServers)).toBe(false);
+		expect(openAPIBaseUrlRequired("custom", preview)).toBe(true);
+	});
+	it("drops a credential whose security scheme changed shape in the re-parsed document", () => {
+		const header: MCPOpenAPISecurityScheme = { name: "Key", type: "apiKey", in: "header", param_name: "X-API-Key", supported: true };
+		const before: MCPOpenAPIPreviewResponse = { ...preview, security_schemes: [header] };
+		const sameShape: MCPOpenAPIPreviewResponse = { ...preview, security_schemes: [{ ...header }] };
+		const moved: MCPOpenAPIPreviewResponse = { ...preview, security_schemes: [{ ...header, in: "query", param_name: "key" }] };
+		const current = { selection: [], baseUrl: "", baseUrlChoice: "server" as const, credentials: { Key: { value: { value: "secret" } } } };
+		expect(applyParsedPreview(current, before, sameShape).credentials).toEqual({ Key: { value: { value: "secret" } } });
+		expect(applyParsedPreview(current, before, moved).credentials).toEqual({});
+	});
+	it("clears a picked document server that the re-parsed document no longer lists", () => {
+		const before: MCPOpenAPIPreviewResponse = { ...preview, servers: ["https://old.example.com"], base_url: "https://old.example.com" };
+		const next = applyParsedPreview(
+			{ selection: [], baseUrl: "https://old.example.com", baseUrlChoice: "server", credentials: {} },
+			before,
+			opServers,
+		);
+		expect(next.baseUrl).toBe("");
+		expect(next.baseUrlChoice).toBe("server");
+	});
+	it("keeps a base URL typed for an operation-servers document across a re-parse", () => {
+		const next = applyParsedPreview(
+			{ selection: [], baseUrl: "https://gateway.example.com", baseUrlChoice: "server", credentials: {} },
+			opServers,
+			opServers,
+		);
+		expect(next.baseUrl).toBe("https://gateway.example.com");
+		expect(next.baseUrlChoice).toBe("custom");
+	});
+	it("keeps a selected operation whose shortened tool name changed after a rename", () => {
+		const before: MCPOpenAPIPreviewResponse = {
+			...preview,
+			tools: [
+				{ name: "an_operation_with_a_long_name_cut_one_way", method: "GET", path: "/long" },
+				{ name: "listPets", method: "GET", path: "/pets" },
+			],
+		};
+		const after: MCPOpenAPIPreviewResponse = {
+			...preview,
+			tools: [
+				{ name: "an_operation_with_a_long_name_cut", method: "GET", path: "/long" },
+				{ name: "listPets", method: "GET", path: "/pets" },
+			],
+		};
+		const next = applyParsedPreview(
+			{ selection: ["an_operation_with_a_long_name_cut_one_way"], baseUrl: "", baseUrlChoice: "server", credentials: {} },
+			before,
+			after,
+		);
+		expect(next.selection).toEqual(["an_operation_with_a_long_name_cut"]);
+	});
+	it("keeps the document-servers choice after parsing an operation-servers document", () => {
+		const next = applyParsedPreview({ selection: [], baseUrl: "", baseUrlChoice: "server", credentials: {} }, null, opServers);
+		expect(next.baseUrlChoice).toBe("server");
+		expect(next.baseUrl).toBe("");
+	});
+	it("does not pin the document's default server as an explicit base URL", () => {
+		const payload = buildOpenAPIConfigPayload({ spec: "x", base_url: "https://petstore.example.com/v1" }, "paste", preview);
+		expect(payload.base_url).toBe("");
+		const custom = buildOpenAPIConfigPayload({ spec: "x", base_url: "https://staging.example.com" }, "paste", preview);
+		expect(custom.base_url).toBe("https://staging.example.com");
+	});
+	it("matches document servers regardless of a trailing slash", () => {
+		const slashed: MCPOpenAPIPreviewResponse = { ...preview, servers: ["https://api.x/v1/"], base_url: "https://api.x/v1" };
+		const fresh = applyParsedPreview({ selection: [], baseUrl: "", baseUrlChoice: "server", credentials: {} }, null, slashed);
+		expect(fresh.baseUrlChoice).toBe("server");
+		expect(fresh.baseUrl).toBe("https://api.x/v1/");
+		const picked = applyParsedPreview(
+			{ selection: [], baseUrl: "https://api.x/v1", baseUrlChoice: "server", credentials: {} },
+			slashed,
+			slashed,
+		);
+		expect(picked.baseUrlChoice).toBe("server");
+		expect(picked.baseUrl).toBe("https://api.x/v1/");
+	});
+	it("keeps a custom URL that equals the document's first server, so it still overrides operation servers", () => {
+		const def = "https://petstore.example.com/v1";
+		expect(buildOpenAPIConfigPayload({ spec: "x", base_url: def }, "paste", preview, "custom").base_url).toBe(def);
+		expect(buildOpenAPIConfigPayload({ spec: "x", base_url: def }, "paste", preview, "server").base_url).toBe("");
+	});
+	it("offers only absolute servers, and needs a base URL when the document has no absolute one", () => {
+		const relativeOnly: MCPOpenAPIPreviewResponse = { ...preview, servers: ["/v1"], base_url: undefined, operation_servers: false };
+		expect(selectableServers({ ...preview, servers: ["/v1", "https://api.example.com"] })).toEqual(["https://api.example.com"]);
+		expect(openAPIBaseUrlRequired("server", relativeOnly)).toBe(true);
+		const typed = applyParsedPreview(
+			{ selection: [], baseUrl: "https://gw.example.com", baseUrlChoice: "server", credentials: {} },
+			relativeOnly,
+			relativeOnly,
+		);
+		expect(typed.baseUrl).toBe("https://gw.example.com");
+	});
+	it("keeps a chosen server that is not the document's first, even after a re-parse echoes it back", () => {
+		const reparsed: MCPOpenAPIPreviewResponse = {
+			...preview,
+			servers: ["https://prod.example.com", "https://staging.example.com"],
+			base_url: "https://staging.example.com",
+		};
+		expect(buildOpenAPIConfigPayload({ spec: "x", base_url: "https://staging.example.com" }, "paste", reparsed).base_url).toBe(
+			"https://staging.example.com",
+		);
+		expect(buildOpenAPIConfigPayload({ spec: "x", base_url: "https://prod.example.com/" }, "paste", reparsed).base_url).toBe("");
+	});
+});
+describe("autoParseStep", () => {
+	it("parses a settled source once, and again after the user leaves it and comes back", () => {
+		let remembered: string | null = null;
+		const run = (key: string, should: boolean) => {
+			const step = autoParseStep(remembered, key, should);
+			remembered = step.remembered;
+			return step.parse;
+		};
+		expect(run("paste:A", true)).toBe(true);
+		// A failed parse is not retried on its own while the source is unchanged.
+		expect(run("paste:A", true)).toBe(false);
+		// The URL tab fetches only on request.
+		expect(run("url:https://x/openapi.json", false)).toBe(false);
+		// Back on Paste, the URL's preview is current, not the pasted one's: parse again.
+		expect(run("paste:A", true)).toBe(true);
+	});
+});
+
+describe("needsHeadersVerification", () => {
+	it("runs the sample-values check for per-user headers, except on OpenAPI servers, which the server never verifies", () => {
+		expect(needsHeadersVerification({ auth_type: "per_user_headers", connection_type: "http" })).toBe(true);
+		expect(needsHeadersVerification({ auth_type: "per_user_headers", connection_type: "openapi" })).toBe(false);
+		expect(needsHeadersVerification({ auth_type: "headers", connection_type: "http" })).toBe(false);
 	});
 });
