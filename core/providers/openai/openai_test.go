@@ -87,7 +87,7 @@ func newOAuthProvider(t *testing.T, baseURL string) *openai.OpenAIProvider {
 	t.Helper()
 	return openai.NewOpenAIProvider(&schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
-			BaseURL:                        baseURL,
+			BaseURL:                        schemas.NewSecretVar(baseURL),
 			DefaultRequestTimeoutInSeconds: 10,
 			AllowPrivateNetwork:            true,
 		},
@@ -372,7 +372,7 @@ func TestOAuthKeyConfigBlankValueMints(t *testing.T) {
 func TestOAuthKeyConfigResolvesAfterOperationCheck(t *testing.T) {
 	t.Parallel()
 	provider := openai.NewOpenAIProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: "https://llm.example", DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar("https://llm.example"), DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
 		CustomProviderConfig: &schemas.CustomProviderConfig{
 			BaseProviderType:  schemas.OpenAI,
 			CustomProviderKey: "acme",

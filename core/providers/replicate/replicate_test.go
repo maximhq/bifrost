@@ -136,7 +136,7 @@ func (s *fileListServer) seen() []*http.Request {
 func newFileListProvider(t *testing.T, baseURL string) *replicate.ReplicateProvider {
 	t.Helper()
 	provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(baseURL)},
 	}, &testLogger{})
 	require.NoError(t, err)
 	return provider
@@ -1890,7 +1890,7 @@ func BenchmarkFileListPagination(b *testing.B) {
 		_, _ = w.Write([]byte(`{"next":"` + srv.URL + `/v1/files?cursor=cD0yMDI0&limit=2","results":[{"id":"f1","name":"a.json","size":3,"created_at":"2024-01-01T00:00:00Z"}]}`))
 	}))
 	defer srv.Close()
-	provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: srv.URL}}, &testLogger{})
+	provider, err := replicate.NewReplicateProvider(&schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(srv.URL)}}, &testLogger{})
 	if err != nil {
 		b.Fatal(err)
 	}
