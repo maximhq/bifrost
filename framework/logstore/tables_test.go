@@ -1,13 +1,19 @@
 package logstore
 
 import (
+	"context"
 	"encoding/json"
 	"math"
+	"reflect"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 func TestSerializeFieldsDenormalizesCostBreakdown(t *testing.T) {
@@ -576,5 +582,86 @@ func TestOverheadBreakdownDropsNonFiniteDurations(t *testing.T) {
 		if c.want != "" {
 			assert.True(t, json.Valid([]byte(log.OverheadBreakdown)), "%s: must stay valid JSON", c.label)
 		}
+	}
+}
+
+// TestPGSafeText pins that pgSafeText removes the bytes Postgres TEXT rejects
+// (NUL, invalid UTF-8) and leaves everything else byte-for-byte.
+func TestPGSafeText(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"clean_ascii", "hello", "hello"},
+		{"clean_multibyte", "café ☕ 日本", "café ☕ 日本"},
+		{"empty", "", ""},
+		{"raw_nul", "a\x00b\x00", "ab"},
+		{"invalid_byte", "a\xffb", "a\uFFFDb"},
+		{"truncated_rune", "caf\xc3", "caf\uFFFD"},
+		{"nul_and_invalid", "\x00\xfe", "\uFFFD"},
+		{"nul_only_stays_non_empty", "\x00\x00", "\uFFFD"},
+		{"literal_escape_text_untouched", `\u0000`, `\u0000`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, pgSafeText(c.in))
+		})
+	}
+}
+
+// TestPGSafeText_CleanInputDoesNotAllocate pins the common-case cost: a clean
+// string is returned as-is.
+func TestPGSafeText_CleanInputDoesNotAllocate(t *testing.T) {
+	s := strings.Repeat(`{"role":"user","content":"héllo"}`, 1000)
+	allocs := testing.AllocsPerRun(100, func() { _ = pgSafeText(s) })
+	assert.Zero(t, allocs)
+}
+
+// TestSanitizeJSONForJSONB pins the escape-aware JSON sanitizer: \u0000 and
+// unpaired surrogates are removed or replaced, valid pairs and escaped
+// backslashes are kept, and the output always casts to jsonb.
+func TestSanitizeJSONForJSONB(t *testing.T) {
+	bs := `\`
+	cases := []struct{ name, in, want string }{
+		{"no_escapes", `{"a":"b"}`, `{"a":"b"}`},
+		{"nul_escape_dropped", `{"a":"x` + bs + `u0000y"}`, `{"a":"xy"}`},
+		{"escaped_backslash_then_u0000_kept", `{"a":"` + bs + bs + `u0000"}`, `{"a":"` + bs + bs + `u0000"}`},
+		{"escaped_backslash_then_real_nul", `{"a":"` + bs + bs + bs + `u0000"}`, `{"a":"` + bs + bs + `"}`},
+		{"lone_high_surrogate", `["` + bs + `ud800"]`, `["` + bs + `ufffd"]`},
+		{"lone_low_surrogate", `["` + bs + `uDC00x"]`, `["` + bs + `ufffdx"]`},
+		{"high_then_non_low", `["` + bs + `ud800` + bs + `u0041"]`, `["` + bs + `ufffd` + bs + `u0041"]`},
+		{"valid_pair_kept", `["` + bs + `ud83d` + bs + `ude00"]`, `["` + bs + `ud83d` + bs + `ude00"]`},
+		{"other_escapes_kept", `["` + bs + `n` + bs + `"` + bs + `u00e9"]`, `["` + bs + `n` + bs + `"` + bs + `u00e9"]`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, sanitizeJSONForJSONB(c.in))
+		})
+	}
+}
+
+// BenchmarkPGTextSafetyRow measures the Postgres text-safety callback on one
+// already-serialized logs row with clean content, the common case: a small row
+// and a row carrying a 1 MiB input history.
+func BenchmarkPGTextSafetyRow(b *testing.B) {
+	sch, err := schema.Parse(&Log{}, &sync.Map{}, schema.NamingStrategy{})
+	require.NoError(b, err)
+	stmt := &gorm.Statement{Context: context.Background(), Schema: sch}
+	fields := pgTextFields(sch)
+	small := `[{"role":"user","content":"What is the capital of France?"}]`
+	large := `[{"role":"user","content":"` + strings.Repeat("héllo wörld ", 1<<20/13) + `"}]`
+	for _, c := range []struct {
+		name    string
+		history string
+	}{{"small", small}, {"1MiB", large}} {
+		b.Run(c.name, func(b *testing.B) {
+			team := `["team-1"]`
+			row := &Log{ID: "id", Provider: "openai", Model: "gpt-4o", Status: "success", Object: "chat.completion",
+				InputHistory: c.history, OutputMessage: `{"role":"assistant","content":"Paris"}`, TeamIDs: &team,
+				TokenUsage: `{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}`}
+			rv := reflect.ValueOf(row).Elem()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				pgSanitizeRows(stmt, fields, rv)
+			}
+		})
 	}
 }

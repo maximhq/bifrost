@@ -570,6 +570,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_provider_objects_table"}, run: migrationAddProviderObjectsTable},
 	{IDs: []string{"add_batch_jobs_file_id_indexes"}, run: migrationAddBatchJobsFileIDIndexes},
 	{IDs: []string{"add_provider_objects_object_id_index"}, run: migrationAddProviderObjectsObjectIDIndex},
+	{IDs: []string{"add_client_config_enforce_vk_object_ownership_column"}, run: migrationAddClientConfigEnforceVKObjectOwnershipColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -12036,6 +12037,33 @@ func migrationAddVirtualKeyExpiresAtColumn(ctx context.Context, db *gorm.DB, log
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableVirtualKey{}, "expires_at")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigEnforceVKObjectOwnershipColumn adds enforce_vk_object_ownership
+// to config_client. It defaults to true, so an upgrade keeps provider objects bound to the
+// virtual key that created them, as they were before the setting existed.
+func migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_enforce_vk_object_ownership_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "enforce_vk_object_ownership"); err != nil {
+				return err
+			}
+			return tx.Exec("UPDATE config_client SET enforce_vk_object_ownership = ? WHERE enforce_vk_object_ownership IS NULL", true).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "enforce_vk_object_ownership")
 		},
 	}})
 	if err := m.Migrate(); err != nil {

@@ -361,3 +361,83 @@ func TestGetVirtualKeysByIDsMatchesGetVirtualKey(t *testing.T) {
 		})
 	}
 }
+
+// TestInListLimitProviderObjectsAndJobsByIDs pins that the ownership lookups a
+// file, batch or video list page runs accept id lists larger than the
+// bind-parameter limit: a 10,000-item page fanned out across every provider
+// name that shares the provider's API reaches it. Only the real rows inside the
+// list come back.
+func TestInListLimitProviderObjectsAndJobsByIDs(t *testing.T) {
+	for _, ns := range inListLimitStores(t) {
+		t.Run(ns.name, func(t *testing.T) {
+			ctx := context.Background()
+			objectID := tables.ProviderObjectID(tables.ProviderObjectKindFile, "openai", "file-real")
+			require.NoError(t, ns.store.UpsertProviderObject(ctx, &tables.TableProviderObject{
+				ID: objectID, Kind: tables.ProviderObjectKindFile, Provider: "openai", ObjectID: "file-real", VirtualKeyID: "vk-a",
+			}))
+			out := "file-out"
+			jobID := tables.ProviderJobID(tables.ProviderJobKindBatch, "openai", "batch-real")
+			require.NoError(t, ns.store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+				ID: jobID, Provider: "openai", JobID: "batch-real", InputFileID: "file-in", OutputFileID: &out,
+				AccountingStatus: tables.ProviderJobAccountingStatusPending,
+			}))
+
+			t.Run("GetProviderObjectsByIDs", func(t *testing.T) {
+				objects, err := ns.store.GetProviderObjectsByIDs(ctx, append(inListSyntheticIDs("file:openai:missing", inListOverLimit), objectID))
+				require.NoError(t, err)
+				require.Len(t, objects, 1)
+				require.Equal(t, objectID, objects[0].ID)
+			})
+			t.Run("GetProviderJobsByIDs", func(t *testing.T) {
+				jobs, err := ns.store.GetProviderJobsByIDs(ctx, append(inListSyntheticIDs("batch:openai:missing", inListOverLimit), jobID))
+				require.NoError(t, err)
+				require.Len(t, jobs, 1)
+				require.Equal(t, jobID, jobs[0].ID)
+			})
+			// Three columns share one id list, so a third of the limit is already too many.
+			t.Run("GetProviderJobsByFileIDs", func(t *testing.T) {
+				jobs, err := ns.store.GetProviderJobsByFileIDs(ctx, "openai", append(inListSyntheticIDs("file-missing", inListOverLimit/3), out))
+				require.NoError(t, err)
+				require.Len(t, jobs, 1)
+				require.Equal(t, jobID, jobs[0].ID)
+			})
+		})
+	}
+}
+
+// TestInListLimitProviderObjectsAndJobsBySuffixes pins that the short-id lookups a
+// Vertex list page runs accept more suffixes than one statement can hold: every
+// suffix is its own LIKE term, and SQLite caps both the bound parameters and the
+// depth of the OR chain they form. Only the full names ending in a listed suffix
+// come back.
+func TestInListLimitProviderObjectsAndJobsBySuffixes(t *testing.T) {
+	const suffixCount = 10000
+	for _, ns := range inListLimitStores(t) {
+		t.Run(ns.name, func(t *testing.T) {
+			ctx := context.Background()
+			fullName := "projects/p/locations/l/batchPredictionJobs/real"
+			require.NoError(t, ns.store.UpsertProviderObject(ctx, &tables.TableProviderObject{
+				ID: tables.ProviderObjectID(tables.ProviderObjectKindBatch, "vertex", fullName), Kind: tables.ProviderObjectKindBatch,
+				Provider: "vertex", ObjectID: fullName, VirtualKeyID: "vk-a",
+			}))
+			require.NoError(t, ns.store.UpsertProviderJob(ctx, &tables.TableProviderJob{
+				ID: tables.ProviderJobID(tables.ProviderJobKindBatch, "vertex", fullName), Kind: tables.ProviderJobKindBatch,
+				Provider: "vertex", JobID: fullName, AccountingStatus: tables.ProviderJobAccountingStatusPending,
+			}))
+			suffixes := append(inListSyntheticIDs("missing", suffixCount), "real")
+
+			t.Run("GetProviderObjectsByObjectIDSuffixes", func(t *testing.T) {
+				objects, err := ns.store.GetProviderObjectsByObjectIDSuffixes(ctx, tables.ProviderObjectKindBatch, "vertex", suffixes)
+				require.NoError(t, err)
+				require.Len(t, objects, 1)
+				require.Equal(t, fullName, objects[0].ObjectID)
+			})
+			t.Run("GetProviderJobsByJobIDSuffixes", func(t *testing.T) {
+				jobs, err := ns.store.GetProviderJobsByJobIDSuffixes(ctx, tables.ProviderJobKindBatch, "vertex", suffixes)
+				require.NoError(t, err)
+				require.Len(t, jobs, 1)
+				require.Equal(t, fullName, jobs[0].JobID)
+			})
+		})
+	}
+}

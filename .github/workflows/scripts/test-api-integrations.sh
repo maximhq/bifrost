@@ -175,6 +175,8 @@ export BIFROST_E2E_SETUP_TOKEN="$BIFROST_SETUP_TOKEN"
 # Match the API management collection's synthetic canary, including local runs.
 # It must be exported before starting the gateway so env-backed fields resolve.
 export BIFROST_SECRET_REDACTION_CANARY="${BIFROST_SECRET_REDACTION_CANARY:-synthetic-secretvar-harness-canary-0123456789}"
+# Key server URLs (ollama/sgl/vllm) must resolve to http(s), so they use a URL canary.
+export BIFROST_SECRET_REDACTION_URL_CANARY="${BIFROST_SECRET_REDACTION_URL_CANARY:-http://127.0.0.1/synthetic-secretvar-harness-canary-0123456789}"
 
 echo "🚀 Starting bifrost-http on port $PORT..."
 "$BIFROST_BINARY" --app-dir "$TEMP_DIR" --port "$PORT" --log-level debug > "$SERVER_LOG" 2>&1 &

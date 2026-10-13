@@ -1,0 +1,10 @@
+- feat: scope cache entries by virtual key and user, with a disable_identity_scoping opt-out
+- feat: cache_tool_call_responses (default false) skips caching responses that carry client-executed tool calls, shell_call and apply_patch_call included
+- feat: record lookup outcome for x-bifrost-cache-* response headers, including streams
+- feat: implement HTTPTransportResponseHeadersHook as a no-op
+- fix: isolate cache entries by request family (thanks [@Atharva-Kanherkar](https://github.com/Atharva-Kanherkar)!)
+- fix: snapshot the response before PostLLMHook returns so async cache writes do not race core cleanup
+- fix: placeholder vector on embedding failure and stricter config validation
+- fix: include embedding task params in the cache hash
+- chore: build cache keys from the new embedding input shape and the new oauth_key_config key schema
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
