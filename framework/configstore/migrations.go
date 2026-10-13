@@ -13863,6 +13863,17 @@ func migrationSwapProviderJobIndexes(ctx context.Context, db *gorm.DB, logger sc
 						return fmt.Errorf("failed to check whether %s is valid: %w", idx.name, err)
 					}
 					if !valid {
+						waited, err := waitForPostgresIndexBuild(tx, idx.name)
+						if err != nil {
+							return err
+						}
+						if waited {
+							if valid, err = postgresIndexIsValid(tx, "batch_jobs", idx.name); err != nil {
+								return fmt.Errorf("failed to check whether %s is valid: %w", idx.name, err)
+							}
+						}
+					}
+					if !valid {
 						if err := tx.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + idx.name).Error; err != nil {
 							return fmt.Errorf("failed to clear a partial %s: %w", idx.name, err)
 						}
@@ -15021,6 +15032,48 @@ func postgresIndexOnTable(tx *gorm.DB, table, name string) (qualified string, va
 	return rows[0].Qualified, rows[0].Valid, true, nil
 }
 
+// concurrentIndexBuildPollInterval is how often waitForPostgresIndexBuild
+// re-checks a concurrent build that another backend is still running.
+const concurrentIndexBuildPollInterval = 2 * time.Second
+
+// waitForPostgresIndexBuild blocks while a backend is still running CREATE INDEX
+// CONCURRENTLY (or REINDEX CONCURRENTLY) for index, and reports whether it waited.
+//
+// An index under a concurrent build reads indisvalid=false, the same as the
+// leftover of an interrupted build, and that build can outlive the pod that
+// started it: when a pod is killed, Postgres ends its idle advisory-lock session
+// at once but keeps the busy build running until it next touches the socket. The
+// next pod then holds the migration lock and sees what looks like a leftover.
+// Dropping it blocks behind the live build and then fails one side with "tuple
+// concurrently updated". Callers that drop an INVALID index call this first and
+// re-check validity when it waited: a finished build is kept, and only an index
+// still INVALID with no build running is dropped.
+//
+// Postgres hides index_relid in pg_stat_progress_create_index for backends of
+// another role unless the caller has pg_read_all_stats. Bifrost nodes share one
+// role; a hidden build reads as "not building" and keeps the drop-and-rebuild path.
+func waitForPostgresIndexBuild(tx *gorm.DB, index string) (bool, error) {
+	ctx := tx.Statement.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for waited := false; ; waited = true {
+		var building bool
+		if err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM pg_stat_progress_create_index
+			WHERE index_relid = pg_catalog.to_regclass(?))`, index).Scan(&building).Error; err != nil {
+			return waited, fmt.Errorf("check concurrent build of %s: %w", index, err)
+		}
+		if !building {
+			return waited, nil
+		}
+		select {
+		case <-ctx.Done():
+			return waited, fmt.Errorf("wait for concurrent build of %s: %w", index, ctx.Err())
+		case <-time.After(concurrentIndexBuildPollInterval):
+		}
+	}
+}
+
 // ensureIndexConcurrently creates index name on table with the given column
 // definition without blocking writes. On postgres it runs CREATE [UNIQUE] INDEX
 // CONCURRENTLY, which cannot run inside a transaction, so callers must use a
@@ -15052,6 +15105,17 @@ func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where 
 	qualified, valid, found, err := postgresIndexOnTable(tx, table, name)
 	if err != nil {
 		return fmt.Errorf("check index %s: %w", name, err)
+	}
+	if found && !valid {
+		waited, err := waitForPostgresIndexBuild(tx, qualified)
+		if err != nil {
+			return err
+		}
+		if waited {
+			if qualified, valid, found, err = postgresIndexOnTable(tx, table, name); err != nil {
+				return fmt.Errorf("check index %s: %w", name, err)
+			}
+		}
 	}
 	if found && valid {
 		return nil

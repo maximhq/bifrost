@@ -3204,15 +3204,76 @@ func pgIndexValid(ctx context.Context, conn *sql.Conn, table, name string) (bool
 // qualified with the current schema, the one pgIndexValid checks: unqualified,
 // a missing index here would resolve to a same-named index in a later
 // search_path schema and drop that one instead.
+//
+// A build another backend is still running also reads as INVALID (see
+// pgWaitForIndexBuild), so it waits for that build first and skips the drop
+// when the build finished valid; every caller rebuilds with IF NOT EXISTS,
+// which then keeps it.
 func pgDropIndexConcurrently(ctx context.Context, conn *sql.Conn, name string) error {
 	qualified, err := pgQualifiedIndex(ctx, conn, name)
 	if err != nil {
 		return err
 	}
+	waited, err := pgWaitForIndexBuild(ctx, conn, qualified)
+	if err != nil {
+		return err
+	}
+	if waited {
+		var valid bool
+		if err := conn.QueryRowContext(ctx, `SELECT COALESCE((SELECT indisvalid FROM pg_index
+			WHERE indexrelid = to_regclass($1)), false)`, qualified).Scan(&valid); err != nil {
+			return fmt.Errorf("failed to check index %s validity: %w", qualified, err)
+		}
+		if valid {
+			return nil
+		}
+	}
 	if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+qualified); err != nil {
 		return fmt.Errorf("failed to drop invalid index %s: %w", qualified, err)
 	}
 	return nil
+}
+
+// concurrentIndexBuildPollInterval is how often pgWaitForIndexBuild re-checks a
+// concurrent build that another backend is still running.
+const concurrentIndexBuildPollInterval = 2 * time.Second
+
+// pgRowQuerier is the QueryRowContext of a *sql.Conn or a gorm ConnPool.
+type pgRowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// pgWaitForIndexBuild blocks while a backend is still running CREATE INDEX
+// CONCURRENTLY (or REINDEX CONCURRENTLY) for index, and reports whether it waited.
+//
+// An index under a concurrent build reads indisvalid=false, the same as the
+// leftover of an interrupted build, and that build can outlive the pod that
+// started it: when a pod is killed, Postgres ends its idle advisory-lock session
+// at once but keeps the busy build running until it next touches the socket. The
+// next pod then holds the migration lock and sees what looks like a leftover.
+// Dropping it blocks behind the live build and then fails one side with "tuple
+// concurrently updated". Callers that drop an INVALID index call this first and
+// re-check validity when it waited.
+//
+// Postgres hides index_relid in pg_stat_progress_create_index for backends of
+// another role unless the caller has pg_read_all_stats. Bifrost nodes share one
+// role; a hidden build reads as "not building" and keeps the drop-and-rebuild path.
+func pgWaitForIndexBuild(ctx context.Context, q pgRowQuerier, index string) (bool, error) {
+	for waited := false; ; waited = true {
+		var building bool
+		if err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_progress_create_index
+			WHERE index_relid = to_regclass($1))`, index).Scan(&building); err != nil {
+			return waited, fmt.Errorf("failed to check concurrent build of %s: %w", index, err)
+		}
+		if !building {
+			return waited, nil
+		}
+		select {
+		case <-ctx.Done():
+			return waited, fmt.Errorf("wait for concurrent build of %s: %w", index, ctx.Err())
+		case <-time.After(concurrentIndexBuildPollInterval):
+		}
+	}
 }
 
 // pgQualifiedIndex returns name qualified with the connection's current schema,
@@ -3241,12 +3302,8 @@ func ensureOwnerTimestampIndexes(ctx context.Context, conn *sql.Conn, logger sch
 		}
 		if !valid {
 			logger.Info("[logstore] building index %s on %s", idx.name, idx.table)
-			qualifiedName, err := pgQualifiedIndex(ctx, conn, idx.name)
-			if err != nil {
+			if err := pgDropIndexConcurrently(ctx, conn, idx.name); err != nil {
 				return err
-			}
-			if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+qualifiedName); err != nil {
-				return fmt.Errorf("failed to drop invalid index %s: %w", idx.name, err)
 			}
 			if _, err := conn.ExecContext(ctx, idx.createSQL()); err != nil {
 				return fmt.Errorf("failed to create index %s: %w", idx.name, err)
@@ -5522,18 +5579,38 @@ func migrationAddWarpConversationsUpdatedAtIndex(ctx context.Context, db *gorm.D
 				//
 				// An invalid remnant is dropped concurrently and rebuilt, matching
 				// how ensureMetadataGINIndex recovers the same situation.
-				var indexValid bool
-				if err := tx.Raw(`
-					SELECT COALESCE(bool_and(pi.indisvalid), false)
-					FROM pg_class pc
-					JOIN pg_index pi ON pi.indrelid = pc.oid
-					JOIN pg_class ic ON ic.oid = pi.indexrelid
-					WHERE pc.relname = 'warp_conversations'
-					  AND ic.relname = 'idx_warp_conversations_updated_at'
-				`).Scan(&indexValid).Error; err != nil {
-					return fmt.Errorf("check warp_conversations updated_at index validity: %w", err)
+				indexValid := func() (bool, error) {
+					var valid bool
+					if err := tx.Raw(`
+						SELECT COALESCE(bool_and(pi.indisvalid), false)
+						FROM pg_class pc
+						JOIN pg_index pi ON pi.indrelid = pc.oid
+						JOIN pg_class ic ON ic.oid = pi.indexrelid
+						WHERE pc.relname = 'warp_conversations'
+						  AND ic.relname = 'idx_warp_conversations_updated_at'
+					`).Scan(&valid).Error; err != nil {
+						return false, fmt.Errorf("check warp_conversations updated_at index validity: %w", err)
+					}
+					return valid, nil
 				}
-				if indexValid {
+				valid, err := indexValid()
+				if err != nil {
+					return err
+				}
+				if !valid {
+					// A build another node is still running reads as INVALID too;
+					// wait for it rather than drop it (see pgWaitForIndexBuild).
+					waited, err := pgWaitForIndexBuild(ctx, tx.Statement.ConnPool, "idx_warp_conversations_updated_at")
+					if err != nil {
+						return err
+					}
+					if waited {
+						if valid, err = indexValid(); err != nil {
+							return err
+						}
+					}
+				}
+				if valid {
 					return nil
 				}
 				// Safe when it does not exist; necessary when it exists but is invalid.
