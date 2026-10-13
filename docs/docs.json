@@ -513,6 +513,11 @@
                   "integrations/genai-sdk/overview"
                 ]
               },
+              {
+                "group": "Cohere SDK",
+                "icon": "c",
+                "pages": ["integrations/cohere-sdk/overview"]
+              },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
               "integrations/pydanticai-sdk",
