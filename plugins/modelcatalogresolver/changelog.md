@@ -1,2 +1,0 @@
-- fix: mark resolver-generated fallbacks as inferred so caller-fault errors are not retried on providers the caller never named
-- chore: upgraded core to v1.12.0 and framework to v1.9.0

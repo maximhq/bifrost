@@ -95,6 +95,13 @@ func (s *CredStore) RequiresPerCallConnection(config *schemas.MCPClientConfig) b
 	if config == nil {
 		return false
 	}
+	// An openapi client's "connection" is an in-process server synthesized from
+	// its spec: there is no remote transport to dial per call, so it is always
+	// sticky regardless of auth type. Per-user credentials are resolved inside
+	// the synthesized tool handler from the call's own context instead.
+	if config.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
+		return false
+	}
 	r, ok := s.resolvers[config.AuthType]
 	if !ok {
 		return false
