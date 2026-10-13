@@ -475,14 +475,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			}
 			return resp, nil
 		},
-		SpeechResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.OpenAI {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
-			}
-			return resp, nil
-		},
+		// No SpeechResponseConverter: like /v1/audio/speech, the router then writes the raw
+		// audio bytes, which is what the Azure OpenAI SDK reads. A converter's return value is
+		// JSON-encoded, which turned the audio into {"audio":"<base64>"}.
 		TranscriptionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
 			if schemas.IsPlainTextTranscriptionFormat(resp.ResponseFormat) {
 				return []byte(resp.Text), nil

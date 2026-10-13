@@ -1080,6 +1080,21 @@ func TestParseAndAddTools_PrependsInstructionsAsSystemMessageAtModeAll(t *testin
 	assert.Equal(t, schemas.ChatMessageRoleUser, req.ChatRequest.Input[1].Role)
 }
 
+// Prompt-cache placement (#6180) resolves its points against the caller's transcript, so it has
+// to know which leading system message the gateway added. The injection records it on ctx.
+func TestParseAndAddTools_RecordsInjectedInstructionsForCachePlacement(t *testing.T) {
+	m := newInstructionsToolsManager()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	req := m.ParseAndAddToolsToRequest(ctx, newChatRequest())
+
+	recorded, ok := ctx.Value(schemas.BifrostContextKeyMCPInstructionsText).(*string)
+	require.True(t, ok, "the injected instructions were not recorded on the context")
+	require.NotNil(t, recorded)
+	require.NotNil(t, req.ChatRequest.Input[0].Content.ContentStr)
+	assert.Equal(t, *req.ChatRequest.Input[0].Content.ContentStr, *recorded)
+}
+
 // The agent loop re-enters this path once per turn against the same context. Without the
 // guard the block is prepended again every turn, growing the prompt without bound.
 func TestParseAndAddTools_InjectsInstructionsOnlyOncePerContext(t *testing.T) {

@@ -125,6 +125,7 @@ type ClientConfig struct {
 	WhitelistedRoutes                     []string                              `json:"whitelisted_routes,omitempty"`                // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
 	DeleteExpiredVirtualKeys              bool                                  `json:"delete_expired_virtual_keys"`                 // Delete expired virtual keys by default; a key's delete_after_expire overrides this
+	EnforceVKObjectOwnership              bool                                  `json:"enforce_vk_object_ownership"`                 // Restrict provider objects (files, batches, containers, ...) to the virtual key that created them
 	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
@@ -148,6 +149,7 @@ func (c *ClientConfig) IsMCPOAuthDiscoveryEnabled() bool {
 func (c *ClientConfig) UnmarshalJSON(data []byte) error {
 	type ClientConfigAlias ClientConfig
 	alias := ClientConfigAlias{
+		EnforceVKObjectOwnership: true, // an omitted field keeps provider objects bound to their creator
 		Compat: CompatConfig{
 			ConvertTextToChat:                   true,
 			ConvertChatToResponses:              true,
@@ -244,6 +246,10 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.DeleteExpiredVirtualKeys {
 		hash.Write([]byte("deleteExpiredVirtualKeys:true"))
+	}
+	// Default is true; only hash the opt-out to avoid config hash churn on upgrade.
+	if !c.EnforceVKObjectOwnership {
+		hash.Write([]byte("enforceVKObjectOwnership:false"))
 	}
 
 	// Always hash when non-zero — explicitly setting the default (10) is a meaningful

@@ -1,16 +1,16 @@
 name: Live Tests
 
 # GPT Live e2e suite (tests/live) against a gateway built from the checkout. The fake upstream
-# needs no provider keys, so the PR job runs unattended; the long sessions run nightly.
+# needs no provider keys. The release pipeline runs the fake suite on every deployment; this
+# workflow runs the long sessions nightly and either mode on demand.
 
 on:
-  pull_request:
   schedule:
     - cron: "0 3 * * *"
   workflow_dispatch:
 
 concurrency:
-  group: live-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: live-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -63,7 +63,6 @@ jobs:
 
   live-long:
     name: GPT Live (long sessions, fake upstream)
-    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:

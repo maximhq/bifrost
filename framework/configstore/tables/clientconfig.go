@@ -55,6 +55,7 @@ type TableClientConfig struct {
 	LoggingHeadersJSON                    string                         `gorm:"type:text" json:"-"`                                         // JSON serialized []string
 	HideDeletedVirtualKeysInFilters       bool                           `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"`  // Hide deleted virtual keys in logs filter dropdowns
 	DeleteExpiredVirtualKeys              bool                           `gorm:"default:false" json:"delete_expired_virtual_keys"`           // Default for virtual keys without an explicit delete_after_expire: delete them once expired
+	EnforceVKObjectOwnership              bool                           `gorm:"default:true" json:"enforce_vk_object_ownership"`            // Restrict provider objects to the virtual key that created them
 	HiddenRequestTypesJSON                string                         `gorm:"type:text" json:"-"`                                         // JSON serialized []string of request types hidden from log reads
 	RoutingChainMaxDepth                  int                            `gorm:"default:10" json:"routing_chain_max_depth"`                  // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  string                         `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"` // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers

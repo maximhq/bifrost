@@ -229,6 +229,7 @@
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
               "features/complexity-router",
+              "features/warp",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",

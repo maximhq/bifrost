@@ -49,6 +49,8 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyRequestedModel:          {},
 	BifrostContextKeyProviderProxyConfig:     {},
 	BifrostContextKeyMCPInboundBearer:        {},
+	BifrostContextKeyMCPAgentServedRoute:     {},
+	BifrostContextKeyMCPInstructionsText:     {},
 }
 
 // isReservedKey reports whether key is a reserved context key whose writes are
@@ -385,8 +387,17 @@ func (bc *BifrostContext) Err() error {
 		return bc.valueDelegate.Err()
 	}
 	bc.errMu.RLock()
-	defer bc.errMu.RUnlock()
-	return bc.err
+	err := bc.err
+	bc.errMu.RUnlock()
+	// The watcher goroutine records a parent cancel asynchronously; read the parent
+	// directly so a cancel is visible on the next call, as with context.WithCancel.
+	if err == nil && bc.parent != nil && !isNonCancellingContext(bc.parent) {
+		if perr := bc.parent.Err(); perr != nil {
+			bc.cancel(perr)
+			return perr
+		}
+	}
+	return err
 }
 
 // Value returns the value associated with the key.
