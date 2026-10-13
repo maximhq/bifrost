@@ -232,30 +232,34 @@ func (setup webrtcRelaySetup) fail(status int, errorType, message string, err er
 // what the browser side ending means.
 func (r *webrtcRelay) installCloseHandlers() {
 	r.upstreamConnectedOrError = make(chan error, 1)
+	r.upstreamPC.OnConnectionStateChange(r.onUpstreamState)
+	r.downstreamPC.OnConnectionStateChange(r.onDownstreamState)
+}
 
-	r.upstreamPC.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		switch state {
-		case webrtc.PeerConnectionStateConnected:
-			select {
-			case r.upstreamConnectedOrError <- nil:
-			default:
-			}
-		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
-			select {
-			case r.upstreamConnectedOrError <- fmt.Errorf("peer connection state %s", state.String()):
-			default:
-			}
-			r.close()
-		case webrtc.PeerConnectionStateDisconnected:
-			r.close()
+// onUpstreamState and onDownstreamState end a leg only on failed or closed. Disconnected means ICE
+// consent checks lapsed and can recover (a busy host does this); pion moves a connection that does
+// not recover to failed after its failed timeout, so a dropped peer still ends the leg.
+func (r *webrtcRelay) onUpstreamState(state webrtc.PeerConnectionState) {
+	switch state {
+	case webrtc.PeerConnectionStateConnected:
+		select {
+		case r.upstreamConnectedOrError <- nil:
+		default:
 		}
-	})
-	r.downstreamPC.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		switch state {
-		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed, webrtc.PeerConnectionStateDisconnected:
-			r.handler.browserGone(r)
+	case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+		select {
+		case r.upstreamConnectedOrError <- fmt.Errorf("peer connection state %s", state.String()):
+		default:
 		}
-	})
+		r.close()
+	}
+}
+
+func (r *webrtcRelay) onDownstreamState(state webrtc.PeerConnectionState) {
+	switch state {
+	case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
+		r.handler.browserGone(r)
+	}
 }
 
 func (r *webrtcRelay) installTrackForwarders() {
@@ -550,8 +554,26 @@ func (reg *webrtcRelayRegistry) closeAll() {
 	}
 }
 
+// ICE timing for both relay legs, measured from the last packet a peer sent. A leg rides out a
+// disconnected stall and ends on failed (onUpstreamState / onDownstreamState), so a peer that
+// vanishes without closing is detected after webrtcICEDisconnectedTimeout + webrtcICEFailedTimeout
+// (10 s) instead of pion's default 30 s.
+const (
+	webrtcICEDisconnectedTimeout = 5 * time.Second
+	webrtcICEFailedTimeout       = 5 * time.Second
+	webrtcICEKeepaliveInterval   = 2 * time.Second
+)
+
+// webrtcRelayAPI is shared by every relay: NewAPI still registers pion's default codecs and
+// interceptors, and each peer connection copies the media engine and builds its own interceptors.
+var webrtcRelayAPI = func() *webrtc.API {
+	var se webrtc.SettingEngine
+	se.SetICETimeouts(webrtcICEDisconnectedTimeout, webrtcICEFailedTimeout, webrtcICEKeepaliveInterval)
+	return webrtc.NewAPI(webrtc.WithSettingEngine(se))
+}()
+
 func newWebRTCPeerConnection() (*webrtc.PeerConnection, error) {
-	return webrtc.NewPeerConnection(webrtc.Configuration{})
+	return webrtcRelayAPI.NewPeerConnection(webrtc.Configuration{})
 }
 
 // setRemoteDescription applies desc to pc and converts a panic raised inside the
