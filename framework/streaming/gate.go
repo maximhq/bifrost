@@ -809,7 +809,10 @@ func (sa *StreamAccumulator) gateFlusher() {
 	for {
 		// Wait while paused (chunks may continue to arrive), or while active
 		// with empty buffer (no work). Wake on Ended or buffered-while-active.
-		for sa.gateState != StreamStateEnded && (len(sa.gateReplayBuf) == 0 || (sa.gateState == StreamStatePaused && sa.gateApprovedPrefix == 0)) {
+		// Also wake when Resume makes a pending terminal finishable: an approved
+		// prefix may have drained the whole buffer while still paused.
+		for sa.gateState != StreamStateEnded && !(sa.gatePendingTerminal && sa.gateState == StreamStateActive) &&
+			(len(sa.gateReplayBuf) == 0 || (sa.gateState == StreamStatePaused && sa.gateApprovedPrefix == 0)) {
 			sa.gateCond.Wait()
 		}
 		// Drain whatever is buffered (state is Active or Ended here).

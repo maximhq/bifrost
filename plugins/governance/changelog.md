@@ -1,0 +1,17 @@
+- feat: bind files, batches, videos, containers and cached contents to the creating virtual key under every id form the provider accepts, behind enforce_vk_object_ownership
+- feat: require a model (or a provider-wide grant) for file-based batches under model-restricted virtual keys, following a custom provider's base type
+- feat: team, business unit and customer access profile limit holders and permits; refuse an entity's own limits when a profile governs it
+- feat: per-agent access checks with virtual-key agent grants and allow_by_default
+- feat: bill live sessions per window without counting each window as a request, and evaluate live sidebands through pre-hooks without a model
+- feat: let provider-injected MCP tools past client and request tool filters
+- feat: stamp the virtual key's content-logging decision on the request and root span
+- feat: serve Warp for signed-in users without an access profile
+- feat: implement HTTPTransportResponseHeadersHook as a no-op
+- fix: check every model a passthrough body names and refuse model-less passthrough under model-restricted keys
+- fix: canonicalise model config keys across aliases, prefixes and casing
+- fix: include the fallback index in billing dedup so fallback usage is billed
+- fix: preserve team calendar alignment after restart
+- fix: load balancer treats negative weights as 0
+- fix: scope code-mode tool discovery to the request's grant
+- fix: dump only changed budget and rate-limit rows
+- chore: upgraded core to v1.12.0 and framework to v1.9.0

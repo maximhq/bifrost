@@ -279,6 +279,8 @@ func (s *BifrostHTTPServer) loadBuiltinPlugins(ctx context.Context) error {
 			IsVkMandatory:         &s.Config.ClientConfig.EnforceAuthOnInference,
 			RequiredHeaders:       &s.Config.ClientConfig.RequiredHeaders,
 			DisableAutoToolInject: &s.Config.ClientConfig.MCPDisableAutoToolInject,
+
+			ObjectOwnershipEnforced: s.Config.ShouldEnforceVKObjectOwnership,
 		}
 		s.registerPluginWithStatus(ctx, governance.PluginName, nil, config, false)
 	} else {

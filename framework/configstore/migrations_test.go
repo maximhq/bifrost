@@ -4557,6 +4557,28 @@ func TestMigrationAddClientConfigDeleteExpiredVirtualKeysColumn(t *testing.T) {
 	require.NoError(t, migrationAddClientConfigDeleteExpiredVirtualKeysColumn(ctx, db, testMigrationLogger))
 }
 
+func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "enforce_vk_object_ownership"))
+	mg := db.Migrator()
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "enforce_vk_object_ownership"))
+
+	require.NoError(t, migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "enforce_vk_object_ownership"))
+
+	// Existing rows read back as on: an upgrade keeps provider objects bound to their creator.
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.True(t, cfg.EnforceVKObjectOwnership)
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_enforce_vk_object_ownership_column").Error)
+	require.NoError(t, migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()

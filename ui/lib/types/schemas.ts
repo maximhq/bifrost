@@ -1268,6 +1268,7 @@ export const coreConfigSchema = z.object({
 	enforce_auth_on_inference: z.boolean().default(true),
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
 	delete_expired_virtual_keys: z.boolean().default(false),
+	enforce_vk_object_ownership: z.boolean().default(true),
 	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),
 	max_request_body_size_mb: z.number().min(1).default(100),
