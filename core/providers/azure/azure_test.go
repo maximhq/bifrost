@@ -403,12 +403,15 @@ func TestAzureDecisionSendsTypesafeBodyToSystemOne(t *testing.T) {
 
 	for name, token := range map[string]string{"api-key": "", "bearer": "entra-token"} {
 		t.Run(name, func(t *testing.T) {
-			var gotPath, gotQuery, gotAPIKey, gotAuth string
-			var gotBody []byte
+			type capturedRequest struct {
+				path, query, apiKey, auth string
+				body                      []byte
+			}
+			// The handler runs on the server's goroutine, so the request is handed over on a channel.
+			captured := make(chan capturedRequest, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotPath, gotQuery = r.URL.Path, r.URL.RawQuery
-				gotAPIKey, gotAuth = r.Header.Get("api-key"), r.Header.Get("Authorization")
-				gotBody, _ = io.ReadAll(r.Body)
+				body, _ := io.ReadAll(r.Body)
+				captured <- capturedRequest{path: r.URL.Path, query: r.URL.RawQuery, apiKey: r.Header.Get("api-key"), auth: r.Header.Get("Authorization"), body: body}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, azureDecisionResponseBody)
 			}))
@@ -422,6 +425,8 @@ func TestAzureDecisionSendsTypesafeBodyToSystemOne(t *testing.T) {
 			if bifrostErr != nil {
 				t.Fatalf("Decision: %+v", bifrostErr.Error)
 			}
+			sent := <-captured
+			gotPath, gotQuery, gotAPIKey, gotAuth, gotBody := sent.path, sent.query, sent.apiKey, sent.auth, sent.body
 
 			if gotPath != "/providers/microsoft/v1/systemone" || gotQuery != "" {
 				t.Errorf("request = %s?%s, want /providers/microsoft/v1/systemone with no query", gotPath, gotQuery)
