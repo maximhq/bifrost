@@ -246,6 +246,11 @@ func createAnthropicMessagesRouteConfig(pathPrefix string, logger schemas.Logger
 					anthropic.ReleaseStreamPromptUsage(ctx)
 					return anthropic.ToAnthropicResponsesStreamError(err)
 				},
+				// The error path above covers a stream that failed. A stream that
+				// simply ends -- including one whose upstream closed without a
+				// message_stop -- releases here instead, rather than waiting for the
+				// next stream to sweep it.
+				Cleanup: anthropic.ReleaseStreamPromptUsage,
 			},
 			PreCallback:  checkAnthropicPassthrough,
 			ShortCircuit: anthropicRefuseThreadContinue,
