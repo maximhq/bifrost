@@ -9042,6 +9042,60 @@
               }
             }
           ]
+        },
+        {
+          "name": "Teardown - Disable Proxy Config",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": false, \"type\": \"http\", \"url\": \"http://127.0.0.1:38080\", \"timeout\": 30, \"enable_for_inference\": false, \"enable_for_api\": false, \"enable_for_scim\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only the authenticated pass stored a proxy (the unauthenticated update is refused",
+                  "// with 403), and only an admin session may change it back.",
+                  "if (!(pm.variables.get('admin_auth_header') || pm.variables.get('setup_token')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The stored proxy points at a port nothing listens on; left enabled, every later",
+                  "// provider call in this pass fails to dial it.",
+                  "pm.test('Proxy is disabled again (200)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },

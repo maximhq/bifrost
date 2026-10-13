@@ -293,6 +293,27 @@ test("Get Proxy Config survives a non-JSON body without a script error", () => {
   assert.ok(ctx.state.tests.length > 0, "the script must reach its named assertions");
 });
 
+const disableProxyPrerequest = scriptFor("Proxy / Teardown - Disable Proxy Config", "prerequest");
+
+test("proxy teardown is skipped in the unauthenticated pass, which stored nothing", () => {
+  const ctx = run(disableProxyPrerequest, {});
+  assert.strictEqual(ctx.state.skipped, true, "expected skipRequest()");
+});
+
+test("proxy teardown runs in the authenticated pass and disables the proxy for every surface", () => {
+  for (const variables of [{ admin_auth_header: "Bearer x" }, { setup_token: "t" }]) {
+    const ctx = run(disableProxyPrerequest, { variables });
+    assert.strictEqual(ctx.state.skipped, false, `unexpected skipRequest() for ${JSON.stringify(variables)}`);
+  }
+  const proxyFolder = collection.item.find((f) => f.name === "Proxy");
+  const teardown = proxyFolder.item.find((i) => i.name === "Teardown - Disable Proxy Config");
+  assert.strictEqual(proxyFolder.item.at(-1), teardown, "teardown must be the folder's last request");
+  const body = JSON.parse(teardown.request.body.raw);
+  assert.strictEqual(body.enabled, false);
+  assert.strictEqual(body.enable_for_inference, false);
+  assert.strictEqual(body.enable_for_api, false);
+});
+
 // ── MCP Clients / Add MCP Client and its dependents ───────────────────────────
 const addMCPClientTest = scriptFor("MCP Clients / Add MCP Client", "test");
 
