@@ -583,11 +583,57 @@ func (bifrost *Bifrost) lastKnownModelsFromCatalog(providerKey schemas.ModelProv
 	return models
 }
 
+// listModelsContextKey keys core-internal list-models state on the context.
+type listModelsContextKey string
+
+// listAllModelsFallbackKey marks a per-provider poll started by ListAllModels, the only caller
+// whose failed poll may be answered from the model catalog.
+const listAllModelsFallbackKey listModelsContextKey = "list-all-models-catalog-fallback"
+
+// isExpectedListModelsError reports whether a per-provider list failure is one the aggregate
+// stays silent about: the provider has no keys, does not support listing, or is blocked.
+func isExpectedListModelsError(err *schemas.BifrostError) bool {
+	if err == nil {
+		return false
+	}
+	if err.Type != nil && *err.Type == "provider_blocked" {
+		return true
+	}
+	if err.Error == nil {
+		return false
+	}
+	return strings.Contains(err.Error.Message, "no keys found") || strings.Contains(err.Error.Message, "not supported")
+}
+
+// lastKnownListModelsResponse answers a failed first-page poll from ListAllModels with the
+// provider's last-known models from the catalog, or returns nil to keep the error. It runs in
+// the worker after retries and before the post-hooks, so plugins narrow the last-known list
+// exactly as they narrow a live one: a virtual key's model allow and block lists still apply.
+func (bifrost *Bifrost) lastKnownListModelsResponse(ctx *schemas.BifrostContext, providerKey schemas.ModelProvider, req *schemas.BifrostListModelsRequest, err *schemas.BifrostError) *schemas.BifrostResponse {
+	if req == nil || req.PageToken != "" || isExpectedListModelsError(err) {
+		return nil
+	}
+	if fallback, _ := ctx.Value(listAllModelsFallbackKey).(bool); !fallback {
+		return nil
+	}
+	models := bifrost.lastKnownModelsFromCatalog(providerKey, req.Unfiltered)
+	if len(models) == 0 {
+		return nil
+	}
+	bifrost.logger.Warn("serving %d last-known models for provider %s from the model catalog after its live poll failed: %s", len(models), providerKey, err.GetErrorString())
+	return &schemas.BifrostResponse{ListModelsResponse: &schemas.BifrostListModelsResponse{
+		Data:        models,
+		KeyStatuses: err.ExtraFields.KeyStatuses,
+	}}
+}
+
 // ListAllModels lists all models from all configured providers.
 // It accumulates responses from all providers with a limit of 1000 per provider to get all results.
 // Each provider poll is bounded by listAllModelsProviderTimeout so one unreachable provider
-// cannot block the aggregate; a provider whose poll fails contributes its last-known models
-// from the model catalog (when one with per-provider listings is configured) instead.
+// cannot block the aggregate. A provider whose poll fails contributes its last-known models
+// from the model catalog (when one with per-provider listings is configured) instead; that
+// list is substituted in the worker, so the plugin post-hooks filter it like a live listing.
+// A poll still running at the deadline contributes nothing, since no post-hook has seen it.
 func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
 	if req == nil {
 		req = &schemas.BifrostListModelsRequest{}
@@ -667,6 +713,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 			providerCtx := schemas.NewBifrostContext(ctx, time.Now().Add(listAllModelsProviderTimeout))
 			defer providerCtx.Cancel()
 			providerCtx.SetValue(schemas.BifrostContextKeyRequestID, uuid.New().String())
+			providerCtx.SetValue(listAllModelsFallbackKey, true)
 
 			providerModels := make([]schemas.Model, 0)
 			var providerKeyStatuses []schemas.KeyStatus
@@ -699,18 +746,7 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 				if bifrostErr != nil {
 					// Some per-provider failures are expected when fanning out across all
 					// configured providers and must not be surfaced as a top-level error
-					errType := ""
-					if bifrostErr.Type != nil {
-						errType = *bifrostErr.Type
-					}
-					errMsg := ""
-					if bifrostErr.Error != nil {
-						errMsg = bifrostErr.Error.Message
-					}
-					isExpected := strings.Contains(errMsg, "no keys found") ||
-						strings.Contains(errMsg, "not supported") ||
-						errType == "provider_blocked"
-					if !isExpected {
+					if !isExpectedListModelsError(bifrostErr) {
 						providerErr = bifrostErr
 						bifrost.logger.Warn("failed to list models for provider %s: %s", providerKey, bifrostErr.GetErrorString())
 					}
@@ -738,20 +774,6 @@ func (bifrost *Bifrost) ListAllModels(ctx *schemas.BifrostContext, req *schemas.
 
 				// Set the page token for the next request
 				providerRequest.PageToken = response.NextPageToken
-			}
-
-			// A provider whose live poll failed shouldn't vanish from the
-			// aggregate while the catalog still remembers its models: serve
-			// the last-known list (kept fresh by the transport's background
-			// refresher) instead of nothing. Expected failures (no keys, not
-			// supported, blocked) leave providerErr nil and stay silent as
-			// before, and the poll error still propagates so an
-			// all-providers-down setup without a catalog keeps erroring.
-			if providerErr != nil && len(providerModels) == 0 {
-				if cached := bifrost.lastKnownModelsFromCatalog(providerKey, req.Unfiltered); len(cached) > 0 {
-					bifrost.logger.Warn("serving %d last-known models for provider %s from the model catalog after its live poll failed", len(cached), providerKey)
-					providerModels = cached
-				}
 			}
 
 			results <- providerResult{
@@ -8307,6 +8329,11 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				}
 				return bifrost.handleProviderRequest(provider, config, req, k, keys)
 			}, keyProvider, req.RequestType, provider.GetProviderKey(), model, &req.BifrostRequest, bifrost.logger)
+			if bifrostError != nil && req.RequestType == schemas.ListModelsRequest {
+				if fallback := bifrost.lastKnownListModelsResponse(req.Context, provider.GetProviderKey(), req.BifrostRequest.ListModelsRequest, bifrostError); fallback != nil {
+					result, bifrostError = fallback, nil
+				}
+			}
 		}
 
 		// For streaming with an error, route release through the LAST attempt's
