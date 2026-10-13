@@ -1,6 +1,7 @@
 package configstore
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -130,5 +131,94 @@ func TestBaseURLBackfillReadBypassesTheAfterFindHook(t *testing.T) {
 		assert.False(t, skip, "an unresolvable reference must still migrate")
 		require.NotNil(t, baseURL)
 		assert.Equal(t, "env.BIFROST_TEST_BACKFILL_ABSENT_URL", baseURL.GetRawRef())
+	})
+}
+
+// TestMigrationAddOllamaSGLConfigColumnsBackfillsReferences runs the registered
+// migration itself, which the two tests above deliberately do not.
+//
+// They cover the decision (through a mirror of the migration's decode) and the
+// read (plain columns, so TableProvider.AfterFind stays out of it). Neither one
+// calls migrationAddOllamaSGLConfigColumns, so the leg that actually carries the
+// endpoint forward -- tx.Create of a key whose OllamaKeyConfig.URL holds the
+// REFERENCE rather than its resolved value -- was untested, and the mirror could
+// drift from the code it mirrors without anything turning red.
+//
+// The ollama provider's reference is deliberately absent from the environment:
+// that is the case the whole backfill exists for, and the one where a resolved
+// value would be an empty string.
+func TestMigrationAddOllamaSGLConfigColumnsBackfillsReferences(t *testing.T) {
+	const ollamaRef = "env.BIFROST_TEST_BACKFILL_MIGRATION_UNSET"
+	const sglLiteral = "http://sgl.internal:30000"
+
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableProvider{}, &tables.TableKey{}))
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+
+	// AutoMigrate derives config_keys from the current struct, so it already has
+	// the two columns this migration adds. Drop them, so the add-column leg runs
+	// for real against a table that predates it -- the shape every upgrading
+	// deployment actually has.
+	for _, col := range []string{"ollama_url", "sgl_url"} {
+		require.NoError(t, db.Migrator().DropColumn(&tables.TableKey{}, col))
+		require.False(t, db.Migrator().HasColumn(&tables.TableKey{}, col),
+			"precondition: %s must be absent before the migration runs", col)
+	}
+
+	// Seeded with raw SQL so neither the write nor the read goes through the
+	// model hooks, matching how these rows exist in an upgraded database.
+	for _, p := range []struct{ name, networkConfigJSON string }{
+		{"ollama", `{"base_url":"` + ollamaRef + `"}`},
+		{"sgl", `{"base_url":"` + sglLiteral + `"}`},
+		{"openai", `{"base_url":"https://api.openai.com"}`}, // not in scope, must not mint a key
+	} {
+		require.NoError(t, db.Exec(
+			"INSERT INTO config_providers (name, network_config_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
+			p.name, p.networkConfigJSON, time.Now(), time.Now(),
+		).Error)
+	}
+
+	require.NoError(t, migrationAddOllamaSGLConfigColumns(context.Background(), db, testMigrationLogger))
+
+	for _, col := range []string{"ollama_url", "sgl_url"} {
+		assert.True(t, db.Migrator().HasColumn(&tables.TableKey{}, col), "%s must exist after the migration", col)
+	}
+
+	t.Run("an unresolvable ollama reference is carried onto the key as a reference", func(t *testing.T) {
+		var key tables.TableKey
+		require.NoError(t, db.Where("provider = ?", "ollama").First(&key).Error,
+			"the backfill must create a key for the ollama provider")
+		require.NotNil(t, key.OllamaKeyConfig, "the generated key must carry an OllamaKeyConfig")
+		assert.Equal(t, ollamaRef, key.OllamaKeyConfig.URL.GetRawRef(),
+			"the reference itself must be stored, not its resolved value")
+		assert.True(t, key.OllamaKeyConfig.URL.IsFromSecret())
+		assert.Empty(t, key.OllamaKeyConfig.URL.GetValue(),
+			"the variable is deliberately unset, so a resolved value would have been empty -- storing it would have lost the endpoint")
+	})
+
+	t.Run("an sgl literal is carried onto the key", func(t *testing.T) {
+		var key tables.TableKey
+		require.NoError(t, db.Where("provider = ?", "sgl").First(&key).Error)
+		require.NotNil(t, key.SGLKeyConfig, "the generated key must carry an SGLKeyConfig")
+		assert.Equal(t, sglLiteral, key.SGLKeyConfig.URL.GetValue())
+		assert.False(t, key.SGLKeyConfig.URL.IsFromSecret())
+	})
+
+	t.Run("providers outside ollama and sgl are left alone", func(t *testing.T) {
+		var n int64
+		require.NoError(t, db.Model(&tables.TableKey{}).Where("provider = ?", "openai").Count(&n).Error)
+		assert.Zero(t, n, "the backfill is scoped to ollama and sgl")
+	})
+
+	t.Run("a second run does not mint a duplicate key", func(t *testing.T) {
+		// Migrations are replayed on every boot. A second default key per provider
+		// is the specific hazard the migration's non-rollbackable Rollback is
+		// reasoned from, so it is worth pinning here.
+		require.NoError(t, migrationAddOllamaSGLConfigColumns(context.Background(), db, testMigrationLogger))
+
+		var n int64
+		require.NoError(t, db.Model(&tables.TableKey{}).Count(&n).Error)
+		assert.EqualValues(t, 2, n, "one key for ollama and one for sgl, after two runs")
 	})
 }
