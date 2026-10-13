@@ -2688,7 +2688,8 @@
               "enum": [
                 "aws-secrets-manager",
                 "gcp-secret-manager",
-                "hashicorp-vault"
+                "hashicorp-vault",
+                "azure-key-vault"
               ],
               "description": "Vault backend type"
             },
@@ -3029,8 +3030,172 @@
                       "additionalProperties": false
                     }
                   ]
+                },
+                "kubernetes_role": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        },
+                        "env_var": {
+                          "type": "string"
+                        },
+                        "from_env": {
+                          "type": "boolean"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "kubernetes_mount_path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        },
+                        "env_var": {
+                          "type": "string"
+                        },
+                        "from_env": {
+                          "type": "boolean"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "kubernetes_token_path": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        },
+                        "env_var": {
+                          "type": "string"
+                        },
+                        "from_env": {
+                          "type": "boolean"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
                 }
               },
+              "additionalProperties": false
+            },
+            "azure": {
+              "type": "object",
+              "description": "Azure Key Vault configuration. Set client_id and client_secret (with tenant_id) to use a service principal; omit them to use DefaultAzureCredential (workload identity, managed identity, or AZURE_* environment variables).",
+              "properties": {
+                "vault_url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        },
+                        "env_var": {
+                          "type": "string"
+                        },
+                        "from_env": {
+                          "type": "boolean"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "tenant_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        },
+                        "env_var": {
+                          "type": "string"
+                        },
+                        "from_env": {
+                          "type": "boolean"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "client_id": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        },
+                        "env_var": {
+                          "type": "string"
+                        },
+                        "from_env": {
+                          "type": "boolean"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "client_secret": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        },
+                        "env_var": {
+                          "type": "string"
+                        },
+                        "from_env": {
+                          "type": "boolean"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "vault_url"
+              ],
               "additionalProperties": false
             }
           },

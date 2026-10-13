@@ -1085,7 +1085,18 @@ false
 {{- if $vs.hashicorp.mountPath }}{{- $_ := set $hashicorp "mount_path" $vs.hashicorp.mountPath }}{{- end }}
 {{- if $vs.hashicorp.roleId }}{{- $_ := set $hashicorp "role_id" $vs.hashicorp.roleId }}{{- end }}
 {{- if $vs.hashicorp.secretId }}{{- $_ := set $hashicorp "secret_id" $vs.hashicorp.secretId }}{{- end }}
+{{- if $vs.hashicorp.kubernetesRole }}{{- $_ := set $hashicorp "kubernetes_role" $vs.hashicorp.kubernetesRole }}{{- end }}
+{{- if $vs.hashicorp.kubernetesMountPath }}{{- $_ := set $hashicorp "kubernetes_mount_path" $vs.hashicorp.kubernetesMountPath }}{{- end }}
+{{- if $vs.hashicorp.kubernetesTokenPath }}{{- $_ := set $hashicorp "kubernetes_token_path" $vs.hashicorp.kubernetesTokenPath }}{{- end }}
 {{- $_ := set $vaultStore "hashicorp" $hashicorp }}
+{{- end }}
+{{- if $vs.azure }}
+{{- $azure := dict }}
+{{- if $vs.azure.vaultUrl }}{{- $_ := set $azure "vault_url" $vs.azure.vaultUrl }}{{- end }}
+{{- if $vs.azure.tenantId }}{{- $_ := set $azure "tenant_id" $vs.azure.tenantId }}{{- end }}
+{{- if $vs.azure.clientId }}{{- $_ := set $azure "client_id" $vs.azure.clientId }}{{- end }}
+{{- if $vs.azure.clientSecret }}{{- $_ := set $azure "client_secret" $vs.azure.clientSecret }}{{- end }}
+{{- $_ := set $vaultStore "azure" $azure }}
 {{- end }}
 {{- $cs := index $config "config_store" }}
 {{- $_ := set $cs "vault_store" $vaultStore }}
