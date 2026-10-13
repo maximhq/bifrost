@@ -52,6 +52,7 @@ const CONNECTION_TYPE_OPTIONS: FilterOption[] = [
 	{ value: "http", label: "HTTP" },
 	{ value: "sse", label: "SSE" },
 	{ value: "stdio", label: "STDIO" },
+	{ value: "openapi", label: "OpenAPI" },
 ];
 
 const AUTH_TYPE_OPTIONS: FilterOption[] = [

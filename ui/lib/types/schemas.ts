@@ -1607,6 +1607,50 @@ export const prometheusFormSchema = z
 		}
 	});
 
+const httpUrlOrEmpty = (message: string) =>
+	z
+		.string()
+		.optional()
+		.refine((v) => !v?.trim() || isHttpUrl(v.trim()), message);
+
+function isHttpUrl(value: string): boolean {
+	try {
+		const url = new URL(value);
+		return (url.protocol === "http:" || url.protocol === "https:") && url.host !== "";
+	} catch {
+		return false;
+	}
+}
+
+// Credential for one OpenAPI securitySchemes entry (apiKey/bearer: value; basic: username + password).
+export const mcpOpenAPICredentialSchema = z.object({
+	value: _secretVarBase.optional(),
+	username: _secretVarBase.optional(),
+	password: _secretVarBase.optional(),
+});
+
+// openapi_config as sent on create/update. Exactly one spec source (inline text or URL).
+// The shape of openapi_config with no source requirement: an update is merged
+// onto the stored block, so it may carry only the fields being changed.
+export const mcpOpenAPIConfigBaseSchema = z.object({
+	spec: z.string().optional(),
+	spec_url: httpUrlOrEmpty("Spec URL must be a valid http:// or https:// URL"),
+	base_url: httpUrlOrEmpty("Base URL must be a valid http:// or https:// URL"),
+	security_credentials: z.record(z.string(), mcpOpenAPICredentialSchema).optional(),
+	include_deprecated: z.boolean().optional(),
+	max_response_bytes: z.number().int().min(0).optional(),
+});
+
+// openapi_config on create: a spec or spec URL is required.
+export const mcpOpenAPIConfigSchema = mcpOpenAPIConfigBaseSchema.superRefine((v, ctx) => {
+	const hasSpec = !!v.spec?.trim();
+	const hasUrl = !!v.spec_url?.trim();
+	if (!hasSpec && !hasUrl) {
+		ctx.addIssue({ code: "custom", path: ["spec"], message: "Paste or upload a spec, or provide a spec URL" });
+	}
+});
+export type MCPOpenAPIConfigSchema = z.infer<typeof mcpOpenAPIConfigSchema>;
+
 // MCP Client update schema
 export const mcpClientUpdateSchema = z
 	.object({
@@ -1615,6 +1659,8 @@ export const mcpClientUpdateSchema = z
 		needs_session_stickiness: z.boolean().optional(),
 		allow_by_default: z.boolean().optional(),
 		disabled: z.boolean().optional(),
+		// openapi clients only; undefined = leave the stored document alone.
+		openapi_config: mcpOpenAPIConfigBaseSchema.optional(),
 		name: z
 			.string()
 			.min(1, "Name is required")
