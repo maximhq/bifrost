@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -971,4 +972,196 @@ func TestBedrockCapabilityGatesReadDatasheet(t *testing.T) {
 			}
 		}
 	})
+}
+
+// codexRootOneOfSchema is the Codex automation_update shape: a tool whose
+// input_schema is a root-level oneOf, which Claude rejects on Converse.
+const codexRootOneOfSchema = `{"type":"object","oneOf":[{"type":"object","properties":{"mode":{"const":"create"},"name":{"type":"string"}},"required":["mode","name"],"additionalProperties":false},{"type":"object","properties":{"mode":{"const":"update"},"id":{"type":"string"}},"required":["mode","id"],"additionalProperties":false}]}`
+
+func mustToolSchema(t testing.TB, raw string) *schemas.ToolFunctionParameters {
+	t.Helper()
+	var params schemas.ToolFunctionParameters
+	if err := schemas.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal tool schema: %v", err)
+	}
+	return &params
+}
+
+// tooManyBranchesSchema exceeds the Anthropic normalizer's branch bound.
+func tooManyBranchesSchema(t testing.TB) *schemas.ToolFunctionParameters {
+	branches := make([]string, 0, 65)
+	for i := range 65 {
+		branches = append(branches, fmt.Sprintf(`{"type":"object","properties":{"p%d":{"type":"string"}}}`, i))
+	}
+	return mustToolSchema(t, `{"type":"object","oneOf":[`+strings.Join(branches, ",")+`]}`)
+}
+
+func bedrockChatToolSchemaRequest(model string, params *schemas.ToolFunctionParameters) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    model,
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "automation_update", Parameters: params},
+			}},
+		},
+	}
+}
+
+func bedrockResponsesToolSchemaRequest(model string, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    model,
+		Input:    []schemas.ResponsesMessage{glmUserMessage("hi")},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  schemas.Ptr("automation_update"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params},
+			}},
+		},
+	}
+}
+
+// convertBedrockToolSchema runs one Converse builder and returns the decoded
+// inputSchema of its single function tool.
+func convertBedrockToolSchema(t *testing.T, path string, ctx *schemas.BifrostContext, model string, params *schemas.ToolFunctionParameters) (map[string]any, error) {
+	t.Helper()
+	var toolConfig *BedrockToolConfig
+	switch path {
+	case "chat":
+		req, err := ToBedrockChatCompletionRequest(ctx, bedrockChatToolSchemaRequest(model, params))
+		if err != nil {
+			return nil, err
+		}
+		toolConfig = req.ToolConfig
+	case "responses":
+		req, err := ToBedrockResponsesRequest(ctx, bedrockResponsesToolSchemaRequest(model, params))
+		if err != nil {
+			return nil, err
+		}
+		toolConfig = req.ToolConfig
+	}
+	if toolConfig == nil || len(toolConfig.Tools) == 0 || toolConfig.Tools[0].ToolSpec == nil {
+		t.Fatalf("expected a function toolSpec, got %+v", toolConfig)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(toolConfig.Tools[0].ToolSpec.InputSchema.JSON, &schema); err != nil {
+		t.Fatalf("decode inputSchema: %v", err)
+	}
+	return schema, nil
+}
+
+// TestConverseToolSchemaRootCompositionClaude pins the Converse fix for Claude:
+// Bedrock forwards toolSpec.inputSchema to Claude, which rejects oneOf/anyOf/allOf
+// at the root ("input_schema does not support oneOf, allOf, or anyOf at the top
+// level"), so the Chat and Responses builders flatten it the way the Anthropic
+// provider does. Non-Claude Converse models accept root compositions and keep them.
+func TestConverseToolSchemaRootCompositionClaude(t *testing.T) {
+	for _, path := range []string{"chat", "responses"} {
+		t.Run(path+"/claude_root_oneOf_flattened", func(t *testing.T) {
+			params := mustToolSchema(t, codexRootOneOfSchema)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			schema, err := convertBedrockToolSchema(t, path, ctx, "global.anthropic.claude-sonnet-4-6", params)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+				if _, ok := schema[keyword]; ok {
+					t.Fatalf("root %s must be flattened for Claude, got %v", keyword, schema)
+				}
+			}
+			properties, _ := schema["properties"].(map[string]any)
+			for _, name := range []string{"mode", "name", "id"} {
+				if _, ok := properties[name]; !ok {
+					t.Fatalf("expected merged property %q, got %v", name, properties)
+				}
+			}
+			if required, _ := schema["required"].([]any); len(required) != 1 || required[0] != "mode" {
+				t.Fatalf("required = %v, want [mode] (intersection of the alternatives)", schema["required"])
+			}
+			if len(params.OneOf) != 2 {
+				t.Fatalf("caller-owned schema was mutated: oneOf has %d branches", len(params.OneOf))
+			}
+		})
+
+		t.Run(path+"/claude_alias_root_anyOf_flattened", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+				Key:    "my-claude-profile",
+				Config: &schemas.AliasConfig{ModelID: "45xnvsodrshx", ModelFamily: new(schemas.ModelFamilyAnthropic)},
+			})
+			params := mustToolSchema(t, strings.Replace(codexRootOneOfSchema, `"oneOf"`, `"anyOf"`, 1))
+			schema, err := convertBedrockToolSchema(t, path, ctx, "my-claude-profile", params)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, ok := schema["anyOf"]; ok {
+				t.Fatalf("root anyOf must be flattened for an Anthropic-family alias, got %v", schema)
+			}
+		})
+
+		t.Run(path+"/claude_root_allOf_flattened", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := mustToolSchema(t, `{"type":"object","allOf":[{"type":"object","properties":{"left":{"type":"string"}},"required":["left"]},{"type":"object","properties":{"right":{"type":"string"}},"required":["right"]}]}`)
+			schema, err := convertBedrockToolSchema(t, path, ctx, "us.anthropic.claude-opus-4-8", params)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, ok := schema["allOf"]; ok {
+				t.Fatalf("root allOf must be flattened for Claude, got %v", schema)
+			}
+			if required, _ := schema["required"].([]any); len(required) != 2 {
+				t.Fatalf("required = %v, want [left right] (union of allOf members)", schema["required"])
+			}
+		})
+
+		for _, model := range []string{"us.amazon.nova-pro-v1:0", "us.meta.llama4-maverick-17b-instruct-v1:0", "qwen.qwen3-32b-v1:0"} {
+			t.Run(path+"/non_claude_keeps_root_oneOf/"+model, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				schema, err := convertBedrockToolSchema(t, path, ctx, model, mustToolSchema(t, codexRootOneOfSchema))
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if branches, _ := schema["oneOf"].([]any); len(branches) != 2 {
+					t.Fatalf("non-Claude model must receive the root oneOf unchanged, got %v", schema)
+				}
+			})
+		}
+
+		t.Run(path+"/claude_too_complex_is_bad_request", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, err := convertBedrockToolSchema(t, path, ctx, "global.anthropic.claude-sonnet-4-6", tooManyBranchesSchema(t))
+			if err == nil || !providerUtils.IsInvalidRequestError(err) {
+				t.Fatalf("expected a caller-facing invalid request error, got %v", err)
+			}
+		})
+	}
+}
+
+// BenchmarkConverseToolSchemaClaude measures Claude Chat conversion with a plain
+// object tool schema (the common case) and with a root oneOf that gets flattened.
+func BenchmarkConverseToolSchemaClaude(b *testing.B) {
+	for _, bc := range []struct {
+		name string
+		raw  string
+	}{
+		{"plain_object", `{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`},
+		{"root_oneOf", codexRootOneOfSchema},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			params := mustToolSchema(b, bc.raw)
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if _, err := ToBedrockChatCompletionRequest(ctx, bedrockChatToolSchemaRequest("global.anthropic.claude-sonnet-4-6", params)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

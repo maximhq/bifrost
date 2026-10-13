@@ -82,6 +82,9 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 
 	if len(request.Tools) > 0 {
 		params.Tools = convertGeminiToolsToResponsesTools(request.Tools)
+		if native := geminiNativeOnlyTools(request.Tools); len(native) > 0 {
+			params.ExtraParams[geminiNativeToolsExtraParamKey] = native
+		}
 	}
 
 	if request.ToolConfig != nil {
@@ -253,6 +256,12 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 				delete(geminiReq.ExtraParams, "cached_content")
 				geminiReq.CachedContent = cachedContent
 			}
+			// Gemini-native tools with no neutral form, carried from the GenAI ingress.
+			// Appended into geminiReq's own slice; the source slice is shared across retries.
+			if nativeTools, ok := bifrostReq.Params.ExtraParams[geminiNativeToolsExtraParamKey]; ok {
+				delete(geminiReq.ExtraParams, geminiNativeToolsExtraParamKey)
+				geminiReq.Tools = append(geminiReq.Tools, extractGeminiNativeTools(nativeTools)...)
+			}
 		}
 	}
 
@@ -308,6 +317,13 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 					Code:    stopReason,
 					Message: errMsg,
 				}
+				// A blocked first candidate says nothing about the others; carry them so
+				// ToGeminiResponsesResponse still returns every candidate.
+				if len(response.Candidates) > 1 {
+					bifrostResp.ProviderExtraFields = map[string]interface{}{
+						"additionalCandidates": response.Candidates[1:],
+					}
+				}
 
 				return bifrostResp
 			}
@@ -317,7 +333,10 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 			bifrostResp.Status, bifrostResp.IncompleteDetails = geminiResponsesStatus(stopReason)
 		}
 
-		outputMessages := convertGeminiCandidatesToResponsesOutput(response.Candidates)
+		// The Responses output describes one answer. Further candidates (candidateCount > 1)
+		// are carried verbatim on ProviderExtraFields below rather than appended here, where
+		// they would read as extra assistant turns and merge into one GenAI candidate.
+		outputMessages := convertGeminiCandidatesToResponsesOutput(response.Candidates[:1])
 		if len(outputMessages) > 0 {
 			bifrostResp.Output = outputMessages
 		}
@@ -337,6 +356,15 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		}
 		if candidate.AvgLogprobs != 0 {
 			extraFields["avgLogprobs"] = candidate.AvgLogprobs
+		}
+		if candidate.LogprobsResult != nil {
+			extraFields["logprobsResult"] = candidate.LogprobsResult
+		}
+		if candidate.URLContextMetadata != nil {
+			extraFields["urlContextMetadata"] = candidate.URLContextMetadata
+		}
+		if len(response.Candidates) > 1 {
+			extraFields["additionalCandidates"] = response.Candidates[1:]
 		}
 		// Server-side tool parts have no lossless home in Bifrost's OpenAI-shaped schema
 		// (the web_search_call item keeps the queries, but not the raw tool response or the
@@ -702,6 +730,9 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 			if target.AvgLogprobs == 0 {
 				target.AvgLogprobs = terminal.AvgLogprobs
 			}
+			if target.URLContextMetadata == nil {
+				target.URLContextMetadata = terminal.URLContextMetadata
+			}
 		} else {
 			candidates = append(candidates, terminal)
 		}
@@ -720,6 +751,18 @@ func ToGeminiResponsesResponse(bifrostResp *schemas.BifrostResponsesResponse) *G
 		// visible, has preserved parts and an empty Output at the same time.
 		geminiResp.Candidates = []*Candidate{
 			buildGeminiTerminalCandidate(bifrostResp, preservedToolParts, "", 0, nil, nil, nil),
+		}
+	}
+
+	// Candidates after the first (candidateCount > 1) were carried verbatim at parse time.
+	if bifrostResp.ProviderExtraFields != nil {
+		for _, extra := range extractGeminiAdditionalCandidates(bifrostResp.ProviderExtraFields["additionalCandidates"]) {
+			if extra == nil {
+				continue
+			}
+			restored := *extra
+			restored.Index = int32(len(geminiResp.Candidates))
+			geminiResp.Candidates = append(geminiResp.Candidates, &restored)
 		}
 	}
 
@@ -831,9 +874,75 @@ func buildGeminiTerminalCandidate(
 		if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.ProviderExtraFields["avgLogprobs"]); ok {
 			candidate.AvgLogprobs = avgLogprobs
 		}
+		if logprobs := extractGeminiLogprobsResult(bifrostResp.ProviderExtraFields["logprobsResult"]); logprobs != nil {
+			candidate.LogprobsResult = logprobs
+		}
+		if urlContext := extractGeminiURLContextMetadata(bifrostResp.ProviderExtraFields["urlContextMetadata"]); urlContext != nil {
+			candidate.URLContextMetadata = urlContext
+		}
 	}
 
 	return candidate
+}
+
+// extractGeminiURLContextMetadata recovers *URLContextMetadata from
+// ProviderExtraFields["urlContextMetadata"], from the in-memory pointer or a JSON-decoded map.
+func extractGeminiURLContextMetadata(v interface{}) *URLContextMetadata {
+	if v == nil {
+		return nil
+	}
+	if meta, ok := v.(*URLContextMetadata); ok {
+		return meta
+	}
+	b, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		return nil
+	}
+	var meta URLContextMetadata
+	if err := sonic.Unmarshal(b, &meta); err != nil {
+		return nil
+	}
+	return &meta
+}
+
+// extractGeminiLogprobsResult recovers *LogprobsResult from ProviderExtraFields["logprobsResult"],
+// from the in-memory pointer or a JSON-decoded map.
+func extractGeminiLogprobsResult(v interface{}) *LogprobsResult {
+	if v == nil {
+		return nil
+	}
+	if result, ok := v.(*LogprobsResult); ok {
+		return result
+	}
+	b, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		return nil
+	}
+	var result LogprobsResult
+	if err := sonic.Unmarshal(b, &result); err != nil {
+		return nil
+	}
+	return &result
+}
+
+// extractGeminiAdditionalCandidates recovers the candidates after the first from
+// ProviderExtraFields["additionalCandidates"], from the in-memory slice or a JSON-decoded form.
+func extractGeminiAdditionalCandidates(v interface{}) []*Candidate {
+	if v == nil {
+		return nil
+	}
+	if candidates, ok := v.([]*Candidate); ok {
+		return candidates
+	}
+	b, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		return nil
+	}
+	var candidates []*Candidate
+	if err := sonic.Unmarshal(b, &candidates); err != nil {
+		return nil
+	}
+	return candidates
 }
 
 // geminiFinishReasonFromResponses picks the Gemini finish reason for a terminal
@@ -1203,6 +1312,9 @@ func ToGeminiResponsesStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 				if avgLogprobs, ok := extractGeminiAvgLogprobs(bifrostResp.Response.ProviderExtraFields["avgLogprobs"]); ok {
 					candidate.AvgLogprobs = avgLogprobs
 				}
+				if urlContext := extractGeminiURLContextMetadata(bifrostResp.Response.ProviderExtraFields["urlContextMetadata"]); urlContext != nil {
+					candidate.URLContextMetadata = urlContext
+				}
 				if responseID, ok := bifrostResp.Response.ProviderExtraFields["responseId"].(string); ok && responseID != "" {
 					streamResp.ResponseID = responseID
 				}
@@ -1278,8 +1390,9 @@ type GeminiResponsesStreamState struct {
 	// Candidate metadata that only arrives on the terminal chunk (alongside finishReason).
 	// Preserved here so closeGeminiOpenItems can stash them onto the response.completed
 	// event's ProviderExtraFields for the reverse (Bifrost -> Gemini) conversion to restore.
-	SafetyRatings []*SafetyRating
-	AvgLogprobs   float64
+	SafetyRatings      []*SafetyRating
+	AvgLogprobs        float64
+	URLContextMetadata *URLContextMetadata // may arrive on any chunk, not only the terminal one
 
 	// Finish reason from a chunk that could not close the stream (no item opened yet);
 	// FinalizeGeminiResponsesStream reports it instead of an unknown finish.
@@ -1387,6 +1500,7 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.ResponseID = nil
 	state.SafetyRatings = nil
 	state.AvgLogprobs = 0
+	state.URLContextMetadata = nil
 	state.PendingFinishReason = ""
 	state.PendingFinishMessage = ""
 	state.CreatedAt = int(time.Now().Unix())
@@ -1500,6 +1614,9 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 		}
 		if candidate.AvgLogprobs != 0 {
 			state.AvgLogprobs = candidate.AvgLogprobs
+		}
+		if candidate.URLContextMetadata != nil {
+			state.URLContextMetadata = candidate.URLContextMetadata
 		}
 
 		// Check for finish reason (indicates end of generation)
@@ -2653,6 +2770,9 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	if state.AvgLogprobs != 0 {
 		extraFields["avgLogprobs"] = state.AvgLogprobs
 	}
+	if state.URLContextMetadata != nil {
+		extraFields["urlContextMetadata"] = state.URLContextMetadata
+	}
 	if len(extraFields) > 0 {
 		completedResp.ProviderExtraFields = extraFields
 	}
@@ -3169,6 +3289,55 @@ const (
 	geminiSearchContentTypeText  = "text"
 	geminiSearchContentTypeImage = "image"
 )
+
+// geminiNativeToolsExtraParamKey carries the Gemini tools that have no neutral Responses
+// tool through ExtraParams, from ToBifrostResponsesRequest to ToGeminiResponsesRequest.
+const geminiNativeToolsExtraParamKey = "gemini_native_tools"
+
+// geminiNativeOnlyTools returns, for each tools[] entry, a copy holding only the tool kinds
+// convertGeminiToolsToResponsesTools cannot express (retrieval with vertexAiSearch /
+// vertexRagStore / externalApi, googleSearchRetrieval, enterpriseWebSearch, googleMaps,
+// urlContext, computerUse). Dropping them silently turned a grounded /genai request into an
+// ungrounded 200, so they are carried verbatim and Google judges them. Returns nil when there
+// are none, so requests without such tools pay nothing.
+func geminiNativeOnlyTools(tools []Tool) []Tool {
+	var native []Tool
+	for _, tool := range tools {
+		if tool.Retrieval == nil && tool.GoogleSearchRetrieval == nil && tool.EnterpriseWebSearch == nil &&
+			tool.GoogleMaps == nil && tool.URLContext == nil && tool.ComputerUse == nil {
+			continue
+		}
+		native = append(native, Tool{
+			Retrieval:             tool.Retrieval,
+			GoogleSearchRetrieval: tool.GoogleSearchRetrieval,
+			EnterpriseWebSearch:   tool.EnterpriseWebSearch,
+			GoogleMaps:            tool.GoogleMaps,
+			URLContext:            tool.URLContext,
+			ComputerUse:           tool.ComputerUse,
+		})
+	}
+	return native
+}
+
+// extractGeminiNativeTools recovers the tools stored under geminiNativeToolsExtraParamKey,
+// from the in-memory slice or a JSON-decoded form.
+func extractGeminiNativeTools(v interface{}) []Tool {
+	if v == nil {
+		return nil
+	}
+	if tools, ok := v.([]Tool); ok {
+		return tools
+	}
+	b, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		return nil
+	}
+	var tools []Tool
+	if err := sonic.Unmarshal(b, &tools); err != nil {
+		return nil
+	}
+	return tools
+}
 
 func convertGeminiToolsToResponsesTools(tools []Tool) []schemas.ResponsesTool {
 	var responsesTools []schemas.ResponsesTool
@@ -4223,6 +4392,15 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 	if params.MaxOutputTokens != nil {
 		config.MaxOutputTokens = int32(*params.MaxOutputTokens)
 	}
+	// Not clamped: an out-of-range value is Google's to reject, not ours to rewrite.
+	// Gemini only honours logprobs when responseLogprobs is on, so a positive value
+	// turns it on (the GenAI ingress also carries an explicit response_logprobs below).
+	if params.TopLogProbs != nil {
+		config.Logprobs = schemas.Ptr(int32(*params.TopLogProbs))
+		if *params.TopLogProbs > 0 {
+			config.ResponseLogprobs = true
+		}
+	}
 	// Only set ThinkingConfig if the model actually supports thinking
 	caps := schemas.ResolveModelCaps(provider, capModel)
 	if params.Reasoning != nil && caps.SupportsReasoning(defaultSupportsReasoning(capModel)) {
@@ -4284,6 +4462,7 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 		if err := convertTextConfigToGenerationConfig(params.Text, &config); err != nil {
 			return config, err
 		}
+		dropJSONResponseFormatWithToolsIfUnsupported(&config, len(params.Tools) > 0, caps, capModel)
 	}
 
 	// Read-only: the request's ExtraParams are shared across retry and fallback
@@ -4317,6 +4496,25 @@ func (r *GeminiGenerationRequest) convertParamsToGenerationConfigResponses(param
 				config.MediaResolution = val
 			}
 		}
+		if candidateCount, ok := params.ExtraParams["candidate_count"]; ok {
+			if val, success := schemas.SafeExtractInt(candidateCount); success {
+				config.CandidateCount = int32(val)
+			}
+		}
+		if responseLogprobs, ok := params.ExtraParams["response_logprobs"]; ok {
+			if val, success := schemas.SafeExtractBool(responseLogprobs); success && val {
+				config.ResponseLogprobs = true
+			}
+		}
+		if seed, ok := params.ExtraParams["seed"]; ok {
+			if val, success := schemas.SafeExtractInt(seed); success {
+				config.Seed = schemas.Ptr(int32(val))
+			}
+		}
+	}
+	// top_logprobs 0 without responseLogprobs asks for nothing; do not send a bare logprobs.
+	if config.Logprobs != nil && *config.Logprobs == 0 && !config.ResponseLogprobs {
+		config.Logprobs = nil
 	}
 
 	return config, nil
@@ -4332,6 +4530,9 @@ var responsesGenerationConfigExtraParamKeys = []string{
 	"presence_penalty",
 	"stop_sequences",
 	"media_resolution",
+	"candidate_count",
+	"response_logprobs",
+	"seed",
 }
 
 // responsesExtraParamsWithoutGenerationConfigKeys returns the ExtraParams to

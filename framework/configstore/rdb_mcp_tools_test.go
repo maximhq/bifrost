@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -72,4 +73,20 @@ func TestUpdateMCPClientTools_UnknownClientReturnsNotFound(t *testing.T) {
 
 	err := s.UpdateMCPClientTools(ctx, "does-not-exist", map[string]schemas.ChatTool{}, map[string]string{}, "")
 	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// TestMCPClientConfigUnknownIDReturnsNotFound pins that deleting or updating an MCP
+// client id with no row reports ErrNotFound, so a handler can answer 404 rather than
+// 500, while the message still names the id.
+func TestMCPClientConfigUnknownIDReturnsNotFound(t *testing.T) {
+	s := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	err := s.DeleteMCPClientConfig(ctx, "does-not-exist")
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.ErrorContains(t, err, "does-not-exist")
+
+	err = s.UpdateMCPClientConfig(ctx, "does-not-exist", &tables.TableMCPClient{Name: "renamed"})
+	assert.ErrorIs(t, err, ErrNotFound)
+	assert.ErrorContains(t, err, "does-not-exist")
 }

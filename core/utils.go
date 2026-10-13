@@ -383,6 +383,20 @@ func stampRequestedRoute(ctx *schemas.BifrostContext, requested schemas.Route) {
 	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, model)
 }
 
+// agentContinuationRoute returns the route that served the first turn of the MCP agent loop
+// this request continues, or nil when the request is not an agent-loop continuation.
+func agentContinuationRoute(ctx *schemas.BifrostContext) *schemas.RoutingInfo {
+	route, _ := ctx.Value(schemas.BifrostContextKeyMCPAgentServedRoute).(*schemas.RoutingInfo)
+	return route
+}
+
+// requestedRouteFromContext reads back the route stampRequestedRoute recorded.
+func requestedRouteFromContext(ctx *schemas.BifrostContext) schemas.Route {
+	provider, _ := ctx.Value(schemas.BifrostContextKeyRequestedProvider).(schemas.ModelProvider)
+	model, _ := ctx.Value(schemas.BifrostContextKeyRequestedModel).(string)
+	return schemas.Route{Provider: provider, Model: model}
+}
+
 // layerFallbackIdentity marks an attempt's routing info as a fallback's when the request is on one,
 // naming the primary from the previous attempt's record: the primary's own, or the primary it
 // carried on a later fallback (clearCtxForFallback keeps the record).

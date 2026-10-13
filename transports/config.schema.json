@@ -323,6 +323,11 @@
           "description": "Delete expired virtual keys automatically. A daily cleanup job removes every key whose expiry has passed unless the key sets delete_after_expire to false; keys with delete_after_expire true are removed regardless.",
           "default": false
         },
+        "enforce_vk_object_ownership": {
+          "type": "boolean",
+          "description": "Restrict provider objects (files, batches, videos, containers, container files, cached contents and live sessions) to the virtual key that created them. Another virtual key gets 404 for them and does not see them in list responses. Requests without a virtual key are not restricted. Creators are recorded even while this is off, so turning it back on also covers objects created meanwhile; an object whose creator could not be recorded stays reachable to every virtual key.",
+          "default": true
+        },
         "vk_rotation_cooldown": {
           "type": [
             "string",

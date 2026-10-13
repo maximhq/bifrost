@@ -1640,6 +1640,100 @@ func TestToBifrostChatResponse_LeavesFinishReasonUnsetForNonTerminalState(t *tes
 	}
 }
 
+// The served tier/speed/geo drive billing and are echoed to the client, so a
+// chat request bridged to Responses (or a Responses request bridged to chat)
+// must carry them across; pre-fix service_tier "fast" came back null.
+func TestResponsesChatBridgeCarriesServedTier(t *testing.T) {
+	tier := BifrostServiceTierFast
+	speed, geo := "fast", "us"
+
+	chat := (&BifrostResponsesResponse{
+		Status:       Ptr(ResponsesResponseStatusCompleted),
+		Output:       responsesTextOutput("ok"),
+		ServiceTier:  &tier,
+		Speed:        &speed,
+		InferenceGeo: &geo,
+	}).ToBifrostChatResponse()
+	if chat.ServiceTier == nil || *chat.ServiceTier != tier {
+		t.Fatalf("responses->chat dropped service_tier: %v", chat.ServiceTier)
+	}
+	if chat.Speed == nil || *chat.Speed != speed || chat.InferenceGeo == nil || *chat.InferenceGeo != geo {
+		t.Fatalf("responses->chat dropped speed/inference_geo: %v %v", chat.Speed, chat.InferenceGeo)
+	}
+
+	back := (&BifrostChatResponse{ServiceTier: &tier, Speed: &speed, InferenceGeo: &geo}).ToBifrostResponsesResponse()
+	if back.ServiceTier == nil || *back.ServiceTier != tier {
+		t.Fatalf("chat->responses dropped service_tier: %v", back.ServiceTier)
+	}
+	if back.Speed == nil || *back.Speed != speed || back.InferenceGeo == nil || *back.InferenceGeo != geo {
+		t.Fatalf("chat->responses dropped speed/inference_geo: %v %v", back.Speed, back.InferenceGeo)
+	}
+
+	chunk := (&BifrostResponsesStreamResponse{
+		Type:     ResponsesStreamResponseTypeCompleted,
+		Response: &BifrostResponsesResponse{Status: Ptr(ResponsesResponseStatusCompleted), ServiceTier: &tier, Speed: &speed, InferenceGeo: &geo},
+	}).ToBifrostChatResponse()
+	if chunk.ServiceTier == nil || *chunk.ServiceTier != tier {
+		t.Fatalf("responses stream->chat chunk dropped service_tier: %v", chunk.ServiceTier)
+	}
+	if chunk.Speed == nil || *chunk.Speed != speed || chunk.InferenceGeo == nil || *chunk.InferenceGeo != geo {
+		t.Fatalf("responses stream->chat chunk dropped speed/inference_geo: %v %v", chunk.Speed, chunk.InferenceGeo)
+	}
+}
+
+// A chat stream served to a Responses client must carry the served tier/speed/geo onto
+// the terminal response even when, as with OpenAI, they ride an earlier chunk and the
+// finish chunk omits them; and a pooled state must not leak them into the next stream.
+func TestChatStreamToResponsesStreamCarriesServedTier(t *testing.T) {
+	tier := BifrostServiceTierFast
+	speed, geo := "fast", "us"
+	role := string(ChatMessageRoleAssistant)
+	text := "ok"
+	stop := string(BifrostFinishReasonStop)
+	chunk := func(delta *ChatStreamResponseChoiceDelta, finish *string, served bool) *BifrostChatResponse {
+		cr := &BifrostChatResponse{
+			ID:    "chatcmpl-tier",
+			Model: "gpt-6-astra",
+			Choices: []BifrostResponseChoice{{
+				FinishReason:             finish,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: delta},
+			}},
+		}
+		if served {
+			cr.ServiceTier, cr.Speed, cr.InferenceGeo = &tier, &speed, &geo
+		}
+		return cr
+	}
+	terminal := func(served bool) *BifrostResponsesResponse {
+		state := AcquireChatToResponsesStreamState()
+		defer ReleaseChatToResponsesStreamState(state)
+		var events []*BifrostResponsesStreamResponse
+		events = append(events, chunk(&ChatStreamResponseChoiceDelta{Role: &role}, nil, served).ToBifrostResponsesStreamResponse(state)...)
+		events = append(events, chunk(&ChatStreamResponseChoiceDelta{Content: &text}, nil, served).ToBifrostResponsesStreamResponse(state)...)
+		events = append(events, chunk(&ChatStreamResponseChoiceDelta{}, &stop, false).ToBifrostResponsesStreamResponse(state)...)
+		for _, evt := range events {
+			if evt != nil && evt.Type == ResponsesStreamResponseTypeCompleted {
+				return evt.Response
+			}
+		}
+		t.Fatal("no response.completed event")
+		return nil
+	}
+
+	served := terminal(true)
+	if served.ServiceTier == nil || *served.ServiceTier != tier {
+		t.Fatalf("chat stream->responses completed dropped service_tier: %v", served.ServiceTier)
+	}
+	if served.Speed == nil || *served.Speed != speed || served.InferenceGeo == nil || *served.InferenceGeo != geo {
+		t.Fatalf("chat stream->responses completed dropped speed/inference_geo: %v %v", served.Speed, served.InferenceGeo)
+	}
+
+	plain := terminal(false)
+	if plain.ServiceTier != nil || plain.Speed != nil || plain.InferenceGeo != nil {
+		t.Fatalf("pooled stream state leaked served metadata into the next stream: %v %v %v", plain.ServiceTier, plain.Speed, plain.InferenceGeo)
+	}
+}
+
 func TestResponsesStreamToBifrostChatResponse_MapsIncompleteContentFilter(t *testing.T) {
 	chunk := &BifrostResponsesStreamResponse{
 		Type: ResponsesStreamResponseTypeIncomplete,

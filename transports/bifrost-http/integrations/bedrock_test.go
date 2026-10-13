@@ -550,7 +550,7 @@ func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamExcept
 				}
 			},
 		},
-	}, stream, rec.cancel)
+	}, "", stream, rec.cancel)
 
 	body, err := io.ReadAll(ctx.Response.BodyStream())
 	require.NoError(t, err)

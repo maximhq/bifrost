@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -138,6 +139,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// without it. Stripping both forced thinking off for every tool-calling conversation
 		// — see issue #5887.
 		openaiReq.stripReasoningDetailsExceptToolCalls()
+		openaiReq.downgradeJSONSchemaToJSONObject()
 		return openaiReq
 	case schemas.Groq, schemas.Cerebras:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -204,6 +206,11 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	default:
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
+			// A custom provider reports its own name, so a DeepSeek-based one lands here
+			// and still needs the json_schema downgrade DeepSeek's endpoint requires.
+			if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.DeepSeek {
+				openaiReq.downgradeJSONSchemaToJSONObject()
+			}
 			return openaiReq
 		}
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -353,6 +360,78 @@ func (req *OpenAIChatRequest) stripReasoningDetailsExceptToolCalls() {
 		}
 		assistantMessage.Reasoning = nil
 	}
+}
+
+// downgradeJSONSchemaToJSONObject rewrites a json_schema response_format to
+// json_object and carries the schema to the model as a system instruction.
+//
+// DeepSeek's chat endpoint rejects json_schema with HTTP 400 ("This response_format
+// type is unavailable now") and accepts only json_object, which in turn requires the
+// word "json" somewhere in the prompt. This is a property of the DeepSeek API surface,
+// not of a model, so it is not gated on SupportsResponseSchema: the datasheet marks
+// the DeepSeek rows supports_response_schema=true because they do support JSON mode.
+//
+// Only requests that carry json_schema pay for this. The caller's response_format and
+// messages are never written: the format is replaced by pointer and the instruction is
+// inserted into a new slice (Messages is already a fresh conversion of the input).
+func (req *OpenAIChatRequest) downgradeJSONSchemaToJSONObject() {
+	if req.ResponseFormat == nil {
+		return
+	}
+	rf, ok := schemas.ParseChatResponseFormat(req.ResponseFormat)
+	if !ok || rf.Type != "json_schema" {
+		return
+	}
+
+	var jsonObject interface{} = json.RawMessage(`{"type":"json_object"}`)
+	req.ResponseFormat = &jsonObject
+
+	instruction := jsonSchemaInstruction(rf)
+	// The instruction goes after any leading system/developer messages so the
+	// client's own system prompt keeps its place at the top of the prompt.
+	insertAt := 0
+	for insertAt < len(req.Messages) &&
+		(req.Messages[insertAt].Role == schemas.ChatMessageRoleSystem || req.Messages[insertAt].Role == schemas.ChatMessageRoleDeveloper) {
+		insertAt++
+	}
+	messages := make([]OpenAIMessage, 0, len(req.Messages)+1)
+	messages = append(messages, req.Messages[:insertAt]...)
+	messages = append(messages, OpenAIMessage{
+		Role:    schemas.ChatMessageRoleSystem,
+		Content: &schemas.ChatMessageContent{ContentStr: &instruction},
+	})
+	messages = append(messages, req.Messages[insertAt:]...)
+	req.Messages = messages
+}
+
+// jsonSchemaInstruction renders a json_schema response_format as a prompt
+// instruction for providers that only offer JSON mode. It always contains the
+// lowercase word "json", which DeepSeek's JSON mode requires in the prompt.
+func jsonSchemaInstruction(rf *schemas.ChatResponseFormat) string {
+	const lead = "Respond with only a valid json object, with no surrounding text or code fences"
+	schema := rf.RawSchema()
+	if len(schema) == 0 {
+		return lead + "."
+	}
+	name, _ := rf.Name()
+	description, _ := rf.Description()
+	var sb strings.Builder
+	sb.Grow(len(lead) + len(name) + len(description) + len(schema) + 80)
+	sb.WriteString(lead)
+	sb.WriteString(", that conforms to the following JSON Schema")
+	if name != "" {
+		sb.WriteString(" (")
+		sb.WriteString(name)
+		sb.WriteString(")")
+	}
+	sb.WriteString(".")
+	if description != "" {
+		sb.WriteString(" ")
+		sb.WriteString(description)
+	}
+	sb.WriteString("\n\nJSON Schema:\n")
+	sb.Write(schema)
+	return sb.String()
 }
 
 // renameAssistantReasoningToAlias moves replayed assistant reasoning from

@@ -860,12 +860,25 @@ func (p *GovernancePlugin) providerObjectOwnersOf(ctx *schemas.BifrostContext, k
 		owners[id] = owner
 	}
 	// The fallbacks answer for what the ownership rows did not, each id once.
+	// A list page can carry thousands of ids, so past a handful they are deduplicated through a
+	// set rather than a quadratic scan; a single-object request allocates no set.
 	unresolved := make([]string, 0, len(ids))
+	var queued map[string]struct{}
+	if len(ids) > 8 {
+		queued = make(map[string]struct{}, len(ids))
+	}
 	for _, id := range ids {
 		if _, seen := owners[id]; seen {
 			continue
 		}
-		if !slices.Contains(unresolved, id) {
+		if queued == nil {
+			if !slices.Contains(unresolved, id) {
+				unresolved = append(unresolved, id)
+			}
+			continue
+		}
+		if _, dup := queued[id]; !dup {
+			queued[id] = struct{}{}
 			unresolved = append(unresolved, id)
 		}
 	}
@@ -1037,14 +1050,23 @@ func (p *GovernancePlugin) builtOnVertex(provider string) bool {
 // refused. A list addresses nothing: its page is narrowed in the post-hook to what is recorded,
 // and with nothing recorded there is nothing to hide, so it goes through unfiltered, as it did
 // before objects were bound. Every object a request names is checked (see
-// providerObjectReferences); the first one another key created refuses the request.
+// providerObjectReferences); the first one another key created refuses the request. None of
+// this applies while client.enforce_vk_object_ownership is turned off; creators are still
+// recorded then, so turning it back on also binds objects created meanwhile.
 func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.LLMPluginShortCircuit {
 	vkID := requestVirtualKeyID(ctx)
 	if vkID == "" {
 		return nil
 	}
+	// With client.enforce_vk_object_ownership turned off nothing is refused, but an automatic
+	// container still needs its marker so the post-hook records its creator.
+	enforced := p.objectOwnershipEnforced()
+	autoContainer := requestsAutomaticContainer(req)
+	if !enforced && !autoContainer {
+		return nil
+	}
 	refs := providerObjectReferences(req)
-	if requestsAutomaticContainer(req) {
+	if autoContainer {
 		var named []string
 		for _, ref := range refs {
 			if ref.kind == configstoreTables.ProviderObjectKindContainer && !ref.isList {
@@ -1052,6 +1074,9 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 			}
 		}
 		ctx.SetValue(governanceAutoContainerContextKey, named)
+	}
+	if !enforced {
+		return nil
 	}
 	for _, ref := range refs {
 		if ref.isList {
@@ -1171,7 +1196,7 @@ func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, ki
 // from the kept items. If the ownership lookup fails it returns an error and leaves the list
 // untouched; the caller fails the request rather than send a page it could not check.
 func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext, provider string, result *schemas.BifrostResponse) error {
-	if p.configStore == nil || result == nil {
+	if p.configStore == nil || result == nil || !p.objectOwnershipEnforced() {
 		return nil
 	}
 	vkID := requestVirtualKeyID(ctx)

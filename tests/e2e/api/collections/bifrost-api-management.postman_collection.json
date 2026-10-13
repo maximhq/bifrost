@@ -11361,7 +11361,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"openai\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"openai\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"oauth_key_config\": {\n      \"grant_type\": \"client_credentials\",\n      \"token_url\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"client_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"client_secret\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"private_key\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n    }\n  }\n}));"
                 ]
               }
             }
@@ -11894,6 +11894,34 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"typesafe\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cloudflare - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"cloudflare\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"cloudflare_key_config\": {\n      \"account_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n    }\n  }\n}));"
                 ]
               }
             }

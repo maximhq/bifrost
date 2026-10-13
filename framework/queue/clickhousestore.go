@@ -412,9 +412,9 @@ func (s *clickhouseStore) Append(ctx context.Context, msgs []*Message) error {
 	if err := s.db.WithContext(held).Raw("SELECT topic, group_name FROM queue_groups FINAL WHERE topic IN ?", topics).Scan(&groups).Error; err != nil {
 		return fmt.Errorf("load groups: %w", err)
 	}
-	var base int64
-	if err := s.db.WithContext(held).Raw("SELECT toUnixTimestamp64Nano(now64(9))").Scan(&base).Error; err != nil {
-		return fmt.Errorf("read clock: %w", err)
+	base, err := s.readClock(held, "toUnixTimestamp64Nano(now64(9))")
+	if err != nil {
+		return err
 	}
 	createdAt := time.Unix(0, base)
 
@@ -473,11 +473,36 @@ const chDeliveryColumns = "id, message_id, topic, group_name, msg_key, seq, stat
 // dbNow reads the database clock in unix microseconds. Lease and retry
 // deadlines are computed from it, never from this instance's clock.
 func (s *clickhouseStore) dbNow(ctx context.Context) (int64, error) {
-	var now int64
-	if err := s.db.WithContext(ctx).Raw("SELECT " + chNowMicros).Scan(&now).Error; err != nil {
+	return s.readClock(ctx, chNowMicros)
+}
+
+// readClock reads one integer the database computes from expr. It reads the
+// rows itself rather than through gorm's Scan so that a result of the wrong
+// shape names the columns it carried, which a bare Scan count error does not.
+func (s *clickhouseStore) readClock(ctx context.Context, expr string) (int64, error) {
+	rows, err := s.db.WithContext(ctx).Raw("SELECT " + expr).Rows()
+	if err != nil {
 		return 0, fmt.Errorf("read clock: %w", err)
 	}
-	return now, nil
+	defer rows.Close()
+	cols, err := rows.Columns()
+	if err != nil {
+		return 0, fmt.Errorf("read clock: %w", err)
+	}
+	if len(cols) != 1 {
+		return 0, fmt.Errorf("read clock: SELECT %s returned columns %v, want one", expr, cols)
+	}
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("read clock: %w", err)
+		}
+		return 0, errors.New("read clock: no row")
+	}
+	var v int64
+	if err := rows.Scan(&v); err != nil {
+		return 0, fmt.Errorf("read clock: %w", err)
+	}
+	return v, rows.Err()
 }
 
 func (s *clickhouseStore) Claim(ctx context.Context, req ClaimRequest) ([]*Claimed, error) {

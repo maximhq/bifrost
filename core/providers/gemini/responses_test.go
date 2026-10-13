@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
@@ -656,6 +659,212 @@ func TestConvertResponsesToolsToGeminiCodeExecution(t *testing.T) {
 	})
 }
 
+// Gemini-native retrieval tools (retrieval.vertexAiSearch, retrieval.vertexRagStore,
+// googleSearchRetrieval, ...) have no neutral Responses tool. A /genai request routed
+// to Vertex (or a bare model) goes through ToBifrostResponsesRequest and back out
+// through ToGeminiResponsesRequest, and these tools used to vanish on the way, so the
+// model answered ungrounded with a 200. They must reach the outbound request intact,
+// alongside the neutral tools, on every retry attempt.
+func TestGenAINativeRetrievalToolsSurviveNeutralRoundTrip(t *testing.T) {
+	threshold := float32(0.3)
+	in := &GeminiGenerationRequest{
+		Model:    "vertex/gemini-2.5-flash",
+		Contents: []Content{{Role: "user", Parts: []*Part{{Text: "What does the index say?"}}}},
+		Tools: []Tool{
+			{Retrieval: &Retrieval{VertexAISearch: &VertexAISearch{Datastore: "projects/p/locations/global/collections/default_collection/dataStores/ds"}}},
+			{Retrieval: &Retrieval{VertexRAGStore: &VertexRAGStore{RAGResources: []*VertexRAGStoreRAGResource{{RAGCorpus: "projects/p/locations/us-central1/ragCorpora/c"}}}}},
+			{GoogleSearchRetrieval: &GoogleSearchRetrieval{DynamicRetrievalConfig: &DynamicRetrievalConfig{Mode: "MODE_DYNAMIC", DynamicThreshold: &threshold}}},
+			{Retrieval: &Retrieval{}},
+			{CodeExecution: &ToolCodeExecution{}},
+		},
+	}
+	bifrostReq := in.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	if bifrostReq == nil || bifrostReq.Params == nil {
+		t.Fatalf("ToBifrostResponsesRequest returned no params")
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		out, err := ToGeminiResponsesRequest(nil, bifrostReq)
+		if err != nil {
+			t.Fatalf("attempt %d: ToGeminiResponsesRequest error: %v", attempt, err)
+		}
+		var vertexSearch, ragStore, emptyRetrieval, searchRetrieval, codeExecution int
+		for _, tool := range out.Tools {
+			if tool.Retrieval != nil {
+				switch {
+				case tool.Retrieval.VertexAISearch != nil:
+					if tool.Retrieval.VertexAISearch.Datastore != "projects/p/locations/global/collections/default_collection/dataStores/ds" {
+						t.Fatalf("attempt %d: datastore = %q", attempt, tool.Retrieval.VertexAISearch.Datastore)
+					}
+					vertexSearch++
+				case tool.Retrieval.VertexRAGStore != nil:
+					ragStore++
+				default:
+					emptyRetrieval++
+				}
+			}
+			if tool.GoogleSearchRetrieval != nil {
+				cfg := tool.GoogleSearchRetrieval.DynamicRetrievalConfig
+				if cfg == nil || cfg.Mode != "MODE_DYNAMIC" || cfg.DynamicThreshold == nil || *cfg.DynamicThreshold != threshold {
+					t.Fatalf("attempt %d: googleSearchRetrieval config lost: %+v", attempt, cfg)
+				}
+				searchRetrieval++
+			}
+			if tool.CodeExecution != nil {
+				codeExecution++
+			}
+		}
+		if vertexSearch != 1 || ragStore != 1 || emptyRetrieval != 1 || searchRetrieval != 1 || codeExecution != 1 {
+			t.Fatalf("attempt %d: tools = %+v, want vertexAiSearch, vertexRagStore, bare retrieval, googleSearchRetrieval and codeExecution each once", attempt, out.Tools)
+		}
+		for key := range out.GetExtraParams() {
+			if strings.Contains(key, "tool") {
+				t.Fatalf("attempt %d: carrier key %q leaked onto the wire", attempt, key)
+			}
+		}
+	}
+}
+
+// A native tool's sub-fields Bifrost does not model (retrieval.dynamicRetrievalConfig is not
+// a real retrieval field, so Google must be the one to reject it) used to be dropped by the
+// typed copy, turning an invalid request into an ungrounded 200 with {"retrieval":{}}.
+// Every native-only tool entry must reach the egress body exactly as the client sent it,
+// including googleSearchRetrieval.dynamicRetrievalConfig, which Gemini does define.
+func TestGenAINativeToolUnknownSubFieldsReachEgressUnchanged(t *testing.T) {
+	retrieval := `{"dynamicRetrievalConfig":{"mode":"MODE_DYNAMIC","dynamicThreshold":0.7}}`
+	searchRetrieval := `{"dynamicRetrievalConfig":{"mode":"MODE_DYNAMIC","dynamicThreshold":0.3},"futureKnob":{"z":1,"a":2}}`
+	body := `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[` +
+		`{"retrieval":` + retrieval + `},` +
+		`{"googleSearchRetrieval":` + searchRetrieval + `},` +
+		`{"urlContext":{"futureKnob":true}},` +
+		`{"functionDeclarations":[{"name":"lookup","description":"look up"}]}]}`
+
+	var in GeminiGenerationRequest
+	if err := json.Unmarshal([]byte(body), &in); err != nil {
+		t.Fatalf("decode ingress body: %v", err)
+	}
+	in.Model = "vertex/gemini-2.5-flash"
+	bifrostReq := in.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	if bifrostReq == nil || bifrostReq.Params == nil {
+		t.Fatalf("ToBifrostResponsesRequest returned no params")
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		out, err := ToGeminiResponsesRequest(nil, bifrostReq)
+		if err != nil {
+			t.Fatalf("attempt %d: ToGeminiResponsesRequest error: %v", attempt, err)
+		}
+		wire, err := providerUtils.MarshalProviderRequest(out)
+		if err != nil {
+			t.Fatalf("attempt %d: marshal egress: %v", attempt, err)
+		}
+		var gotRetrieval, gotSearchRetrieval, gotURLContext, gotFunction string
+		for _, tool := range gjson.GetBytes(wire, "tools").Array() {
+			if v := tool.Get("retrieval"); v.Exists() {
+				gotRetrieval = v.Raw
+			}
+			if v := tool.Get("googleSearchRetrieval"); v.Exists() {
+				gotSearchRetrieval = v.Raw
+			}
+			if v := tool.Get("urlContext"); v.Exists() {
+				gotURLContext = v.Raw
+			}
+			if v := tool.Get("functionDeclarations.0.name"); v.Exists() {
+				gotFunction = v.String()
+			}
+		}
+		if gotRetrieval != retrieval {
+			t.Fatalf("attempt %d: retrieval = %s, want %s (body %s)", attempt, gotRetrieval, retrieval, wire)
+		}
+		if gotSearchRetrieval != searchRetrieval {
+			t.Fatalf("attempt %d: googleSearchRetrieval = %s, want %s (body %s)", attempt, gotSearchRetrieval, searchRetrieval, wire)
+		}
+		if gotURLContext != `{"futureKnob":true}` {
+			t.Fatalf("attempt %d: urlContext = %s, want {\"futureKnob\":true} (body %s)", attempt, gotURLContext, wire)
+		}
+		if gotFunction != "lookup" {
+			t.Fatalf("attempt %d: function declaration lost (body %s)", attempt, wire)
+		}
+	}
+
+	// The carrier must also survive a JSON round trip of ExtraParams (the in-memory slice is
+	// not the only form it can arrive in). Decoding into interface{} already loses key order,
+	// so this form is compared by value.
+	carried, err := providerUtils.MarshalSorted(bifrostReq.Params.ExtraParams[geminiNativeToolsExtraParamKey])
+	if err != nil {
+		t.Fatalf("marshal carrier: %v", err)
+	}
+	var decoded interface{}
+	if err := json.Unmarshal(carried, &decoded); err != nil {
+		t.Fatalf("decode carrier: %v", err)
+	}
+	wire, err := providerUtils.MarshalSorted(extractGeminiNativeTools(decoded))
+	if err != nil {
+		t.Fatalf("marshal decoded carrier: %v", err)
+	}
+	var gotValue, wantValue interface{}
+	if err := json.Unmarshal([]byte(gjson.GetBytes(wire, "0.retrieval").Raw), &gotValue); err != nil {
+		t.Fatalf("JSON-decoded carrier lost retrieval: %s", wire)
+	}
+	if err := json.Unmarshal([]byte(retrieval), &wantValue); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Fatalf("JSON-decoded carrier retrieval = %v, want %v", gotValue, wantValue)
+	}
+}
+
+// urlContextMetadata has no field in Bifrost's OpenAI-shaped Responses schema. A /genai
+// generateContent answer routed through the Responses path came back with groundingMetadata
+// but without candidates[0].urlContextMetadata, so a client could not see which URLs the
+// urlContext tool fetched. It must survive Gemini -> Bifrost Responses -> GenAI, in memory
+// and after the ProviderExtraFields have been through JSON.
+func TestGeminiURLContextMetadataSurvivesResponsesRoundTrip(t *testing.T) {
+	native := &GenerateContentResponse{
+		ResponseID:   "resp-url",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*Candidate{{
+			Content:      &Content{Role: "model", Parts: []*Part{{Text: "The page is about cats."}}},
+			FinishReason: FinishReasonStop,
+			URLContextMetadata: &URLContextMetadata{URLMetadata: []*URLMetadata{
+				{RetrievedURL: "https://example.com/cats", URLRetrievalStatus: "URL_RETRIEVAL_STATUS_SUCCESS"},
+			}},
+		}},
+	}
+
+	check := func(t *testing.T, bifrostResp *schemas.BifrostResponsesResponse) {
+		t.Helper()
+		out := ToGeminiResponsesResponse(bifrostResp)
+		if out == nil || len(out.Candidates) == 0 {
+			t.Fatalf("no candidates restored")
+		}
+		meta := out.Candidates[0].URLContextMetadata
+		if meta == nil || len(meta.URLMetadata) != 1 {
+			t.Fatalf("candidates[0].urlContextMetadata = %+v, want one entry", meta)
+		}
+		if meta.URLMetadata[0].RetrievedURL != "https://example.com/cats" || meta.URLMetadata[0].URLRetrievalStatus != "URL_RETRIEVAL_STATUS_SUCCESS" {
+			t.Fatalf("urlMetadata = %+v", meta.URLMetadata[0])
+		}
+	}
+
+	t.Run("in memory", func(t *testing.T) {
+		check(t, native.ToResponsesBifrostResponsesResponse())
+	})
+	t.Run("json decoded extra fields", func(t *testing.T) {
+		bifrostResp := native.ToResponsesBifrostResponsesResponse()
+		raw, err := json.Marshal(bifrostResp.ProviderExtraFields)
+		if err != nil {
+			t.Fatalf("marshal extra fields: %v", err)
+		}
+		var decoded map[string]interface{}
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("decode extra fields: %v", err)
+		}
+		bifrostResp.ProviderExtraFields = decoded
+		check(t, bifrostResp)
+	})
+}
+
 // executableCode and codeExecutionResult arrive as two sibling parts. They must land as
 // one structured code_interpreter_call carrying code and outputs, not as prose text —
 // that is the shape OpenAI and Anthropic already produce.
@@ -1125,4 +1334,96 @@ func TestGeminiResponsesStreamClosesDanglingCodeInterpreterCall(t *testing.T) {
 		}
 	}
 	t.Fatalf("dangling code_interpreter_call was never closed (%d events)", len(events))
+}
+
+// BenchmarkGenAIToolsResponsesEgress measures a /genai request with tools decoded, carried
+// through the Responses path and marshalled for the provider: "function" is the common case
+// that must not pay for native-tool fidelity, "native" carries retrieval/urlContext entries.
+func BenchmarkGenAIToolsResponsesEgress(b *testing.B) {
+	bodies := map[string][]byte{
+		"function": []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"functionDeclarations":[{"name":"lookup","description":"look up","parameters":{"type":"object","properties":{"q":{"type":"string"}}}}]}]}`),
+		"native":   []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"tools":[{"retrieval":{"vertexAiSearch":{"datastore":"projects/p/locations/global/collections/default_collection/dataStores/ds"}}},{"googleSearchRetrieval":{"dynamicRetrievalConfig":{"mode":"MODE_DYNAMIC","dynamicThreshold":0.3}}},{"urlContext":{}}]}`),
+	}
+	for _, name := range []string{"function", "native"} {
+		body := bodies[name]
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				var in GeminiGenerationRequest
+				if err := sonic.Unmarshal(body, &in); err != nil {
+					b.Fatal(err)
+				}
+				in.Model = "gemini-2.5-flash"
+				bifrostReq := in.ToBifrostResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+				out, err := ToGeminiResponsesRequest(nil, bifrostReq)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := providerUtils.MarshalProviderRequest(out); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkGeminiResponsesResponseRoundTrip measures Gemini -> Bifrost Responses -> GenAI for
+// a plain answer (common case) and one carrying urlContextMetadata.
+func BenchmarkGeminiResponsesResponseRoundTrip(b *testing.B) {
+	plain := &GenerateContentResponse{
+		ResponseID:   "resp",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*Candidate{{
+			Content:      &Content{Role: "model", Parts: []*Part{{Text: "hello"}}},
+			FinishReason: FinishReasonStop,
+		}},
+	}
+	withURL := &GenerateContentResponse{
+		ResponseID:   "resp",
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*Candidate{{
+			Content:      &Content{Role: "model", Parts: []*Part{{Text: "hello"}}},
+			FinishReason: FinishReasonStop,
+			URLContextMetadata: &URLContextMetadata{URLMetadata: []*URLMetadata{
+				{RetrievedURL: "https://example.com", URLRetrievalStatus: "URL_RETRIEVAL_STATUS_SUCCESS"},
+			}},
+		}},
+	}
+	for name, resp := range map[string]*GenerateContentResponse{"plain": plain, "urlContext": withURL} {
+		resp := resp
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = ToGeminiResponsesResponse(resp.ToResponsesBifrostResponsesResponse())
+			}
+		})
+	}
+}
+
+// A native tool decoded from a request re-emits its ingress bytes, so an edit to a typed
+// field after decoding does not reach the wire until raw is cleared (the nativeToolJSON
+// contract); a value whose raw is cleared marshals from its fields again.
+func TestNativeToolRawBytesWinUntilCleared(t *testing.T) {
+	var r Retrieval
+	if err := json.Unmarshal([]byte(`{"vertexAiSearch":{"datastore":"projects/p/ds/original"}}`), &r); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	r.VertexAISearch.Datastore = "projects/p/ds/edited"
+
+	withRaw, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal with raw: %v", err)
+	}
+	if !strings.Contains(string(withRaw), "original") || strings.Contains(string(withRaw), "edited") {
+		t.Fatalf("a decoded tool must re-emit its ingress bytes while raw is set: %s", withRaw)
+	}
+
+	r.raw = nil
+	rebuilt, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal after clearing raw: %v", err)
+	}
+	if !strings.Contains(string(rebuilt), "edited") || strings.Contains(string(rebuilt), "original") {
+		t.Fatalf("clearing raw must marshal from the typed fields: %s", rebuilt)
+	}
 }

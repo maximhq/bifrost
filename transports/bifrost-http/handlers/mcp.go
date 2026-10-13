@@ -3107,7 +3107,11 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 	}
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.UpdateMCPClientConfig(ctx, id, &dbUpdateRecord); err != nil {
-			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update mcp client config in store: %v", err))
+			status := fasthttp.StatusInternalServerError
+			if errors.Is(err, configstore.ErrNotFound) {
+				status = fasthttp.StatusNotFound
+			}
+			SendError(ctx, status, fmt.Sprintf("failed to update mcp client config in store: %v", err))
 			return
 		}
 	}
@@ -3482,6 +3486,11 @@ func (h *MCPHandler) deleteMCPClient(ctx *fasthttp.RequestCtx) {
 	// Delete from DB first to avoid memory/DB inconsistency if DB delete fails
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.DeleteMCPClientConfig(ctx, id); err != nil {
+			// An unknown id leaves nothing to remove: the runtime manager is not reached.
+			if errors.Is(err, configstore.ErrNotFound) {
+				SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("failed to delete MCP config: %v", err))
+				return
+			}
 			logger.Error(fmt.Sprintf("Failed to delete MCP client config from database: %v", err))
 			SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to delete MCP config: %v", err))
 			return
