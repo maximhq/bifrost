@@ -142,7 +142,7 @@ Run the cases in a third terminal:
 
 ```bash
 newman run tests/e2e/api/collections/provider-harness.json \
-  --folder "202. Sonnet 5.5 caller request surface (sonnet-5-5-surface)" \
+  --folder "230. Sonnet 5.5 caller request surface (sonnet-5-5-surface)" \
   --env-var baseUrl=http://127.0.0.1:8792 \
   --env-var anthropicRequestSurfaceFixture=1
 ```
