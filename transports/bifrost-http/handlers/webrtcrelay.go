@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	webrtcHandshakeTimeout   = 10 * time.Second
-	webrtcICEGatherTimeout   = 3 * time.Second
-	webrtcMaxPendingMessages = 1000
+	webrtcHandshakeTimeout     = 10 * time.Second
+	webrtcICEGatherTimeout     = 3 * time.Second
+	webrtcUpstreamDrainTimeout = 10 * time.Second
+	webrtcMaxPendingMessages   = 1000
 )
 
 var defaultAudioCodec = webrtc.RTPCodecCapability{
@@ -81,6 +82,8 @@ type webrtcRelay struct {
 	setupState atomic.Int32 // relaySettingUp until establishment and a close race for it
 
 	channelMu                sync.Mutex
+	closing                  bool        // guarded by channelMu
+	upstreamDrainTimer       *time.Timer // terminal transport state waits for the channel reader
 	pendingToUpstream        []queuedDataChannelMessage
 	pendingToDownstream      []queuedDataChannelMessage
 	upstreamConnectedOrError chan error
@@ -251,8 +254,30 @@ func (r *webrtcRelay) onUpstreamState(state webrtc.PeerConnectionState) {
 		case r.upstreamConnectedOrError <- fmt.Errorf("peer connection state %s", state.String()):
 		default:
 		}
-		r.close()
+		r.closeAfterUpstreamDrain()
 	}
+}
+
+// SCTP acknowledges data before OnMessage consumes it. Pion closes the peer on a
+// DTLS CloseNotify, but its channel reader can still drain received messages.
+// Closing the relay here would suppress those callbacks and lose final usage.
+// OnClose/OnError finalize after the reader drains; the timer bounds a channel
+// that never opened or a callback that does not return.
+func (r *webrtcRelay) closeAfterUpstreamDrain() {
+	r.channelMu.Lock()
+	if r.closing {
+		r.channelMu.Unlock()
+		return
+	}
+	if r.upstreamChannel == nil || r.setupState.Load() != relayEstablished {
+		r.channelMu.Unlock()
+		r.close()
+		return
+	}
+	if r.upstreamDrainTimer == nil {
+		r.upstreamDrainTimer = time.AfterFunc(webrtcUpstreamDrainTimeout, r.close)
+	}
+	r.channelMu.Unlock()
 }
 
 func (r *webrtcRelay) onDownstreamState(state webrtc.PeerConnectionState) {
@@ -464,6 +489,13 @@ func (r *webrtcRelay) flushPending() {
 
 func (r *webrtcRelay) close() {
 	r.closeOnce.Do(func() {
+		r.channelMu.Lock()
+		r.closing = true
+		if r.upstreamDrainTimer != nil {
+			r.upstreamDrainTimer.Stop()
+			r.upstreamDrainTimer = nil
+		}
+		r.channelMu.Unlock()
 		if r.handler != nil {
 			r.handler.closed()
 		}
