@@ -1,8 +1,10 @@
 import CustomersTable from "@/app/workspace/governance/views/customerTable";
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { parseAsSafeString } from "@/lib/queryParamsParser";
 import { getErrorMessage, useGetCustomersQuery } from "@/lib/store";
+import { showLoadError } from "@/lib/utils/loadError";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { parseAsInteger, useQueryStates } from "nuqs";
 import { useEffect, useRef, useState } from "react";
@@ -32,7 +34,9 @@ export default function GovernanceCustomersPage() {
 	const {
 		data: customersData,
 		error: customersError,
+		isError: isCustomersError,
 		isLoading: customersLoading,
+		refetch: refetchCustomers,
 	} = useGetCustomersQuery(
 		{
 			limit: PAGE_SIZE,
@@ -72,6 +76,12 @@ export default function GovernanceCustomersPage() {
 
 	if (isLoading) {
 		return <FullPageLoader />;
+	}
+
+	if (showLoadError(isCustomersError, customersData)) {
+		return (
+			<LoadErrorView entity="customers" error={customersError} onRetry={() => void refetchCustomers()} testId="customers-load-error" />
+		);
 	}
 
 	return (

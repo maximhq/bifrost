@@ -1,5 +1,6 @@
 import ModelProviderConfig from "@/app/workspace/providers/views/modelProviderConfig";
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -23,6 +24,7 @@ import { cn } from "@/lib/utils";
 import { decisionProviderIconKey } from "@/lib/utils/decisionModelProviders";
 import { CLOUDFLARE_PROVIDER, isMigratableCloudflareProvider } from "@/lib/utils/cloudflareMigration";
 import { DATABRICKS_PROVIDER, isCustomDatabricksProvider } from "@/lib/utils/databricksMigration";
+import { showLoadError } from "@/lib/utils/loadError";
 import { findCustomProviderCollisions, normalizeProviderName } from "@/lib/utils/providerCollision";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
@@ -37,7 +39,6 @@ import CloudflareMigrationDialog from "./dialogs/cloudflareMigrationDialog";
 import DatabricksMigrationDialog from "./dialogs/databricksMigrationDialog";
 import FirstPartyProviderAvailableDialog from "./dialogs/firstPartyProviderAvailableDialog";
 import { AddProviderDropdown } from "./views/addProviderDropdown";
-import { showProvidersLoadError } from "./page.utils";
 import { ProvidersEmptyState } from "./views/providersEmptyState";
 
 export default function Providers() {
@@ -79,6 +80,7 @@ export default function Providers() {
 		isLoading: isLoadingProviders,
 		isError: isProvidersError,
 		error: providersError,
+		refetch: refetchProviders,
 	} = useGetProvidersQuery();
 	const [getProvider, { isLoading: isLoadingProvider }] = useLazyGetProviderQuery();
 	const [createProvider] = useCreateProviderMutation();
@@ -187,12 +189,10 @@ export default function Providers() {
 	if (isLoadingProviders) {
 		return <FullPageLoader />;
 	}
-	if (showProvidersLoadError(isProvidersError, savedProviders)) {
+	if (showLoadError(isProvidersError, savedProviders)) {
 		return (
 			<div className="mx-auto w-full max-w-7xl">
-				<div className="border-destructive bg-destructive/10 text-destructive rounded-lg border p-6 text-sm">
-					Failed to load providers: {getErrorMessage(providersError)}
-				</div>
+				<LoadErrorView entity="providers" error={providersError} onRetry={() => void refetchProviders()} testId="providers-load-error" />
 			</div>
 		);
 	}

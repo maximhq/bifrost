@@ -1,5 +1,6 @@
 import PageTitle from "@/components/pageTitle";
 import FullPageLoader from "@/components/fullPageLoader";
+import { LoadErrorView } from "@/components/loadErrorView";
 import { PIN_SHADOW_RIGHT } from "@/components/table/columnPinning";
 import {
 	AlertDialog,
@@ -26,6 +27,7 @@ import {
 	useUpdateWebhookEndpointMutation,
 } from "@/lib/store";
 import { WEBHOOK_EVENTS, WebhookEndpoint, WebhookEndpointRequest, WebhookEvent } from "@/lib/types/webhooks";
+import { showLoadError } from "@/lib/utils/loadError";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useNavigate } from "@tanstack/react-router";
@@ -330,16 +332,8 @@ export default function WebhooksView() {
 	// invites creating an endpoint, so a hidden fetch error could prompt a
 	// duplicate. Only fatal when there is no data to fall back on; a transient
 	// poll failure over cached rows keeps rendering the list.
-	if (isError && !data) {
-		return (
-			<div className="flex flex-col items-center justify-center gap-3 py-16 text-center" data-testid="webhooks-load-error">
-				<p className="text-sm font-medium">Failed to load webhook endpoints.</p>
-				<p className="text-muted-foreground max-w-md text-sm">{getErrorMessage(error)}</p>
-				<Button variant="outline" size="sm" onClick={() => void refetch()}>
-					Retry
-				</Button>
-			</div>
-		);
+	if (showLoadError(isError, data)) {
+		return <LoadErrorView entity="webhook endpoints" error={error} onRetry={() => void refetch()} testId="webhooks-load-error" />;
 	}
 
 	return (
