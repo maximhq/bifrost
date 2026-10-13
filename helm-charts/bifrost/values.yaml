@@ -2028,6 +2028,14 @@ vectorStore:
       ENABLE_MODULES: ""
       CLUSTER_HOSTNAME: "node1"
 
+    # Scheduling controls for the Weaviate pod. Useful for pinning it to dedicated
+    # or tainted nodes (e.g. non-spot capacity), away from other workloads.
+    nodeSelector: {}
+
+    tolerations: []
+
+    affinity: {}
+
   # Redis configuration
   redis:
     # Deploy Redis as part of this chart
@@ -2084,6 +2092,14 @@ vectorStore:
           cpu: 250m
           memory: 256Mi
 
+      # Scheduling controls for the Redis pod. Useful for pinning it to dedicated
+      # or tainted nodes (e.g. non-spot capacity), away from other workloads.
+      nodeSelector: {}
+
+      tolerations: []
+
+      affinity: {}
+
     metrics:
       enabled: false
 
@@ -2121,6 +2137,14 @@ vectorStore:
       requests:
         cpu: 500m
         memory: 1Gi
+
+    # Scheduling controls for the Qdrant pod. Useful for pinning it to dedicated
+    # or tainted nodes (e.g. non-spot capacity), away from other workloads.
+    nodeSelector: {}
+
+    tolerations: []
+
+    affinity: {}
 
   # Pinecone configuration (external only, no self-hosted option)
   pinecone:
