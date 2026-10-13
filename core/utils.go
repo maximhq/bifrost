@@ -896,7 +896,9 @@ func isPromptOptionalVideoEditType(t *string) bool {
 
 // wrapConvertedStreamPostHookRunner wraps a PostHookRunner so that streaming
 // responses produced by a type-converted request are converted back to the
-// caller's original type before the post-hook runs.
+// caller's original type before the post-hook runs. Each converted chunk is
+// marked with ConvertedRequestType: its RawResponse is still the target API's
+// bytes, which integrations must not echo to a client of the original API.
 func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
 	roleSent := false
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
@@ -906,6 +908,7 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				// text→chat: convert chat stream chunk back to text completion
 				if result.ChatResponse != nil {
 					if converted := result.ChatResponse.ToBifrostTextCompletionResponse(); converted != nil {
+						converted.ExtraFields.ConvertedRequestType = targetType
 						result = &schemas.BifrostResponse{TextCompletionResponse: converted}
 					}
 				}
@@ -914,6 +917,7 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				if result.ResponsesStreamResponse != nil {
 					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
 						roleSent = setAssistantRoleOnce(converted, roleSent)
+						converted.ExtraFields.ConvertedRequestType = targetType
 						result = &schemas.BifrostResponse{ChatResponse: converted}
 					}
 				}

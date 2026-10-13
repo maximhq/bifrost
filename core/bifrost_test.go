@@ -17,8 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/keyselectors"
+	"github.com/maximhq/bifrost/core/mcp"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/text/cases"
@@ -7755,5 +7757,117 @@ func BenchmarkShouldTryFallbacks(b *testing.B) {
 				_ = bifrost.shouldTryFallbacks(nil, req, primaryErr)
 			}
 		})
+	}
+}
+
+// TestSetMCPManager_ReceivesTheRegisteredFactory: an SDK caller may register
+// the openapi factory before injecting its own manager; the injected manager
+// gets the factory, and the two setters do not race (run with -race).
+func TestSetMCPManager_ReceivesTheRegisteredFactory(t *testing.T) {
+	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		return server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false)), nil
+	}
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer b.Shutdown()
+	b.SetMCPInProcessServerFactory(factory)
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	b.SetMCPManager(injected)
+	err = b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{ID: "oa-id", Name: "oa", ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}})
+	if err != nil {
+		t.Fatalf("the injected manager did not get the registered factory: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); b.SetMCPInProcessServerFactory(factory) }()
+	go func() {
+		defer wg.Done()
+		b.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil))
+	}()
+	wg.Wait()
+}
+
+// TestLazyMCPManager_ConcurrentFirstCallersDoNotRace: the first MCP calls on a
+// Bifrost without an mcp block create the manager lazily. Concurrent first
+// callers must not read the manager field while another publishes it (run
+// with -race), and a manager injected with SetMCPManager is never replaced.
+func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
+	client := func(name string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{ID: name + "-id", Name: name, ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}}
+	}
+	for i := 0; i < 10; i++ {
+		b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() { defer wg.Done(); _ = b.AddMCPClient(context.Background(), client("a")) }()
+		go func() {
+			defer wg.Done()
+			_, _, _, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
+		}()
+		go func() {
+			defer wg.Done()
+			_, _, _, _ = b.VerifyPerUserOAuthConnection(context.Background(), client("c"), "token")
+		}()
+		wg.Wait()
+		b.Shutdown()
+	}
+
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer b.Shutdown()
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	b.SetMCPManager(injected)
+	_ = b.AddMCPClient(context.Background(), client("d"))
+	if b.MCPManager != mcp.MCPManagerInterface(injected) {
+		t.Fatal("an injected MCP manager was replaced by the lazy one")
+	}
+}
+
+// TestSetMCPInProcessServerFactory_RacesLazyManagerCreation: the HTTP transport
+// registers the openapi factory after Init, while a request may be lazily
+// creating the MCP manager. Whichever wins, the manager that ends up serving
+// must carry the factory, and the registration must not race the creation.
+func TestSetMCPInProcessServerFactory_RacesLazyManagerCreation(t *testing.T) {
+	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		return server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false)), nil
+	}
+	openAPIClient := func(name string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID:             name + "-id",
+			Name:           name,
+			ConnectionType: schemas.MCPConnectionTypeOpenAPI,
+			ToolsToExecute: schemas.WhiteList{"*"},
+			OpenAPIConfig:  &schemas.MCPOpenAPIConfig{Spec: "unused by the stub"},
+		}
+	}
+	for i := 0; i < 20; i++ {
+		// No MCPConfig: the manager is created lazily by the first MCP call.
+		b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			b.SetMCPInProcessServerFactory(factory)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = b.AddMCPClient(context.Background(), openAPIClient("first"))
+		}()
+		wg.Wait()
+		if err := b.AddMCPClient(context.Background(), openAPIClient("second")); err != nil {
+			t.Fatalf("iteration %d: the manager lost the registered factory: %v", i, err)
+		}
+		b.Shutdown()
 	}
 }

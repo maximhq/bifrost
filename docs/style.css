@@ -2,37 +2,8 @@
     height: 1.50rem;
 }
 
-/* Navbar Discord and GitHub links keep their labels for screen readers. */
-nav[aria-label="Main"] .navbar-link a[href*="discord.gg"],
-nav[aria-label="Main"] .navbar-link a[href*="github.com/maximhq/bifrost"] {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0.3125rem 0;
-}
-
-nav[aria-label="Main"] .navbar-link a[href*="discord.gg"] svg,
-nav[aria-label="Main"] .navbar-link a[href*="github.com/maximhq/bifrost"] svg {
-    width: 1.625rem;
-    height: 1.625rem;
-}
-
-nav[aria-label="Main"] .navbar-link a[href*="discord.gg"] span,
-nav[aria-label="Main"] .navbar-link a[href*="github.com/maximhq/bifrost"] span {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-}
-
-/* Same gap between the icons and both CTAs. Book a demo's right side was
-   tighter than its left, which made the space between the buttons look uneven. */
+/* Book a demo's right side was tighter than its left, which made the
+   space between the buttons look uneven. */
 div:has(> nav[aria-label="Main"]) {
     gap: 1.5rem;
 }
@@ -42,8 +13,7 @@ nav[aria-label="Main"] > ul {
 }
 
 nav[aria-label="Main"] a[href*="book-a-demo"] {
-    padding-left: 0.75rem;
-    padding-right: 0.75rem;
+    padding: 0.4375rem 0.625rem;
 }
 
 nav[aria-label="Main"] a[href*="book-a-demo"] svg {
@@ -61,7 +31,7 @@ nav[aria-label="Main"] .navbar-link a[href*="#free-license"] {
     border: 1px solid rgb(var(--primary-dark));
     border-radius: 0.75rem;
     box-sizing: border-box;
-    padding: calc(0.5rem - 1px) 0.75rem;
+    padding: calc(0.4375rem - 1px) 0.625rem;
     color: rgb(var(--primary-dark));
     background: transparent;
     font-size: 0.875rem;
