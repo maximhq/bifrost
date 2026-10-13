@@ -1078,10 +1078,14 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 		// A system or developer message after the conversation has started is a
 		// mid-conversation instruction. Chat templates such as Qwen's reject a
 		// system message that is not in the leading run, so it becomes a user
-		// turn wrapped in <system-reminder>, matching the Bedrock provider.
+		// turn wrapped in <system-reminder>, matching the Bedrock provider. One with
+		// no text is skipped, as the Bedrock, Anthropic and Gemini converters do,
+		// rather than sent as an empty user turn.
 		if pastLeadingInstructions && (cm.Role == ChatMessageRoleSystem || cm.Role == ChatMessageRoleDeveloper) {
+			if !inlineSystemReminder(&cm) {
+				continue
+			}
 			cm.Role = ChatMessageRoleUser
-			inlineSystemReminder(&cm)
 		}
 		if cm.Role != ChatMessageRoleSystem && cm.Role != ChatMessageRoleDeveloper {
 			pastLeadingInstructions = true
@@ -1107,23 +1111,31 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	return chatMessages
 }
 
-func inlineSystemReminder(cm *ChatMessage) {
+// inlineSystemReminder wraps each non-blank text in cm in <system-reminder> and
+// reports whether it found any.
+func inlineSystemReminder(cm *ChatMessage) bool {
 	if cm == nil || cm.Content == nil {
-		return
+		return false
 	}
 	if cm.Content.ContentStr != nil {
+		if strings.TrimSpace(*cm.Content.ContentStr) == "" {
+			return false
+		}
 		wrapped := systemReminderText(*cm.Content.ContentStr)
 		cm.Content.ContentStr = &wrapped
-		return
+		return true
 	}
+	found := false
 	for i := range cm.Content.ContentBlocks {
 		block := &cm.Content.ContentBlocks[i]
-		if block.Text == nil || (block.Type != ChatContentBlockTypeText && block.Type != "") {
+		if block.Text == nil || strings.TrimSpace(*block.Text) == "" || (block.Type != ChatContentBlockTypeText && block.Type != "") {
 			continue
 		}
 		wrapped := systemReminderText(*block.Text)
 		block.Text = &wrapped
+		found = true
 	}
+	return found
 }
 
 func systemReminderText(text string) string {

@@ -120,6 +120,34 @@ func TestToChatMessages_InlinesMidConversationSystem(t *testing.T) {
 	}
 }
 
+func TestToChatMessages_SkipsBlankMidConversationSystem(t *testing.T) {
+	tests := []struct {
+		name    string
+		content *ResponsesMessageContent
+	}{
+		{name: "empty string", content: &ResponsesMessageContent{ContentStr: Ptr("")}},
+		{name: "whitespace string", content: &ResponsesMessageContent{ContentStr: Ptr(" \n ")}},
+		{name: "blank text block", content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+			{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("")},
+		}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chatMessages := ToChatMessages([]ResponsesMessage{
+				{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("Say hello.")}},
+				{Role: Ptr(ResponsesInputMessageRoleSystem), Content: tt.content},
+			})
+			if len(chatMessages) != 1 {
+				t.Fatalf("expected the blank system message to be skipped, got %+v", chatMessages)
+			}
+			if chatMessages[0].Role != ChatMessageRoleUser {
+				t.Fatalf("expected the user turn, got %q", chatMessages[0].Role)
+			}
+		})
+	}
+}
+
 func TestToChatMessages_AttachesReasoningToNextAssistantMessage(t *testing.T) {
 	reasoningText := "Let me think about this step by step."
 	signature := "sig_abc"
