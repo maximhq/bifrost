@@ -11,7 +11,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 )
 
 func newRealtimeTurnContext(
