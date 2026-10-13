@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +14,8 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"gorm.io/gorm"
 )
 
@@ -28,6 +32,9 @@ const (
 	uploadKindLog uploadKind = iota
 	uploadKindMCP
 	uploadKindAgent
+	// uploadKindLogMerge overlays the payload onto the object the row already
+	// has (BatchUpdate's reconcile of a late completion) instead of replacing it.
+	uploadKindLogMerge
 )
 
 // uploadWork represents an async S3 upload job.
@@ -54,7 +61,7 @@ type HybridLogStore struct {
 	objects        objectstore.ObjectStore
 	prefix         string
 	logger         schemas.Logger
-	uploadQueue    chan *uploadWork
+	uploadQueues   []chan *uploadWork // one per worker, sharded by log id so a row's uploads run in enqueue order
 	wg             sync.WaitGroup
 	closed         atomic.Bool
 	droppedUploads atomic.Int64
@@ -63,21 +70,44 @@ type HybridLogStore struct {
 	excludedPayloadFields map[string]struct{}
 	// excludedRequestTypes is the set of log object types that are never offloaded; their rows stay complete in the DB.
 	excludedRequestTypes map[string]struct{}
+	// offloadErrorRawBodies: error_details is DB-resident only through databaseResidentPayloadFields, so its raw bodies are offloaded.
+	offloadErrorRawBodies bool
 }
 
 type scopedDBLogStore interface {
 	ScopedDB(context.Context) *gorm.DB
 }
 
+// databaseResidentPayloadFields stay in the database whatever the configured
+// exclusions say. error_details backs the error_type, error_code and
+// status_code rankings and filters, which query the column directly, so
+// offloading it left every error breakdown empty. It is not request content,
+// except for the provider raw bodies it can carry, which
+// moveErrorRawBodiesToObject sends to object storage. Content-hidden rows
+// still offload it with everything else.
+//
+// This applies to logs written from this change on. Rows written before it
+// hold error_details only in their object, so they stay out of the error
+// breakdowns: restoring them means one object read per failed log, with no
+// bound on the count, and is not done automatically.
+var databaseResidentPayloadFields = []string{"error_details"}
+
 // newHybridLogStore creates a HybridLogStore wrapping the given inner store.
 // excludeFields lists payload field DB column names that should be kept in the
-// database rather than offloaded to object storage. Pass nil for the default
-// behaviour of offloading all payload fields. excludeRequestTypes lists log
+// database rather than offloaded to object storage, on top of
+// databaseResidentPayloadFields. Pass nil to offload every other payload field. excludeRequestTypes lists log
 // object types whose rows are written to the DB unchanged and never uploaded.
 func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix string, logger schemas.Logger, excludeFields []string, excludeRequestTypes []string) *HybridLogStore {
-	excluded := make(map[string]struct{}, len(excludeFields))
+	excluded := make(map[string]struct{}, len(excludeFields)+len(databaseResidentPayloadFields))
+	for _, f := range databaseResidentPayloadFields {
+		excluded[f] = struct{}{}
+	}
+	offloadErrorRawBodies := true
 	for _, f := range excludeFields {
 		excluded[f] = struct{}{}
+		if f == "error_details" {
+			offloadErrorRawBodies = false
+		}
 	}
 	excludedTypes := make(map[string]struct{}, len(excludeRequestTypes))
 	for _, t := range excludeRequestTypes {
@@ -90,24 +120,45 @@ func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix s
 		objects:               objects,
 		prefix:                prefix,
 		logger:                logger,
-		uploadQueue:           make(chan *uploadWork, defaultUploadQueueSize),
+		uploadQueues:          make([]chan *uploadWork, defaultUploadWorkers),
 		excludedPayloadFields: excluded,
 		excludedRequestTypes:  excludedTypes,
+		offloadErrorRawBodies: offloadErrorRawBodies,
 	}
-	// Start upload workers.
-	for i := 0; i < defaultUploadWorkers; i++ {
+	// Start upload workers, one per queue shard. Uploads for one log id always
+	// land on the same shard (see uploadShard), so an insert's upload and a
+	// later reconcile's merge upload for that row cannot race on the object key.
+	for i := range h.uploadQueues {
+		h.uploadQueues[i] = make(chan *uploadWork, defaultUploadQueueSize/defaultUploadWorkers)
 		h.wg.Add(1)
-		go h.uploadWorker()
+		go h.uploadWorker(h.uploadQueues[i])
 	}
 	return h
 }
 
-// uploadWorker processes async S3 upload jobs from the queue.
-func (h *HybridLogStore) uploadWorker() {
+// uploadWorker processes async S3 upload jobs from one queue shard, in order.
+func (h *HybridLogStore) uploadWorker(queue chan *uploadWork) {
 	defer h.wg.Done()
-	for work := range h.uploadQueue {
+	for work := range queue {
 		h.processUpload(work)
 	}
+}
+
+// uploadShard picks the queue for a log id. The same id always maps to the
+// same shard, which is what orders a row's uploads.
+func (h *HybridLogStore) uploadShard(logID string) chan *uploadWork {
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(logID))
+	return h.uploadQueues[int(hash.Sum32()%uint32(len(h.uploadQueues)))]
+}
+
+// queuedUploads reports how many uploads are waiting across all shards.
+func (h *HybridLogStore) queuedUploads() int {
+	n := 0
+	for _, q := range h.uploadQueues {
+		n += len(q)
+	}
+	return n
 }
 
 // processUpload uploads a single payload to object storage.
@@ -150,6 +201,14 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		if work.status != "" && current.Status != work.status {
 			return
 		}
+	}
+
+	if work.kind == uploadKindLogMerge {
+		merged, ok := h.mergeIntoStoredObject(ctx, work)
+		if !ok {
+			return
+		}
+		work.payload = merged
 	}
 
 	if err := h.objects.Put(ctx, work.key, work.payload, work.tags); err != nil {
@@ -200,6 +259,56 @@ func isPayloadEmpty(payload map[string]string) bool {
 	return true
 }
 
+// mergeIntoStoredObject prepares a merge upload: the row's object is read and
+// the work's non-empty payload fields are laid over it, so the result carries
+// everything the object held plus the late fields. It runs on the row's upload
+// shard, after any earlier upload for the same id, which is what lets a
+// reconcile queued before the insert's upload finished still see the full
+// input. The object store is always consulted, never the row's has_object flag:
+// a Put can succeed while every has_object update fails, leaving an object the
+// flag does not admit to. A definite not-found means there is nothing to
+// preserve and the payload is uploaded as is; any other read or decode failure
+// drops the upload and counts it, because a payload rebuilt without the stored
+// content must never replace an object that may exist (for a hidden row that
+// object is the only copy of the input).
+func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *uploadWork) ([]byte, bool) {
+	existing, err := h.objects.Get(ctx, work.key)
+	if err != nil {
+		if errors.Is(err, objectstore.ErrNotFound) {
+			return work.payload, true
+		}
+		h.logger.Warn("objectstore: failed to fetch payload for log %s before merge upload, leaving the stored object untouched: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	var base, overlay map[string]string
+	if err := sonic.Unmarshal(existing, &base); err != nil {
+		h.logger.Warn("objectstore: failed to decode payload for log %s before merge upload, leaving the stored object untouched: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	if err := sonic.Unmarshal(work.payload, &overlay); err != nil {
+		h.logger.Warn("objectstore: failed to decode merge payload for log %s: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	if base == nil {
+		base = make(map[string]string, len(overlay))
+	}
+	for k, v := range overlay {
+		if v != "" {
+			base[k] = v
+		}
+	}
+	merged, err := sonic.Marshal(base)
+	if err != nil {
+		h.logger.Warn("objectstore: failed to encode merged payload for log %s: %v", work.logID, err)
+		h.droppedUploads.Add(1)
+		return nil, false
+	}
+	return merged, true
+}
+
 // enqueueUpload pushes an upload job onto the queue. If the queue is full,
 // the job is dropped to prevent S3 slowness from cascading.
 func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payload map[string]string, tags map[string]string) {
@@ -243,7 +352,7 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 		return
 	}
 	select {
-	case h.uploadQueue <- &uploadWork{
+	case h.uploadShard(logID) <- &uploadWork{
 		logID:     logID,
 		timestamp: timestamp,
 		key:       key,
@@ -350,6 +459,41 @@ func (h *HybridLogStore) extractUploadPayload(entry *Log) map[string]string {
 	return ExtractPayloadFiltered(entry, h.excludedPayloadFields)
 }
 
+// errorRawBodyPaths are the error_details paths holding provider raw bodies,
+// present only when content logging and raw storage are both on.
+var errorRawBodyPaths = []string{"extra_fields.raw_request", "extra_fields.raw_response"}
+
+// moveErrorRawBodiesToObject keeps error_details in the DB row without the
+// provider raw bodies it carries, and puts the whole value in the upload
+// payload instead, which FindByID merges back over the row's copy. Without it,
+// keeping error_details DB-resident would keep raw bodies in the database even
+// though raw_request and raw_response are offloaded. An operator who lists
+// error_details in object_storage_exclude_fields keeps it whole in the DB.
+// Content-hidden rows already offload error_details in full.
+func (h *HybridLogStore) moveErrorRawBodiesToObject(dbEntry *Log, payload map[string]string) {
+	if !h.offloadErrorRawBodies || dbEntry.ContentHidden || dbEntry.ErrorDetails == "" {
+		return
+	}
+	stripped := dbEntry.ErrorDetails
+	for _, path := range errorRawBodyPaths {
+		if !gjson.Get(stripped, path).Exists() {
+			continue
+		}
+		next, err := sjson.Delete(stripped, path)
+		if err != nil {
+			return
+		}
+		stripped = next
+	}
+	if stripped == dbEntry.ErrorDetails {
+		return
+	}
+	payload["error_details"] = dbEntry.ErrorDetails
+	dbEntry.ErrorDetails = stripped
+	// SerializeFields on the write path would re-serialize a parsed copy over it.
+	dbEntry.ErrorDetailsParsed = nil
+}
+
 // skipsOffload reports whether entry's request type is excluded from object
 // storage. Excluded entries are written to the inner store unchanged, which
 // builds their content summary on write. Hidden entries are always offloaded:
@@ -374,6 +518,7 @@ func (h *HybridLogStore) Create(ctx context.Context, entry *Log) error {
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
 	prepareDBEntry(&dbEntry, h.excludedPayloadFields)
+	h.moveErrorRawBodiesToObject(&dbEntry, payload)
 	if err := h.inner.Create(ctx, &dbEntry); err != nil {
 		return err
 	}
@@ -397,6 +542,7 @@ func (h *HybridLogStore) CreateIfNotExists(ctx context.Context, entry *Log) erro
 	// Work on a shallow copy so the caller's entry is preserved on DB failure.
 	dbEntry := *entry
 	prepareDBEntry(&dbEntry, h.excludedPayloadFields)
+	h.moveErrorRawBodiesToObject(&dbEntry, payload)
 	if err := h.inner.CreateIfNotExists(ctx, &dbEntry); err != nil {
 		return err
 	}
@@ -439,6 +585,7 @@ func (h *HybridLogStore) BatchCreateIfNotExists(ctx context.Context, entries []*
 		// Work on a shallow copy so the caller's entries are preserved on DB failure.
 		dbEntry := *entry
 		prepareDBEntry(&dbEntry, h.excludedPayloadFields)
+		h.moveErrorRawBodiesToObject(&dbEntry, payload)
 		dbEntries = append(dbEntries, &dbEntry)
 		origEntries = append(origEntries, entry)
 		uploads = append(uploads, pendingUpload{
@@ -613,7 +760,9 @@ func (h *HybridLogStore) DeleteMCPToolLogsBatch(ctx context.Context, cutoff time
 // mid-flight.
 func (h *HybridLogStore) Close(ctx context.Context) error {
 	h.closed.Store(true)
-	close(h.uploadQueue)
+	for _, q := range h.uploadQueues {
+		close(q)
+	}
 	done := make(chan struct{})
 	go func() {
 		h.wg.Wait()
@@ -1039,6 +1188,126 @@ func (h *HybridLogStore) GetDimensionTokenHistogram(ctx context.Context, filters
 // dimension.
 func (h *HybridLogStore) GetDimensionLatencyHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64, dimension HistogramDimension) (*DimensionLatencyHistogramResult, error) {
 	return h.inner.GetDimensionLatencyHistogram(ctx, filters, bucketSizeSeconds, dimension)
+}
+
+// BatchUpdate reconciles output fields onto existing rows the same way an
+// insert would have placed them: the DB row gets the scalar columns, and the
+// payload goes to object storage. The current row is read once per id (the
+// update carries no timestamp, which the object key needs), every entry for
+// that id is applied to the DB in batch order, and their non-empty payload
+// fields are folded, in that same order, into ONE merge upload that the upload
+// worker lays over the row's stored object (see mergeIntoStoredObject). The DB
+// row stays content-free. Hidden rows are handled identically, which is what
+// keeps a retained response from being lost: the hidden DB row must never hold
+// content, so the object is the only place the late output can go. Rows whose
+// request type is excluded from offloading pass through unchanged, and rows
+// that do not exist are skipped, as in the inner store.
+func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error {
+	type pendingUpload struct {
+		logID     string
+		timestamp time.Time
+		payload   map[string]string
+		tagRow    *Log // the saved row with every entry's non-zero fields applied, in batch order
+	}
+	uploadsByID := make(map[string]*pendingUpload)
+	var uploadOrder []string
+	rowsByID := make(map[string]*Log)
+	dbEntries := make([]*Log, 0, len(entries))
+	for _, entry := range entries {
+		if entry == nil || entry.ID == "" {
+			continue
+		}
+		row, seen := rowsByID[entry.ID]
+		if !seen {
+			var err error
+			row, err = h.inner.FindByID(ctx, entry.ID)
+			if err != nil {
+				if errors.Is(err, ErrNotFound) {
+					rowsByID[entry.ID] = nil
+					continue
+				}
+				return err
+			}
+			rowsByID[entry.ID] = row
+		}
+		if row == nil {
+			continue
+		}
+		// The entry carries the request's final visibility decision, which may
+		// clear a hidden flag the row was saved with before that decision existed.
+		hidden := entry.ContentHidden
+		if _, excluded := h.excludedRequestTypes[row.Object]; excluded && !hidden {
+			dbEntries = append(dbEntries, entry)
+			continue
+		}
+		if err := entry.SerializeFields(); err != nil {
+			return fmt.Errorf("logstore: serialize before update: %w", err)
+		}
+		// Shallow copies so the caller's entry is preserved on DB failure.
+		payloadEntry := *entry
+		// The update carries no timestamp; without the row's, the payload would
+		// carry the zero time and the merge would overwrite the stored one.
+		payloadEntry.Timestamp = row.Timestamp
+		payloadEntry.ContentHidden = hidden
+		dbEntry := *entry
+		dbEntry.ContentHidden = hidden
+		prepareDBEntry(&dbEntry, h.excludedPayloadFields)
+
+		upload := uploadsByID[entry.ID]
+		if upload == nil {
+			tagRow := *row
+			upload = &pendingUpload{logID: row.ID, timestamp: row.Timestamp, payload: make(map[string]string), tagRow: &tagRow}
+			uploadsByID[entry.ID] = upload
+			uploadOrder = append(uploadOrder, entry.ID)
+		}
+		// Later entries for the same id override earlier ones field by field,
+		// matching the order the DB applies them.
+		for k, v := range h.extractUploadPayload(&payloadEntry) {
+			if v != "" {
+				upload.payload[k] = v
+			}
+		}
+		h.moveErrorRawBodiesToObject(&dbEntry, upload.payload)
+		// Tags describe the row as the batch leaves it: the selected key, virtual
+		// key, routing rule and stream flag only arrive with the completion.
+		overlayNonZeroFields(upload.tagRow, entry)
+		dbEntries = append(dbEntries, &dbEntry)
+	}
+	if len(dbEntries) == 0 {
+		return nil
+	}
+	if err := h.inner.BatchUpdate(ctx, dbEntries); err != nil {
+		return err
+	}
+	for _, id := range uploadOrder {
+		u := uploadsByID[id]
+		if isPayloadEmpty(u.payload) {
+			continue
+		}
+		data, err := sonic.Marshal(u.payload)
+		if err != nil {
+			h.logger.Warn("objectstore: failed to marshal merge payload for log %s: %v", u.logID, err)
+			h.droppedUploads.Add(1)
+			continue
+		}
+		h.enqueueRawUpload(u.logID, u.timestamp, ObjectKey(h.prefix, u.timestamp, u.logID), uploadKindLogMerge, "", data, BuildTags(u.tagRow))
+	}
+	return nil
+}
+
+// overlayNonZeroFields copies every non-zero field of src onto dst, the same
+// semantics the DB update applies (GORM Updates with a struct), so a row
+// assembled this way matches what the update leaves in the database.
+func overlayNonZeroFields(dst, src *Log) {
+	d := reflect.ValueOf(dst).Elem()
+	s := reflect.ValueOf(src).Elem()
+	for i := 0; i < s.NumField(); i++ {
+		field := s.Field(i)
+		if field.IsZero() || !d.Field(i).CanSet() {
+			continue
+		}
+		d.Field(i).Set(field)
+	}
 }
 
 // BulkUpdateCost delegates to the inner store and updates the cost columns
@@ -1639,6 +1908,7 @@ func (h *HybridLogStore) hydrateAgentLogDetail(ctx context.Context, detail *Agen
 	}
 	entry := &AgentLog{ID: detail.ID, Timestamp: detail.Timestamp, HasObject: detail.hasObject, ContentHidden: detail.contentHidden, PayloadReference: detail.payloadReference}
 	h.hydrateAgentLog(ctx, entry)
+	detail.RawRequest, detail.RawResponse = entry.RawRequest, entry.RawResponse
 	detail.RequestBody = entry.RequestBody
 	detail.ResponseBody = entry.ResponseBody
 	detail.EventBody = entry.EventBody
@@ -1716,6 +1986,10 @@ func applyAgentLogBodyUpdate(entry *AgentLog, field string, value any) error {
 		entry.ResponseBody = body
 	case "event_body":
 		entry.EventBody = body
+	case "raw_request":
+		entry.RawRequest = body
+	case "raw_response":
+		entry.RawResponse = body
 	}
 	return nil
 }
@@ -1726,7 +2000,7 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 		return h.inner.UpdateAgentLog(ctx, id, entry)
 	}
 	payloadUpdate := false
-	for _, field := range []string{"request_body", "response_body", "event_body"} {
+	for _, field := range []string{"request_body", "response_body", "event_body", "raw_request", "raw_response"} {
 		if _, ok := updates[field]; ok {
 			payloadUpdate = true
 			break
@@ -1749,7 +2023,7 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 	dbUpdates := make(map[string]interface{}, len(updates)+1)
 	for field, value := range updates {
 		switch field {
-		case "request_body", "response_body", "event_body":
+		case "request_body", "response_body", "event_body", "raw_request", "raw_response":
 			if err := applyAgentLogBodyUpdate(current, field, value); err != nil {
 				return err
 			}
@@ -1770,6 +2044,8 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 	dbUpdates["request_body"] = dbEntry.RequestBody
 	dbUpdates["response_body"] = dbEntry.ResponseBody
 	dbUpdates["event_body"] = dbEntry.EventBody
+	dbUpdates["raw_request"] = dbEntry.RawRequest
+	dbUpdates["raw_response"] = dbEntry.RawResponse
 	dbUpdates["payload_reference"] = dbEntry.PayloadReference
 	dbUpdates["has_object"] = false
 	if err := h.inner.UpdateAgentLog(ctx, id, dbUpdates); err != nil {

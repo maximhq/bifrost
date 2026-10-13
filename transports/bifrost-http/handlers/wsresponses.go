@@ -83,17 +83,35 @@ func (h *WSResponsesHandler) RegisterRoutes(r *router.Router, middlewares ...sch
 	}
 }
 
+// endSession tears down a client's session when its connection ends, normally or after a
+// recovered panic. The upstream a session pins between turns was borrowed from the pool, so it goes
+// back through the pool exactly once before the session is removed: Session.Close only closes it,
+// which would leave it counted in flight, and a pool at its limit then refuses every later borrow.
+// Upstreams dialed with request-scoped headers are never pinned, so whatever is pinned is pooled.
+func (h *WSResponsesHandler) endSession(conn *ws.Conn) {
+	if session := h.sessions.Get(conn); session != nil {
+		if upstream := session.Upstream(); upstream != nil {
+			session.SetUpstream(nil)
+			if h.pool != nil {
+				h.pool.Discard(upstream)
+			}
+		}
+	}
+	h.sessions.Remove(conn)
+}
+
 // handleUpgrade upgrades the HTTP connection to WebSocket and starts the event loop.
 func (h *WSResponsesHandler) handleUpgrade(ctx *fasthttp.RequestCtx) {
 	err := h.upgrader.Upgrade(ctx, func(conn *ws.Conn) {
 		defer conn.Close()
+		defer recoverWebSocketSession(conn)
 
 		session, sessionErr := h.sessions.Create(conn)
 		if sessionErr != nil {
 			writeWSError(conn, 429, "websocket_connection_limit_reached", sessionErr.Error())
 			return
 		}
-		defer h.sessions.Remove(conn)
+		defer h.endSession(conn)
 
 		// Capture auth headers from the upgrade request for per-event context creation
 		authHeaders := captureAuthHeaders(ctx)
@@ -806,6 +824,15 @@ func createBifrostContextFromAuth(handlerStore lib.HandlerStore, auth *authHeade
 		if strings.HasPrefix(auth.googAPIKey, "sk-bf-") {
 			ctx.SetValue(schemas.BifrostContextKeyVirtualKey, auth.googAPIKey)
 		}
+	}
+	// The caller's own provider key, under the same gate as on HTTP, set before the identity
+	// settles so governance sees a resolved credential.
+	var directKey string
+	if v := auth.headers["x-bf-direct-key"]; len(v) > 0 {
+		directKey = v[0]
+	}
+	if key, ok := lib.DirectKeyFromHeaders(handlerStore, directKey, auth.authorization, auth.apiKey, auth.googAPIKey); ok {
+		ctx.SetValue(schemas.BifrostContextKeyDirectKey, key)
 	}
 	// The headers captured at upgrade are all this connection will ever present, so the identity is
 	// settled here the way the HTTP path settles it, a connection that presented nothing included:

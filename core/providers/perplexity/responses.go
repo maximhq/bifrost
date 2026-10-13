@@ -7,38 +7,21 @@ import (
 )
 
 // isPerplexityResponsesSupported reports whether the model should use /v1/responses vs /chat/completions.
-// Denylist by design: /chat/completions serves only the Sonar family, so sonar-* variants go to chat and
-// every other model (base sonar + non-Sonar) goes to responses. This keeps newly-shipped non-Sonar models
-// working without a code change; they'd fail on chat, which doesn't serve them.
+// Denylist by design: /chat/completions serves only the Sonar family, so base "sonar" and the sonar-*
+// variants go to chat (/v1/responses rejects them with `model "sonar" is not supported`) and every other
+// model goes to responses. This keeps newly-shipped non-Sonar models working without a code change;
+// they'd fail on chat, which doesn't serve them.
 func isPerplexityResponsesSupported(model string) bool {
-	return !strings.HasPrefix(strings.TrimPrefix(model, "perplexity/"), "sonar-")
+	bare := strings.ToLower(strings.TrimPrefix(model, "perplexity/"))
+	return bare != "sonar" && !strings.HasPrefix(bare, "sonar-")
 }
-
-// perplexityAgentSonarModel is Perplexity's own base Sonar model name.
-const perplexityAgentSonarModel = "sonar"
 
 // perplexityAgentPresetModel is a Bifrost-only sentinel (not a real Perplexity
 // model): it tells withWireModelForAgentAPI to omit `model` from the wire and let
 // an ExtraParams `preset` (fast/low/medium/high/xhigh/wide-research) pick Perplexity's
-// own default model. Unlike bare "sonar" — a real product name a caller may want
-// regardless of any preset — "preset" has no meaning as an actual wire model, so
-// both the bare and "perplexity/"-prefixed spellings are treated identically.
+// own default model. Unlike a real model name, "preset" has no meaning as an actual
+// wire model, so both the bare and "perplexity/"-prefixed spellings are treated identically.
 const perplexityAgentPresetModel = "preset"
-
-// wireModelForAgentAPI returns the model string to send on the wire to Perplexity's
-// Agent API (/v1/responses). Live-verified against api.perplexity.ai on 2026-09-17:
-// Perplexity's own bare "sonar" model requires the "perplexity/" vendor-namespace
-// prefix on this endpoint specifically — {"model":"sonar",...} 400s with
-// `validation failed: model "sonar" is not supported`, while
-// {"model":"perplexity/sonar",...} succeeds. Third-party Agent API models (e.g.
-// "openai/gpt-5.6-sol") already carry their own vendor prefix and are returned
-// unchanged, as is any input that already spells out "perplexity/sonar".
-func wireModelForAgentAPI(model string) string {
-	if strings.TrimPrefix(model, "perplexity/") == perplexityAgentSonarModel {
-		return "perplexity/" + perplexityAgentSonarModel
-	}
-	return model
-}
 
 // ToPerplexityResponsesRequest converts a BifrostResponsesRequest to PerplexityChatRequest
 func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *PerplexityChatRequest {

@@ -13,8 +13,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"net"
-	"net/url"
 	"runtime"
 	"runtime/debug"
 	"slices"
@@ -23,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	ws "github.com/fasthttp/websocket"
 	"github.com/google/uuid"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -34,6 +33,7 @@ import (
 	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/sync/semaphore"
 )
 
 var loggingSkipPaths = []string{"/health", "/_next", "/api/dev/"}
@@ -118,6 +118,54 @@ func restoreCorrelationHeaders(ctx *fasthttp.RequestCtx) {
 	ctx.Response.Header.SetBytesV(lib.HeaderBifrostRequestID, requestID)
 	ctx.Response.Header.SetBytesV(lib.HeaderRequestID, requestID)
 	ctx.Response.Header.Set(lib.HeaderBifrostTraceID, exportTraceID)
+}
+
+// recoverWebSocketSession is deferred first inside every WebSocket upgrade callback.
+// A hijacked connection is served on its own goroutine after the HTTP handler, and
+// therefore after RecoveryMiddleware, has returned, so a panic there would otherwise
+// end the whole process. The panic is logged the same way and only this connection is
+// dropped (the callback's own deferred conn.Close runs after this recover).
+func recoverWebSocketSession(conn *ws.Conn) {
+	if r := recover(); r != nil {
+		logWebSocketPanic(conn, r)
+	}
+}
+
+// runWebSocketRelay runs one relay of a WebSocket session on the current goroutine and turns a
+// panic inside it into the error it returns, logged like recoverWebSocketSession. The relays
+// of a session run on their own goroutines, past the recover deferred by the upgrade callback,
+// so without this a panic in a plugin hook on the relay path would end the process rather
+// than the session. The error carries the panic summary only, never the panic value.
+func runWebSocketRelay(conn *ws.Conn, relay func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logWebSocketPanic(conn, r)
+			err = fmt.Errorf("websocket relay panicked: %T", r)
+		}
+	}()
+	return relay()
+}
+
+// logWebSocketPanic logs a recovered panic of a WebSocket session with the peer address and
+// the panic value's type only. Plugin hooks run on these paths, and a runtime.Error they raise
+// may carry whatever they put in its text, so unlike the request path the text is never kept.
+func logWebSocketPanic(conn *ws.Conn, r any) {
+	logger.Error(fmt.Sprintf("recovered from panic in websocket session (%s): %T\n%s", webSocketPeer(conn), r, debug.Stack()))
+}
+
+// webSocketPeer is the peer address of a connection, or empty when there is none to read: a
+// hijacked connection fasthttp has already recycled has no net.Conn underneath, and asking it
+// would panic inside the panic report.
+func webSocketPeer(conn *ws.Conn) (remote string) {
+	defer func() {
+		if recover() != nil {
+			remote = ""
+		}
+	}()
+	if conn == nil || conn.RemoteAddr() == nil {
+		return ""
+	}
+	return conn.RemoteAddr().String()
 }
 
 // panicSummary describes a recovered panic value without echoing arbitrary content.
@@ -326,6 +374,48 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 	return allowed
 }
 
+const (
+	// requestDecompressionMaxRatio bounds how far a compressed request body may expand relative
+	// to the bytes received. Real JSON compresses a few times to a few tens of times; only a bomb
+	// does better than this.
+	requestDecompressionMaxRatio = 100
+	// requestDecompressionFloor is the expansion every body is allowed whatever its size, so a
+	// small, well-compressed request is never refused for compressing well.
+	requestDecompressionFloor = 1 << 20
+	// requestDecompressionBudgetFactor sizes the process-wide budget of decompressed bytes in
+	// flight, as a multiple of the request body cap. Bodies are charged what they inflate to.
+	requestDecompressionBudgetFactor = 4
+)
+
+// requestBodyCap is the configured request body cap in bytes, 100 MiB when unset.
+func requestBodyCap(config *lib.Config) int {
+	if config != nil && config.ClientConfig != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
+		return config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
+	}
+	return 100 * 1024 * 1024
+}
+
+// decompressionAllowance is what a compressed body of compressedLen bytes may expand to: at
+// most requestDecompressionMaxRatio times its size, never below the floor, never above the cap.
+// A negative length (a chunked body, whose size is unknown) is allowed the cap.
+func decompressionAllowance(compressedLen, maxRequestBodyBytes int) int {
+	if compressedLen < 0 {
+		return maxRequestBodyBytes
+	}
+	// Compared before multiplying: a length past this would overflow int and wrap below the floor.
+	if compressedLen > maxRequestBodyBytes/requestDecompressionMaxRatio {
+		return maxRequestBodyBytes
+	}
+	allowed := compressedLen * requestDecompressionMaxRatio
+	if allowed < requestDecompressionFloor {
+		allowed = requestDecompressionFloor
+	}
+	if allowed > maxRequestBodyBytes {
+		allowed = maxRequestBodyBytes
+	}
+	return allowed
+}
+
 // RequestDecompressionMiddleware transparently decompresses compressed request bodies.
 // Two paths based on compressed Content-Length:
 //   - Large or chunked (CL > threshold or CL unknown): streaming decompression via
@@ -333,7 +423,20 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 //     matching the response-side pattern in core/providers/utils.
 //   - Small (CL ≤ threshold): buffered decompression via io.ReadAll + SetBodyRaw,
 //     with decompression bomb protection via MaxRequestBodySizeMB.
+//
+// This middleware wraps the router, so it runs before route matching and before every auth
+// middleware, for anyone who can reach the listener. The work it does must therefore stay in
+// proportion to what the caller sent: the cap alone is the wire cap too, and lets a few hundred
+// bytes become a 100 MiB buffer. Two bounds keep it proportional. Each body may expand only to
+// its decompressionAllowance, and each buffered decompression charges the bytes it actually
+// inflates to a process-wide budget, as they are produced, for the life of the request, so
+// buffers cannot stack up without bound; a request that cannot be charged is answered 503 at
+// once. The allowance is not reserved up front: past cap/requestDecompressionMaxRatio
+// compressed it is the whole cap, and booking that for every multi-MB SDK body would refuse
+// the fifth concurrent one while the process holds a fraction of the budget. Streaming bodies
+// are not buffered here and take no charge.
 func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
+	budget := semaphore.NewWeighted(int64(requestDecompressionBudgetFactor) * int64(requestBodyCap(config)))
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			if len(ctx.Request.Header.ContentEncoding()) == 0 {
@@ -345,13 +448,18 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 			// bounds what any codec may expand to, and the zstd decoder itself refuses
 			// frames whose declared window or content size exceeds its bounds before
 			// allocating them (providerUtils.ZstdDecoderMaxWindow).
-			maxRequestBodyBytes := 100 * 1024 * 1024 // default 100 MB (matches decodeRequestBodyWithLimit fallback)
-			if config != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
-				maxRequestBodyBytes = config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
+			maxRequestBodyBytes := requestBodyCap(config)
+			allowed := decompressionAllowance(ctx.Request.Header.ContentLength(), maxRequestBodyBytes)
+			refuseExpansion := func(compressedLen int) {
+				if allowed >= maxRequestBodyBytes {
+					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+					return
+				}
+				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds the expansion allowed for a %d-byte compressed body: at most %d bytes (%dx its size, never below %d bytes or above %d bytes)", compressedLen, allowed, requestDecompressionMaxRatio, requestDecompressionFloor, maxRequestBodyBytes))
 			}
 
 			if shouldStreamDecompress(config, ctx) {
-				cleanup, applied, err := streamingDecompress(ctx, maxRequestBodyBytes)
+				cleanup, applied, err := streamingDecompress(ctx, allowed)
 				if providerUtils.IsDecompressionSizeLimitError(err) {
 					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("compressed request body declares a size beyond the max allowed %d bytes: %v", maxRequestBodyBytes, err))
 					return
@@ -371,10 +479,17 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				// through to the buffered decompression path below.
 			}
 
-			// Buffered path: small compressed request — materialize fully.
-			body, err := decodeRequestBodyWithLimit(&ctx.Request, maxRequestBodyBytes)
+			// Buffered path: small compressed request — materialize fully. The body is in hand
+			// now, so the allowance follows its real length rather than the declared one.
+			allowed = decompressionAllowance(len(ctx.Request.Body()), maxRequestBodyBytes)
+			body, charged, err := decodeRequestBodyWithLimit(&ctx.Request, allowed, budget)
+			defer budget.Release(charged)
+			if errors.Is(err, errDecompressionBudgetExhausted) {
+				SendError(ctx, fasthttp.StatusServiceUnavailable, "too many compressed request bodies are being decompressed at once; retry shortly or send the body uncompressed")
+				return
+			}
 			if errors.Is(err, errRequestBodyTooLarge) {
-				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+				refuseExpansion(len(ctx.Request.Body()))
 				return
 			}
 			if providerUtils.IsDecompressionSizeLimitError(err) {
@@ -476,27 +591,57 @@ func (l *limitedBodyReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// decodeRequestBodyWithLimit decodes the request body with a limit on the size of the body.
-func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int) ([]byte, error) {
+var errDecompressionBudgetExhausted = errors.New("decompressed request bytes in flight exceed the process budget")
+
+// budgetedReader charges every byte it hands out to budget, failing with
+// errDecompressionBudgetExhausted once the budget cannot cover them. The caller releases charged.
+type budgetedReader struct {
+	r       io.Reader
+	budget  *semaphore.Weighted
+	charged int64
+}
+
+func (b *budgetedReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if n > 0 {
+		if !b.budget.TryAcquire(int64(n)) {
+			return 0, errDecompressionBudgetExhausted
+		}
+		b.charged += int64(n)
+	}
+	return n, err
+}
+
+// decodeRequestBodyWithLimit decodes the request body with a limit on the size of the body. With
+// a non-nil budget the decoded bytes are charged to it as they are produced; charged is what the
+// caller must release, whether or not decoding succeeded.
+func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int, budget *semaphore.Weighted) (body []byte, charged int64, err error) {
 	encoding := strings.ToLower(strings.TrimSpace(string(req.Header.ContentEncoding())))
 	bodyReader := bytes.NewReader(req.Body())
 
 	var reader io.Reader = bodyReader
 	cleanup := func() {}
 	if encoding != "" {
-		var err error
 		reader, cleanup, err = newDecompressReader(bodyReader, encoding)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	defer cleanup()
 
-	body, err := io.ReadAll(newLimitedBodyReader(reader, maxRequestBodyBytes))
-	if err != nil {
-		return nil, err
+	var budgeted *budgetedReader
+	if budget != nil {
+		budgeted = &budgetedReader{r: reader, budget: budget}
+		reader = budgeted
 	}
-	return body, nil
+	body, err = io.ReadAll(newLimitedBodyReader(reader, maxRequestBodyBytes))
+	if budgeted != nil {
+		charged = budgeted.charged
+	}
+	if err != nil {
+		return nil, charged, err
+	}
+	return body, charged, nil
 }
 
 // newDecompressReader wraps r with a decompression reader for the given encoding.
@@ -1320,31 +1465,89 @@ func originExplicitlyAllowed(origin string, allowedOrigins []string) bool {
 	if isLocalhostOrigin(origin) {
 		return true
 	}
-	explicit := slices.DeleteFunc(slices.Clone(allowedOrigins), func(entry string) bool { return entry == "*" })
-	return IsOriginAllowed(origin, explicit)
+	for _, entry := range allowedOrigins {
+		if entry == "*" {
+			continue
+		}
+		if entry == origin || (strings.Contains(entry, "*") && matchesWildcardPattern(origin, entry)) {
+			return true
+		}
+	}
+	return false
 }
 
 // isSameOrigin reports whether origin names the host the request was sent to. Browsers send
 // Origin on same-origin writes too, so the bundled dashboard served from any address carries its
 // own origin on PUT /api/config and similar calls; that is not a cross-origin request. Hosts are
-// compared case-insensitively with default ports (80 for http, 443 for https) made explicit.
+// compared case-insensitively with default ports (80 for http, 443 for https) made explicit. It
+// runs on every dashboard write, so it splits the strings in place rather than parsing a URL.
 func isSameOrigin(origin, host string) bool {
-	parsed, err := url.Parse(origin)
-	if err != nil || parsed.Host == "" || host == "" {
+	scheme, rest, ok := strings.Cut(origin, "://")
+	if !ok || host == "" {
 		return false
 	}
-	defaultPort := map[string]string{"http": "80", "https": "443"}[strings.ToLower(parsed.Scheme)]
-	if defaultPort == "" {
+	var defaultPort string
+	switch {
+	case strings.EqualFold(scheme, "http"):
+		defaultPort = "80"
+	case strings.EqualFold(scheme, "https"):
+		defaultPort = "443"
+	default:
 		return false
 	}
-	withPort := func(hostport string) string {
-		hostport = strings.ToLower(hostport)
-		if _, _, err := net.SplitHostPort(hostport); err == nil {
-			return hostport
+	if end := strings.IndexAny(rest, "/?#"); end >= 0 {
+		rest = rest[:end]
+	}
+	if at := strings.LastIndexByte(rest, '@'); at >= 0 {
+		rest = rest[at+1:]
+	}
+	originHost, originPort, ok := splitOriginHostPort(rest, defaultPort)
+	if !ok {
+		return false
+	}
+	requestHost, requestPort, ok := splitOriginHostPort(host, defaultPort)
+	return ok && originPort == requestPort && strings.EqualFold(originHost, requestHost)
+}
+
+// splitOriginHostPort splits a host[:port] (an IPv6 host in brackets) into the host and its port,
+// defaultPort when none is given. ok is false for an empty host or a port that is not a number.
+func splitOriginHostPort(hostport, defaultPort string) (host, port string, ok bool) {
+	host, port = hostport, defaultPort
+	if strings.HasPrefix(hostport, "[") {
+		end := strings.IndexByte(hostport, ']')
+		if end < 0 {
+			return "", "", false
 		}
-		return net.JoinHostPort(strings.Trim(hostport, "[]"), defaultPort)
+		host, rest := hostport[1:end], hostport[end+1:]
+		switch {
+		case rest == "":
+		case strings.HasPrefix(rest, ":"):
+			port = rest[1:]
+		default:
+			return "", "", false
+		}
+		return host, port, host != "" && isPortNumber(port)
 	}
-	return withPort(parsed.Host) == withPort(host)
+	if colon := strings.LastIndexByte(hostport, ':'); colon >= 0 {
+		host, port = hostport[:colon], hostport[colon+1:]
+		if strings.IndexByte(host, ':') >= 0 {
+			return "", "", false
+		}
+	}
+	return host, port, host != "" && isPortNumber(port)
+}
+
+// isPortNumber reports a non-empty run of ASCII digits.
+func isPortNumber(port string) bool {
+	if port == "" {
+		return false
+	}
+	for i := 0; i < len(port); i++ {
+		if port[i] < '0' || port[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // refuseCrossOriginWhileAuthDisabled closes the one browser path into the open
@@ -1358,15 +1561,22 @@ func isSameOrigin(origin, host string) bool {
 // dashboard navigation) and inference routes are unaffected. Returns true if the
 // request was refused (the error response has already been written).
 func (m *AuthMiddleware) refuseCrossOriginWhileAuthDisabled(ctx *fasthttp.RequestCtx) bool {
-	origin := string(ctx.Request.Header.Peek("Origin"))
-	if origin == "" {
-		return false
-	}
 	var allowed []string
 	if stored := m.allowedOrigins.Load(); stored != nil {
 		allowed = *stored
 	}
-	if originExplicitlyAllowed(origin, allowed) || isSameOrigin(origin, string(ctx.Host())) {
+	return refuseCrossOriginOnOpenAPI(ctx, allowed)
+}
+
+// refuseCrossOriginOnOpenAPI is the rule behind refuseCrossOriginWhileAuthDisabled with the
+// allowed origins passed in, so the no-config-store path, which has no AuthMiddleware to read
+// them from, applies the same one. Returns true if the request was refused.
+func refuseCrossOriginOnOpenAPI(ctx *fasthttp.RequestCtx, allowedOrigins []string) bool {
+	origin := string(ctx.Request.Header.Peek("Origin"))
+	if origin == "" {
+		return false
+	}
+	if originExplicitlyAllowed(origin, allowedOrigins) || isSameOrigin(origin, string(ctx.Host())) {
 		return false
 	}
 	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Cross-origin requests to the management API from %q are refused while dashboard auth is disabled; enable dashboard authentication, or list the origin explicitly in client_config.allowed_origins (localhost origins are always allowed).", origin))
@@ -1504,24 +1714,28 @@ var apiWhitelistedPrefixes = []string{
 // a system route, a system prefix, or an operator-configured whitelisted route. Shared by
 // APIMiddleware and SetupLockMiddleware so both agree on what never needs a credential.
 func (m *AuthMiddleware) isAPIRouteWhitelisted(url string) bool {
+	var configuredRoutes []string
+	if stored := m.whitelistedRoutes.Load(); stored != nil {
+		configuredRoutes = *stored
+	}
+	return isAPIRouteWhitelistedAmong(url, configuredRoutes)
+}
+
+// isAPIRouteWhitelistedAmong is isAPIRouteWhitelisted with the operator-configured routes passed
+// in, for the no-config-store path that has no AuthMiddleware holding them.
+func isAPIRouteWhitelistedAmong(url string, configuredRoutes []string) bool {
 	if slices.Contains(apiSystemWhitelistedRoutes, url) ||
 		slices.IndexFunc(apiWhitelistedPrefixes, func(prefix string) bool {
 			return strings.HasPrefix(url, prefix)
 		}) != -1 {
 		return true
 	}
-	// Check user-configured whitelisted routes
-	if configuredRoutes := m.whitelistedRoutes.Load(); configuredRoutes != nil {
-		if slices.Contains(*configuredRoutes, url) || slices.IndexFunc(*configuredRoutes, func(route string) bool {
-			if before, ok := strings.CutSuffix(route, "*"); ok {
-				return strings.HasPrefix(url, before)
-			}
-			return false
-		}) != -1 {
-			return true
+	return slices.Contains(configuredRoutes, url) || slices.IndexFunc(configuredRoutes, func(route string) bool {
+		if before, ok := strings.CutSuffix(route, "*"); ok {
+			return strings.HasPrefix(url, before)
 		}
-	}
-	return false
+		return false
+	}) != -1
 }
 
 // APIMiddleware is for API requests if authConfig is set, it will verify authentication based on the request type.
@@ -2208,9 +2422,24 @@ func GetObservabilityPlugins(plugins []schemas.BasePlugin) []schemas.Observabili
 // (and so no auth at all), so handlers that require genuine auth for dangerous changes - which
 // key off BifrostContextKeyAuthBypassed - still refuse them in that mode instead of reading an
 // unmarked request as authenticated and failing open.
-func AuthBypassedMiddleware() schemas.BifrostHTTPMiddleware {
+//
+// The management API is as open here as with dashboard auth disabled, so the same browser rule
+// applies: a request carrying an Origin reaches a non-whitelisted route only from a localhost
+// origin, its own origin, or one listed by name in allowedOrigins (see
+// refuseCrossOriginWhileAuthDisabled). Both lists are snapshots: without a config store the
+// configuration only changes with a restart.
+func AuthBypassedMiddleware(allowedOrigins, whitelistedRoutes []string) schemas.BifrostHTTPMiddleware {
+	allowedOrigins = slices.Clone(allowedOrigins)
+	whitelistedRoutes = slices.Clone(whitelistedRoutes)
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			// Only a request carrying an Origin can be refused, so CLI and SDK calls, which send
+			// none, skip the route and origin checks entirely.
+			if len(ctx.Request.Header.Peek("Origin")) > 0 &&
+				!isAPIRouteWhitelistedAmong(string(ctx.Request.URI().PathOriginal()), whitelistedRoutes) &&
+				refuseCrossOriginOnOpenAPI(ctx, allowedOrigins) {
+				return
+			}
 			// Mirror the auth-disabled branch of the real middleware: the request
 			// acts as the local admin for ordinary handlers, and the bypass marker
 			// keeps the guards on dangerous changes closed.

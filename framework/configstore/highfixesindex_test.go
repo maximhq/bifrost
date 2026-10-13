@@ -258,6 +258,9 @@ func TestHighFixTagsBuildIndexes(t *testing.T) {
 
 	require.Equal(t, []string{"kind", "next_check_at"}, indexColumns(t, db, "idx_batch_jobs_due"))
 	require.True(t, strings.Contains(sqliteIndexSQL(t, db, "idx_batch_jobs_due"), "WHERE next_check_at IS NOT NULL"))
+	require.Equal(t, []string{"input_file_id"}, indexColumns(t, db, "idx_batch_jobs_input_file_id"))
+	require.Equal(t, []string{"output_file_id"}, indexColumns(t, db, "idx_batch_jobs_output_file_id"))
+	require.Equal(t, []string{"error_file_id"}, indexColumns(t, db, "idx_batch_jobs_error_file_id"))
 }
 
 // TestHighFixHashNormalizationIsBatched pins that normalizing empty hashes to

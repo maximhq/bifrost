@@ -596,7 +596,7 @@ func (s *permitStore) ResolvePermits(ctx *schemas.BifrostContext) ([]schemas.Per
 
 // newAccessTestPlugin builds a plugin over a store that serves vk, optionally wrapped so the
 // store composes further permits onto every request.
-func newAccessTestPlugin(t *testing.T, vk *configstoreTables.TableVirtualKey, wrap *permitStore) *GovernancePlugin {
+func newAccessTestPlugin(t testing.TB, vk *configstoreTables.TableVirtualKey, wrap *permitStore) *GovernancePlugin {
 	t.Helper()
 	logger := NewMockLogger()
 	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{

@@ -107,7 +107,7 @@ This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) 
 |-------|------|---------|-------------|
 | `allowed_origins` | array | `["*"]` | CORS allowed origins: exact URIs, wildcard-host patterns such as `https://*.example.com`, or `"*"`. While dashboard auth is disabled, browser requests to the management API are accepted only from localhost origins, the gateway's own origin, and origins listed here explicitly; see the note below |
 | `enforce_auth_on_inference` | boolean | `false` | Require auth (virtual key, API key, or user token) on `/v1/*` inference routes. Realtime connections (`/v1/realtime`, `/v1/realtime/calls`) are refused with `401` at connect time unless they present one of those, or an ephemeral client secret from `POST /v1/realtime/client_secrets` |
-| `max_request_body_size_mb` | integer | `100` | Maximum allowed request body size in MB |
+| `max_request_body_size_mb` | integer | `100` | Maximum allowed request body size in MB. It also caps what a compressed request body (`Content-Encoding: gzip`, `deflate`, `br` or `zstd`) may decompress to. Within that cap a body may expand to at most 100 times its compressed size, with a 1 MiB floor, and the gateway keeps at most four times this cap of decompressed request bytes in flight at once; a body past the ratio is refused with `413`, and a request whose decompressed bytes would push the in-flight total past that budget with `503`. Each body counts what it actually inflates to, so concurrent multi-MB gzipped requests are not refused for the cap they could have reached |
 | `whitelisted_routes` | array of strings | `[]` | Routes that bypass auth middleware |
 | `allowed_headers` | array of strings | `[]` | Additional headers permitted for CORS and WebSocket |
 | `allow_direct_keys` | boolean | `false` | Allow callers to bypass the registered key pool by sending `x-bf-direct-key: true` and a raw provider key in `Authorization` / `x-api-key` / `x-goog-api-key`. See [Direct API Key](../../providers/request-options#direct-api-key) |
@@ -128,7 +128,7 @@ This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) 
 ```
 
 <Note>
-While dashboard auth is disabled or unconfigured, a request to the management API (`/api/*`, `/ws`, `/metrics`) that carries an `Origin` header is accepted only from a localhost origin, from the gateway's own origin (the `Origin` host and port match the request's `Host`, as for the bundled dashboard's own requests such as `PUT /api/config`), or from an origin listed in `allowed_origins` by name or pattern (for example `https://*.example.com`); the `"*"` entry does not count, and other origins receive `403`. Requests without an `Origin` header (CLI and SDKs), whitelisted routes such as `/health`, and inference routes are unaffected. If the dashboard sits behind a proxy that rewrites the `Host` header, list its public origin in `allowed_origins`. To call the management API from a web app on another origin, list that origin explicitly or enable dashboard authentication, which lifts this check.
+While dashboard auth is disabled or unconfigured, or Bifrost runs without a config store (`config_store.enabled: false`), a request to the management API (`/api/*`, `/ws`, `/metrics`) that carries an `Origin` header is accepted only from a localhost origin, from the gateway's own origin (the `Origin` host and port match the request's `Host`, as for the bundled dashboard's own requests such as `PUT /api/config`), or from an origin listed in `allowed_origins` by name or pattern (for example `https://*.example.com`); the `"*"` entry does not count, and other origins receive `403`. Requests without an `Origin` header (CLI and SDKs), whitelisted routes such as `/health`, and inference routes are unaffected. If the dashboard sits behind a proxy that rewrites the `Host` header, list its public origin in `allowed_origins`. To call the management API from a web app on another origin, list that origin explicitly, or enable dashboard authentication, which lifts this check. Dashboard authentication needs the config store: with `config_store.enabled: false` it cannot be turned on, so listing the origin is the only option.
 </Note>
 
 ---
@@ -174,6 +174,7 @@ Compatibility flags that let Bifrost silently adapt request/response shapes for 
 | `compat.should_convert_params` | boolean | `false` | Auto-convert parameter values across provider schemas |
 | `compat.azure_deepseek` | boolean | `false` | Convert Azure DeepSeek responses requests to chat completions so reasoning is preserved for coding harnesses |
 | `compat.force_reasoning_only_models_to_responses` | boolean | `true` | Convert chat completion requests to Responses for models whose datasheet sets `supports_reasoning_with_tool_calls: false`, so reasoning is kept instead of forced off |
+| `compat.convert_decision_to_responses` | boolean | `false` | Answer decision requests for models without a native decisions endpoint through the Responses API. See [Decision-to-Responses Emulation](/features/compat-plugin#4-decision-to-responses-emulation) |
 
 ```json
 {

@@ -255,7 +255,9 @@ func (h *AgentGatewayHandler) RegisterPushIngressRoute(r *router.Router, middlew
 // transport only carries the token header and body across.
 func (h *AgentGatewayHandler) pushCallback(ctx *fasthttp.RequestCtx) {
 	token := string(ctx.Request.Header.Peek(agent.PushNotificationTokenHeader))
-	status, err := h.manager.AcceptPushCallback(ctx, pathName(ctx), token, ctx.PostBody())
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	status, err := h.manager.AcceptPushCallback(workCtx, pathName(ctx), token, ctx.PostBody())
 	if err != nil {
 		if status >= fasthttp.StatusInternalServerError {
 			SendError(ctx, status, "failed to accept push notification")
@@ -285,7 +287,9 @@ func (h *AgentGatewayHandler) listPushConfigs(ctx *fasthttp.RequestCtx) {
 	limit, _ := strconv.Atoi(string(ctx.QueryArgs().Peek("limit")))
 	offset, _ := strconv.Atoi(string(ctx.QueryArgs().Peek("offset")))
 	limit, offset = ClampPaginationParams(limit, offset)
-	configs, total, err := h.manager.ListStoredPushConfigs(ctx, schemas.AgentPushConfigQuery{
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	configs, total, err := h.manager.ListStoredPushConfigs(workCtx, schemas.AgentPushConfigQuery{
 		AgentNames: pushConfigAgentNames(ctx.QueryArgs().Peek("agent_names")),
 		TaskID:     string(ctx.QueryArgs().Peek("task_id")),
 		ConfigID:   string(ctx.QueryArgs().Peek("config_id")),
@@ -297,7 +301,7 @@ func (h *AgentGatewayHandler) listPushConfigs(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to list agent push configurations")
 		return
 	}
-	names, err := h.manager.ListStoredPushConfigAgentNames(ctx)
+	names, err := h.manager.ListStoredPushConfigAgentNames(workCtx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to list agent push configuration filters")
 		return
@@ -320,7 +324,9 @@ func (h *AgentGatewayHandler) deletePushConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "agent, task, and config are required")
 		return
 	}
-	deleted, err := h.manager.DeleteStoredPushConfig(ctx, agentName, taskID, configID)
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	deleted, err := h.manager.DeleteStoredPushConfig(workCtx, agentName, taskID, configID)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, "failed to delete agent push configuration")
 		return
@@ -340,13 +346,15 @@ func (h *AgentGatewayHandler) create(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid agent registration")
 		return
 	}
-	view, err := h.registrationManager.CreateAgentRegistration(ctx, req)
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	view, err := h.registrationManager.CreateAgentRegistration(workCtx, req)
 	if err != nil {
 		h.registrationMutationError(ctx, err)
 		return
 	}
 	h.config.SetEnabledAgent(view.Name, view.Enabled, view.AllowByDefault)
-	h.reloadGrantedVirtualKeys(ctx, view.VirtualKeyIDs)
+	h.reloadGrantedVirtualKeys(workCtx, view.VirtualKeyIDs)
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, view)
 }
@@ -357,7 +365,9 @@ func (h *AgentGatewayHandler) inspect(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "invalid agent inspection request")
 		return
 	}
-	result, err := h.manager.Inspect(ctx, req)
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	result, err := h.manager.Inspect(workCtx, req)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -374,14 +384,16 @@ func (h *AgentGatewayHandler) update(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	name := pathName(ctx)
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
 	// The grants being replaced are read before the write so the virtual keys that
 	// lose access are refreshed too, not just the ones that gain it.
-	previous, err := h.manager.Get(ctx, name)
+	previous, err := h.manager.Get(workCtx, name)
 	if err != nil {
 		h.managementError(ctx, err)
 		return
 	}
-	view, err := h.registrationManager.UpdateAgentRegistration(ctx, name, req)
+	view, err := h.registrationManager.UpdateAgentRegistration(workCtx, name, req)
 	if err != nil {
 		if errors.Is(err, configstore.ErrNotFound) || errors.Is(err, agent.ErrNotFound) {
 			h.managementError(ctx, configstore.ErrNotFound)
@@ -391,14 +403,16 @@ func (h *AgentGatewayHandler) update(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	h.config.SetEnabledAgent(view.Name, view.Enabled, view.AllowByDefault)
-	h.reloadGrantedVirtualKeys(ctx, previous.VirtualKeyIDs, view.VirtualKeyIDs)
+	h.reloadGrantedVirtualKeys(workCtx, previous.VirtualKeyIDs, view.VirtualKeyIDs)
 	SendJSON(ctx, view)
 }
 
 // list returns redacted registration summaries with a count, including disabled
 // agents so administrators can see everything they have configured.
 func (h *AgentGatewayHandler) list(ctx *fasthttp.RequestCtx) {
-	views, err := h.manager.List(ctx)
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	views, err := h.manager.List(workCtx)
 	if err != nil {
 		SendError(ctx, 500, "failed to list agents")
 		return
@@ -408,7 +422,9 @@ func (h *AgentGatewayHandler) list(ctx *fasthttp.RequestCtx) {
 
 // get returns one redacted registration; secrets are never included.
 func (h *AgentGatewayHandler) get(ctx *fasthttp.RequestCtx) {
-	view, err := h.manager.Get(ctx, pathName(ctx))
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	view, err := h.manager.Get(workCtx, pathName(ctx))
 	if err != nil {
 		h.managementError(ctx, err)
 		return
@@ -420,19 +436,21 @@ func (h *AgentGatewayHandler) get(ctx *fasthttp.RequestCtx) {
 // remaining representation to return.
 func (h *AgentGatewayHandler) delete(ctx *fasthttp.RequestCtx) {
 	name := pathName(ctx)
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
 	// Read the grants before deleting so the virtual keys whose cascade-deleted
 	// rows just disappeared stop carrying a stale grant for this agent name.
-	previous, err := h.manager.Get(ctx, name)
+	previous, err := h.manager.Get(workCtx, name)
 	if err != nil {
 		h.managementError(ctx, err)
 		return
 	}
-	if err := h.registrationManager.DeleteAgentRegistration(ctx, name); err != nil {
+	if err := h.registrationManager.DeleteAgentRegistration(workCtx, name); err != nil {
 		h.managementError(ctx, err)
 		return
 	}
 	h.config.DeleteEnabledAgent(name)
-	h.reloadGrantedVirtualKeys(ctx, previous.VirtualKeyIDs)
+	h.reloadGrantedVirtualKeys(workCtx, previous.VirtualKeyIDs)
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 
@@ -668,7 +686,7 @@ func parseAgentHistorySearch(ctx *fasthttp.RequestCtx) (logstore.AgentLogHistory
 		BusinessUnitID: values("business_unit_id"), ProjectID: values("project_id"), RequestID: value("request_id"), TraceID: value("trace_id"),
 		TaskID: value("task_id"), ContextID: value("context_id"), PushConfigID: value("push_config_id"),
 		DeliveryID: value("delivery_id"), AttemptID: value("attempt_id"), EventType: values("event_type"), TaskState: values("task_state"), Status: values("status"), RecordKind: values("record_kind"),
-		Search: value("search"),
+		Search: value("search"), GroupSessions: args.GetBool("group_sessions"),
 	}
 	for name, target := range map[string]**time.Time{"start_time": &filter.StartTime, "end_time": &filter.EndTime} {
 		if raw := value(name); raw != "" {
@@ -754,20 +772,28 @@ func sanitizeAgentHistoryPayload(payload *string) *string {
 	return &result
 }
 
+// redactAgentHistorySecrets removes credentials while preserving public OAuth definitions.
 func redactAgentHistorySecrets(value any) {
+	redactAgentHistoryValue(value, false)
+}
+
+// redactAgentHistoryValue tracks OAuth scheme definitions to distinguish public authorization fields from credentials.
+func redactAgentHistoryValue(value any, oauthDefinition bool) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
 			normalized := strings.ToLower(strings.TrimSpace(key))
-			if schemas.IsSensitiveHeader(normalized) || normalized == "password" || normalized == "client_secret" || normalized == "access_token" || normalized == "refresh_token" {
+			_, flowDefinition := child.(map[string]any)
+			publicOAuthField := oauthDefinition && (key == "authorizationCode" && flowDefinition || key == "authorizationUrl")
+			if !publicOAuthField && (schemas.IsSensitiveHeader(normalized) || normalized == "password" || normalized == "client_secret" || normalized == "access_token" || normalized == "refresh_token") {
 				typed[key] = schemas.RedactedAttrValue
 				continue
 			}
-			redactAgentHistorySecrets(child)
+			redactAgentHistoryValue(child, oauthDefinition || key == "oauth2SecurityScheme")
 		}
 	case []any:
 		for _, child := range typed {
-			redactAgentHistorySecrets(child)
+			redactAgentHistoryValue(child, oauthDefinition)
 		}
 	}
 }
@@ -917,7 +943,9 @@ func (h *AgentGatewayHandler) setCardCachingHeaders(ctx *fasthttp.RequestCtx, na
 	sum := sha256.Sum256(ctx.Response.Body())
 	etag := `"` + hex.EncodeToString(sum[:16]) + `"`
 	ctx.Response.Header.Set(fasthttp.HeaderETag, etag)
-	if view, err := h.manager.Get(ctx, name); err == nil && !view.UpdatedAt.IsZero() {
+	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+	defer cancel()
+	if view, err := h.manager.Get(workCtx, name); err == nil && !view.UpdatedAt.IsZero() {
 		ctx.Response.Header.Set(fasthttp.HeaderLastModified, view.UpdatedAt.UTC().Format(http.TimeFormat))
 	}
 	if etagMatches(string(ctx.Request.Header.Peek(fasthttp.HeaderIfNoneMatch)), etag) {

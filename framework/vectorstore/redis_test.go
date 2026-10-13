@@ -763,6 +763,34 @@ func TestRedisStore_CreateNamespaceRejectsDimensionChange(t *testing.T) {
 	err := setup.Store.CreateNamespace(setup.ctx, namespace, RedisTestDimension/2, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists with dimension")
+	assert.ErrorIs(t, err, ErrDimensionMismatch, "callers tell a config mistake apart from a store failure by this sentinel")
+}
+
+// TestRedisStore_GetNearestScoresCosineSimilarity pins GetNearest's threshold and score to cosine
+// similarity, the scale every store uses.
+func TestRedisStore_GetNearestScoresCosineSimilarity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration tests in short mode")
+	}
+
+	setup := NewRedisTestSetup(t)
+	defer setup.Cleanup(t)
+
+	namespace := TestNamespace + "_cosine"
+	properties := map[string]VectorStoreProperties{"label": {DataType: VectorStorePropertyTypeString}}
+	_ = setup.Store.DeleteNamespace(setup.ctx, namespace)
+	defer func() { _ = setup.Store.DeleteNamespace(setup.ctx, namespace) }()
+	require.NoError(t, setup.Store.CreateNamespace(setup.ctx, namespace, 2, properties))
+
+	require.NoError(t, setup.Store.Add(setup.ctx, namespace, generateUUID(), unitVectorAtCosine(2, 0.9), map[string]interface{}{"label": "close"}))
+	require.NoError(t, setup.Store.Add(setup.ctx, namespace, generateUUID(), unitVectorAtCosine(2, 0.7), map[string]interface{}{"label": "far"}))
+
+	results, err := setup.Store.GetNearest(setup.ctx, namespace, unitVectorAtCosine(2, 1), nil, []string{"label"}, 0.8, 10)
+	require.NoError(t, err)
+	require.Len(t, results, 1, "only the vector at cosine 0.9 clears a 0.8 threshold")
+	assert.Equal(t, "close", results[0].Properties["label"])
+	require.NotNil(t, results[0].Score)
+	assert.InDelta(t, 0.9, *results[0].Score, 1e-3)
 }
 
 func TestRedisStore_ParseSearchResults_ByteScore(t *testing.T) {
@@ -2017,9 +2045,11 @@ func TestRedisStore_ErrorHandling(t *testing.T) {
 		assert.Error(t, err)
 	})
 
-	t.Run("Delete non-existent key", func(t *testing.T) {
+	t.Run("Delete non-existent key is a no-op", func(t *testing.T) {
+		// Every store treats deleting a missing id as success, so clearing an unknown cache
+		// entry answers 200 whichever store backs it.
 		err := setup.Store.Delete(setup.ctx, TestNamespace, "non-existent-key")
-		assert.Error(t, err)
+		assert.NoError(t, err)
 	})
 
 	t.Run("Add with empty ID", func(t *testing.T) {

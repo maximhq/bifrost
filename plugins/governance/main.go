@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"sort"
 	"strings"
+
+	"github.com/tidwall/gjson"
 	"sync"
 	"time"
 
@@ -80,6 +83,8 @@ type Config struct {
 	RequiredHeaders       *[]string `json:"required_headers"` // Pointer to live config slice; changes are reflected immediately without restart
 	IsEnterprise          bool      `json:"is_enterprise"`
 	DisableAutoToolInject *bool     `json:"disable_auto_tool_inject"`
+	// Reports the live client.enforce_vk_object_ownership; nil means on
+	ObjectOwnershipEnforced func() bool `json:"-"`
 }
 
 type InMemoryStore interface {
@@ -90,6 +95,35 @@ type InMemoryStore interface {
 	// GetMCPClientBySlug resolves a client by its endpoint slug (for serving one client at /mcp/<slug>).
 	GetMCPClientBySlug(slug string) (clientID, clientName string, ok bool)
 	GetEnabledAgents() map[string]bool // agent name → allow by default
+}
+
+// singleProviderStore is an InMemoryStore that can hand back one provider's configuration without
+// building the whole map, so a per-request model check stays free of allocations.
+type singleProviderStore interface {
+	GetConfiguredProvider(provider schemas.ModelProvider) (configstore.ProviderConfig, bool)
+}
+
+// configuredProvider returns one provider's configuration from store, read alone when the store
+// supports it.
+func configuredProvider(store InMemoryStore, provider schemas.ModelProvider) (configstore.ProviderConfig, bool) {
+	if single, ok := store.(singleProviderStore); ok {
+		return single.GetConfiguredProvider(provider)
+	}
+	config, ok := store.GetConfiguredProviders()[provider]
+	return config, ok
+}
+
+// configuredBaseProvider is the provider whose implementation runs provider's requests: the base
+// type of a custom provider, otherwise provider itself. It reads that one provider's configuration.
+func configuredBaseProvider(store InMemoryStore, provider schemas.ModelProvider) schemas.ModelProvider {
+	if store == nil {
+		return provider
+	}
+	config, ok := configuredProvider(store, provider)
+	if !ok || config.CustomProviderConfig == nil || config.CustomProviderConfig.BaseProviderType == "" {
+		return provider
+	}
+	return config.CustomProviderConfig.BaseProviderType
 }
 
 type BaseGovernancePlugin interface {
@@ -153,6 +187,8 @@ type GovernancePlugin struct {
 	requiredHeaders       *[]string // pointer to live config slice; lowercased at check time
 	isEnterprise          bool
 	disableAutoToolInject *bool
+
+	objectOwnershipEnforcedFn func() bool
 }
 
 // Init initializes and returns a governance plugin instance.
@@ -218,10 +254,12 @@ func Init(
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
+	var objectOwnershipEnforcedFn func() bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
+		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
 	}
 
 	newStoreStart := time.Now()
@@ -255,6 +293,8 @@ func Init(
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
 		inMemoryStore:         inMemoryStore,
+
+		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
 	}
 	return plugin, nil
 }
@@ -297,10 +337,12 @@ func InitFromStore(
 	var isVkMandatory *bool
 	var requiredHeaders *[]string
 	var disableAutoToolInject *bool
+	var objectOwnershipEnforcedFn func() bool
 	if config != nil {
 		isVkMandatory = config.IsVkMandatory
 		requiredHeaders = config.RequiredHeaders
 		disableAutoToolInject = config.DisableAutoToolInject
+		objectOwnershipEnforcedFn = config.ObjectOwnershipEnforced
 	}
 	resolver := NewBudgetResolver(governanceStore, modelCatalog, logger, inMemoryStore)
 	tracker := NewUsageTracker(ctx, governanceStore, resolver, configStore, logger)
@@ -321,6 +363,8 @@ func InitFromStore(
 		requiredHeaders:       requiredHeaders,
 		isEnterprise:          config != nil && config.IsEnterprise,
 		disableAutoToolInject: disableAutoToolInject,
+
+		objectOwnershipEnforcedFn: objectOwnershipEnforcedFn,
 	}
 	return plugin, nil
 }
@@ -375,6 +419,13 @@ func (p *GovernancePlugin) UpdateEnforceAuthOnInference(enforceAuthOnInference b
 	p.cfgMutex.Lock()
 	defer p.cfgMutex.Unlock()
 	p.isVkMandatory = new(enforceAuthOnInference)
+}
+
+// objectOwnershipEnforced reports whether provider objects are restricted to the virtual key
+// that created them (client.enforce_vk_object_ownership). It is on unless configured off. The
+// transport's getter reads under the same lock config saves hold, so a save never races a request.
+func (p *GovernancePlugin) objectOwnershipEnforced() bool {
+	return p.objectOwnershipEnforcedFn == nil || p.objectOwnershipEnforcedFn()
 }
 
 // HTTPTransportPreAuthHook is a no-op: this plugin does no credential work, so it has
@@ -1010,7 +1061,7 @@ func (p *GovernancePlugin) modelMatcher() grant.ModelMatcher {
 	return func(provider, model string, allowed []string) bool {
 		var providerConfig *configstore.ProviderConfig
 		if p.inMemoryStore != nil {
-			if config, ok := p.inMemoryStore.GetConfiguredProviders()[schemas.ModelProvider(provider)]; ok {
+			if config, ok := configuredProvider(p.inMemoryStore, schemas.ModelProvider(provider)); ok {
 				providerConfig = &config
 			}
 		}
@@ -1137,6 +1188,44 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 		Model:            model,
 		OpaqueBatchInput: isOpaqueBatchInput(req),
 	}
+	// A passthrough body is forwarded as the provider reads it, and a task array (Runware) names a
+	// model per task that the request itself may not carry. Every model the body names is
+	// evaluated the way inline batch items are, before the request's own pass; a request naming
+	// no model anywhere is marked so the model gate can refuse it under a restricted access. The
+	// limits each body model settles are kept: usage is charged against the request's own pass,
+	// so a body model's limit that pass does not settle would be checked and never charged.
+	var bodyModelLimits map[string]string // limit id -> the body model that settled it
+	if req.RequestType == schemas.PassthroughRequest || req.RequestType == schemas.PassthroughStreamRequest {
+		bodyModels := passthroughBodyModels(req)
+		evaluationRequest.ModelUnseen = model == "" && len(bodyModels) == 0
+		resourceNamed := p.namesModelsAsResources(provider)
+		for _, bodyModel := range bodyModels {
+			if resourceNamed {
+				bodyModel = bareResourceModel(bodyModel)
+			}
+			if bodyModel == model {
+				continue
+			}
+			bodyEvaluationRequest := *evaluationRequest
+			bodyEvaluationRequest.Model = bodyModel
+			_, bifrostError := p.Evaluate(ctx, &bodyEvaluationRequest)
+			if bifrostError != nil {
+				return req, &schemas.LLMPluginShortCircuit{
+					Error: bifrostError,
+				}, nil
+			}
+			if g := ctx.Grant(); g != nil && g.Limits() != nil {
+				if bodyModelLimits == nil {
+					bodyModelLimits = make(map[string]string)
+				}
+				for _, limit := range append(g.Limits().Budgets(), g.Limits().RateLimits()...) {
+					if _, seen := bodyModelLimits[limit.ID]; !seen {
+						bodyModelLimits[limit.ID] = bodyModel
+					}
+				}
+			}
+		}
+	}
 	// A batch create fans out to many completions, each naming its own model, so
 	// every model it will run is evaluated before the request itself. Each pass
 	// settles that model's limits on the access and checks them; the request's own
@@ -1162,19 +1251,125 @@ func (p *GovernancePlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 			Error: bifrostError,
 		}, nil
 	}
+	if shortCircuit := refuseUnchargedBodyModelLimits(ctx, bodyModelLimits); shortCircuit != nil {
+		return req, shortCircuit, nil
+	}
 
-	// A batch addressed by id belongs to the virtual key that created it; see providerjobs.go.
-	if shortCircuit := p.enforceProviderJobOwnership(ctx, req); shortCircuit != nil {
+	// A provider object addressed by id belongs to the virtual key that created it; see providerjobs.go.
+	if shortCircuit := p.enforceProviderObjectOwnership(ctx, req); shortCircuit != nil {
 		return req, shortCircuit, nil
 	}
 
 	return req, nil, nil
 }
 
-// isOpaqueBatchInput reports whether a batch create's work is an uploaded file or blob rather than
-// inline requests, so the models it will run are not visible on the request.
+// refuseUnchargedBodyModelLimits refuses a passthrough request when a model its body names settled
+// a limit that the request's own pass did not: usage is charged against that pass alone, and a mixed
+// task array cannot be split by model, so the body model's budget or rate limit would be checked
+// and never charged. The caller sends one model per request instead.
+func refuseUnchargedBodyModelLimits(ctx *schemas.BifrostContext, bodyModelLimits map[string]string) *schemas.LLMPluginShortCircuit {
+	if len(bodyModelLimits) == 0 {
+		return nil
+	}
+	charged := map[string]struct{}{}
+	if g := ctx.Grant(); g != nil && g.Limits() != nil {
+		for _, limit := range append(g.Limits().Budgets(), g.Limits().RateLimits()...) {
+			charged[limit.ID] = struct{}{}
+		}
+	}
+	var models []string
+	for id, model := range bodyModelLimits {
+		if _, ok := charged[id]; !ok && !slices.Contains(models, model) {
+			models = append(models, model)
+		}
+	}
+	if len(models) == 0 {
+		return nil
+	}
+	slices.Sort(models)
+	ctx.SetValue(governanceRejectedContextKey, true)
+	return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+		Type:       bifrost.Ptr(string(DecisionModelLimitsUnattributable)),
+		StatusCode: bifrost.Ptr(400),
+		Error: &schemas.ErrorField{Message: fmt.Sprintf("the request body names models with budgets or rate limits of their own (%s) that one request cannot be charged against; send one model per request",
+			strings.Join(models, ", "))},
+	}}
+}
+
+// passthroughBodyModels returns every distinct model a passthrough body names: the "model" of a
+// JSON object body, or of each task in a JSON array body (Runware). The router has already
+// refused malformed model keys, so a model that is not a string is simply not one here.
+func passthroughBodyModels(req *schemas.BifrostRequest) []string {
+	if req.PassthroughRequest == nil || len(req.PassthroughRequest.Body) == 0 || !gjson.ValidBytes(req.PassthroughRequest.Body) {
+		return nil
+	}
+	root := gjson.ParseBytes(req.PassthroughRequest.Body)
+	seen := make(map[string]struct{})
+	var models []string
+	add := func(object gjson.Result) bool {
+		if value := object.Get("model"); value.Type == gjson.String {
+			if m := strings.TrimSpace(value.Str); m != "" {
+				if _, ok := seen[m]; !ok {
+					seen[m] = struct{}{}
+					models = append(models, m)
+				}
+			}
+		}
+		return true
+	}
+	switch {
+	case root.IsObject():
+		add(root)
+	case root.IsArray():
+		root.ForEach(func(_, task gjson.Result) bool {
+			if task.IsObject() {
+				add(task)
+			}
+			return true
+		})
+	}
+	return models
+}
+
+// namesModelsAsResources reports whether a provider name reaches Gemini or Vertex, whose bodies
+// name a model by its resource name rather than its bare id.
+func (p *GovernancePlugin) namesModelsAsResources(provider schemas.ModelProvider) bool {
+	base := configuredBaseProvider(p.inMemoryStore, provider)
+	return base == schemas.Gemini || base == schemas.Vertex
+}
+
+// bareResourceModel reduces a GenAI or Vertex model resource name ("models/<id>",
+// "tunedModels/<id>", "publishers/google/models/<id>", "projects/<p>/locations/<l>/publishers/
+// google/models/<id>") to the bare id, the way the router reduces the request model, so a body and
+// the request it rides on are judged on the same name. Anything else is returned unchanged.
+func bareResourceModel(model string) string {
+	if !strings.HasPrefix(model, "models/") && !strings.HasPrefix(model, "tunedModels/") &&
+		!strings.HasPrefix(model, "projects/") && !strings.HasPrefix(model, "publishers/") {
+		return model
+	}
+	parts := strings.Split(model, "/")
+	for i, part := range parts {
+		if (part == "models" || part == "tunedModels") && i+1 < len(parts) {
+			id := parts[i+1]
+			if colon := strings.Index(id, ":"); colon > 0 {
+				id = id[:colon]
+			}
+			if id = strings.TrimSpace(id); id != "" {
+				return id
+			}
+			break
+		}
+	}
+	return model
+}
+
+// isOpaqueBatchInput reports whether a batch create's work is an uploaded file or blob, so the
+// models it will run are not visible on the request. Inline items beside a file do not make the
+// batch inline: no provider runs them then. OpenAI, Azure and Bedrock submit the file and drop
+// the items, Gemini and Vertex refuse the mix, so the items are at most a decoy for the model
+// check and the file rule has to hold.
 func isOpaqueBatchInput(req *schemas.BifrostRequest) bool {
-	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil || len(req.BatchCreateRequest.Requests) > 0 {
+	if req.RequestType != schemas.BatchCreateRequest || req.BatchCreateRequest == nil {
 		return false
 	}
 	batch := req.BatchCreateRequest
@@ -1240,19 +1435,21 @@ func (p *GovernancePlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Extract request type, provider, and model
 	requestType, provider, requestedModel, _ := bifrost.GetResponseFields(result, err)
 
-	// A batch list is the provider's answer for the shared operator key; narrow it to what this
-	// virtual key may see before anything downstream reads it. See providerjobs.go.
-	if result != nil && result.BatchListResponse != nil {
-		if filterErr := p.filterProviderJobList(ctx, string(provider), result.BatchListResponse); filterErr != nil {
+	// A list of provider objects is the provider's answer for the shared operator key; narrow it to
+	// what this virtual key may see before anything downstream reads it, and remember which key a
+	// freshly created object belongs to. See providerjobs.go.
+	if err == nil && result != nil {
+		if filterErr := p.filterProviderObjectList(ctx, string(provider), result); filterErr != nil {
 			return nil, &schemas.BifrostError{
 				StatusCode: bifrost.Ptr(500),
-				Error:      &schemas.ErrorField{Message: "failed to verify access to the batch list"},
+				Error:      &schemas.ErrorField{Message: filterErr.Error()},
 				ExtraFields: schemas.BifrostErrorExtraFields{
 					RequestType: requestType,
 					Provider:    provider,
 				},
 			}, nil
 		}
+		p.recordProviderObjectLifecycle(ctx, requestType, string(provider), result)
 	}
 
 	requestID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyRequestID)

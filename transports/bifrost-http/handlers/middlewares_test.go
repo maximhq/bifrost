@@ -6,14 +6,17 @@ import (
 	"compress/zlib"
 	"context"
 	cryptoRand "crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -515,6 +518,63 @@ func TestRecoveryMiddleware_DoesNotLogPanicValue(t *testing.T) {
 	}
 }
 
+// TestRecoverWebSocketSession_RecoversAndRedactsPanic pins the helper every WebSocket
+// upgrade callback defers: a panic on the hijacked session goroutine is swallowed (so the
+// process keeps serving), logged once, and never logged with the panic value itself.
+func TestRecoverWebSocketSession_RecoversAndRedactsPanic(t *testing.T) {
+	capLogger := &captureLogger{}
+	SetLogger(capLogger)
+	defer SetLogger(&mockLogger{})
+
+	session := func() {
+		defer recoverWebSocketSession(nil)
+		panic(errors.New("upstream rejected key sk-secret-456"))
+	}
+	session() // must return normally
+
+	if len(capLogger.errors) != 1 {
+		t.Fatalf("error logs = %d, want 1", len(capLogger.errors))
+	}
+	if strings.Contains(capLogger.errors[0], "sk-secret-456") {
+		t.Errorf("websocket recovery log leaked the panic value: %q", capLogger.errors[0])
+	}
+	if !strings.Contains(capLogger.errors[0], "websocket session") || !strings.Contains(capLogger.errors[0], "*errors.errorString") {
+		t.Errorf("websocket recovery log = %q, want the session marker and the panic value type", capLogger.errors[0])
+	}
+
+	quiet := func() {
+		defer recoverWebSocketSession(nil)
+	}
+	quiet()
+	if len(capLogger.errors) != 1 {
+		t.Fatalf("error logs after a non-panicking session = %d, want 1", len(capLogger.errors))
+	}
+
+	// A runtime.Error is summarized by type alone on the WebSocket paths too: its text can carry
+	// whatever a plugin put in it.
+	runtimeSession := func() {
+		defer recoverWebSocketSession(nil)
+		panic(secretRuntimeError{})
+	}
+	runtimeSession()
+	if len(capLogger.errors) != 2 {
+		t.Fatalf("error logs = %d, want 2", len(capLogger.errors))
+	}
+	if strings.Contains(capLogger.errors[1], "sk-secret-789") {
+		t.Errorf("websocket recovery log leaked a runtime.Error's text: %q", capLogger.errors[1])
+	}
+	err := runWebSocketRelay(nil, func() error { panic(secretRuntimeError{}) })
+	if err == nil || strings.Contains(err.Error(), "sk-secret-789") {
+		t.Errorf("relay error leaked a runtime.Error's text: %v", err)
+	}
+}
+
+// secretRuntimeError is a runtime.Error whose text carries something that must not be echoed.
+type secretRuntimeError struct{}
+
+func (secretRuntimeError) Error() string { return "index out of range for key sk-secret-789" }
+func (secretRuntimeError) RuntimeError() {}
+
 // TestRecoveryMiddleware_PassesThroughNormalRequests confirms the middleware is
 // a no-op for handlers that don't panic.
 func TestRecoveryMiddleware_PassesThroughNormalRequests(t *testing.T) {
@@ -973,6 +1033,51 @@ func TestAuthMiddleware_DisabledAuthConfig_CrossOrigin(t *testing.T) {
 		am.UpdateWhitelistedRoutes([]string{"/api/public/*"})
 		called, _ = run(am, api, "/api/public/status", "https://evil.example")
 		assert.True(t, called)
+	})
+
+	// Without a config store there is no auth middleware at all; the bypass middleware the server
+	// installs instead applies the same rule, since the API is just as open there.
+	t.Run("no config store, auth bypassed", func(t *testing.T) {
+		am := &AuthMiddleware{}
+		bypassed := AuthBypassedMiddleware([]string{"*"}, nil)
+
+		called, _ := run(am, bypassed, "/api/logs", "")
+		assert.True(t, called, "no Origin header: CLI/SDK callers are unaffected")
+		called, _ = run(am, bypassed, "/api/logs", "http://localhost:3000")
+		assert.True(t, called, "localhost origins are always allowed")
+		called, status := run(am, bypassed, "/api/logs", "https://evil.example")
+		assert.False(t, called, "an unlisted origin must not reach the open management API without a config store either")
+		assert.Equal(t, fasthttp.StatusForbidden, status)
+		called, _ = run(am, bypassed, "/health", "https://evil.example")
+		assert.True(t, called, "whitelisted routes keep today's behaviour")
+
+		listed := AuthBypassedMiddleware([]string{"https://app.example.com", "https://*.corp.example"}, []string{"/api/public/*"})
+		called, _ = run(am, listed, "/api/logs", "https://app.example.com")
+		assert.True(t, called, "an explicitly listed origin passes")
+		called, _ = run(am, listed, "/api/logs", "https://tools.corp.example")
+		assert.True(t, called, "a domain pattern names the origin")
+		called, status = run(am, listed, "/api/logs", "https://app.example.com.evil.example")
+		assert.False(t, called)
+		assert.Equal(t, fasthttp.StatusForbidden, status)
+		called, _ = run(am, listed, "/api/public/status", "https://evil.example")
+		assert.True(t, called, "operator-configured whitelisted routes are exempt")
+
+		sameOrigin := &fasthttp.RequestCtx{}
+		sameOrigin.Request.SetRequestURI("/api/config")
+		sameOrigin.Request.Header.SetMethod(fasthttp.MethodPut)
+		sameOrigin.Request.Header.SetHost("10.0.0.5:8080")
+		sameOrigin.Request.Header.Set("Origin", "http://10.0.0.5:8080")
+		sameOriginCalled := false
+		bypassed(func(*fasthttp.RequestCtx) { sameOriginCalled = true })(sameOrigin)
+		assert.True(t, sameOriginCalled, "the dashboard's own same-origin write must not be refused (status %d)", sameOrigin.Response.StatusCode())
+
+		// A refused request is never marked as the local admin.
+		refused := &fasthttp.RequestCtx{}
+		refused.Request.SetRequestURI("/api/logs")
+		refused.Request.Header.Set("Origin", "https://evil.example")
+		bypassed(func(*fasthttp.RequestCtx) {})(refused)
+		assert.Nil(t, refused.UserValue(schemas.IsLocalAdminContextKey))
+		assert.Nil(t, refused.UserValue(schemas.BifrostContextKeyAuthBypassed))
 	})
 }
 
@@ -2680,6 +2785,311 @@ func TestRequestDecompressionMiddleware_ExactSizeLimit(t *testing.T) {
 
 // --- Streaming decompression path tests ---
 
+// compressedCodecs are the request encodings the middleware accepts, with a test encoder each.
+var compressedCodecs = []struct {
+	name     string
+	encoding string
+	encode   func([]byte) ([]byte, error)
+}{
+	{name: "gzip", encoding: "gzip", encode: gzipCompress},
+	{name: "deflate", encoding: "deflate", encode: deflateCompress},
+	{name: "brotli", encoding: "br", encode: brotliCompress},
+	{name: "zstd", encoding: "zstd", encode: zstdCompress},
+}
+
+// incompressibleBytes returns n bytes no codec shrinks, from a fixed xorshift sequence.
+func incompressibleBytes(n int) []byte {
+	out := make([]byte, n)
+	x := uint64(0x9E3779B97F4A7C15)
+	for i := range out {
+		x ^= x << 13
+		x ^= x >> 7
+		x ^= x << 17
+		out[i] = byte(x)
+	}
+	return out
+}
+
+// runDecompression sends one compressed body through the middleware and reports whether the
+// next handler ran.
+func runDecompression(t *testing.T, config *lib.Config, encoding string, compressed []byte) (*fasthttp.RequestCtx, bool) {
+	t.Helper()
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("POST")
+	ctx.Request.Header.Set("Content-Encoding", encoding)
+	ctx.Request.SetBodyRaw(compressed)
+	nextCalled := false
+	RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) { nextCalled = true })(ctx)
+	return ctx, nextCalled
+}
+
+// TestRequestDecompressionMiddleware_ExpansionBound pins that what a compressed body may expand
+// to is bounded by what was sent, not only by the absolute cap: the middleware runs before
+// routing and auth, so the cap alone lets a few hundred unauthenticated bytes become 100 MiB of
+// heap. A body may grow to at most 100 times its compressed size, with a 1 MiB floor so small
+// bodies are never refused, and never past the cap. Bodies within those bounds are untouched.
+func TestRequestDecompressionMiddleware_ExpansionBound(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 100}}
+
+	// A compressed length whose expansion would overflow int is still allowed the cap, not wrapped
+	// to a negative product and clamped to the floor. On a 32-bit build that is a 22 MiB body.
+	const capBytes = 100 << 20
+	if got := decompressionAllowance(math.MaxInt/requestDecompressionMaxRatio+1, capBytes); got != capBytes {
+		t.Fatalf("a length whose expansion overflows int must be allowed the cap %d, got %d", capBytes, got)
+	}
+	if got := decompressionAllowance(math.MaxInt, capBytes); got != capBytes {
+		t.Fatalf("the largest length must be allowed the cap %d, got %d", capBytes, got)
+	}
+
+	bomb := make([]byte, 2<<20) // 2 MiB of zeros: a few hundred bytes on the wire
+	for _, codec := range compressedCodecs {
+		t.Run(codec.name+" bomb", func(t *testing.T) {
+			compressed, err := codec.encode(bomb)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(compressed) > 8<<10 {
+				t.Fatalf("test bomb is %d bytes compressed, expected a few hundred", len(compressed))
+			}
+			ctx, nextCalled := runDecompression(t, config, codec.encoding, compressed)
+			if nextCalled {
+				t.Fatalf("a %d-byte body expanding to %d bytes must be refused before the router", len(compressed), len(bomb))
+			}
+			if ctx.Response.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+				t.Fatalf("expected 413, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+			}
+			if !strings.Contains(string(ctx.Response.Body()), "expansion") {
+				t.Fatalf("the refusal must name the expansion bound, got %s", ctx.Response.Body())
+			}
+		})
+	}
+
+	// Under the floor, compressibility does not matter.
+	small := make([]byte, 512<<10)
+	compressed, err := gzipCompress(small)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx, nextCalled := runDecompression(t, config, "gzip", compressed); !nextCalled {
+		t.Fatalf("a body under the floor must pass however well it compresses: %d %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+
+	// Above the floor, a body within the ratio passes.
+	within := incompressibleBytes(2 << 20)
+	compressed, err = gzipCompress(within)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx, nextCalled := runDecompression(t, config, "gzip", compressed); !nextCalled {
+		t.Fatalf("a body within the ratio must pass: %d %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+// TestRequestDecompressionMiddleware_InFlightBudget pins that buffered decompressions cannot
+// stack up without bound: the bytes each one inflates are charged to a budget of four times the
+// cap for the life of the request, and a request that cannot be charged is answered 503 rather
+// than given another buffer.
+func TestRequestDecompressionMiddleware_InFlightBudget(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 1}}
+	compressed, err := gzipCompress(make([]byte, 1024*1024))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) {
+		entered <- struct{}{}
+		<-release
+	})
+	send := func() *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("POST")
+		ctx.Request.Header.Set("Content-Encoding", "gzip")
+		ctx.Request.SetBodyRaw(compressed)
+		handler(ctx)
+		return ctx
+	}
+
+	// Each body inflates to the whole 1 MiB cap, so four fill the 4 MiB budget.
+	done := make(chan struct{})
+	for range 4 {
+		go func() {
+			send()
+			done <- struct{}{}
+		}()
+	}
+	for range 4 {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the first four requests must be admitted")
+		}
+	}
+	fifth := make(chan *fasthttp.RequestCtx, 1)
+	go func() { fifth <- send() }()
+	select {
+	case ctx := <-fifth:
+		if ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable {
+			t.Fatalf("the fifth request must be refused with 503 while the budget is held, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	case <-entered:
+		close(release)
+		t.Fatal("the fifth request was admitted while four held the whole budget")
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("the fifth request neither returned nor entered the handler")
+	}
+	close(release)
+	for range 4 {
+		<-done
+	}
+	// The reservations end with their requests.
+	release = make(chan struct{})
+	close(release)
+	if ctx := send(); ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("a request after the others returned must be admitted, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+}
+
+// sdkLikeJSONBody builds a chat request of about inflatedLen bytes whose content mixes prose with
+// base64 noise, so it gzips at a ratio typical of real SDK payloads (single digits) rather than
+// the hundreds that runs of one byte reach.
+func sdkLikeJSONBody(t testing.TB, inflatedLen int) []byte {
+	t.Helper()
+	noise := make([]byte, 150)
+	prose := strings.Repeat("The quarterly report shows revenue growth across every region. ", 13)
+	var content strings.Builder
+	for content.Len() < inflatedLen {
+		if _, err := cryptoRand.Read(noise); err != nil {
+			t.Fatal(err)
+		}
+		content.WriteString(base64.StdEncoding.EncodeToString(noise))
+		content.WriteString(prose)
+	}
+	return []byte(`{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"` + content.String() + `"}]}`)
+}
+
+// TestRequestDecompressionMiddleware_ConcurrentMultiMBGzipNotRefused pins that ordinary gzipped
+// SDK bodies are not refused just because several are in flight at once. Each body is past
+// cap/100 compressed, so its expansion allowance is the whole cap; the in-flight budget must be
+// charged for what the bodies really inflate to, not for that allowance, or the fifth concurrent
+// request is answered 503 while the process holds a fraction of the budget.
+func TestRequestDecompressionMiddleware_ConcurrentMultiMBGzipNotRefused(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 10}}
+	plain := sdkLikeJSONBody(t, 2*1024*1024)
+	compressed, err := gzipCompress(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compressed) <= requestBodyCap(config)/requestDecompressionMaxRatio {
+		t.Fatalf("fixture must be past cap/%d compressed to exercise a full-cap allowance, got %d bytes", requestDecompressionMaxRatio, len(compressed))
+	}
+
+	const concurrent = 8
+	entered := make(chan struct{}, concurrent)
+	release := make(chan struct{})
+	handler := RequestDecompressionMiddleware(config)(func(ctx *fasthttp.RequestCtx) {
+		if !bytes.Equal(ctx.Request.Body(), plain) {
+			t.Errorf("decompressed body differs from what was sent: got %d bytes, want %d", len(ctx.Request.Body()), len(plain))
+		}
+		entered <- struct{}{}
+		<-release
+	})
+	results := make(chan *fasthttp.RequestCtx, concurrent)
+	for range concurrent {
+		go func() {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.Header.Set("Content-Encoding", "gzip")
+			ctx.Request.SetBodyRaw(compressed)
+			handler(ctx)
+			results <- ctx
+		}()
+	}
+	for i := range concurrent {
+		select {
+		case <-entered:
+		case ctx := <-results:
+			close(release)
+			t.Fatalf("after %d of %d concurrent %d-byte gzip bodies (%d bytes inflated each, %d MiB cap) were admitted, one was refused with %d: %s",
+				i, concurrent, len(compressed), len(plain), config.ClientConfig.MaxRequestBodySizeMB, ctx.Response.StatusCode(), ctx.Response.Body())
+		case <-time.After(10 * time.Second):
+			close(release)
+			t.Fatalf("only %d of %d concurrent requests reached the handler", i, concurrent)
+		}
+	}
+	close(release)
+	for range concurrent {
+		if ctx := <-results; ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+}
+
+// TestRequestDecompressionMiddleware_BudgetReleasedOnFailedDecode pins that a decompression that
+// fails part way, past the expansion bound or on a corrupt stream, gives back whatever budget it
+// had charged: afterwards requests that need the whole budget at once are all admitted.
+func TestRequestDecompressionMiddleware_BudgetReleasedOnFailedDecode(t *testing.T) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 1}}
+	full, err := gzipCompress(make([]byte, 1024*1024))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bomb, err := gzipCompress(make([]byte, 2*1024*1024))
+	if err != nil {
+		t.Fatal(err)
+	}
+	truncated := full[:len(full)/2]
+
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	hold := false
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) {
+		if hold {
+			entered <- struct{}{}
+			<-release
+		}
+	})
+	send := func(body []byte) *fasthttp.RequestCtx {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("POST")
+		ctx.Request.Header.Set("Content-Encoding", "gzip")
+		ctx.Request.SetBodyRaw(body)
+		handler(ctx)
+		return ctx
+	}
+	for range 4 {
+		if ctx := send(bomb); ctx.Response.StatusCode() != fasthttp.StatusRequestEntityTooLarge {
+			t.Fatalf("bomb: expected 413, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+		if ctx := send(truncated); ctx.Response.StatusCode() != fasthttp.StatusBadRequest {
+			t.Fatalf("truncated gzip: expected 400, got %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		}
+	}
+
+	// Four 1 MiB bodies need the whole 4 MiB budget; any leak above would refuse one of them.
+	hold = true
+	results := make(chan *fasthttp.RequestCtx, 4)
+	for range 4 {
+		go func() { results <- send(full) }()
+	}
+	for range 4 {
+		select {
+		case <-entered:
+		case ctx := <-results:
+			close(release)
+			t.Fatalf("budget leaked by failed decodes: a 1 MiB body was refused with %d: %s", ctx.Response.StatusCode(), ctx.Response.Body())
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatal("the four full-size requests did not reach the handler")
+		}
+	}
+	close(release)
+	for range 4 {
+		<-results
+	}
+}
+
 func TestShouldStreamDecompress(t *testing.T) {
 	defaultThreshold := int(schemas.DefaultLargePayloadRequestThresholdBytes)
 	tests := []struct {
@@ -4092,7 +4502,7 @@ func TestAuthBypassedMiddleware_MarksRequest(t *testing.T) {
 	handler := lib.ChainMiddlewares(func(ctx *fasthttp.RequestCtx) {
 		sawBypassed, _ = ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
 		sawLocalAdmin, _ = ctx.UserValue(schemas.IsLocalAdminContextKey).(bool)
-	}, AuthBypassedMiddleware())
+	}, AuthBypassedMiddleware([]string{"*"}, nil))
 
 	handler(&fasthttp.RequestCtx{})
 
@@ -4603,4 +5013,163 @@ func (p *capturePluginLogsPlugin) Inject(_ context.Context, trace *schemas.Trace
 		}
 	}
 	return nil
+}
+
+// TestIsSameOrigin pins how an Origin is compared with the Host the request was sent to: hosts
+// case-insensitively, the scheme's default port made explicit on either side, IPv6 brackets kept,
+// userinfo ignored, and anything that is not an http(s) origin never the same.
+func TestIsSameOrigin(t *testing.T) {
+	cases := []struct {
+		origin, host string
+		want         bool
+	}{
+		{"http://bifrost.internal:8080", "bifrost.internal:8080", true},
+		{"http://Bifrost.Internal:8080", "bifrost.internal:8080", true},
+		{"HTTP://bifrost.internal:8080", "bifrost.internal:8080", true},
+		{"https://b.example", "b.example:443", true},
+		{"https://b.example:443", "b.example", true},
+		{"http://b.example", "b.example:80", true},
+		{"http://b.example", "b.example", true},
+		{"http://[::1]:8080", "[::1]:8080", true},
+		{"http://[::1]", "[::1]:80", true},
+		{"http://user@b.example:8080", "b.example:8080", true},
+		{"http://b.example:8080/", "b.example:8080", true},
+		{"http://b.example:8080", "b.example:8081", false},
+		{"https://b.example", "b.example:80", false},
+		{"http://b.example", "b.example:443", false},
+		{"http://evil.example", "b.example", false},
+		{"ftp://b.example", "b.example", false},
+		{"null", "b.example", false},
+		{"", "b.example", false},
+		{"http://b.example", "", false},
+		{"http://", "b.example", false},
+		{"http://b.example:port", "b.example:port", false},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, isSameOrigin(tc.origin, tc.host), "isSameOrigin(%q, %q)", tc.origin, tc.host)
+	}
+}
+
+// BenchmarkAuthBypassedMiddlewareOriginCheck measures the auth-bypassed management middleware on
+// an /api request with no Origin (CLI and SDKs), a same-origin dashboard request served from a
+// non-localhost address (localhost origins are accepted before the host comparison runs), and a
+// request from an origin listed in allowed_origins.
+func BenchmarkAuthBypassedMiddlewareOriginCheck(b *testing.B) {
+	handler := AuthBypassedMiddleware([]string{"https://app.example.com"}, nil)(func(*fasthttp.RequestCtx) {})
+	cases := []struct{ name, host, origin string }{
+		{"no_origin", "bifrost.internal:8080", ""},
+		{"same_origin", "bifrost.internal:8080", "http://bifrost.internal:8080"},
+		{"allowed_origin", "bifrost.internal:8080", "https://app.example.com"},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			// fasthttp reuses one RequestCtx per connection; so does the benchmark.
+			ctx := &fasthttp.RequestCtx{}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				ctx.Request.Reset()
+				ctx.ResetUserValues()
+				ctx.Request.SetRequestURI("/api/providers")
+				ctx.Request.Header.SetHost(tc.host)
+				if tc.origin != "" {
+					ctx.Request.Header.Set("Origin", tc.origin)
+				}
+				handler(ctx)
+				if ctx.Response.StatusCode() == fasthttp.StatusForbidden {
+					b.Fatalf("%s was refused: %s", tc.name, ctx.Response.Body())
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkRequestDecompressionMiddleware measures the decompression middleware on a 4 KiB JSON
+// request body sent uncompressed (the common case, which it passes straight through) and gzipped
+// (decompressed under the expansion bound and the in-flight budget), plus a 10 MiB SDK-like body
+// (about 1.5 MiB gzipped) and 1 MiB of zeros (about 1 KiB gzipped, the high-ratio extreme).
+func BenchmarkRequestDecompressionMiddleware(b *testing.B) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 100}}
+	handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) {})
+	body := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"` + strings.Repeat("hello world ", 340) + `"}]}`)
+	compressed, err := gzipCompress(body)
+	if err != nil {
+		b.Fatal(err)
+	}
+	sdkCompressed, err := gzipCompress(sdkLikeJSONBody(b, 10*1024*1024))
+	if err != nil {
+		b.Fatal(err)
+	}
+	zeros, err := gzipCompress(make([]byte, 1024*1024))
+	if err != nil {
+		b.Fatal(err)
+	}
+	cases := []struct {
+		name, encoding string
+		payload        []byte
+	}{
+		{"uncompressed", "", body},
+		{"gzip", "gzip", compressed},
+		{"gzip-sdk-10MiB", "gzip", sdkCompressed},
+		{"gzip-zeros-1MiB", "gzip", zeros},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			// fasthttp reuses one RequestCtx per connection; so does the benchmark.
+			ctx := &fasthttp.RequestCtx{}
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				ctx.Request.Reset()
+				ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+				ctx.Request.SetRequestURI("/v1/chat/completions")
+				ctx.Request.Header.SetContentType("application/json")
+				if tc.encoding != "" {
+					ctx.Request.Header.Set("Content-Encoding", tc.encoding)
+				}
+				ctx.Request.SetBody(tc.payload)
+				handler(ctx)
+			}
+		})
+	}
+}
+
+// BenchmarkRequestDecompressionMiddlewareParallel sends a 10 MiB SDK-like body, about 1.5 MiB
+// gzipped, through one middleware instance from many goroutines at once, with the handler held
+// for 5ms to stand in for the upstream call the in-flight budget is held across. 503/op is the
+// share of requests refused for budget; the body inflates to a tenth of the 100 MiB cap, so a
+// budget of four times the cap should refuse none of them below about 40 concurrent.
+func BenchmarkRequestDecompressionMiddlewareParallel(b *testing.B) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{MaxRequestBodySizeMB: 100}}
+	compressed, err := gzipCompress(sdkLikeJSONBody(b, 10*1024*1024))
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, perProc := range []int{1, 2, 4} {
+		goroutines := perProc * runtime.GOMAXPROCS(0)
+		b.Run(fmt.Sprintf("concurrent-%d", goroutines), func(b *testing.B) {
+			handler := RequestDecompressionMiddleware(config)(func(*fasthttp.RequestCtx) {
+				time.Sleep(5 * time.Millisecond)
+			})
+			var total, refused atomic.Int64
+			b.SetParallelism(perProc)
+			b.ReportAllocs()
+			b.RunParallel(func(pb *testing.PB) {
+				ctx := &fasthttp.RequestCtx{}
+				for pb.Next() {
+					ctx.Request.Reset()
+					ctx.Response.Reset()
+					ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+					ctx.Request.SetRequestURI("/v1/chat/completions")
+					ctx.Request.Header.SetContentType("application/json")
+					ctx.Request.Header.Set("Content-Encoding", "gzip")
+					ctx.Request.SetBody(compressed)
+					handler(ctx)
+					total.Add(1)
+					if ctx.Response.StatusCode() == fasthttp.StatusServiceUnavailable {
+						refused.Add(1)
+					}
+				}
+			})
+			b.ReportMetric(float64(refused.Load())/float64(total.Load()), "503/op")
+		})
+	}
 }

@@ -528,6 +528,93 @@ func TestLatestCreatedSkillVersionUsesCreationOrder(t *testing.T) {
 	assert.Equal(t, "1.0.2-1", skill.HighestVersion)
 }
 
+func setupSkillTestStore(t *testing.T) *RDBConfigStore {
+	store := setupRDBTestStore(t)
+	err := store.DB().AutoMigrate(
+		&tables.TableSkill{},
+		&tables.TableSkillVersion{},
+		&tables.TableSkillFile{},
+		&tables.TableSkillFileBlob{},
+	)
+	require.NoError(t, err)
+	return store
+}
+
+func skillURLFile(path string) tables.TableSkillFile {
+	sourceURL := "https://example.com/" + path
+	return tables.TableSkillFile{Path: path, SourceType: tables.SkillSourceTypeURL, SourceURL: &sourceURL}
+}
+
+// The config-driven skills registry passes a freshly built skill whose
+// LatestVersion is empty, so serving the new version must not depend on it.
+func TestUpdateSkillServesNewVersionWhenLatestVersionIsUnset(t *testing.T) {
+	store := setupSkillTestStore(t)
+	ctx := context.Background()
+
+	created := &tables.TableSkill{
+		Name:        "config-update",
+		Description: "first",
+		SkillMDBody: "body 1",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v1.md")},
+	}
+	require.NoError(t, store.CreateSkill(ctx, created, "1.0.0", nil))
+
+	updated := &tables.TableSkill{
+		ID:          created.ID,
+		Name:        created.Name,
+		Description: "second",
+		SkillMDBody: "body 2",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v2.md")},
+	}
+	require.NoError(t, store.UpdateSkill(ctx, updated, "1.1.0", true, nil))
+
+	assert.Equal(t, "1.1.0", updated.LatestVersion)
+	require.Len(t, updated.Files, 1)
+	assert.Equal(t, "references/v2.md", updated.Files[0].Path)
+
+	skill, err := store.GetSkill(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "1.1.0", skill.LatestVersion)
+	assert.Equal(t, "body 2", skill.SkillMDBody)
+	require.Len(t, skill.Files, 1)
+	assert.Equal(t, "references/v2.md", skill.Files[0].Path)
+}
+
+func TestUpdateSkillWithoutServeKeepsServingVersion(t *testing.T) {
+	store := setupSkillTestStore(t)
+	ctx := context.Background()
+
+	created := &tables.TableSkill{
+		Name:        "config-draft",
+		Description: "first",
+		SkillMDBody: "body 1",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v1.md")},
+	}
+	require.NoError(t, store.CreateSkill(ctx, created, "1.0.0", nil))
+
+	updated := &tables.TableSkill{
+		ID:          created.ID,
+		Name:        created.Name,
+		Description: "second",
+		SkillMDBody: "body 2",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v2.md")},
+	}
+	require.NoError(t, store.UpdateSkill(ctx, updated, "1.1.0", false, nil))
+
+	assert.Equal(t, "1.0.0", updated.LatestVersion)
+	require.Len(t, updated.Files, 1)
+	assert.Equal(t, "references/v1.md", updated.Files[0].Path)
+
+	skill, err := store.GetSkill(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.0", skill.LatestVersion)
+	assert.Equal(t, "body 1", skill.SkillMDBody)
+
+	version, err := store.GetSkillVersion(ctx, created.ID, "1.1.0")
+	require.NoError(t, err)
+	assert.Equal(t, "body 2", version.SkillMDBody)
+}
+
 // =============================================================================
 // Provider and Key Tests
 // =============================================================================
@@ -2498,6 +2585,39 @@ func TestUpdateClientConfig_VKRotationCooldownRoundTrip(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, result.VKRotationCooldown.D())
 }
 
+func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// config.json without the field enforces ownership.
+	var fromJSON ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"initial_pool_size":100}`), &fromJSON))
+	assert.True(t, fromJSON.EnforceVKObjectOwnership, "an omitted field keeps ownership enforced")
+	require.NoError(t, json.Unmarshal([]byte(`{"enforce_vk_object_ownership":false}`), &fromJSON))
+	assert.False(t, fromJSON.EnforceVKObjectOwnership, "an explicit false turns it off")
+
+	on := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &on))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.EnforceVKObjectOwnership)
+
+	// The column defaults to true, so the write must force an explicit false through.
+	off := on
+	off.EnforceVKObjectOwnership = false
+	require.NoError(t, store.UpdateClientConfig(ctx, &off))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.EnforceVKObjectOwnership, "an explicit false survives the delete-and-create write")
+
+	// Only the opt-out is hashed, so configs written before the field existed keep their hash.
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash)
+}
+
 func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -3683,6 +3803,43 @@ func TestUpsertModelPricesBatch_TimeOfDayColumns_SurviveResync(t *testing.T) {
 	assert.Equal(t, []int{1, 2, 3, 4, 5}, row.PeakHours.Windows[0].Days)
 	assert.Equal(t, "02:00", row.PeakHours.Windows[0].Start)
 	assert.Equal(t, "05:00", row.PeakHours.Windows[0].End)
+}
+
+// TestUpsertModelPricesBatch_DecisionRateColumns_SurviveResync is the same
+// pricingSyncUpdateColumns regression for the decision rate columns: both
+// values change on the second upsert so a column missing from the list fails
+// here instead of keeping its first value.
+func TestUpsertModelPricesBatch_DecisionRateColumns_SurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{{
+		Model:                       "gpt-6-luna",
+		Provider:                    "openai",
+		Mode:                        "chat",
+		InputCostPerToken:           cost(0.000002),
+		OutputCostPerToken:          cost(0.000008),
+		InputCostPerTokenDecisions:  cost(0.0000001),
+		OutputCostPerTokenDecisions: cost(0.0000003),
+	}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	pricing[0].InputCostPerTokenDecisions = cost(0.0000002)
+	pricing[0].OutputCostPerTokenDecisions = cost(0.0000004)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	row := got[0]
+	require.NotNil(t, row.InputCostPerTokenDecisions, "input_cost_per_token_decisions missing from pricingSyncUpdateColumns")
+	require.NotNil(t, row.OutputCostPerTokenDecisions, "output_cost_per_token_decisions missing from pricingSyncUpdateColumns")
+	assert.InDelta(t, 0.0000002, *row.InputCostPerTokenDecisions, 1e-12)
+	assert.InDelta(t, 0.0000004, *row.OutputCostPerTokenDecisions, 1e-12)
 }
 
 func TestUpsertModelParametersBatch_SQLite(t *testing.T) {
@@ -5186,4 +5343,154 @@ func TestUpsertModelPricesBatch_PriorityAbove272kCacheCreation_SurvivesResync(t 
 	require.Len(t, got, 1)
 	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove272kTokensPriority)
 	assert.InDelta(t, 0.00006, *got[0].CacheCreationInputTokenCostAbove272kTokensPriority, 1e-12)
+}
+
+// TestUpsertModelPricesBatch_Above100kColumns_SurviveResync guards the
+// pricingSyncUpdateColumns entries for the >100k tier columns.
+func TestUpsertModelPricesBatch_Above100kColumns_SurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	pricing := []tables.TableModelPricing{{
+		Model: "claude-haiku-5-5", Provider: "anthropic", Mode: "chat",
+		InputCostPerToken:                                  new(1e-07),
+		InputCostPerTokenAbove100kTokens:                   new(4e-07),
+		OutputCostPerTokenAbove100kTokens:                  new(2e-06),
+		CacheCreationInputTokenCostAbove100kTokens:         new(5e-07),
+		CacheReadInputTokenCostAbove100kTokens:             new(4e-08),
+		CacheCreationInputTokenCostAbove1hrAbove100kTokens: new(8e-07),
+	}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	pricing[0].InputCostPerTokenAbove100kTokens = new(5e-07)
+	pricing[0].OutputCostPerTokenAbove100kTokens = new(2.5e-06)
+	pricing[0].CacheCreationInputTokenCostAbove100kTokens = new(6.25e-07)
+	pricing[0].CacheReadInputTokenCostAbove100kTokens = new(5e-08)
+	pricing[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens = new(1e-06)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].InputCostPerTokenAbove100kTokens)
+	assert.InDelta(t, 5e-07, *got[0].InputCostPerTokenAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].OutputCostPerTokenAbove100kTokens)
+	assert.InDelta(t, 2.5e-06, *got[0].OutputCostPerTokenAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove100kTokens)
+	assert.InDelta(t, 6.25e-07, *got[0].CacheCreationInputTokenCostAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheReadInputTokenCostAbove100kTokens)
+	assert.InDelta(t, 5e-08, *got[0].CacheReadInputTokenCostAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens)
+	assert.InDelta(t, 1e-06, *got[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens, 1e-15)
+}
+
+// TestProviderInjectedToolsRoundTrip pins injected_tools through every provider write
+// path (bulk upsert, add, update) and both read paths, including clearing it.
+func TestProviderInjectedToolsRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	webSearch := []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
+		{Name: "read_page", MCPClientName: "fetcher", ToolName: "fetch"},
+	}
+
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		schemas.OpenAI: {InjectedTools: webSearch},
+	}))
+	all, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, webSearch, all[schemas.OpenAI].InjectedTools)
+
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: webSearch}))
+	got, err := store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Equal(t, webSearch, got.InjectedTools)
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Nil(t, got.InjectedTools, "updating with a nil block must clear the stored column")
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: webSearch}))
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: []schemas.InjectedTool{}}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Empty(t, got.InjectedTools, "an empty list clears the stored column too")
+}
+
+func TestUpdateClientConfig_CompatConvertDecisionToResponsesRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(enabled bool) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			Compat:               CompatConfig{ConvertDecisionToResponses: enabled},
+		}
+	}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(true)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Compat.ConvertDecisionToResponses, "enabling the toggle must persist")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(false)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.Compat.ConvertDecisionToResponses, "disabling the toggle must persist")
+}
+
+func TestGenerateClientConfigHash_CompatConvertDecisionToResponses(t *testing.T) {
+	on := &ClientConfig{InitialPoolSize: 100, Compat: CompatConfig{ConvertDecisionToResponses: true}}
+	off := &ClientConfig{InitialPoolSize: 100}
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash, "toggling convert_decision_to_responses must change the hash")
+}
+
+// TestClientConfigUnmarshal_CompatConvertDecisionToResponsesDefaultsOff pins that,
+// unlike the other compat toggles, decision emulation stays off when config.json
+// omits it - both when compat is absent and when it is present without the field.
+func TestClientConfigUnmarshal_CompatConvertDecisionToResponsesDefaultsOff(t *testing.T) {
+	for name, raw := range map[string]string{
+		"compat absent":      `{}`,
+		"field absent":       `{"compat": {"convert_text_to_chat": true}}`,
+		"explicitly enabled": `{"compat": {"convert_decision_to_responses": true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var c ClientConfig
+			require.NoError(t, json.Unmarshal([]byte(raw), &c))
+			assert.Equal(t, name == "explicitly enabled", c.Compat.ConvertDecisionToResponses)
+		})
+	}
+}
+
+// TestA2ARawCaptureConfigRoundTrip verifies persistence and hash parity for raw capture.
+func TestA2ARawCaptureConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	config := &ClientConfig{}
+	require.NoError(t, store.UpdateClientConfig(ctx, config))
+	config, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	config.A2AStoreRawRequestResponse = true
+	require.NoError(t, store.UpdateClientConfig(ctx, config))
+	found, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.True(t, found.A2AStoreRawRequestResponse)
+	want, err := config.GenerateClientConfigHash()
+	require.NoError(t, err)
+	got, err := found.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	config.A2AStoreRawRequestResponse = false
+	other, err := config.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.NotEqual(t, want, other)
 }

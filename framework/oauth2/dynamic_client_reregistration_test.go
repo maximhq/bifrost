@@ -20,6 +20,7 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -188,6 +189,28 @@ func (s *dcrConfigStore) GetOauthUserSessionByModeIdentityAndMCPClient(ctx conte
 		return nil, err
 	}
 	return &flow, nil
+}
+
+func (s *dcrConfigStore) GetMCPClientConfigByID(ctx context.Context, id string) (*schemas.MCPClientConfig, error) {
+	var client tables.TableMCPClient
+	if err := s.db.WithContext(ctx).Where("client_id = ?", id).First(&client).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, configstore.ErrNotFound
+		}
+		return nil, err
+	}
+	return &schemas.MCPClientConfig{ID: client.ClientID, Name: client.Name, OauthConfigID: client.OauthConfigID, RequirePublicTarget: client.RequirePublicTarget}, nil
+}
+
+func (s *dcrConfigStore) GetMCPClientByOauthConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPClient, error) {
+	var client tables.TableMCPClient
+	if err := s.db.WithContext(ctx).Where("oauth_config_id = ?", oauthConfigID).First(&client).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, configstore.ErrNotFound
+		}
+		return nil, err
+	}
+	return &client, nil
 }
 
 // evictableAuthServer is an RFC 7591 authorization server whose client
@@ -674,6 +697,90 @@ func TestReregisterDynamicClient_ClassifiesProviderRefusals(t *testing.T) {
 			unchanged, err := store.GetOauthConfigByID(ctx, oauthConfigID)
 			require.NoError(t, err)
 			assert.Equal(t, registeredClientID, unchanged.GetResolvedClientID(), "a failed attempt must leave the stored client alone")
+		})
+	}
+}
+
+// useProductionOAuthDialer drops TestMain's unguarded dialer for the rest of
+// the test, so OAuth requests go through the real destination policy, and
+// installs allow (nil for none) as the private-target allowlist.
+func useProductionOAuthDialer(t *testing.T, allow ...string) {
+	t.Helper()
+	prevDial := testDialContextOverride
+	prevAllow := privateTargetAllowlist.Load()
+	testDialContextOverride = nil
+	t.Cleanup(func() {
+		testDialContextOverride = prevDial
+		SetPrivateTargetAllowlist(prevAllow)
+	})
+	if len(allow) == 0 {
+		SetPrivateTargetAllowlist(nil)
+		return
+	}
+	al, err := network.ValidatePrivateTargetAllowlist(allow)
+	require.NoError(t, err)
+	SetPrivateTargetAllowlist(al)
+}
+
+// TestOAuthLoopbackProviderFollowsPrivateTargetAllowlist pins the MCP OAuth
+// destination policy end to end against a real loopback authorization server
+// and the production dialer: an MCP client registered by an authenticated
+// admin (RequirePublicTarget=false) reaches a private OAuth server once the
+// operator allowlists it, for bootstrap registration, refresh and
+// re-registration alike; without the allowlist, for a client registered with
+// auth bypassed (RequirePublicTarget=true), or when the owning client cannot
+// be identified, every hop stays public-only.
+func TestOAuthLoopbackProviderFollowsPrivateTargetAllowlist(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		requirePublicTarget bool
+		allow               []string
+		unlinked            bool
+		wantReachable       bool
+	}{
+		{name: "authenticated client, loopback allowlisted", allow: []string{"127.0.0.1"}, wantReachable: true},
+		{name: "authenticated client, no allowlist"},
+		{name: "authenticated client, other host allowlisted", allow: []string{"10.0.0.0/8"}},
+		{name: "auth-bypassed client, loopback allowlisted", requirePublicTarget: true, allow: []string{"127.0.0.1"}},
+		{name: "unidentifiable client, loopback allowlisted", unlinked: true, allow: []string{"127.0.0.1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			as := newEvictableAuthServer(t)
+			provider, store := newDCRProvider(t)
+			ctx := context.Background()
+			oauthConfigID, _ := dcrFixture(t, as, store, provider)
+			if tc.unlinked {
+				require.NoError(t, store.db.Where("client_id = ?", dcrMCPClientID).Delete(&tables.TableMCPClient{}).Error)
+				require.NoError(t, store.db.Model(&tables.TableMCPOauthToken{}).Where("id = ?", dcrTokenID).Update("mcp_client_id", "").Error)
+			} else {
+				require.NoError(t, store.db.Model(&tables.TableMCPClient{}).Where("client_id = ?", dcrMCPClientID).Update("require_public_target", tc.requirePublicTarget).Error)
+			}
+			useProductionOAuthDialer(t, tc.allow...)
+
+			assertReach := func(what string, err error) {
+				t.Helper()
+				if tc.wantReachable {
+					require.NoError(t, err, what)
+					return
+				}
+				require.Error(t, err, what)
+				require.Contains(t, err.Error(), "blocked connection to non-public address", what)
+			}
+
+			_, err := provider.InitiateOAuthFlow(ctx, &schemas.OAuth2Config{
+				AuthorizeURL:        as.server.URL + "/authorize",
+				TokenURL:            as.server.URL + "/token",
+				RegistrationURL:     bifrost.Ptr(as.server.URL + "/register"),
+				RedirectURI:         dcrRedirectURI,
+				ServerURL:           as.server.URL,
+				RequirePublicTarget: tc.requirePublicTarget || tc.unlinked,
+			})
+			assertReach("bootstrap dynamic registration", err)
+
+			assertReach("refresh", provider.RefreshAccessToken(ctx, dcrTokenID))
+
+			_, _, _, err = provider.ReregisterDynamicClient(ctx, oauthConfigID, dcrRedirectURI)
+			assertReach("re-registration", err)
 		})
 	}
 }

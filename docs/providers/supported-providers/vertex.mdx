@@ -57,7 +57,7 @@ Vertex AI requires Google Cloud project configuration and authentication credent
 
 ### 1. Service Account JSON (Recommended for Production)
 
-Provide a credential JSON string in `auth_credentials`. The JSON must contain a `type` field. Supported types: `service_account` (most common), `impersonated_service_account`, `authorized_user`, `external_account`, `external_account_authorized_user`.
+Provide a credential JSON string in `auth_credentials`. The JSON must contain a `type` field. Supported types: `service_account` (most common), `impersonated_service_account`, `authorized_user`, `external_account`, `external_account_authorized_user`. The document names the token, impersonation and credential-source URLs the Google client dials, so setting, changing or removing it through the API is held to the same rule as a key endpoint: a request admitted without any credential check (dashboard authentication disabled or unconfigured, or a whitelisted route) is refused with `403`. A request that passed a credential check may set it: an authenticated admin session, or, while the setup lock is active, a request carrying the configured setup token (see [Provider endpoint URLs](/deployment-guides/how-to/security-best-practices#provider-endpoint-urls)).
 
 <Note>
   An `external_account` JSON (a Workload Identity Federation credential config) is accepted here

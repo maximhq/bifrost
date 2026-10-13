@@ -978,7 +978,7 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 					ResponsesCodeInterpreterOutputLogs: &ResponsesCodeInterpreterOutputLogs{Type: "logs", Logs: "hello"},
 				}},
 			},
-			ResponsesMCPToolCall: &ResponsesMCPToolCall{ServerLabel: "repo"},
+			ServerLabel: Ptr("repo"),
 			ResponsesImageGenerationCall: &ResponsesImageGenerationCall{
 				Result:        "image",
 				Background:    Ptr("transparent"),
@@ -987,7 +987,7 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 				RevisedPrompt: Ptr("draw a cat"),
 				Size:          Ptr("1024x1024"),
 			},
-			ResponsesMCPListTools: &ResponsesMCPListTools{ServerLabel: "repo", Tools: []ResponsesMCPTool{{
+			ResponsesMCPListTools: &ResponsesMCPListTools{Tools: []ResponsesMCPTool{{
 				Name:        "read_file",
 				InputSchema: map[string]any{"type": "object", "properties": map[string]any{"path": "string"}},
 				Description: Ptr("read a file"),
@@ -1324,6 +1324,33 @@ func TestStreamWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 			t.Errorf("%s: normalized stream JSON still has code_execution_*:\n%s", typ, encoded)
 		}
 	}
+}
+
+// TestStreamWithDefaultsPreservesExtraFields pins parity with the non-streaming
+// WithDefaults: provider-format stream routes must not zero the chunk's extra_fields.
+func TestStreamWithDefaultsPreservesExtraFields(t *testing.T) {
+	extra := BifrostResponseExtraFields{
+		RequestType: ResponsesStreamRequest,
+		RoutingInfo: RoutingInfo{Provider: Vertex, Model: "claude-sonnet-5-5", Key: "vertex-key"},
+		Provider:    Vertex,
+		Latency:     42,
+		ChunkIndex:  5,
+	}
+	src := &BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeOutputTextDelta,
+		Delta:       new("hi"),
+		ExtraFields: extra,
+	}
+
+	out := src.WithDefaults()
+	require.NotNil(t, out)
+	assert.Equal(t, extra, out.ExtraFields)
+
+	encoded, err := Marshal(out)
+	require.NoError(t, err)
+	assert.Equal(t, string(ResponsesStreamRequest), gjson.GetBytes(encoded, "extra_fields.request_type").String(), string(encoded))
+	assert.Equal(t, string(Vertex), gjson.GetBytes(encoded, "extra_fields.routing_info.provider").String(), string(encoded))
+	assert.Equal(t, int64(5), gjson.GetBytes(encoded, "extra_fields.chunk_index").Int(), string(encoded))
 }
 
 // TestCustomToolInputDoneRoundTrip preserves the terminal input clients compare with streamed custom-tool deltas.
@@ -2419,4 +2446,85 @@ func TestResponsesMessagePerplexityAgentAPIOutputItemsPreservedVerbatim(t *testi
 			assert.JSONEq(t, raw, string(encoded))
 		})
 	}
+}
+
+// TestDeepCopyResponsesMessagePreservesToolChanges: cache-breakpoint injection copies the whole
+// message, so a tool_addition / tool_removal block must keep its tool target (and a compaction
+// block its tool_changes) through DeepCopyResponsesMessage, without sharing pointers.
+func TestDeepCopyResponsesMessagePreservesToolChanges(t *testing.T) {
+	def := &ResponsesTool{Type: ResponsesToolTypeFunction, Name: Ptr("get_weather"), ResponsesToolFunction: &ResponsesToolFunction{}}
+	msg := ResponsesMessage{
+		Role: Ptr(ResponsesInputMessageRoleSystem),
+		Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+			{Type: ResponsesInputMessageContentBlockTypeToolAddition, ToolChange: &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolDefinition, Definition: def}},
+			{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolReference, Name: Ptr("echo")}},
+			{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("Weather lookups are disabled.")},
+			{Type: ResponsesOutputMessageContentTypeCompaction, ResponsesOutputMessageContentCompaction: &ResponsesOutputMessageContentCompaction{
+				Summary:     "summary",
+				ToolChanges: []ResponsesMessageContentBlock{{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolReference, Name: Ptr("echo")}}},
+			}},
+		}},
+	}
+	copied := DeepCopyResponsesMessage(msg)
+	blocks := copied.Content.ContentBlocks
+	if blocks[0].ToolChange == nil || blocks[0].ToolChange.Type != ResponsesToolChangeTargetTypeToolDefinition {
+		t.Fatalf("tool_addition lost its tool target on copy: %+v", blocks[0])
+	}
+	if blocks[0].ToolChange == msg.Content.ContentBlocks[0].ToolChange {
+		t.Errorf("tool_addition target pointer shared with the original")
+	}
+	if blocks[0].ToolChange.Definition == nil || blocks[0].ToolChange.Definition.Name == nil || *blocks[0].ToolChange.Definition.Name != "get_weather" {
+		t.Errorf("tool_addition definition not copied: %+v", blocks[0].ToolChange)
+	}
+	if blocks[1].ToolChange == nil || blocks[1].ToolChange.Name == nil || *blocks[1].ToolChange.Name != "echo" {
+		t.Fatalf("tool_removal lost its tool reference on copy: %+v", blocks[1])
+	}
+	cmp := blocks[3].ResponsesOutputMessageContentCompaction
+	if cmp == nil || len(cmp.ToolChanges) != 1 || cmp.ToolChanges[0].ToolChange == nil {
+		t.Fatalf("compaction tool_changes lost on copy: %+v", cmp)
+	}
+}
+
+// server_label sat on two embedded structs (ResponsesMCPListTools and
+// ResponsesMCPToolCall) at the same depth, so encoding/json and sonic treated it
+// as ambiguous and dropped it both ways; replaying an mcp_list_tools or mcp_call
+// item then reached OpenAI without server_label and 400ed.
+func TestResponsesMCPItemsKeepServerLabel(t *testing.T) {
+	items := []string{
+		`{"type":"mcp_list_tools","id":"mcpl_1","server_label":"deepwiki","tools":[{"name":"ask","input_schema":{"type":"object"}}]}`,
+		`{"type":"mcp_call","id":"mcp_1","server_label":"deepwiki","name":"ask","arguments":"{}","output":"ok"}`,
+		`{"type":"mcp_approval_request","id":"mcpr_1","server_label":"deepwiki","name":"ask","arguments":"{}"}`,
+	}
+	for _, raw := range items {
+		t.Run(gjson.Get(raw, "type").String(), func(t *testing.T) {
+			for name, roundTrip := range map[string]func([]byte, *ResponsesMessage) ([]byte, error){
+				"sonic": func(b []byte, m *ResponsesMessage) ([]byte, error) {
+					if err := Unmarshal(b, m); err != nil {
+						return nil, err
+					}
+					return Marshal(m)
+				},
+				"encoding/json": func(b []byte, m *ResponsesMessage) ([]byte, error) {
+					if err := json.Unmarshal(b, m); err != nil {
+						return nil, err
+					}
+					return json.Marshal(m)
+				},
+			} {
+				var msg ResponsesMessage
+				out, err := roundTrip([]byte(raw), &msg)
+				require.NoError(t, err, name)
+				assert.Equal(t, "deepwiki", gjson.GetBytes(out, "server_label").String(), "%s dropped server_label: %s", name, out)
+			}
+		})
+	}
+
+	// Built in Go (no decode), the label must still reach the wire exactly once.
+	msg := ResponsesMessage{
+		Type:                 Ptr(ResponsesMessageTypeMCPListTools),
+		ResponsesToolMessage: &ResponsesToolMessage{ServerLabel: Ptr("deepwiki"), ResponsesMCPListTools: &ResponsesMCPListTools{}},
+	}
+	out, err := Marshal(msg)
+	require.NoError(t, err)
+	assert.Equal(t, "deepwiki", gjson.GetBytes(out, "server_label").String(), string(out))
 }

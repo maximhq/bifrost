@@ -27,8 +27,14 @@ import (
 // dialer for this package: the MCP OAuth tests here register against
 // loopback-bound httptest.Server instances, which the production guard in
 // framework/oauth2 refuses to dial. The guard has its own coverage there.
+//
+// It also installs the package logger before any test runs. Production sets
+// it at startup, and code such as the WebSocket panic recovery logs through it
+// unconditionally, so a test that reaches that code must not depend on an
+// earlier test in the run having set it.
 func TestMain(m *testing.M) {
 	oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+	SetLogger(&mockLogger{})
 	os.Exit(m.Run())
 }
 
@@ -356,4 +362,135 @@ func TestReregisterMCPClient_StatusSaysWhoseProblemItIs(t *testing.T) {
 		assert.Equal(t, f.registeredClientID, f.storedClientID(t), "a failed attempt must leave the stored client alone")
 		assert.Empty(t, f.cache.evictedClients, "nothing rotated, so nothing may be invalidated")
 	})
+}
+
+// =============================================================================
+// POST /api/mcp/client with auth_type oauth against an OAuth-protected MCP
+// server on loopback, with the production OAuth dialer.
+// =============================================================================
+
+// newLoopbackOAuthMCPServer serves the RFC 8414 discovery document and RFC 7591
+// registration an OAuth-protected MCP server on the operator's own host
+// exposes (the shape of examples/mcps/oauth-demo-server).
+func newLoopbackOAuthMCPServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	var server *httptest.Server
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"issuer":                 server.URL,
+			"authorization_endpoint": server.URL + "/authorize",
+			"token_endpoint":         server.URL + "/token",
+			"registration_endpoint":  server.URL + "/register",
+		})
+	})
+	mux.HandleFunc("/register", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"client_id": "loopback-client"})
+	})
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist pins the fix for MCP
+// OAuth servers on localhost: once the OAuth chain was put behind the
+// public-only dialer, an authenticated admin could not add one at all. With
+// the server's host on mcp_oauth_private_allowlist the admin's registration
+// discovers, registers and returns an authorize URL; without it the chain is
+// still refused, and a caller with auth bypassed is refused regardless.
+func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+
+	for _, tc := range []struct {
+		name         string
+		allow        []string
+		authBypassed bool
+		wantStatus   int
+		wantBody     string
+	}{
+		{name: "authenticated, loopback allowlisted", allow: []string{"127.0.0.1"}, wantStatus: fasthttp.StatusOK, wantBody: "authorize_url"},
+		{name: "authenticated, no allowlist", wantStatus: fasthttp.StatusInternalServerError, wantBody: "blocked connection to non-public address"},
+		{name: "auth bypassed, loopback allowlisted", allow: []string{"127.0.0.1"}, authBypassed: true, wantStatus: fasthttp.StatusForbidden, wantBody: "unauthenticated callers cannot register MCP clients"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			SetLogger(&mockLogger{})
+			require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(tc.allow))
+			server := newLoopbackOAuthMCPServer(t)
+			store := newRealOAuth2Store(t)
+			provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+			cfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
+			h := &MCPHandler{store: cfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, cfg)}
+
+			var req fasthttp.Request
+			req.Header.SetMethod(fasthttp.MethodPost)
+			req.Header.SetContentType("application/json")
+			req.Header.SetHost("bifrost.example.com")
+			req.SetBodyString(`{"name":"local_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"oauth","oauth_config":{}}`)
+			ctx := initCtx(&req)
+			if tc.authBypassed {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
+			h.addMCPClient(ctx)
+
+			body := string(ctx.Response.Body())
+			require.Equal(t, tc.wantStatus, ctx.Response.StatusCode(), body)
+			assert.Contains(t, body, tc.wantBody)
+		})
+	}
+}
+
+// removeRecordingMCPManager records RemoveMCPClient calls; any other manager call panics.
+type removeRecordingMCPManager struct {
+	MCPManager
+	removed []string
+}
+
+func (m *removeRecordingMCPManager) RemoveMCPClient(_ context.Context, id string) error {
+	m.removed = append(m.removed, id)
+	return nil
+}
+
+// TestDeleteMCPClient_UnknownIDIsNotFound pins that deleting an MCP client id with
+// no row answers 404 and leaves the runtime manager untouched, while a known id is
+// still removed from both the store and the manager.
+func TestDeleteMCPClient_UnknownIDIsNotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	manager := &removeRecordingMCPManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: manager}
+	del := func(id string) (int, string) {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodDelete)
+		ctx := initCtx(&req)
+		ctx.SetUserValue("id", id)
+		h.deleteMCPClient(ctx)
+		return ctx.Response.StatusCode(), string(ctx.Response.Body())
+	}
+
+	status, body := del("3f8e2a1c-0000-4000-8000-000000000000")
+	assert.Equal(t, fasthttp.StatusNotFound, status, body)
+	assert.Contains(t, body, "not found")
+	assert.Empty(t, manager.removed, "an unknown id must not reach the runtime manager")
+
+	require.NoError(t, store.CreateMCPClientConfig(context.Background(), &schemas.MCPClientConfig{
+		ID:               "mcp-delete-known",
+		Name:             "delete_known",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	status, body = del("mcp-delete-known")
+	assert.Equal(t, fasthttp.StatusOK, status, body)
+	assert.Equal(t, []string{"mcp-delete-known"}, manager.removed)
+	_, err := store.GetMCPClientByID(context.Background(), "mcp-delete-known")
+	assert.ErrorIs(t, err, configstore.ErrNotFound)
 }

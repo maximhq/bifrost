@@ -25,7 +25,7 @@ func init() {
 
 // setupEncryptionTestStore creates an in-memory SQLite database with all tables
 // migrated and returns an RDBConfigStore for testing the startup encryption pass.
-func setupEncryptionTestStore(t *testing.T) (*RDBConfigStore, *gorm.DB) {
+func setupEncryptionTestStore(t testing.TB) (*RDBConfigStore, *gorm.DB) {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
@@ -1552,4 +1552,127 @@ func TestMigrationAddVertexAWSWorkloadIdentityColumn_RollbackRefuses(t *testing.
 	require.NoError(t, db.Where("name = ?", "vertex-wif").First(&found).Error)
 	require.NotNil(t, found.VertexKeyConfig)
 	require.NotNil(t, found.VertexKeyConfig.AWSWorkloadIdentity, "the stored federation config must survive the refused rollback")
+}
+
+// ============================================================================
+// Plaintext lookup fallbacks only match rows that are still plaintext
+// ============================================================================
+
+// Once a session is encrypted, only its plaintext token resolves it, through the hash. The
+// value stored in the token column is ciphertext and must not act as the token, for reads or
+// deletes. The legacy plaintext fallback keeps serving rows that are still plaintext.
+func TestGetSession_StoredCiphertextDoesNotResolve(t *testing.T) {
+	store, db := setupEncryptionTestStore(t)
+	ctx := context.Background()
+
+	session := &tables.SessionsTable{Token: "session-plain-token", ExpiresAt: time.Now().Add(time.Hour)}
+	require.NoError(t, db.Create(session).Error)
+	var raw map[string]any
+	db.Table("sessions").Where("id = ?", session.ID).Take(&raw)
+	ciphertext, _ := raw["token"].(string)
+	require.NotEmpty(t, ciphertext)
+	require.NotEqual(t, "session-plain-token", ciphertext, "the row stores ciphertext")
+
+	found, err := store.GetSession(ctx, "session-plain-token")
+	require.NoError(t, err)
+	require.NotNil(t, found, "the plaintext token resolves the session")
+	assert.Equal(t, "session-plain-token", found.Token)
+
+	found, err = store.GetSession(ctx, ciphertext)
+	require.NoError(t, err)
+	assert.Nil(t, found, "the at-rest ciphertext must not resolve the session")
+
+	require.NoError(t, store.DeleteSession(ctx, ciphertext))
+	var remaining int64
+	db.Table("sessions").Where("id = ?", session.ID).Count(&remaining)
+	assert.Equal(t, int64(1), remaining, "deleting by ciphertext removes nothing")
+
+	// A row still stored in plaintext is marked plain_text, or was written before the status
+	// column existed and carries NULL or an empty status. All three resolve by token and delete
+	// by token.
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	later := time.Now().UTC().Add(time.Hour).Format("2006-01-02 15:04:05")
+	for label, status := range legacyPlaintextStatuses {
+		token := "legacy-session-token-" + label
+		insertPlaintextRow(t, db,
+			`INSERT INTO sessions (token, expires_at, created_at, updated_at, encryption_status) VALUES (?, ?, ?, ?, ?)`,
+			token, later, now, now, status)
+		found, err = store.GetSession(ctx, token)
+		require.NoError(t, err)
+		require.NotNil(t, found, "a row still stored in plaintext (status %s) resolves by token", label)
+		assert.Equal(t, token, found.Token)
+
+		require.NoError(t, store.DeleteSession(ctx, token))
+		found, err = store.GetSession(ctx, token)
+		require.NoError(t, err)
+		assert.Nil(t, found, "the plaintext row (status %s) is deleted by its token", label)
+	}
+}
+
+// legacyPlaintextStatuses are the encryption_status values of a row whose sensitive columns are
+// still plaintext: marked so, or written before the column existed (NULL or empty).
+var legacyPlaintextStatuses = map[string]any{"plain_text": "plain_text", "null": nil, "empty": ""}
+
+// The same holds for virtual keys: the stored ciphertext of a key value is not the key.
+func TestFindVirtualKeyByValue_StoredCiphertextDoesNotResolve(t *testing.T) {
+	store, db := setupEncryptionTestStore(t)
+
+	vk := &tables.TableVirtualKey{ID: "vk-cipher", Name: "cipher-vk", Value: *schemas.NewSecretVar("vk-plain-secret"), IsActive: bifrost.Ptr(true)}
+	require.NoError(t, db.Create(vk).Error)
+	var raw map[string]any
+	db.Table("governance_virtual_keys").Where("id = ?", "vk-cipher").Take(&raw)
+	ciphertext, _ := raw["value"].(string)
+	require.NotEmpty(t, ciphertext)
+	require.NotEqual(t, "vk-plain-secret", ciphertext)
+
+	found, err := store.findVirtualKeyByValue(db, "vk-plain-secret")
+	require.NoError(t, err)
+	assert.Equal(t, "vk-cipher", found.ID)
+
+	_, err = store.findVirtualKeyByValue(db, ciphertext)
+	assert.ErrorIs(t, err, ErrNotFound, "the at-rest ciphertext must not resolve the key")
+
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	for label, status := range legacyPlaintextStatuses {
+		id := "vk-legacy-" + label
+		insertPlaintextRow(t, db,
+			`INSERT INTO governance_virtual_keys (id, name, value, is_active, encryption_status, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			id, "legacy-vk-"+label, id+"-secret", true, status, now, now)
+		found, err = store.findVirtualKeyByValue(db, id+"-secret")
+		require.NoError(t, err)
+		assert.Equal(t, id, found.ID, "a row still stored in plaintext (status %s) resolves by value", label)
+	}
+}
+
+// BenchmarkCredentialLookupFallback measures the credential lookups on the auth path against an
+// encrypted SQLite store: a virtual key found by its hash (the common case), a value that matches
+// nothing and falls back to the legacy plaintext lookup, and a session token that does the same.
+func BenchmarkCredentialLookupFallback(b *testing.B) {
+	store, db := setupEncryptionTestStore(b)
+	vk := &tables.TableVirtualKey{ID: "vk-bench", Name: "bench-vk", Value: *schemas.NewSecretVar("vk-bench-secret"), IsActive: bifrost.Ptr(true)}
+	if err := db.Create(vk).Error; err != nil {
+		b.Fatal(err)
+	}
+	ctx := context.Background()
+	b.Run("virtual_key_hit", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := store.findVirtualKeyByValue(db, "vk-bench-secret"); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("virtual_key_miss", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_, _ = store.findVirtualKeyByValue(db, "vk-unknown-secret")
+		}
+	})
+	b.Run("session_miss", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_, _ = store.GetSession(ctx, "unknown-session-token")
+		}
+	})
 }

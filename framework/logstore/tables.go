@@ -15,18 +15,82 @@ import (
 )
 
 // sanitizeJSONForJSONB removes JSON escape sequences that PostgreSQL's jsonb
-// type cannot represent. Specifically, jsonb rejects the NUL unicode escape
-// (\u0000) with errcode 22P05 even though plain TEXT and the json type can
-// store it. Stripping the escape from the marshaled JSON keeps subsequent
-// TEXT->jsonb casts in list queries safe. The replacement is case-insensitive
-// since JSON allows \u0000 or \U0000.
+// type cannot represent, though plain TEXT and the json type (and so IS JSON)
+// accept them: the NUL escape \u0000 (22P05) is dropped, and an unpaired
+// surrogate escape (22P02) becomes \ufffd. It walks the string escape by
+// escape, so an escaped backslash followed by the text "u0000" is left intact.
+// A string without \u is returned as-is without allocating.
 func sanitizeJSONForJSONB(s string) string {
-	if !strings.Contains(s, `\u`) && !strings.Contains(s, `\U`) {
+	if !strings.Contains(s, `\u`) {
 		return s
 	}
-	s = strings.ReplaceAll(s, `\u0000`, "")
-	s = strings.ReplaceAll(s, `\U0000`, "")
-	return s
+	var b strings.Builder
+	last := 0
+	for i := 0; i+1 < len(s); i++ {
+		if s[i] != '\\' {
+			continue
+		}
+		if s[i+1] != 'u' {
+			i++ // skip the escaped character, including a second backslash
+			continue
+		}
+		cp, ok := jsonHex4(s, i+2)
+		if !ok {
+			i++
+			continue
+		}
+		end := i + 6
+		var repl string
+		switch {
+		case cp == 0:
+			repl = ""
+		case cp >= 0xD800 && cp <= 0xDBFF:
+			if low, ok := jsonHex4(s, end+2); ok && end+1 < len(s) && s[end] == '\\' && s[end+1] == 'u' && low >= 0xDC00 && low <= 0xDFFF {
+				i = end + 5 // a valid pair is kept as written
+				continue
+			}
+			repl = "\\ufffd"
+		case cp >= 0xDC00 && cp <= 0xDFFF:
+			repl = "\\ufffd"
+		default:
+			i = end - 1
+			continue
+		}
+		if b.Cap() == 0 {
+			b.Grow(len(s))
+		}
+		b.WriteString(s[last:i])
+		b.WriteString(repl)
+		last = end
+		i = end - 1
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
+// jsonHex4 parses the four hex digits of a \u escape starting at s[at].
+func jsonHex4(s string, at int) (rune, bool) {
+	if at < 0 || at+4 > len(s) {
+		return 0, false
+	}
+	var cp rune
+	for _, c := range []byte(s[at : at+4]) {
+		cp <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			cp |= rune(c - '0')
+		case c >= 'a' && c <= 'f':
+			cp |= rune(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			cp |= rune(c-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return cp, true
 }
 
 type SortBy string
@@ -1463,6 +1527,7 @@ const AgentLogHistoryMaxLimit = 1000
 // The slice fields match any of their values (OR); every populated filter must
 // match (AND).
 type AgentLogHistoryFilter struct {
+	GroupSessions  bool
 	AgentName      []string
 	StartTime      *time.Time
 	EndTime        *time.Time
@@ -1489,6 +1554,13 @@ type AgentLogHistoryFilter struct {
 	// error). Protocol payloads are deliberately excluded: under the hybrid
 	// store they live in object storage and are not queryable in SQL.
 	Search string
+}
+
+// SessionGroupingActive reports whether context grouping may collapse this search.
+// Explicit identifier searches keep every matching operation visible.
+func (f AgentLogHistoryFilter) SessionGroupingActive() bool {
+	return f.GroupSessions && f.ContextID == "" && f.TaskID == "" && f.RequestID == "" &&
+		f.TraceID == "" && f.PushConfigID == "" && f.DeliveryID == "" && f.AttemptID == ""
 }
 
 // AgentLogStats aggregates an A2A history search. A2A has no pricing model, so
@@ -1544,6 +1616,7 @@ type AgentFilterData struct {
 
 // AgentLogSummary is the compact metadata contract returned by list searches.
 type AgentLogSummary struct {
+	SessionChildCount       int64            `gorm:"-" json:"session_child_count,omitempty"`
 	ID                      string           `json:"id"`
 	Timestamp               time.Time        `json:"timestamp"`
 	RecordKind              string           `json:"record_kind"`
@@ -1606,6 +1679,8 @@ type AgentLogSummary struct {
 // AgentLogDetail is the rich public contract. Persistence and object-storage
 // bookkeeping never leave the log store through this type.
 type AgentLogDetail struct {
+	RawRequest  *string `json:"raw_request,omitempty"` // Base64-encoded upstream body bytes.
+	RawResponse *string `json:"raw_response,omitempty"`
 	AgentLogSummary
 	RequestBody      *string               `json:"request_body,omitempty"`
 	ResponseBody     *string               `json:"response_body,omitempty"`
@@ -1640,6 +1715,7 @@ func NewAgentLogDetail(entry *AgentLog) AgentLogDetail {
 		Latency: entry.Latency, UpstreamLatency: entry.UpstreamLatency, OverheadLatency: entry.OverheadLatency,
 		OverheadBreakdown: entry.OverheadBreakdownParsed,
 		ContentType:       entry.ContentType, Input: entry.RequestBody,
+		RawRequest: entry.RawRequest, RawResponse: entry.RawResponse,
 		RequestBody: entry.RequestBody, ResponseBody: entry.ResponseBody, EventBody: entry.EventBody,
 		PluginLogs: entry.PluginLogs, ErrorDetails: entry.ErrorDetailsParsed,
 		hasObject: entry.HasObject, contentHidden: entry.ContentHidden, payloadReference: entry.PayloadReference,
@@ -1717,6 +1793,8 @@ type AgentLog struct {
 	OverheadLatency   *float64 `json:"overhead_latency,omitempty"`
 	OverheadBreakdown string   `gorm:"type:text" json:"-"` // Name-keyed JSON object, mirroring Log.OverheadBreakdown
 	ContentType       *string  `gorm:"type:varchar(255)" json:"content_type,omitempty"`
+	RawRequest        *string  `gorm:"type:text" json:"raw_request,omitempty"` // Base64 preserves binary transport bytes.
+	RawResponse       *string  `gorm:"type:text" json:"raw_response,omitempty"`
 	RequestBody       *string  `gorm:"type:text" json:"request_body,omitempty"`
 	ResponseBody      *string  `gorm:"type:text" json:"response_body,omitempty"`
 	EventBody         *string  `gorm:"type:text" json:"event_body,omitempty"`

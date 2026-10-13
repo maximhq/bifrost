@@ -611,10 +611,15 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 			requestType, _ = raw.(string)
 		}
 	}
+	var errorType schemas.ErrorType
 	if requestType != "" {
-		if errorType := schemas.ClassifyErrorType(err, schemas.RequestType(requestType)); errorType != "" {
+		if errorType = schemas.ClassifyErrorType(err, schemas.RequestType(requestType)); errorType != "" {
 			// Plain string: readers assert .(string); a defined type is dropped.
 			span.SetAttribute(schemas.AttrBifrostErrorType, string(errorType))
+			// Mirrored onto the typed record the attribute map renders from.
+			if llm.Error != nil {
+				llm.Error.Type = string(errorType)
+			}
 		}
 	}
 
@@ -724,6 +729,8 @@ func (t *Tracer) PopulateLLMResponseAttributes(ctx *schemas.BifrostContext, hand
 		if v, ok := respAttrs[schemas.AttrFinishReasons]; ok {
 			rootSpan.SetAttribute(schemas.AttrFinishReasons, v)
 		}
+		// Only an HTTP status here cannot tell a model refusal from a provider outage.
+		rootSpan.SetAttributes(schemas.RootSpanErrorAttributes(err, errorType))
 	}
 }
 
@@ -844,7 +851,26 @@ func (t *Tracer) AddStreamingChunk(traceID string, response *schemas.BifrostResp
 	if traceID == "" || response == nil {
 		return
 	}
-	t.store.AppendStreamingChunk(traceID, response)
+	if firstChunk := t.store.appendStreamingChunk(traceID, response); !firstChunk.IsZero() {
+		t.stampTimeToFirstToken(traceID, firstChunk)
+	}
+}
+
+// stampTimeToFirstToken records request receipt to first chunk on the llm.call and
+// root spans. Measured from trace creation, so it covers the whole client wait.
+func (t *Tracer) stampTimeToFirstToken(traceID string, firstChunk time.Time) {
+	trace := t.store.GetTrace(traceID)
+	if trace == nil || trace.StartTime.IsZero() {
+		return
+	}
+	ms := float64(firstChunk.Sub(trace.StartTime).Nanoseconds()) / 1e6
+	if ms <= 0 {
+		return
+	}
+	if spanID := t.GetDeferredSpanID(traceID); spanID != "" {
+		trace.GetSpan(spanID).SetAttribute(schemas.AttrBifrostTimeToFirstTokenMs, ms)
+	}
+	trace.RootSpan.SetAttribute(schemas.AttrBifrostTimeToFirstTokenMs, ms)
 }
 
 // GetAccumulatedChunks returns the accumulated response, TTFT, and chunk count for the deferred span.
@@ -1002,6 +1028,15 @@ func (t *Tracer) CleanupStreamAccumulator(traceID string) {
 	}
 }
 
+// ResetStreamAccumulator drops the chunks accumulated for the given trace ID so a
+// retried stream attempt starts clean.
+func (t *Tracer) ResetStreamAccumulator(traceID string) {
+	if traceID == "" || t.accumulator == nil {
+		return
+	}
+	t.accumulator.ResetStreamAccumulator(traceID)
+}
+
 // ForceCleanupStreamAccumulator reaps the stream accumulator for the given trace
 // ID regardless of its reference counter. It is the guaranteed end-of-stream
 // backstop, called from the transport's trace completer once the stream has fully
@@ -1029,10 +1064,17 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 	accumCtx.SetValue(schemas.BifrostContextKeyAccumulatorID, traceID)
 	accumCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, isFinalChunk)
 
-	// Forward relevant context values to the new context
+	// Forward everything PricingLookupScopesFromContext reads, so the streamed
+	// total is priced with the same scopes as the request's cost breakdown. The
+	// grant carries the user; the deprecated key covers contexts built without one.
 	if ctx != nil {
+		if g := ctx.Grant(); g != nil {
+			accumCtx.SetGrant(g)
+		}
 		accumCtx.SetValue(schemas.BifrostContextKeySelectedKeyID, ctx.Value(schemas.BifrostContextKeySelectedKeyID))
 		accumCtx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID))
+		accumCtx.SetValue(schemas.BifrostContextKeyUserID, ctx.Value(schemas.BifrostContextKeyUserID))
+		accumCtx.SetValue(schemas.BifrostContextKeyRequestStartTime, ctx.Value(schemas.BifrostContextKeyRequestStartTime))
 	}
 
 	processedResp, processErr := t.accumulator.ProcessStreamingResponse(accumCtx, result, err)
@@ -1086,7 +1128,17 @@ func (t *Tracer) ProcessStreamingChunk(ctx *schemas.BifrostContext, traceID stri
 		accResult.FinishReason = processedResp.Data.FinishReason
 		accResult.RawResponse = processedResp.Data.RawResponse
 
-		if (accResult.Cost == nil || *accResult.Cost == 0.0) && accResult.TokenUsage != nil && accResult.TokenUsage.Cost != nil {
+		// Fall back to the provider-reported cost when the catalog could not price
+		// the stream, unless the provider is configured with ignore_provider_cost.
+		// Key the check on the routed provider, as pricing does.
+		provider := processedResp.Provider
+		if result != nil {
+			if ef := result.GetExtraFields(); ef != nil && ef.RoutingInfo.Provider != "" {
+				provider = ef.RoutingInfo.Provider
+			}
+		}
+		if (accResult.Cost == nil || *accResult.Cost == 0.0) && accResult.TokenUsage != nil && accResult.TokenUsage.Cost != nil &&
+			!t.pricingManager.IsProviderCostIgnored(provider) {
 			accResult.Cost = &accResult.TokenUsage.Cost.TotalCost
 		}
 	}

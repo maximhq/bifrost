@@ -23,7 +23,7 @@ Perplexity is retiring the Sonar API (Chat Completions) on **September 27, 2026*
 | Operation | Non-Streaming | Streaming | Endpoint |
 |-----------|---------------|-----------|----------|
 | Chat Completions | ✅ | ✅ | `/chat/completions` |
-| Responses API / Agent API | ✅ | ✅ | `/v1/responses` (Agent API alias); falls back to `/chat/completions` for `sonar-*` models |
+| Responses API / Agent API | ✅ | ✅ | `/v1/responses` (Agent API alias); falls back to `/chat/completions` for `sonar` and `sonar-*` models |
 | Text Completions | ❌ | ❌ | - |
 | Embeddings | ❌ | ❌ | - |
 | Image Generation | ❌ | ❌ | - |
@@ -31,10 +31,11 @@ Perplexity is retiring the Sonar API (Chat Completions) on **September 27, 2026*
 | Transcriptions (STT) | ❌ | ❌ | - |
 | Files | ❌ | ❌ | - |
 | Batch | ❌ | ❌ | - |
-| List Models | ❌ | ❌ | - |
+| List Models | ✅ | - | `/v1/models` |
+| Decisions | ✅ | - | `/v1/decisions` |
 
 <Note>
-**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, Batch, and List Models are not supported by the upstream Perplexity API. These return `UnsupportedOperationError`.
+**Unsupported Operations** (❌): Text Completions, Embeddings, Image Generation, Speech, Transcriptions, Files, and Batch are not supported by the upstream Perplexity API. These return `UnsupportedOperationError`.
 </Note>
 
 ## Setup & Configuration
@@ -405,7 +406,7 @@ Responses streaming uses the same OpenAI-compatible streaming as Chat Completion
 
 # 3. Agent API (Perplexity's Sonar replacement)
 
-Perplexity's [Agent API](https://docs.perplexity.ai/docs/agent-api/quickstart) is the successor to Sonar, reachable through the same `/v1/responses` endpoint Bifrost already uses for the Responses operation (documented by Perplexity as the OpenAI-SDK-compatible alias for its native `/v1/agent` endpoint). Sending a Bifrost `responses.create` call to Perplexity with a model that isn't `sonar-*`-suffixed (see the routing caveat below) reaches the Agent API directly — no separate operation or endpoint is needed.
+Perplexity's [Agent API](https://docs.perplexity.ai/docs/agent-api/quickstart) is the successor to Sonar, reachable through the same `/v1/responses` endpoint Bifrost already uses for the Responses operation (documented by Perplexity as the OpenAI-SDK-compatible alias for its native `/v1/agent` endpoint). Sending a Bifrost `responses.create` call to Perplexity with a model outside the Sonar family (see the routing caveat below) reaches the Agent API directly — no separate operation or endpoint is needed.
 
 <Note>
 Sonar (`sonar`, `sonar-pro`, `sonar-reasoning[-pro]`, `sonar-deep-research`) remains available and unaffected through Chat Completions until Perplexity's September 27, 2026 deprecation date.
@@ -454,10 +455,10 @@ resp, err := client.ResponsesRequest(schemas.NewBifrostContext(ctx, schemas.NoDe
 </Tab>
 </Tabs>
 
-Bifrost's Perplexity provider forwards `extra_params` for Responses requests that use Perplexity's Agent API route — unlike most other providers, no `x-bf-passthrough-extra-params` header or context flag is needed. The `sonar-*` fallback to Chat Completions (see the routing caveat above) does not enable this passthrough, so `preset` and `max_steps` in `extra_params` are omitted for those models.
+Bifrost's Perplexity provider forwards `extra_params` for Responses requests that use Perplexity's Agent API route — unlike most other providers, no `x-bf-passthrough-extra-params` header or context flag is needed. The Sonar-family fallback to Chat Completions (see the routing caveat below) does not enable this passthrough, so `preset` and `max_steps` in `extra_params` are omitted for those models.
 
 <Note>
-An explicit `model` always wins over a `preset`'s own default model (live-verified against api.perplexity.ai) — the example above pins `openai/gpt-5.6-sol` regardless of `preset`. To let the preset choose the model instead, set `"model": "perplexity/preset"` — a Bifrost-only sentinel, not a real Perplexity model — together with `preset`: Bifrost omits `model` from the wire request in that case so Perplexity's preset default applies. Bare `sonar` and every other real model name are unaffected and always win over `preset`, same as any other explicit model.
+An explicit `model` always wins over a `preset`'s own default model (live-verified against api.perplexity.ai) — the example above pins `openai/gpt-5.6-sol` regardless of `preset`. To let the preset choose the model instead, set `"model": "perplexity/preset"` — a Bifrost-only sentinel, not a real Perplexity model — together with `preset`: Bifrost omits `model` from the wire request in that case so Perplexity's preset default applies. Every real model name is unaffected and always wins over `preset`, same as any other explicit model.
 </Note>
 
 ## Tools
@@ -491,8 +492,37 @@ The Agent API appends tool results as flat items in the `output` array rather th
 
 ## Routing Caveat
 
-Models whose name has a `sonar-` prefix (`sonar-pro`, `sonar-reasoning`, `sonar-reasoning-pro`, `sonar-deep-research`) are routed to `/chat/completions` even through the Responses operation, so Agent-only features (`preset`, `max_steps`, the tools above) aren't reachable with those model names — live-verified: `/v1/responses` rejects both `sonar-pro` and `perplexity/sonar-pro` with `model "..." is not supported`. Use the bare `sonar` model or a third-party model Perplexity's Agent API hosts (e.g. `openai/gpt-5.6-sol`) to reach the Agent API directly.
+The Sonar family — bare `sonar` and every `sonar-` model (`sonar-pro`, `sonar-reasoning`, `sonar-reasoning-pro`, `sonar-deep-research`), with or without the `perplexity/` prefix — is routed to `/chat/completions` even through the Responses operation, so Agent-only features (`preset`, `max_steps`, the tools above) aren't reachable with those model names — live-verified: `/v1/responses` rejects both `sonar-pro` and `perplexity/sonar-pro` with `model "..." is not supported`. Use a third-party model Perplexity's Agent API hosts (e.g. `openai/gpt-5.6-sol`) to reach the Agent API directly.
 
-<Note>
-Perplexity's own bare `sonar` model requires the `perplexity/` vendor-namespace prefix on `/v1/responses` specifically (`{"model":"sonar",...}` 400s; `{"model":"perplexity/sonar",...}` succeeds) — third-party Agent API models like `openai/gpt-5.6-sol` don't need this. Bifrost rewrites this automatically on the wire, so requesting the `sonar` model just works.
-</Note>
+---
+
+# 4. Decisions
+
+Perplexity's decider models answer [`/v1/decisions`](/quickstart/gateway/decisions):
+
+| Model | Notes |
+|-------|-------|
+| `pplx-decider-v1.1-27b` | Current release |
+| `pplx-decider-v1-27b` | Previous release |
+
+Dated snapshots (for example `pplx-decider-v1.1-27b-20261006`) work too.
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "perplexity/pplx-decider-v1.1-27b",
+    "input": "Customer message: I was double charged and nobody replied to my two emails.",
+    "questions": [
+      { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" }
+    ]
+  }'
+```
+
+Bifrost calls Perplexity's `POST /v1/decisions`, which uses TypeSafe's System One format, so questions are converted as on [TypeSafe](/providers/supported-providers/typesafe#field-mapping-reference). Differences from TypeSafe:
+
+- **Images are supported.** `input_image` parts are sent in order with the message text. Perplexity decides which URLs it accepts; a remote URL it cannot fetch returns its own `400`.
+- **Score questions take 1-10 levels** (TypeSafe needs at least 2).
+- **The response `id`** comes from Perplexity's `x-request-id` header.
+
+A model Perplexity does not serve returns Perplexity's own error. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use these models as its classifier; it starts on `pplx-decider-v1.1-27b`.

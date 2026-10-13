@@ -1,4 +1,9 @@
+import { devices } from '@playwright/test'
 import { expect, test } from '../../core/fixtures/base.fixture'
+
+// defaultBrowserType is worker-scoped and cannot be set per file; the lane already runs Chromium.
+const { defaultBrowserType: _, ...pixel7 } = devices['Pixel 7']
+test.use(pixel7)
 
 const mobileRoutes = [
   { name: 'dashboard', path: '/workspace/dashboard' },

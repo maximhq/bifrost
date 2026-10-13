@@ -916,6 +916,50 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 		copy.GuardContent = copyGuardContent
 	}
 
+	// Deep copy CacheControl if present
+	if original.CacheControl != nil {
+		copyCacheControl := &CacheControl{Type: original.CacheControl.Type}
+		if original.CacheControl.TTL != nil {
+			copyTTL := *original.CacheControl.TTL
+			copyCacheControl.TTL = &copyTTL
+		}
+		if original.CacheControl.Scope != nil {
+			copyScope := *original.CacheControl.Scope
+			copyCacheControl.Scope = &copyScope
+		}
+		copy.CacheControl = copyCacheControl
+	}
+
+	// Deep copy Citations.
+	if original.Citations != nil {
+		copyCitations := &Citations{}
+		if original.Citations.Enabled != nil {
+			copyEnabled := *original.Citations.Enabled
+			copyCitations.Enabled = &copyEnabled
+		}
+		copy.Citations = copyCitations
+	}
+
+	// Deep copy PromptCacheBreakpoint.
+	if original.PromptCacheBreakpoint != nil {
+		copyPromptCacheBreakpoint := &PromptCacheBreakpoint{}
+		if original.PromptCacheBreakpoint.Mode != nil {
+			copyMode := *original.PromptCacheBreakpoint.Mode
+			copyPromptCacheBreakpoint.Mode = &copyMode
+		}
+		copy.PromptCacheBreakpoint = copyPromptCacheBreakpoint
+	}
+
+	// Deep copy CachePoint.
+	if original.CachePoint != nil {
+		copyCachePoint := &CachePoint{Type: original.CachePoint.Type}
+		if original.CachePoint.TTL != nil {
+			copyTTL := *original.CachePoint.TTL
+			copyCachePoint.TTL = &copyTTL
+		}
+		copy.CachePoint = copyCachePoint
+	}
+
 	return copy
 }
 
@@ -1666,10 +1710,10 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.ResponsesCodeInterpreterToolCall = &copyToolCall
 		}
 
-		// Deep copy ResponsesMCPToolCall.
-		if original.ResponsesToolMessage.ResponsesMCPToolCall != nil {
-			copyToolCall := *original.ResponsesToolMessage.ResponsesMCPToolCall
-			copy.ResponsesToolMessage.ResponsesMCPToolCall = &copyToolCall
+		// Deep copy ServerLabel (shared by the MCP items).
+		if original.ResponsesToolMessage.ServerLabel != nil {
+			serverLabel := *original.ResponsesToolMessage.ServerLabel
+			copy.ResponsesToolMessage.ServerLabel = &serverLabel
 		}
 
 		// Deep copy ResponsesImageGenerationCall.
@@ -2177,9 +2221,34 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		}
 	}
 	if original.ResponsesOutputMessageContentCompaction != nil {
-		copy.ResponsesOutputMessageContentCompaction = &ResponsesOutputMessageContentCompaction{
+		copyCompaction := &ResponsesOutputMessageContentCompaction{
 			Summary: original.ResponsesOutputMessageContentCompaction.Summary,
 		}
+		// tool_changes are replayed to the provider verbatim, so they must survive the copy.
+		if changes := original.ResponsesOutputMessageContentCompaction.ToolChanges; changes != nil {
+			copyCompaction.ToolChanges = make([]ResponsesMessageContentBlock, len(changes))
+			for i, change := range changes {
+				copyCompaction.ToolChanges[i] = deepCopyResponsesMessageContentBlock(change)
+			}
+		}
+		copy.ResponsesOutputMessageContentCompaction = copyCompaction
+	}
+	// The tool target of a tool_addition / tool_removal block is what the provider acts on;
+	// without it the block is dropped on egress. The definition is copied by value (its nested
+	// schema pointers are shared, as no transform mutates a tool definition in place).
+	if original.ToolChange != nil {
+		copyTarget := &ResponsesToolChangeTarget{Type: original.ToolChange.Type}
+		if original.ToolChange.Name != nil {
+			copyTarget.Name = new(*original.ToolChange.Name)
+		}
+		if original.ToolChange.ServerName != nil {
+			copyTarget.ServerName = new(*original.ToolChange.ServerName)
+		}
+		if original.ToolChange.Definition != nil {
+			copyDefinition := *original.ToolChange.Definition
+			copyTarget.Definition = &copyDefinition
+		}
+		copy.ToolChange = copyTarget
 	}
 	if original.ResponsesOutputMessageContentFallback != nil {
 		copyFallback := &ResponsesOutputMessageContentFallback{
@@ -2343,6 +2412,37 @@ func IsTypesafeModel(model string) bool {
 	return strings.HasPrefix(strings.TrimPrefix(strings.ToLower(model), "~"), "typesafe/")
 }
 
+// IsClefModel checks if the model is a Clef decision model on Cloudflare Workers AI,
+// by its bare name ("clef-flash") or Cloudflare's full ID ("@cf/cloudflare/clef-flash").
+// Any "clef" name matches, so new Clef variants work without a code change.
+func IsClefModel(model string) bool {
+	return strings.HasPrefix(strings.TrimPrefix(model, "@cf/cloudflare/"), "clef")
+}
+
+// IsPerplexityDeciderModel checks if the model is one of Perplexity's decider models
+// ("pplx-decider-v1.1-27b"), served on its decisions endpoint rather than chat. Dated
+// snapshots share the prefix.
+func IsPerplexityDeciderModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "pplx-decider")
+}
+
+// ollamaDecisionModelPrefixes are the System One model families in Ollama's
+// library, served on its /v1/systemone endpoint rather than chat.
+var ollamaDecisionModelPrefixes = []string{"nimble", "tev1", "clef", "laya"}
+
+// IsOllamaDecisionModel checks if the model is one of Ollama's System One
+// models ("nimble", "clef-flash", "tev1:0.8b"). Any name in a System One family
+// matches, so new variants work without a code change.
+func IsOllamaDecisionModel(model string) bool {
+	model = strings.ToLower(model)
+	for _, prefix := range ollamaDecisionModelPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
@@ -2478,6 +2578,26 @@ func IsOpus55Plus(model string) bool {
 		return false
 	}
 	return strings.Contains(m, "5-5") || strings.Contains(m, "5.5")
+}
+
+// openAIDecisionModelPrefixes are the model families OpenAI serves on its
+// POST /v1/decisions endpoint. They back DefaultSupportsDecisions for
+// deployments without the datasheet; with it, the supports_decisions row
+// decides.
+var openAIDecisionModelPrefixes = []string{"gpt-6-luna"}
+
+// DefaultSupportsDecisions is the name-based fallback for
+// ModelCaps.SupportsDecisions, used when the datasheet says nothing: true for
+// a model family OpenAI serves on its decisions endpoint. Dated snapshots
+// share their family's prefix.
+func DefaultSupportsDecisions(model string) bool {
+	model = strings.TrimPrefix(strings.ToLower(model), "openai/")
+	for _, prefix := range openAIDecisionModelPrefixes {
+		if strings.HasPrefix(model, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // DefaultSupportsForcedToolChoice is the name-based fallback for

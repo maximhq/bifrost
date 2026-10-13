@@ -56,9 +56,10 @@ type SessionAffinity interface {
 	// order. It answers with the chain to dispatch. The chain unchanged, or nil, leaves the
 	// request as the hooks left it.
 	ResolveRoute(ctx *BifrostContext, requested Route, chain []Route) []Route
-	// ResolveKey is asked once the eligible key pool for a provider attempt has been built
-	// with two or more keys in it. It answers with the key the session's state settles on, or
-	// with ok=false to leave the choice to ordinary key selection. A returned key is used for
+	// ResolveKey is asked once the eligible key pool for a provider attempt has been built. It
+	// answers with the key the session's state settles on, or with ok=false to leave the choice
+	// to ordinary key selection. A pool of one key is offered too, so a binding to a key that
+	// left the pool can be dropped; its answer is ignored, since that one key is used. A returned key is used for
 	// every attempt of the request until the provider rejects it outright (a credential, quota
 	// or model-access failure); the request then continues on another eligible key.
 	ResolveKey(ctx *BifrostContext, provider ModelProvider, model string, eligible []Key) (key Key, ok bool)

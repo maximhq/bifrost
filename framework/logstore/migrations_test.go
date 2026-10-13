@@ -902,3 +902,236 @@ func TestMigrationAddEmbeddingInputColumn_SQLite(t *testing.T) {
 	require.NoError(t, err)
 	runEmbeddingInputColumnCases(t, db)
 }
+
+// TestAdvisoryKeyHalves pins how a bigint advisory key maps onto the
+// (classid, objid) pair pg_locks reports, which the migration probe queries by.
+func TestAdvisoryKeyHalves(t *testing.T) {
+	classid, objid := advisoryKeyHalves(migrationAdvisoryLockKey)
+	assert.Equal(t, int64(0), classid)
+	assert.Equal(t, int64(migrationAdvisoryLockKey), objid)
+
+	classid, objid = advisoryKeyHalves(int64(7)<<32 | 42)
+	assert.Equal(t, int64(7), classid)
+	assert.Equal(t, int64(42), objid)
+}
+
+// TestMigrationLockProbeNonPostgresNeverReportsMigration pins the fail-open
+// defaults: no store, no database, or a non-Postgres dialect all read as
+// "not migrating" without issuing any query.
+func TestMigrationLockProbeNonPostgresNeverReportsMigration(t *testing.T) {
+	var nilProbe *migrationLockProbe
+	assert.False(t, nilProbe.inProgress(context.Background()))
+	assert.False(t, newMigrationLockProbe(nil, testLogger{}).inProgress(context.Background()))
+
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "probe.db")), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	store := &RDBLogStore{db: db, logger: testLogger{}}
+	assert.False(t, store.MigrationInProgress(context.Background()))
+	assert.False(t, MigrationInProgressFor(context.Background(), store))
+	assert.False(t, MigrationInProgressFor(context.Background(), struct{}{}), "a value without the gate reads as not migrating")
+}
+
+// TestMigrationLockProbeCachesWithinTTL pins that one answer is reused for
+// maintenanceCheckTTL so many pollers cost the database one query per TTL.
+func TestMigrationLockProbeCachesWithinTTL(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	probe := &migrationLockProbe{now: func() time.Time { return now }, checkedAt: now, held: true}
+	assert.True(t, probe.inProgress(context.Background()), "a fresh cached answer is served without a database")
+
+	now = now.Add(maintenanceCheckTTL)
+	assert.False(t, probe.inProgress(context.Background()), "an expired cache falls through to the (absent) database and fails open")
+}
+
+// TestMigrationInProgressTracksAdvisoryLockPostgres pins the live probe: it
+// sees the migration lock held by another session, ignores other keys, clears
+// when the holder goes away, and fails open when the database is unreachable.
+func TestMigrationInProgressTracksAdvisoryLockPostgres(t *testing.T) {
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	store := &RDBLogStore{db: db, logger: testLogger{}}
+	fresh := func() bool {
+		probe := store.migrationProbe()
+		probe.mu.Lock()
+		probe.checkedAt = time.Time{}
+		probe.mu.Unlock()
+		return store.MigrationInProgress(context.Background())
+	}
+
+	require.False(t, fresh(), "no lock held yet")
+
+	holderDB, holder := acquireTestAdvisoryLockOnIsolatedPool(t, migrationAdvisoryLockKey)
+	require.True(t, fresh(), "migration lock held by another session must be visible")
+	assert.True(t, store.MigrationInProgress(context.Background()), "cached answer within the TTL")
+	closeTestAdvisoryLockSession(t, holderDB, holder)
+	require.Eventually(t, probeReports(store, false), 5*time.Second, 50*time.Millisecond, "lock must clear once the holder's session ends")
+
+	indexDB, indexHolder := acquireTestAdvisoryLockOnIsolatedPool(t, indexAdvisoryLockKey)
+	require.False(t, fresh(), "a different advisory key (background index build) must not read as a migration")
+	closeTestAdvisoryLockSession(t, indexDB, indexHolder)
+
+	closedDB := trySetupPostgresDB(t)
+	require.NotNil(t, closedDB)
+	closedSQL, err := closedDB.DB()
+	require.NoError(t, err)
+	require.NoError(t, closedSQL.Close())
+	assert.False(t, newMigrationLockProbe(closedDB, testLogger{}).inProgress(context.Background()), "an unreachable database fails open")
+}
+
+// probeReports returns a poll function that resets the probe cache and reports
+// whether MigrationInProgress equals want.
+func probeReports(store *RDBLogStore, want bool) func() bool {
+	return func() bool {
+		probe := store.migrationProbe()
+		probe.mu.Lock()
+		probe.checkedAt = time.Time{}
+		probe.mu.Unlock()
+		return store.MigrationInProgress(context.Background()) == want
+	}
+}
+
+// TestMigrationLockProbeCachesFromQueryCompletion pins that the TTL starts when
+// the answer arrives, not when the query was issued: a slow probe must not leave
+// an already-expired answer for the callers queued behind it, or each of them
+// would run its own slow query in turn.
+func TestMigrationLockProbeCachesFromQueryCompletion(t *testing.T) {
+	now := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	queries := 0
+	probe := &migrationLockProbe{
+		now: func() time.Time { return now },
+		query: func(context.Context) (bool, error) {
+			queries++
+			now = now.Add(maintenanceCheckTTL + 500*time.Millisecond) // a slow round trip
+			return true, nil
+		},
+	}
+	assert.True(t, probe.inProgress(context.Background()))
+	assert.True(t, probe.inProgress(context.Background()), "the answer that just arrived is served from cache")
+	assert.Equal(t, 1, queries, "a slow probe must not make the next caller query again")
+}
+
+// TestMigrationLockProbeWaitersHonourContext pins that a caller whose context
+// ends while another caller's query is in flight returns at once (fail open)
+// instead of waiting for that probe, so shutdown never waits on the database.
+func TestMigrationLockProbeWaitersHonourContext(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	released := false
+	releaseOnce := func() {
+		if !released {
+			released = true
+			close(release)
+		}
+	}
+	defer releaseOnce()
+	probe := &migrationLockProbe{
+		now: time.Now,
+		query: func(context.Context) (bool, error) {
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			<-release
+			return true, nil
+		},
+	}
+	first := make(chan bool, 1)
+	go func() { first <- probe.inProgress(context.Background()) }()
+	<-entered
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	second := make(chan bool, 1)
+	go func() { second <- probe.inProgress(cancelled) }()
+	select {
+	case got := <-second:
+		assert.False(t, got, "a caller whose context ended must fail open")
+	case <-time.After(time.Second):
+		t.Fatal("a caller with an ended context waited for another caller's probe")
+	}
+	releaseOnce()
+	assert.True(t, <-first, "the in-flight probe still completes normally")
+}
+
+// TestAgentRawCaptureMigration upgrades existing Agent log tables without replacing rows.
+func TestAgentRawCaptureMigration(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "raw-migration.db")), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec("CREATE TABLE agent_logs (id TEXT PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO agent_logs (id) VALUES (?)", "existing").Error)
+	for range 2 {
+		require.NoError(t, migrationAddAgentRawPayloadColumns(context.Background(), db, testLogger{}))
+	}
+	require.True(t, db.Migrator().HasColumn(&AgentLog{}, "RawRequest"))
+	require.True(t, db.Migrator().HasColumn(&AgentLog{}, "RawResponse"))
+	var count int64
+	require.NoError(t, db.Table("agent_logs").Where("id = ?", "existing").Count(&count).Error)
+	require.Equal(t, int64(1), count)
+}
+
+// TestIndexBuildersIgnoreSameNamedIndexInOtherSchema pins that the index
+// builders look for their index on this schema's table. A shared database can
+// hold another schema with its own logs tables (another deployment, or a test
+// package), and a valid same-named index there made the builders skip their
+// build, leaving this schema's table unindexed (so the cost and latency sorts
+// seq-scanned). The other schema is also on the search_path after this one, so
+// an unqualified DROP INDEX of a missing index would resolve to its copy: the
+// builders must leave it alone.
+func TestIndexBuildersIgnoreSameNamedIndexInOtherSchema(t *testing.T) {
+	const shadow = "logstore_test_shadow"
+	_, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.Exec("DROP SCHEMA IF EXISTS "+shadow+" CASCADE").Error)
+	require.NoError(t, db.Exec("CREATE SCHEMA "+shadow).Error)
+	t.Cleanup(func() { _ = db.Exec("DROP SCHEMA IF EXISTS " + shadow + " CASCADE").Error })
+
+	type index struct{ table, name string }
+	indexes := []index{
+		{"logs", "idx_logs_metadata_gin"},
+		{"logs", "idx_logs_team_ids_gin"},
+		{"logs", "idx_logs_business_unit_ids_gin"},
+		{"logs", "idx_logs_customer_ids_gin"},
+		{"logs", "idx_logs_histogram_cover"},
+		{"mcp_tool_logs", "idx_mcp_logs_histogram_cover"},
+	}
+	for _, idx := range performanceIndexes {
+		indexes = append(indexes, index{idx.table, idx.name})
+	}
+
+	// A valid same-named index in the shadow schema, and none in this one.
+	for _, idx := range indexes {
+		require.NoError(t, db.Exec(fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s (id text)", shadow, idx.table)).Error)
+		require.NoError(t, db.Exec(fmt.Sprintf("CREATE INDEX %s ON %s.%s (id)", idx.name, shadow, idx.table)).Error)
+		require.NoError(t, db.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s.%s", pgTestSchema, idx.name)).Error)
+	}
+
+	conn := acquirePerfTestSQLConn(t, ctx, db)
+	_, err := conn.ExecContext(ctx, fmt.Sprintf("SET search_path TO %s, %s", pgTestSchema, shadow))
+	require.NoError(t, err)
+	// Runs before the connection returns to the pool.
+	t.Cleanup(func() { _, _ = conn.ExecContext(context.Background(), "SET search_path TO "+pgTestSchema) })
+
+	require.NoError(t, ensureMetadataGINIndex(ctx, conn))
+	require.NoError(t, ensureMultiTeamBusinessUnitGINIndexes(ctx, conn))
+	require.NoError(t, ensureDashboardEnhancements(ctx, conn))
+	require.NoError(t, ensurePerformanceIndexes(ctx, conn, testLogger{}))
+
+	// Read pg_index directly rather than through pgIndexValid, which is the
+	// check under test: the index must be valid on this schema's table.
+	for _, idx := range indexes {
+		var built bool
+		require.NoError(t, db.Raw(`
+			SELECT COALESCE(bool_and(pi.indisvalid), false)
+			FROM pg_index pi
+			JOIN pg_class ic ON ic.oid = pi.indexrelid
+			WHERE pi.indrelid = to_regclass(?) AND ic.relname = ?
+		`, pgTestSchema+"."+idx.table, idx.name).Scan(&built).Error)
+		assert.True(t, built, "%s on %s.%s must be built despite a same-named index in %s", idx.name, pgTestSchema, idx.table, shadow)
+
+		var shadowKept bool
+		require.NoError(t, db.Raw("SELECT to_regclass(?) IS NOT NULL", shadow+"."+idx.name).Scan(&shadowKept).Error)
+		assert.True(t, shadowKept, "the builders must not drop %s.%s", shadow, idx.name)
+	}
+}

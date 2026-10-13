@@ -192,38 +192,12 @@ func TestResponses_AgentAPIForwardsPerplexitySpecificWebSearchFilters(t *testing
 	}
 }
 
-// TestWireModelForAgentAPI locks in the live-verified (api.perplexity.ai, 2026-09-17)
-// requirement that Perplexity's Agent API wants its own bare "sonar" model spelled
-// "perplexity/sonar" on the wire, while every other model string (including one that
-// already carries the prefix) is left untouched.
-func TestWireModelForAgentAPI(t *testing.T) {
-	tests := []struct {
-		name  string
-		model string
-		want  string
-	}{
-		{name: "bare sonar gets prefixed", model: "sonar", want: "perplexity/sonar"},
-		{name: "already-prefixed sonar is unchanged", model: "perplexity/sonar", want: "perplexity/sonar"},
-		{name: "sonar-pro is untouched (routes to chat/completions, not this path)", model: "sonar-pro", want: "sonar-pro"},
-		{name: "third-party model is untouched", model: "openai/gpt-5.6-sol", want: "openai/gpt-5.6-sol"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := wireModelForAgentAPI(tt.model); got != tt.want {
-				t.Fatalf("wireModelForAgentAPI(%q) = %q, want %q", tt.model, got, tt.want)
-			}
-		})
-	}
-}
-
-// TestWithWireModelForAgentAPI covers withWireModelForAgentAPI directly: the bare
-// "sonar" rewrite from TestWireModelForAgentAPI, plus the dedicated "preset" sentinel
-// that lets a `preset` pick Perplexity's own default model. Live-verified against
-// api.perplexity.ai on 2026-09-24: sending any `model` value, even an empty string,
-// always wins over a `preset`'s own default model — only a wire request with no
-// `model` field at all lets the preset choose. Bare "sonar" is a real Perplexity
-// model, so it is never touched by a preset (a caller who wants it keeps it
-// regardless of any preset); the "preset" sentinel (not a real model — see
+// TestWithWireModelForAgentAPI covers withWireModelForAgentAPI directly: the dedicated
+// "preset" sentinel that lets a `preset` pick Perplexity's own default model.
+// Live-verified against api.perplexity.ai on 2026-09-24: sending any `model` value,
+// even an empty string, always wins over a `preset`'s own default model — only a wire
+// request with no `model` field at all lets the preset choose. A real model is never
+// touched by a preset; the "preset" sentinel (not a real model — see
 // perplexityAgentPresetModel) is the explicit opt-in for letting the preset decide.
 func TestWithWireModelForAgentAPI(t *testing.T) {
 	tests := []struct {
@@ -233,8 +207,7 @@ func TestWithWireModelForAgentAPI(t *testing.T) {
 		preset    string
 		want      string
 	}{
-		{name: "bare sonar, no preset param at all: rewritten as usual", model: "sonar", want: "perplexity/sonar"},
-		{name: "bare sonar + preset: explicit sonar model still wins, unaffected", model: "sonar", hasPreset: true, preset: "fast", want: "perplexity/sonar"},
+		{name: "real model, no preset param at all: left untouched", model: "openai/gpt-5.6-sol", want: "openai/gpt-5.6-sol"},
 		{name: "preset sentinel, no preset param: left untouched (caller error)", model: "preset", want: "preset"},
 		{name: "bare preset sentinel + non-empty preset: model cleared for preset to control", model: "preset", hasPreset: true, preset: "fast", want: ""},
 		{name: "prefixed preset sentinel + non-empty preset: model cleared for preset to control", model: "perplexity/preset", hasPreset: true, preset: "fast", want: ""},
@@ -256,55 +229,6 @@ func TestWithWireModelForAgentAPI(t *testing.T) {
 				t.Fatalf("caller's request.Model was mutated: got %q, want %q", req.Model, tt.model)
 			}
 		})
-	}
-}
-
-// TestResponses_AgentAPIRewritesBareSonarModel verifies the fix end to end: a Responses
-// call for the bare "sonar" model reaches Perplexity's /v1/responses (the Agent API
-// alias) as "perplexity/sonar" on the wire. Before this fix, Bifrost forwarded "sonar"
-// verbatim, which Perplexity's live API rejects with `validation failed: model "sonar"
-// is not supported` even though isPerplexityResponsesSupported("sonar") routes it here.
-func TestResponses_AgentAPIRewritesBareSonarModel(t *testing.T) {
-	t.Parallel()
-
-	var capturedBody map[string]interface{}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
-			http.Error(w, "json error", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(minimalResponsesAPIPayload))
-	}))
-	defer server.Close()
-
-	provider := newTestPerplexityProvider(t, server.URL)
-	key := schemas.Key{ID: "test-key", Value: schemas.SecretVar{Val: "test-api-key"}}
-
-	hello := "hi"
-	req := &schemas.BifrostResponsesRequest{
-		Provider: schemas.Perplexity,
-		Model:    "sonar",
-		Input: []schemas.ResponsesMessage{
-			{
-				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
-				Content: &schemas.ResponsesMessageContent{ContentStr: &hello},
-			},
-		},
-	}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	if _, bifrostErr := provider.Responses(ctx, key, req); bifrostErr != nil {
-		t.Fatalf("Responses returned error: %v", bifrostErr.Error.Message)
-	}
-
-	if got, want := capturedBody["model"], "perplexity/sonar"; got != want {
-		t.Fatalf("expected model=%q on the wire, got %v", want, got)
-	}
-	// The caller's own request object must not be mutated.
-	if req.Model != "sonar" {
-		t.Fatalf("caller's request.Model was mutated: got %q, want \"sonar\"", req.Model)
 	}
 }
 
@@ -407,59 +331,6 @@ const minimalResponsesAPIStreamCompletedEvent = `data: {"type":"response.complet
 	`{"id":"resp_1","object":"response","created_at":1,"model":"openai/gpt-5.6-sol","status":"completed",` +
 	`"output":[{"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"hi","annotations":[]}]}],` +
 	`"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n"
-
-// TestResponsesStream_AgentAPIRewritesBareSonarModel is the streaming counterpart of
-// TestResponses_AgentAPIRewritesBareSonarModel: without a preset, bare "sonar" is
-// still rewritten to "perplexity/sonar" on the wire for the streaming path.
-func TestResponsesStream_AgentAPIRewritesBareSonarModel(t *testing.T) {
-	t.Parallel()
-
-	var capturedBody map[string]interface{}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
-			http.Error(w, "json error", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		_, _ = fmt.Fprint(w, minimalResponsesAPIStreamCompletedEvent)
-		if flusher, ok := w.(http.Flusher); ok {
-			flusher.Flush()
-		}
-	}))
-	defer server.Close()
-
-	provider := newTestPerplexityProvider(t, server.URL)
-	key := schemas.Key{ID: "test-key", Value: schemas.SecretVar{Val: "test-api-key"}}
-
-	hello := "hi"
-	req := &schemas.BifrostResponsesRequest{
-		Provider: schemas.Perplexity,
-		Model:    "sonar",
-		Input: []schemas.ResponsesMessage{
-			{
-				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
-				Content: &schemas.ResponsesMessageContent{ContentStr: &hello},
-			},
-		},
-	}
-
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	stream, bifrostErr := provider.ResponsesStream(ctx, noopPostHookRunner, nil, key, req)
-	if bifrostErr != nil {
-		t.Fatalf("ResponsesStream returned error synchronously: %v", bifrostErr.Error.Message)
-	}
-	drainStreamWithTimeout(t, stream, 5*time.Second)
-
-	if got, want := capturedBody["model"], "perplexity/sonar"; got != want {
-		t.Fatalf("expected model=%q on the wire, got %v", want, got)
-	}
-	// The caller's own request object must not be mutated.
-	if req.Model != "sonar" {
-		t.Fatalf("caller's request.Model was mutated: got %q, want \"sonar\"", req.Model)
-	}
-}
 
 // TestResponsesStream_AgentAPIOmitsModelForPresetAndForwardsExtraParams is the
 // streaming counterpart of TestResponses_AgentAPIForwardsExtraParamsAutomatically and

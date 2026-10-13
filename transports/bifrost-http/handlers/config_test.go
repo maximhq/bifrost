@@ -25,6 +25,7 @@ import (
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
@@ -484,6 +485,165 @@ func TestUpdateConfig_A2AExternalClientURLPresence(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, persisted.A2AExternalClientURL)
 	assert.Empty(t, persisted.A2AExternalClientURL.GetValue())
+}
+
+// enforce_vk_object_ownership defaults to true when a body omits it, so the handler copies it only
+// when sent: a partial save from an API client must not turn a stored false back on.
+func TestUpdateConfig_EnforceVKObjectOwnershipPresence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.EnforceVKObjectOwnership = false
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() bool {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.EnforceVKObjectOwnership
+	}
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.False(t, cfg.ClientConfig.EnforceVKObjectOwnership, "an omitted field keeps the live value")
+	assert.False(t, stored(), "an omitted field keeps the stored value")
+
+	enabled := putConfigCtx(`{"client_config":{"log_retention_days":8,"enforce_vk_object_ownership":true}}`)
+	h.updateConfig(enabled)
+	require.Equal(t, fasthttp.StatusOK, enabled.Response.StatusCode(), string(enabled.Response.Body()))
+	assert.True(t, cfg.ClientConfig.EnforceVKObjectOwnership)
+	assert.True(t, stored())
+
+	disabled := putConfigCtx(`{"client_config":{"log_retention_days":8,"enforce_vk_object_ownership":false}}`)
+	h.updateConfig(disabled)
+	require.Equal(t, fasthttp.StatusOK, disabled.Response.StatusCode(), string(disabled.Response.Body()))
+	assert.False(t, cfg.ClientConfig.EnforceVKObjectOwnership)
+	assert.False(t, stored())
+	// null would decode as the default (true) and pass the presence check, so it is refused
+	// before anything changes; other non-boolean values already fail decoding.
+	for _, body := range []string{
+		`{"client_config":{"log_retention_days":8,"enforce_vk_object_ownership":null}}`,
+		`{"client_config":{"log_retention_days":8,"enforce_vk_object_ownership":"yes"}}`,
+	} {
+		refused := putConfigCtx(body)
+		h.updateConfig(refused)
+		assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), "%s: %s", body, refused.Response.Body())
+		assert.False(t, cfg.ClientConfig.EnforceVKObjectOwnership, "%s left the live value unchanged", body)
+		assert.False(t, stored(), "%s left the stored value unchanged", body)
+	}
+}
+
+// TestUpdateConfig_MCPOAuthPrivateAllowlist pins how PUT /api/config handles
+// mcp_oauth_private_allowlist: an authenticated admin sets it and it is
+// persisted; an omitted field keeps it; a caller admitted with auth bypassed
+// may resend the current value (the dashboard saves the whole client config)
+// but not change it; entries the policy can never honor are refused.
+func TestUpdateConfig_MCPOAuthPrivateAllowlist(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	persistedAllowlist := func() []string {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.MCPOAuthPrivateAllowlist
+	}
+
+	set := putConfigCtx(`{"client_config":{"log_retention_days":8,"mcp_oauth_private_allowlist":["localhost","127.0.0.1","10.0.0.0/8"]}}`)
+	h.updateConfig(set)
+	require.Equal(t, fasthttp.StatusOK, set.Response.StatusCode(), string(set.Response.Body()))
+	want := []string{"localhost", "127.0.0.1", "10.0.0.0/8"}
+	assert.Equal(t, want, cfg.ClientConfig.MCPOAuthPrivateAllowlist)
+	assert.Equal(t, want, persistedAllowlist())
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	omitted.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.Equal(t, want, persistedAllowlist(), "an omitted allowlist must be kept")
+
+	resent := putConfigCtx(`{"client_config":{"log_retention_days":8,"mcp_oauth_private_allowlist":["localhost","127.0.0.1","10.0.0.0/8"]}}`)
+	resent.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updateConfig(resent)
+	require.Equal(t, fasthttp.StatusOK, resent.Response.StatusCode(), string(resent.Response.Body()))
+
+	for _, body := range []string{
+		`{"client_config":{"log_retention_days":8,"mcp_oauth_private_allowlist":["localhost","192.168.0.0/16"]}}`,
+		`{"client_config":{"log_retention_days":8,"mcp_oauth_private_allowlist":[]}}`,
+	} {
+		changed := putConfigCtx(body)
+		changed.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		h.updateConfig(changed)
+		require.Equal(t, fasthttp.StatusForbidden, changed.Response.StatusCode(), string(changed.Response.Body()))
+		assert.Contains(t, string(changed.Response.Body()), "mcp_oauth_private_allowlist requires an authenticated admin session")
+		assert.Equal(t, want, persistedAllowlist(), "an auth-bypassed caller must not change the allowlist")
+	}
+
+	for _, entry := range []string{"169.254.169.254", "0.0.0.0/0", "metadata.google.internal", "http://localhost:3000"} {
+		invalid := putConfigCtx(`{"client_config":{"log_retention_days":8,"mcp_oauth_private_allowlist":["` + entry + `"]}}`)
+		h.updateConfig(invalid)
+		require.Equal(t, fasthttp.StatusBadRequest, invalid.Response.StatusCode(), entry+": "+string(invalid.Response.Body()))
+		assert.Equal(t, want, persistedAllowlist())
+	}
+
+	cleared := putConfigCtx(`{"client_config":{"log_retention_days":8,"mcp_oauth_private_allowlist":[]}}`)
+	h.updateConfig(cleared)
+	require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode(), string(cleared.Response.Body()))
+	assert.Empty(t, persistedAllowlist())
+}
+
+// failingReloadConfigManager fails the post-save reload, as a config store read
+// error would.
+type failingReloadConfigManager struct{ stubConfigManager }
+
+func (failingReloadConfigManager) ReloadClientConfigFromConfigStore(context.Context) error {
+	return errors.New("config store read failed")
+}
+
+// TestUpdateConfig_MCPOAuthPrivateAllowlistRemovalSurvivesFailedReload pins
+// that a saved allowlist removal takes effect even when the reload after the
+// save fails: the OAuth chain must stop reaching the removed host rather than
+// keep the old list until a later reload succeeds.
+func TestUpdateConfig_MCPOAuthPrivateAllowlistRemovalSurvivesFailedReload(t *testing.T) {
+	SetLogger(&mockLogger{})
+	oauth2.SetDiscoveryDialContextForTests(nil)
+	t.Cleanup(func() {
+		oauth2.SetDiscoveryDialContextForTests((&net.Dialer{}).DialContext)
+		require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(nil))
+	})
+
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.MCPOAuthPrivateAllowlist = []string{"127.0.0.1"}
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	require.NoError(t, lib.ApplyMCPOAuthPrivateAllowlist(cfg.ClientConfig.MCPOAuthPrivateAllowlist))
+
+	h := &ConfigHandler{store: cfg, configManager: failingReloadConfigManager{}}
+	removal := putConfigCtx(`{"client_config":{"log_retention_days":8,"mcp_oauth_private_allowlist":[]}}`)
+	h.updateConfig(removal)
+	require.Equal(t, fasthttp.StatusInternalServerError, removal.Response.StatusCode(), string(removal.Response.Body()))
+	persisted, err := store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	require.Empty(t, persisted.MCPOAuthPrivateAllowlist, "the removal is saved before the reload runs")
+
+	server := newLoopbackOAuthMCPServer(t)
+	provider := oauth2.NewOAuth2Provider(store, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	mcpCfg := &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}, OAuthProvider: provider}
+	mh := &MCPHandler{store: mcpCfg, mcpManager: failingMCPManager{}, oauthHandler: NewOAuthHandler(provider, nil, mcpCfg)}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.Header.SetContentType("application/json")
+	req.Header.SetHost("bifrost.example.com")
+	req.SetBodyString(`{"name":"local_oauth","connection_type":"http","connection_string":"` + server.URL + `/mcp","auth_type":"oauth","oauth_config":{}}`)
+	add := initCtx(&req)
+	mh.addMCPClient(add)
+
+	body := string(add.Response.Body())
+	require.Equal(t, fasthttp.StatusInternalServerError, add.Response.StatusCode(), "a host removed from the saved allowlist must not stay reachable: %s", body)
+	assert.Contains(t, body, "blocked connection to non-public address")
 }
 
 // TestUpdateConfig_EmptyDatasheetURLsResetToDefaults pins the regression where

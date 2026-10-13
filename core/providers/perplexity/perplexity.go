@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
+	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -274,8 +275,7 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 }
 
 // withWireModelForAgentAPI returns request unchanged, or a shallow copy with Model
-// rewritten to wireModelForAgentAPI(request.Model) or cleared, so the caller's
-// request is never mutated.
+// cleared, so the caller's request is never mutated.
 //
 // A `preset` (fast/low/medium/high/xhigh/wide-research — see
 // docs.perplexity.ai/docs/agent-api/presets) can supply its own default model,
@@ -289,8 +289,7 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 // Bifrost requires a non-empty Model for internal routing, so a caller who wants
 // the preset to pick the model opts in explicitly with the perplexityAgentPresetModel
 // sentinel ("preset", not a real Perplexity model — see its doc comment) instead of
-// naming a real model. Every other model, including bare "sonar" (Perplexity's own
-// base model — see wireModelForAgentAPI), is left for the preset/model interplay
+// naming a real model. Every other model is left for the preset/model interplay
 // Perplexity itself already resolves correctly (an explicit model always wins).
 func withWireModelForAgentAPI(request *schemas.BifrostResponsesRequest) *schemas.BifrostResponsesRequest {
 	if strings.TrimPrefix(request.Model, "perplexity/") == perplexityAgentPresetModel && request.Params != nil {
@@ -303,13 +302,7 @@ func withWireModelForAgentAPI(request *schemas.BifrostResponsesRequest) *schemas
 		}
 	}
 
-	wireModel := wireModelForAgentAPI(request.Model)
-	if wireModel == request.Model {
-		return request
-	}
-	reqCopy := *request
-	reqCopy.Model = wireModel
-	return &reqCopy
+	return request
 }
 
 // ResponsesStream performs a streaming responses request to the Perplexity API.
@@ -368,9 +361,46 @@ func (provider *PerplexityProvider) Rerank(ctx *schemas.BifrostContext, key sche
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
 }
 
-// Decision is not supported by the Perplexity provider.
+// Decision runs a decision on Perplexity's decider models (pplx-decider-*). The model is
+// sent as is; Perplexity rejects one it does not serve, and that error is passed through.
 func (provider *PerplexityProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+	jsonBody, err := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToPerplexityDecisionRequest(request)
+		})
+	if err != nil {
+		return nil, err
+	}
+
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonBody, provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, perplexityDecisionPath), key.Value.GetValue(), request.Model)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+	if err != nil {
+		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	var response typesafe.TypesafeDecisionResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, responseBody, &response, jsonBody, providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest), providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse))
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	bifrostResponse, bifrostErr := ToBifrostDecisionResponse(&response, request, decisionRequestID(providerResponseHeaders))
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonBody, responseBody, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
+	}
+
+	bifrostResponse.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResponse.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	if providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) {
+		bifrostResponse.ExtraFields.RawRequest = rawRequest
+	}
+	if providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse) {
+		bifrostResponse.ExtraFields.RawResponse = rawResponse
+	}
+
+	return bifrostResponse, nil
 }
 
 // OCR is not supported by the Perplexity provider.

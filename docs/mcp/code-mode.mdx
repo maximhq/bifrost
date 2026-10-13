@@ -39,9 +39,9 @@ Bifrost Code Mode was benchmarked against classic MCP across three controlled ro
 
 | Round | MCP footprint | Pass rate, classic MCP | Pass rate, Code Mode | Input tokens, classic MCP | Input tokens, Code Mode | Input token change | Est. cost, classic MCP | Est. cost, Code Mode | Cost change |
 |-------|---------------|------------------------|----------------------|---------------------------|-------------------------|--------------------|------------------------|----------------------|-------------|
-| 1 | 96 tools / 6 servers | 64/64 (100%) | 64/64 (100%) | 19.9M | 8.3M | -58.2% | $104.04 | $46.06 | -55.7% |
-| 2 | 251 tools / 11 servers | 64/65 (98.5%) | 65/65 (100%) | 35.7M | 5.5M | -84.5% | $180.07 | $29.80 | -83.4% |
-| 3 | 508 tools / 16 servers | 65/65 (100%) | 65/65 (100%) | 75.1M | 5.4M | -92.8% | $377.00 | $29.00 | -92.2% |
+| 1 | 96 tools / 6 servers | 64/64 (100%) | 64/64 (100%) | 19.9M | 8.3M | -58.2% | \$104.04 | \$46.06 | -55.7% |
+| 2 | 251 tools / 11 servers | 64/65 (98.5%) | 65/65 (100%) | 35.7M | 5.5M | -84.5% | \$180.07 | \$29.80 | -83.4% |
+| 3 | 508 tools / 16 servers | 65/65 (100%) | 65/65 (100%) | 75.1M | 5.4M | -92.8% | \$377.00 | \$29.00 | -92.2% |
 
 <Frame>
   <img src="/media/mcp-codemode-tokens-diff.png" alt="Code Mode input token usage compared to classic MCP as tool count increases" />
@@ -330,10 +330,26 @@ Reads a virtual `.pyi` file to get compact Python function signatures for tools.
 # youtube server tools
 # Usage: youtube.tool_name(param=value)
 # For detailed docs: use getToolDocs(server="youtube", tool="tool_name")
+#
+# ---- server instructions (from the upstream handshake) ----
+# Prefer search for discovery; call get_video only with an id search returned.
+# ---- end server instructions ----
 
 def search(query: str, maxResults: int = None) -> dict:  # Search for videos
 def get_video(id: str) -> dict:  # Get video details
 ```
+
+If the server described how its tools should be used when it connected, that guidance appears
+above the signatures, so the model reads it right before writing the call. Servers that said
+nothing contribute no block. `listToolFiles` names which servers have guidance, and `getToolDocs`
+repeats it alongside the full tool documentation. Long guidance is trimmed to the server's
+instruction limit.
+
+This is the only place a code mode server's guidance appears. It is deliberately left out of the
+aggregate that non-code-mode servers contribute to (see
+[Server Instructions](/mcp/overview#server-instructions)), which every request carries: in code
+mode that would describe tools the model was not given, and would put back a per-server prompt
+cost that code mode exists to remove.
 
 ### 3. getToolDocs
 
@@ -714,7 +730,7 @@ Classic MCP injects every available tool definition on every model turn. As you 
 
 Code Mode keeps that catalog behind four meta-tools. The model discovers the relevant stub files, reads only the signatures and docs it needs, and executes the multi-tool workflow inside the sandbox. In the benchmark rounds above, that kept Code Mode input usage nearly flat while classic MCP grew from 19.9M to 75.1M input tokens.
 
-The effect is most visible at large scale: with **508 tools across 16 servers**, Code Mode cut input tokens from **75.1M to 5.4M** and estimated cost from **$377.00 to $29.00**, while preserving a **65/65 (100%)** pass rate.
+The effect is most visible at large scale: with **508 tools across 16 servers**, Code Mode cut input tokens from **75.1M to 5.4M** and estimated cost from **\$377.00 to \$29.00**, while preserving a **65/65 (100%)** pass rate.
 
 ---
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -695,6 +696,107 @@ func TestClickHouseSearchAndStats(t *testing.T) {
 	upper, err := store.GetDistinctModels(ctx, 10, "GPT")
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{"gpt-4o"}, upper)
+}
+
+// The driver binds a time.Time at seconds precision, so a window bound inside a
+// second used to widen to that second's start and narrow to its end's start.
+// Warp's backfill resumes from a millisecond cursor, and every page re-read the
+// rows earlier in that second and embedded them again.
+func TestClickHouseSearchWindowKeepsMilliseconds(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	second := time.Now().UTC().Truncate(time.Second)
+
+	for _, offset := range []time.Duration{100, 400, 700} {
+		entry := chTestLog(fmt.Sprintf("ch-window-%d", offset), second.Add(offset*time.Millisecond))
+		entry.Status = "success"
+		require.NoError(t, store.CreateIfNotExists(ctx, entry))
+	}
+
+	ids := func(filters SearchFilters) []string {
+		result, err := store.SearchLogs(ctx, filters, PaginationOptions{Limit: 10, SortBy: "timestamp", Order: "asc"})
+		require.NoError(t, err)
+		out := make([]string, 0, len(result.Logs))
+		for _, entry := range result.Logs {
+			out = append(out, entry.ID)
+		}
+		return out
+	}
+
+	start := second.Add(400 * time.Millisecond)
+	assert.Equal(t, []string{"ch-window-400", "ch-window-700"}, ids(SearchFilters{StartTime: &start}),
+		"a start inside a second must not reach back to rows earlier in it")
+	end := second.Add(400 * time.Millisecond)
+	assert.Equal(t, []string{"ch-window-100", "ch-window-400"}, ids(SearchFilters{EndTime: &end}),
+		"an end inside a second must still include the rows up to it")
+	assert.Equal(t, []string{"ch-window-400"}, ids(SearchFilters{StartTime: &start, EndTime: &end}))
+}
+
+func TestClickHouseDimensionFiltersMatchFanoutRankings(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	assertFilterMatchesFanoutRankings(t, store.RDBLogStore, func(idCol, id, scalarID, scalarName, arrayIDs, arrayNames string) {
+		insertDimensionLog(t, store.db, idCol, id, now, scalarID, scalarName, arrayIDs, arrayNames)
+	}, now)
+}
+
+// The agent-log team, customer and business-unit filters bound the ids as a
+// bare list inside hasAny, which ClickHouse refuses as a string, so every one
+// of them failed on this backend.
+func TestClickHouseA2AAttributionFilters(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	assertA2AAttributionFilters(t, store.RDBLogStore, store.BatchCreateAgentLogsIfNotExists)
+}
+
+// The keyset cursor bound its timestamp as a time.Time, which the driver sends
+// at seconds precision. Ascending, every page re-read the rows earlier in the
+// cursor's second, and a second holding a full page never advanced; descending,
+// the rows between that second's start and the cursor were skipped. Cost
+// recalculation pages through logs this way.
+//
+// Three rows share the 200ms timestamp, and with two rows a page a boundary
+// falls inside that group in both directions (after 200-a ascending, after
+// 200-c descending), so only the id comparison decides what the next page
+// starts with.
+func TestClickHouseKeysetCursorKeepsMilliseconds(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	second := time.Now().UTC().Truncate(time.Second)
+
+	var ascending []string
+	for _, row := range []struct {
+		offset int
+		suffix string
+	}{{100, "a"}, {200, "a"}, {200, "b"}, {200, "c"}, {300, "a"}} {
+		entry := chTestLog(fmt.Sprintf("ch-keyset-%d-%s", row.offset, row.suffix), second.Add(time.Duration(row.offset)*time.Millisecond))
+		entry.Status = "success"
+		require.NoError(t, store.CreateIfNotExists(ctx, entry))
+		ascending = append(ascending, entry.ID)
+	}
+	descending := slices.Clone(ascending)
+	slices.Reverse(descending)
+
+	walk := func(order string) []string {
+		var seen []string
+		pagination := PaginationOptions{Limit: 2, SortBy: "timestamp", Order: order}
+		for page := 0; page < 10; page++ {
+			result, err := store.SearchLogs(ctx, SearchFilters{}, pagination)
+			require.NoError(t, err)
+			if len(result.Logs) == 0 {
+				return seen
+			}
+			for _, entry := range result.Logs {
+				seen = append(seen, entry.ID)
+			}
+			last := result.Logs[len(result.Logs)-1]
+			cursor := last.Timestamp
+			pagination.AfterTimestamp, pagination.AfterID = &cursor, last.ID
+		}
+		t.Fatalf("%s paging did not finish in 10 pages: %v", order, seen)
+		return nil
+	}
+	assert.Equal(t, ascending, walk("asc"), "every row once, in order")
+	assert.Equal(t, descending, walk("desc"), "every row once, in order")
 }
 
 func TestClickHouseDeleteLogs(t *testing.T) {
@@ -1472,4 +1574,61 @@ func TestClickHouseWarpWriteStopsWhenTheLeaseIsLost(t *testing.T) {
 	counts, err := store.CountWarpMessages(ctx, []string{owner + "-c"})
 	require.NoError(t, err)
 	require.Zero(t, counts[owner+"-c"], "nothing was written without the lock")
+}
+
+func TestClickHouseBatchUpdate(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	ts := time.Now().UTC().Truncate(time.Millisecond)
+
+	for i := 0; i < 3; i++ {
+		entry := chTestLog(fmt.Sprintf("ch-upd-%d", i), ts.Add(time.Duration(i)*time.Millisecond))
+		entry.Status = "processing"
+		require.NoError(t, store.CreateIfNotExists(ctx, entry))
+	}
+	before, err := store.FindByID(ctx, "ch-upd-0")
+	require.NoError(t, err)
+
+	output := "late output"
+	require.NoError(t, store.BatchUpdate(ctx, []*Log{
+		// Two entries for one id in a single batch: both overlays must apply, in order.
+		{ID: "ch-upd-0", TotalTokens: 15},
+		{ID: "ch-upd-0", Status: "success", OutputMessageParsed: &schemas.ChatMessage{
+			Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &output}}},
+		{ID: "ch-upd-1", Status: "error", ContentHidden: true},
+		{ID: "ch-upd-missing", Status: "success"}, // skipped, never inserted
+		nil,
+	}))
+	require.NoError(t, store.BatchUpdate(ctx, nil)) // no-op
+
+	found, err := store.FindByID(ctx, "ch-upd-0")
+	require.NoError(t, err)
+	assert.Equal(t, "success", found.Status)
+	assert.Equal(t, 15, found.TotalTokens)
+	assert.Contains(t, found.OutputMessage, output)
+	// Only non-zero fields overlay; the rest of the row is reproduced as it was.
+	assert.Equal(t, before.Provider, found.Provider)
+	assert.Equal(t, before.Model, found.Model)
+	assert.Equal(t, before.InputHistory, found.InputHistory)
+	assert.Equal(t, before.ContentSummary, found.ContentSummary, "content_summary is left as the row had it")
+	assert.True(t, before.Timestamp.Equal(found.Timestamp))
+	assert.Equal(t, int64(1), chCountRows(t, store.db, "logs", "ch-upd-0"), "re-insert supersedes the old row")
+
+	errRow, err := store.FindByID(ctx, "ch-upd-1")
+	require.NoError(t, err)
+	assert.Equal(t, "error", errRow.Status)
+	assert.True(t, errRow.ContentHidden)
+
+	// A final visible decision clears the flag again.
+	require.NoError(t, store.BatchUpdate(ctx, []*Log{{ID: "ch-upd-1", ContentHidden: false}}))
+	errRow, err = store.FindByID(ctx, "ch-upd-1")
+	require.NoError(t, err)
+	assert.False(t, errRow.ContentHidden, "content_hidden is written even when false")
+
+	untouched, err := store.FindByID(ctx, "ch-upd-2")
+	require.NoError(t, err)
+	assert.Equal(t, "processing", untouched.Status)
+
+	_, err = store.FindByID(ctx, "ch-upd-missing")
+	require.ErrorIs(t, err, ErrNotFound)
 }

@@ -48,7 +48,9 @@ A request that pins one of the routed provider's keys, by ID (`x-bf-api-key-id`)
 
 ### Key level
 
-Within the provider that serves the request, the key that last served the session for that provider and model is used again while it stays in the eligible pool. The pool is what key selection would otherwise choose from: the keys enabled for the provider that allow the model. A provider with a single key has nothing to choose, so the key level is skipped.
+Within the provider that serves the request, the key that last served the session for that provider and model is used again while it stays in the eligible pool. The pool is what key selection would otherwise choose from: the keys enabled for the provider that allow the model.
+
+A provider with a single key has nothing to choose, so its key binding is not read. The first request it serves writes one, and later requests it serves as the primary leave it as it is; a request it serves as a fallback rewrites it and restarts its TTL, as a fallback does on any provider. If a second key is added to the provider, a session bound before that keeps its first key while that key stays eligible, and each request served on it restarts the TTL, so the binding lasts until the session goes quiet for the TTL; new sessions pick between both keys.
 
 A key that leaves the pool, because it was disabled, removed, or stopped allowing the model, loses its binding and a key is picked normally.
 
