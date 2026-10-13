@@ -262954,13 +262954,11 @@
                   "  pm.expect((fmt.schema || {}).required, 'schema.required must stay the caller list, not every property').to.eql(['answer', 'confident']);",
                   "  pm.expect(((fmt.schema || {}).properties || {}).note, 'schema.properties.note, the optional property, must reach OpenAI unchanged').to.eql({ type: 'string' });",
                   "});",
-                  "pm.test('openai/gpt-4o-mini /anthropic output_config.format: reply is JSON that matches the schema', function () {",
+                  "pm.test('openai/gpt-4o-mini /anthropic output_config.format: reply is a JSON object (text.format.strict false does not guarantee schema adherence)', function () {",
                   "  var text = (body.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join('');",
                   "  var parsed = null;",
                   "  try { parsed = JSON.parse(text); } catch (e) { parsed = null; }",
                   "  pm.expect(parsed, 'reply is not JSON: ' + text).to.be.an('object');",
-                  "  pm.expect(parsed.answer, 'answer must be a string').to.be.a('string');",
-                  "  pm.expect(parsed.confident, 'confident must be a boolean').to.be.a('boolean');",
                   "});"
                 ]
               }
@@ -263024,13 +263022,11 @@
                   "  pm.expect((fmt.schema || {}).required, 'schema.required must stay the caller list, not every property').to.eql(['answer', 'confident']);",
                   "  pm.expect(((fmt.schema || {}).properties || {}).note, 'schema.properties.note, the optional property, must reach OpenAI unchanged').to.eql({ type: 'string' });",
                   "});",
-                  "pm.test('openai/gpt-4o-mini /anthropic output_format: reply is JSON that matches the schema', function () {",
+                  "pm.test('openai/gpt-4o-mini /anthropic output_format: reply is a JSON object (text.format.strict false does not guarantee schema adherence)', function () {",
                   "  var text = (body.content || []).filter(function (b) { return b && b.type === 'text'; }).map(function (b) { return b.text || ''; }).join('');",
                   "  var parsed = null;",
                   "  try { parsed = JSON.parse(text); } catch (e) { parsed = null; }",
                   "  pm.expect(parsed, 'reply is not JSON: ' + text).to.be.an('object');",
-                  "  pm.expect(parsed.answer, 'answer must be a string').to.be.a('string');",
-                  "  pm.expect(parsed.confident, 'confident must be a boolean').to.be.a('boolean');",
                   "});"
                 ]
               }
