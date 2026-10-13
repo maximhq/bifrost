@@ -187,6 +187,69 @@ func TestWebRTCRelayDisconnectedIsNotAnEnding(t *testing.T) {
 	})
 }
 
+func TestWebRTCRelayUpstreamDrainLifecycle(t *testing.T) {
+	for _, state := range []webrtc.PeerConnectionState{webrtc.PeerConnectionStateClosed, webrtc.PeerConnectionStateFailed} {
+		t.Run(state.String(), func(t *testing.T) {
+			handler := newFakeWebRTCHandler()
+			relay := &webrtcRelay{handler: handler, upstreamChannel: &webrtc.DataChannel{}}
+			require.True(t, relay.markEstablished())
+			t.Cleanup(relay.close)
+			relay.onUpstreamState(state)
+			_, closed := handler.counts()
+			assert.Zero(t, closed, "transport ending does not overtake queued callbacks")
+			require.NotNil(t, relay.upstreamDrainTimer)
+			timer := relay.upstreamDrainTimer
+			relay.onUpstreamState(state)
+			assert.Same(t, timer, relay.upstreamDrainTimer, "repeated terminal states do not extend the deadline")
+			relay.close() // data-channel OnClose/OnError after the reader drains
+			assert.Nil(t, relay.upstreamDrainTimer, "reader completion releases the timer")
+			relay.onUpstreamState(state)
+			assert.Nil(t, relay.upstreamDrainTimer, "late state changes cannot retain the closed relay")
+			_, closed = handler.counts()
+			assert.Equal(t, 1, closed)
+		})
+	}
+	t.Run("unopened channel is bounded", func(t *testing.T) {
+		handler := newFakeWebRTCHandler()
+		relay := &webrtcRelay{handler: handler, upstreamChannel: &webrtc.DataChannel{}}
+		require.True(t, relay.markEstablished())
+		t.Cleanup(relay.close)
+		relay.onUpstreamState(webrtc.PeerConnectionStateClosed)
+		relay.channelMu.Lock()
+		relay.upstreamDrainTimer.Reset(time.Millisecond)
+		relay.channelMu.Unlock()
+		waitSignal(t, handler.done, "bounded drain for a channel without a reader")
+		_, closed := handler.counts()
+		assert.Equal(t, 1, closed)
+	})
+	t.Run("setup failure does not wait", func(t *testing.T) {
+		handler := newFakeWebRTCHandler()
+		relay := &webrtcRelay{handler: handler, upstreamChannel: &webrtc.DataChannel{}}
+		relay.onUpstreamState(webrtc.PeerConnectionStateFailed)
+		_, closed := handler.counts()
+		assert.Equal(t, 1, closed)
+		assert.Nil(t, relay.upstreamDrainTimer)
+	})
+}
+
+func BenchmarkWebRTCRelayUpstreamState(b *testing.B) {
+	for _, state := range []webrtc.PeerConnectionState{webrtc.PeerConnectionStateConnected, webrtc.PeerConnectionStateDisconnected, webrtc.PeerConnectionStateClosed} {
+		b.Run(state.String(), func(b *testing.B) {
+			relay := &webrtcRelay{upstreamChannel: &webrtc.DataChannel{}}
+			relay.markEstablished()
+			b.ReportAllocs()
+			for b.Loop() {
+				relay.onUpstreamState(state)
+				if state == webrtc.PeerConnectionStateClosed {
+					relay.close()
+					relay.closeOnce = sync.Once{}
+					relay.closing = false
+				}
+			}
+		})
+	}
+}
+
 // pion fails a connection disconnectedTimeout + failedTimeout after the last packet. That sum is
 // how long a peer that vanished without closing keeps its session (and its billing) open, so it
 // is pinned here; disconnected must stay shorter so a stall is ridden out before the leg ends.
