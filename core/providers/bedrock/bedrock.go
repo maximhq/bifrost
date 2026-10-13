@@ -746,7 +746,7 @@ func signAWSRequest(
 		if err != nil {
 			return providerUtils.NewBifrostOperationError("error reading request body", err)
 		}
-		if int64(len(bodyBytes)) >= maxProviderResponseBytes {
+		if int64(len(bodyBytes)) > maxProviderResponseBytes {
 			return providerUtils.NewBifrostOperationError("request body exceeds maximum allowed size", nil)
 		}
 		// Restore the body for subsequent reads
@@ -3394,7 +3394,7 @@ func (provider *BedrockProvider) FileContent(ctx *schemas.BifrostContext, keys [
 			lastErr = providerUtils.NewBifrostOperationError("error reading S3 object content", err)
 			continue
 		}
-		if int64(len(body)) >= maxProviderResponseBytes {
+		if int64(len(body)) > maxProviderResponseBytes {
 			return nil, providerUtils.NewBifrostOperationError("S3 object exceeds maximum allowed size", nil)
 		}
 
