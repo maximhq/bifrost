@@ -2260,7 +2260,13 @@
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
-              "changelogs/cli-v0.10.6",
+              "changelogs/cli-v1.0.0",
+              {
+                "group": "June 2026",
+                "pages": [
+                  "changelogs/cli-v0.10.6"
+                ]
+              },
               {
                 "group": "May 2026",
                 "pages": [
