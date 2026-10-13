@@ -623,7 +623,7 @@ if [ $EXIT_CODE -eq 0 ] && [ "${BIFROST_E2E_SKIP_CONTENT_LOGGING_MATRIX:-0}" != 
     # The matrix reads raw log rows, so it must look at the same logs database this run was pointed
     # at: --logs-db-url and --config-path are plain shell variables here, not exported, so pass them
     # on explicitly. Unset values are left out so a caller's exported BIFROST_LOGS_DB_URL still wins.
-    matrix_env=(BIFROST_E2E_BASE_URL="$BASE_URL")
+    matrix_env=(BIFROST_E2E_BASE_URL="$BASE_URL" BIFROST_E2E_SETUP_TOKEN="$SETUP_TOKEN")
     [ -n "$LOGS_DB_URL" ] && matrix_env+=(BIFROST_LOGS_DB_URL="$LOGS_DB_URL")
     [ -n "$DB_CONFIG_PATH" ] && matrix_env+=(BIFROST_E2E_CONFIG_PATH="$DB_CONFIG_PATH")
     set +e

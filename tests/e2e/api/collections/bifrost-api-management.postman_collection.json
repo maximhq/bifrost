@@ -4090,28 +4090,35 @@
       "description": "A virtual key with allow_all_providers grants every provider, including ones it holds no provider_config for; the configs it does hold are overrides rather than the whole grant. The listing routes used to answer from the provider_config rows alone, so such a key saw only the providers it happened to override and every other provider vanished from /api/models*, /v1/models and the VK model pickers, while inference on them kept working.",
       "item": [
         {
-          "name": "Baseline - catalog sizes with no VK",
+          "name": "Baseline - anthropic catalog size with no VK",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Baseline listing returns 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Baseline anthropic listing returns 200', function () { pm.response.to.have.status(200); });",
                   "// Parse defensively: an SPA fallback, a 401/403 or any non-JSON body makes an unguarded",
                   "// pm.response.json() throw a script error, which aborts the run instead of failing a",
                   "// named assertion and strands every request after this one.",
                   "var body = null;",
                   "try { body = pm.response.json(); } catch (e) { body = null; }",
                   "var models = (body && body.models) || [];",
-                  "var counts = {};",
-                  "models.forEach(function (m) { if (m && m.provider) counts[m.provider] = (counts[m.provider] || 0) + 1; });",
-                  "pm.collectionVariables.set('vkall_base_anthropic', String(counts.anthropic || 0));",
-                  "pm.collectionVariables.set('vkall_base_openai', String(counts.openai || 0));",
-                  "// The scenario needs a provider to leave unnamed and one to override; without both",
-                  "// configured there is nothing to tell apart and the assertions below would pass vacuously.",
-                  "pm.test('anthropic is configured on this server', function () { pm.expect(counts.anthropic || 0).to.be.above(0); });",
-                  "pm.test('openai is configured on this server', function () { pm.expect(counts.openai || 0).to.be.above(1); });"
+                  "var total = Number(body && body.total);",
+                  "// Count from a provider-filtered listing, never from one page of the whole catalog: an",
+                  "// unfiltered page is capped and unsorted, so a provider's rows can land past the cap and",
+                  "// the count reads short once the catalog outgrows it.",
+                  "pm.test('anthropic listing is one complete page', function () {",
+                  "  pm.expect(models.length, 'total ' + total).to.eql(total);",
+                  "});",
+                  "pm.test('the listing holds only anthropic', function () {",
+                  "  var others = models.filter(function (m) { return !m || m.provider !== 'anthropic'; }).length;",
+                  "  pm.expect(others).to.eql(0);",
+                  "});",
+                  "pm.collectionVariables.set('vkall_base_anthropic', String(models.length));",
+                  "// The scenario needs a provider to leave unnamed; without it configured there is nothing",
+                  "// to tell apart and the assertions below would pass vacuously.",
+                  "pm.test('anthropic is configured on this server', function () { pm.expect(models.length).to.be.above(0); });"
                 ]
               }
             }
@@ -4120,7 +4127,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/models/details?limit=5000",
+              "raw": "{{base_url}}/api/models/details?provider=anthropic&limit=5000",
               "host": [
                 "{{base_url}}"
               ],
@@ -4130,6 +4137,69 @@
                 "details"
               ],
               "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                },
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Baseline - openai catalog size with no VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Baseline openai listing returns 200', function () { pm.response.to.have.status(200); });",
+                  "// Parse defensively: an SPA fallback, a 401/403 or any non-JSON body makes an unguarded",
+                  "// pm.response.json() throw a script error, which aborts the run instead of failing a",
+                  "// named assertion and strands every request after this one.",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var models = (body && body.models) || [];",
+                  "var total = Number(body && body.total);",
+                  "// Count from a provider-filtered listing, never from one page of the whole catalog: an",
+                  "// unfiltered page is capped and unsorted, so a provider's rows can land past the cap and",
+                  "// the count reads short once the catalog outgrows it.",
+                  "pm.test('openai listing is one complete page', function () {",
+                  "  pm.expect(models.length, 'total ' + total).to.eql(total);",
+                  "});",
+                  "pm.test('the listing holds only openai', function () {",
+                  "  var others = models.filter(function (m) { return !m || m.provider !== 'openai'; }).length;",
+                  "  pm.expect(others).to.eql(0);",
+                  "});",
+                  "pm.collectionVariables.set('vkall_base_openai', String(models.length));",
+                  "// The VK narrows openai to one model, so it needs more than one to show the narrowing.",
+                  "pm.test('openai is configured on this server', function () { pm.expect(models.length).to.be.above(1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models/details?provider=openai&limit=5000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "details"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
                 {
                   "key": "limit",
                   "value": "5000"
@@ -4206,7 +4276,7 @@
           }
         },
         {
-          "name": "/api/models/details - unnamed provider is granted in full, overridden one stays narrowed",
+          "name": "/api/models/details - unnamed provider is granted in full",
           "event": [
             {
               "listen": "test",
@@ -4220,22 +4290,25 @@
                   "var body = null;",
                   "try { body = pm.response.json(); } catch (e) { body = null; }",
                   "var models = (body && body.models) || [];",
-                  "var counts = {};",
-                  "models.forEach(function (m) { if (m && m.provider) counts[m.provider] = (counts[m.provider] || 0) + 1; });",
+                  "var total = Number(body && body.total);",
+                  "// Count from a provider-filtered listing, never from one page of the whole catalog: an",
+                  "// unfiltered page is capped and unsorted, so a provider's rows can land past the cap and",
+                  "// the count reads short once the catalog outgrows it.",
+                  "pm.test('anthropic listing is one complete page', function () {",
+                  "  pm.expect(models.length, 'total ' + total).to.eql(total);",
+                  "});",
+                  "pm.test('the listing holds only anthropic', function () {",
+                  "  var others = models.filter(function (m) { return !m || m.provider !== 'anthropic'; }).length;",
+                  "  pm.expect(others).to.eql(0);",
+                  "});",
                   "var baseAnthropic = Number(pm.collectionVariables.get('vkall_base_anthropic'));",
-                  "var baseOpenai = Number(pm.collectionVariables.get('vkall_base_openai'));",
                   "// The regression: anthropic has no provider_config, so it is granted by the flag alone.",
                   "// Answering from the configs alone dropped it entirely.",
                   "pm.test('anthropic is listed though the VK names no config for it', function () {",
-                  "  pm.expect(counts.anthropic || 0).to.be.above(0);",
+                  "  pm.expect(models.length).to.be.above(0);",
                   "});",
                   "pm.test('anthropic is granted in full, not narrowed', function () {",
-                  "  pm.expect(counts.anthropic).to.eql(baseAnthropic);",
-                  "});",
-                  "// And the other half: a config the VK does hold still narrows its provider, so the fix",
-                  "// widens nothing it should not.",
-                  "pm.test('openai stays narrowed by its own config', function () {",
-                  "  pm.expect(counts.openai || 0).to.be.below(baseOpenai);",
+                  "  pm.expect(models.length).to.eql(baseAnthropic);",
                   "});"
                 ]
               }
@@ -4250,7 +4323,7 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/models/details?limit=5000",
+              "raw": "{{base_url}}/api/models/details?provider=anthropic&limit=5000",
               "host": [
                 "{{base_url}}"
               ],
@@ -4260,6 +4333,80 @@
                 "details"
               ],
               "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                },
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/api/models/details - overridden provider stays narrowed",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET /api/models/details with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "// Parse defensively: an SPA fallback, a 401/403 or any non-JSON body makes an unguarded",
+                  "// pm.response.json() throw a script error, which aborts the run instead of failing a",
+                  "// named assertion and strands every request after this one.",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var models = (body && body.models) || [];",
+                  "var total = Number(body && body.total);",
+                  "// Count from a provider-filtered listing, never from one page of the whole catalog: an",
+                  "// unfiltered page is capped and unsorted, so a provider's rows can land past the cap and",
+                  "// the count reads short once the catalog outgrows it.",
+                  "pm.test('openai listing is one complete page', function () {",
+                  "  pm.expect(models.length, 'total ' + total).to.eql(total);",
+                  "});",
+                  "pm.test('the listing holds only openai', function () {",
+                  "  var others = models.filter(function (m) { return !m || m.provider !== 'openai'; }).length;",
+                  "  pm.expect(others).to.eql(0);",
+                  "});",
+                  "var baseOpenai = Number(pm.collectionVariables.get('vkall_base_openai'));",
+                  "// The other half: a config the VK does hold still narrows its provider, so granting the",
+                  "// unnamed ones in full widens nothing it should not.",
+                  "pm.test('openai is listed through its own config', function () {",
+                  "  pm.expect(models.length).to.be.above(0);",
+                  "});",
+                  "pm.test('openai stays narrowed by its own config', function () {",
+                  "  pm.expect(models.length).to.be.below(baseOpenai);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkall_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/models/details?provider=openai&limit=5000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "details"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
                 {
                   "key": "limit",
                   "value": "5000"
