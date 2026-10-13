@@ -262004,6 +262004,123 @@
           ]
         }
       ]
+    },
+    {
+      "name": "228. Converted chat keeps the chat wire shape on /openai (gpt-5.5)",
+      "description": "The compat plugin's force_reasoning_only_models_to_responses (on by default) sends chat requests for models whose datasheet sets supports_reasoning_with_tool_calls false (openai gpt-5.5) to the Responses API. The /openai drop-in route echoed the provider's raw response bytes for OpenAI, so with send_back_raw_response on, a chat client got Responses events (response.created, object \"response\") and failed its schema check (opencode via @ai-sdk/openai-compatible). Converted responses now carry extra_fields.converted_request_type and the drop-in route re-serializes them. These cases pin that every frame, and the unary body, is chat-shaped.",
+      "item": [
+        {
+          "name": "openai gpt-5.5 converted chat on /openai drop-in: streaming frames are chat chunks",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai gpt-5.5 converted chat stream: status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var text = pm.response.text();",
+                  "var frames = text.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) { return l.slice(6).trim(); }).filter(function (f) { return f !== '[DONE]'; });",
+                  "pm.test('every frame is a chat.completion.chunk, never a raw Responses event', function () {",
+                  "  pm.expect(frames.length, 'no data frames: ' + text).to.be.above(0);",
+                  "  frames.forEach(function (f, i) {",
+                  "    var o = JSON.parse(f);",
+                  "    pm.expect(o.type, 'frame ' + i + ' is a Responses event: ' + f).to.equal(undefined);",
+                  "    pm.expect(o.object, 'frame ' + i + ': ' + f).to.equal('chat.completion.chunk');",
+                  "  });",
+                  "});",
+                  "pm.test('stream carries assistant text', function () {",
+                  "  var content = '';",
+                  "  frames.forEach(function (f) { var o = JSON.parse(f); var c = o.choices && o.choices[0]; if (c && c.delta && typeof c.delta.content === 'string') { content += c.delta.content; } });",
+                  "  pm.expect(content, 'no delta.content in: ' + text).to.include('OKBIFROST');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"This is a harmless connectivity test. Reply with exactly the single token OKBIFROST and nothing else.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"none\",\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 512,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai gpt-5.5 converted chat on /openai drop-in: unary body is a chat completion",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai gpt-5.5 converted chat: status 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('body is a chat.completion, never a raw Responses object', function () {",
+                  "  var o = pm.response.json();",
+                  "  pm.expect(o.object, 'body: ' + pm.response.text()).to.equal('chat.completion');",
+                  "  pm.expect(o.choices, 'body: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(o.choices[0].message.content, 'body: ' + pm.response.text()).to.include('OKBIFROST');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.5\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"This is a harmless connectivity test. Reply with exactly the single token OKBIFROST and nothing else.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"tool_choice\": \"none\",\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 512,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -693,6 +693,10 @@ const standardProviders = [...standardBlock.matchAll(/^\s*(\w+),/gm)].map((m) =>
 const redactionRef = "env.BIFROST_SECRET_REDACTION_CANARY";
 const redactionCanary = "synthetic-secretvar-harness-canary-0123456789";
 const redactionMask = "synt" + "*".repeat(24) + "6789";
+// Key server URLs are validated as http(s) URLs once resolved, so they use a URL canary.
+const redactionUrlRef = "env.BIFROST_SECRET_REDACTION_URL_CANARY";
+const redactionUrlMask = "http" + "*".repeat(24) + "6789";
+const redactionUrlFields = new Set(["OllamaKeyConfig.url", "SGLKeyConfig.url", "VLLMKeyConfig.url"]);
 
 test("redaction folder authenticates the initial request as well as callback requests", () => {
   let header;
@@ -732,7 +736,10 @@ test("redaction matrix covers every provider-specific SecretVar field", () => {
     if (!fields.length) continue; // Replicate has no secret-bearing key config.
     const fixture = redactionFixtures.find((f) => f.key[property]);
     assert.ok(fixture, `no fixture covers ${type}`);
-    for (const field of fields) assert.strictEqual(fixture.key[property][field], redactionRef, `${type}.${field}`);
+    for (const field of fields) {
+      const ref = redactionUrlFields.has(`${type}.${field}`) ? redactionUrlRef : redactionRef;
+      assert.strictEqual(fixture.key[property][field], ref, `${type}.${field}`);
+    }
     if (structBody(type).includes("*BedrockEndpoints")) {
       for (const field of secretFields("BedrockEndpoints")) {
         assert.strictEqual(fixture.key[property].endpoints[field], redactionRef, `${type}.endpoints.${field}`);
@@ -768,6 +775,9 @@ function simulateRedaction(fixture, mode = "masked", existing = false, auth = fa
   function wire(value) {
     if (value === redactionRef || (value && value.ref === redactionRef)) {
       return { ref: redactionRef, type: "env", value: redactionMask };
+    }
+    if (value === redactionUrlRef || (value && value.ref === redactionUrlRef)) {
+      return { ref: redactionUrlRef, type: "env", value: redactionUrlMask };
     }
     if (Array.isArray(value)) return value.map(wire);
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, val]) => [key, wire(val)]));
