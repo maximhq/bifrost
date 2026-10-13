@@ -65,7 +65,7 @@ func convertFunctionToolToAnthropic(tool schemas.ChatTool) (AnthropicTool, error
 
 	if anthropicTool.InputSchema != nil {
 		var err error
-		anthropicTool.InputSchema, err = normalizeAnthropicToolInputSchema(anthropicTool.InputSchema)
+		anthropicTool.InputSchema, err = NormalizeAnthropicToolInputSchema(anthropicTool.InputSchema)
 		if err != nil {
 			return AnthropicTool{}, err
 		}

@@ -4,10 +4,18 @@ description: "Ask questions about some input and get typed answers with Bifrost 
 icon: "scale-balanced"
 ---
 
-Use the Go SDK to get structured judgments - probabilities, choices, and rubric scores - from judgment models like TypeSafe's jev family.
+Use the Go SDK to get structured judgments - probabilities, choices, and rubric scores - from judgment models such as TypeSafe's jev family, OpenAI's gpt-6-luna, Cloudflare's Clef, or Perplexity's deciders.
 
 Provider/model examples:
 - TypeSafe: `Provider: schemas.Typesafe`, `Model: "jev-1.13.0"` (aliases: `jev-latest`, `jev-preview`)
+- OpenAI: `Provider: schemas.OpenAI`, `Model: "gpt-6-luna"`
+- OpenRouter: `Provider: schemas.OpenRouter`, `Model: "~typesafe/jev-latest"`
+- Cloudflare: `Provider: schemas.Cloudflare`, `Model: "clef-flash"` (the key needs `CloudflareKeyConfig.AccountID`)
+- Perplexity: `Provider: schemas.Perplexity`, `Model: "pplx-decider-v1.1-27b"` or `"pplx-decider-v1-27b"`
+- Ollama: `Provider: schemas.Ollama`, `Model: "nimble"` (any pulled System One model)
+- Laya or Nimble: the name of your [custom provider](/providers/self-hosted-decision-models), for example `Provider: "laya"`, `Model: "english"`
+
+See [Decisions](/quickstart/gateway/decisions#providers) for which providers read image parts.
 
 ## Basic Example
 
@@ -129,25 +137,9 @@ func main() {
 | `Questions[].Levels` | Score only: the ordered levels, each with a label and description |
 | `SafetyIdentifier` | Stable end-user identifier, forwarded to models that accept one |
 
-A model that cannot read part of a request (an image or any other non-text part sent to a TypeSafe or chat model) rejects that attempt with a 400, so a fallback can serve it. Fallbacks work like every other request type via the `Fallbacks` field.
+A model that cannot read part of a request (an image or any other non-text part sent to a TypeSafe or custom TypeSafe-based model) rejects that attempt with a 400, so a fallback can serve it. Fallbacks work like every other request type via the `Fallbacks` field.
 
-A chat model with no native decisions endpoint (for example `openai/gpt-4o-mini`) returns `unsupported_operation` by default. To have it answer through structured output on its Responses API, register the compat plugin with [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, as the gateway does:
-
-```go
-import "github.com/maximhq/bifrost/plugins/compat"
-
-compatPlugin, err := compat.Init(compat.Config{ConvertDecisionToResponses: true}, bifrost.NewDefaultLogger(schemas.LogLevelInfo), nil)
-if err != nil {
-	panic(err)
-}
-
-client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
-	Account:    &MyAccount{},
-	LLMPlugins: []schemas.LLMPlugin{compatPlugin},
-})
-```
-
-The plugin checks every attempt, fallbacks included, and leaves native decisions models (such as `gpt-6-luna` and TypeSafe models) on their decisions endpoint. Setting `schemas.BifrostContextKeyChangeRequestType` to `schemas.ResponsesRequest` on the request context yourself skips that check and emulates the request directly, so set it only for a model without a native decisions endpoint. It covers the first attempt only: Bifrost clears it before each fallback.
+A chat model with no native decisions endpoint (for example `openai/gpt-4o-mini`) returns `unsupported_operation` unless the compat plugin is registered with `compat.Config{ConvertDecisionToResponses: true}`, which emulates the answer through the model's Responses API. See [Decision-to-Responses Emulation](/features/compat-plugin#4-decision-to-responses-emulation).
 
 ## Answers
 
@@ -170,7 +162,10 @@ An array in `Input.Structured` is sent to TypeSafe-based models as a JSON array 
 
 ## Migrating from the Map Form
 
-Earlier versions keyed questions and answers by name. The HTTP map form is still served at `/v1/decisions`, but the Go types changed:
+<Warning>
+The map form (`State`, questions and answers keyed by name, `Kind`/`Criteria`) is deprecated. The Go SDK only has the shape above, so code written against the old types no longer compiles; move it to the new fields using the table below. The HTTP map form is still served at `/v1/decisions` for now, but new and existing integrations should switch.
+</Warning>
+
 
 | Before | Now |
 |--------|-----|

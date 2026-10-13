@@ -2204,3 +2204,62 @@ func TestReconcileAppliesFinalVisibility(t *testing.T) {
 		t.Fatal("expected the completion's visible decision applied to the row")
 	}
 }
+
+// TestProcessBatchOmitsBinaryBodies pins that body columns holding binary data
+// (an audio passthrough response, a multipart upload, a Bedrock event stream)
+// are stored as a size placeholder instead of raw bytes, and that a text
+// preview cut inside a multi-byte character keeps its text with the partial
+// character dropped. Raw NUL bytes and invalid UTF-8 are what Postgres rejects
+// with SQLSTATE 22021, failing the whole batch INSERT.
+func TestProcessBatchOmitsBinaryBodies(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{ctx: context.Background(), store: store, logger: testLogger{}}
+
+	audio := "ID3\x03\x00\x00\x00\x00\xff\xfb\x90"
+	multipart := "--b\r\nContent-Type: audio/wav\r\n\r\nRIFF\x24\x00\x00\x00WAVE\r\n--b--"
+	cutPreview := `{"text":"caf` + "\xc3"
+	eventStream := "\x00\x00\x00\x8a\x00\x00\x00\x52event"
+
+	insert := &logstore.Log{ID: "binary-insert", Timestamp: time.Now().UTC(), CreatedAt: time.Now().UTC(), Provider: "openai", Model: "whisper-1", Status: "success", Object: "audio.transcription",
+		RawRequest: multipart, RawResponse: cutPreview, PassthroughRequestBody: `{"ok":true}`, PassthroughResponseBody: audio}
+	update := &logstore.Log{ID: "binary-insert", RawResponse: eventStream}
+
+	if left := plugin.processBatch(context.Background(), []*writeQueueEntry{{log: insert}, {logUpdate: update}}); len(left) != 0 {
+		t.Fatalf("expected no unwritten entries, got %d", len(left))
+	}
+	row, err := store.FindByID(context.Background(), "binary-insert")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if want := fmt.Sprintf("<binary content omitted: %d bytes>", len(audio)); row.PassthroughResponseBody != want {
+		t.Errorf("passthrough_response_body = %q, want %q", row.PassthroughResponseBody, want)
+	}
+	if want := fmt.Sprintf("<binary content omitted: %d bytes>", len(multipart)); row.RawRequest != want {
+		t.Errorf("raw_request = %q, want %q", row.RawRequest, want)
+	}
+	if want := fmt.Sprintf("<binary content omitted: %d bytes>", len(eventStream)); row.RawResponse != want {
+		t.Errorf("raw_response after update = %q, want %q", row.RawResponse, want)
+	}
+	if row.PassthroughRequestBody != `{"ok":true}` {
+		t.Errorf("text passthrough_request_body changed: %q", row.PassthroughRequestBody)
+	}
+}
+
+// TestOmitBinaryBody pins the text/binary decision.
+func TestOmitBinaryBody(t *testing.T) {
+	for _, c := range []struct{ name, in, want string }{
+		{"empty", "", ""},
+		{"json", `{"a":"b"}`, `{"a":"b"}`},
+		{"multibyte_text", "café ☕", "café ☕"},
+		{"preview_cut_mid_rune", "caf\xc3", "caf"},
+		{"preview_cut_mid_4byte_rune", "a\xf0\x9f\x98", "a"},
+		{"nul_byte", "a\x00b", "<binary content omitted: 3 bytes>"},
+		{"invalid_byte", "a\xffb", "<binary content omitted: 3 bytes>"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := omitBinaryBody(c.in); got != c.want {
+				t.Fatalf("omitBinaryBody(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}

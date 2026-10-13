@@ -80,11 +80,9 @@ func TestConvertBifrostMCPCallToAnthropicToolUse_Input(t *testing.T) {
 				ID:   schemas.Ptr("mcp_call_test"),
 				Type: schemas.Ptr(schemas.ResponsesMessageTypeMCPCall),
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
-					Name:      schemas.Ptr("maximsse-get-maxim-workspace-id"),
-					Arguments: tt.arguments,
-					ResponsesMCPToolCall: &schemas.ResponsesMCPToolCall{
-						ServerLabel: "maximsse",
-					},
+					Name:        schemas.Ptr("maximsse-get-maxim-workspace-id"),
+					Arguments:   tt.arguments,
+					ServerLabel: schemas.Ptr("maximsse"),
 				},
 			}
 
@@ -129,11 +127,9 @@ func TestConvertBifrostMCPApprovalToAnthropicToolUse_Input(t *testing.T) {
 				ID:   schemas.Ptr("mcp_approval_test"),
 				Type: schemas.Ptr(schemas.ResponsesMessageTypeMCPApprovalRequest),
 				ResponsesToolMessage: &schemas.ResponsesToolMessage{
-					Name:      schemas.Ptr("maximsse-get-maxim-workspace-id"),
-					Arguments: tt.arguments,
-					ResponsesMCPToolCall: &schemas.ResponsesMCPToolCall{
-						ServerLabel: "maximsse",
-					},
+					Name:        schemas.Ptr("maximsse-get-maxim-workspace-id"),
+					Arguments:   tt.arguments,
+					ServerLabel: schemas.Ptr("maximsse"),
 				},
 			}
 

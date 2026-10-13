@@ -146,6 +146,8 @@ export default function SecurityView() {
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
 		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
+		const enforceVKObjectOwnershipChanged =
+			(localConfig.enforce_vk_object_ownership ?? true) !== (config.enforce_vk_object_ownership ?? true);
 		const dualCredentialConflictBehaviorChanged =
 			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
 		const vkRotationCooldownChanged = formatCooldown(localConfig.vk_rotation_cooldown) !== formatCooldown(config.vk_rotation_cooldown);
@@ -159,6 +161,7 @@ export default function SecurityView() {
 			enforceAuthOnInferenceChanged ||
 			allowDirectKeysChanged ||
 			deleteExpiredVirtualKeysChanged ||
+			enforceVKObjectOwnershipChanged ||
 			dualCredentialConflictBehaviorChanged ||
 			vkRotationCooldownChanged
 		);
@@ -639,6 +642,26 @@ export default function SecurityView() {
 						data-testid="security-delete-expired-virtual-keys-switch"
 						checked={localConfig.delete_expired_virtual_keys}
 						onCheckedChange={(checked) => handleConfigChange("delete_expired_virtual_keys", checked)}
+					/>
+				</div>
+				{/* Restrict Provider Objects to the Creating Virtual Key */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="enforce-vk-object-ownership" className="text-sm font-medium">
+							Restrict Provider Objects to the Creating Virtual Key
+						</label>
+						<p className="text-muted-foreground text-sm">
+							When enabled, files, batches, videos, containers, cached contents and live sessions created with a virtual key can only be
+							read, listed or deleted with that same key. Other virtual keys get a not-found error and do not see them in lists. Requests
+							without a virtual key are not affected. The creating key is recorded even while this is disabled, so enabling it again also
+							covers objects created in the meantime, except any whose creating key could not be recorded.
+						</p>
+					</div>
+					<Switch
+						id="enforce-vk-object-ownership"
+						data-testid="security-enforce-vk-object-ownership-switch"
+						checked={localConfig.enforce_vk_object_ownership ?? true}
+						onCheckedChange={(checked) => handleConfigChange("enforce_vk_object_ownership", checked)}
 					/>
 				</div>
 				{/* Allowed Origins */}

@@ -277,7 +277,20 @@ func TestEmulateDecisionToolChoicePerSurface(t *testing.T) {
 		{schemas.BedrockMantle, "openai.gpt-oss-20b", schemas.ResponsesToolChoiceTypeAuto},
 		{schemas.BedrockMantle, "anthropic.claude-opus-4-8", schemas.ResponsesToolChoiceTypeRequired},
 		{schemas.OpenAI, "gpt-4o-mini", schemas.ResponsesToolChoiceTypeRequired},
+		// Cohere reasoning models reject any tool_choice ("tool_choice is not
+		// supported for this model"), so the field is omitted (want "").
+		{schemas.Cohere, "command-a-reasoning-08-2025", ""},
+		{schemas.Cohere, "command-a-03-2025", schemas.ResponsesToolChoiceTypeRequired},
+		// A datasheet record saying supports_tool_choice=false wins over the name.
+		{schemas.OpenAI, "no-tool-choice-model", ""},
 	}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if model == "no-tool-choice-model" {
+			return &schemas.ModelCapabilities{SupportsToolChoice: schemas.Ptr(false)}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 	for _, tc := range cases {
 		t.Run(string(tc.provider)+"/"+tc.model, func(t *testing.T) {
 			provider := &decisionEmulationProvider{response: emulationFunctionCallResponse(args)}
@@ -289,6 +302,12 @@ func TestEmulateDecisionToolChoicePerSurface(t *testing.T) {
 				t.Fatalf("unexpected error: %v", bifrostErr)
 			}
 			choice := provider.lastRequest.Params.ToolChoice
+			if tc.want == "" {
+				if choice != nil {
+					t.Errorf("tool_choice = %+v, want it omitted", choice)
+				}
+				return
+			}
 			if choice == nil || choice.ResponsesToolChoiceStr == nil || *choice.ResponsesToolChoiceStr != string(tc.want) {
 				t.Errorf("tool_choice = %+v, want %q", choice, tc.want)
 			}

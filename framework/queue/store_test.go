@@ -16,11 +16,15 @@ import (
 )
 
 // contractLease is short so lease-expiry cases stay fast; contractWait
-// comfortably outlasts it, including on a database clock.
+// comfortably outlasts it, including on a database clock. contractBackoff is
+// longer because its cases assert "not yet due" across several round trips,
+// which a loaded -race run can stretch past contractLease.
 const (
-	contractLease = 400 * time.Millisecond
-	contractWait  = 700 * time.Millisecond
-	longLease     = time.Minute
+	contractLease       = 400 * time.Millisecond
+	contractWait        = 700 * time.Millisecond
+	contractBackoff     = 1500 * time.Millisecond
+	contractBackoffWait = 2 * time.Second
+	longLease           = time.Minute
 )
 
 // storeFactory returns a fresh, empty Store. It registers its own cleanup.
@@ -279,12 +283,12 @@ func contractRetry(t *testing.T, s Store) {
 
 	cs := mustClaim(t, s, topic, "g", 1, longLease)
 	require.Len(t, cs, 1)
-	held, err := s.Retry(ctx, cs[0], contractLease, "boom")
+	held, err := s.Retry(ctx, cs[0], contractBackoff, "boom")
 	require.NoError(t, err)
 	require.True(t, held)
 
 	assert.Empty(t, mustClaim(t, s, topic, "g", 1, longLease), "not due during backoff")
-	time.Sleep(contractWait)
+	time.Sleep(contractBackoffWait)
 	again := mustClaim(t, s, topic, "g", 1, longLease)
 	require.Len(t, again, 1)
 	assert.Equal(t, 2, again[0].Attempt)
@@ -348,7 +352,7 @@ func contractPerKeyFIFO(t *testing.T, s Store) {
 	}
 
 	// A head in retry backoff still blocks its key.
-	held, err := s.Retry(ctx, byPayload["a"], contractLease, "boom")
+	held, err := s.Retry(ctx, byPayload["a"], contractBackoff, "boom")
 	require.NoError(t, err)
 	require.True(t, held)
 	assert.Empty(t, mustClaim(t, s, topic, "g", 10, longLease), "b waits behind a's backoff")
@@ -359,7 +363,7 @@ func contractPerKeyFIFO(t *testing.T, s Store) {
 	require.True(t, held)
 	assert.Equal(t, []string{"y"}, payloads(mustClaim(t, s, topic, "g", 10, longLease)))
 
-	time.Sleep(contractWait)
+	time.Sleep(contractBackoffWait)
 	retried := mustClaim(t, s, topic, "g", 10, longLease)
 	require.Equal(t, []string{"a"}, payloads(retried), "a comes back before b")
 	held, err = ackOne(ctx, s, retried[0])
@@ -708,11 +712,11 @@ func contractWaitingBehindHead(t *testing.T, s Store) {
 	require.Equal(t, []string{"1"}, payloads(next))
 
 	// A retry keeps "1" as the head, so "2" stays behind it during backoff.
-	ok, err = s.Retry(ctx, next[0], contractLease, "boom")
+	ok, err = s.Retry(ctx, next[0], contractBackoff, "boom")
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Empty(t, mustClaim(t, s, topic, "g", 10, longLease))
-	time.Sleep(contractWait)
+	time.Sleep(contractBackoffWait)
 	next = mustClaim(t, s, topic, "g", 10, longLease)
 	require.Equal(t, []string{"1"}, payloads(next))
 
@@ -880,7 +884,9 @@ func contractScheduled(t *testing.T, s Store) {
 // not after it was published.
 func contractRetentionFromDeathAndDueTime(t *testing.T, s Store) {
 	ctx := context.Background()
-	const keep = 300 * time.Millisecond
+	// keep is also the slack between the kill or ack and the purge that must not
+	// remove the row yet; under -race against ClickHouse 300ms was not enough.
+	const keep = 2 * time.Second
 	policy := PurgePolicy{DeadRetention: keep, AckedRetention: keep}
 	purgeAll := func() {
 		for range 20 {

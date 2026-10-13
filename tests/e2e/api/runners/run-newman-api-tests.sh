@@ -623,7 +623,7 @@ if [ $EXIT_CODE -eq 0 ] && [ "${BIFROST_E2E_SKIP_CONTENT_LOGGING_MATRIX:-0}" != 
     # The matrix reads raw log rows, so it must look at the same logs database this run was pointed
     # at: --logs-db-url and --config-path are plain shell variables here, not exported, so pass them
     # on explicitly. Unset values are left out so a caller's exported BIFROST_LOGS_DB_URL still wins.
-    matrix_env=(BIFROST_E2E_BASE_URL="$BASE_URL")
+    matrix_env=(BIFROST_E2E_BASE_URL="$BASE_URL" BIFROST_E2E_SETUP_TOKEN="$SETUP_TOKEN")
     [ -n "$LOGS_DB_URL" ] && matrix_env+=(BIFROST_LOGS_DB_URL="$LOGS_DB_URL")
     [ -n "$DB_CONFIG_PATH" ] && matrix_env+=(BIFROST_E2E_CONFIG_PATH="$DB_CONFIG_PATH")
     set +e
@@ -655,6 +655,7 @@ if [ $EXIT_CODE -eq 0 ] && [ "${BIFROST_E2E_SKIP_REQUEST_GUARDS:-0}" != "1" ]; t
     echo -e "${GREEN}Running request guard tests...${NC}" | tee -a "$LOG_FILE"
     set +e
     BIFROST_BASE_URL="$BASE_URL" \
+    BIFROST_E2E_SETUP_TOKEN="$SETUP_TOKEN" \
     BIFROST_E2E_ADMIN_USERNAME="$ADMIN_USERNAME" \
     BIFROST_E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
     BIFROST_E2E_ADMIN_EXISTS="$REQUEST_GUARDS_ADMIN_EXISTS" \
@@ -679,7 +680,7 @@ elif [ $EXIT_CODE -eq 0 ]; then
 fi
 
 # Governance suites (virtual key quota, rate limit / budget enforcement,
-# rotation cooldown, and time-of-day pricing). These run as their own newman
+# rotation cooldown, provider object ownership, and time-of-day pricing). These run as their own newman
 # invocations rather than through --extra-collection: merging folds them into the management collection,
 # which would drop their collection variables, subject their deliberate 401/403/
 # 429/402 assertions to that collection's 2xx gate, and run them a second time in
@@ -692,6 +693,7 @@ if [ $EXIT_CODE -eq 0 ] && [ "${BIFROST_E2E_SKIP_GOVERNANCE:-0}" != "1" ]; then
         "vk-quota:run-newman-vk-quota-tests.sh" \
         "rate-limit:run-newman-rate-limit-tests.sh" \
         "vk-rotation-cooldown:run-newman-vk-rotation-cooldown-tests.sh" \
+        "vk-object-ownership:run-newman-vk-object-ownership-tests.sh" \
         "pricing-time-of-day:run-newman-pricing-time-of-day-tests.sh"; do
         suite_name="${governance_suite%%:*}"
         suite_runner="${governance_suite##*:}"

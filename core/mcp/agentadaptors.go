@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/maximhq/bifrost/core/schemas"
 )
@@ -65,6 +67,16 @@ type agentAPIAdapter interface {
 
 	// applyUsage sets accumulated usage on the response in place.
 	applyUsage(response interface{}, usage *schemas.BifrostLLMUsage)
+
+	// carryForward records the assistant text and reasoning of a turn the loop is about to
+	// supersede, leaving out the tool calls Bifrost executed for it.
+	carryForward(response interface{}, executedToolCalls []schemas.ChatAssistantMessageToolCall)
+
+	// applyCarriedContent prepends what carryForward recorded to the final response, in turn order.
+	applyCarriedContent(response interface{})
+
+	// routingInfo returns the route that served a response.
+	routingInfo(response interface{}) schemas.RoutingInfo
 }
 
 // chatAPIAdapter implements agentAPIAdapter for Chat API
@@ -72,6 +84,10 @@ type chatAPIAdapter struct {
 	originalReq     *schemas.BifrostChatRequest
 	initialResponse *schemas.BifrostChatResponse
 	makeReq         func(ctx *schemas.BifrostContext, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError)
+
+	carriedText             []string                       // assistant text of superseded turns, in order
+	carriedReasoning        []string                       // reasoning text of superseded turns, in order
+	carriedReasoningDetails []schemas.ChatReasoningDetails // reasoning details (signatures intact) of superseded turns
 }
 
 // responsesAPIAdapter implements agentAPIAdapter for Responses API.
@@ -92,6 +108,8 @@ type responsesAPIAdapter struct {
 	originalReq     *schemas.BifrostResponsesRequest
 	initialResponse *schemas.BifrostResponsesResponse
 	makeReq         func(ctx *schemas.BifrostContext, req *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError)
+
+	carriedOutput []schemas.ResponsesMessage // output items of superseded turns, executed tool calls removed
 }
 
 // Chat API adapter implementations
@@ -187,6 +205,115 @@ func (c *chatAPIAdapter) extractUsage(response interface{}) *schemas.BifrostLLMU
 
 func (c *chatAPIAdapter) applyUsage(response interface{}, usage *schemas.BifrostLLMUsage) {
 	response.(*schemas.BifrostChatResponse).Usage = usage
+}
+
+func (c *chatAPIAdapter) routingInfo(response interface{}) schemas.RoutingInfo {
+	return response.(*schemas.BifrostChatResponse).ExtraFields.RoutingInfo
+}
+
+// carryForward keeps the first choice's text and reasoning: the agent loop only ever
+// continues the first choice's conversation, so that is the one the client is shown. Tool
+// calls are left behind - this turn's were executed by Bifrost, and the final response lists
+// any the client still has to run.
+func (c *chatAPIAdapter) carryForward(response interface{}, _ []schemas.ChatAssistantMessageToolCall) {
+	message := firstChatMessage(response.(*schemas.BifrostChatResponse))
+	if message == nil {
+		return
+	}
+	if text := chatMessageText(message.Content); text != "" {
+		c.carriedText = append(c.carriedText, text)
+	}
+	if assistant := message.ChatAssistantMessage; assistant != nil {
+		if assistant.Reasoning != nil && *assistant.Reasoning != "" {
+			c.carriedReasoning = append(c.carriedReasoning, *assistant.Reasoning)
+		}
+		c.carriedReasoningDetails = append(c.carriedReasoningDetails, assistant.ReasoningDetails...)
+	}
+}
+
+// applyCarriedContent puts earlier turns' text ahead of the final message's own, and their
+// reasoning ahead of its reasoning. String content stays a string (parts joined by a blank
+// line) so OpenAI-shaped clients keep the shape they expect; block content gains leading
+// text blocks. Reasoning details keep their signatures and are re-indexed in order.
+func (c *chatAPIAdapter) applyCarriedContent(response interface{}) {
+	if len(c.carriedText) == 0 && len(c.carriedReasoning) == 0 && len(c.carriedReasoningDetails) == 0 {
+		return
+	}
+	message := firstChatMessage(response.(*schemas.BifrostChatResponse))
+	if message == nil {
+		return
+	}
+	if len(c.carriedText) > 0 {
+		if message.Content == nil || message.Content.ContentStr != nil || len(message.Content.ContentBlocks) == 0 {
+			var last *string
+			if message.Content != nil {
+				last = message.Content.ContentStr
+			}
+			joined := joinNonEmpty(c.carriedText, last)
+			message.Content = &schemas.ChatMessageContent{ContentStr: &joined}
+		} else {
+			blocks := make([]schemas.ChatContentBlock, 0, len(c.carriedText)+len(message.Content.ContentBlocks))
+			for i := range c.carriedText {
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: &c.carriedText[i]})
+			}
+			blocks = append(blocks, message.Content.ContentBlocks...)
+			message.Content = &schemas.ChatMessageContent{ContentBlocks: blocks}
+		}
+	}
+	if len(c.carriedReasoning) == 0 && len(c.carriedReasoningDetails) == 0 {
+		return
+	}
+	if message.ChatAssistantMessage == nil {
+		message.ChatAssistantMessage = &schemas.ChatAssistantMessage{}
+	}
+	assistant := message.ChatAssistantMessage
+	if len(c.carriedReasoning) > 0 {
+		joined := joinNonEmpty(c.carriedReasoning, assistant.Reasoning)
+		assistant.Reasoning = &joined
+	}
+	if len(c.carriedReasoningDetails) > 0 {
+		details := make([]schemas.ChatReasoningDetails, 0, len(c.carriedReasoningDetails)+len(assistant.ReasoningDetails))
+		details = append(details, c.carriedReasoningDetails...)
+		details = append(details, assistant.ReasoningDetails...)
+		for i := range details {
+			details[i].Index = i
+		}
+		assistant.ReasoningDetails = details
+	}
+}
+
+// firstChatMessage returns the message of a chat response's first choice, or nil.
+func firstChatMessage(response *schemas.BifrostChatResponse) *schemas.ChatMessage {
+	if response == nil || len(response.Choices) == 0 || response.Choices[0].ChatNonStreamResponseChoice == nil {
+		return nil
+	}
+	return response.Choices[0].ChatNonStreamResponseChoice.Message
+}
+
+// chatMessageText returns the text a chat message content carries, as a string or text blocks.
+func chatMessageText(content *schemas.ChatMessageContent) string {
+	if content == nil {
+		return ""
+	}
+	if content.ContentStr != nil {
+		return *content.ContentStr
+	}
+	var parts []string
+	for _, block := range content.ContentBlocks {
+		if block.Type == schemas.ChatContentBlockTypeText && block.Text != nil && *block.Text != "" {
+			parts = append(parts, *block.Text)
+		}
+	}
+	return strings.Join(parts, "\n\n")
+}
+
+// joinNonEmpty joins earlier parts and a final part with a blank line, skipping an empty final part.
+func joinNonEmpty(earlier []string, last *string) string {
+	parts := earlier
+	if last != nil && *last != "" {
+		parts = append(slices.Clip(earlier), *last)
+	}
+	return strings.Join(parts, "\n\n")
 }
 
 // createChatResponseWithExecutedToolsAndNonAutoExecutableCalls creates a chat response
@@ -410,6 +537,46 @@ func (r *responsesAPIAdapter) extractUsage(response interface{}) *schemas.Bifros
 
 func (r *responsesAPIAdapter) applyUsage(response interface{}, usage *schemas.BifrostLLMUsage) {
 	response.(*schemas.BifrostResponsesResponse).Usage = usage.ToResponsesResponseUsage()
+}
+
+func (r *responsesAPIAdapter) routingInfo(response interface{}) schemas.RoutingInfo {
+	return response.(*schemas.BifrostResponsesResponse).ExtraFields.RoutingInfo
+}
+
+// carryForward keeps every output item of the turn except the tool calls Bifrost executed,
+// and any function_call, which the final response re-lists when the client must run it.
+// Items are kept whole, so a reasoning item's encrypted_content survives byte for byte.
+func (r *responsesAPIAdapter) carryForward(response interface{}, executedToolCalls []schemas.ChatAssistantMessageToolCall) {
+	for _, item := range response.(*schemas.BifrostResponsesResponse).Output {
+		if item.Type != nil && *item.Type == schemas.ResponsesMessageTypeFunctionCall {
+			continue
+		}
+		if item.ResponsesToolMessage != nil && item.ResponsesToolMessage.CallID != nil && executedToolCallID(executedToolCalls, *item.ResponsesToolMessage.CallID) {
+			continue
+		}
+		r.carriedOutput = append(r.carriedOutput, item)
+	}
+}
+
+// applyCarriedContent puts earlier turns' output items ahead of the final response's own.
+func (r *responsesAPIAdapter) applyCarriedContent(response interface{}) {
+	if len(r.carriedOutput) == 0 {
+		return
+	}
+	responsesResponse := response.(*schemas.BifrostResponsesResponse)
+	output := make([]schemas.ResponsesMessage, 0, len(r.carriedOutput)+len(responsesResponse.Output))
+	output = append(output, r.carriedOutput...)
+	responsesResponse.Output = append(output, responsesResponse.Output...)
+}
+
+// executedToolCallID reports whether callID names one of the executed tool calls.
+func executedToolCallID(executed []schemas.ChatAssistantMessageToolCall, callID string) bool {
+	for i := range executed {
+		if executed[i].ID != nil && *executed[i].ID == callID {
+			return true
+		}
+	}
+	return false
 }
 
 // createResponsesResponseWithExecutedToolsAndNonAutoExecutableCalls creates a responses response

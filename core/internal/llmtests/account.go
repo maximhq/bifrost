@@ -628,16 +628,17 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 	case schemas.Typesafe:
 		return []schemas.Key{
 			{
-				Value:  *schemas.NewSecretVar("env.TYPESAFE_API_KEY"),
-				Models: []string{"*"},
-				Weight: 1.0,
+				Value:          *schemas.NewSecretVar("env.TYPESAFE_API_KEY"),
+				Models:         []string{"*"},
+				Weight:         1.0,
+				UseForBatchAPI: bifrost.Ptr(true),
 			},
 		}, nil
 	case schemas.Fireworks:
 		return []schemas.Key{
 			{
 				Value:          *schemas.NewSecretVar("env.FIREWORKS_API_KEY"),
-				Models:         []string{"accounts/fireworks/models/kimi-k2p7-code", "fireworks/qwen3-embedding-8b"},
+				Models:         []string{"accounts/fireworks/models/gpt-oss-120b", "accounts/fireworks/models/deepseek-v4p1-flash", "fireworks/qwen3-embedding-8b"},
 				Weight:         1.0,
 				UseForBatchAPI: bifrost.Ptr(true),
 			},
@@ -1553,8 +1554,8 @@ var AllProviderConfigs = []ComprehensiveTestConfig{
 	},
 	{
 		Provider:       schemas.Fireworks,
-		ChatModel:      "accounts/fireworks/models/kimi-k2p7-code",
-		TextModel:      "accounts/fireworks/models/kimi-k2p7-code",
+		ChatModel:      "accounts/fireworks/models/gpt-oss-120b",
+		TextModel:      "accounts/fireworks/models/deepseek-v4p1-flash",
 		EmbeddingModel: "fireworks/qwen3-embedding-8b",
 		Scenarios: TestScenarios{
 			TextCompletion:        true,

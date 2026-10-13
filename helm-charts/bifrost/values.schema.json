@@ -750,10 +750,21 @@
                 "allowedRedirectUris": {
                   "type": "array",
                   "items": {
-                    "type": "string",
-                    "format": "uri"
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "const": "*"
+                      },
+                      {
+                        "type": "string",
+                        "format": "uri",
+                        "not": {
+                          "pattern": "\\*"
+                        }
+                      }
+                    ]
                   },
-                  "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries; other remote callbacks are denied by default. Maps to client.oauth2_server_config.allowed_redirect_uris."
+                  "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries; other remote callbacks are denied by default. A bare \"*\" entry allows any https callback; private-use scheme callbacks still need an exact entry, and partial wildcards are rejected. Maps to client.oauth2_server_config.allowed_redirect_uris."
                 }
               },
               "additionalProperties": false
