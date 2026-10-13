@@ -17,6 +17,10 @@ description: "v2.3.0 changelog - 2026-10-13"
 </Tabs>
 
 <Update label="Bifrost(HTTP)" description="2.3.0">
+<Warning>
+**Pass-through routes and file objects now work differently with virtual keys.** Read this changelog in full before you upgrade. Every one of these changes strengthens Bifrost's security posture. If you have questions, reach out to us.
+</Warning>
+
 ## ✨ Features
 
 - **Agent Gateway (A2A)** - Bifrost now proxies A2A agents. Register an upstream agent by its agent card URL (`POST /api/agents`, `POST /api/agents/inspect`, or the new top-level `agents` array in config.json, reconciled by name at startup) and clients reach it at `/agents/a2a/<name>/.well-known/agent-card.json`, `/agents/a2a/<name>/json-rpc` (JSON-RPC and SSE streaming) and `/agents/a2a/<name>/rest/...`, plus an optional shared gRPC listener routed by `<agent>.<a2a_grpc_base_domain>:<a2a_grpc_port>`. The runtime caches cards and clients, refreshes a stale interface on 404/405/410/426, supports header, OAuth and TLS upstream auth, runs A2A plugin hooks, and delivers push notifications through a durable, retried outbox (`/agents/a2a/<name>/push/callback`, authenticated with a per-config token). Push callbacks to loopback or private addresses stay blocked unless the new `server.a2a_allow_private_push_callbacks` is on (default off). Access is governed per virtual key with `agent_grants` (omit to keep, `[]` to clear, unknown agents rejected atomically) and `allow_by_default` per agent; ungranted or disabled agents return `403`. Every A2A operation and stream event gets its own log row (relational, ClickHouse, or hybrid with object-store payloads) in a new Agent Logs workspace with session grouping, raw capture and DAC-bounded filters, LLM and MCP logs carry the A2A correlation id, and A2A client spans plus the `a2a.client.operation.duration` metric reach connectors. The dashboard adds an agent sheet with auth fields and a card preview, push-config UI and an Agent Gateway settings page; Helm adds `bifrost.agents[]`, `bifrost.client.a2aExternalClientUrl`, `bifrost.server.a2aGrpcBaseDomain` and `bifrost.server.a2aGrpcPort`
