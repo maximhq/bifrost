@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -346,6 +347,13 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	}
 	if err := lib.ValidateBaseURL(payload.ClientConfig.A2AExternalClientURL.GetValue()); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("a2a_external_client_url %v", err))
+		return
+	}
+
+	// enforce_vk_object_ownership is a plain bool that defaults to true, so a JSON null would
+	// decode as true and silently re-enable ownership. Refuse it; omit the field to keep the stored value.
+	if raw, present := clientConfigFields["enforce_vk_object_ownership"]; present && bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		SendError(ctx, fasthttp.StatusBadRequest, "enforce_vk_object_ownership must be true or false")
 		return
 	}
 
@@ -778,6 +786,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig.AllowDirectKeys = payload.ClientConfig.AllowDirectKeys
 	// Read by the daily expired-key cleanup job from the store, so no restart is needed.
 	updatedConfig.DeleteExpiredVirtualKeys = payload.ClientConfig.DeleteExpiredVirtualKeys
+	// Copied only when sent: an omitted field unmarshals as the default (true), which would
+	// re-enable ownership on a partial save. Readers pick the saved value up on the next request.
+	if _, present := clientConfigFields["enforce_vk_object_ownership"]; present {
+		updatedConfig.EnforceVKObjectOwnership = payload.ClientConfig.EnforceVKObjectOwnership
+	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally
 	// so 0 clears a previously stored cooldown.

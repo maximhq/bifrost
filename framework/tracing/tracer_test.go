@@ -988,6 +988,41 @@ func TestTracer_PopulateLLMResponseAttributesEmitsResponsesFinishReason(t *testi
 	require.Equal(t, "refusal", span.Attributes[schemas.AttrFinishReason])
 }
 
+// The same refusal on a span whose request side says Responses, as every real
+// /v1/responses call has. The test above leaves the request type empty, which
+// renders through the chat branch and so never saw the Responses branch drop
+// the finish reasons.
+func TestTracer_PopulateLLMResponseAttributesEmitsResponsesFinishReasonForResponsesRequest(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "llm.call", schemas.SpanKindLLMCall)
+
+	tracer.PopulateLLMRequestAttributes(handle, &schemas.BifrostRequest{
+		RequestType:      schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+	})
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			ID:         schemas.Ptr("resp_refusal"),
+			Model:      "gpt-4o-mini",
+			StopReason: schemas.Ptr("refusal"),
+		},
+	}
+
+	bctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	tracer.PopulateLLMResponseAttributes(bctx, handle, resp, nil)
+
+	span := store.GetTrace(traceID).RootSpan
+	require.Equal(t, []string{"refusal"}, span.Attributes[schemas.AttrFinishReasons])
+	require.Equal(t, "refusal", span.Attributes[schemas.AttrFinishReason])
+}
+
 // Before SetObservabilityPlugins runs, demand is unknown rather than absent. A
 // request in flight during boot must still get its attributes; declaring an
 // empty plugin set is what expresses "nothing is listening".

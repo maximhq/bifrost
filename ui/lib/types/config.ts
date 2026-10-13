@@ -848,6 +848,9 @@ export interface CoreConfig {
 	// Default for virtual keys without an explicit delete_after_expire: the daily
 	// cleanup job deletes them once expired.
 	delete_expired_virtual_keys: boolean;
+	// Restrict provider objects (files, batches, containers, live sessions, ...) to the
+	// virtual key that created them.
+	enforce_vk_object_ownership: boolean;
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
 	routing_chain_max_depth: number;
@@ -907,6 +910,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	whitelisted_routes: [],
 	hide_deleted_virtual_keys_in_filters: false,
 	delete_expired_virtual_keys: false,
+	enforce_vk_object_ownership: true,
 	hidden_request_types: [],
 	routing_chain_max_depth: 10,
 };

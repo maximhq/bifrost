@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/queryscope"
 )
 
 // UpsertProviderObject records the creating virtual key of a provider object. The
@@ -31,14 +32,27 @@ func (s *RDBConfigStore) UpsertProviderObject(ctx context.Context, object *table
 	}).Create(object).Error
 }
 
+// providerIDListInlineMax is the longest id list bound one parameter per id.
+const providerIDListInlineMax = 1000
+
 // GetProviderObjectsByIDs returns the provider objects among ids that exist, in no
-// particular order. Ids with no row are simply absent from the result.
+// particular order. Ids with no row are simply absent from the result. A list page fans
+// its ids out across every provider name sharing the API, so ids can outnumber the
+// bind-parameter limit (SQLite 32,766, Postgres 65,535). A list longer than
+// providerIDListInlineMax travels as one parameter (queryscope.InStrings); a short one,
+// the common case, keeps the plain IN, which SQLite plans faster than a json_each scan.
 func (s *RDBConfigStore) GetProviderObjectsByIDs(ctx context.Context, ids []string) ([]*tables.TableProviderObject, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
+	db := s.DB().WithContext(ctx)
+	if len(ids) <= providerIDListInlineMax {
+		db = db.Where("id IN ?", ids)
+	} else {
+		db = db.Where(queryscope.InStrings(db, "id", ids))
+	}
 	var objects []*tables.TableProviderObject
-	if err := s.DB().WithContext(ctx).Where("id IN ?", ids).Find(&objects).Error; err != nil {
+	if err := db.Find(&objects).Error; err != nil {
 		return nil, err
 	}
 	return objects, nil
@@ -65,22 +79,35 @@ func (s *RDBConfigStore) DeleteProviderObjectsByObjectIDSuffix(ctx context.Conte
 // whose provider-side id ends in "/"+one of suffixes, in no particular order: full
 // resource names such as "projects/<p>/locations/<l>/cachedContents/<n>" addressed by
 // their last segment alone. Each suffix matches whole, at a path boundary, with LIKE
-// metacharacters taken literally; empty suffixes are ignored.
+// metacharacters taken literally; empty suffixes are ignored. Each suffix is its own LIKE
+// term, so the suffixes are read suffixPatternChunkSize at a time.
 func (s *RDBConfigStore) GetProviderObjectsByObjectIDSuffixes(ctx context.Context, kind, provider string, suffixes []string) ([]*tables.TableProviderObject, error) {
 	patterns := suffixLikePatterns(suffixes)
 	if kind == "" || provider == "" || len(patterns) == 0 {
 		return nil, nil
 	}
-	suffixWhere := s.DB()
-	for _, pattern := range patterns {
-		suffixWhere = suffixWhere.Or(`object_id LIKE ? ESCAPE '\'`, pattern)
-	}
 	var objects []*tables.TableProviderObject
-	if err := s.DB().WithContext(ctx).
-		Where("kind = ? AND provider = ?", kind, provider).
-		Where(suffixWhere).
-		Find(&objects).Error; err != nil {
-		return nil, err
+	seen := make(map[string]struct{})
+	for start := 0; start < len(patterns); start += suffixPatternChunkSize {
+		chunk := patterns[start:min(start+suffixPatternChunkSize, len(patterns))]
+		suffixWhere := s.DB()
+		for _, pattern := range chunk {
+			suffixWhere = suffixWhere.Or(`object_id LIKE ? ESCAPE '\'`, pattern)
+		}
+		var page []*tables.TableProviderObject
+		if err := s.DB().WithContext(ctx).
+			Where("kind = ? AND provider = ?", kind, provider).
+			Where(suffixWhere).
+			Find(&page).Error; err != nil {
+			return nil, err
+		}
+		for _, object := range page {
+			if _, dup := seen[object.ID]; dup {
+				continue
+			}
+			seen[object.ID] = struct{}{}
+			objects = append(objects, object)
+		}
 	}
 	return objects, nil
 }

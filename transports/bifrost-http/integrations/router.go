@@ -2841,7 +2841,34 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 
 	// Handle streaming using the centralized approach
 	// Pass cancel function so it can be called when the writer exits (errors, completion, etc.)
-	g.handleStreaming(ctx, bifrostCtx, config, stream, cancel)
+	g.handleStreaming(ctx, bifrostCtx, config, requestType, stream, cancel)
+}
+
+// streamErrorEventType names the SSE event line for a mid-stream error object.
+// OpenAI Responses streams type every frame, and both the OpenAI API and the
+// native /v1/responses handler send a failure as "event: error", so the OpenAI
+// integration's Responses routes do the same. The error's request type decides it
+// (the Azure deployments route serves chat and responses on one path); an error
+// with none takes the request type of the stream it ends, and only when that is
+// unknown too does the route path decide. Chat and text completion streams keep
+// bare data frames.
+func streamErrorEventType(config RouteConfig, bifrostErr *schemas.BifrostError, streamRequestType schemas.RequestType) string {
+	if config.Type != RouteConfigTypeOpenAI || bifrostErr == nil {
+		return ""
+	}
+	requestType := bifrostErr.ExtraFields.RequestType
+	if requestType == "" {
+		requestType = streamRequestType
+	}
+	switch requestType {
+	case schemas.ResponsesStreamRequest, schemas.ResponsesRetrieveStreamRequest:
+		return string(schemas.ResponsesStreamResponseTypeError)
+	case "":
+		if strings.Contains(config.Path, "/responses") {
+			return string(schemas.ResponsesStreamResponseTypeError)
+		}
+	}
+	return ""
 }
 
 // handleStreaming processes a stream of BifrostResponse objects and sends them as Server-Sent Events (SSE).
@@ -2900,7 +2927,7 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 // only stops when this context is cancelled or the client socket dies. Returning without
 // cancelling leaks the watcher and the entire request-scoped BifrostContext for as long as the
 // client keeps its connection open.
-func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, streamChan chan *schemas.BifrostStreamChunk, cancel context.CancelFunc) {
+func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, streamRequestType schemas.RequestType, streamChan chan *schemas.BifrostStreamChunk, cancel context.CancelFunc) {
 	// Signal to tracing middleware that trace completion should be deferred
 	// The streaming callback will complete the trace after the stream ends
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
@@ -3055,8 +3082,8 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					}
 				}
 
-				// Send error as SSE data
-				reader.SendEvent("", errorJSON)
+				// Send error as SSE data, typed for routes whose frames carry an event line
+				reader.SendEvent(streamErrorEventType(config, bifrostErr, streamRequestType), errorJSON)
 			}
 		}
 

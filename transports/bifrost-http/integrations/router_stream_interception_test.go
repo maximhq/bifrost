@@ -74,7 +74,7 @@ func runHandleStreamingWithInterceptor(t *testing.T, config RouteConfig, interce
 	router := NewGenericRouter(nil, handlerStore, nil, nil, nil, bifrost.NewNoOpLogger())
 	ctx := &fasthttp.RequestCtx{}
 	rec := newCancelRecorder()
-	router.handleStreaming(ctx, nil, config, stream, rec.cancel)
+	router.handleStreaming(ctx, nil, config, "", stream, rec.cancel)
 
 	body, err := io.ReadAll(ctx.Response.BodyStream())
 	require.NoError(t, err)
@@ -221,7 +221,7 @@ func Test_handleStreamingMissingSpeechConverterReturnsError(t *testing.T) {
 	ctx := &fasthttp.RequestCtx{}
 	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	rec := newCancelRecorder()
-	router.handleStreaming(ctx, bifrostCtx, config, stream, rec.cancel)
+	router.handleStreaming(ctx, bifrostCtx, config, "", stream, rec.cancel)
 
 	body, err := io.ReadAll(ctx.Response.BodyStream())
 	require.NoError(t, err)

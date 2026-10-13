@@ -270,15 +270,21 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 	}
 }
 
+// openAIRawPassthrough reports whether the raw upstream bytes are already the
+// caller's OpenAI wire format. A converted request (chat served through Responses,
+// text through chat, Responses through chat) carries the other API's raw bytes, so
+// the Bifrost response is serialized instead.
+func openAIRawPassthrough(extra *schemas.BifrostResponseExtraFields) bool {
+	return extra.Provider == schemas.OpenAI && extra.RawResponse != nil && extra.ConvertedRequestType == ""
+}
+
 // openAIResponsesWireConverter maps a Bifrost responses payload to the OpenAI wire JSON shape.
 func openAIResponsesWireConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-	if resp != nil && resp.ExtraFields.Provider == schemas.OpenAI {
-		if resp.ExtraFields.RawResponse != nil {
-			return resp.ExtraFields.RawResponse, nil
-		}
-	}
 	if resp == nil {
 		return nil, nil
+	}
+	if openAIRawPassthrough(&resp.ExtraFields) {
+		return resp.ExtraFields.RawResponse, nil
 	}
 	return openAIWireCostResponse(resp.WithDefaults()), nil
 }
@@ -289,7 +295,7 @@ func openAIResponsesWireConverter(ctx *schemas.BifrostContext, resp *schemas.Bif
 // a bundle must be emitted as preformatted SSE with a prefix on every frame.
 // Keep the raw capture itself unchanged for logging and plugins.
 func openAIChatStreamWireConverter(_ *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
-	if resp.ExtraFields.Provider == schemas.OpenAI && resp.ExtraFields.RawResponse != nil {
+	if openAIRawPassthrough(&resp.ExtraFields) {
 		raw := resp.ExtraFields.RawResponse
 		if frames, ok := raw.(string); ok && strings.Contains(frames, "\n\n") {
 			var framed strings.Builder
@@ -452,18 +458,14 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			return nil, errors.New("invalid request type")
 		},
 		ChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.OpenAI {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
+			if openAIRawPassthrough(&resp.ExtraFields) {
+				return resp.ExtraFields.RawResponse, nil
 			}
 			return openAIWireCostResponse(resp), nil
 		},
 		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.OpenAI {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
+			if openAIRawPassthrough(&resp.ExtraFields) {
+				return resp.ExtraFields.RawResponse, nil
 			}
 			return openAIWireCostResponse(resp), nil
 		},
@@ -475,14 +477,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			}
 			return resp, nil
 		},
-		SpeechResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.OpenAI {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
-			}
-			return resp, nil
-		},
+		// No SpeechResponseConverter: like /v1/audio/speech, the router then writes the raw
+		// audio bytes, which is what the Azure OpenAI SDK reads. A converter's return value is
+		// JSON-encoded, which turned the audio into {"audio":"<base64>"}.
 		TranscriptionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
 			if schemas.IsPlainTextTranscriptionFormat(resp.ResponseFormat) {
 				return []byte(resp.Text), nil
@@ -506,10 +503,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		StreamConfig: &StreamConfig{
 			ChatStreamResponseConverter: openAIChatStreamWireConverter,
 			TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return "", resp.ExtraFields.RawResponse, nil
-					}
+				if openAIRawPassthrough(&resp.ExtraFields) {
+					return "", resp.ExtraFields.RawResponse, nil
 				}
 				return "", openAIWireCostResponse(resp), nil
 			},
@@ -538,10 +533,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return "", openAIWireCostResponse(resp), nil
 			},
 			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return string(resp.Type), resp.ExtraFields.RawResponse, nil
-					}
+				if openAIRawPassthrough(&resp.ExtraFields) {
+					return string(resp.Type), resp.ExtraFields.RawResponse, nil
 				}
 				converted := resp.WithDefaults()
 				if converted == nil {
@@ -585,10 +578,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type")
 			},
 			ChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return resp.ExtraFields.RawResponse, nil
-					}
+				if openAIRawPassthrough(&resp.ExtraFields) {
+					return resp.ExtraFields.RawResponse, nil
 				}
 				// Here we will combine content blocks into a single text block as required by openai SDK
 				if len(resp.Choices) == 0 {
@@ -673,10 +664,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type")
 			},
 			TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return resp.ExtraFields.RawResponse, nil
-					}
+				if openAIRawPassthrough(&resp.ExtraFields) {
+					return resp.ExtraFields.RawResponse, nil
 				}
 				return openAIWireCostResponse(resp), nil
 			},
@@ -685,10 +674,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 			StreamConfig: &StreamConfig{
 				TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
-						if resp.ExtraFields.RawResponse != nil {
-							return "", resp.ExtraFields.RawResponse, nil
-						}
+					if openAIRawPassthrough(&resp.ExtraFields) {
+						return "", resp.ExtraFields.RawResponse, nil
 					}
 					return "", openAIWireCostResponse(resp), nil
 				},
@@ -747,10 +734,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
-						if resp.ExtraFields.RawResponse != nil {
-							return string(resp.Type), resp.ExtraFields.RawResponse, nil
-						}
+					if openAIRawPassthrough(&resp.ExtraFields) {
+						return string(resp.Type), resp.ExtraFields.RawResponse, nil
 					}
 					converted := resp.WithDefaults()
 					if converted == nil {
@@ -841,10 +826,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			ResponsesResponseConverter: openAIResponsesWireConverter,
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
-						if resp.ExtraFields.RawResponse != nil {
-							return string(resp.Type), resp.ExtraFields.RawResponse, nil
-						}
+					if openAIRawPassthrough(&resp.ExtraFields) {
+						return string(resp.Type), resp.ExtraFields.RawResponse, nil
 					}
 					converted := resp.WithDefaults()
 					if converted == nil {
