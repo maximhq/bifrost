@@ -17,7 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/sjson"
 	"github.com/valyala/fasthttp"
 )

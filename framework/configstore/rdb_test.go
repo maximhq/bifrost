@@ -2585,6 +2585,39 @@ func TestUpdateClientConfig_VKRotationCooldownRoundTrip(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, result.VKRotationCooldown.D())
 }
 
+func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// config.json without the field enforces ownership.
+	var fromJSON ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"initial_pool_size":100}`), &fromJSON))
+	assert.True(t, fromJSON.EnforceVKObjectOwnership, "an omitted field keeps ownership enforced")
+	require.NoError(t, json.Unmarshal([]byte(`{"enforce_vk_object_ownership":false}`), &fromJSON))
+	assert.False(t, fromJSON.EnforceVKObjectOwnership, "an explicit false turns it off")
+
+	on := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &on))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.EnforceVKObjectOwnership)
+
+	// The column defaults to true, so the write must force an explicit false through.
+	off := on
+	off.EnforceVKObjectOwnership = false
+	require.NoError(t, store.UpdateClientConfig(ctx, &off))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.EnforceVKObjectOwnership, "an explicit false survives the delete-and-create write")
+
+	// Only the opt-out is hashed, so configs written before the field existed keep their hash.
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash)
+}
+
 func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2636,6 +2669,34 @@ func TestGenerateClientConfigHash_MCPCodeModeLimits(t *testing.T) {
 	withLimits, err := cc.GenerateClientConfigHashWithToolManager(&schemas.MCPToolManagerConfig{MaxAgentDepth: 10, CodeModeLimits: &schemas.MCPCodeModeLimits{MaxToolCalls: 5}})
 	require.NoError(t, err)
 	assert.NotEqual(t, withoutLimits, withLimits, "tool_manager_config.code_mode_limits must take part in the file hash")
+}
+
+func TestGenerateClientConfigHash_OAuth2ServerConfigPolicyFields(t *testing.T) {
+	hash := func(oc *tables.OAuth2ServerConfig) string {
+		h, err := (&ClientConfig{InitialPoolSize: 100, MCPServerAuthMode: tables.MCPServerAuthModeBoth, OAuth2ServerConfig: oc}).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	base := func() *tables.OAuth2ServerConfig {
+		return &tables.OAuth2ServerConfig{IssuerURL: schemas.NewSecretVar("https://issuer.example.com"), AuthCodeTTL: 300, AccessTokenTTL: 600}
+	}
+	baseHash := hash(base())
+
+	empty := base()
+	empty.AllowedRedirectURIs = []string{}
+	assert.Equal(t, baseHash, hash(empty), "an empty redirect list must not change existing hashes")
+
+	withRedirect := base()
+	withRedirect.AllowedRedirectURIs = []string{"https://www.cursor.com/agents/mcp/oauth/callback"}
+	assert.NotEqual(t, baseHash, hash(withRedirect), "adding allowed_redirect_uris must change the hash")
+
+	otherRedirect := base()
+	otherRedirect.AllowedRedirectURIs = []string{"https://app.example.com/callback"}
+	assert.NotEqual(t, hash(withRedirect), hash(otherRedirect), "changing allowed_redirect_uris must change the hash")
+
+	disabledVK := base()
+	disabledVK.DisableVKIdentity = true
+	assert.NotEqual(t, baseHash, hash(disabledVK), "setting disable_vk_identity must change the hash")
 }
 
 func TestUpdateClientConfig_CompatAzureDeepseekRoundTrip(t *testing.T) {

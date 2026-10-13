@@ -187,6 +187,37 @@ func TestNewBifrostContext_GoroutineStartsWithCancellableParent(t *testing.T) {
 	}
 }
 
+// Err must report a parent cancellation on the very next call, as context.WithCancel
+// children do, not only once the watcher goroutine has run. A loop that cancels the
+// request and then checks ctx.Err() (the injected-tool turn loop) otherwise opens
+// one more upstream turn after the caller is gone.
+func TestNewBifrostContext_ErrSeesParentCancelSynchronously(t *testing.T) {
+	for i := 0; i < 1000; i++ {
+		parent, parentCancel := context.WithCancel(context.Background())
+		ctx := NewBifrostContext(parent, NoDeadline)
+		parentCancel()
+		if err := ctx.Err(); err != context.Canceled {
+			t.Fatalf("iteration %d: Err() right after the parent cancel = %v, want context.Canceled", i, err)
+		}
+		select {
+		case <-ctx.Done():
+		default:
+			t.Fatalf("iteration %d: Done() still open after Err() reported the cancel", i)
+		}
+	}
+}
+
+func BenchmarkBifrostContextErr(b *testing.B) {
+	parent, parentCancel := context.WithCancel(context.Background())
+	defer parentCancel()
+	ctx := NewBifrostContext(parent, NoDeadline)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = ctx.Err()
+	}
+}
+
 func TestNewBifrostContext_DeadlineExpires(t *testing.T) {
 	// Create context with short deadline
 	deadline := time.Now().Add(50 * time.Millisecond)
@@ -554,4 +585,45 @@ func TestTrustedValue_HiddenFromUserValues(t *testing.T) {
 	if v := root.TrustedValue(trustedTestKey{}); v != "rewritten" {
 		t.Fatalf("scoped write did not reach the root: %v", v)
 	}
+}
+
+// TestBifrostContextFromContext covers the recovery helper used by code that
+// receives a request context through a foreign wrapper (mcp-go's in-process
+// transport wraps every dispatched call in its own WithValue, and the tool
+// manager adds a timeout on top).
+func TestBifrostContextFromContext(t *testing.T) {
+	root := NewBifrostContext(context.Background(), NoDeadline)
+	type foreignKey struct{}
+
+	t.Run("direct", func(t *testing.T) {
+		got, ok := BifrostContextFromContext(root)
+		if !ok || got != root {
+			t.Fatalf("direct *BifrostContext must be returned as-is (ok=%v)", ok)
+		}
+	})
+	t.Run("through foreign wrappers", func(t *testing.T) {
+		timed, cancel := context.WithTimeout(root, time.Minute)
+		defer cancel()
+		wrapped := context.WithValue(timed, foreignKey{}, "x")
+		got, ok := BifrostContextFromContext(wrapped)
+		if !ok || got != root {
+			t.Fatalf("wrapped BifrostContext must be recovered through Value (ok=%v)", ok)
+		}
+	})
+	t.Run("scoped resolves to root", func(t *testing.T) {
+		scoped := root.WithPluginScope(nil)
+		defer scoped.ReleasePluginScope()
+		got, ok := BifrostContextFromContext(context.WithValue(scoped, foreignKey{}, "x"))
+		if !ok || got.Root() != root {
+			t.Fatalf("scoped context must resolve to a context rooted at the original (ok=%v)", ok)
+		}
+	})
+	t.Run("absent", func(t *testing.T) {
+		if _, ok := BifrostContextFromContext(context.Background()); ok {
+			t.Fatal("plain context must not report a BifrostContext")
+		}
+		if _, ok := BifrostContextFromContext(nil); ok {
+			t.Fatal("nil context must not report a BifrostContext")
+		}
+	})
 }

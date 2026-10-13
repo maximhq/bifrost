@@ -98,14 +98,15 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 	// balancing plugins, which both promote unselected candidates to fallbacks
 	// when the caller didn't configure any. Model refinement is not needed here:
 	// GetProvidersForModel only returns providers that already serve this exact
-	// model string.
+	// model string. They are marked Inferred, so core does not let a provider the
+	// caller never named answer a request the primary refused as malformed.
 	if len(existingFallbacks) == 0 && len(candidates) > 1 {
 		fallbacks := make([]schemas.Fallback, 0, len(candidates)-1)
 		for _, prov := range candidates {
 			if prov == selected {
 				continue
 			}
-			fallbacks = append(fallbacks, schemas.Fallback{Provider: prov, Model: model})
+			fallbacks = append(fallbacks, schemas.Fallback{Provider: prov, Model: model, Inferred: true})
 		}
 		if len(fallbacks) > 0 {
 			req.SetFallbacks(fallbacks)

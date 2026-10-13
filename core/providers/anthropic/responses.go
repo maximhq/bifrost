@@ -1621,9 +1621,7 @@ func (chunk *AnthropicStreamEvent) ToBifrostResponsesStream(ctx context.Context,
 
 				// Set server name if present
 				if chunk.ContentBlock.ServerName != nil {
-					item.ResponsesToolMessage.ResponsesMCPToolCall = &schemas.ResponsesMCPToolCall{
-						ServerLabel: *chunk.ContentBlock.ServerName,
-					}
+					item.ResponsesToolMessage.ServerLabel = schemas.Ptr(*chunk.ContentBlock.ServerName)
 				}
 
 				// Initialize argument buffer for this MCP call and mark as MCP
@@ -3358,9 +3356,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 						if bifrostResp.Item.ResponsesToolMessage != nil {
 							contentBlock.ID = providerUtils.SanitizeAnthropicToolUseIDPtr(bifrostResp.Item.ID)
 							contentBlock.Name = bifrostResp.Item.ResponsesToolMessage.Name
-							if bifrostResp.Item.ResponsesToolMessage.ResponsesMCPToolCall != nil {
-								contentBlock.ServerName = &bifrostResp.Item.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel
-							}
+							contentBlock.ServerName = bifrostResp.Item.ResponsesToolMessage.ServerLabel
 							// Always start with empty input for streaming compatibility
 							contentBlock.Input = json.RawMessage("{}")
 						}
@@ -6635,6 +6631,13 @@ func convertAnthropicContentBlocksToResponsesMessagesGrouped(contentBlocks []Ant
 							if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
 								toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesDocumentBlock())
 							}
+						case AnthropicContentBlockTypeToolReference:
+							if contentBlock.ToolName != nil {
+								toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
+									Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
+									ToolName: contentBlock.ToolName,
+								})
+							}
 						}
 					}
 					bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
@@ -6918,7 +6921,7 @@ func normalizeInlineFunctionTool(tool *schemas.ResponsesTool) (*schemas.Response
 	if tool == nil || tool.ResponsesToolFunction == nil || tool.ResponsesToolFunction.Parameters == nil {
 		return tool, nil
 	}
-	normalized, err := normalizeAnthropicToolInputSchema(tool.ResponsesToolFunction.Parameters)
+	normalized, err := NormalizeAnthropicToolInputSchema(tool.ResponsesToolFunction.Parameters)
 	if err != nil {
 		return nil, err
 	}
@@ -7421,6 +7424,13 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 							if contentBlock.Source != nil && contentBlock.Source.SourceObj != nil {
 								toolMsgContentBlocks = append(toolMsgContentBlocks, contentBlock.toBifrostResponsesDocumentBlock())
 							}
+						case AnthropicContentBlockTypeToolReference:
+							if contentBlock.ToolName != nil {
+								toolMsgContentBlocks = append(toolMsgContentBlocks, schemas.ResponsesMessageContentBlock{
+									Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
+									ToolName: contentBlock.ToolName,
+								})
+							}
 						}
 					}
 					bifrostMsg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks = toolMsgContentBlocks
@@ -7626,9 +7636,7 @@ func convertAnthropicContentBlocksToResponsesMessagesOrdered(ctx *schemas.Bifros
 					bifrostMsg.ResponsesToolMessage.Arguments = schemas.Ptr(string(block.Input))
 				}
 				if block.ServerName != nil {
-					bifrostMsg.ResponsesToolMessage.ResponsesMCPToolCall = &schemas.ResponsesMCPToolCall{
-						ServerLabel: *block.ServerName,
-					}
+					bifrostMsg.ResponsesToolMessage.ServerLabel = schemas.Ptr(*block.ServerName)
 				}
 				bifrostMessages = append(bifrostMessages, bifrostMsg)
 			}
@@ -8170,8 +8178,8 @@ func convertBifrostMCPCallToAnthropicToolUse(msg *schemas.ResponsesMessage) *Ant
 		toolUseBlock.Name = msg.ResponsesToolMessage.Name
 
 		// Set server name if present
-		if msg.ResponsesToolMessage.ResponsesMCPToolCall != nil && msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel != "" {
-			toolUseBlock.ServerName = &msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel
+		if msg.ResponsesToolMessage.ServerLabel != nil && *msg.ResponsesToolMessage.ServerLabel != "" {
+			toolUseBlock.ServerName = msg.ResponsesToolMessage.ServerLabel
 		}
 
 		// Parse arguments as JSON input
@@ -8220,8 +8228,8 @@ func convertBifrostMCPApprovalToAnthropicToolUse(msg *schemas.ResponsesMessage) 
 		toolUseBlock.Name = msg.ResponsesToolMessage.Name
 
 		// Set server name if present
-		if msg.ResponsesToolMessage.ResponsesMCPToolCall != nil && msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel != "" {
-			toolUseBlock.ServerName = &msg.ResponsesToolMessage.ResponsesMCPToolCall.ServerLabel
+		if msg.ResponsesToolMessage.ServerLabel != nil && *msg.ResponsesToolMessage.ServerLabel != "" {
+			toolUseBlock.ServerName = msg.ResponsesToolMessage.ServerLabel
 		}
 
 		// Parse arguments as JSON input
@@ -9408,7 +9416,7 @@ func convertBifrostToolsToAnthropic(caps schemas.ModelCaps, tools []schemas.Resp
 			toolForConversion = &toolCopy
 		}
 		if tool.ResponsesToolFunction != nil && tool.ResponsesToolFunction.Parameters != nil {
-			normalized, err := normalizeAnthropicToolInputSchema(tool.ResponsesToolFunction.Parameters)
+			normalized, err := NormalizeAnthropicToolInputSchema(tool.ResponsesToolFunction.Parameters)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -9884,6 +9892,13 @@ func convertContentBlockToAnthropicWithCaps(caps schemas.ModelCaps, block schema
 				Type:         AnthropicContentBlockTypeContainerUpload,
 				FileID:       block.FileID,
 				CacheControl: block.CacheControl,
+			}
+		}
+	case schemas.ResponsesInputMessageContentBlockTypeToolReference:
+		if block.ToolName != nil {
+			return &AnthropicContentBlock{
+				Type:     AnthropicContentBlockTypeToolReference,
+				ToolName: block.ToolName,
 			}
 		}
 	case schemas.ResponsesOutputMessageContentTypeReasoning:

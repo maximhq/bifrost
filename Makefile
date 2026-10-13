@@ -888,7 +888,7 @@ test-framework: install-gotestsum ## Run framework tests
 			( cd $$dir && gotestsum \
 				--format=$(GOTESTSUM_FORMAT) \
 				--junitfile=$(CURDIR)/$(TEST_REPORTS_DIR)/framework-$$pkg_name.xml \
-				-- -v ./... ) || touch $(CURDIR)/$(TEST_REPORTS_DIR)/.framework-failed; \
+				-- -v -timeout 30m ./... ) || touch $(CURDIR)/$(TEST_REPORTS_DIR)/.framework-failed; \
 			if [ -z "$$CI" ] && [ -z "$$GITHUB_ACTIONS" ] && [ -z "$$GITLAB_CI" ] && [ -z "$$CIRCLECI" ] && [ -z "$$JENKINS_HOME" ]; then \
 				if which junit-viewer > /dev/null 2>&1; then \
 					$(ECHO) "$(YELLOW)Generating HTML report for $$pkg_name...$(NC)"; \
@@ -2291,6 +2291,7 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 		printf '  %-30s %s\n' "tmp/harness-monitor-passes.jsonl" "Pass manifest the single run-wide status table follows (one record per newman invocation)."; \
 		printf '  %-30s %s\n' "tmp/harness-failures.md"     "Categorized failure analyzer output + coverage matrices."; \
 		printf '  %-30s %s\n' "tmp/bifrost-dev.log"         "Bifrost runtime log (only if we auto-started it)."; \
+		printf '  %-30s %s\n' "tmp/harness-mcp-fixture.log" "MCP test server log (sse_mcp on 3012; only if we started it)."; \
 		printf '  %-30s %s\n' "tmp/harness-augmented.json"  "Provider harness plus generated streaming/thinking rows."; \
 		printf '  %-30s %s\n' "tmp/harness-filtered.json"   "Filtered collection (only if PROVIDER/FEATURE/RERUN_FAILED set)."; \
 		printf '  %-30s %s\n' "tmp/harness-timings.json"    "Measured median ms per request name, merged across runs. Drives both the shard sizing and the"; \
@@ -2507,6 +2508,10 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			pkill -P $$BPID 2>/dev/null; \
 			rm -f tmp/bifrost-dev.pid; \
 		fi; \
+		if [ -f tmp/harness-mcp-fixture.pid ]; then \
+			kill $$(cat tmp/harness-mcp-fixture.pid) 2>/dev/null; \
+			rm -f tmp/harness-mcp-fixture.pid; \
+		fi; \
 	}; \
 	preempt_viewer_port() { \
 		if [ -f tmp/harness-viewer.pid ]; then \
@@ -2544,8 +2549,37 @@ run-provider-harness-test: $(if $(HELP),,install-newman) ## Run the Bifrost prov
 			say "$(GREEN)Modalities: all (no filter)$(NC)"; \
 		fi; \
 	fi; \
+	: "The profile's sse_mcp client (localhost:3012) serves the injected web_search tool."; \
+	: "Without it injection fails open and every injected-web-search row fails, so start the"; \
+	: "examples/mcps/remote-test-server fixture before the gateway resolves its MCP clients."; \
+	MCP_FIXTURE_STARTED=0; \
+	if nc -z localhost 3012 2>/dev/null; then \
+		say "$(GREEN)MCP test server already listening on 3012$(NC)"; \
+	else \
+		MCP_FIXTURE_BIN="$(CURDIR)/examples/mcps/remote-test-server/bin/remote-test-server"; \
+		if [ ! -x "$$MCP_FIXTURE_BIN" ]; then \
+			say "$(CYAN)Building MCP test server (examples/mcps/remote-test-server)...$(NC)"; \
+			(cd examples/mcps/remote-test-server && GOWORK=off go build -o bin/remote-test-server .) || { \
+				say "$(RED)Could not build the MCP test server; injected-web-search rows will fail$(NC)"; \
+			}; \
+		fi; \
+		if [ -x "$$MCP_FIXTURE_BIN" ]; then \
+			MCP_HTTP_PORT=3011 MCP_SSE_PORT=3012 "$$MCP_FIXTURE_BIN" > tmp/harness-mcp-fixture.log 2>&1 & \
+			echo $$! > tmp/harness-mcp-fixture.pid; \
+			for i in $$(seq 1 40); do nc -z localhost 3012 2>/dev/null && break; sleep 0.25; done; \
+			if nc -z localhost 3012 2>/dev/null; then \
+				say "$(GREEN)MCP test server up on 3012 (log: tmp/harness-mcp-fixture.log)$(NC)"; \
+				MCP_FIXTURE_STARTED=1; \
+			else \
+				say "$(RED)MCP test server did not open 3012. See tmp/harness-mcp-fixture.log$(NC)"; \
+			fi; \
+		fi; \
+	fi; \
 	if curl -fsS --max-time 2 "$$BASE_URL_VAL/health" > /dev/null 2>&1; then \
 		say "$(GREEN)Bifrost already running at $$BASE_URL_VAL$(NC)"; \
+		if [ "$$MCP_FIXTURE_STARTED" = "1" ]; then \
+			say "$(YELLOW)The MCP test server started after this gateway booted, so its sse_mcp client may still be disconnected; restart the gateway if injected-web-search rows fail.$(NC)"; \
+		fi; \
 	else \
 		say "$(YELLOW)Bifrost not running - launching 'make dev' (APP_DIR=$$APP_DIR_VAL) in background...$(NC)"; \
 		$(MAKE) dev APP_DIR="$$APP_DIR_VAL" > tmp/bifrost-dev.log 2>&1 & \

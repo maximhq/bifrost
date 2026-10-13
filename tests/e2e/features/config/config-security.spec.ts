@@ -159,6 +159,38 @@ test.describe("Inference auth setup defaults", () => {
     await expect(inference).not.toBeChecked();
   });
 
+  test("provider object ownership switch reads an omitted setting as on", async ({
+    page,
+  }) => {
+    // A gateway that predates the setting omits it; the server treats that as enforced,
+    // so the switch must not show it as off and an unrelated save must not turn it off.
+    const { enforce_vk_object_ownership: _omitted, ...withoutOwnership } =
+      DefaultCoreConfig;
+    await page.route("**/api/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      await route.fulfill({
+        json:
+          path === "/api/config"
+            ? {
+                client_config: withoutOwnership,
+                auth_config: null,
+                framework_config: {},
+                is_db_connected: true,
+                metadata: { onboarding_dismissed: true },
+              }
+            : path === "/api/version"
+              ? "1.0.0"
+              : path === "/api/session/is-auth-enabled"
+                ? { is_auth_enabled: false, auth_type: "none" }
+                : {},
+      });
+    });
+    await page.goto("/workspace/config/security");
+    await expect(
+      page.getByTestId("security-enforce-vk-object-ownership-switch"),
+    ).toBeChecked();
+  });
+
   test("setup toggles stay disabled when the stored config failed to load", async ({
     page,
   }) => {
@@ -266,6 +298,30 @@ test.describe("Security Settings", () => {
     if (await configSettingsPage.hasPendingChanges()) {
       await configSettingsPage.saveSettings();
     }
+  });
+
+  test("should persist the provider object ownership switch", async ({
+    configSettingsPage,
+    request,
+  }) => {
+    // The generic afterEach restore puts the switch back to the operator's value.
+    await configSettingsPage.dismissOnboardingWidget();
+    const ownership = configSettingsPage.enforceVKObjectOwnershipSwitch;
+    await expect(ownership).toBeVisible();
+    const initial = await configSettingsPage.getSwitchState(ownership);
+
+    await ownership.click();
+    await configSettingsPage.saveSettings();
+    await configSettingsPage.goto("security");
+    expect(
+      await configSettingsPage.getSwitchState(
+        configSettingsPage.enforceVKObjectOwnershipSwitch,
+      ),
+    ).toBe(!initial);
+    expect(
+      (await coreConfigApi.get(request)).client_config
+        .enforce_vk_object_ownership,
+    ).toBe(!initial);
   });
 
   test("should display required headers textarea", async ({

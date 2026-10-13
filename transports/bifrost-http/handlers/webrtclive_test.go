@@ -397,6 +397,109 @@ func TestLiveWebRTCRelayEndToEnd(t *testing.T) {
 	assert.Equal(t, []float64{31, 9}, voice, "a full window, then the rest reported by session.closed")
 }
 
+type pausedLiveWebRTCMessages struct {
+	*liveWebRTCMessages
+	paused chan struct{}
+	resume chan struct{}
+}
+
+func (m *pausedLiveWebRTCMessages) fromProvider(r *webrtcRelay, msg webrtc.DataChannelMessage) {
+	m.liveWebRTCMessages.fromProvider(r, msg)
+	if schemas.LiveEventTypeOf(msg.Data) == schemas.LiveEventSessionStarted {
+		close(m.paused)
+		<-m.resume
+	}
+}
+
+// Acknowledged SCTP messages can still be waiting behind an application callback.
+// DTLS close must not finalize billing before the data-channel reader drains them.
+func TestLiveWebRTCTransportCloseDrainsReceivedUsage(t *testing.T) {
+	if logger == nil {
+		SetLogger(&mockLogger{})
+	}
+	for _, tc := range []struct {
+		name        string
+		frames      []string
+		seconds     float64
+		closed      bool
+		browserGone bool
+	}{
+		{name: "usage then session closed", frames: []string{`{"type":"session.usage.updated","usage":{"seconds":97}}`, `{"type":"session.closed","usage":{"seconds":97}}`}, seconds: 97, closed: true},
+		{name: "final usage only", frames: []string{`{"type":"session.closed","usage":{"seconds":97}}`}, seconds: 97, closed: true},
+		{name: "final usage increases last snapshot", frames: []string{`{"type":"session.usage.updated","usage":{"seconds":31}}`, `{"type":"session.closed","usage":{"seconds":97}}`}, seconds: 97, closed: true},
+		{name: "duplicate snapshots do not double bill", frames: []string{`{"type":"session.usage.updated","usage":{"seconds":97}}`, `{"type":"session.usage.updated","usage":{"seconds":97}}`, `{"type":"session.closed","usage":{"seconds":97}}`}, seconds: 97, closed: true},
+		{name: "late usage after session closed is ignored", frames: []string{`{"type":"session.closed","usage":{"seconds":97}}`, `{"type":"session.usage.updated","usage":{"seconds":999}}`}, seconds: 97, closed: true},
+		{name: "usage then hangup", frames: []string{`{"type":"session.usage.updated","usage":{"seconds":97}}`}, seconds: 97},
+		{name: "hangup without usage", seconds: 15},
+		{name: "browser left before final usage", frames: []string{`{"type":"session.closed","usage":{"seconds":97}}`}, seconds: 97, closed: true, browserGone: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := newWebRTCTestPeer(t)
+			receiver := newWebRTCTestPeer(t)
+			provider.pc.OnDataChannel(provider.bind)
+			runner := &fakeLiveRunner{}
+			meter := newTestLiveMeter(runner)
+			require.Nil(t, meter.admit("gpt-live-1", ""))
+			meter.setMinimumSeconds(15)
+			messages := &pausedLiveWebRTCMessages{
+				liveWebRTCMessages: &liveWebRTCMessages{},
+				paused:             make(chan struct{}), resume: make(chan struct{}),
+			}
+			messages.liveSessionController = newTestLiveController(fakeLiveModels{allowed: true}, meter, messages.liveWebRTCMessages)
+			closed, peerEnded := make(chan struct{}), make(chan struct{}, 1)
+			relay := &webrtcRelay{upstreamPC: receiver.pc, handler: messages, onClose: func() { close(closed) }}
+			messages.relay = relay
+			var resumeOnce sync.Once
+			resume := func() { resumeOnce.Do(func() { close(messages.resume) }) }
+			t.Cleanup(relay.close)
+			t.Cleanup(resume)
+			receiver.pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+				relay.onUpstreamState(state)
+				if state == webrtc.PeerConnectionStateClosed {
+					select {
+					case peerEnded <- struct{}{}:
+					default:
+					}
+				}
+			})
+			dc, err := receiver.pc.CreateDataChannel(liveWebRTCDataChannelLabel, nil)
+			require.NoError(t, err)
+			relay.bindUpstreamChannel(dc)
+			offer, err := receiver.pc.CreateOffer(nil)
+			require.NoError(t, err)
+			require.NoError(t, provider.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: gatheredSDP(t, receiver.pc, offer)}))
+			answer, err := provider.pc.CreateAnswer(nil)
+			require.NoError(t, err)
+			require.NoError(t, receiver.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: gatheredSDP(t, provider.pc, answer)}))
+			provider.waitOpen(t)
+			require.True(t, relay.markEstablished())
+			provider.send(t, `{"type":"session.started","session":{"id":"live_queued_usage"}}`)
+			waitSignal(t, messages.paused, "paused application callback")
+			if tc.browserGone {
+				relay.onDownstreamState(webrtc.PeerConnectionStateFailed)
+			}
+			for _, frame := range tc.frames {
+				provider.send(t, frame)
+			}
+			provider.mu.Lock()
+			providerDC := provider.dc
+			provider.mu.Unlock()
+			require.Eventually(t, func() bool { return providerDC.BufferedAmount() == 0 }, 5*time.Second, time.Millisecond, "all frames acknowledged while application callback is blocked")
+			require.NoError(t, provider.pc.Close())
+			waitSignal(t, peerEnded, "DTLS peer close")
+			resume()
+			waitSignal(t, closed, "relay finalization")
+			_, posts, _ := runner.snapshot()
+			var seconds float64
+			for _, post := range posts {
+				seconds += postSeconds(t, post)
+			}
+			assert.Equal(t, tc.seconds, seconds, "bill received usage before finalizing")
+			assert.Equal(t, tc.closed, messages.sessionClosed.Load(), "queued terminal event is processed")
+		})
+	}
+}
+
 // TestLiveWebRTCCloseBeforeEstablishedDoesNotFinish: a relay that fails during setup must not run
 // the session's finish, which would bill the transport minimum as a success; the create handler
 // aborts the meter instead. Once the relay is established, a close finishes the session.

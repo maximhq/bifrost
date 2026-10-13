@@ -601,6 +601,8 @@ type DynamicRetrievalConfig struct {
 type GoogleSearchRetrieval struct {
 	// Optional. Specifies the dynamic retrieval configuration for the given source.
 	DynamicRetrievalConfig *DynamicRetrievalConfig `json:"dynamicRetrievalConfig,omitempty"`
+
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
 }
 
 // EnterpriseWebSearch is a tool to search public web data, powered by Vertex AI Search and Sec4 compliance.
@@ -608,6 +610,8 @@ type EnterpriseWebSearch struct {
 	// Optional. List of domains to be excluded from the search results. The default limit
 	// is 2000 domains.
 	ExcludeDomains []string `json:"excludeDomains,omitempty"`
+
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
 }
 
 // APIKeyConfig represents configuration for authentication with API key.
@@ -701,15 +705,21 @@ const (
 type GoogleMaps struct {
 	// Optional. Auth config for the Google Maps tool.
 	AuthConfig *AuthConfig `json:"authConfig,omitempty"`
+
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
 }
 
 // URLContext is a tool to support URL context retrieval.
-type URLContext struct{}
+type URLContext struct {
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
+}
 
 // ToolComputerUse is a tool to support computer use.
 type ToolComputerUse struct {
 	// Optional. Required. The environment being operated.
 	Environment Environment `json:"environment,omitempty"`
+
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
 }
 
 // Environment represents the environment being operated.
@@ -902,6 +912,126 @@ type Retrieval struct {
 	// Set to use data source powered by Vertex RAG store. User data is uploaded via the
 	// VertexRAGDataService.
 	VertexRAGStore *VertexRAGStore `json:"vertexRagStore,omitempty"`
+
+	raw json.RawMessage // ingress bytes, see nativeToolJSON
+}
+
+// nativeToolJSON copies the bytes a Gemini-native tool (retrieval, googleSearchRetrieval,
+// enterpriseWebSearch, googleMaps, urlContext, computerUse) arrived with. These tools have no
+// neutral Bifrost form and are forwarded to Google as-is, so their MarshalJSON emits these
+// bytes verbatim: a sub-field the typed struct does not model (a newer Google option, or an
+// invalid one such as retrieval.dynamicRetrievalConfig) then reaches the provider and Google
+// judges it, instead of being silently dropped. The typed fields stay decoded for Bifrost's
+// own reads. A value built in code has no raw bytes and marshals from its fields. Only
+// requests that carry such a tool pay the copy. Because the bytes win, code that edits a
+// typed field of a decoded tool must clear raw (or build a fresh value) for the edit to
+// reach the wire; this holds for every raw-backed tool type in this file.
+func nativeToolJSON(data []byte) json.RawMessage {
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	return append(json.RawMessage(nil), data...)
+}
+
+func (r *Retrieval) UnmarshalJSON(data []byte) error {
+	type alias Retrieval
+	if err := sonic.Unmarshal(data, (*alias)(r)); err != nil {
+		return err
+	}
+	r.raw = nativeToolJSON(data)
+	return nil
+}
+
+func (r Retrieval) MarshalJSON() ([]byte, error) {
+	if len(r.raw) > 0 {
+		return r.raw, nil
+	}
+	type alias Retrieval
+	return providerUtils.MarshalSorted(alias(r))
+}
+
+func (g *GoogleSearchRetrieval) UnmarshalJSON(data []byte) error {
+	type alias GoogleSearchRetrieval
+	if err := sonic.Unmarshal(data, (*alias)(g)); err != nil {
+		return err
+	}
+	g.raw = nativeToolJSON(data)
+	return nil
+}
+
+func (g GoogleSearchRetrieval) MarshalJSON() ([]byte, error) {
+	if len(g.raw) > 0 {
+		return g.raw, nil
+	}
+	type alias GoogleSearchRetrieval
+	return providerUtils.MarshalSorted(alias(g))
+}
+
+func (e *EnterpriseWebSearch) UnmarshalJSON(data []byte) error {
+	type alias EnterpriseWebSearch
+	if err := sonic.Unmarshal(data, (*alias)(e)); err != nil {
+		return err
+	}
+	e.raw = nativeToolJSON(data)
+	return nil
+}
+
+func (e EnterpriseWebSearch) MarshalJSON() ([]byte, error) {
+	if len(e.raw) > 0 {
+		return e.raw, nil
+	}
+	type alias EnterpriseWebSearch
+	return providerUtils.MarshalSorted(alias(e))
+}
+
+func (g *GoogleMaps) UnmarshalJSON(data []byte) error {
+	type alias GoogleMaps
+	if err := sonic.Unmarshal(data, (*alias)(g)); err != nil {
+		return err
+	}
+	g.raw = nativeToolJSON(data)
+	return nil
+}
+
+func (g GoogleMaps) MarshalJSON() ([]byte, error) {
+	if len(g.raw) > 0 {
+		return g.raw, nil
+	}
+	type alias GoogleMaps
+	return providerUtils.MarshalSorted(alias(g))
+}
+
+func (u *URLContext) UnmarshalJSON(data []byte) error {
+	type alias URLContext
+	if err := sonic.Unmarshal(data, (*alias)(u)); err != nil {
+		return err
+	}
+	u.raw = nativeToolJSON(data)
+	return nil
+}
+
+func (u URLContext) MarshalJSON() ([]byte, error) {
+	if len(u.raw) > 0 {
+		return u.raw, nil
+	}
+	return []byte("{}"), nil
+}
+
+func (c *ToolComputerUse) UnmarshalJSON(data []byte) error {
+	type alias ToolComputerUse
+	if err := sonic.Unmarshal(data, (*alias)(c)); err != nil {
+		return err
+	}
+	c.raw = nativeToolJSON(data)
+	return nil
+}
+
+func (c ToolComputerUse) MarshalJSON() ([]byte, error) {
+	if len(c.raw) > 0 {
+		return c.raw, nil
+	}
+	type alias ToolComputerUse
+	return providerUtils.MarshalSorted(alias(c))
 }
 
 // ToolCodeExecution is a tool that executes code generated by the model, and automatically returns the result

@@ -83,6 +83,10 @@ func (s *ChromemStore) Ping(ctx context.Context) error {
 	return nil
 }
 
+// maxChromemDimension bounds the probe vector CreateNamespace allocates. Embedding models
+// in use top out at a few thousand dimensions, so this only rejects a corrupt config.
+const maxChromemDimension = 65536
+
 // CreateNamespace creates a collection if it does not exist and records its
 // dimension. Idempotent: callers invoke it on every startup.
 func (s *ChromemStore) CreateNamespace(ctx context.Context, namespace string, dimension int, properties map[string]VectorStoreProperties) error {
@@ -91,6 +95,9 @@ func (s *ChromemStore) CreateNamespace(ctx context.Context, namespace string, di
 	}
 	if dimension <= 0 {
 		return fmt.Errorf("dimension must be positive, got %d", dimension)
+	}
+	if dimension > maxChromemDimension {
+		return fmt.Errorf("dimension must be at most %d, got %d", maxChromemDimension, dimension)
 	}
 
 	col, err := s.db.GetOrCreateCollection(namespace, nil, chromemStubEmbeddingFunc)

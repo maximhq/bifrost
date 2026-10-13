@@ -368,6 +368,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	mcpserver "github.com/mark3labs/mcp-go/server"
+	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -386,6 +389,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+	"sync/atomic"
 )
 
 // First-admin file setup must default inference auth on without changing existing
@@ -433,6 +437,54 @@ func TestLoadClientConfig_InferenceAuthSetup(t *testing.T) {
 			}
 		}
 	}
+}
+
+// Adding allowed_redirect_uris (or disable_vk_identity) to config.json on a
+// deployment whose DB row already holds the rest of oauth2_server_config must
+// reach the runtime config instead of being masked by a matching hash.
+func TestLoadClientConfig_OAuth2ServerConfigPolicyFieldsSyncFromFile(t *testing.T) {
+	SetLogger(&testLogger{})
+	const callback = "https://www.cursor.com/agents/mcp/oauth/callback"
+	before := `{"client":{"mcp_server_auth_mode":"both","oauth2_server_config":{"issuer_url":"https://issuer.example.com"}}}`
+	after := `{"client":{"mcp_server_auth_mode":"both","oauth2_server_config":{"issuer_url":"https://issuer.example.com","allowed_redirect_uris":["` + callback + `"],"disable_vk_identity":true}}}`
+
+	store := &MockConfigStore{}
+	cfg := &Config{ConfigStore: store}
+	var first ConfigData
+	require.NoError(t, json.Unmarshal([]byte(before), &first))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &first))
+	require.NotNil(t, cfg.ClientConfig.OAuth2ServerConfig)
+	require.Empty(t, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs)
+
+	var second ConfigData
+	require.NoError(t, json.Unmarshal([]byte(after), &second))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &second))
+	require.NotNil(t, cfg.ClientConfig.OAuth2ServerConfig)
+	assert.Equal(t, []string{callback}, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs, "file allowed_redirect_uris must be synced over the DB row")
+	assert.True(t, cfg.ClientConfig.OAuth2ServerConfig.DisableVKIdentity, "file disable_vk_identity must be synced over the DB row")
+}
+
+// A partial wildcard in config.json must stop the file sync before it reaches the
+// store, so the previously stored allowlist stays in effect and fixing the file
+// is enough to recover.
+func TestLoadClientConfig_PartialWildcardRedirectFromFileIsRejected(t *testing.T) {
+	SetLogger(&testLogger{})
+	withRedirect := func(uri string) string {
+		return `{"client":{"mcp_server_auth_mode":"both","oauth2_server_config":{"issuer_url":"https://issuer.example.com","allowed_redirect_uris":["` + uri + `"]}}}`
+	}
+	store := &MockConfigStore{}
+	cfg := &Config{ConfigStore: store}
+	var first ConfigData
+	require.NoError(t, json.Unmarshal([]byte(withRedirect("*")), &first))
+	require.NoError(t, loadClientConfig(context.Background(), cfg, &first))
+	require.Equal(t, []string{"*"}, store.clientConfig.OAuth2ServerConfig.AllowedRedirectURIs)
+
+	var bad ConfigData
+	require.NoError(t, json.Unmarshal([]byte(withRedirect("https://*.example.com/cb")), &bad))
+	err := loadClientConfig(context.Background(), cfg, &bad)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "allowed_redirect_uris")
+	assert.Equal(t, []string{"*"}, store.clientConfig.OAuth2ServerConfig.AllowedRedirectURIs, "a rejected file must not overwrite the stored allowlist")
 }
 
 func TestLoadClientConfig_InferenceAuthExistingAndAbsentClient(t *testing.T) {
@@ -2133,8 +2185,7 @@ func TestMergeGovernanceConfig_AppliesComplexityAnalyzerConfigWhenHashesAreEmpty
 		GovernanceConfig: dbGovernance,
 	}
 	fileConfig := testFileComplexityAnalyzerConfig()
-	// Startup reconciliation hashes the normalized file, including classifier defaults.
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
 		Governance: &configstore.GovernanceConfig{
@@ -2175,7 +2226,7 @@ func TestMergeGovernanceConfig_PreservesComplexityAnalyzerConfigWhenSectionHashe
 
 	store := NewMockConfigStore()
 	fileConfig := testFileComplexityAnalyzerConfig()
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	require.NoError(t, err)
 
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
@@ -2225,7 +2276,7 @@ func TestMergeGovernanceConfig_MergesComplexityKeywordsWhenSectionHashesChange(t
 		GovernanceConfig: dbGovernance,
 	}
 	fileConfig := testFileComplexityAnalyzerConfig()
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
 		Governance: &configstore.GovernanceConfig{
@@ -2250,7 +2301,7 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 
 	store := NewMockConfigStore()
 	oldFileConfig := testFileComplexityAnalyzerConfig()
-	oldFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(oldFileConfig.Normalized()))
+	oldFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(oldFileConfig)
 	require.NoError(t, err)
 
 	dbConfig := testRuntimeComplexityAnalyzerConfig()
@@ -2268,7 +2319,7 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 
 	newFileConfig := testFileComplexityAnalyzerConfig()
 	newFileConfig.Keywords.MediumKeywords = []string{"file-code", "file-code-new"}
-	newFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(newFileConfig.Normalized()))
+	newFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(newFileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
 		Governance: &configstore.GovernanceConfig{
@@ -2292,6 +2343,45 @@ func TestMergeGovernanceConfig_OnlyChangedComplexitySectionsApply(t *testing.T) 
 	require.Equal(t, oldFileHashes.ClassifierSettings, stored.ConfigHashes.ClassifierSettings)
 }
 
+// A config.json that says nothing about the classifier has no opinion on it, so a keyword edit
+// in the file must not reset the classifier the dashboard chose. The hashes and the merge decide
+// presence from the file as written; normalising it first would invent a default classifier and
+// then "apply" it.
+func TestMergeGovernanceConfig_FileWithoutClassifierKeepsDashboardClassifier(t *testing.T) {
+	initTestLogger()
+
+	store := NewMockConfigStore()
+	oldFileConfig := testFileComplexityAnalyzerConfig()
+	oldFileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(oldFileConfig)
+	require.NoError(t, err)
+
+	dbConfig := testRuntimeComplexityAnalyzerConfig()
+	dbConfig.ConfigHashes = oldFileHashes
+	dbConfig.Classifier = configstore.ComplexityClassifierDecision
+	dbGovernance := &configstore.GovernanceConfig{ComplexityAnalyzerConfig: dbConfig}
+	store.governanceConfig = dbGovernance
+	config := &Config{
+		ConfigStore:      store,
+		GovernanceConfig: dbGovernance,
+	}
+
+	newFileConfig := testFileComplexityAnalyzerConfig()
+	newFileConfig.Keywords.MediumKeywords = []string{"file-code", "file-code-new"}
+	configData := &ConfigData{
+		Governance: &configstore.GovernanceConfig{
+			ComplexityAnalyzerConfig: newFileConfig,
+		},
+	}
+
+	mergeGovernanceConfig(context.Background(), config, configData, dbGovernance)
+
+	stored, err := store.GetComplexityAnalyzerConfig(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, configstore.ComplexityClassifierDecision, stored.Classifier)
+	require.Empty(t, stored.ConfigHashes.ClassifierSettings)
+}
+
 func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t *testing.T) {
 	initTestLogger()
 
@@ -2311,7 +2401,7 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t
 		GovernanceConfig: dbGovernance,
 	}
 	fileConfig := testFileComplexityAnalyzerConfig()
-	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+	fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 	require.NoError(t, err)
 	configData := &ConfigData{
 		SourceOfTruth: SourceOfTruthConfigJSON,
@@ -2330,8 +2420,9 @@ func TestMergeGovernanceConfig_SourceOfTruthConfigJSONUsesComplexityFileConfig(t
 	require.Equal(t, fileHashes, stored.ConfigHashes)
 }
 
-// Split-mode startup compares the effective file classifier, including its semantic
-// default, with the last file hash. Dashboard edits survive when that hash matches.
+// Split-mode startup compares the classifier as written in the file with the last file
+// hash. An omitted classifier is "no opinion" and never overrides the dashboard; only an
+// explicit file classifier whose hash changed is applied.
 func TestMergeGovernanceConfig_ReconcilesComplexityClassifier(t *testing.T) {
 	initTestLogger()
 
@@ -2343,12 +2434,18 @@ func TestMergeGovernanceConfig_ReconcilesComplexityClassifier(t *testing.T) {
 		wantClassifier     string
 	}{
 		{
-			name:           "omitted classifier with empty previous hash defaults to semantic",
-			wantClassifier: configstore.ComplexityClassifierSemantic,
+			name:           "omitted classifier with empty previous hash preserves dashboard decision",
+			wantClassifier: configstore.ComplexityClassifierDecision,
 		},
 		{
-			name:               "removing explicit decision defaults to semantic",
+			name:               "removing explicit decision from the file preserves dashboard decision",
 			previousClassifier: configstore.ComplexityClassifierDecision,
+			wantClassifier:     configstore.ComplexityClassifierDecision,
+		},
+		{
+			name:               "explicit semantic in file replaces dashboard decision",
+			previousClassifier: configstore.ComplexityClassifierDecision,
+			fileClassifier:     configstore.ComplexityClassifierSemantic,
 			wantClassifier:     configstore.ComplexityClassifierSemantic,
 		},
 		{
@@ -2399,10 +2496,14 @@ func TestMergeGovernanceConfig_ReconcilesComplexityClassifier(t *testing.T) {
 			require.Equal(t, tc.wantClassifier, stored.Classifier)
 			require.NotNil(t, stored.Decision, "switching classifiers retains decision settings")
 			require.Equal(t, tc.wantClassifier, config.GovernanceConfig.ComplexityAnalyzerConfig.Classifier)
-			if tc.omitAnalyzer {
+			switch {
+			case tc.omitAnalyzer:
 				require.Equal(t, previousHashes, stored.ConfigHashes)
-			} else {
-				fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(schemas.Ptr(fileConfig.Normalized()))
+			case tc.fileClassifier == "":
+				// No opinion in the file: the classifier hash is left as it was.
+				require.Equal(t, previousHashes.ClassifierSettings, stored.ConfigHashes.ClassifierSettings)
+			default:
+				fileHashes, err := configstore.GenerateComplexityAnalyzerConfigHashes(fileConfig)
 				require.NoError(t, err)
 				require.Equal(t, fileHashes.ClassifierSettings, stored.ConfigHashes.ClassifierSettings)
 			}
@@ -2705,6 +2806,31 @@ func TestValidateClientConfig_VKRotationCooldown(t *testing.T) {
 				require.NoError(t, err)
 			}
 		})
+	}
+}
+
+// TestValidateClientConfig_AllowedRedirectURIsWildcard locks in that a
+// config.json or DB entry can use only a bare "*" wildcard: a partial pattern
+// is matched literally, so it would silently approve nothing.
+func TestValidateClientConfig_AllowedRedirectURIsWildcard(t *testing.T) {
+	for _, tc := range []struct {
+		uris    []string
+		wantErr bool
+	}{
+		{nil, false},
+		{[]string{"*"}, false},
+		{[]string{"https://www.cursor.com/agents/mcp/oauth/callback", "*"}, false},
+		{[]string{"https://*.example.com/cb"}, true},
+		{[]string{"https://app.example.com/*"}, true},
+		{[]string{"**"}, true},
+	} {
+		err := validateClientConfig(&configstore.ClientConfig{OAuth2ServerConfig: &tables.OAuth2ServerConfig{AllowedRedirectURIs: tc.uris}})
+		if tc.wantErr {
+			require.Error(t, err, "%v", tc.uris)
+			require.Contains(t, err.Error(), "allowed_redirect_uris")
+		} else {
+			require.NoError(t, err, "%v", tc.uris)
+		}
 	}
 }
 
@@ -3497,6 +3623,34 @@ func TestSourceOfTruthConfigJSON_MCPPresentEmptyPrunesDB(t *testing.T) {
 	require.NotNil(t, cfg.MCPConfig)
 	require.Empty(t, cfg.MCPConfig.ClientConfigs)
 	require.Empty(t, store.mcpConfig.ClientConfigs)
+}
+
+// TestSourceOfTruthConfigJSON_InvalidOpenAPIDeclarationKeepsStoredClient: when
+// an existing OpenAPI client's declaration in config.json cannot be prepared
+// (its document no longer parses), the stored client and its last valid
+// configuration are kept instead of the client being pruned.
+func TestSourceOfTruthConfigJSON_InvalidOpenAPIDeclarationKeepsStoredClient(t *testing.T) {
+	initTestLogger()
+	store := NewMockConfigStore()
+	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+		ID: "openapi-db", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
+		OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "stored valid document"},
+	}}}
+	cfg := &Config{ConfigStore: store}
+	configData := &ConfigData{
+		SourceOfTruth: SourceOfTruthConfigJSON,
+		MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
+			OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "not: openapi"},
+		}}},
+	}
+
+	loadMCPConfig(context.Background(), cfg, configData)
+
+	require.Len(t, store.mcpConfig.ClientConfigs, 1, "the stored client must not be pruned")
+	require.NotNil(t, cfg.MCPConfig)
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
+	assert.Equal(t, "stored valid document", cfg.MCPConfig.ClientConfigs[0].OpenAPIConfig.Spec, "the runtime keeps the last valid configuration")
 }
 
 // TestLoadConfig_Governance_Merge tests governance config merge from DB and file
@@ -25169,4 +25323,133 @@ func TestReconcileProviderKeys_LegacyAliasHashKeepsStoredEdits(t *testing.T) {
 		require.Len(t, merged, 1)
 		require.Equal(t, float64(2), merged[0].Weight, "a changed config.json must still replace the stored key")
 	})
+}
+
+// TestPrepareOpenAPIClientFromFile covers how an openapi client declared in
+// config.json is normalized at load: spec_file is read relative to the config
+// directory and inlined, the server-computed metadata is filled from a parse,
+// a spec_url-only entry is left for connect time, and the auth types the
+// synthesized server cannot honor are refused.
+func TestPrepareOpenAPIClientFromFile(t *testing.T) {
+	dir := t.TempDir()
+	spec := "openapi: 3.0.3\ninfo:\n  title: Petstore\n  version: 1.0.0\nservers:\n  - url: https://petstore.example.com/v1\npaths:\n  /pets:\n    get:\n      operationId: listPets\n      responses:\n        '200':\n          description: ok\n"
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "specs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "specs", "petstore.yaml"), []byte(spec), 0o644))
+	str := func(s string) *string { return &s }
+
+	fromFile := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("specs/petstore.yaml")}}
+	require.NoError(t, prepareOpenAPIClientFromFile(fromFile, dir))
+	assert.Equal(t, spec, fromFile.OpenAPIConfig.Spec, "spec_file is inlined so the persisted row carries the document")
+	assert.Equal(t, "Petstore", fromFile.OpenAPIConfig.SpecTitle)
+	assert.Equal(t, "3.0.3", fromFile.OpenAPIConfig.OpenAPIVersion)
+	assert.Equal(t, 1, fromFile.OpenAPIConfig.OperationCount)
+	assert.NotEmpty(t, fromFile.OpenAPIConfig.SpecHash)
+
+	urlOnly := &schemas.MCPClientConfig{Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeHeaders, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecURL: str("https://api.example.com/openapi.json")}}
+	require.NoError(t, prepareOpenAPIClientFromFile(urlOnly, dir))
+	assert.Empty(t, urlOnly.OpenAPIConfig.Spec, "a spec_url is fetched at connect time, not at load")
+
+	for name, cfg := range map[string]*schemas.MCPClientConfig{
+		"missing block":  {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI},
+		"no source":      {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{}},
+		"oauth":          {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeOauth, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}},
+		"token exchange": {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeTokenExchange, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: spec}},
+		"missing file":   {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("specs/nope.yaml")}},
+		"escaping file":  {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{SpecFile: str("../../etc/passwd")}},
+		"unparseable":    {Name: "x", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "not: openapi"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.Error(t, prepareOpenAPIClientFromFile(cfg, dir))
+		})
+	}
+}
+
+// newOpenAPIUpdateTestConfig builds a Config backed by a real Bifrost engine
+// with one registered openapi client. Its server factory succeeds on the first
+// connect and fails every rebuild after it when failRebuilds is set.
+func newOpenAPIUpdateTestConfig(t *testing.T, failRebuilds bool) (*Config, *schemas.MCPClientConfig) {
+	t.Helper()
+	logger := bifrost.NewDefaultLogger(schemas.LogLevelError)
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: NewBaseAccount(&Config{}), Logger: logger})
+	require.NoError(t, err)
+	t.Cleanup(client.Shutdown)
+	var calls atomic.Int32
+	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*mcpserver.MCPServer, error) {
+		if calls.Add(1) > 1 && failRebuilds {
+			return nil, fmt.Errorf("%w: rebuild refused by test factory", schemas.ErrMCPOpenAPIConfigInvalid)
+		}
+		return mcpserver.NewMCPServer("openapi-test", "1", mcpserver.WithToolCapabilities(false)), nil
+	}
+	client.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: factory}, nil, logger, nil))
+	stored := &schemas.MCPClientConfig{
+		ID: "openapi-1", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, AuthType: schemas.MCPAuthTypeNone,
+		ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "spec-a"},
+	}
+	runtime := *stored
+	runtime.OpenAPIConfig = stored.OpenAPIConfig.Clone()
+	require.NoError(t, client.AddMCPClient(context.Background(), &runtime))
+	return &Config{client: client, MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{stored}}}, stored
+}
+
+// TestUpdateMCPClient_SharedConnectFailureStillAppliesFields: when the runtime
+// saved an update but could not reconnect with it, the management copy takes
+// the update too, so it agrees with the database and the runtime instead of
+// serving the old document and merging later edits against it.
+func TestUpdateMCPClient_SharedConnectFailureStillAppliesFields(t *testing.T) {
+	cfg, stored := newOpenAPIUpdateTestConfig(t, true)
+	update := *stored
+	update.OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: "spec-b"}
+	update.ToolsToExecute = schemas.WhiteList{"listPets"}
+	err := cfg.UpdateMCPClient(context.Background(), stored.ID, &update)
+	require.ErrorIs(t, err, mcp.ErrMCPSharedConnectFailedAfterUpdate)
+	got := cfg.MCPConfig.ClientConfigs[0]
+	assert.Equal(t, "spec-b", got.OpenAPIConfig.Spec)
+	assert.Equal(t, schemas.WhiteList{"listPets"}, got.ToolsToExecute)
+}
+
+// TestUpdateMCPClient_RequirePublicTargetOnlyTightens: the management copy can
+// gain the public-target restriction from an update but never loses it.
+func TestUpdateMCPClient_RequirePublicTargetOnlyTightens(t *testing.T) {
+	cfg, stored := newOpenAPIUpdateTestConfig(t, false)
+	update := *stored
+	update.RequirePublicTarget = true
+	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
+	assert.True(t, cfg.MCPConfig.ClientConfigs[0].RequirePublicTarget)
+
+	update.RequirePublicTarget = false
+	require.NoError(t, cfg.UpdateMCPClient(context.Background(), stored.ID, &update))
+	assert.True(t, cfg.MCPConfig.ClientConfigs[0].RequirePublicTarget)
+}
+
+// TestGetMCPClientOpenAPISpec_ReadsUnderLock: the stored document is copied out
+// under the MCP config lock, so a concurrent update that replaces the block
+// cannot race the read (run with -race).
+func TestGetMCPClientOpenAPISpec_ReadsUnderLock(t *testing.T) {
+	c := &Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+		ID: "oa", Name: "petstore", ConnectionType: schemas.MCPConnectionTypeOpenAPI, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "v0"},
+	}}}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			c.muMCP.Lock()
+			c.MCPConfig.ClientConfigs[0].OpenAPIConfig = &schemas.MCPOpenAPIConfig{Spec: fmt.Sprintf("v%d", i)}
+			c.muMCP.Unlock()
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		spec, isOpenAPI, found := c.GetMCPClientOpenAPISpec("oa")
+		require.True(t, found)
+		require.True(t, isOpenAPI)
+		require.NotEmpty(t, spec)
+	}
+	<-done
+	_, isOpenAPI, found := c.GetMCPClientOpenAPISpec("missing")
+	assert.False(t, found)
+	assert.False(t, isOpenAPI)
+
+	// A nil entry in the client list is skipped, not dereferenced.
+	c.MCPConfig.ClientConfigs = append([]*schemas.MCPClientConfig{nil}, c.MCPConfig.ClientConfigs...)
+	require.NotPanics(t, func() { _, _, found = c.GetMCPClientOpenAPISpec("oa") })
+	assert.True(t, found)
 }

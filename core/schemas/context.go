@@ -49,6 +49,8 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyRequestedModel:          {},
 	BifrostContextKeyProviderProxyConfig:     {},
 	BifrostContextKeyMCPInboundBearer:        {},
+	BifrostContextKeyMCPAgentServedRoute:     {},
+	BifrostContextKeyMCPInstructionsText:     {},
 }
 
 // isReservedKey reports whether key is a reserved context key whose writes are
@@ -255,6 +257,22 @@ func (bc *BifrostContext) Grant() Grant {
 // is not itself a *BifrostContext.
 type bifrostContextSelfKey struct{}
 
+// BifrostContextFromContext returns the nearest *BifrostContext reachable from ctx: ctx itself,
+// or the one a foreign wrapper (context.WithTimeout, mcp-go's per-request WithValue, ...) was
+// derived from. ok is false when no BifrostContext is in the chain. Callers that only need to
+// read request values (identity, extra headers) use this instead of wrapping ctx in a fresh
+// BifrostContext, which would start a cancellation watcher per call.
+func BifrostContextFromContext(ctx context.Context) (*BifrostContext, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	if bc, ok := ctx.(*BifrostContext); ok {
+		return bc, true
+	}
+	bc, ok := ctx.Value(bifrostContextSelfKey{}).(*BifrostContext)
+	return bc, ok && bc != nil
+}
+
 // inheritedGrant finds the grant of the nearest ancestor request context that has one. A
 // BifrostContext parent is walked directly; a foreign parent is asked for one via Value before
 // giving up, since a foreign context with nothing to offer still answers nil for that key the
@@ -385,8 +403,17 @@ func (bc *BifrostContext) Err() error {
 		return bc.valueDelegate.Err()
 	}
 	bc.errMu.RLock()
-	defer bc.errMu.RUnlock()
-	return bc.err
+	err := bc.err
+	bc.errMu.RUnlock()
+	// The watcher goroutine records a parent cancel asynchronously; read the parent
+	// directly so a cancel is visible on the next call, as with context.WithCancel.
+	if err == nil && bc.parent != nil && !isNonCancellingContext(bc.parent) {
+		if perr := bc.parent.Err(); perr != nil {
+			bc.cancel(perr)
+			return perr
+		}
+	}
+	return err
 }
 
 // Value returns the value associated with the key.

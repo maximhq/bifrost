@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 
@@ -106,11 +107,50 @@ func videoIDForms(provider schemas.ModelProvider, id string) []string {
 	return forms
 }
 
+// resourceCollections is, per kind, the collection a Google resource name puts in front of the
+// id: a Gemini batch is "batches/<id>", a file "files/<id>", a cached content "cachedContents/<id>".
+var resourceCollections = map[string]string{
+	configstoreTables.ProviderObjectKindBatch:         "batches",
+	configstoreTables.ProviderObjectKindFile:          "files",
+	configstoreTables.ProviderObjectKindCachedContent: "cachedContents",
+}
+
+// providerObjectIDForms returns the forms an id may be recorded under, as written first. A video
+// id is taken with and without its ":<provider>" suffix. Gemini addresses an object by a resource
+// name and accepts its short form too: a batch as "batches/<id>" or "<id>", a cached content as
+// "cachedContents/<n>" or "<n>", so a short id is also taken bare and under its collection. The
+// provider is not consulted for that: a custom provider built on Gemini goes by its own name, and
+// an id of another shape gains forms that nothing is recorded under. A full resource name
+// ("projects/<p>/locations/<l>/batchPredictionJobs/<n>") is exact and is the only form it is
+// recorded under; its short forms are resolved against full names by suffix instead (see
+// resolveShortResourceNames), since a job number is one project's and cannot be a row of its own.
+func providerObjectIDForms(kind string, provider schemas.ModelProvider, id string) []string {
+	if id == "" {
+		return nil
+	}
+	if kind == configstoreTables.ProviderObjectKindVideo {
+		return videoIDForms(provider, id)
+	}
+	forms := []string{id}
+	collection, ok := resourceCollections[kind]
+	if !ok || strings.HasPrefix(id, "projects/") {
+		return forms
+	}
+	bare := strings.TrimPrefix(id, collection+"/")
+	prefixed := collection + "/" + bare
+	for _, form := range []string{bare, prefixed} {
+		if form != "" && !slices.Contains(forms, form) {
+			forms = append(forms, form)
+		}
+	}
+	return forms
+}
+
 func objectRef(kind string, provider schemas.ModelProvider, id string) (providerObjectRef, bool) {
 	if id == "" {
 		return providerObjectRef{}, false
 	}
-	return providerObjectRef{kind: kind, provider: string(provider), requestID: id, ids: []string{id}}, true
+	return providerObjectRef{kind: kind, provider: string(provider), requestID: id, ids: providerObjectIDForms(kind, provider, id)}, true
 }
 
 func listRef(kind string, provider schemas.ModelProvider) (providerObjectRef, bool) {
@@ -128,13 +168,6 @@ func providerObjectReference(req *schemas.BifrostRequest) (providerObjectRef, bo
 	file := configstoreTables.ProviderObjectKindFile
 	container := configstoreTables.ProviderObjectKindContainer
 	cached := configstoreTables.ProviderObjectKindCachedContent
-	videoRef := func(provider schemas.ModelProvider, id string) (providerObjectRef, bool) {
-		ref, ok := objectRef(video, provider, id)
-		if ok {
-			ref.ids = videoIDForms(provider, id)
-		}
-		return ref, ok
-	}
 	switch {
 	case req.BatchRetrieveRequest != nil:
 		return objectRef(batch, req.BatchRetrieveRequest.Provider, req.BatchRetrieveRequest.BatchID)
@@ -158,13 +191,13 @@ func providerObjectReference(req *schemas.BifrostRequest) (providerObjectRef, bo
 	case req.FileListRequest != nil:
 		return listRef(file, req.FileListRequest.Provider)
 	case req.VideoRetrieveRequest != nil:
-		return videoRef(req.VideoRetrieveRequest.Provider, req.VideoRetrieveRequest.ID)
+		return objectRef(video, req.VideoRetrieveRequest.Provider, req.VideoRetrieveRequest.ID)
 	case req.VideoDownloadRequest != nil:
-		return videoRef(req.VideoDownloadRequest.Provider, req.VideoDownloadRequest.ID)
+		return objectRef(video, req.VideoDownloadRequest.Provider, req.VideoDownloadRequest.ID)
 	case req.VideoDeleteRequest != nil:
-		return videoRef(req.VideoDeleteRequest.Provider, req.VideoDeleteRequest.ID)
+		return objectRef(video, req.VideoDeleteRequest.Provider, req.VideoDeleteRequest.ID)
 	case req.VideoRemixRequest != nil:
-		return videoRef(req.VideoRemixRequest.Provider, req.VideoRemixRequest.ID)
+		return objectRef(video, req.VideoRemixRequest.Provider, req.VideoRemixRequest.ID)
 	case req.VideoListRequest != nil:
 		return listRef(video, req.VideoListRequest.Provider)
 	case req.ContainerRetrieveRequest != nil:
@@ -178,7 +211,7 @@ func providerObjectReference(req *schemas.BifrostRequest) (providerObjectRef, bo
 		if req.VideoEditRequest.Input == nil {
 			return providerObjectRef{}, false
 		}
-		ref, ok := videoRef(req.VideoEditRequest.Provider, req.VideoEditRequest.Input.Video.ID)
+		ref, ok := objectRef(video, req.VideoEditRequest.Provider, req.VideoEditRequest.Input.Video.ID)
 		ref.indirect = true
 		return ref, ok
 	case req.ContainerFileListRequest != nil:
@@ -769,13 +802,32 @@ func cachedContentCarrier(req *schemas.BifrostRequest) (schemas.ModelProvider, m
 	return "", nil, false
 }
 
-// providerObjectOwners returns, per provider-side id, the virtual key recorded as its creator.
-// The ownership row wins; for batches and videos the accounting job row is read next, and for
-// files the batch rows naming the file as input, output or error. Ids nobody recorded are absent.
-func (p *GovernancePlugin) providerObjectOwners(ctx *schemas.BifrostContext, kind, provider string, ids []string) (map[string]string, error) {
+// providerObjectOwners returns, per provider-side id, the virtual key recorded as its creator,
+// and the ids whose creator cannot be told. The ownership row wins; for batches and videos the
+// accounting job row is read next, and for files the batch rows naming the file as input, output
+// or error. Ids nobody recorded are absent from both.
+//
+// Vertex records an object under the full resource name its create returned, and a short form
+// (a bare job number, "cachedContents/<n>") cannot be expanded back to it without the key's
+// project and region. So on Vertex a short id is also matched as the last segment of the full
+// names on record, ownership rows and batch job rows alike, in one lookup per page. A job number
+// is scoped to a project and region: when the full names that end in it belong to more than one
+// virtual key, the id is ambiguous and reported as such rather than resolved by guessing. The
+// suffix lookup is kept to providers built on Vertex.
+func (p *GovernancePlugin) providerObjectOwners(ctx *schemas.BifrostContext, kind, provider string, ids []string) (map[string]string, map[string]struct{}, error) {
+	return p.providerObjectOwnersOf(ctx, kind, provider, ids, false)
+}
+
+// providerObjectOwnersOf is providerObjectOwners with one more fact: sameObject says the ids
+// are the forms of a single object (see providerObjectIDForms) rather than distinct objects. An
+// ownership row under any form then answers for all of them, and the fallbacks, a suffix scan
+// and a scan of the batch history for files, are skipped. The forms of one object cannot name
+// two creators: an object is created once, by one key.
+func (p *GovernancePlugin) providerObjectOwnersOf(ctx *schemas.BifrostContext, kind, provider string, ids []string, sameObject bool) (map[string]string, map[string]struct{}, error) {
 	owners := make(map[string]string, len(ids))
+	ambiguous := make(map[string]struct{})
 	if len(ids) == 0 {
-		return owners, nil
+		return owners, ambiguous, nil
 	}
 	providers := p.equivalentProviders(provider)
 	objectIDs := make([]string, 0, len(ids)*len(providers))
@@ -786,30 +838,55 @@ func (p *GovernancePlugin) providerObjectOwners(ctx *schemas.BifrostContext, kin
 	}
 	objects, err := p.configStore.GetProviderObjectsByIDs(ctx, objectIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, object := range objects {
 		if object != nil && object.VirtualKeyID != "" {
 			owners[object.ObjectID] = object.VirtualKeyID
 		}
 	}
+	// A second source that names a different key for an id already answered makes it ambiguous:
+	// the id is refused rather than resolved by whichever source was read first.
 	claim := func(id, owner string) {
 		if id == "" || owner == "" {
 			return
 		}
-		if _, seen := owners[id]; !seen {
-			owners[id] = owner
+		if existing, seen := owners[id]; seen {
+			if existing != owner {
+				ambiguous[id] = struct{}{}
+			}
+			return
 		}
+		owners[id] = owner
 	}
-	// The job rows are the fallback for what the ownership rows did not answer.
+	// The fallbacks answer for what the ownership rows did not, each id once.
+	// A list page can carry thousands of ids, so past a handful they are deduplicated through a
+	// set rather than a quadratic scan; a single-object request allocates no set.
 	unresolved := make([]string, 0, len(ids))
+	var queued map[string]struct{}
+	if len(ids) > 8 {
+		queued = make(map[string]struct{}, len(ids))
+	}
 	for _, id := range ids {
-		if _, seen := owners[id]; !seen {
+		if _, seen := owners[id]; seen {
+			continue
+		}
+		if queued == nil {
+			if !slices.Contains(unresolved, id) {
+				unresolved = append(unresolved, id)
+			}
+			continue
+		}
+		if _, dup := queued[id]; !dup {
+			queued[id] = struct{}{}
 			unresolved = append(unresolved, id)
 		}
 	}
-	if len(unresolved) == 0 {
-		return owners, nil
+	if len(unresolved) == 0 || (sameObject && len(owners) > 0) {
+		return owners, ambiguous, nil
+	}
+	if err := p.resolveShortResourceNames(ctx, kind, provider, providers, unresolved, owners, ambiguous); err != nil {
+		return nil, nil, err
 	}
 	switch kind {
 	case configstoreTables.ProviderObjectKindBatch, configstoreTables.ProviderObjectKindVideo:
@@ -821,7 +898,7 @@ func (p *GovernancePlugin) providerObjectOwners(ctx *schemas.BifrostContext, kin
 		}
 		jobs, err := p.configStore.GetProviderJobsByIDs(ctx, jobIDs)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, job := range jobs {
 			if job != nil && job.VirtualKeyID != nil {
@@ -839,7 +916,7 @@ func (p *GovernancePlugin) providerObjectOwners(ctx *schemas.BifrostContext, kin
 		for _, name := range providers {
 			jobs, err := p.configStore.GetProviderJobsByFileIDs(ctx, name, unresolved)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			for _, job := range jobs {
 				if job == nil || job.VirtualKeyID == nil {
@@ -853,7 +930,116 @@ func (p *GovernancePlugin) providerObjectOwners(ctx *schemas.BifrostContext, kin
 			}
 		}
 	}
-	return owners, nil
+	return owners, ambiguous, nil
+}
+
+// resolveShortResourceNames answers, for the short ids among unresolved, from the full resource
+// names on record whose last segment they are: ownership rows of the kind, and for batches the
+// accounting job rows. One lookup per store per provider name covers every short id on the page.
+// A short id whose full names belong to one key is claimed for it; one whose full names belong to
+// several keys is ambiguous. Only providers built on Vertex record full names.
+func (p *GovernancePlugin) resolveShortResourceNames(ctx *schemas.BifrostContext, kind, provider string, providers, unresolved []string, owners map[string]string, ambiguous map[string]struct{}) error {
+	if _, named := resourceCollections[kind]; !named || !p.builtOnVertex(provider) {
+		return nil
+	}
+	bySuffix := make(map[string][]string)
+	for _, id := range unresolved {
+		suffix, ok := resourceNameSuffix(kind, id)
+		if !ok {
+			continue
+		}
+		// The bare and collection forms of one short id share a suffix; a row under either form
+		// has answered for both, so no scan is spent on the other.
+		if _, done := owners[suffix]; done {
+			continue
+		}
+		if _, done := owners[resourceCollections[kind]+"/"+suffix]; done {
+			continue
+		}
+		bySuffix[suffix] = append(bySuffix[suffix], id)
+	}
+	if len(bySuffix) == 0 {
+		return nil
+	}
+	suffixes := make([]string, 0, len(bySuffix))
+	for suffix := range bySuffix {
+		suffixes = append(suffixes, suffix)
+	}
+	sort.Strings(suffixes)
+	claimants := make(map[string]map[string]struct{}, len(suffixes))
+	note := func(fullName, owner string) {
+		if owner == "" {
+			return
+		}
+		suffix := fullName[strings.LastIndex(fullName, "/")+1:]
+		if _, wanted := bySuffix[suffix]; !wanted {
+			return
+		}
+		if claimants[suffix] == nil {
+			claimants[suffix] = make(map[string]struct{})
+		}
+		claimants[suffix][owner] = struct{}{}
+	}
+	for _, name := range providers {
+		objects, err := p.configStore.GetProviderObjectsByObjectIDSuffixes(ctx, kind, name, suffixes)
+		if err != nil {
+			return err
+		}
+		for _, object := range objects {
+			if object != nil {
+				note(object.ObjectID, object.VirtualKeyID)
+			}
+		}
+		if kind != configstoreTables.ProviderObjectKindBatch {
+			continue
+		}
+		jobs, err := p.configStore.GetProviderJobsByJobIDSuffixes(ctx, kind, name, suffixes)
+		if err != nil {
+			return err
+		}
+		for _, job := range jobs {
+			if job != nil && job.VirtualKeyID != nil {
+				note(job.JobID, *job.VirtualKeyID)
+			}
+		}
+	}
+	for suffix, keys := range claimants {
+		for _, id := range bySuffix[suffix] {
+			if len(keys) > 1 {
+				ambiguous[id] = struct{}{}
+				continue
+			}
+			for owner := range keys {
+				if _, seen := owners[id]; !seen {
+					owners[id] = owner
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// resourceNameSuffix returns the last segment of a short form of a Google resource name: a bare
+// id, or "<collection>/<id>" for the kind's collection. A full name ("projects/...") is not short,
+// and neither is any other id with a path in it.
+func resourceNameSuffix(kind, id string) (string, bool) {
+	if id == "" {
+		return "", false
+	}
+	if !strings.Contains(id, "/") {
+		return id, true
+	}
+	collection := resourceCollections[kind]
+	if collection != "" && strings.HasPrefix(id, collection+"/") && !strings.Contains(id[len(collection)+1:], "/") {
+		return id[len(collection)+1:], true
+	}
+	return "", false
+}
+
+// builtOnVertex reports whether a provider name reaches Vertex: Vertex itself, or a custom
+// provider built on it.
+func (p *GovernancePlugin) builtOnVertex(provider string) bool {
+	return configuredBaseProvider(p.inMemoryStore, schemas.ModelProvider(provider)) == schemas.Vertex
 }
 
 // enforceProviderObjectOwnership refuses a request for a provider object whose recorded creator
@@ -864,14 +1050,23 @@ func (p *GovernancePlugin) providerObjectOwners(ctx *schemas.BifrostContext, kin
 // refused. A list addresses nothing: its page is narrowed in the post-hook to what is recorded,
 // and with nothing recorded there is nothing to hide, so it goes through unfiltered, as it did
 // before objects were bound. Every object a request names is checked (see
-// providerObjectReferences); the first one another key created refuses the request.
+// providerObjectReferences); the first one another key created refuses the request. None of
+// this applies while client.enforce_vk_object_ownership is turned off; creators are still
+// recorded then, so turning it back on also binds objects created meanwhile.
 func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.LLMPluginShortCircuit {
 	vkID := requestVirtualKeyID(ctx)
 	if vkID == "" {
 		return nil
 	}
+	// With client.enforce_vk_object_ownership turned off nothing is refused, but an automatic
+	// container still needs its marker so the post-hook records its creator.
+	enforced := p.objectOwnershipEnforced()
+	autoContainer := requestsAutomaticContainer(req)
+	if !enforced && !autoContainer {
+		return nil
+	}
 	refs := providerObjectReferences(req)
-	if requestsAutomaticContainer(req) {
+	if autoContainer {
 		var named []string
 		for _, ref := range refs {
 			if ref.kind == configstoreTables.ProviderObjectKindContainer && !ref.isList {
@@ -879,6 +1074,9 @@ func (p *GovernancePlugin) enforceProviderObjectOwnership(ctx *schemas.BifrostCo
 			}
 		}
 		ctx.SetValue(governanceAutoContainerContextKey, named)
+	}
+	if !enforced {
+		return nil
 	}
 	for _, ref := range refs {
 		if ref.isList {
@@ -924,7 +1122,7 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 			Error:      &schemas.ErrorField{Message: fmt.Sprintf("%s access cannot be verified for virtual keys without a config store", label)},
 		}}
 	}
-	owners, err := p.providerObjectOwners(ctx, ref.kind, ref.provider, ref.ids)
+	owners, ambiguous, err := p.providerObjectOwnersOf(ctx, ref.kind, ref.provider, ref.ids, true)
 	if err != nil {
 		p.logger.Error("failed to load %s %s for ownership check: %v", label, ref.requestID, err)
 		ctx.SetValue(governanceRejectedContextKey, true)
@@ -943,12 +1141,28 @@ func (p *GovernancePlugin) refuseForeignProviderObject(ctx *schemas.BifrostConte
 			}}
 		}
 	}
+	if len(ambiguous) > 0 {
+		// A short Vertex id that several keys' full names end in names one job per project, which
+		// cannot be told apart before a key is chosen. The caller is told how to name it exactly.
+		ctx.SetValue(governanceRejectedContextKey, true)
+		return &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{
+			Type:       bifrost.Ptr(string(DecisionAccessBlocked)),
+			StatusCode: bifrost.Ptr(400),
+			Error:      &schemas.ErrorField{Message: fmt.Sprintf("%s '%s' matches objects in more than one project; address it by its full resource name", label, ref.requestID)},
+		}}
+	}
 	return nil
 }
 
-// hiddenProviderObjects returns, from a page of ids, the ones another virtual key created.
-func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, kind, provider, vkID string, ids []string) (map[string]struct{}, error) {
-	owners, err := p.providerObjectOwners(ctx, kind, provider, ids)
+// hiddenProviderObjects returns, from a page of ids, the ones another virtual key created, as a
+// predicate on the listed id. Every form of each id is looked up, and an id is hidden when any
+// of its forms is another key's. The predicate is nil when nothing on the page is hidden.
+func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, kind, provider, vkID string, ids []string) (func(id string) bool, error) {
+	forms := make([]string, 0, len(ids)*2)
+	for _, id := range ids {
+		forms = append(forms, providerObjectIDForms(kind, schemas.ModelProvider(provider), id)...)
+	}
+	owners, ambiguous, err := p.providerObjectOwners(ctx, kind, provider, forms)
 	if err != nil {
 		return nil, err
 	}
@@ -958,7 +1172,21 @@ func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, ki
 			hidden[id] = struct{}{}
 		}
 	}
-	return hidden, nil
+	// An item whose creator cannot be told is not shown rather than guessed at.
+	for id := range ambiguous {
+		hidden[id] = struct{}{}
+	}
+	if len(hidden) == 0 {
+		return nil, nil
+	}
+	return func(id string) bool {
+		for _, form := range providerObjectIDForms(kind, schemas.ModelProvider(provider), id) {
+			if _, ok := hidden[form]; ok {
+				return true
+			}
+		}
+		return false
+	}, nil
 }
 
 // filterProviderObjectList narrows a list of provider objects to the ones the request's virtual
@@ -968,7 +1196,7 @@ func (p *GovernancePlugin) hiddenProviderObjects(ctx *schemas.BifrostContext, ki
 // from the kept items. If the ownership lookup fails it returns an error and leaves the list
 // untouched; the caller fails the request rather than send a page it could not check.
 func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext, provider string, result *schemas.BifrostResponse) error {
-	if p.configStore == nil || result == nil {
+	if p.configStore == nil || result == nil || !p.objectOwnershipEnforced() {
 		return nil
 	}
 	vkID := requestVirtualKeyID(ctx)
@@ -991,12 +1219,12 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 		if err != nil {
 			return fail(configstoreTables.ProviderObjectKindBatch, err)
 		}
-		if len(hidden) == 0 {
+		if hidden == nil {
 			return nil
 		}
 		kept := make([]schemas.BifrostBatchRetrieveResponse, 0, len(list.Data))
 		for _, item := range list.Data {
-			if _, drop := hidden[item.ID]; !drop {
+			if !hidden(item.ID) {
 				item.ExtraFields.RawResponse = nil
 				kept = append(kept, item)
 			}
@@ -1013,12 +1241,12 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 		if err != nil {
 			return fail(configstoreTables.ProviderObjectKindFile, err)
 		}
-		if len(hidden) == 0 {
+		if hidden == nil {
 			return nil
 		}
 		kept := make([]schemas.FileObject, 0, len(list.Data))
 		for _, item := range list.Data {
-			if _, drop := hidden[item.ID]; !drop {
+			if !hidden(item.ID) {
 				kept = append(kept, item)
 			}
 		}
@@ -1026,27 +1254,20 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 		list.ExtraFields.RawResponse = nil
 	case result.VideoListResponse != nil && len(result.VideoListResponse.Data) > 0:
 		list := result.VideoListResponse
-		ids := make([]string, 0, len(list.Data)*2)
+		ids := make([]string, 0, len(list.Data))
 		for _, item := range list.Data {
-			ids = append(ids, videoIDForms(schemas.ModelProvider(provider), item.ID)...)
+			ids = append(ids, item.ID)
 		}
 		hidden, err := p.hiddenProviderObjects(ctx, configstoreTables.ProviderObjectKindVideo, provider, vkID, ids)
 		if err != nil {
 			return fail(configstoreTables.ProviderObjectKindVideo, err)
 		}
-		if len(hidden) == 0 {
+		if hidden == nil {
 			return nil
 		}
 		kept := make([]schemas.VideoObject, 0, len(list.Data))
 		for _, item := range list.Data {
-			drop := false
-			for _, form := range videoIDForms(schemas.ModelProvider(provider), item.ID) {
-				if _, ok := hidden[form]; ok {
-					drop = true
-					break
-				}
-			}
-			if !drop {
+			if !hidden(item.ID) {
 				kept = append(kept, item)
 			}
 		}
@@ -1062,12 +1283,12 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 		if err != nil {
 			return fail(configstoreTables.ProviderObjectKindContainer, err)
 		}
-		if len(hidden) == 0 {
+		if hidden == nil {
 			return nil
 		}
 		kept := make([]schemas.ContainerObject, 0, len(list.Data))
 		for _, item := range list.Data {
-			if _, drop := hidden[item.ID]; !drop {
+			if !hidden(item.ID) {
 				kept = append(kept, item)
 			}
 		}
@@ -1083,12 +1304,12 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 		if err != nil {
 			return fail(configstoreTables.ProviderObjectKindContainerFile, err)
 		}
-		if len(hidden) == 0 {
+		if hidden == nil {
 			return nil
 		}
 		kept := make([]schemas.ContainerFileObject, 0, len(list.Data))
 		for _, item := range list.Data {
-			if _, drop := hidden[item.ID]; !drop {
+			if !hidden(item.ID) {
 				kept = append(kept, item)
 			}
 		}
@@ -1104,12 +1325,12 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 		if err != nil {
 			return fail(configstoreTables.ProviderObjectKindCachedContent, err)
 		}
-		if len(hidden) == 0 {
+		if hidden == nil {
 			return nil
 		}
 		kept := make([]schemas.CachedContentObject, 0, len(list.CachedContents))
 		for _, item := range list.CachedContents {
-			if _, drop := hidden[item.Name]; !drop {
+			if !hidden(item.Name) {
 				kept = append(kept, item)
 			}
 		}
@@ -1121,8 +1342,11 @@ func (p *GovernancePlugin) filterProviderObjectList(ctx *schemas.BifrostContext,
 
 // recordProviderObjectLifecycle remembers the virtual key a create response was produced under,
 // and forgets an object a delete response confirms gone. A video create is told apart from a
-// retrieve, which answers with the same shape, by the request type. A write that fails is logged:
-// the object exists either way, and the response carrying its id is the caller's.
+// retrieve, which answers with the same shape, by the request type. An id is recorded only as the
+// create returned it; short forms of a full resource name are resolved by suffix at lookup time
+// (see resolveShortResourceNames). A delete forgets every form of the id it names, and a delete in
+// short form also forgets the deleting key's own full name that ends in it. A write that fails is
+// logged: the object exists either way, and the response carrying its id is the caller's.
 func (p *GovernancePlugin) recordProviderObjectLifecycle(ctx *schemas.BifrostContext, requestType schemas.RequestType, provider string, result *schemas.BifrostResponse) {
 	if p.configStore == nil || result == nil || provider == "" {
 		return
@@ -1135,8 +1359,7 @@ func (p *GovernancePlugin) recordProviderObjectLifecycle(ctx *schemas.BifrostCon
 		p.recordAutomaticContainers(ctx, provider, vkID, result, named)
 	}
 	var createdKind, createdID string
-	var deletedKind string
-	var deletedIDs []string
+	var deletedKind, deletedID string
 	switch {
 	case result.FileUploadResponse != nil && requestType == schemas.FileUploadRequest:
 		createdKind, createdID = configstoreTables.ProviderObjectKindFile, result.FileUploadResponse.ID
@@ -1154,31 +1377,66 @@ func (p *GovernancePlugin) recordProviderObjectLifecycle(ctx *schemas.BifrostCon
 		p.recordBatchFiles(ctx, provider, result.BatchRetrieveResponse)
 		return
 	case result.FileDeleteResponse != nil && result.FileDeleteResponse.Deleted:
-		deletedKind, deletedIDs = configstoreTables.ProviderObjectKindFile, []string{result.FileDeleteResponse.ID}
+		deletedKind, deletedID = configstoreTables.ProviderObjectKindFile, result.FileDeleteResponse.ID
 	case result.VideoDeleteResponse != nil && result.VideoDeleteResponse.Deleted:
-		deletedKind, deletedIDs = configstoreTables.ProviderObjectKindVideo, videoIDForms(schemas.ModelProvider(provider), result.VideoDeleteResponse.ID)
+		deletedKind, deletedID = configstoreTables.ProviderObjectKindVideo, result.VideoDeleteResponse.ID
 	case result.ContainerDeleteResponse != nil && result.ContainerDeleteResponse.Deleted:
-		deletedKind, deletedIDs = configstoreTables.ProviderObjectKindContainer, []string{result.ContainerDeleteResponse.ID}
+		deletedKind, deletedID = configstoreTables.ProviderObjectKindContainer, result.ContainerDeleteResponse.ID
 	case result.ContainerFileDeleteResponse != nil && result.ContainerFileDeleteResponse.Deleted:
-		deletedKind, deletedIDs = configstoreTables.ProviderObjectKindContainerFile, []string{result.ContainerFileDeleteResponse.ID}
+		deletedKind, deletedID = configstoreTables.ProviderObjectKindContainerFile, result.ContainerFileDeleteResponse.ID
 	case result.CachedContentDeleteResponse != nil && result.CachedContentDeleteResponse.Deleted:
-		deletedKind, deletedIDs = configstoreTables.ProviderObjectKindCachedContent, []string{result.CachedContentDeleteResponse.Name}
+		deletedKind, deletedID = configstoreTables.ProviderObjectKindCachedContent, result.CachedContentDeleteResponse.Name
 	case result.BatchDeleteResponse != nil:
-		deletedKind, deletedIDs = configstoreTables.ProviderObjectKindBatch, []string{result.BatchDeleteResponse.ID}
+		deletedKind, deletedID = configstoreTables.ProviderObjectKindBatch, result.BatchDeleteResponse.ID
 	default:
 		return
 	}
 	if createdKind != "" && createdID != "" {
+		// Recorded as the provider named it, and under no short form: a Vertex job number is one
+		// project's, so a row keyed by it would be shared by every project's job of that number.
+		// Short forms are resolved against the full names when they are asked for instead.
 		p.recordProviderObjectCreator(ctx, createdKind, provider, createdID, vkID)
 		return
 	}
-	for _, id := range deletedIDs {
-		if id == "" {
-			continue
+	// The object is forgotten under every provider name that reaches the same upstream: the delete
+	// was admitted through one of them, and a row recorded through another would otherwise linger.
+	aliases := p.equivalentProviders(provider)
+	for _, alias := range aliases {
+		for _, id := range providerObjectIDForms(deletedKind, schemas.ModelProvider(alias), deletedID) {
+			if err := p.configStore.DeleteProviderObject(ctx, configstoreTables.ProviderObjectID(deletedKind, alias, id)); err != nil {
+				p.logger.Warn("failed to forget deleted %s %s on %s: %v", providerObjectLabel(deletedKind), id, alias, err)
+			}
 		}
-		if err := p.configStore.DeleteProviderObject(ctx, configstoreTables.ProviderObjectID(deletedKind, provider, id)); err != nil {
-			p.logger.Warn("failed to forget deleted %s %s on %s: %v", providerObjectLabel(deletedKind), id, provider, err)
+	}
+	if suffix, short := resourceNameSuffix(deletedKind, deletedID); short && p.builtOnVertex(provider) {
+		p.forgetShortFormDelete(ctx, deletedKind, aliases, suffix, vkID)
+	}
+}
+
+// forgetShortFormDelete forgets the deleting key's own full name that a delete by a short form
+// removed. The provider deleted one object and echoes only the short form; when exactly one of the
+// key's full names ends in it, that one is forgotten. When several do (the key's jobs with one
+// number in two projects), which one went is unknown, so every binding is kept: a stale binding
+// to the same key is harmless, an unbound survivor is not. Other keys' rows are never touched.
+func (p *GovernancePlugin) forgetShortFormDelete(ctx *schemas.BifrostContext, kind string, providers []string, suffix, vkID string) {
+	var own []*configstoreTables.TableProviderObject
+	for _, name := range providers {
+		objects, err := p.configStore.GetProviderObjectsByObjectIDSuffixes(ctx, kind, name, []string{suffix})
+		if err != nil {
+			p.logger.Warn("failed to look up the full name of deleted %s %s on %s: %v", providerObjectLabel(kind), suffix, name, err)
+			return
 		}
+		for _, object := range objects {
+			if object != nil && object.VirtualKeyID == vkID {
+				own = append(own, object)
+			}
+		}
+	}
+	if len(own) != 1 {
+		return
+	}
+	if err := p.configStore.DeleteProviderObject(ctx, own[0].ID); err != nil {
+		p.logger.Warn("failed to forget deleted %s %s on %s by its full name: %v", providerObjectLabel(kind), suffix, own[0].Provider, err)
 	}
 }
 
@@ -1256,7 +1514,7 @@ func (p *GovernancePlugin) recordBatchFiles(ctx *schemas.BifrostContext, provide
 	if len(fileIDs) == 0 || batch.ID == "" {
 		return
 	}
-	owners, err := p.providerObjectOwners(ctx, configstoreTables.ProviderObjectKindBatch, provider, []string{batch.ID})
+	owners, _, err := p.providerObjectOwners(ctx, configstoreTables.ProviderObjectKindBatch, provider, []string{batch.ID})
 	if err != nil {
 		p.logger.Warn("failed to look up the creating virtual key of batch %s on %s: %v", batch.ID, provider, err)
 		return

@@ -75,18 +75,21 @@ type ModelCapabilities struct {
 	// feature while SupportsWebSearchDynamic is the dynamic-query variant, and
 	// SupportsPromptCaching is the base feature while SupportsPromptCachingScope
 	// is the scope sub-feature.
-	SupportsAssistantPrefill        *bool `json:"supports_assistant_prefill,omitempty"`
-	SupportsSystemMessages          *bool `json:"supports_system_messages,omitempty"`
-	SupportsFunctionCalling         *bool `json:"supports_function_calling,omitempty"`
-	SupportsParallelFunctionCalling *bool `json:"supports_parallel_function_calling,omitempty"`
-	SupportsToolChoice              *bool `json:"supports_tool_choice,omitempty"`
-	SupportsReasoning               *bool `json:"supports_reasoning,omitempty"`
-	SupportsResponseSchema          *bool `json:"supports_response_schema,omitempty"`
-	SupportsReasoningWithToolCalls  *bool `json:"supports_reasoning_with_tool_calls,omitempty"`
-	SupportsNoneReasoningEffort     *bool `json:"supports_none_reasoning_effort,omitempty"`
-	SupportsServiceTier             *bool `json:"supports_service_tier,omitempty"`
-	SupportsPromptCaching           *bool `json:"supports_prompt_caching,omitempty"`
-	SupportsWebSearch               *bool `json:"supports_web_search,omitempty"`
+	SupportsAssistantPrefill         *bool `json:"supports_assistant_prefill,omitempty"`
+	SupportsSystemMessages           *bool `json:"supports_system_messages,omitempty"`
+	SupportsFunctionCalling          *bool `json:"supports_function_calling,omitempty"`
+	SupportsParallelFunctionCalling  *bool `json:"supports_parallel_function_calling,omitempty"`
+	SupportsToolChoice               *bool `json:"supports_tool_choice,omitempty"`
+	SupportsReasoning                *bool `json:"supports_reasoning,omitempty"`
+	SupportsResponseSchema           *bool `json:"supports_response_schema,omitempty"`
+	SupportsReasoningWithToolCalls   *bool `json:"supports_reasoning_with_tool_calls,omitempty"`
+	SupportsNoneReasoningEffort      *bool `json:"supports_none_reasoning_effort,omitempty"`
+	SupportsReasoningSummaryDetailed *bool `json:"supports_reasoning_summary_detailed,omitempty"`
+	SupportsReasoningSummaryConcise  *bool `json:"supports_reasoning_summary_concise,omitempty"`
+	SupportsReasoningSummaryAuto     *bool `json:"supports_reasoning_summary_auto,omitempty"`
+	SupportsServiceTier              *bool `json:"supports_service_tier,omitempty"`
+	SupportsPromptCaching            *bool `json:"supports_prompt_caching,omitempty"`
+	SupportsWebSearch                *bool `json:"supports_web_search,omitempty"`
 
 	// ---- Endpoint + parameter surface ----
 
@@ -188,6 +191,9 @@ type ModelCapabilities struct {
 	// Model accepts an explicit "off" — thinking:{type:"disabled"} or a zero
 	// budget. False on models that reject it, which need the config omitted.
 	SupportsReasoningDisable *bool `json:"supports_reasoning_disable,omitempty"`
+
+	// Effort the model applies when the request omits it ("none" means it does not reason).
+	DefaultReasoningEffort *string `json:"default_reasoning_effort,omitempty"`
 
 	// Model accepts thinking:{type:"between_tools"} (no up-front thinking).
 	SupportsBetweenToolsThinking *bool `json:"supports_between_tools_thinking,omitempty"`

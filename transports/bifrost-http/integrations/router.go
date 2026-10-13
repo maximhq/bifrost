@@ -67,7 +67,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
@@ -2841,7 +2841,34 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 
 	// Handle streaming using the centralized approach
 	// Pass cancel function so it can be called when the writer exits (errors, completion, etc.)
-	g.handleStreaming(ctx, bifrostCtx, config, stream, cancel)
+	g.handleStreaming(ctx, bifrostCtx, config, requestType, stream, cancel)
+}
+
+// streamErrorEventType names the SSE event line for a mid-stream error object.
+// OpenAI Responses streams type every frame, and both the OpenAI API and the
+// native /v1/responses handler send a failure as "event: error", so the OpenAI
+// integration's Responses routes do the same. The error's request type decides it
+// (the Azure deployments route serves chat and responses on one path); an error
+// with none takes the request type of the stream it ends, and only when that is
+// unknown too does the route path decide. Chat and text completion streams keep
+// bare data frames.
+func streamErrorEventType(config RouteConfig, bifrostErr *schemas.BifrostError, streamRequestType schemas.RequestType) string {
+	if config.Type != RouteConfigTypeOpenAI || bifrostErr == nil {
+		return ""
+	}
+	requestType := bifrostErr.ExtraFields.RequestType
+	if requestType == "" {
+		requestType = streamRequestType
+	}
+	switch requestType {
+	case schemas.ResponsesStreamRequest, schemas.ResponsesRetrieveStreamRequest:
+		return string(schemas.ResponsesStreamResponseTypeError)
+	case "":
+		if strings.Contains(config.Path, "/responses") {
+			return string(schemas.ResponsesStreamResponseTypeError)
+		}
+	}
+	return ""
 }
 
 // handleStreaming processes a stream of BifrostResponse objects and sends them as Server-Sent Events (SSE).
@@ -2900,7 +2927,7 @@ func (g *GenericRouter) handleStreamingRequest(ctx *fasthttp.RequestCtx, config 
 // only stops when this context is cancelled or the client socket dies. Returning without
 // cancelling leaks the watcher and the entire request-scoped BifrostContext for as long as the
 // client keeps its connection open.
-func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, streamChan chan *schemas.BifrostStreamChunk, cancel context.CancelFunc) {
+func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, config RouteConfig, streamRequestType schemas.RequestType, streamChan chan *schemas.BifrostStreamChunk, cancel context.CancelFunc) {
 	// Signal to tracing middleware that trace completion should be deferred
 	// The streaming callback will complete the trace after the stream ends
 	ctx.SetUserValue(schemas.BifrostContextKeyDeferTraceCompletion, true)
@@ -3055,8 +3082,8 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					}
 				}
 
-				// Send error as SSE data
-				reader.SendEvent("", errorJSON)
+				// Send error as SSE data, typed for routes whose frames carry an event line
+				reader.SendEvent(streamErrorEventType(config, bifrostErr, streamRequestType), errorJSON)
 			}
 		}
 
@@ -3475,12 +3502,57 @@ func parsePassthroughBody(contentType string, body []byte) (model string, isStre
 		return
 	}
 	root := gjson.ParseBytes(body)
+	if root.IsArray() {
+		// A task array (Runware) names a model per task. One agreed model is the request's, so key
+		// selection sees it; tasks naming different models leave it empty, and governance reads the
+		// models from the body instead.
+		// Every task is checked, even after two have disagreed: a later task with a malformed
+		// model key is refused the same way, since governance reads every model from the body.
+		var taskErr error
+		var disagree bool
+		root.ForEach(func(_, task gjson.Result) bool {
+			if !task.IsObject() {
+				return true
+			}
+			taskModel, err := passthroughObjectModel(task)
+			if err != nil {
+				taskErr = err
+				return false
+			}
+			switch {
+			case taskModel == "":
+			case model == "":
+				model = taskModel
+			case model != taskModel:
+				disagree = true
+			}
+			return true
+		})
+		if taskErr != nil {
+			return "", false, taskErr
+		}
+		if disagree {
+			model = ""
+		}
+		return model, false, nil
+	}
 	if !root.IsObject() {
 		return
 	}
+	model, err = passthroughObjectModel(root)
+	if err != nil {
+		return "", false, err
+	}
+	isStream = root.Get("stream").Type == gjson.True
+	return
+}
+
+// passthroughObjectModel reads the model a JSON object names, strictly: the key spelled "model",
+// once, with a string value. A missing key is no model, not an error.
+func passthroughObjectModel(object gjson.Result) (string, error) {
 	var modelKeys int
 	var modelValue gjson.Result
-	root.ForEach(func(key, value gjson.Result) bool {
+	object.ForEach(func(key, value gjson.Result) bool {
 		if strings.EqualFold(key.Str, "model") {
 			modelKeys++
 			if key.Str == "model" {
@@ -3491,16 +3563,15 @@ func parsePassthroughBody(contentType string, body []byte) (model string, isStre
 	})
 	switch {
 	case modelKeys > 1:
-		return "", false, errors.New("passthrough request body must carry the model key at most once")
+		return "", errors.New("passthrough request body must carry the model key at most once")
 	case modelKeys == 1 && !modelValue.Exists():
-		return "", false, errors.New("passthrough request body model key must be spelled \"model\"")
+		return "", errors.New("passthrough request body model key must be spelled \"model\"")
 	case modelKeys == 1 && modelValue.Type != gjson.String:
-		return "", false, errors.New("passthrough request body model must be a string")
+		return "", errors.New("passthrough request body model must be a string")
 	case modelKeys == 1:
-		model = strings.TrimSpace(modelValue.Str)
+		return strings.TrimSpace(modelValue.Str), nil
 	}
-	isStream = root.Get("stream").Type == gjson.True
-	return
+	return "", nil
 }
 
 // isJSONMediaType reports whether a parsed media type declares a JSON body.
