@@ -150322,7 +150322,9 @@
                   "var ef = response.extra_fields || {}; var rr = ef.raw_request; if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
                   "pm.test('77.19: outbound raw request is captured', function () { pm.expect(rr, 'extra_fields.raw_request missing: ' + pm.response.text().slice(0, 400)).to.be.an('object'); });",
                   "var content = rr && rr.messages && rr.messages[0] && rr.messages[0].content || []; var docIndex = -1; content.forEach(function (block, i) { if (block && block.document) { docIndex = i; } });",
-                  "pm.test('77.19: file cache_control becomes a trailing cachePoint', function () { if (docIndex < 0) { pm.expect.fail('document block missing from outbound request: ' + JSON.stringify(content).slice(0, 500)); return; } var next = content[docIndex + 1] || {}; pm.expect(next.cachePoint, 'cachePoint must follow document: ' + JSON.stringify(content).slice(0, 500)).to.be.an('object'); pm.expect(next.cachePoint.type).to.eql('default'); });"
+                  "pm.test('77.19: file cache_control becomes a trailing cachePoint', function () { if (docIndex < 0) { pm.expect.fail('document block missing from outbound request: ' + JSON.stringify(content).slice(0, 500)); return; } var next = content[docIndex + 1] || {}; pm.expect(next.cachePoint, 'cachePoint must follow document: ' + JSON.stringify(content).slice(0, 500)).to.be.an('object'); pm.expect(next.cachePoint.type).to.eql('default'); });",
+                  "var answer = response.choices && response.choices[0] && response.choices[0].message && response.choices[0].message.content;",
+                  "pm.test('77.19: response includes document marker', function () { pm.expect(answer, 'response content did not include the document marker').to.be.a('string').and.include('cobalt-7613'); });"
                 ]
               }
             }
