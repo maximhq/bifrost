@@ -247,9 +247,15 @@ func (h *MCPPerUserHeadersHandler) flowSubmit(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	if _, _, _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, config, filtered); verifyErr != nil {
-		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
-		return
+	// Verification dials the client's remote MCP server with these values. An
+	// openapi client has none (its server is synthesized in-process), so the
+	// required-key check above is the whole validation; the upstream API sees
+	// the values on the first tool call.
+	if config.ConnectionType != schemas.MCPConnectionTypeOpenAPI {
+		if _, _, _, verifyErr := h.mcpManager.VerifyHeadersConnection(bifrostCtx, config, filtered); verifyErr != nil {
+			SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
+			return
+		}
 	}
 
 	mode := schemas.MCPAuthMode(flow.FlowMode)

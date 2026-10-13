@@ -771,6 +771,73 @@ func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputPreservesNonT
 	}
 }
 
+// tool_reference is Anthropic-only (tool search); OpenAI has no such block, so
+// it is dropped before flattening and an output left empty becomes "".
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputDropsToolReferenceBlocks(t *testing.T) {
+	toolRef := schemas.ResponsesMessageContentBlock{
+		Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
+		ToolName: schemas.Ptr("get_weather"),
+	}
+	imageURL := "https://example.com/screenshot.png"
+	image := schemas.ResponsesMessageContentBlock{
+		Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+		ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+			ImageURL: &imageURL,
+		},
+	}
+	tests := []struct {
+		name       string
+		blocks     []schemas.ResponsesMessageContentBlock
+		wantString *string
+		wantBlocks int
+	}{
+		{name: "only tool_reference", blocks: []schemas.ResponsesMessageContentBlock{toolRef}, wantString: schemas.Ptr("")},
+		{
+			name:       "text and tool_reference",
+			blocks:     []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("found it")}, toolRef},
+			wantString: schemas.Ptr("found it"),
+		},
+		{name: "image and tool_reference", blocks: []schemas.ResponsesMessageContentBlock{image, toolRef}, wantBlocks: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := &OpenAIResponsesRequestInput{
+				OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("toolu_search"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: tt.blocks},
+						},
+					},
+				},
+			}
+			jsonBytes, err := input.MarshalJSON()
+			if err != nil {
+				t.Fatalf("Failed to marshal: %v", err)
+			}
+			var messages []map[string]interface{}
+			if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+				t.Fatalf("Failed to unmarshal: %v\nraw=%s", err, string(jsonBytes))
+			}
+			if tt.wantString != nil {
+				got, ok := messages[0]["output"].(string)
+				if !ok || got != *tt.wantString {
+					t.Fatalf("output: want %q, got %v; raw=%s", *tt.wantString, messages[0]["output"], string(jsonBytes))
+				}
+				return
+			}
+			blocks, ok := messages[0]["output"].([]interface{})
+			if !ok || len(blocks) != tt.wantBlocks {
+				t.Fatalf("output: want %d blocks, got %v; raw=%s", tt.wantBlocks, messages[0]["output"], string(jsonBytes))
+			}
+			if strings.Contains(string(jsonBytes), "tool_reference") {
+				t.Fatalf("tool_reference must not reach OpenAI; raw=%s", string(jsonBytes))
+			}
+		})
+	}
+}
+
 // TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags ensures the
 // Responses serializer drops the Anthropic-native tool flags (defer_loading,
 // input_examples, eager_input_streaming) along with CacheControl before

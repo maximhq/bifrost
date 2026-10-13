@@ -543,6 +543,14 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		}
 		hash.Write([]byte("oauth2AuthCodeTTL:" + strconv.Itoa(oc.AuthCodeTTL)))
 		hash.Write([]byte("oauth2AccessTokenTTL:" + strconv.Itoa(oc.AccessTokenTTL)))
+		// Unset policy fields contribute nothing so rows stored before they were
+		// hashed keep their hash; once set, a file edit must win over the DB row.
+		for _, uri := range oc.AllowedRedirectURIs {
+			hash.Write([]byte("oauth2AllowedRedirectURI:" + uri))
+		}
+		if oc.DisableVKIdentity {
+			hash.Write([]byte("oauth2DisableVKIdentity:true"))
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -2095,6 +2103,65 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 			return "", err
 		}
 		hash.Write(data)
+	}
+
+	// Hash openapi_config so a changed spec, upstream, credential set or option
+	// in config.json drifts the hash and triggers reconciliation. The spec is
+	// hashed by content (or by its file reference when the content was not
+	// inlined), credentials by ref or value like Headers above; server-computed
+	// metadata (sizes, counts) is derived from these and contributes nothing.
+	// spec_url is hashed whenever it is set, inline spec or not: relative
+	// servers (and Swagger 2.0 documents without a host) resolve against it, so
+	// it can pick the upstream even when it does not supply the document. An
+	// empty base_url means the same as none. Every field is length-framed, so
+	// no value can run into the field written after it.
+	if m.OpenAPIConfig != nil {
+		oc := m.OpenAPIConfig
+		writeField := func(label, value string) {
+			fmt.Fprintf(hash, "openapi:%d:%s=%d:%s;", len(label), label, len(value), value)
+		}
+		switch {
+		case oc.Spec != "":
+			specSum := sha256.Sum256([]byte(oc.Spec))
+			writeField("spec_sha256", hex.EncodeToString(specSum[:]))
+		case oc.SpecFile != nil && *oc.SpecFile != "":
+			writeField("spec_file", *oc.SpecFile)
+		}
+		if oc.SpecURL != nil && *oc.SpecURL != "" {
+			writeField("spec_url", *oc.SpecURL)
+		}
+		if oc.BaseURL != nil && *oc.BaseURL != "" {
+			writeField("base_url", *oc.BaseURL)
+		}
+		if len(oc.SecurityCredentials) > 0 {
+			names := make([]string, 0, len(oc.SecurityCredentials))
+			for name := range oc.SecurityCredentials {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				cred := oc.SecurityCredentials[name]
+				for _, part := range []struct {
+					label string
+					v     *schemas.SecretVar
+				}{{"value", cred.Value}, {"username", cred.Username}, {"password", cred.Password}} {
+					if part.v == nil {
+						continue
+					}
+					if part.v.IsFromSecret() {
+						writeField("cred_ref:"+name+":"+part.label, part.v.GetRawRef())
+					} else {
+						writeField("cred_val:"+name+":"+part.label, part.v.Val)
+					}
+				}
+			}
+		}
+		if oc.IncludeDeprecated {
+			writeField("include_deprecated", "true")
+		}
+		if oc.MaxResponseBytes != 0 {
+			writeField("max_response_bytes", fmt.Sprintf("%d", oc.MaxResponseBytes))
+		}
 	}
 
 	// will enable it in the future with a migration
