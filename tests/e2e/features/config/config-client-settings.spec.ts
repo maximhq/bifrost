@@ -199,4 +199,42 @@ test.describe('Client Settings', () => {
       expectedState ? 'checked' : 'unchecked'
     )
   })
+
+  test('should save and persist extra fields placement', async ({ configSettingsPage, page }) => {
+    await expect(configSettingsPage.extraFieldsPlacementSelect).toBeVisible()
+
+    // Start from whatever the gateway stores, switch to the other value, and put the original back.
+    const stored = await page.request.get('/api/config?from_db=true')
+    expect(stored.status(), await stored.text()).toBe(200)
+    const original: 'body' | 'headers' = (await stored.json()).client_config.extra_fields_placement === 'headers' ? 'headers' : 'body'
+    const target: 'body' | 'headers' = original === 'body' ? 'headers' : 'body'
+    const label = (value: 'body' | 'headers') => (value === 'body' ? /Body/ : /Headers/)
+
+    await expect(configSettingsPage.extraFieldsPlacementSelect).toHaveText(label(original))
+    try {
+      await configSettingsPage.selectExtraFieldsPlacement(target)
+      // Headers mode spells out which fields are dropped; Body mode hides the note.
+      if (target === 'headers') {
+        await expect(configSettingsPage.extraFieldsPlacementDroppedNote).toBeVisible()
+      } else {
+        await expect(configSettingsPage.extraFieldsPlacementDroppedNote).not.toBeVisible()
+      }
+      expect(await configSettingsPage.hasPendingChanges()).toBe(true)
+      await configSettingsPage.saveSettings()
+
+      const saved = await page.request.get('/api/config?from_db=true')
+      expect(saved.status(), await saved.text()).toBe(200)
+      expect((await saved.json()).client_config.extra_fields_placement).toBe(target)
+
+      await configSettingsPage.goto('client-settings')
+      await expect(configSettingsPage.extraFieldsPlacementSelect).toHaveText(label(target))
+    } finally {
+      // restoreSettings only covers switches and number inputs, so put the original select value back here.
+      await configSettingsPage.goto('client-settings')
+      if (!label(original).test((await configSettingsPage.extraFieldsPlacementSelect.textContent()) ?? '')) {
+        await configSettingsPage.selectExtraFieldsPlacement(original)
+        await configSettingsPage.saveSettings()
+      }
+    }
+  })
 })
