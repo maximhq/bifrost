@@ -117,6 +117,67 @@ v2.3.0 moves the enterprise gateway onto OSS transports v2.3.0. Teams, business 
 - **Bifrost CLI** - The `bifrost` CLI covers the published API, with resource commands, `chat`, `infer`, `auth` (SSO included), `usage`, reversible `configure` for native agents, and table, JSON or YAML output.
 - **Helm Chart 2.1.44** - Exposes the new config fields, `topologySpreadConstraints` and `extraContainers`.
 
+## ⚙️ Upgrade Notes
+
+These entries change a default, a status code, a response shape or a Go SDK type. The matching entries above describe each change in full.
+
+- **Agent Gateway (A2A)** - optional; set `client.a2a_external_client_url` for push and stable card URLs, and `server.a2a_grpc_base_domain` + `server.a2a_grpc_port` (plus wildcard DNS) for gRPC. Custom `schemas.Tracer` implementations must add `ReleaseTrace`.
+- **Warp AI Assistant (alpha)** - on by default in OSS; set `feature_flags.flags.warp.enabled: false` to keep it hidden.
+- **Cloudflare Workers AI Provider** - the name `cloudflare` is reserved; migrate a custom provider named `cloudflare` with the dashboard dialog or recreate it with `cloudflare_key_config.account_id`.
+- **Decisions API in OpenAI Shape** - map-form `/v1/decisions` bodies are deprecated (still served); update Go SDK code to the new `BifrostDecisionRequest` fields.
+- **Decision Emulation Is Opt-In** - decisions on non-decision models return `unsupported_operation`; set `compat.convert_decision_to_responses: true` or send `x-bf-compat: ["convert_decision_to_responses"]` to keep emulation.
+- **Multimodal Embeddings** - Go SDK `BifrostEmbeddingRequest.Input` is now `[]EmbeddingInputItem`; HTTP bodies are unchanged.
+- **xAI Realtime** - refusal and content-filter stops are logged as `model_refusal` errors; exclude that error type from error-rate alerts if needed.
+- **Web Search Priced per Request** - rename `search_context_cost_per_query` to `web_search_cost_per_request` in config.json overrides; read counts from `usage.tool_usage.web_search.num_requests`.
+- **Compat: Route Reasoning-Only Models to Responses** - turned on for existing deployments; set `compat.force_reasoning_only_models_to_responses: false` to keep the old behavior.
+- **Chat reasoning.mode and reasoning.summary** - the `/openai` chat route strips `reasoning.summary`; send it through `extra_params` there.
+- **Failure Classification and Smarter Key Rotation** - a model missing on every key returns the provider's `404` instead of `502 upstream_credentials_exhausted`; update alerts on that error and on `fail_reason` values.
+- **Gateway Request ID Header** - read the gateway request ID from `x-bifrost-request-id`; upstream `x-bifrost-*` headers are no longer forwarded.
+- **Deprecated Models Hidden from Browsing** - add `include_deprecated=true` to `GET /api/models` to keep deprecated models.
+- **Provider Objects Bound to the Creating Virtual Key** - set `client.enforce_vk_object_ownership: false` if virtual keys share files, batches, containers or cached contents.
+- **File-Based Batches Under Model-Restricted Virtual Keys** - use a `*` model grant for OpenAI/Azure file batches, send an allowed `model` for Gemini/Vertex/Bedrock file batches, and never mix a file with inline `requests`.
+- **Passthrough Route Hardening** - use passthrough only for `POST` inference paths with rooted paths, the route's own provider and one string `model` key.
+- **Management API Refuses Unlisted Browser Origins** - add cross-origin browser apps to `client.allowed_origins` or enable dashboard auth.
+- **Real Auth Required for Secret References and Private Targets** - enable dashboard auth or send `X-Bifrost-Setup-Token` for MCP `env.`/`vault.` references, private webhooks, plugin endpoints, Vertex `auth_credentials` and `DELETE /api/mcp-logs`.
+- **Auth Config Changes Need Proof of Control** - send `auth_config.current_password` or `setup_token` when re-enabling auth or rotating admin credentials while auth is off.
+- **Request Decompression Limits** - bodies expanding over 100x return `413`; send them uncompressed or raise `client.max_request_body_size_mb`.
+- **Access Profiles for Teams, Business Units and Customers** - move config.json limits of governed entities and their keys onto the access profile.
+- **Global Proxy in config.json and for All Outbound Traffic** - set `enable_for_inference: false` to keep inference direct, and list direct hosts in `proxy_config.no_proxy`.
+- **Audit Logs: Omit IP Addresses** - make SIEM rules accept both audit `typeURI` values.
+- **Attribution Context Keys Deprecated** - read attribution in custom plugins from `ctx.Grant()`.
+- **MCP Client Target Validation at Connect Time** - register private MCP servers as an authenticated admin or in config.json, and use `http`, `sse` or `stdio` as `connection_type`.
+- **MCP OAuth Server Hardening** - list remote OAuth callback URIs in `client.oauth2_server_config.allowed_redirect_uris` before upgrading.
+- **Virtual Key Rotation Revokes MCP OAuth Grants** - re-authorize MCP clients after rotating their virtual key.
+- **MCP Server Instructions** - bound injected instructions with `max_instructions_per_client`, `max_instructions_total` or per-client `max_instructions_length`.
+- **Code Mode Execution Limits** - raise fields under `mcp.tool_manager_config.code_mode_limits` for scripts that exceed the new budgets.
+- **Semantic Cache Scoped by Identity** - expect a cold cache; set `disable_identity_scoping: true` to share entries across identities.
+- **Semantic Cache Skips Tool-Call Responses by Default** - set `cache_tool_call_responses: true` to keep caching them.
+- **App Label on Metrics** - add the new `app` label to recording rules or alerts that match exact label sets.
+- **OTel HTTP Semantic Conventions** - move dashboards to `http.request.method`, `http.response.status_code`, `http.route` and `url.path`; the span name and `http.url` drop the query string.
+- **Response Headers Plugin Hook** - Go types implementing `HTTPTransportPlugin` must add `HTTPTransportResponseHeadersHook` (a no-op is fine).
+- **Exclude Request Types from Object Storage** - only exclude request types whose content you do not need retained in object storage.
+- **Helm Chart 2.1.44** - set `bifrost.client.oauth2ServerConfig.issuerUrl` when `mcpServerAuthMode` is `oauth` or `both`, or `helm template` fails.
+- **Outbound Fetch Redirect Hardening** - test-fire private webhooks with an authenticated caller; point datasheet URLs at their final location or use `file://`.
+- **Provider base_url Shape Checked** - remove userinfo, query strings and fragments from `base_url`.
+- **Direct Keys Stay on Their Provider** - pass `?provider=` or `x-bf-model-provider` on direct-key model listings.
+- **config.json Governance Limits Reconciled Correctly** - read virtual key and provider config limits from the key's model configs after the migration.
+- **Partial Provider Key Updates** - send a field explicitly to clear it.
+- **Weights Must Be Valid Numbers** - use weights of 0 or more for keys and greater than 0 for routing targets.
+- **Duplicate Routing Rule Priority Returns 409** - treat `409` as a request error instead of retrying on `500`.
+- **Dashboard Rankings Under DAC** - treat the ranking row `id: "other"` like `unassigned`.
+- **MCP OAuth and Client Fixes** - expect `404`, not `500`, for an unknown MCP client.
+- **Implicit Prompt Caching for gpt-5.6+ Now Takes Effect** - set `prompt_cache_options.mode: "explicit"` on the request to opt into explicit mode.
+- **Stream Errors Get a Real HTTP Status** - update retry logic and alerts that assumed every stream error was `400`.
+- **Bedrock Incomplete Converse Streams** - truncated Converse streams now end with `502`.
+- **Replicate File List Cursor** - pass the `after` cursor exactly as returned; others get `400 invalid pagination cursor`.
+- **Anthropic Error and Stop Fidelity** - branch on documented Anthropic error types instead of `api_error`.
+- **Error Metrics Report the Real Status** - repoint alerts on `status_code="unknown"` and add `error_type` to OTel queries.
+- **OTLP HTTP Metrics to https Endpoints** - set `tls_ca_cert` or keep `insecure: true` for self-signed collectors.
+- **Connector Export Gaps** - group OTel datapoints by `bifrost_instance_id` instead of `service_instance_id`, and review telemetry `custom_labels` for cardinality.
+- **Postgres Scale Fixes** - plan IO for the background index build; set `statement_timeout` and `idle_in_transaction_session_timeout` to `"0"` to keep server defaults.
+- **ClickHouse Large Team Scopes** - set `logs_store.config.max_query_size` if a ClickHouse settings profile constrains it.
+- **Semantic Cache Vector Store Consistency** - on Weaviate, set `threshold` to `2 * old - 1` to keep the old hit rate.
+
 ## 🐞 Fixed
 
 - **DAC Leaks Closed** - Each of these routes now returns 404, 403 or a filtered list:
