@@ -423,6 +423,9 @@
         {
           "name": "Azure API Key",
           "value": "env.AZURE_API_KEY",
+          "aliases": {
+            "Microsoft-Decision-1": "Decision-1"
+          },
           "azure_key_config": {
             "endpoint": "env.AZURE_ENDPOINT",
             "deployments": {

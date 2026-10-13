@@ -51,8 +51,9 @@ func validStructuredValue(value interface{}) bool {
 // become an option -> description map, a boolean choice keyed "true" or
 // "false", and levels an ordered array of descriptions with their labels
 // folded in. Unsupported types and malformed criteria are rejected rather than
-// silently approximated, and so is an image in the input, which Typesafe would
-// read as text. Validation is never stricter than the official SDKs' types:
+// silently approximated, and so is an image in the input, which Typesafe (and
+// any other text-only systemone endpoint, such as Azure's Microsoft-Decision-1)
+// would read as text. Validation is never stricter than the official SDKs' types:
 // null state, null or absent instructions, and null descriptions are
 // forwarded for the endpoint to judge.
 func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error) {
@@ -60,7 +61,7 @@ func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*Typesa
 		return nil, providerUtils.InvalidRequestErrorf("decision request requires at least one question")
 	}
 	if partType := request.Input.NonTextPartType(); partType != "" {
-		return nil, providerUtils.InvalidRequestErrorf("decision input carries an %q part, which Typesafe cannot read; route the request to a provider that accepts it", partType)
+		return nil, providerUtils.InvalidRequestErrorf("decision input carries an %q part, which this provider cannot read; route the request to a provider that accepts it", partType)
 	}
 	state := typesafeState(request.Input)
 	if !isJSONNull(state) && !validStructuredValue(state) {
