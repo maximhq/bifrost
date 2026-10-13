@@ -358,6 +358,25 @@ test("allow-all VK checks query one provider each", () => {
   }
 });
 
+// ── Request guards / cases the OSS setup lock must refuse ─────────────────────
+test("request-guard lock cases drop the setup token and expect the lock's 401", () => {
+  for (const name of [
+    "MCP client registration / A target host that does not resolve is refused without a setup token",
+    "MCP client registration / A loopback target is refused without a setup token",
+    "Provider endpoint changes / Changing the proxy URL is refused without a setup token",
+    "Provider endpoint changes / A custom provider with a base URL is refused without a setup token",
+    "Provider endpoint changes / A provider key carrying an endpoint is refused without a setup token",
+    "Webhook delivery test gate / A test delivery is refused without a setup token",
+    "Dashboard auth update / Re-enabling auth without a setup token is refused",
+    "Dashboard auth update / Re-enabling auth with a wrong current_password and no setup token is refused",
+  ]) {
+    const pre = guardsScriptFor(name, "prerequest");
+    assert.match(pre, /pm\.request\.headers\.remove\('X-Bifrost-Setup-Token'\)/, `${name} must send no setup token`);
+    const post = guardsScriptFor(name, "test");
+    assert.match(post, /to\.eql\(401\)/, `${name} must expect the lock's 401`);
+  }
+});
+
 // ── MCP Clients / Add MCP Client and its dependents ───────────────────────────
 const addMCPClientTest = scriptFor("MCP Clients / Add MCP Client", "test");
 
