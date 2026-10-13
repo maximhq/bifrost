@@ -3,13 +3,98 @@ package handlers
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/pion/ice/v4"
+	"github.com/pion/logging"
+	"github.com/pion/transport/v5/vnet"
 	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestWebRTCRelayCloseDrainsBrowserMessages(t *testing.T) {
+	if logger == nil {
+		SetLogger(&mockLogger{})
+	}
+	router, err := vnet.NewRouter(&vnet.RouterConfig{CIDR: "192.0.2.0/24", LoggerFactory: logging.NewDefaultLoggerFactory()})
+	require.NoError(t, err)
+	newPeer := func(ip string) *webrtc.PeerConnection {
+		network, err := vnet.NewNet(&vnet.NetConfig{StaticIPs: []string{ip}})
+		require.NoError(t, err)
+		require.NoError(t, router.AddNet(network))
+		settings := webrtc.SettingEngine{}
+		settings.SetNet(network)
+		settings.SetICEMulticastDNSMode(ice.MulticastDNSModeDisabled)
+		pc, err := webrtc.NewAPI(webrtc.WithSettingEngine(settings)).NewPeerConnection(webrtc.Configuration{})
+		require.NoError(t, err)
+		return pc
+	}
+	sender, browser := newPeer("192.0.2.1"), newPeer("192.0.2.2")
+	var blockPackets atomic.Bool
+	router.AddChunkFilter(func(vnet.Chunk) bool { return !blockPackets.Load() })
+	require.NoError(t, router.Start())
+	t.Cleanup(func() { _ = router.Stop() })
+	t.Cleanup(func() { _ = browser.Close(); _ = sender.Close() })
+	t.Cleanup(func() { blockPackets.Store(false) })
+	received := make(chan string, 1)
+	browser.OnDataChannel(func(dc *webrtc.DataChannel) {
+		dc.OnMessage(func(msg webrtc.DataChannelMessage) { received <- string(msg.Data) })
+	})
+	dc, err := sender.CreateDataChannel("oai-events", nil)
+	require.NoError(t, err)
+	relay := &webrtcRelay{downstreamPC: sender, handler: newFakeWebRTCHandler()}
+	relay.bindDownstreamChannel(dc)
+	require.True(t, relay.markEstablished())
+	offer, err := sender.CreateOffer(nil)
+	require.NoError(t, err)
+	require.NoError(t, browser.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: gatheredSDP(t, sender, offer)}))
+	answer, err := browser.CreateAnswer(nil)
+	require.NoError(t, err)
+	require.NoError(t, sender.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: gatheredSDP(t, browser, answer)}))
+	require.Eventually(t, func() bool { return dc.ReadyState() == webrtc.DataChannelStateOpen }, 5*time.Second, time.Millisecond)
+
+	// Make the final frame wait for retransmission, independently of CPU speed.
+	blockPackets.Store(true)
+	terminal := `{"type":"session.closed","usage":{"seconds":97}}`
+	relay.sendDownstream([]byte(terminal), true)
+	require.Positive(t, dc.BufferedAmount())
+	done := make(chan struct{})
+	go func() { relay.close(); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("relay closed while the browser's final frame was still buffered")
+	case <-time.After(100 * time.Millisecond):
+	}
+	blockPackets.Store(false)
+	select {
+	case frame := <-received:
+		assert.Equal(t, terminal, frame)
+	case <-time.After(5 * time.Second):
+		t.Fatal("browser did not receive the final frame after the network recovered")
+	}
+	waitSignal(t, done, "close after browser output drained")
+}
+
+func TestWebRTCRelayDownstreamDrainIsBounded(t *testing.T) {
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pc.Close() })
+	dc, err := pc.CreateDataChannel("oai-events", nil)
+	require.NoError(t, err)
+	relay := &webrtcRelay{downstreamChannel: dc}
+	relay.sendDownstream([]byte(`{"type":"error"}`), true)
+	require.True(t, relay.hasPendingDownstream(), "an unopened channel may still deliver pending frames")
+	started := time.Now()
+	relay.drainDownstream(20 * time.Millisecond)
+	assert.GreaterOrEqual(t, time.Since(started), 20*time.Millisecond)
+	assert.Less(t, time.Since(started), time.Second, "a channel that never opens cannot block teardown")
+	require.True(t, relay.hasPendingDownstream(), "the timeout must not pretend output was delivered")
+	require.NoError(t, dc.Close())
+	assert.False(t, relay.hasPendingDownstream(), "a departed browser cannot receive queued output")
+}
 
 // fakeWebRTCHandler records what the relay reports to its handler.
 type fakeWebRTCHandler struct {

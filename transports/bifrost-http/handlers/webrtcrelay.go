@@ -19,10 +19,11 @@ import (
 )
 
 const (
-	webrtcHandshakeTimeout     = 10 * time.Second
-	webrtcICEGatherTimeout     = 3 * time.Second
-	webrtcUpstreamDrainTimeout = 10 * time.Second
-	webrtcMaxPendingMessages   = 1000
+	webrtcHandshakeTimeout       = 10 * time.Second
+	webrtcICEGatherTimeout       = 3 * time.Second
+	webrtcUpstreamDrainTimeout   = 10 * time.Second
+	webrtcDownstreamDrainTimeout = 10 * time.Second
+	webrtcMaxPendingMessages     = 1000
 )
 
 var defaultAudioCodec = webrtc.RTPCodecCapability{
@@ -499,6 +500,7 @@ func (r *webrtcRelay) close() {
 		if r.handler != nil {
 			r.handler.closed()
 		}
+		r.drainDownstream(webrtcDownstreamDrainTimeout)
 		if r.onClose != nil {
 			r.onClose()
 		}
@@ -524,11 +526,41 @@ func (r *webrtcRelay) close() {
 	})
 }
 
+// Sending only queues SCTP data. Keep the browser leg alive until final events
+// (including errors produced by handler.closed) are acknowledged. A channel that
+// has not opened yet can still flush its pending events through OnOpen. A lost
+// browser cannot hold teardown beyond timeout.
+func (r *webrtcRelay) drainDownstream(timeout time.Duration) {
+	if !r.hasPendingDownstream() {
+		return
+	}
+	deadline := time.Now().Add(timeout)
+	for r.hasPendingDownstream() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (r *webrtcRelay) hasPendingDownstream() bool {
+	r.channelMu.Lock()
+	defer r.channelMu.Unlock()
+	if r.downstreamChannel == nil {
+		return false
+	}
+	switch r.downstreamChannel.ReadyState() {
+	case webrtc.DataChannelStateConnecting:
+		return len(r.pendingToDownstream) > 0
+	case webrtc.DataChannelStateOpen:
+		return len(r.pendingToDownstream) > 0 || r.downstreamChannel.BufferedAmount() > 0
+	default:
+		return false
+	}
+}
+
 func (r *webrtcRelay) closeWithShutdownSignal() {
 	r.close()
 }
 
-// closeWithErrorEvent sends a final event to the browser, then closes the relay shortly after.
+// closeWithErrorEvent sends a final event to the browser, then drains and closes the relay.
 func (r *webrtcRelay) closeWithErrorEvent(payload []byte) {
 	r.channelMu.Lock()
 	dc := r.downstreamChannel
@@ -536,10 +568,7 @@ func (r *webrtcRelay) closeWithErrorEvent(payload []byte) {
 
 	if isDataChannelOpen(dc) && len(payload) > 0 {
 		sendDataChannelMessage(dc, payload, true)
-		go func() {
-			time.Sleep(100 * time.Millisecond)
-			r.close()
-		}()
+		go r.close()
 		return
 	}
 
