@@ -17,24 +17,14 @@
   "navbar": {
     "links": [
       {
-        "label": "Discord",
-        "href": "https://discord.gg/exN5KAydbU",
-        "icon": "discord"
-      },
-      {
-        "label": "GitHub",
-        "href": "https://github.com/maximhq/bifrost",
-        "icon": "github"
-      },
-      {
         "label": "Request License",
-        "href": "https://www.getmaxim.ai/enterprise#free-license"
+        "href": "https://www.getmaxim.ai/enterprise?utm_source=bifrost_docs&utm_medium=Bifrost_Navbar#free-license"
       }
     ],
     "primary": {
       "type": "button",
-      "label": "Book a demo",
-      "href": "https://www.getmaxim.ai/book-a-demo"
+      "label": "Book a Demo",
+      "href": "https://www.getmaxim.ai/book-a-demo?utm_source=bifrost_docs&utm_medium=Bifrost_Navbar"
     }
   },
   "navigation": {
@@ -44,6 +34,11 @@
           "anchor": "Discord",
           "icon": "discord",
           "href": "https://discord.gg/exN5KAydbU"
+        },
+        {
+          "anchor": "GitHub",
+          "icon": "github",
+          "href": "https://github.com/maximhq/bifrost"
         },
         {
           "anchor": "Try Enterprise",
