@@ -1702,6 +1702,8 @@ func HandleOpenAIChatCompletionStreaming(
 					}
 
 					response.ExtraFields.ChunkIndex = response.SequenceNumber
+					// RawResponse below is the chat frame; integrations must not echo it as Responses.
+					response.ExtraFields.ConvertedRequestType = schemas.ChatCompletionRequest
 
 					// One upstream chat frame spreads into several Responses events.
 					// Stamping every one of them made framework/streaming/responses.go
@@ -1965,7 +1967,10 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		if err != nil {
 			return nil, err
 		}
-		return chatResponse.ToBifrostResponsesResponse(), nil
+		responsesResponse := chatResponse.ToBifrostResponsesResponse()
+		// RawResponse is still the chat body; integrations must not echo it as Responses.
+		responsesResponse.ExtraFields.ConvertedRequestType = schemas.ChatCompletionRequest
+		return responsesResponse, nil
 	}
 
 	// Check if chat completion is allowed for this provider

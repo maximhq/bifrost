@@ -1177,6 +1177,18 @@ func TestResolveSessionRouteAppliesTheAnswer(t *testing.T) {
 		}
 	})
 
+	t.Run("a reordered inferred chain stays inferred", func(t *testing.T) {
+		client, _ := setup(t, reverse)
+		req := newRequest(schemas.OpenAI)
+		req.SetFallbacks([]schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o", Inferred: true}, {Provider: schemas.Groq, Model: "openai/gpt-4o", Inferred: true}})
+		client.resolveSessionRoute(sessionCtx("s"), routeOf("", "gpt-4o"), req)
+		_, _, fallbacks := req.GetRequestFields()
+		want := []schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o", Inferred: true}, {Provider: schemas.OpenAI, Model: "gpt-4o", Inferred: true}}
+		if !slices.Equal(fallbacks, want) {
+			t.Fatalf("fallbacks = %v, want %v", fallbacks, want)
+		}
+	})
+
 	t.Run("the same chain, or no answer, leaves the request untouched", func(t *testing.T) {
 		for name, answer := range map[string]func([]schemas.Route) []schemas.Route{
 			"same":  nil,

@@ -2,11 +2,13 @@ package logging
 
 import (
 	"context"
+	"fmt"
 	"hash/fnv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
@@ -474,9 +476,11 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	agentLogs := make([]*logstore.AgentLog, 0, len(batch))
 	for _, entry := range batch {
 		if entry.log != nil {
+			omitBinaryBodies(entry.log)
 			logs = append(logs, entry.log)
 		}
 		if entry.logUpdate != nil {
+			omitBinaryBodies(entry.logUpdate)
 			logUpdates = append(logUpdates, entry.logUpdate)
 		}
 		if entry.mcpLog != nil {
@@ -1274,4 +1278,39 @@ func applyUpstreamOverheadToEntry(entry *logstore.Log, ef *schemas.BifrostRespon
 		return
 	}
 	setUpstreamOverheadLatency(entry, ef.UpstreamLatency, ef.OverheadLatency)
+}
+
+// omitBinaryBodies replaces the body columns of log that hold binary data with
+// a size placeholder. Bodies are copied into the entry as raw bytes (audio
+// passthrough responses, multipart uploads, Bedrock event streams), and their
+// NUL bytes and invalid UTF-8 are rejected by Postgres TEXT, failing the whole
+// batch INSERT; even where a store accepts them they render as garbage.
+func omitBinaryBodies(log *logstore.Log) {
+	log.RawRequest = omitBinaryBody(log.RawRequest)
+	log.RawResponse = omitBinaryBody(log.RawResponse)
+	log.PassthroughRequestBody = omitBinaryBody(log.PassthroughRequestBody)
+	log.PassthroughResponseBody = omitBinaryBody(log.PassthroughResponseBody)
+}
+
+// omitBinaryBody returns s when it is text and a "<binary content omitted: N
+// bytes>" placeholder otherwise. A partial UTF-8 sequence at the very end is a
+// preview cut by byte count, not binary data, so it is dropped and the text
+// kept.
+func omitBinaryBody(s string) string {
+	if s == "" {
+		return s
+	}
+	text := s
+	for i := len(text) - 1; i >= 0 && i >= len(text)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(text[i]) {
+			if !utf8.FullRuneInString(text[i:]) {
+				text = text[:i]
+			}
+			break
+		}
+	}
+	if strings.IndexByte(text, 0) < 0 && utf8.ValidString(text) {
+		return text
+	}
+	return fmt.Sprintf("<binary content omitted: %d bytes>", len(s))
 }

@@ -2646,3 +2646,162 @@ func BenchmarkResolveKeyStatic(b *testing.B) {
 		}
 	}
 }
+
+// deepSeekJSONSchemaBody is a chat/completions body carrying a json_schema
+// response_format and a system prompt of its own, as a client sends it.
+const deepSeekJSONSchemaBody = `{"model":"deepseek-v4-flash","messages":[{"role":"system","content":"You extract people."},{"role":"user","content":"Ada is 36."}],"response_format":{"type":"json_schema","json_schema":{"name":"person","schema":{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"],"additionalProperties":false},"strict":true}}}`
+
+func deepSeekJSONSchemaRequest(t testing.TB, body string, provider schemas.ModelProvider) (*schemas.BifrostContext, *schemas.BifrostChatRequest) {
+	t.Helper()
+	var inbound OpenAIChatRequest
+	require.NoError(t, schemas.Unmarshal([]byte(body), &inbound))
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := inbound.ToBifrostChatRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	bifrostReq.Provider = provider
+	return ctx, bifrostReq
+}
+
+// TestToOpenAIChatRequest_DeepSeekDowngradesJSONSchema pins that a json_schema
+// response_format reaches DeepSeek as json_object, which is the only structured
+// mode its chat endpoint accepts, with the schema carried as an instruction.
+func TestToOpenAIChatRequest_DeepSeekDowngradesJSONSchema(t *testing.T) {
+	ctx, bifrostReq := deepSeekJSONSchemaRequest(t, deepSeekJSONSchemaBody, schemas.DeepSeek)
+	originalFormat := bifrostReq.Params.ResponseFormat
+	originalFormatValue := *originalFormat
+
+	out := ToOpenAIChatRequest(ctx, bifrostReq)
+	require.NotNil(t, out)
+
+	raw, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	require.Equal(t, "json_object", gjsonString(raw, "response_format.type"), "wire: %s", raw)
+	require.False(t, gjsonExists(raw, "response_format.json_schema"), "json_schema must not reach DeepSeek: %s", raw)
+
+	require.Len(t, out.Messages, 3, "schema instruction must be added as one system message")
+	require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[0].Role)
+	require.Equal(t, "You extract people.", *out.Messages[0].Content.ContentStr, "client system prompt stays first")
+	require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[1].Role)
+	require.NotNil(t, out.Messages[1].Content)
+	require.NotNil(t, out.Messages[1].Content.ContentStr)
+	instruction := *out.Messages[1].Content.ContentStr
+	require.Contains(t, instruction, "json", "DeepSeek json_object requires the word json in the prompt")
+	require.Contains(t, instruction, `{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"],"additionalProperties":false}`,
+		"schema must be carried verbatim")
+	require.Contains(t, instruction, "person", "schema name is carried")
+	require.Equal(t, schemas.ChatMessageRoleUser, out.Messages[2].Role)
+
+	// The caller's request is shared with fallbacks and post-hooks.
+	require.Same(t, originalFormat, bifrostReq.Params.ResponseFormat)
+	require.Equal(t, originalFormatValue, *bifrostReq.Params.ResponseFormat)
+	require.Len(t, bifrostReq.Input, 2)
+}
+
+// TestToOpenAIChatRequest_DeepSeekJSONSchemaWithoutSystemPrompt covers the
+// common shape with no client system prompt: the instruction leads.
+func TestToOpenAIChatRequest_DeepSeekJSONSchemaWithoutSystemPrompt(t *testing.T) {
+	body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Ada is 36."}],"response_format":{"type":"json_schema","json_schema":{"name":"person","schema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}}}`
+	ctx, bifrostReq := deepSeekJSONSchemaRequest(t, body, schemas.DeepSeek)
+
+	out := ToOpenAIChatRequest(ctx, bifrostReq)
+	require.NotNil(t, out)
+	require.Len(t, out.Messages, 2)
+	require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[0].Role)
+	require.Contains(t, *out.Messages[0].Content.ContentStr, `"required":["name"]`)
+	require.Equal(t, schemas.ChatMessageRoleUser, out.Messages[1].Role)
+}
+
+// TestToOpenAIChatRequest_DeepSeekResponsesTextFormatDowngraded covers the
+// Responses route: DeepSeek serves /v1/responses through ToChatRequest, where
+// text.format arrives as an in-memory response_format rather than raw bytes.
+func TestToOpenAIChatRequest_DeepSeekResponsesTextFormatDowngraded(t *testing.T) {
+	var inbound OpenAIResponsesRequest
+	body := `{"model":"deepseek-v4-flash","input":"Ada is 36.","text":{"format":{"type":"json_schema","name":"person","schema":{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"]}}}}`
+	require.NoError(t, schemas.Unmarshal([]byte(body), &inbound))
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	responsesReq := inbound.ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, responsesReq)
+	responsesReq.Provider = schemas.DeepSeek
+
+	out := ToOpenAIChatRequest(ctx, responsesReq.ToChatRequest())
+	require.NotNil(t, out)
+	raw, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	require.Equal(t, "json_object", gjsonString(raw, "response_format.type"), "wire: %s", raw)
+	require.False(t, gjsonExists(raw, "response_format.json_schema"), "wire: %s", raw)
+	require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[0].Role)
+	instruction := *out.Messages[0].Content.ContentStr
+	require.Contains(t, instruction, "json")
+	require.Contains(t, instruction, `"required":["name","age"]`)
+}
+
+// TestToOpenAIChatRequest_JSONSchemaDowngradeScope pins what the DeepSeek
+// downgrade must leave alone: json_object on DeepSeek, and json_schema on any
+// provider that accepts it.
+func TestToOpenAIChatRequest_JSONSchemaDowngradeScope(t *testing.T) {
+	t.Run("deepseek json_object untouched", func(t *testing.T) {
+		body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Reply in json."}],"response_format":{"type":"json_object"}}`
+		ctx, bifrostReq := deepSeekJSONSchemaRequest(t, body, schemas.DeepSeek)
+		out := ToOpenAIChatRequest(ctx, bifrostReq)
+		require.NotNil(t, out)
+		require.Same(t, bifrostReq.Params.ResponseFormat, out.ResponseFormat)
+		require.Len(t, out.Messages, 1)
+	})
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Groq, schemas.XAI} {
+		t.Run(string(provider)+" json_schema untouched", func(t *testing.T) {
+			ctx, bifrostReq := deepSeekJSONSchemaRequest(t, deepSeekJSONSchemaBody, provider)
+			out := ToOpenAIChatRequest(ctx, bifrostReq)
+			require.NotNil(t, out)
+			require.Same(t, bifrostReq.Params.ResponseFormat, out.ResponseFormat)
+			require.Len(t, out.Messages, 2)
+		})
+	}
+	// A custom provider reports its own name, so the downgrade keys on the base provider.
+	t.Run("custom provider on a deepseek base downgrades", func(t *testing.T) {
+		ctx, bifrostReq := deepSeekJSONSchemaRequest(t, deepSeekJSONSchemaBody, schemas.ModelProvider("my-deepseek"))
+		ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.DeepSeek)
+		out := ToOpenAIChatRequest(ctx, bifrostReq)
+		require.NotNil(t, out)
+		raw, err := providerUtils.MarshalSorted(out)
+		require.NoError(t, err)
+		require.Equal(t, "json_object", gjsonString(raw, "response_format.type"), "wire: %s", raw)
+		require.False(t, gjsonExists(raw, "response_format.json_schema"), "json_schema must not reach a custom DeepSeek: %s", raw)
+	})
+	t.Run("custom provider on an openai base json_schema untouched", func(t *testing.T) {
+		ctx, bifrostReq := deepSeekJSONSchemaRequest(t, deepSeekJSONSchemaBody, schemas.ModelProvider("my-openai"))
+		ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+		out := ToOpenAIChatRequest(ctx, bifrostReq)
+		require.NotNil(t, out)
+		require.Same(t, bifrostReq.Params.ResponseFormat, out.ResponseFormat)
+	})
+}
+
+func gjsonString(raw []byte, path string) string {
+	return providerUtils.GetJSONField(raw, path).String()
+}
+
+func gjsonExists(raw []byte, path string) bool {
+	return providerUtils.JSONFieldExists(raw, path)
+}
+
+// BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat measures the DeepSeek
+// conversion with no response_format (the common case, which must not pay for
+// the downgrade) and with a json_schema response_format (which does).
+func BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat(b *testing.B) {
+	plainBody := `{"model":"deepseek-v4-flash","messages":[{"role":"system","content":"You extract people."},{"role":"user","content":"Ada is 36."}]}`
+	for _, tc := range []struct{ name, body string }{
+		{"no_response_format", plainBody},
+		{"json_schema", deepSeekJSONSchemaBody},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx, bifrostReq := deepSeekJSONSchemaRequest(b, tc.body, schemas.DeepSeek)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = ToOpenAIChatRequest(ctx, bifrostReq)
+			}
+		})
+	}
+}

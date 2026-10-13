@@ -537,16 +537,7 @@ func offerWebRTCSession(t *testing.T, opts clientOptions) (*liveClient, int, []b
 	c := &liveClient{t: t, pc: pc, onFunctionCall: opts.onFunctionCall, onClientTask: opts.onClientTask, stopSilence: make(chan struct{}), speech: make(chan [][]byte, 4)}
 	dc, err := pc.CreateDataChannel("oai-events", nil)
 	require.NoError(t, err)
-	c.dc = dc
-	opened := make(chan struct{})
-	dc.OnOpen(func() { close(opened) })
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) { c.record(msg.Data) })
-	dc.OnClose(func() { c.markGone() })
-	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		if state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected {
-			c.markGone()
-		}
-	})
+	opened := c.bindWebRTCChannel(dc)
 	t.Cleanup(c.Close)
 
 	offer, err := pc.CreateOffer(nil)
@@ -578,6 +569,68 @@ func offerWebRTCSession(t *testing.T, opts clientOptions) (*liveClient, int, []b
 	}
 	go c.sendSilence(microphone)
 	return c, status, raw
+}
+
+func (c *liveClient) bindWebRTCChannel(dc *webrtc.DataChannel) <-chan struct{} {
+	c.dc = dc
+	opened := make(chan struct{})
+	dc.OnOpen(func() { close(opened) })
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) { c.record(msg.Data) })
+	// A peer can report closed while the data-channel reader still has frames to
+	// deliver. Only its OnClose callback makes the recorded frame list complete.
+	dc.OnClose(func() { c.markGone() })
+	return opened
+}
+
+func TestClientWebRTCCloseWaitsForReceivedFrames(t *testing.T) {
+	sender, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sender.Close() })
+	receiver, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = receiver.Close() })
+	c := &liveClient{t: t, pc: receiver}
+	dc, err := receiver.CreateDataChannel("oai-events", nil)
+	require.NoError(t, err)
+	opened := c.bindWebRTCChannel(dc)
+	paused, resume := make(chan struct{}), make(chan struct{})
+	var resumeOnce sync.Once
+	unblock := func() { resumeOnce.Do(func() { close(resume) }) }
+	t.Cleanup(unblock)
+	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+		close(paused)
+		<-resume
+		c.record(msg.Data)
+	})
+	senderChannel := make(chan *webrtc.DataChannel, 1)
+	sender.OnDataChannel(func(dc *webrtc.DataChannel) { senderChannel <- dc })
+	describe := func(pc *webrtc.PeerConnection, description webrtc.SessionDescription) webrtc.SessionDescription {
+		gathered := webrtc.GatheringCompletePromise(pc)
+		require.NoError(t, pc.SetLocalDescription(description))
+		<-gathered
+		return *pc.LocalDescription()
+	}
+	offer, err := receiver.CreateOffer(nil)
+	require.NoError(t, err)
+	require.NoError(t, sender.SetRemoteDescription(describe(receiver, offer)))
+	answer, err := sender.CreateAnswer(nil)
+	require.NoError(t, err)
+	require.NoError(t, receiver.SetRemoteDescription(describe(sender, answer)))
+	await(t, opened, "client data channel open")
+	source := await(t, senderChannel, "server data channel")
+	require.Eventually(t, func() bool { return source.ReadyState() == webrtc.DataChannelStateOpen }, frameTimeout, time.Millisecond)
+	require.NoError(t, source.SendText(`{"type":"session.closed","usage":{"seconds":97}}`))
+	await(t, paused, "paused receive callback")
+	require.Eventually(t, func() bool { return source.BufferedAmount() == 0 }, frameTimeout, time.Millisecond)
+	require.NoError(t, sender.Close())
+	require.Eventually(t, func() bool { return receiver.ConnectionState() == webrtc.PeerConnectionStateClosed }, frameTimeout, time.Millisecond)
+	c.mu.Lock()
+	gone := c.gone
+	c.mu.Unlock()
+	require.False(t, gone, "peer closure must not make WaitGone return before queued frames are recorded")
+	unblock()
+	c.WaitGone()
+	require.Len(t, c.Frames("session.closed"), 1)
 }
 
 // sendSilence keeps the microphone track flowing: queued speech when there is some, silence otherwise.

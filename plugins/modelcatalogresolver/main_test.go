@@ -186,12 +186,14 @@ func TestPreRequestHook(t *testing.T) {
 		wantLogs      []string
 	}{
 		{
-			name:         "a bare model gets the picked provider and every other candidate as a fallback",
+			// Marked Inferred: core does not let a chain nobody asked for answer a request the
+			// primary refused as malformed.
+			name:         "a bare model gets the picked provider and every other candidate as an inferred fallback",
 			req:          chat("", "shared-model", nil),
 			wantProvider: schemas.Anthropic,
 			wantFallbacks: []schemas.Fallback{
-				{Provider: schemas.Azure, Model: "shared-model"},
-				{Provider: schemas.OpenAI, Model: "shared-model"},
+				{Provider: schemas.Azure, Model: "shared-model", Inferred: true},
+				{Provider: schemas.OpenAI, Model: "shared-model", Inferred: true},
 			},
 			wantLogs: []string{
 				"No provider specified for model shared-model, found 3 options in model catalog: [anthropic, azure, openai], selected: anthropic",
@@ -214,7 +216,7 @@ func TestPreRequestHook(t *testing.T) {
 			req:           chat("", "shared-model", nil),
 			allowed:       []schemas.ModelProvider{schemas.OpenAI, schemas.Azure},
 			wantProvider:  schemas.Azure,
-			wantFallbacks: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "shared-model"}},
+			wantFallbacks: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "shared-model", Inferred: true}},
 		},
 		{
 			name: "an embedding request is resolved the same way",

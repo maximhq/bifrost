@@ -132,7 +132,7 @@ func (r *capturingLiveIO) sent() (upstream, client []string) {
 func newLiveOwnerTestGateway(t *testing.T, store configstore.ConfigStore, extra ...schemas.ModelProvider) *liveGateway {
 	t.Helper()
 	config := &lib.Config{
-		ClientConfig: &configstore.ClientConfig{},
+		ClientConfig: &configstore.ClientConfig{EnforceVKObjectOwnership: true}, // the default; ClientConfig{} literals are off
 		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
 			schemas.OpenAI: {Keys: []schemas.Key{{ID: "key-1", Name: "openai", Value: *schemas.NewSecretVar("sk-test"), Weight: 1, Models: []string{"gpt-live-1"}}}},
 		},
@@ -247,6 +247,88 @@ func TestLiveSessionsBindToTheVirtualKeyThatOpenedThem(t *testing.T) {
 	assert.False(t, ok)
 	assert.Equal(t, fasthttp.StatusInternalServerError, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
 	assert.NotContains(t, string(ctx.Response.Body()), "db down", "store errors stay in the server log")
+}
+
+// With client.enforce_vk_object_ownership turned off a live session is reachable by every
+// virtual key, but its opener is still recorded, so turning the setting back on binds it. Recording
+// does not depend on the setting: a virtual-key session that cannot be recorded (no config store,
+// or a failed owner write) is refused either way, so no session exists that a later switch-on
+// could not bind.
+func TestLiveSessionOwnershipFollowsTheClientSetting(t *testing.T) {
+	t.Parallel()
+
+	const path = "/v1/live/sessions"
+	target := liveTarget{provider: &fakeLiveWebRTCProvider{}, providerKey: schemas.OpenAI, voiceModel: "gpt-live-1"}
+	offer := []byte(`{"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"offer"}}`)
+	gatewayOff := func(t *testing.T, store configstore.ConfigStore) *liveGateway {
+		g := newLiveOwnerTestGateway(t, store)
+		g.config.ClientConfig.EnforceVKObjectOwnership = false
+		return g
+	}
+	resolve := func(t *testing.T, g *liveGateway, vkID, sessionID string) (*fasthttp.RequestCtx, bool) {
+		t.Helper()
+		req := &liveRequest{path: path + "/" + sessionID + "/content", auth: &authHeaders{}, preReqCtx: liveCallerCtx(t, vkID), cancel: func() {}, middlewareValues: map[any]any{}}
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI(req.path)
+		ctx.SetUserValue("session_id", sessionID)
+		return ctx, g.resolveSession(ctx, req)
+	}
+
+	store := &liveOwnerStore{}
+	g := gatewayOff(t, store)
+	admission, bifrostErr := g.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-off")
+	require.Nil(t, bifrostErr)
+	t.Cleanup(admission.cancel)
+	created, _, bifrostErr := createLiveWebRTCSession(admission, offer, "bifrost offer")
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "vk-a", store.owner(tables.ProviderObjectKindLiveSession, "openai", created.Session.ID), "the opener is recorded while the setting is off")
+	ctx, ok := resolve(t, g, "vk-b", created.Session.ID)
+	assert.True(t, ok, "another key reaches the session while the setting is off; body=%s", ctx.Response.Body())
+
+	g.config.ClientConfig.EnforceVKObjectOwnership = true
+	ctx, ok = resolve(t, g, "vk-b", created.Session.ID)
+	assert.False(t, ok, "another key is refused once the setting is on")
+	assert.Equal(t, fasthttp.StatusNotFound, ctx.Response.StatusCode(), "body=%s", ctx.Response.Body())
+
+	// No config store: a virtual-key session is refused at admission while the setting is off.
+	noStore := gatewayOff(t, nil)
+	admission, bifrostErr = noStore.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-off-nostore")
+	if admission != nil {
+		t.Cleanup(admission.cancel)
+	}
+	require.NotNil(t, bifrostErr, "a virtual-key session without a config store is refused while the setting is off")
+	assert.Equal(t, 403, *bifrostErr.StatusCode)
+
+	// A failed owner write ends the session while the setting is off.
+	failing := gatewayOff(t, &liveOwnerStore{upsertErr: errors.New("db down")})
+	admission, bifrostErr = failing.admit(&authHeaders{}, liveCallerCtx(t, "vk-a"), map[any]any{}, path, target, "bf-off-failing")
+	require.Nil(t, bifrostErr)
+	t.Cleanup(admission.cancel)
+	_, _, bifrostErr = createLiveWebRTCSession(admission, offer, "bifrost offer")
+	require.NotNil(t, bifrostErr, "a session whose owner cannot be recorded is refused while the setting is off")
+}
+
+// A config save copies the whole client config in under Config.Mu while live routes read the
+// ownership setting. The read must take the same lock, or the race detector reports the two.
+func TestLiveSessionOwnershipReadIsOrderedWithConfigSaves(t *testing.T) {
+	t.Parallel()
+
+	g := newLiveOwnerTestGateway(t, &liveOwnerStore{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			updated := *g.config.ClientConfig
+			updated.EnforceVKObjectOwnership = i%2 == 0
+			g.config.Mu.Lock()
+			*g.config.ClientConfig = updated
+			g.config.Mu.Unlock()
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		_ = g.ownershipEnforced()
+	}
+	<-done
 }
 
 // The control routes resolve their provider by the path and, off a provider route, prefer openai
@@ -862,18 +944,24 @@ func BenchmarkLiveSessionControlRoute(b *testing.B) {
 	config.SetBifrostClient(client)
 	g := &liveGateway{client: client, config: config, handlerStore: config}
 	const path = "/v1/live/sessions/live_bench/content"
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		preReqCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
-		preReqCtx.SetGrant(grant.New())
-		preReqCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-vk-a")
-		preReqCtx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-vk-a"), nil, &schemas.EntityRef{ID: "vk-a", Name: "vk-a"}, nil, nil, nil, nil))
-		req := &liveRequest{path: path, auth: &authHeaders{}, preReqCtx: preReqCtx, cancel: func() {}, middlewareValues: map[any]any{}}
-		ctx := &fasthttp.RequestCtx{}
-		ctx.Request.SetRequestURI(path)
-		ctx.SetUserValue("session_id", "live_bench")
-		g.resolveSession(ctx, req)
-		cancel()
+	// "on" is the default and runs the ownership lookup; "off" is client.enforce_vk_object_ownership: false.
+	for _, mode := range []string{"off", "on"} {
+		b.Run(mode, func(b *testing.B) {
+			config.ClientConfig.EnforceVKObjectOwnership = mode == "on"
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				preReqCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+				preReqCtx.SetGrant(grant.New())
+				preReqCtx.SetValue(schemas.BifrostContextKeyVirtualKey, "sk-bf-vk-a")
+				preReqCtx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, "sk-bf-vk-a"), nil, &schemas.EntityRef{ID: "vk-a", Name: "vk-a"}, nil, nil, nil, nil))
+				req := &liveRequest{path: path, auth: &authHeaders{}, preReqCtx: preReqCtx, cancel: func() {}, middlewareValues: map[any]any{}}
+				ctx := &fasthttp.RequestCtx{}
+				ctx.Request.SetRequestURI(path)
+				ctx.SetUserValue("session_id", "live_bench")
+				g.resolveSession(ctx, req)
+				cancel()
+			}
+		})
 	}
 }
