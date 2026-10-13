@@ -61,6 +61,9 @@ const (
 	ConfigComplexitySemanticGenerationsKey = "complexity_semantic_generations"
 	ConfigRestartRequiredKey              = "restart_required"
 	ConfigHeaderFilterKey                 = "header_filter_config"
+	// ConfigProxyHashKey stores the hash of the proxy_config config.json last applied. It is its own
+	// row because the proxy row is saved whole by the dashboard, which would wipe a hash kept inside it.
+	ConfigProxyHashKey = "proxy_config_hash"
 )
 
 // Keys for the ClientConfig.MetadataJSON blob.

@@ -79,3 +79,37 @@ func TestResolveBatchProvider(t *testing.T) {
 		})
 	}
 }
+
+// A batch create names its work once: an uploaded file, a blob, or inline requests. No provider
+// runs inline items beside a file (OpenAI, Azure and Bedrock submit the file and drop them,
+// Gemini and Vertex refuse the mix), so the gateway refuses the mix before anything runs rather
+// than let a client's inline items vanish.
+func TestBatchCreateRefusesFileAndInlineRequestsTogether(t *testing.T) {
+	h := &CompletionHandler{config: &lib.Config{}}
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"file beside inline requests", `{"model":"openai/gpt-4o-mini","input_file_id":"file-x","endpoint":"/v1/chat/completions","requests":[{"custom_id":"a","body":{"model":"gpt-4o-mini"}}]}`, fasthttp.StatusBadRequest},
+		{"blob beside inline requests", `{"model":"azure/gpt-4o-mini","input_blob":"https://blob.example/in.jsonl","endpoint":"/v1/chat/completions","requests":[{"custom_id":"a","body":{"model":"gpt-4o-mini"}}]}`, fasthttp.StatusBadRequest},
+		{"nothing named", `{"model":"openai/gpt-4o-mini","endpoint":"/v1/chat/completions"}`, fasthttp.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.SetBodyString(tc.body)
+
+			h.batchCreate(ctx)
+
+			if ctx.Response.StatusCode() != tc.want {
+				t.Fatalf("status = %d, want %d: %s", ctx.Response.StatusCode(), tc.want, ctx.Response.Body())
+			}
+			if tc.name != "nothing named" && !strings.Contains(string(ctx.Response.Body()), "not both") {
+				t.Fatalf("the refusal should say the inputs are exclusive: %s", ctx.Response.Body())
+			}
+		})
+	}
+}

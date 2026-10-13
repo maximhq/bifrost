@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2655,6 +2656,52 @@ func TestInvokeChatGuardTagging_RendersMarkersAsInlineTags(t *testing.T) {
 	assert.Nil(t, none)
 }
 
+// TestInvokeChatGuardTagging_PreservesCacheControlAndCitations tests that prompt caching and
+// citation settings on document blocks survive request deep-copying during Bedrock guardrail tagging.
+func TestInvokeChatGuardTagging_PreservesCacheControlAndCitations(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ttl := "1h"
+	enabled := true
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{
+				Type:         schemas.ChatContentBlockTypeFile,
+				File:         &schemas.ChatInputFile{FileID: schemas.Ptr("file_test123"), Filename: schemas.Ptr("doc.txt")},
+				CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: &ttl},
+				Citations:    &schemas.Citations{Enabled: &enabled},
+			},
+			{
+				Type:         schemas.ChatContentBlockTypeText,
+				Text:         schemas.Ptr("Guarded question"),
+				GuardContent: &schemas.GuardContent{Qualifiers: []string{"query"}},
+			},
+		}}}},
+		Params: &schemas.ChatParameters{ExtraParams: map[string]any{"guardrailConfig": map[string]any{
+			"guardrailIdentifier": "test-guardrail-id", "guardrailVersion": "DRAFT", "tagSuffix": "xyz",
+		}}},
+	}
+
+	tagged, guardrailBody, err := invokeChatGuardTagging(request)
+	require.NoError(t, err)
+	require.NotSame(t, request, tagged)
+
+	block0 := tagged.Input[0].Content.ContentBlocks[0]
+	require.NotNil(t, block0.CacheControl, "CacheControl must survive deep copy during guard tagging")
+	assert.Equal(t, "1h", *block0.CacheControl.TTL)
+	require.NotNil(t, block0.Citations, "Citations must survive deep copy during guard tagging")
+	assert.True(t, *block0.Citations.Enabled)
+
+	provider := &BedrockProvider{}
+	body, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, tagged, provider.invokeBuildConfig(tagged.Model, false, false, guardrailBody))
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "document", gjson.GetBytes(body, "messages.0.content.0.type").String())
+	assert.Equal(t, "ephemeral", gjson.GetBytes(body, "messages.0.content.0.cache_control.type").String())
+	assert.True(t, gjson.GetBytes(body, "messages.0.content.0.citations.enabled").Bool())
+	assert.Contains(t, gjson.GetBytes(body, "messages.0.content.1.text").String(), "amazon-bedrock-guardrails-query_xyz")
+}
+
 // TestGuardTagSuffixValidation_InvokePath: a caller-supplied tagSuffix outside AWS's 1-20
 // alphanumeric constraint is rejected before it is spliced into a tag name, on both the
 // Responses and Chat InvokeModel paths; the boundary-valid values pass.
@@ -2887,4 +2934,67 @@ func TestToAnthropicInvokeStreamBytes_MessageDeltaCarriesZeroThinkingTokens(t *t
 	thinking := usage.Get("output_tokens_details.thinking_tokens")
 	assert.True(t, thinking.Exists(), "message_delta must forward an explicit zero breakdown, got usage %s", usage.Raw)
 	assert.EqualValues(t, 0, thinking.Int())
+}
+
+// TestInvokeIngressCarriesEagerInputStreaming covers Claude Code in Bedrock mode
+// pointed at Bifrost's /bedrock invoke routes. It opts in per tool
+// (eager_input_streaming) or, on older clients, with the
+// fine-grained-tool-streaming beta in the body's anthropic_beta. Both used to be
+// dropped by convertAnthropicTools, so the Converse egress never asked Claude to
+// stream tool input and long arguments arrived in one late burst. The model is
+// one Bifrost does not opt in by default, so only the client's own opt-in can
+// produce the beta.
+func TestInvokeIngressCarriesEagerInputStreaming(t *testing.T) {
+	writeTool := func(extra map[string]interface{}) map[string]interface{} {
+		tool := map[string]interface{}{
+			"name":         "Write",
+			"description":  "Write a file",
+			"input_schema": map[string]interface{}{"type": "object", "properties": map[string]interface{}{"content": map[string]interface{}{"type": "string"}}},
+		}
+		for k, v := range extra {
+			tool[k] = v
+		}
+		return tool
+	}
+	cases := []struct {
+		name      string
+		tool      map[string]interface{}
+		beta      interface{}
+		wantEager *bool
+	}{
+		{name: "per-tool flag", tool: writeTool(map[string]interface{}{"eager_input_streaming": true}), wantEager: schemas.Ptr(true)},
+		{name: "legacy beta array", tool: writeTool(nil), beta: []interface{}{"fine-grained-tool-streaming-2025-05-14"}, wantEager: schemas.Ptr(true)},
+		{name: "explicit false beats the beta", tool: writeTool(map[string]interface{}{"eager_input_streaming": false}), beta: []interface{}{"fine-grained-tool-streaming-2025-05-14"}, wantEager: schemas.Ptr(false)},
+		{name: "no opt-in", tool: writeTool(nil)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &BedrockInvokeRequest{
+				ModelID:       "anthropic.claude-sonnet-4-5-20250929-v1:0",
+				AnthropicBeta: tc.beta,
+				Messages: []BedrockMessage{
+					{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("write the file")}}},
+				},
+				Tools: []interface{}{tc.tool},
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.Len(t, bifrostReq.Params.Tools, 1)
+			assert.Equal(t, tc.wantEager, bifrostReq.Params.Tools[0].EagerInputStreaming)
+
+			egress, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+			require.NoError(t, err)
+			var betas []string
+			if egress.AdditionalModelRequestFields != nil {
+				if raw, ok := egress.AdditionalModelRequestFields.Get("anthropic_beta"); ok {
+					encoded, err := sonic.Marshal(raw)
+					require.NoError(t, err)
+					require.NoError(t, sonic.Unmarshal(encoded, &betas))
+				}
+			}
+			wantBeta := tc.wantEager != nil && *tc.wantEager
+			assert.Equal(t, wantBeta, slices.Contains(betas, anthropic.AnthropicEagerInputStreamingBetaHeader), "anthropic_beta = %v", betas)
+		})
+	}
 }

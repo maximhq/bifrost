@@ -53,11 +53,14 @@ const (
 	WarpDefaultHistoryRetentionDays = 30
 	// WarpDefaultSemanticSearchThreshold is the minimum similarity accepted by
 	// semantic log search when an operator has not supplied one. It is a
-	// Weaviate certainty, (1 + cosine) / 2, and a question matched against a
-	// logged conversation scores well below a near-duplicate: 0.80 (cosine 0.6)
-	// cut off clearly relevant rows with text-embedding-3-small, so search came
-	// back empty for ordinary questions. 0.70 is cosine 0.4.
-	WarpDefaultSemanticSearchThreshold = 0.70
+	// similarity in 0..1, (1 + cosine) / 2, on a cosine-scored index (a Pinecone
+	// score is read as cosine, so its index must use that metric). A topic
+	// query scores cosine 0.15 to 0.47 against conversations that really are
+	// about it with text-embedding-3-small, and unrelated ones score inside
+	// that range too, so no threshold separates them: 0.5 (cosine 0) admits
+	// every real match, and the ranking, the result limit and Warp reading
+	// each row decide what is relevant.
+	WarpDefaultSemanticSearchThreshold = 0.50
 
 	// WarpDefaultSemanticSearchLimit is the default number of semantic matches.
 	WarpDefaultSemanticSearchLimit = 10
@@ -384,6 +387,7 @@ type WarpStoredMessage struct {
 	// came from nowhere.
 	ToolCalls []WarpStoredToolCall `json:"tool_calls,omitempty"`
 	Error     string               `json:"error,omitempty"`
+	ErrorCode string               `json:"error_code,omitempty"` // the error frame's code, e.g. budget_exceeded
 	// FinishReason is "partial" when the answer was given on the last research
 	// step without settling, so a reopened thread still shows it as partial.
 	FinishReason string `json:"finish_reason,omitempty"`

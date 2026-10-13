@@ -94,7 +94,7 @@ type HTTPClientFactory struct {
 
 	// Inner clients built for the current proxy config, lazily. UpdateProxyConfig
 	// drops them so the next request builds new ones.
-	fasthttpClients map[ClientPurpose]*fasthttp.Client
+	fasthttpClients map[fasthttpClientKey]*fasthttp.Client
 	httpClients     map[httpClientKey]*http.Client
 
 	// Fasthttp read/write buffer sizes. Zero unless a caller opts in via
@@ -130,7 +130,7 @@ func NewHTTPClientFactory(proxyConfig *GlobalProxyConfig, logger schemas.Logger,
 		proxyConfig:     proxyConfig,
 		liveFasthttp:    make(map[ClientPurpose]*fasthttp.Client, 3),
 		liveHTTP:        make(map[httpClientKey]*http.Client, 3),
-		fasthttpClients: make(map[ClientPurpose]*fasthttp.Client, 3),
+		fasthttpClients: make(map[fasthttpClientKey]*fasthttp.Client, 3),
 		httpClients:     make(map[httpClientKey]*http.Client, 3),
 		logger:          logger,
 	}
@@ -149,7 +149,7 @@ func (f *HTTPClientFactory) UpdateProxyConfig(config *GlobalProxyConfig) {
 	oldFasthttp := f.fasthttpClients
 	oldHTTP := f.httpClients
 	f.proxyConfig = config
-	f.fasthttpClients = make(map[ClientPurpose]*fasthttp.Client, 3)
+	f.fasthttpClients = make(map[fasthttpClientKey]*fasthttp.Client, 3)
 	f.httpClients = make(map[httpClientKey]*http.Client, 3)
 	f.mu.Unlock()
 
@@ -174,7 +174,7 @@ func (f *HTTPClientFactory) ApplyOptions(opts ...FactoryOption) {
 	}
 	oldFasthttp := f.fasthttpClients
 	oldHTTP := f.httpClients
-	f.fasthttpClients = make(map[ClientPurpose]*fasthttp.Client, 3)
+	f.fasthttpClients = make(map[fasthttpClientKey]*fasthttp.Client, 3)
 	f.httpClients = make(map[httpClientKey]*http.Client, 3)
 	f.mu.Unlock()
 	for _, client := range oldFasthttp {
@@ -271,10 +271,23 @@ func (f *HTTPClientFactory) GetFasthttpClient(purpose ClientPurpose) *fasthttp.C
 	return client
 }
 
+// fasthttpClientKey identifies an inner fasthttp client. rawPath selects the variant
+// that sends the request path exactly as written; fasthttp applies that setting from
+// the client that sends the request, so it cannot be a per-request choice.
+type fasthttpClientKey struct {
+	purpose ClientPurpose
+	rawPath bool
+}
+
 // currentFasthttpClient returns the inner fasthttp client for the current proxy config.
 func (f *HTTPClientFactory) currentFasthttpClient(purpose ClientPurpose) *fasthttp.Client {
+	return f.currentFasthttpClientFor(fasthttpClientKey{purpose: purpose})
+}
+
+// currentFasthttpClientFor returns the inner fasthttp client for key, building it on first use.
+func (f *HTTPClientFactory) currentFasthttpClientFor(key fasthttpClientKey) *fasthttp.Client {
 	f.mu.RLock()
-	client, ok := f.fasthttpClients[purpose]
+	client, ok := f.fasthttpClients[key]
 	f.mu.RUnlock()
 	if ok {
 		return client
@@ -282,11 +295,12 @@ func (f *HTTPClientFactory) currentFasthttpClient(purpose ClientPurpose) *fastht
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if client, ok := f.fasthttpClients[purpose]; ok {
+	if client, ok := f.fasthttpClients[key]; ok {
 		return client
 	}
-	client = f.createFasthttpClient(purpose)
-	f.fasthttpClients[purpose] = client
+	client = f.createFasthttpClient(key.purpose)
+	client.DisablePathNormalizing = key.rawPath
+	f.fasthttpClients[key] = client
 	return client
 }
 
@@ -299,8 +313,12 @@ type liveFasthttpTransport struct {
 	purpose ClientPurpose
 }
 
-func (t *liveFasthttpTransport) RoundTrip(_ *fasthttp.HostClient, req *fasthttp.Request, resp *fasthttp.Response) (bool, error) {
-	return false, t.factory.currentFasthttpClient(t.purpose).Do(req, resp)
+func (t *liveFasthttpTransport) RoundTrip(outer *fasthttp.HostClient, req *fasthttp.Request, resp *fasthttp.Response) (bool, error) {
+	// A caller that set DisablePathNormalizing on a copy of the live client wants
+	// escaped path segments such as %2F kept; the inner client sending the request
+	// must carry the same setting or fasthttp resets it to the inner client's value.
+	key := fasthttpClientKey{purpose: t.purpose, rawPath: outer != nil && outer.DisablePathNormalizing}
+	return false, t.factory.currentFasthttpClientFor(key).Do(req, resp)
 }
 
 // GetHTTPClient returns the live net/http client for purpose. The same client is

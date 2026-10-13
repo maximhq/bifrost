@@ -2245,7 +2245,9 @@ func TestGate_TransformInPlaceMutationIsRepriced(t *testing.T) {
 	err := a.TransformPausedStreamBuffer(traceID, func(buffered []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
 		pt := buffered[0].BifrostPassthroughResponse
 		pt.Body = append(pt.Body, bytes.Repeat([]byte("z"), grow)...) // in-place, same pointer
-		return schemas.PausedStreamBufferTransformResult{Chunks: buffered, ReleaseCount: len(buffered)}, nil
+		// Release nothing here: releasing wakes the flusher, which can drain the entry
+		// before the size checks below read gateReplayBuf[0]. ResumeStream releases it.
+		return schemas.PausedStreamBufferTransformResult{Chunks: buffered, ReleaseCount: 0}, nil
 	})
 	if err != nil {
 		t.Fatalf("in-place transform rejected: %v", err)
@@ -2273,4 +2275,70 @@ func TestGate_TransformInPlaceMutationIsRepriced(t *testing.T) {
 	}
 	a.EndStream(traceID, nil)
 	sa.WaitForFlusher()
+}
+
+// TestGate_ApprovedFullDrainWhilePausedThenResumeEnds pins the race behind a CI
+// hang: a transform that approves the whole buffer lets the flusher drain every
+// chunk, terminal included, while the gate is still Paused. The pending terminal
+// can only finish once Resume makes the gate Active, so Resume must wake the
+// flusher into ending the stream even though the buffer is already empty.
+func TestGate_ApprovedFullDrainWhilePausedThenResumeEnds(t *testing.T) {
+	a := newTestAccumulator(t)
+	traceID := "trace-approved-drain-then-resume"
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	r := newRecorder(32)
+	defer r.close()
+	chunks := toolCarryingSSEStream()
+
+	a.PauseStream(traceID)
+	for i, c := range chunks {
+		if !a.GateSend(traceID, c, i == len(chunks)-1, false, r.ch, ctx) {
+			t.Fatalf("paused GateSend returned false at %d", i)
+		}
+	}
+	err := a.TransformPausedStreamBuffer(traceID, func(buffered []*schemas.BifrostStreamChunk) (schemas.PausedStreamBufferTransformResult, error) {
+		return schemas.PausedStreamBufferTransformResult{Chunks: buffered, ReleaseCount: len(buffered)}, nil
+	})
+	if err != nil {
+		t.Fatalf("TransformPausedStreamBuffer() error = %v", err)
+	}
+	if !r.waitFor(len(chunks), time.Second) {
+		got, _ := r.snapshot()
+		t.Fatalf("approved prefix delivered %d of %d chunks", len(got), len(chunks))
+	}
+	sa := mustGet(t, a, traceID)
+	// drainBufferLocked nils the buffer at its end and the flusher keeps sa.mu
+	// until gateCond.Wait releases it, so observing nil here under sa.mu means
+	// the flusher already went back to waiting while Paused.
+	deadline := time.Now().Add(time.Second)
+	for {
+		sa.mu.Lock()
+		drained := sa.gateReplayBuf == nil && sa.gateState == StreamStatePaused && sa.gatePendingTerminal
+		sa.mu.Unlock()
+		if drained {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("flusher did not finish the approved drain while paused")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	a.ResumeStream(traceID)
+	done := make(chan struct{})
+	go func() {
+		sa.WaitForFlusher()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("flusher never ended the stream after Resume: pending terminal stranded")
+	}
+	sa.mu.Lock()
+	state := sa.gateState
+	sa.mu.Unlock()
+	if state != StreamStateEnded {
+		t.Fatalf("gate state = %v after flusher exit, want Ended", state)
+	}
 }

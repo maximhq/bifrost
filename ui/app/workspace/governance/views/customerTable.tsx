@@ -21,7 +21,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { resetDurationLabels } from "@/lib/constants/governance";
 import { getErrorMessage, useDeleteCustomerMutation } from "@/lib/store";
-import { Customer, Team } from "@/lib/types/governance";
+import { Customer } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { formatCurrency } from "@/lib/utils/governance";
 import { useEntityProfileLimits } from "@enterprise/components/access-profiles/fragments/entityAccessProfileSection";
@@ -120,7 +120,6 @@ function CustomerActionsMenu({ customer, canUpdate, canDelete, onEdit, onDelete 
 interface CustomersTableProps {
 	customers: Customer[];
 	totalCount: number;
-	teams: Team[];
 	search: string;
 	debouncedSearch: string;
 	onSearchChange: (value: string) => void;
@@ -134,7 +133,6 @@ interface CustomersTableProps {
 export default function CustomersTable({
 	customers,
 	totalCount,
-	teams,
 	search,
 	debouncedSearch,
 	onSearchChange,
@@ -186,10 +184,6 @@ export default function CustomersTable({
 	const handleCustomerSaved = () => {
 		setShowCustomerSheet(false);
 		setEditingCustomer(null);
-	};
-
-	const getTeamsForCustomer = (customerId: string) => {
-		return teams.filter((team) => team.customer_id === customerId);
 	};
 
 	const hasActiveFilters = debouncedSearch;
@@ -285,7 +279,7 @@ export default function CustomersTable({
 										</TableRow>
 									) : (
 										customers.map((customer) => {
-											const customerTeams = getTeamsForCustomer(customer.id);
+											const teamCount = customer.team_count ?? 0;
 											const vkCount = customer.virtual_key_count ?? 0;
 
 											// A customer governed by an access profile has no limits of its own; its
@@ -348,17 +342,10 @@ export default function CustomersTable({
 														</div>
 													</TableCell>
 													<TableCell>
-														{customerTeams?.length > 0 ? (
-															<div className="flex items-center gap-2">
-																<Tooltip>
-																	<TooltipTrigger>
-																		<Badge variant="outline" className="text-xs">
-																			{customerTeams.length} {customerTeams.length === 1 ? "team" : "teams"}
-																		</Badge>
-																	</TooltipTrigger>
-																	<TooltipContent>{customerTeams.map((team) => team.name).join(", ")}</TooltipContent>
-																</Tooltip>
-															</div>
+														{teamCount > 0 ? (
+															<Badge variant="outline" className="text-xs">
+																{teamCount} {teamCount === 1 ? "team" : "teams"}
+															</Badge>
 														) : (
 															<span className="text-muted-foreground text-sm">-</span>
 														)}

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
@@ -1053,5 +1054,85 @@ func TestDoHTTPRequest_DisarmedDeadlineKeepsBody(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil || string(body) != "tail" {
 		t.Fatalf("body = %q err = %v, want the full body after disarm", body, err)
+	}
+}
+
+// euroBodyServer serves a body of repeated 3-byte "€" runes, with a
+// Content-Length when withLength is set and chunked otherwise. Neither the
+// prefetch size nor the large-response threshold used below is a multiple of
+// 3, so a cut by byte count lands inside a rune.
+func euroBodyServer(t *testing.T, size int, withLength bool) *httptest.Server {
+	t.Helper()
+	body := bytes.Repeat([]byte("€"), size/3)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if withLength {
+			w.Header().Set("Content-Length", fmt.Sprint(len(body)))
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write(body) //nolint:errcheck
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestFinalizeResponseWithLargeDetection_PreviewEndsOnRuneBoundary pins that
+// the large-response preview stored for logging never ends inside a multi-byte
+// UTF-8 sequence. A preview cut mid-rune is invalid UTF-8, which Postgres
+// rejects with SQLSTATE 22021 and which fails the log writer's batch INSERT.
+func TestFinalizeResponseWithLargeDetection_PreviewEndsOnRuneBoundary(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		withLength bool
+	}{
+		{"known_length_prefetch", true}, // 64KB prefetch: 65536 % 3 == 1
+		{"chunked_threshold", false},    // threshold+1 = 1025 bytes: 1025 % 3 == 2
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			srv := euroBodyServer(t, 256*1024, c.withLength)
+			ctx, resp, release := largeResponseRequest(t, srv, 2*time.Second)
+			defer release()
+
+			_, isLarge, bifrostErr := FinalizeResponseWithLargeDetection(ctx, resp, nil)
+			if bifrostErr != nil {
+				t.Fatalf("FinalizeResponseWithLargeDetection: %s", bifrostErr.Error.Message)
+			}
+			if !isLarge {
+				t.Fatal("expected the large-response path")
+			}
+			if reader, ok := ctx.Value(schemas.BifrostContextKeyLargeResponseReader).(io.Closer); ok {
+				defer reader.Close()
+			}
+			preview, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadResponsePreview).(string)
+			if preview == "" {
+				t.Fatal("expected a response preview")
+			}
+			if !utf8.ValidString(preview) {
+				t.Fatalf("preview of %d bytes ends inside a rune: trailing bytes % x", len(preview), preview[max(0, len(preview)-3):])
+			}
+		})
+	}
+}
+
+// TestTrimIncompleteRune pins the helper that backs the preview cut.
+func TestTrimIncompleteRune(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		in   []byte
+		want string
+	}{
+		{"empty", nil, ""},
+		{"ascii", []byte("abc"), "abc"},
+		{"complete_multibyte", []byte("a€"), "a€"},
+		{"cut_after_1_of_3", []byte("a€")[:2], "a"},
+		{"cut_after_2_of_3", []byte("a€")[:3], "a"},
+		{"cut_after_3_of_4", []byte("a😀")[:4], "a"},
+		{"binary_byte_kept", []byte("a\xff"), "a\xff"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := string(trimIncompleteRune(c.in)); got != c.want {
+				t.Fatalf("trimIncompleteRune(% x) = % x, want % x", c.in, got, c.want)
+			}
+		})
 	}
 }

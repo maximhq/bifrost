@@ -424,7 +424,6 @@ bifrost:
         description: "A test virtual key"
         is_active: true
         team_id: "team-1"
-        customer_id: "cust-1"
         rate_limit_id: "rl-1"
         provider_configs:
           - provider: "openai"
@@ -441,6 +440,10 @@ bifrost:
             tools_to_execute:
               - "search"
               - "compute"
+      - id: "vk-2"
+        name: "Customer VK"
+        value: "vk-customer-value"
+        customer_id: "cust-1"
     modelConfigs:
       - id: "mc-1"
         model_name: "gpt-4o"
@@ -524,7 +527,7 @@ assert_field_value 'governance.virtual_keys[0].value' '.governance.virtual_keys.
 assert_field_value 'governance.virtual_keys[0].description' '.governance.virtual_keys.[0].description' '"A test virtual key"'
 assert_field_value 'governance.virtual_keys[0].is_active' '.governance.virtual_keys.[0].is_active' 'true'
 assert_field_value 'governance.virtual_keys[0].team_id' '.governance.virtual_keys.[0].team_id' '"team-1"'
-assert_field_value 'governance.virtual_keys[0].customer_id' '.governance.virtual_keys.[0].customer_id' '"cust-1"'
+assert_field_value 'governance.virtual_keys[1].customer_id' '.governance.virtual_keys.[1].customer_id' '"cust-1"'
 assert_field_value 'governance.virtual_keys[0].rate_limit_id' '.governance.virtual_keys.[0].rate_limit_id' '"rl-1"'
 assert_field 'governance.virtual_keys[0].provider_configs' '.governance.virtual_keys.[0].provider_configs'
 assert_field_value 'governance.virtual_keys[0].provider_configs[0].provider' '.governance.virtual_keys.[0].provider_configs.[0].provider' '"openai"'
@@ -1488,6 +1491,150 @@ assert_field_value 'logs_store.object_storage.type (gcs)' '.logs_store.object_st
 assert_field_value 'logs_store.object_storage.bucket (gcs)' '.logs_store.object_storage.bucket' '"bifrost-gcs-bucket"'
 assert_field_value 'logs_store.object_storage.project_id' '.logs_store.object_storage.project_id' '"my-gcp-project"'
 assert_field_value 'logs_store.object_storage.credentials_json' '.logs_store.object_storage.credentials_json' '"/etc/gcs/creds.json"'
+
+###############################################################################
+# 2.1.44 config.schema.json sync (fields added after helm v2.1.43)
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 2.1.44 config.schema.json sync${NC}"
+
+cat > "$TMPDIR/values-2144-sync.yaml" << 'VALS'
+image:
+  tag: v1.0.0
+storage:
+  mode: postgres
+  configStore:
+    enabled: true
+    statementTimeout: "90s"
+    idleInTransactionSessionTimeout: "0"
+  logsStore:
+    enabled: true
+    statementTimeout: "60s"
+    idleInTransactionSessionTimeout: "30s"
+    objectStorageExcludeRequestTypes: ["list_models"]
+postgresql:
+  enabled: true
+  auth:
+    password: "test-pass"
+bifrost:
+  encryptionKey: "test-encryption-key-1234567890ab"
+  providers:
+    openai:
+      keys:
+        - name: "openai-key"
+          value: "sk-test"
+          weight: 1
+      ignore_provider_cost: true
+  client:
+    compat:
+      forceReasoningOnlyModelsToResponses: false
+    deleteExpiredVirtualKeys: true
+    mcpServerAuthMode: "both"
+    oauth2ServerConfig:
+      issuerUrl: "https://bifrost.example.com"
+      allowedRedirectUris: ["https://app.example.com/callback"]
+  mcp:
+    enabled: true
+    clientConfigs:
+      - name: "public-mcp"
+        connectionType: "http"
+        httpConfig:
+          url: "https://mcp.example.com/mcp"
+        requirePublicTarget: true
+  governance:
+    virtualKeys:
+      - id: "vk-sync"
+        name: "vk-sync"
+        expires_at: "2026-12-31T23:59:59Z"
+        delete_after_expire: false
+        disable_content_logging: true
+        business_unit_id: "bu-1"
+    routingRules:
+      - id: "rr-sync"
+        name: "rr-sync"
+        cel_expression: "true"
+        targets:
+          - provider: "openai"
+            weight: 1
+        fallbacks:
+          - "anthropic/claude-sonnet-4-5"
+          - provider: "azure"
+            model: "gpt-4o"
+            provider_key_name: "azure-eu"
+  plugins:
+    semanticCache:
+      enabled: true
+      config:
+        dimension: 1
+        cache_tool_call_responses: true
+  scim:
+    enabled: true
+    provider: "generic"
+    config:
+      issuerUrl: "https://idp.example.com"
+      clientId: "bifrost"
+      displayName: "Acme SSO"
+VALS
+
+render_config "$TMPDIR/values-2144-sync.yaml"
+assert_field_value 'config_store.config.statement_timeout' '.config_store.config.statement_timeout' '"90s"'
+assert_field_value 'config_store.config.idle_in_transaction_session_timeout ("0")' '.config_store.config.idle_in_transaction_session_timeout' '"0"'
+assert_field_value 'logs_store.config.statement_timeout' '.logs_store.config.statement_timeout' '"60s"'
+assert_field_value 'logs_store.config.idle_in_transaction_session_timeout' '.logs_store.config.idle_in_transaction_session_timeout' '"30s"'
+assert_field_value 'logs_store.object_storage_exclude_request_types' '.logs_store.object_storage_exclude_request_types' '["list_models"]'
+assert_field_value 'providers.openai.ignore_provider_cost' '.providers.openai.ignore_provider_cost' 'true'
+assert_field_value 'client.compat.force_reasoning_only_models_to_responses' '.client.compat.force_reasoning_only_models_to_responses' 'false'
+assert_field_value 'client.delete_expired_virtual_keys' '.client.delete_expired_virtual_keys' 'true'
+assert_field_value 'client.oauth2_server_config.allowed_redirect_uris' '.client.oauth2_server_config.allowed_redirect_uris' '["https://app.example.com/callback"]'
+assert_field_value 'mcp.client_configs[0].require_public_target' '.mcp.client_configs.[0].require_public_target' 'true'
+assert_field_value 'governance.virtual_keys[0].delete_after_expire' '.governance.virtual_keys.[0].delete_after_expire' 'false'
+assert_field_value 'governance.virtual_keys[0].disable_content_logging' '.governance.virtual_keys.[0].disable_content_logging' 'true'
+assert_field_value 'governance.virtual_keys[0].business_unit_id' '.governance.virtual_keys.[0].business_unit_id' '"bu-1"'
+assert_field_value 'governance.routing_rules[0].fallbacks[0] (string)' '.governance.routing_rules.[0].fallbacks.[0]' '"anthropic/claude-sonnet-4-5"'
+assert_field_value 'governance.routing_rules[0].fallbacks[1].provider_key_name (object)' '.governance.routing_rules.[0].fallbacks.[1].provider_key_name' '"azure-eu"'
+assert_field_value 'plugins: semantic_cache cache_tool_call_responses' '.plugins.[0].config.cache_tool_call_responses' 'true'
+assert_field_value 'scim_config.config.displayName (generic)' '.scim_config.config.displayName' '"Acme SSO"'
+
+# config.schema.json makes delete_after_expire depend on expires_at; the values schema must refuse it too.
+if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 \
+     --set 'bifrost.governance.virtualKeys[0].id=vk-no-expiry' \
+     --set 'bifrost.governance.virtualKeys[0].name=vk-no-expiry' \
+     --set 'bifrost.governance.virtualKeys[0].delete_after_expire=true' \
+     > "$TMPDIR/render-err.txt" 2>&1; then
+  report_result 'governance.virtual_keys[].delete_after_expire without expires_at is rejected' 1
+  echo -e "${YELLOW}    render succeeded; expected the values schema to require expires_at${NC}"
+elif grep -q "expires_at" "$TMPDIR/render-err.txt"; then
+  report_result 'governance.virtual_keys[].delete_after_expire without expires_at is rejected' 0
+else
+  report_result 'governance.virtual_keys[].delete_after_expire without expires_at is rejected' 1
+  head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+fi
+
+# config.schema.json allows a virtual key at most one owner; the values schema must refuse a pair.
+for pair in "team_id customer_id" "team_id business_unit_id" "customer_id business_unit_id"; do
+  set -- $pair
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 \
+       --set 'bifrost.governance.virtualKeys[0].id=vk-two-owners' \
+       --set 'bifrost.governance.virtualKeys[0].name=vk-two-owners' \
+       --set "bifrost.governance.virtualKeys[0].$1=owner-a" \
+       --set "bifrost.governance.virtualKeys[0].$2=owner-b" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "governance.virtual_keys[] with both $1 and $2 is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject two owners${NC}"
+  else
+    report_result "governance.virtual_keys[] with both $1 and $2 is rejected" 0
+  fi
+done
+if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 \
+     --set 'bifrost.governance.virtualKeys[0].id=vk-one-owner' \
+     --set 'bifrost.governance.virtualKeys[0].name=vk-one-owner' \
+     --set 'bifrost.governance.virtualKeys[0].business_unit_id=bu-1' \
+     > "$TMPDIR/render-err.txt" 2>&1; then
+  report_result 'governance.virtual_keys[] with a single owner renders' 0
+else
+  report_result 'governance.virtual_keys[] with a single owner renders' 1
+  head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+fi
 
 ###############################################################################
 # Summary

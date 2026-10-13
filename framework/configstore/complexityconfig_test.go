@@ -87,9 +87,9 @@ func TestComplexitySemanticConfigTimeoutDecoding(t *testing.T) {
 	}
 }
 
-// TestComplexityJevConfigDefaults verifies the default user-history window and timeout.
-func TestComplexityJevConfigDefaults(t *testing.T) {
-	config := (&ComplexityJevConfig{}).normalized()
+// TestComplexityDecisionConfigDefaults verifies the default user-history window and timeout.
+func TestComplexityDecisionConfigDefaults(t *testing.T) {
+	config := (&ComplexityDecisionConfig{}).normalized()
 	require.NotNil(t, config.PreviousMessageCount)
 	assert.Equal(t, 1, *config.PreviousMessageCount)
 	assert.Equal(t, 1500*time.Millisecond, config.Timeout)
@@ -965,111 +965,140 @@ func TestGetComplexityConfigNeedsSemanticRow(t *testing.T) {
 	assert.Nil(t, applyComplexitySemanticConfigRow(decoded, nil))
 }
 
-// testJevAnalyzerConfig selects Jev as the primary classifier with no semantic block.
-func testJevAnalyzerConfig() *ComplexityAnalyzerConfig {
+// testDecisionAnalyzerConfig selects the decision model as the primary classifier with no semantic block.
+func testDecisionAnalyzerConfig() *ComplexityAnalyzerConfig {
 	cfg := testComplexityAnalyzerConfig()
-	cfg.Classifier = ComplexityClassifierJev
+	cfg.Classifier = ComplexityClassifierDecision
 	return cfg
 }
 
-// TestComplexityJevConfigDecoding pins the accepted Jev JSON shapes: a
+// TestComplexityDecisionConfigDecoding pins the accepted decision-model JSON shapes: a
 // duration string or milliseconds for the timeout, and no unknown fields, so
 // a typo in config.json fails loudly instead of silently using defaults.
-func TestComplexityJevConfigDecoding(t *testing.T) {
-	var cfg ComplexityJevConfig
+func TestComplexityDecisionConfigDecoding(t *testing.T) {
+	var cfg ComplexityDecisionConfig
 	require.NoError(t, json.Unmarshal([]byte(`{"previous_message_count":3,"timeout":"2s"}`), &cfg))
 	require.NotNil(t, cfg.PreviousMessageCount)
 	assert.Equal(t, 3, *cfg.PreviousMessageCount)
 	assert.Equal(t, 2*time.Second, cfg.Timeout)
 
-	cfg = ComplexityJevConfig{}
+	cfg = ComplexityDecisionConfig{}
 	require.NoError(t, json.Unmarshal([]byte(`{"timeout":750}`), &cfg))
 	assert.Equal(t, 750*time.Millisecond, cfg.Timeout)
 	assert.Nil(t, cfg.PreviousMessageCount, "an omitted count must stay distinguishable from an explicit 0")
 
-	cfg = ComplexityJevConfig{}
+	cfg = ComplexityDecisionConfig{}
 	require.NoError(t, json.Unmarshal([]byte(`{"previous_message_count":0}`), &cfg))
 	require.NotNil(t, cfg.PreviousMessageCount)
 	assert.Equal(t, 0, *cfg.PreviousMessageCount)
 	assert.Equal(t, 0, *cfg.normalized().PreviousMessageCount, "an explicit 0 must not be replaced by the default")
 
 	for name, raw := range map[string]string{
-		"unknown field":     `{"model":"jev-1.13.0"}`,
+		"unknown field":     `{"api_key":"sk-test"}`,
 		"negative timeout":  `{"timeout":"-1s"}`,
 		"negative millis":   `{"timeout":-5}`,
 		"malformed timeout": `{"timeout":"soon"}`,
 		"boolean timeout":   `{"timeout":true}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			var cfg ComplexityJevConfig
+			var cfg ComplexityDecisionConfig
 			require.Error(t, json.Unmarshal([]byte(raw), &cfg))
 		})
 	}
 }
 
-// TestComplexityJevConfigMarshalRoundTrip checks that a saved Jev block reads back unchanged.
-func TestComplexityJevConfigMarshalRoundTrip(t *testing.T) {
+// TestComplexityDecisionConfigMarshalRoundTrip checks that a saved decision-model block reads back unchanged.
+func TestComplexityDecisionConfigMarshalRoundTrip(t *testing.T) {
 	count := 4
-	original := ComplexityJevConfig{PreviousMessageCount: &count, Timeout: 1200 * time.Millisecond}
+	original := ComplexityDecisionConfig{Provider: "nimble", Model: "nimble-latest", PreviousMessageCount: &count, Timeout: 1200 * time.Millisecond}
 	data, err := json.Marshal(original)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"previous_message_count":4,"timeout":"1.2s"}`, string(data))
+	assert.JSONEq(t, `{"provider":"nimble","model":"nimble-latest","previous_message_count":4,"timeout":"1.2s"}`, string(data))
 
-	var decoded ComplexityJevConfig
+	var decoded ComplexityDecisionConfig
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	assert.Equal(t, original, decoded)
 }
 
-// TestComplexityJevConfigValidation pins the history-window bounds shared with the UI.
-func TestComplexityJevConfigValidation(t *testing.T) {
-	for _, count := range []int{0, 1, MaxComplexityJevPreviousMessageCount} {
-		value := count
-		assert.NoError(t, (&ComplexityJevConfig{PreviousMessageCount: &value}).Validate(), "count %d", count)
-	}
-	for _, count := range []int{-1, MaxComplexityJevPreviousMessageCount + 1} {
-		value := count
-		assert.ErrorContains(t, (&ComplexityJevConfig{PreviousMessageCount: &value}).Validate(), "previous_message_count", "count %d", count)
-	}
-	assert.Error(t, (&ComplexityJevConfig{Timeout: -time.Millisecond}).Validate())
+// TestComplexityDecisionConfigModelSelection pins how the decision model is chosen:
+// both fields empty selects the Typesafe Jev default, a custom provider keeps its
+// exact name, a built-in provider is lowercased, and half a selection is rejected.
+func TestComplexityDecisionConfigModelSelection(t *testing.T) {
+	var cfg ComplexityDecisionConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"provider":" Laya ","model":" english "}`), &cfg))
+	normalized := cfg.normalized()
+	assert.Equal(t, schemas.ModelProvider("Laya"), normalized.Provider, "a custom provider is looked up under its exact name")
+	assert.Equal(t, "english", normalized.Model)
+	require.NoError(t, normalized.Validate())
 
-	cfg := testJevAnalyzerConfig()
-	outOfRange := MaxComplexityJevPreviousMessageCount + 1
-	cfg.Jev = &ComplexityJevConfig{PreviousMessageCount: &outOfRange}
-	normalized := cfg.Normalized()
-	assert.ErrorContains(t, normalized.Validate(), "previous_message_count", "an analyzer config must reject an invalid jev block")
+	defaulted := (&ComplexityDecisionConfig{}).normalized()
+	assert.Equal(t, DefaultComplexityDecisionProvider, defaulted.Provider)
+	assert.Equal(t, DefaultComplexityDecisionModel, defaulted.Model)
+
+	builtin := (&ComplexityDecisionConfig{Provider: "TypeSafe", Model: "jev-1.13.0"}).normalized()
+	assert.Equal(t, schemas.Typesafe, builtin.Provider)
+
+	for name, partial := range map[string]ComplexityDecisionConfig{
+		"provider only": {Provider: "nimble"},
+		"model only":    {Model: "nimble-latest"},
+		"blank model":   {Provider: "nimble", Model: "  "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assert.ErrorContains(t, partial.Validate(), "set together")
+		})
+	}
 }
 
-// TestComplexityAnalyzerConfigNormalizedJev pins when a Jev block exists at
-// runtime: it is defaulted whenever Jev can run (primary or semantic
+// TestComplexityDecisionConfigValidation pins the history-window bounds shared with the UI.
+func TestComplexityDecisionConfigValidation(t *testing.T) {
+	for _, count := range []int{0, 1, MaxComplexityDecisionPreviousMessageCount} {
+		value := count
+		assert.NoError(t, (&ComplexityDecisionConfig{PreviousMessageCount: &value}).Validate(), "count %d", count)
+	}
+	for _, count := range []int{-1, MaxComplexityDecisionPreviousMessageCount + 1} {
+		value := count
+		assert.ErrorContains(t, (&ComplexityDecisionConfig{PreviousMessageCount: &value}).Validate(), "previous_message_count", "count %d", count)
+	}
+	assert.Error(t, (&ComplexityDecisionConfig{Timeout: -time.Millisecond}).Validate())
+
+	cfg := testDecisionAnalyzerConfig()
+	outOfRange := MaxComplexityDecisionPreviousMessageCount + 1
+	cfg.Decision = &ComplexityDecisionConfig{PreviousMessageCount: &outOfRange}
+	normalized := cfg.Normalized()
+	assert.ErrorContains(t, normalized.Validate(), "previous_message_count", "an analyzer config must reject an invalid decision block")
+}
+
+// TestComplexityAnalyzerConfigNormalizedDecision pins when a decision-model block exists at
+// runtime: it is defaulted whenever the decision model can run (primary or semantic
 // fallback) and left absent otherwise, and the classifier name is canonical.
-func TestComplexityAnalyzerConfigNormalizedJev(t *testing.T) {
-	t.Run("jev primary without block gets defaults", func(t *testing.T) {
-		normalized := testJevAnalyzerConfig().Normalized()
-		require.NotNil(t, normalized.Jev)
-		assert.Equal(t, DefaultComplexityJevPreviousMessageCount, *normalized.Jev.PreviousMessageCount)
-		assert.Equal(t, DefaultComplexityJevTimeout, normalized.Jev.Timeout)
+func TestComplexityAnalyzerConfigNormalizedDecision(t *testing.T) {
+	t.Run("decision primary without block gets defaults", func(t *testing.T) {
+		normalized := testDecisionAnalyzerConfig().Normalized()
+		require.NotNil(t, normalized.Decision)
+		assert.Equal(t, DefaultComplexityDecisionPreviousMessageCount, *normalized.Decision.PreviousMessageCount)
+		assert.Equal(t, DefaultComplexityDecisionTimeout, normalized.Decision.Timeout)
 		require.NoError(t, normalized.Validate())
 	})
 
-	t.Run("semantic fallback jev without block gets defaults", func(t *testing.T) {
+	t.Run("semantic fallback decision without block gets defaults", func(t *testing.T) {
 		cfg := testSemanticAnalyzerConfig()
-		cfg.Semantic.Fallback = ComplexitySemanticFallbackJev
+		cfg.Semantic.Fallback = ComplexitySemanticFallbackDecision
 		normalized := cfg.Normalized()
-		require.NotNil(t, normalized.Jev)
+		require.NotNil(t, normalized.Decision)
 		assert.Equal(t, ComplexityClassifierSemantic, normalized.Classifier)
 	})
 
-	t.Run("semantic without jev fallback has no block", func(t *testing.T) {
+	t.Run("semantic without decision fallback has no block", func(t *testing.T) {
 		normalized := testSemanticAnalyzerConfig().Normalized()
-		assert.Nil(t, normalized.Jev)
+		assert.Nil(t, normalized.Decision)
 		assert.Equal(t, ComplexityClassifierSemantic, normalized.Classifier, "an omitted classifier defaults to semantic")
 	})
 
 	t.Run("classifier name is canonicalized", func(t *testing.T) {
-		cfg := testJevAnalyzerConfig()
-		cfg.Classifier = "  JEV "
+		cfg := testDecisionAnalyzerConfig()
+		cfg.Classifier = "  DECISION "
 		normalized := cfg.Normalized()
-		assert.Equal(t, ComplexityClassifierJev, normalized.Classifier)
+		assert.Equal(t, ComplexityClassifierDecision, normalized.Classifier)
 		require.NoError(t, normalized.Validate())
 	})
 
@@ -1080,8 +1109,8 @@ func TestComplexityAnalyzerConfigNormalizedJev(t *testing.T) {
 		assert.ErrorContains(t, normalized.Validate(), "complexity classifier must be")
 	})
 
-	t.Run("jev session needs no semantic block", func(t *testing.T) {
-		cfg := testJevAnalyzerConfig()
+	t.Run("decision session needs no semantic block", func(t *testing.T) {
+		cfg := testDecisionAnalyzerConfig()
 		cfg.Session = &ComplexitySessionConfig{Enabled: true}
 		normalized := cfg.Normalized()
 		require.NoError(t, normalized.Validate())
@@ -1092,17 +1121,17 @@ func TestComplexityAnalyzerConfigNormalizedJev(t *testing.T) {
 	})
 }
 
-// TestRDBConfigStore_ComplexityJevPersistence checks that the classifier
-// choice and Jev block survive a save and reload, including a UI-style save
+// TestRDBConfigStore_ComplexityDecisionPersistence checks that the classifier
+// choice and decision-model block survive a save and reload, including a UI-style save
 // that carries no hashes, and that switching back to semantic sticks.
-func TestRDBConfigStore_ComplexityJevPersistence(t *testing.T) {
+func TestRDBConfigStore_ComplexityDecisionPersistence(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
 
 	count := 3
-	cfg := testJevAnalyzerConfig()
+	cfg := testDecisionAnalyzerConfig()
 	cfg.Semantic = testSemanticConfig()
-	cfg.Jev = &ComplexityJevConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond}
+	cfg.Decision = &ComplexityDecisionConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond}
 	hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
 	require.NoError(t, err)
 	cfg.ConfigHashes = hashes
@@ -1110,23 +1139,23 @@ func TestRDBConfigStore_ComplexityJevPersistence(t *testing.T) {
 
 	got, err := store.GetComplexityAnalyzerConfig(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, ComplexityClassifierJev, got.Classifier)
-	require.NotNil(t, got.Jev)
-	assert.Equal(t, 3, *got.Jev.PreviousMessageCount)
-	assert.Equal(t, 900*time.Millisecond, got.Jev.Timeout)
+	assert.Equal(t, ComplexityClassifierDecision, got.Classifier)
+	require.NotNil(t, got.Decision)
+	assert.Equal(t, 3, *got.Decision.PreviousMessageCount)
+	assert.Equal(t, 900*time.Millisecond, got.Decision.Timeout)
 	require.NotNil(t, got.Semantic, "the dormant semantic block must be kept for switching back")
 	assert.Equal(t, hashes.ClassifierSettings, got.ConfigHashes.ClassifierSettings)
-	assert.Equal(t, hashes.JevSettings, got.ConfigHashes.JevSettings)
+	assert.Equal(t, hashes.DecisionSettings, got.ConfigHashes.DecisionSettings)
 
 	// A UI save omits hashes; the file-sync hashes must be carried over.
-	uiUpdate := testJevAnalyzerConfig()
+	uiUpdate := testDecisionAnalyzerConfig()
 	uiUpdate.Semantic = testSemanticConfig()
-	uiUpdate.Jev = &ComplexityJevConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond}
+	uiUpdate.Decision = &ComplexityDecisionConfig{PreviousMessageCount: &count, Timeout: 900 * time.Millisecond}
 	require.NoError(t, store.UpdateComplexityAnalyzerConfig(ctx, uiUpdate))
 	got, err = store.GetComplexityAnalyzerConfig(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, hashes.ClassifierSettings, got.ConfigHashes.ClassifierSettings)
-	assert.Equal(t, hashes.JevSettings, got.ConfigHashes.JevSettings)
+	assert.Equal(t, hashes.DecisionSettings, got.ConfigHashes.DecisionSettings)
 
 	switched := testSemanticAnalyzerConfig()
 	switched.Classifier = ComplexityClassifierSemantic
@@ -1142,58 +1171,58 @@ func TestRDBConfigStore_ComplexityJevPersistence(t *testing.T) {
 	assert.Equal(t, ComplexityClassifierSemantic, merged.Classifier)
 }
 
-// TestMergeComplexityAnalyzerConfigByHashesJev pins config.json sync for the
-// classifier choice and Jev block: an unchanged file keeps UI edits, a
+// TestMergeComplexityAnalyzerConfigByHashesDecision pins config.json sync for the
+// classifier choice and decision-model block: an unchanged file keeps UI edits, a
 // changed file wins, and a file that says nothing keeps the DB choice.
-func TestMergeComplexityAnalyzerConfigByHashesJev(t *testing.T) {
+func TestMergeComplexityAnalyzerConfigByHashesDecision(t *testing.T) {
 	withHashes := func(cfg *ComplexityAnalyzerConfig) *ComplexityAnalyzerConfig {
 		hashes, err := GenerateComplexityAnalyzerConfigHashes(cfg)
 		require.NoError(t, err)
 		cfg.ConfigHashes = hashes
 		return cfg
 	}
-	jevFile := func(count int) *ComplexityAnalyzerConfig {
-		cfg := testJevAnalyzerConfig()
+	decisionFile := func(count int) *ComplexityAnalyzerConfig {
+		cfg := testDecisionAnalyzerConfig()
 		cfg.Semantic = testSemanticConfig()
-		cfg.Jev = &ComplexityJevConfig{PreviousMessageCount: &count}
+		cfg.Decision = &ComplexityDecisionConfig{PreviousMessageCount: &count}
 		return withHashes(cfg)
 	}
 
-	t.Run("file switches a semantic DB to jev", func(t *testing.T) {
+	t.Run("file switches a semantic DB to decision", func(t *testing.T) {
 		base := withHashes(testSemanticAnalyzerConfig())
-		merged, err := MergeComplexityAnalyzerConfigByHashes(base, jevFile(2))
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, decisionFile(2))
 		require.NoError(t, err)
-		assert.Equal(t, ComplexityClassifierJev, merged.Classifier)
-		require.NotNil(t, merged.Jev)
-		assert.Equal(t, 2, *merged.Jev.PreviousMessageCount)
+		assert.Equal(t, ComplexityClassifierDecision, merged.Classifier)
+		require.NotNil(t, merged.Decision)
+		assert.Equal(t, 2, *merged.Decision.PreviousMessageCount)
 	})
 
 	t.Run("unchanged file keeps UI edits", func(t *testing.T) {
-		base := jevFile(2)
+		base := decisionFile(2)
 		// Simulate UI edits persisted after the last file sync.
 		base.Classifier = ComplexityClassifierSemantic
 		edited := 4
-		base.Jev.PreviousMessageCount = &edited
+		base.Decision.PreviousMessageCount = &edited
 
-		merged, err := MergeComplexityAnalyzerConfigByHashes(base, jevFile(2))
+		merged, err := MergeComplexityAnalyzerConfigByHashes(base, decisionFile(2))
 		require.NoError(t, err)
 		assert.Equal(t, ComplexityClassifierSemantic, merged.Classifier)
-		assert.Equal(t, 4, *merged.Jev.PreviousMessageCount)
+		assert.Equal(t, 4, *merged.Decision.PreviousMessageCount)
 	})
 
-	t.Run("changed jev block replaces the DB block", func(t *testing.T) {
-		merged, err := MergeComplexityAnalyzerConfigByHashes(jevFile(2), jevFile(5))
+	t.Run("changed decision block replaces the DB block", func(t *testing.T) {
+		merged, err := MergeComplexityAnalyzerConfigByHashes(decisionFile(2), decisionFile(5))
 		require.NoError(t, err)
-		assert.Equal(t, 5, *merged.Jev.PreviousMessageCount)
+		assert.Equal(t, 5, *merged.Decision.PreviousMessageCount)
 	})
 
 	t.Run("file without classifier keeps DB choice", func(t *testing.T) {
 		file := withHashes(testSemanticAnalyzerConfig())
 		file.Classifier = ""
-		merged, err := MergeComplexityAnalyzerConfigByHashes(jevFile(2), file)
+		merged, err := MergeComplexityAnalyzerConfigByHashes(decisionFile(2), file)
 		require.NoError(t, err)
-		assert.Equal(t, ComplexityClassifierJev, merged.Classifier)
-		require.NotNil(t, merged.Jev)
-		assert.Equal(t, 2, *merged.Jev.PreviousMessageCount)
+		assert.Equal(t, ComplexityClassifierDecision, merged.Classifier)
+		require.NotNil(t, merged.Decision)
+		assert.Equal(t, 2, *merged.Decision.PreviousMessageCount)
 	})
 }

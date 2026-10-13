@@ -18,8 +18,12 @@ type complexityProposal struct {
 	Score           *float64
 	Confidence      *float64
 	MatchedExemplar string
-	LogLevel        schemas.LogLevel
-	LogMessage      string
+	// Model is the provider/model that classified, for decision-model and LLM
+	// proposals. The mechanism stays generic ("decision", "llm") because it is a
+	// metric label; logs name the model so operators can see which one answered.
+	Model      string
+	LogLevel   schemas.LogLevel
+	LogMessage string
 }
 
 // computeComplexity reuses continuation or session state before classifying the request.
@@ -182,8 +186,8 @@ func (p *RoutingPlugin) computeComplexity(
 // classifyComplexityInput selects the configured primary classifier and fallback chain.
 func (p *RoutingPlugin) classifyComplexityInput(ctx *schemas.BifrostContext, input complexity.ComplexityInput) complexityProposal {
 	config := p.complexityConfig.Load()
-	if config != nil && config.Classifier == complexity.ClassifierJev {
-		return p.classifyJevComplexity(ctx, input)
+	if config != nil && config.Classifier == complexity.ClassifierDecision {
+		return p.classifyDecisionComplexity(ctx, input)
 	}
 	return p.classifySemanticComplexity(ctx, input, config)
 }
@@ -191,13 +195,13 @@ func (p *RoutingPlugin) classifyComplexityInput(ctx *schemas.BifrostContext, inp
 // classifySemanticComplexity runs semantic routing and its configured fallback.
 func (p *RoutingPlugin) classifySemanticComplexity(ctx *schemas.BifrostContext, input complexity.ComplexityInput, config *complexity.AnalyzerConfig) complexityProposal {
 	if p.semanticClassifier == nil || !p.semanticClassifier.IsConfigured() {
-		if config != nil && config.Semantic != nil && config.Semantic.Fallback == configstore.ComplexitySemanticFallbackJev {
+		if config != nil && config.Semantic != nil && config.Semantic.Fallback == configstore.ComplexitySemanticFallbackDecision {
 			ctx.AppendRoutingEngineLog(
 				schemas.RoutingEngineRoutingRule,
 				schemas.LogLevelInfo,
-				noSemanticClassifierLog+"; falling back to Jev",
+				noSemanticClassifierLog+"; falling back to the decision model",
 			)
-			return p.classifyJevComplexity(ctx, input)
+			return p.classifyDecisionComplexity(ctx, input)
 		}
 		if p.logger != nil {
 			p.logger.Debug("[Routing] %s", noSemanticClassifierLog)
@@ -266,13 +270,13 @@ func (p *RoutingPlugin) classifySemanticComplexity(ctx *schemas.BifrostContext, 
 		)
 	}
 
-	if config != nil && config.Semantic != nil && config.Semantic.Fallback == configstore.ComplexitySemanticFallbackJev {
+	if config != nil && config.Semantic != nil && config.Semantic.Fallback == configstore.ComplexitySemanticFallbackDecision {
 		ctx.AppendRoutingEngineLog(
 			schemas.RoutingEngineRoutingRule,
 			schemas.LogLevelInfo,
-			unavailableCause+"; falling back to Jev",
+			unavailableCause+"; falling back to the decision model",
 		)
-		return p.classifyJevComplexity(ctx, input)
+		return p.classifyDecisionComplexity(ctx, input)
 	}
 	if p.llmClassifier != nil && p.llmClassifier.FallbackEnabled() {
 		ctx.AppendRoutingEngineLog(
@@ -375,6 +379,9 @@ func formatSessionProposalLog(event, effectiveTier, previousTier string, proposa
 	}
 	if proposal.Confidence != nil {
 		message += fmt.Sprintf(" proposed_confidence=%.2f", *proposal.Confidence)
+	}
+	if proposal.Model != "" {
+		message += fmt.Sprintf(" proposed_model=%s", proposal.Model)
 	}
 	if matched := truncateExemplarForLog(proposal.MatchedExemplar); matched != "" {
 		message += fmt.Sprintf(" proposed_matched=%q", matched)

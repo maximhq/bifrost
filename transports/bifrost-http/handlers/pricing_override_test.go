@@ -53,7 +53,7 @@ func (pricingOverrideTestGovernanceManager) ReloadModelConfig(context.Context, s
 func (pricingOverrideTestGovernanceManager) RemoveModelConfig(context.Context, string) error {
 	return nil
 }
-func (pricingOverrideTestGovernanceManager) ReloadProvider(context.Context, schemas.ModelProvider) (*configstoreTables.TableProvider, error) {
+func (pricingOverrideTestGovernanceManager) ReloadProvider(context.Context, schemas.ModelProvider, bool) (*configstoreTables.TableProvider, error) {
 	return nil, nil
 }
 func (pricingOverrideTestGovernanceManager) RemoveProvider(context.Context, schemas.ModelProvider) error {

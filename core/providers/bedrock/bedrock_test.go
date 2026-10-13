@@ -17,6 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/internal/llmtests"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -7488,6 +7489,86 @@ func TestReasoningConfigNoDoubleEmissionOnEgress(t *testing.T) {
 	}
 }
 
+// TestConverseAdditionalModelRequestFieldsStoreReachesParams pins that a boolean
+// store in additionalModelRequestFields - the only place the AWS SDK's ConverseInput
+// can carry it - lands on Params.Store, so an OpenAI/Azure Responses target sends the
+// caller's store:false instead of silently applying its store:true default (#7720).
+func TestConverseAdditionalModelRequestFieldsStoreReachesParams(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name      string
+		storeJSON string // raw JSON for the store key; empty omits it
+		want      *bool
+	}{
+		{"store_false", `false`, schemas.Ptr(false)},
+		{"store_true", `true`, schemas.Ptr(true)},
+		{"store_absent", ``, nil},
+		{"store_non_boolean_ignored", `"false"`, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			storeField := ""
+			if tc.storeJSON != "" {
+				storeField = `, "store": ` + tc.storeJSON
+			}
+			body := []byte(`{
+				"messages": [{"role": "user", "content": [{"text": "What is 17*23? Answer briefly."}]}],
+				"additionalModelRequestFields": {
+					"reasoning_config": {"type": "enabled"},
+					"output_config": {"effort": "medium"}` + storeField + `
+				}
+			}`)
+
+			var req bedrock.BedrockConverseRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			req.ModelID = "azure/gpt-5"
+
+			mid, err := req.ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, mid.Params, "Params is nil")
+			assert.Equal(t, tc.want, mid.Params.Store, "Params.Store")
+
+			// Every Responses-path host of OpenAI models (openai, azure, bedrock_mantle, the
+			// Bedrock OpenAI surface, openrouter, databricks) builds its body with this converter.
+			wire, err := json.Marshal(openai.ToOpenAIResponsesRequest(ctx, mid))
+			require.NoError(t, err)
+			var fields map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(wire, &fields))
+			got, present := fields["store"]
+			if tc.want == nil {
+				assert.False(t, present, "outbound body must not invent store: %s", wire)
+			} else if assert.True(t, present, "outbound body dropped store: %s", wire) {
+				assert.JSONEq(t, tc.storeJSON, string(got), "outbound store: %s", wire)
+			}
+
+			// Models without a Responses endpoint (and chat-only hosts such as groq, cerebras,
+			// parasail) take the Chat fallback; the datasheet then decides whether store is sent.
+			chatReq := mid.ToChatRequest()
+			require.NotNil(t, chatReq.Params, "chat fallback Params is nil")
+			assert.Equal(t, tc.want, chatReq.Params.Store, "chat fallback Params.Store")
+
+			// Bedrock Converse ignores Params.Store; store keeps riding in
+			// additionalModelRequestFields exactly as it did before the fix.
+			converse, err := bedrock.ToBedrockResponsesRequest(ctx, mid)
+			require.NoError(t, err)
+			var forwarded interface{}
+			forwardedOK := false
+			if converse.AdditionalModelRequestFields != nil {
+				forwarded, forwardedOK = converse.AdditionalModelRequestFields.Get("store")
+			}
+			if tc.storeJSON == "" {
+				assert.False(t, forwardedOK, "Converse egress must not invent store")
+			} else if assert.True(t, forwardedOK, "Converse egress dropped store from additionalModelRequestFields") {
+				forwardedJSON, err := json.Marshal(forwarded)
+				require.NoError(t, err)
+				assert.JSONEq(t, tc.storeJSON, string(forwardedJSON), "Converse additionalModelRequestFields.store")
+			}
+		})
+	}
+}
+
 // TestBedrockDocumentS3URIUsesS3Location pins that an s3:// document reference travels
 // to Converse as the s3Location union member rather than being downloaded by Bifrost.
 // DocumentSource is documented as bytes | content | s3Location | text, so the object
@@ -8568,6 +8649,117 @@ func TestGuardTagSuffixValidation_ConversePath(t *testing.T) {
 				Params: &schemas.ChatParameters{ExtraParams: extra}})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "tagSuffix")
+		})
+	}
+}
+
+// TestBedrockConverseFineGrainedToolStreaming pins the Converse carrier for
+// fine-grained tool streaming. Converse has no slot for the per-tool
+// eager_input_streaming flag and Bedrock's edge consumes the outer
+// anthropic-beta header, so the only way the opt-in reaches Claude is
+// additionalModelRequestFields.anthropic_beta. Without it Claude emits a tool's
+// input one complete JSON value at a time: Claude Code saw a Write call's
+// file_path immediately, then minutes of silence, then the whole content in one
+// burst, and aborted on its idle watchdog. Claude Code sends no flag at all when
+// pointed at a gateway, so Bifrost must default it on for the models Claude Code
+// itself enables on Bedrock.
+func TestBedrockConverseFineGrainedToolStreaming(t *testing.T) {
+	const beta = "fine-grained-tool-streaming-2025-05-14"
+	params := func() *schemas.ToolFunctionParameters {
+		return &schemas.ToolFunctionParameters{
+			Type:       "object",
+			Properties: schemas.NewOrderedMapFromPairs(schemas.KV("content", map[string]interface{}{"type": "string"})),
+		}
+	}
+
+	cases := []struct {
+		name       string
+		model      string
+		eager      *bool
+		noTools    bool
+		clientBeta string
+		serverTool bool
+		wantBeta   bool
+	}{
+		{name: "opus 5 tool without flag gets the default", model: "global.anthropic.claude-opus-5", wantBeta: true},
+		{name: "sonnet 4.6 tool without flag gets the default", model: "us.anthropic.claude-sonnet-4-6", wantBeta: true},
+		{name: "explicit true on an older model", model: "anthropic.claude-sonnet-4-5-20250929-v1:0", eager: schemas.Ptr(true), wantBeta: true},
+		{name: "client anthropic-beta header on an older model", model: "anthropic.claude-sonnet-4-5-20250929-v1:0", clientBeta: beta + ",interleaved-thinking-2025-05-14", wantBeta: true},
+		{name: "older model without any opt-in", model: "anthropic.claude-sonnet-4-5-20250929-v1:0", wantBeta: false},
+		{name: "explicit false is respected", model: "global.anthropic.claude-opus-5", eager: schemas.Ptr(false), wantBeta: false},
+		{name: "no custom tools", model: "global.anthropic.claude-opus-5", noTools: true, wantBeta: false},
+		{name: "non-Anthropic model", model: "amazon.nova-pro-v1:0", eager: schemas.Ptr(true), wantBeta: false},
+		{name: "dedupes against server-tool betas", model: "global.anthropic.claude-opus-5", serverTool: true, wantBeta: true},
+	}
+
+	for _, tc := range cases {
+		newCtx := func() *schemas.BifrostContext {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			if tc.clientBeta != "" {
+				ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"anthropic-beta": {tc.clientBeta}})
+			}
+			return ctx
+		}
+		assertBeta := func(t *testing.T, fields *schemas.OrderedMap) {
+			t.Helper()
+			got := fields != nil && betaListContains(t, fields, beta)
+			assert.Equal(t, tc.wantBeta, got, "additionalModelRequestFields.anthropic_beta contains %s", beta)
+			if fields == nil {
+				return
+			}
+			if raw, ok := fields.Get("anthropic_beta"); ok {
+				encoded, err := json.Marshal(raw)
+				require.NoError(t, err)
+				assert.LessOrEqual(t, strings.Count(string(encoded), beta), 1, "beta duplicated: %s", encoded)
+			}
+		}
+
+		t.Run(tc.name+"/responses", func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Model:  tc.model,
+				Input:  []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ResponsesParameters{},
+			}
+			if !tc.noTools {
+				req.Params.Tools = append(req.Params.Tools, schemas.ResponsesTool{
+					Type:                  schemas.ResponsesToolTypeFunction,
+					Name:                  schemas.Ptr("Write"),
+					Description:           schemas.Ptr("Write a file"),
+					EagerInputStreaming:   tc.eager,
+					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params()},
+				})
+			}
+			bedrockReq, err := bedrock.ToBedrockResponsesRequest(newCtx(), req)
+			require.NoError(t, err)
+			assertBeta(t, bedrockReq.AdditionalModelRequestFields)
+		})
+
+		t.Run(tc.name+"/chat", func(t *testing.T) {
+			req := &schemas.BifrostChatRequest{
+				Model:  tc.model,
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("write the file")}}},
+				Params: &schemas.ChatParameters{},
+			}
+			if !tc.noTools {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{
+					Type:                schemas.ChatToolTypeFunction,
+					Function:            &schemas.ChatToolFunction{Name: "Write", Description: schemas.Ptr("Write a file"), Parameters: params()},
+					EagerInputStreaming: tc.eager,
+				})
+			}
+			if tc.serverTool {
+				req.Params.Tools = append(req.Params.Tools, schemas.ChatTool{Type: "memory_20250818", Name: "memory"})
+			}
+			bedrockReq, err := bedrock.ToBedrockChatCompletionRequest(newCtx(), req)
+			require.NoError(t, err)
+			assertBeta(t, bedrockReq.AdditionalModelRequestFields)
+			if tc.serverTool {
+				raw, ok := bedrockReq.AdditionalModelRequestFields.Get("anthropic_beta")
+				require.True(t, ok)
+				encoded, err := json.Marshal(raw)
+				require.NoError(t, err)
+				assert.Greater(t, strings.Count(string(encoded), ","), 0, "server-tool beta was dropped: %s", encoded)
+			}
 		})
 	}
 }

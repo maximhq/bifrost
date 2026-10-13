@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fasthttp/router"
 	"github.com/valyala/fasthttp"
 )
 
@@ -144,6 +145,41 @@ func TestClearCacheByKey_OK(t *testing.T) {
 	}
 	if len(clearer.keyCalls) != 1 || clearer.keyCalls[0] != "session-42" {
 		t.Fatalf("expected ClearCacheForKey('session-42'), got %v", clearer.keyCalls)
+	}
+}
+
+// The router matches on the raw path, so a key reaches the handler still percent-encoded. It must
+// be decoded before the clear, or a key with a space, colon or slash clears nothing.
+func TestClearCacheByKey_DecodesThePathKey(t *testing.T) {
+	clearer := &fakeCacheClearer{}
+	r := router.New()
+	newCacheHandler(clearer).RegisterRoutes(r)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod(fasthttp.MethodDelete)
+	ctx.Request.SetRequestURI("/api/cache/clear-by-key/tenant%20a%3Asession%2F42")
+	r.Handler(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", got, ctx.Response.Body())
+	}
+	if len(clearer.keyCalls) != 1 || clearer.keyCalls[0] != "tenant a:session/42" {
+		t.Fatalf("expected ClearCacheForKey('tenant a:session/42'), got %q", clearer.keyCalls)
+	}
+}
+
+func TestClearCacheByKey_RejectsAnInvalidEncoding(t *testing.T) {
+	clearer := &fakeCacheClearer{}
+	h := newCacheHandler(clearer)
+
+	ctx := newCacheCtx("cacheKey", "bad%zzkey")
+	h.clearCacheByKey(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", got, ctx.Response.Body())
+	}
+	if len(clearer.keyCalls) != 0 {
+		t.Fatalf("expected no clear, got %v", clearer.keyCalls)
 	}
 }
 

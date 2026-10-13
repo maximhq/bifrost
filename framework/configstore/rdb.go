@@ -178,6 +178,8 @@ func schemaKeyFromTableKey(dbKey tables.TableKey) schemas.Key {
 		SGLKeyConfig:           dbKey.SGLKeyConfig,
 		DatabricksKeyConfig:    dbKey.DatabricksKeyConfig,
 		GithubCopilotKeyConfig: dbKey.GithubCopilotKeyConfig,
+		CloudflareKeyConfig:    dbKey.CloudflareKeyConfig,
+		OAuthKeyConfig:         dbKey.OAuthKeyConfig,
 		ConfigHash:             dbKey.ConfigHash,
 		Status:                 schemas.KeyStatusType(dbKey.Status),
 		Description:            dbKey.Description,
@@ -210,6 +212,8 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		SGLKeyConfig:           key.SGLKeyConfig,
 		DatabricksKeyConfig:    key.DatabricksKeyConfig,
 		GithubCopilotKeyConfig: key.GithubCopilotKeyConfig,
+		CloudflareKeyConfig:    key.CloudflareKeyConfig,
+		OAuthKeyConfig:         key.OAuthKeyConfig,
 		ConfigHash:             key.ConfigHash,
 		Status:                 string(key.Status),
 		Description:            key.Description,
@@ -280,54 +284,60 @@ func mcpExternalURLToString(e *schemas.SecretVar) string {
 // UpdateClientConfig updates the client configuration in the database.
 func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientConfig) error {
 	dbConfig := tables.TableClientConfig{
-		DropExcessRequests:                    config.DropExcessRequests,
-		InitialPoolSize:                       config.InitialPoolSize,
-		EnableLogging:                         config.EnableLogging,
-		DisableContentLogging:                 config.DisableContentLogging,
-		RetainContentInObjectStorage:          config.RetainContentInObjectStorage,
-		DisableDBPingsInHealth:                config.DisableDBPingsInHealth,
-		DumpErrorsInConsoleLogs:               config.DumpErrorsInConsoleLogs,
-		LogRetentionDays:                      config.LogRetentionDays,
-		EnforceAuthOnInference:                config.EnforceAuthOnInference,
-		DualCredentialConflictBehavior:        config.DualCredentialConflictBehavior,
-		EnforceGovernanceHeader:               config.EnforceGovernanceHeader,
-		EnforceSCIMAuth:                       config.EnforceSCIMAuth,
-		PrometheusLabels:                      config.PrometheusLabels,
-		AllowedOrigins:                        config.AllowedOrigins,
-		AllowedHeaders:                        config.AllowedHeaders,
-		MaxRequestBodySizeMB:                  config.MaxRequestBodySizeMB,
-		CompatConvertTextToChat:               config.Compat.ConvertTextToChat,
-		CompatConvertChatToResponses:          config.Compat.ConvertChatToResponses,
-		CompatShouldDropParams:                config.Compat.ShouldDropParams,
-		CompatShouldConvertParams:             config.Compat.ShouldConvertParams,
-		CompatAzureDeepseek:                   config.Compat.AzureDeepseek,
-		MCPAgentDepth:                         config.MCPAgentDepth,
-		MCPMaxInstructionsPerClient:           config.MCPMaxInstructionsPerClient,
-		MCPMaxInstructionsTotal:               config.MCPMaxInstructionsTotal,
-		MCPCodeModeLimits:                     config.MCPCodeModeLimits,
-		MCPToolExecutionTimeout:               config.MCPToolExecutionTimeout,
-		MCPCodeModeBindingLevel:               config.MCPCodeModeBindingLevel,
-		MCPToolSyncInterval:                   config.MCPToolSyncInterval,
-		MCPDisableAutoToolInject:              config.MCPDisableAutoToolInject,
-		MCPEnableTempTokenAuth:                config.MCPEnableTempTokenAuth,
-		AsyncJobResultTTL:                     config.AsyncJobResultTTL,
-		RequiredHeaders:                       config.RequiredHeaders,
-		LoggingHeaders:                        config.LoggingHeaders,
-		WhitelistedRoutes:                     config.WhitelistedRoutes,
-		HideDeletedVirtualKeysInFilters:       config.HideDeletedVirtualKeysInFilters,
-		DeleteExpiredVirtualKeys:              config.DeleteExpiredVirtualKeys,
-		HiddenRequestTypes:                    config.HiddenRequestTypes,
-		RoutingChainMaxDepth:                  config.RoutingChainMaxDepth,
-		MCPExternalClientURL:                  mcpExternalURLToString(config.MCPExternalClientURL),
-		HeaderFilterConfig:                    config.HeaderFilterConfig,
-		AllowPerRequestContentStorageOverride: config.AllowPerRequestContentStorageOverride,
-		AllowPerRequestRawOverride:            config.AllowPerRequestRawOverride,
-		AllowDirectKeys:                       config.AllowDirectKeys,
-		VKRotationCooldownNS:                  int64(config.VKRotationCooldown),
-		MCPServerAuthMode:                     config.MCPServerAuthMode,
-		OAuth2ServerConfig:                    config.OAuth2ServerConfig,
-		WebhookConfig:                         config.WebhookConfig,
-		ConfigHash:                            config.ConfigHash,
+		DropExcessRequests:                        config.DropExcessRequests,
+		InitialPoolSize:                           config.InitialPoolSize,
+		EnableLogging:                             config.EnableLogging,
+		DisableContentLogging:                     config.DisableContentLogging,
+		RetainContentInObjectStorage:              config.RetainContentInObjectStorage,
+		DisableDBPingsInHealth:                    config.DisableDBPingsInHealth,
+		DumpErrorsInConsoleLogs:                   config.DumpErrorsInConsoleLogs,
+		LogRetentionDays:                          config.LogRetentionDays,
+		EnforceAuthOnInference:                    config.EnforceAuthOnInference,
+		DualCredentialConflictBehavior:            config.DualCredentialConflictBehavior,
+		EnforceGovernanceHeader:                   config.EnforceGovernanceHeader,
+		EnforceSCIMAuth:                           config.EnforceSCIMAuth,
+		PrometheusLabels:                          config.PrometheusLabels,
+		AllowedOrigins:                            config.AllowedOrigins,
+		AllowedHeaders:                            config.AllowedHeaders,
+		MaxRequestBodySizeMB:                      config.MaxRequestBodySizeMB,
+		CompatConvertTextToChat:                   config.Compat.ConvertTextToChat,
+		CompatConvertChatToResponses:              config.Compat.ConvertChatToResponses,
+		CompatShouldDropParams:                    config.Compat.ShouldDropParams,
+		CompatShouldConvertParams:                 config.Compat.ShouldConvertParams,
+		CompatAzureDeepseek:                       config.Compat.AzureDeepseek,
+		CompatForceReasoningOnlyModelsToResponses: config.Compat.ForceReasoningOnlyModelsToResponses,
+		CompatConvertDecisionToResponses:          config.Compat.ConvertDecisionToResponses,
+		MCPAgentDepth:                             config.MCPAgentDepth,
+		MCPMaxInstructionsPerClient:               config.MCPMaxInstructionsPerClient,
+		MCPMaxInstructionsTotal:                   config.MCPMaxInstructionsTotal,
+		MCPCodeModeLimits:                         config.MCPCodeModeLimits,
+		MCPOAuthPrivateAllowlist:                  config.MCPOAuthPrivateAllowlist,
+		MCPToolExecutionTimeout:                   config.MCPToolExecutionTimeout,
+		MCPCodeModeBindingLevel:                   config.MCPCodeModeBindingLevel,
+		MCPToolSyncInterval:                       config.MCPToolSyncInterval,
+		MCPDisableAutoToolInject:                  config.MCPDisableAutoToolInject,
+		MCPEnableTempTokenAuth:                    config.MCPEnableTempTokenAuth,
+		AsyncJobResultTTL:                         config.AsyncJobResultTTL,
+		RequiredHeaders:                           config.RequiredHeaders,
+		LoggingHeaders:                            config.LoggingHeaders,
+		WhitelistedRoutes:                         config.WhitelistedRoutes,
+		HideDeletedVirtualKeysInFilters:           config.HideDeletedVirtualKeysInFilters,
+		DeleteExpiredVirtualKeys:                  config.DeleteExpiredVirtualKeys,
+		EnforceVKObjectOwnership:                  config.EnforceVKObjectOwnership,
+		HiddenRequestTypes:                        config.HiddenRequestTypes,
+		RoutingChainMaxDepth:                      config.RoutingChainMaxDepth,
+		MCPExternalClientURL:                      mcpExternalURLToString(config.MCPExternalClientURL),
+		A2AStoreRawRequestResponse:                config.A2AStoreRawRequestResponse,
+		A2AExternalClientURL:                      mcpExternalURLToString(config.A2AExternalClientURL),
+		HeaderFilterConfig:                        config.HeaderFilterConfig,
+		AllowPerRequestContentStorageOverride:     config.AllowPerRequestContentStorageOverride,
+		AllowPerRequestRawOverride:                config.AllowPerRequestRawOverride,
+		AllowDirectKeys:                           config.AllowDirectKeys,
+		VKRotationCooldownNS:                      int64(config.VKRotationCooldown),
+		MCPServerAuthMode:                         config.MCPServerAuthMode,
+		OAuth2ServerConfig:                        config.OAuth2ServerConfig,
+		WebhookConfig:                             config.WebhookConfig,
+		ConfigHash:                                config.ConfigHash,
 	}
 	// Delete existing client config and create new one in a transaction.
 	// MetadataJSON is preserved here because Metadata is a UI/admin-preferences
@@ -358,6 +368,13 @@ func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientC
 		// update mirroring the Delete above.
 		if config.MCPToolSyncInterval == 0 {
 			if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Model(&tables.TableClientConfig{}).Update("mcp_tool_sync_interval", 0).Error; err != nil {
+				return err
+			}
+		}
+		// Same for enforce_vk_object_ownership, which defaults to true: Create would drop an
+		// explicit false and the database would store true.
+		if !config.EnforceVKObjectOwnership {
+			if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Model(&tables.TableClientConfig{}).Update("enforce_vk_object_ownership", false).Error; err != nil {
 				return err
 			}
 		}
@@ -598,16 +615,19 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		AllowedHeaders:                 dbConfig.AllowedHeaders,
 		MaxRequestBodySizeMB:           dbConfig.MaxRequestBodySizeMB,
 		Compat: CompatConfig{
-			ConvertTextToChat:      dbConfig.CompatConvertTextToChat,
-			ConvertChatToResponses: dbConfig.CompatConvertChatToResponses,
-			ShouldDropParams:       dbConfig.CompatShouldDropParams,
-			ShouldConvertParams:    dbConfig.CompatShouldConvertParams,
-			AzureDeepseek:          dbConfig.CompatAzureDeepseek,
+			ConvertTextToChat:                   dbConfig.CompatConvertTextToChat,
+			ConvertChatToResponses:              dbConfig.CompatConvertChatToResponses,
+			ShouldDropParams:                    dbConfig.CompatShouldDropParams,
+			ShouldConvertParams:                 dbConfig.CompatShouldConvertParams,
+			AzureDeepseek:                       dbConfig.CompatAzureDeepseek,
+			ForceReasoningOnlyModelsToResponses: dbConfig.CompatForceReasoningOnlyModelsToResponses,
+			ConvertDecisionToResponses:          dbConfig.CompatConvertDecisionToResponses,
 		},
 		MCPAgentDepth:                         dbConfig.MCPAgentDepth,
 		MCPMaxInstructionsPerClient:           dbConfig.MCPMaxInstructionsPerClient,
 		MCPMaxInstructionsTotal:               dbConfig.MCPMaxInstructionsTotal,
 		MCPCodeModeLimits:                     dbConfig.MCPCodeModeLimits,
+		MCPOAuthPrivateAllowlist:              dbConfig.MCPOAuthPrivateAllowlist,
 		MCPToolExecutionTimeout:               dbConfig.MCPToolExecutionTimeout,
 		MCPCodeModeBindingLevel:               dbConfig.MCPCodeModeBindingLevel,
 		MCPToolSyncInterval:                   dbConfig.MCPToolSyncInterval,
@@ -619,9 +639,12 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		WhitelistedRoutes:                     dbConfig.WhitelistedRoutes,
 		HideDeletedVirtualKeysInFilters:       dbConfig.HideDeletedVirtualKeysInFilters,
 		DeleteExpiredVirtualKeys:              dbConfig.DeleteExpiredVirtualKeys,
+		EnforceVKObjectOwnership:              dbConfig.EnforceVKObjectOwnership,
 		HiddenRequestTypes:                    dbConfig.HiddenRequestTypes,
 		RoutingChainMaxDepth:                  dbConfig.RoutingChainMaxDepth,
 		MCPExternalClientURL:                  schemas.NewSecretVar(dbConfig.MCPExternalClientURL),
+		A2AStoreRawRequestResponse:            dbConfig.A2AStoreRawRequestResponse,
+		A2AExternalClientURL:                  schemas.NewSecretVar(dbConfig.A2AExternalClientURL),
 		HeaderFilterConfig:                    dbConfig.HeaderFilterConfig,
 		AllowPerRequestContentStorageOverride: dbConfig.AllowPerRequestContentStorageOverride,
 		AllowPerRequestRawOverride:            dbConfig.AllowPerRequestRawOverride,
@@ -747,9 +770,11 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 			SendBackRawRequest:       providerConfig.SendBackRawRequest,
 			SendBackRawResponse:      providerConfig.SendBackRawResponse,
 			StoreRawRequestResponse:  providerConfig.StoreRawRequestResponse,
+			IgnoreProviderCost:       providerConfig.IgnoreProviderCost,
 			CustomProviderConfig:     providerConfig.CustomProviderConfig,
 			OpenAIConfig:             providerConfig.OpenAIConfig,
 			PromptCache:              providerConfig.PromptCache,
+			InjectedTools:            providerConfig.InjectedTools,
 			ConfigHash:               providerConfig.ConfigHash,
 			Status:                   providerConfig.Status,
 			Description:              providerConfig.Description,
@@ -811,6 +836,8 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				SGLKeyConfig:           key.SGLKeyConfig,
 				DatabricksKeyConfig:    key.DatabricksKeyConfig,
 				GithubCopilotKeyConfig: key.GithubCopilotKeyConfig,
+				CloudflareKeyConfig:    key.CloudflareKeyConfig,
+				OAuthKeyConfig:         key.OAuthKeyConfig,
 				ConfigHash:             keyHash,
 				Status:                 string(key.Status),
 				Description:            key.Description,
@@ -1030,9 +1057,11 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 	dbProvider.SendBackRawRequest = configCopy.SendBackRawRequest
 	dbProvider.SendBackRawResponse = configCopy.SendBackRawResponse
 	dbProvider.StoreRawRequestResponse = configCopy.StoreRawRequestResponse
+	dbProvider.IgnoreProviderCost = configCopy.IgnoreProviderCost
 	dbProvider.CustomProviderConfig = configCopy.CustomProviderConfig
 	dbProvider.OpenAIConfig = configCopy.OpenAIConfig
 	dbProvider.PromptCache = configCopy.PromptCache
+	dbProvider.InjectedTools = configCopy.InjectedTools
 	dbProvider.ConfigHash = configCopy.ConfigHash
 
 	// Save the updated provider
@@ -1098,6 +1127,8 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			SGLKeyConfig:           key.SGLKeyConfig,
 			DatabricksKeyConfig:    key.DatabricksKeyConfig,
 			GithubCopilotKeyConfig: key.GithubCopilotKeyConfig,
+			CloudflareKeyConfig:    key.CloudflareKeyConfig,
+			OAuthKeyConfig:         key.OAuthKeyConfig,
 			ConfigHash:             keyHash,
 			Status:                 string(key.Status),
 			Description:            key.Description,
@@ -1225,9 +1256,11 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 		SendBackRawRequest:       configCopy.SendBackRawRequest,
 		SendBackRawResponse:      configCopy.SendBackRawResponse,
 		StoreRawRequestResponse:  configCopy.StoreRawRequestResponse,
+		IgnoreProviderCost:       configCopy.IgnoreProviderCost,
 		CustomProviderConfig:     configCopy.CustomProviderConfig,
 		OpenAIConfig:             configCopy.OpenAIConfig,
 		PromptCache:              configCopy.PromptCache,
+		InjectedTools:            configCopy.InjectedTools,
 		ConfigHash:               configCopy.ConfigHash,
 	}
 	// Create the provider
@@ -1260,6 +1293,8 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			SGLKeyConfig:           key.SGLKeyConfig,
 			DatabricksKeyConfig:    key.DatabricksKeyConfig,
 			GithubCopilotKeyConfig: key.GithubCopilotKeyConfig,
+			CloudflareKeyConfig:    key.CloudflareKeyConfig,
+			OAuthKeyConfig:         key.OAuthKeyConfig,
 			ConfigHash:             key.ConfigHash,
 			Status:                 string(key.Status),
 			Description:            key.Description,
@@ -1405,9 +1440,11 @@ func (s *RDBConfigStore) GetProvidersConfig(ctx context.Context) (map[schemas.Mo
 			SendBackRawRequest:       dbProvider.SendBackRawRequest,
 			SendBackRawResponse:      dbProvider.SendBackRawResponse,
 			StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
+			IgnoreProviderCost:       dbProvider.IgnoreProviderCost,
 			CustomProviderConfig:     dbProvider.CustomProviderConfig,
 			OpenAIConfig:             dbProvider.OpenAIConfig,
 			PromptCache:              dbProvider.PromptCache,
+			InjectedTools:            dbProvider.InjectedTools,
 			ConfigHash:               dbProvider.ConfigHash,
 			Status:                   dbProvider.Status,
 			Description:              dbProvider.Description,
@@ -1439,9 +1476,11 @@ func (s *RDBConfigStore) GetProviderConfig(ctx context.Context, provider schemas
 		SendBackRawRequest:       dbProvider.SendBackRawRequest,
 		SendBackRawResponse:      dbProvider.SendBackRawResponse,
 		StoreRawRequestResponse:  dbProvider.StoreRawRequestResponse,
+		IgnoreProviderCost:       dbProvider.IgnoreProviderCost,
 		CustomProviderConfig:     dbProvider.CustomProviderConfig,
 		OpenAIConfig:             dbProvider.OpenAIConfig,
 		PromptCache:              dbProvider.PromptCache,
+		InjectedTools:            dbProvider.InjectedTools,
 		ConfigHash:               dbProvider.ConfigHash,
 		Status:                   dbProvider.Status,
 		Description:              dbProvider.Description,
@@ -1762,6 +1801,7 @@ func (s *RDBConfigStore) GetMCPConfig(ctx context.Context) (*schemas.MCPConfig, 
 		MaxInstructionsPerClient: clientConfig.MCPMaxInstructionsPerClient,
 		MaxInstructionsTotal:     clientConfig.MCPMaxInstructionsTotal,
 		CodeModeLimits:           clientConfig.MCPCodeModeLimits,
+		OAuthPrivateAllowlist:    clientConfig.MCPOAuthPrivateAllowlist,
 		CodeModeBindingLevel:     schemas.CodeModeBindingLevel(clientConfig.MCPCodeModeBindingLevel),
 		DisableAutoToolInject:    clientConfig.MCPDisableAutoToolInject,
 	}
@@ -2457,7 +2497,7 @@ func (s *RDBConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, c
 		var existingClient tables.TableMCPClient
 		if err := dbForUpdate(tx.WithContext(ctx)).Where("client_id = ?", id).First(&existingClient).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("MCP client with id '%s' not found", id)
+				return fmt.Errorf("MCP client with id '%s' %w", id, ErrNotFound)
 			}
 			return err
 		}
@@ -2709,7 +2749,7 @@ func (s *RDBConfigStore) DeleteMCPClientConfig(ctx context.Context, id string) e
 		var existingClient tables.TableMCPClient
 		if err := dbForUpdate(tx.WithContext(ctx)).Where("client_id = ?", id).First(&existingClient).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("MCP client with id '%s' not found", id)
+				return fmt.Errorf("MCP client with id '%s' %w", id, ErrNotFound)
 			}
 			return err
 		}
@@ -2915,12 +2955,18 @@ var pricingSyncUpdateColumns = []string{
 	"input_cost_per_token_fast",
 	"output_cost_per_token_fast",
 	"input_cost_per_character",
+	// Costs - Decisions
+	"input_cost_per_token_decisions",
+	"output_cost_per_token_decisions",
 	// Costs - 128k Tier
 	"input_cost_per_token_above_128k_tokens",
 	"input_cost_per_image_above_128k_tokens",
 	"input_cost_per_video_per_second_above_128k_tokens",
 	"input_cost_per_audio_per_second_above_128k_tokens",
 	"output_cost_per_token_above_128k_tokens",
+	// Costs - 100k Tier
+	"input_cost_per_token_above_100k_tokens",
+	"output_cost_per_token_above_100k_tokens",
 	// Costs - 200k Tier
 	"input_cost_per_token_above_200k_tokens",
 	"input_cost_per_token_above_200k_tokens_priority",
@@ -2943,6 +2989,9 @@ var pricingSyncUpdateColumns = []string{
 	"cache_read_input_token_cost_above_200k_tokens_priority",
 	"cache_creation_input_token_cost_above_1hr",
 	"cache_creation_input_token_cost_above_1hr_above_200k_tokens",
+	"cache_creation_input_token_cost_above_100k_tokens",
+	"cache_read_input_token_cost_above_100k_tokens",
+	"cache_creation_input_token_cost_above_1hr_above_100k_tokens",
 	"cache_creation_input_audio_token_cost",
 	"cache_read_input_token_cost_priority",
 	"cache_read_input_token_cost_ultrafast",
@@ -3653,6 +3702,38 @@ func (s *RDBConfigStore) attachCustomerVirtualKeyCounts(ctx context.Context, cus
 	return nil
 }
 
+// attachCustomerTeamCounts sets TeamCount on each customer with one grouped COUNT,
+// so list responses report the count without loading the teams themselves.
+func (s *RDBConfigStore) attachCustomerTeamCounts(ctx context.Context, customers []tables.TableCustomer) error {
+	if len(customers) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(customers))
+	for i := range customers {
+		ids = append(ids, customers[i].ID)
+	}
+	var rows []struct {
+		CustomerID string
+		Count      int
+	}
+	if err := s.DB().WithContext(ctx).
+		Model(&tables.TableTeam{}).
+		Select("customer_id, COUNT(*) AS count").
+		Where("customer_id IN ?", ids).
+		Group("customer_id").
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+	countByCustomer := make(map[string]int, len(rows))
+	for _, row := range rows {
+		countByCustomer[row.CustomerID] = row.Count
+	}
+	for i := range customers {
+		customers[i].TeamCount = countByCustomer[customers[i].ID]
+	}
+	return nil
+}
+
 // preloadVirtualKeyBaseRelations preloads the base relationships for a virtual key.
 func preloadVirtualKeyBaseRelations(db *gorm.DB) *gorm.DB {
 	return db.
@@ -3668,7 +3749,8 @@ func preloadVirtualKeyBaseRelations(db *gorm.DB) *gorm.DB {
 			return db.Select("id, name, key_id, models_json, provider")
 		}).
 		Preload("MCPConfigs").
-		Preload("MCPConfigs.MCPClient")
+		Preload("MCPConfigs.MCPClient").
+		Preload("AgentGrants")
 }
 
 // preloadVirtualKeyDetailRelations preloads the detail relationships for a virtual key.
@@ -4112,8 +4194,9 @@ func (s *RDBConfigStore) findVirtualKeyByValue(baseQuery *gorm.DB, value string)
 	if schemas.IsSecretRef(value) {
 		return nil, ErrNotFound
 	}
-	// Fallback: try plaintext lookup for rows not yet migrated
-	if err := baseQuery.Session(&gorm.Session{}).Where("value = ?", value).First(&virtualKey).Error; err != nil {
+	// Fallback: plaintext lookup for rows not yet migrated. Only rows still stored in plaintext
+	// qualify; an encrypted row's value column holds ciphertext, which is not the key.
+	if err := baseQuery.Session(&gorm.Session{}).Where(plaintextRowPredicate).Where("value = ?", value).First(&virtualKey).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -4314,6 +4397,10 @@ func (s *RDBConfigStore) DeleteVirtualKey(ctx context.Context, id string, tx ...
 		}
 		// Delete all MCP configs associated with the virtual key
 		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyMCPConfig{}, "virtual_key_id = ?", id).Error; err != nil {
+			return err
+		}
+		// Delete all direct Agent Gateway grants associated with the virtual key.
+		if err := txDB.WithContext(ctx).Delete(&tables.TableVirtualKeyAgentGrant{}, "virtual_key_id = ?", id).Error; err != nil {
 			return err
 		}
 		// Delete upstream OAuth flow rows tied to this VK. No flow_mode
@@ -5362,13 +5449,18 @@ func (s *RDBConfigStore) GetCustomersPaginated(ctx context.Context, params Custo
 		offset = 0
 	}
 	var customers []tables.TableCustomer
-	if err := preloadCustomerRelationsWithoutVirtualKeys(baseQuery, "").
+	if err := baseQuery.
+		Preload("Budgets").
+		Preload("RateLimit").
 		Order("created_at ASC, id ASC").
 		Offset(offset).Limit(limit).
 		Find(&customers).Error; err != nil {
 		return nil, 0, err
 	}
 	if err := s.attachCustomerVirtualKeyCounts(ctx, customers); err != nil {
+		return nil, 0, err
+	}
+	if err := s.attachCustomerTeamCounts(ctx, customers); err != nil {
 		return nil, 0, err
 	}
 	return customers, totalCount, nil
@@ -5620,6 +5712,38 @@ func (s *RDBConfigStore) GetBudget(ctx context.Context, id string, tx ...*gorm.D
 		return nil, err
 	}
 	return &budget, nil
+}
+
+// GetVirtualKeyBudgets returns the budgets a virtual key holds through virtual_key_id, leaving out
+// any a model config has taken over.
+func (s *RDBConfigStore) GetVirtualKeyBudgets(ctx context.Context, virtualKeyID string, tx ...*gorm.DB) ([]tables.TableBudget, error) {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	var budgets []tables.TableBudget
+	if err := txDB.WithContext(ctx).Where("virtual_key_id = ? AND model_config_id IS NULL", virtualKeyID).Find(&budgets).Error; err != nil {
+		return nil, err
+	}
+	return budgets, nil
+}
+
+// GetVirtualKeyProviderConfigBudgets returns the budgets a virtual key provider config holds through
+// provider_config_id, leaving out any a model config has taken over.
+func (s *RDBConfigStore) GetVirtualKeyProviderConfigBudgets(ctx context.Context, providerConfigID uint, tx ...*gorm.DB) ([]tables.TableBudget, error) {
+	var txDB *gorm.DB
+	if len(tx) > 0 {
+		txDB = tx[0]
+	} else {
+		txDB = s.DB()
+	}
+	var budgets []tables.TableBudget
+	if err := txDB.WithContext(ctx).Where("provider_config_id = ? AND model_config_id IS NULL", providerConfigID).Find(&budgets).Error; err != nil {
+		return nil, err
+	}
+	return budgets, nil
 }
 
 // CreateBudget creates a new budget in the database.
@@ -6008,9 +6132,9 @@ func (s *RDBConfigStore) CreateRoutingRule(ctx context.Context, rule *tables.Tab
 	}
 	if count > 0 {
 		if rule.ScopeID != nil {
-			return fmt.Errorf("routing rule with priority %d already exists for scope '%s' with scopeID '%v'", rule.Priority, rule.Scope, rule.ScopeID)
+			return fmt.Errorf("routing rule with priority %d %w for scope '%s' with scope ID '%s'", rule.Priority, ErrRoutingRulePriorityTaken, rule.Scope, *rule.ScopeID)
 		}
-		return fmt.Errorf("routing rule with priority %d already exists for scope '%s'", rule.Priority, rule.Scope)
+		return fmt.Errorf("routing rule with priority %d %w for scope '%s'", rule.Priority, ErrRoutingRulePriorityTaken, rule.Scope)
 	}
 
 	return s.parseGormError(database.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -6066,9 +6190,9 @@ func (s *RDBConfigStore) UpdateRoutingRule(ctx context.Context, rule *tables.Tab
 		}
 		if count > 0 {
 			if rule.ScopeID != nil {
-				return fmt.Errorf("routing rule with priority %d already exists for scope '%s' with scopeID '%v'", rule.Priority, rule.Scope, rule.ScopeID)
+				return fmt.Errorf("routing rule with priority %d %w for scope '%s' with scope ID '%s'", rule.Priority, ErrRoutingRulePriorityTaken, rule.Scope, *rule.ScopeID)
 			}
-			return fmt.Errorf("routing rule with priority %d already exists for scope '%s'", rule.Priority, rule.Scope)
+			return fmt.Errorf("routing rule with priority %d %w for scope '%s'", rule.Priority, ErrRoutingRulePriorityTaken, rule.Scope)
 		}
 
 		targets := rule.Targets
@@ -6427,7 +6551,7 @@ func (s *RDBConfigStore) GetProviderGovernanceModelConfigs(ctx context.Context) 
 
 // GetModelConfigsPaginated retrieves model configs with pagination, filtering, and search support.
 func (s *RDBConfigStore) GetModelConfigsPaginated(ctx context.Context, params ModelConfigsQueryParams) ([]tables.TableModelConfig, int64, error) {
-	baseQuery := s.DB().WithContext(ctx).Model(&tables.TableModelConfig{})
+	baseQuery := s.ScopedDB(ctx).Model(&tables.TableModelConfig{})
 
 	if params.Search != "" {
 		search := "%" + strings.ToLower(params.Search) + "%"
@@ -7158,7 +7282,7 @@ func (s *RDBConfigStore) readComplexityCarryOverWithDB(ctx context.Context, db *
 	hashes.ComplexKeywords = semanticRow.ConfigHashes.ComplexKeywords
 	hashes.SemanticSettings = semanticRow.ConfigHashes.SemanticSettings
 	hashes.ClassifierSettings = semanticRow.ConfigHashes.ClassifierSettings
-	hashes.JevSettings = semanticRow.ConfigHashes.JevSettings
+	hashes.DecisionSettings = semanticRow.ConfigHashes.DecisionSettings
 	hashes.LLMSettings = semanticRow.ConfigHashes.LLMSettings
 	hashes.SessionSettings = semanticRow.ConfigHashes.SessionSettings
 	return hashes, semanticRow.EmbeddingFingerprint, nil
@@ -7374,8 +7498,10 @@ func (s *RDBConfigStore) GetSession(ctx context.Context, token string) (*tables.
 	err := s.DB().WithContext(ctx).First(&session, "token_hash = ?", tokenHash).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// Fall back to plaintext lookup for backward compatibility
-			if err := s.DB().WithContext(ctx).First(&session, "token = ?", token).Error; err != nil {
+			// Fall back to plaintext lookup for rows written before the hash existed. Only rows
+			// still stored in plaintext qualify: an encrypted row's token column holds
+			// ciphertext, which is not the token and must not resolve the session.
+			if err := s.DB().WithContext(ctx).Where(plaintextRowPredicate).First(&session, "token = ?", token).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
 					return nil, nil
 				}
@@ -7399,8 +7525,9 @@ func (s *RDBConfigStore) DeleteSession(ctx context.Context, token string) error 
 	var session tables.SessionsTable
 	if err := s.DB().WithContext(ctx).First(&session, "token_hash = ?", tokenHash).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// Fall back to plaintext lookup for backward compatibility
-			return s.DB().WithContext(ctx).Delete(&tables.SessionsTable{}, "token = ?", token).Error // vault token is saved via tokenHash, so this case will not hit the vault scenario, but we keep it for backward compatibility with any existing plaintext tokens
+			// Fall back to plaintext lookup for rows written before the hash existed, and only for
+			// rows still stored in plaintext (see GetSession).
+			return s.DB().WithContext(ctx).Where(plaintextRowPredicate).Delete(&tables.SessionsTable{}, "token = ?", token).Error
 		}
 		return err
 	}

@@ -933,11 +933,9 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 		return
 	}
 
-	// Bind to request context with a timeout so stalled git processes
-	// don't outlive a client disconnect or server shutdown. 30s is generous —
-	// upload-pack on these in-memory repos completes in <1s normally, but we
-	// allow headroom for large all-skills repos under load.
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Bound the git process so a stalled upload-pack cannot hang the worker.
+	// Never derive from the RequestCtx: see skillsServingWorkContext.
+	cmdCtx, cancel := skillsServingWorkContext()
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, gitBinaryPath, "upload-pack", "--stateless-rpc", "--advertise-refs", ".") //nolint:gosec // gitBinaryPath is from exec.LookPath
 	cmd.Dir = repoDir
@@ -965,11 +963,9 @@ func serveInfoRefs(ctx *fasthttp.RequestCtx, repoDir, label string) {
 // serveUploadPack handles POST /git-upload-pack by piping the request body
 // into `git upload-pack --stateless-rpc` and streaming the output back.
 func serveUploadPack(ctx *fasthttp.RequestCtx, repoDir, label string) {
-	// Bind to request context with a timeout so stalled git processes
-	// don't outlive a client disconnect or server shutdown. 30s is generous —
-	// upload-pack on these in-memory repos completes in <1s normally, but we
-	// allow headroom for large all-skills repos under load.
-	cmdCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Bound the git process so a stalled upload-pack cannot hang the worker.
+	// Never derive from the RequestCtx: see skillsServingWorkContext.
+	cmdCtx, cancel := skillsServingWorkContext()
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, gitBinaryPath, "upload-pack", "--stateless-rpc", ".") //nolint:gosec // gitBinaryPath is from exec.LookPath
 	cmd.Dir = repoDir
@@ -1631,26 +1627,11 @@ func buildSkillFilePath(skillName string, file *tables.TableSkillFile) string {
 	return path.Join(skillName, file.Path)
 }
 
-// skillsServingWorkTimeout bounds store, object-store and outbound HTTP work started while
-// serving a skills request.
-const skillsServingWorkTimeout = 30 * time.Second
-
 // skillsServingWorkContext returns the context to hand to the config store, the object store
-// and outbound HTTP clients while serving a skills request.
-//
-// Never pass the *fasthttp.RequestCtx itself. Its Done() returns a server-wide channel
-// (fasthttp.Server.done), closed only on server shutdown, not per request (fasthttp's own
-// documented tradeoff, since allocating a channel per request is expensive). Whenever
-// ctx.Done() != nil, database/sql and net/http spawn an internal cancellation-watcher
-// goroutine that keeps reading RequestCtx.s.done after the handler returns, while
-// Server.ShutdownWithContext writes s.done = nil once every connection has closed. That is an
-// unsynchronized write against a live reader: the data race seen under -race in
-// TestClaudeMarketplaceGitRepoContainsMarketplaceAndCloneablePlugin.
-//
-// Deriving from context.Background() gives up nothing, because a RequestCtx carries no
-// per-request cancellation to propagate in the first place.
+// and outbound HTTP clients while serving a skills request. Background-rooted because these
+// paths read no request values; see RequestWorkContext for why the RequestCtx is never used.
 func skillsServingWorkContext() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), skillsServingWorkTimeout)
+	return RequestWorkContext(context.Background(), RequestWorkTimeout)
 }
 
 // lookupSkillByPathParam extracts the skill-name path parameter and fetches the skill.

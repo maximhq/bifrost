@@ -1,8 +1,13 @@
 import { test as base, expect } from "@playwright/test";
+import { existsSync } from "fs";
+import { readFile } from "fs/promises";
+import { extname, resolve } from "path";
 import { waitForNetworkIdle } from "../utils/test-helpers";
 import { SidebarPage } from "../pages/sidebar.page";
 import { ProvidersPage } from "../../features/providers/pages/providers.page";
+import { ProviderSettingsPage } from "../../features/providers/pages/providerSettings.page";
 import { VirtualKeysPage } from "../../features/virtual-keys/pages/virtual-keys.page";
+import { VirtualKeysManagementPage } from "../../features/virtual-keys/pages/virtualKeysManagement.page";
 import { DashboardPage } from "../../features/dashboard/pages/dashboard.page";
 import { LogsPage } from "../../features/logs/pages/logs.page";
 import { MCPLogsPage } from "../../features/mcp-logs/pages/mcp-logs.page";
@@ -21,12 +26,15 @@ import { ModelLimitsPage } from "../../features/model-limits/pages/model-limits.
  * Custom test fixtures type
  */
 type BifrostFixtures = {
+	serveMonacoLocally: void;
 	closeDevProfiler: void;
 	handleLoginRedirect: void;
 	skipAutoLogin: boolean;
 	sidebarPage: SidebarPage;
 	providersPage: ProvidersPage;
+	providerSettingsPage: ProviderSettingsPage;
 	virtualKeysPage: VirtualKeysPage;
+	virtualKeysManagementPage: VirtualKeysManagementPage;
 	dashboardPage: DashboardPage;
 	logsPage: LogsPage;
 	mcpLogsPage: MCPLogsPage;
@@ -45,7 +53,39 @@ type BifrostFixtures = {
 /**
  * Extended test with Bifrost-specific fixtures
  */
+// The UI's code editor loads Monaco from cdn.jsdelivr.net at runtime; under parallel runs
+// that download sometimes stalls and the editor never leaves its spinner. Serve the copy the
+// UI build already installed instead. The CDN version can differ, which only matters for
+// tests that depend on editor features rather than the rendered text.
+const MONACO_VS_DIR = resolve(__dirname, "../../../../ui/node_modules/monaco-editor/min/vs");
+const MONACO_CDN = /^https:\/\/cdn\.jsdelivr\.net\/npm\/monaco-editor@[^/]+\/min\/vs\/(.+)$/;
+const MONACO_CONTENT_TYPES: Record<string, string> = {
+	".js": "application/javascript",
+	".css": "text/css",
+	".ttf": "font/ttf",
+};
+
 export const test = base.extend<BifrostFixtures>({
+	serveMonacoLocally: [
+		async ({ context }, use) => {
+			if (existsSync(MONACO_VS_DIR)) {
+				await context.route(MONACO_CDN, async (route) => {
+					const rel = MONACO_CDN.exec(route.request().url().split("?")[0])?.[1] ?? "";
+					const file = resolve(MONACO_VS_DIR, rel);
+					// Anything not in the local copy (or outside it) still comes from the CDN.
+					if (!file.startsWith(MONACO_VS_DIR + "/") || !existsSync(file)) return route.continue();
+					await route.fulfill({
+						body: await readFile(file),
+						contentType: MONACO_CONTENT_TYPES[extname(file)] ?? "application/octet-stream",
+						headers: { "access-control-allow-origin": "*" },
+					});
+				});
+			}
+			await use();
+		},
+		{ auto: true },
+	],
+
 	closeDevProfiler: [
 		async ({ page }, use) => {
 			// Keep the development profiler from stealing focus or blocking assertions when
@@ -54,6 +94,12 @@ export const test = base.extend<BifrostFixtures>({
 			await page.addInitScript(() => {
 				window.localStorage.setItem("devProfiler.isVisible", "false");
 				window.localStorage.setItem("devProfiler.isExpanded", "false");
+				// Toasts retired by BasePage.waitForToastsToDisappear vanish at once.
+				document.addEventListener("DOMContentLoaded", () => {
+					const style = document.createElement("style");
+					style.textContent = "[data-e2e-dismissed]{display:none!important}";
+					document.head.appendChild(style);
+				});
 			});
 
 			await page.addLocatorHandler(
@@ -76,6 +122,7 @@ export const test = base.extend<BifrostFixtures>({
 	],
 
 	skipAutoLogin: [false, { option: true }],
+
 
 	handleLoginRedirect: [
 		async ({ page, skipAutoLogin }, use) => {
@@ -124,8 +171,16 @@ export const test = base.extend<BifrostFixtures>({
 		await use(new ProvidersPage(page));
 	},
 
+	providerSettingsPage: async ({ page }, use) => {
+		await use(new ProviderSettingsPage(page));
+	},
+
 	virtualKeysPage: async ({ page }, use) => {
 		await use(new VirtualKeysPage(page));
+	},
+
+	virtualKeysManagementPage: async ({ page }, use) => {
+		await use(new VirtualKeysManagementPage(page));
 	},
 
 	dashboardPage: async ({ page }, use) => {
@@ -143,6 +198,7 @@ export const test = base.extend<BifrostFixtures>({
 	routingRulesPage: async ({ page }, use) => {
 		await use(new RoutingRulesPage(page));
 	},
+
 
 	mcpRegistryPage: async ({ page }, use) => {
 		await use(new MCPRegistryPage(page));

@@ -23,7 +23,7 @@ Virtual Keys are the primary governance entity in Bifrost. Users and application
 - **Budget Overrides** - Temporarily add spending capacity without changing the base budget
 - **Rate Limiting** - Token and request-based throttling (VK-level only)
 - **Key Restrictions** - Limit VK to specific provider API keys (if configured, VK can only use those keys)
-- **Exclusive Attachment** - Belongs to either one team OR one customer OR neither (mutually exclusive)
+- **Exclusive Attachment** - Belongs to either one team OR one customer OR neither (mutually exclusive). In Enterprise, a key can also belong to a business unit or a user, still only one owner
 - **Active/Inactive Status** - Enable/disable access instantly
 
 ## Configuration
@@ -361,7 +361,13 @@ A batch created from `input_file_id` or `input_blob` names its models inside the
 - **OpenAI and Azure** run the models named in each input row and ignore the `model` on the batch request, so creating a file- or blob-based batch requires a key that allows every model of that provider. Otherwise the request is refused with `403` (`model_blocked`), even if an allowed `model` is supplied.
 - **Gemini, Vertex, and Bedrock** run the model named on the batch request, so that `model` must be supplied and allowed by the key.
 
+A custom provider is held to the rule of its base provider type, since it runs that provider's batch API. A request that names a file or blob and inline `requests` together is refused with `400`: no provider runs inline requests beside a file, so the batch's work must be named once.
+
 Inline batches (`requests`) are checked per item and are unaffected, as are keys that allow every model of the provider.
+
+#### Passthrough requests
+
+A passthrough route forwards the request body as the provider reads it. When a key restricts models on the provider, every model the body names is checked: the `model` of a JSON object body, or the `model` of each task in a task array (Runware). A passthrough request that names no model anywhere, neither in its path nor in its body, is refused with `403` (`model_blocked`) under such a key, since the provider would still run a model the key never allowed. Keys that allow every model of the provider forward every passthrough body as before.
 
 ## User Groups
 
@@ -373,14 +379,14 @@ Teams provide organizational grouping for virtual keys with department-level bud
 - **Organizational Structure** - Group multiple virtual keys
 - **Independent Budgets** - Department-level cost control (separate from customer budgets)
 - **Customer Association** - Can belong to one customer (optional)
-- **No Rate Limits** - Teams cannot have rate limits (VK-level only)
+- **Rate Limit** - A team can have one rate limit of its own, checked alongside its keys' rate limits
 
 **Configuration**
 
 <Tabs group="config-method">
 <Tab title="Web UI">
 
-1. Go to **Users & Groups** → **Teams**
+1. Go to **Governance** → **Teams**
 
 2. Click on **Add Team** button
 
@@ -494,14 +500,14 @@ Customers represent the highest level in the governance hierarchy, typically cor
 - **Top-Level Organization** - Highest hierarchy level
 - **Independent Budgets** - Organization-wide cost control (separate from team/VK budgets)
 - **Team Management** - Contains multiple teams and direct VKs
-- **No Rate Limits** - Customers cannot have rate limits (VK-level only)
+- **Rate Limit** - A customer can have one rate limit of its own, checked alongside its teams' and keys' rate limits
 
 **Configuration**
 
 <Tabs group="config-method">
 <Tab title="Web UI">
 
-1. Go to **Users & Groups** → **Customers**
+1. Go to **Governance** → **Customers**
 
 2. Click on **Add Customer** button
 

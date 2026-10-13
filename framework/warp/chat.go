@@ -168,7 +168,10 @@ func (s *Service) RunTurn(ctx context.Context, turn *Turn, sink func(Event) bool
 	// searcher were snapshotted together at NewTurn, so a SetLogReader landing
 	// mid-turn cannot leave the agent searching one backend while it hydrates
 	// details from another - or hand it a nil reader it will dereference.
-	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, s.governance, ScopeFromContext(runCtx), turn.config, turn.utcOffsetMinutes, turn.timezone, turn.semantic)
+	// The resolver is asked here as well: a store that scopes per read leaves
+	// nothing on the context to tell a restricted caller from an admin.
+	scope := withCallerRestriction(runCtx, ScopeFromContext(runCtx), s.callerRestriction)
+	agent := NewAgent(turn.chat, s.costFuncFor(turn.config), turn.logs, s.governance, scope, turn.config, turn.utcOffsetMinutes, turn.timezone, turn.semantic)
 	agent.SetGovernanceExtras(s.vkDecorator, s.userGovernance)
 	agent.questionsAsked = turn.questionsAsked
 	events := make(chan Event, 16)

@@ -3,6 +3,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -205,6 +206,8 @@ func SendError(ctx *fasthttp.RequestCtx, statusCode int, message string) {
 
 // SendBifrostError sends a BifrostError response
 func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
+	// Before sanitizing: the span keeps the unredacted detail core already stamps.
+	stampRootSpanError(ctx, bifrostErr)
 	bifrostErr = lib.SanitizeBifrostErrorForClient(bifrostErr)
 	if bifrostErr == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, lib.ClientSafeInternalErrorMessage)
@@ -225,6 +228,39 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 		logger.Warn(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
+	}
+}
+
+// stampRootSpanError records the failure identity on the root span. A request
+// rejected before dispatch has no llm.call span to carry it.
+func stampRootSpanError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
+	if bifrostErr == nil {
+		return
+	}
+	tracer, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || tracer == nil {
+		return
+	}
+	traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+	if traceID == "" {
+		return
+	}
+	// A nil span ID resolves to the root span.
+	span := tracer.SpanFromHandle(tracer.GetSpanHandleByID(traceID, nil))
+	if span == nil {
+		return
+	}
+	span.SetAttributes(schemas.RootSpanErrorAttributes(bifrostErr,
+		schemas.ClassifyErrorType(bifrostErr, bifrostErr.ExtraFields.RequestType)))
+
+	// A request that reached a provider already propagated its resolved identity up.
+	ef := bifrostErr.ExtraFields
+	if _, exists := span.GetAttribute(schemas.AttrRequestModel); !exists && ef.OriginalModelRequested != "" {
+		span.SetAttribute(schemas.AttrRequestModel, ef.OriginalModelRequested)
+	}
+	if _, exists := span.GetAttribute(schemas.AttrProviderName); !exists && ef.Provider != "" {
+		span.SetAttribute(schemas.AttrProviderName, schemas.OTelProviderName(ef.Provider))
+		span.SetAttribute(schemas.AttrBifrostProviderName, string(ef.Provider))
 	}
 }
 
@@ -390,4 +426,41 @@ func fuzzyMatch(text, query string) bool {
 	}
 
 	return queryIndex == len(queryRunes)
+}
+
+// isAuthBypassed reports whether ctx was let through the auth middleware's fail-open branch
+// (dashboard auth disabled/unconfigured) rather than a genuine credential check. Handlers
+// gating a capability that's fine for a real admin but dangerous for anyone on the network
+// (e.g. pointing a dial destination somewhere new) should check this, not
+// IsLocalAdminContextKey, which is also true for genuinely authenticated sessions.
+func isAuthBypassed(ctx *fasthttp.RequestCtx) bool {
+	bypassed, _ := ctx.UserValue(schemas.BifrostContextKeyAuthBypassed).(bool)
+	return bypassed
+}
+
+// isSetupTokenAuthenticated reports whether the OSS setup-lock gate let ctx through because
+// it carried the operator's setup token (see AuthMiddleware.SetupLockMiddleware). That is
+// the same proof the body's auth_config.setup_token gives, so first-admin creation accepts
+// either.
+func isSetupTokenAuthenticated(ctx *fasthttp.RequestCtx) bool {
+	authed, _ := ctx.UserValue(schemas.BifrostContextKeySetupTokenAuthenticated).(bool)
+	return authed
+}
+
+// RequestWorkTimeout bounds store, object-store and outbound HTTP work started while
+// serving an HTTP request.
+const RequestWorkTimeout = 30 * time.Second
+
+// RequestWorkContext returns the context to hand to stores and outbound clients for work
+// started while serving an HTTP request.
+//
+// Never derive a cancellable context from the *fasthttp.RequestCtx itself. Its Done() is
+// the server-wide fasthttp.Server.done, and ShutdownWithContext resets that field once
+// connections drain, so Err() returns to nil while Done() stays closed. The watcher
+// goroutine context.WithCancel/WithTimeout starts for such a parent then panics with
+// "context: internal error: missing cancel error" and races the pooled RequestCtx as
+// fasthttp recycles it. WithoutCancel drops Done()/Err() so no watcher is started, while
+// request values stay readable for the handler's lifetime.
+func RequestWorkContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), timeout)
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -39,6 +40,84 @@ func TestAnthropicMessagesBillingHeaderNormalizedBeforeDispatch(t *testing.T) {
 	// Normalization only owns the newly converted slices, not the parsed source.
 	if len(incoming.System.ContentBlocks) != 2 || *incoming.System.ContentBlocks[0].Text != header {
 		t.Fatal("parsed Anthropic request was mutated")
+	}
+}
+
+// TestAnthropicMessagesBillingHeaderAfterEffortOnlySystemMessage is a regression test for
+// 2.2.6: once per-message output_config was kept, an effort-only system message ahead of a
+// system billing header pushed the header out of the first slot and it survived ingress, so
+// guardrails evaluated it and non-Anthropic fallbacks received it.
+func TestAnthropicMessagesBillingHeaderAfterEffortOnlySystemMessage(t *testing.T) {
+	header := "x-anthropic-billing-header: cc_version=2.1.286; cc_entrypoint=cli;"
+	for name, headerContent := range map[string]string{
+		"string": `"` + header + `"`,
+		"blocks": `[{"type":"text","text":"` + header + `"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			var incoming anthropic.AnthropicMessageRequest
+			raw := []byte(`{"model":"claude-opus-5-5","max_tokens":64,"messages":[` +
+				`{"role":"system","content":[],"output_config":{"effort":"high"}},` +
+				`{"role":"system","content":` + headerContent + `},` +
+				`{"role":"user","content":"alpha"}]}`)
+			if err := sonic.Unmarshal(raw, &incoming); err != nil {
+				t.Fatal(err)
+			}
+			for _, route := range createAnthropicMessagesRouteConfig("/anthropic", nil) {
+				request, err := route.RequestConverter(ctx, &incoming)
+				if err != nil {
+					t.Fatal(err)
+				}
+				input := request.ResponsesRequest.Input
+				normalized, err := schemas.MarshalSorted(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(normalized), "x-anthropic-billing-header:") {
+					t.Fatalf("billing header survived ingress behind an effort-only message: %s", normalized)
+				}
+				if len(input) != 2 || !input[0].IsEffortOnlySystemItem() {
+					t.Fatalf("effort-only message must stay first with the user turn after it: %s", normalized)
+				}
+
+				restored := request.ResponsesRequest.WithAnthropicBillingHeader().Input
+				if len(restored) != 3 || !restored[0].IsEffortOnlySystemItem() {
+					t.Fatalf("restored input lost its shape: %+v", restored)
+				}
+				content := restored[1].Content
+				got := ""
+				if content.ContentStr != nil {
+					got = *content.ContentStr
+				} else if len(content.ContentBlocks) == 1 && content.ContentBlocks[0].Text != nil {
+					got = *content.ContentBlocks[0].Text
+				}
+				if got != header {
+					t.Fatalf("billing header not restored in place for Anthropic: %q", got)
+				}
+			}
+
+			// Raw forwarding sends the native body, so its text target IDs must skip the
+			// header exactly as ingress did: the user turn is target 0 and the header stays.
+			targets, err := collectAnthropicRawRequestTextTargets(gjson.ParseBytes(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(targets) != 1 || targets[0].Path != "messages.2.content" || targets[0].ID != schemas.TextTargetIDForIndex(0) {
+				t.Fatalf("raw targets out of line with normalized input: %+v", targets)
+			}
+			rewritten, err := rewriteAnthropicRawRequestBodyTransforms(append([]byte(nil), raw...), []schemas.TextRewrite{{TargetID: targets[0].ID, Original: "alpha", Replacement: "[MASKED]"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := gjson.GetBytes(rewritten, "messages.2.content").String(); got != "[MASKED]" {
+				t.Fatalf("raw rewrite missed the user turn: %q", got)
+			}
+			for _, path := range []string{"messages.0", "messages.1"} {
+				if got, want := gjson.GetBytes(rewritten, path).Raw, gjson.GetBytes(raw, path).Raw; got != want {
+					t.Fatalf("raw rewrite changed %s: %s", path, got)
+				}
+			}
+		})
 	}
 }
 
@@ -1102,6 +1181,155 @@ func TestAnthropicRawTransformsRetainsBillingLikeToolResults(t *testing.T) {
 			}
 			if gjson.GetBytes(rewritten, "system").String() != header || gjson.GetBytes(rewritten, targets[0].Path).String() != "[MASKED]" {
 				t.Fatal("system attribution and tool-result data were not kept separate")
+			}
+		})
+	}
+}
+
+// Core can take an attempt off raw-body passthrough after the integration chose it
+// (injected tools, unsupported structured output). The response converters must then
+// re-encode Bifrost events instead of treating the reply as raw Anthropic passthrough.
+func TestResponsePassthroughFollowsCoreRawBodyDecision(t *testing.T) {
+	claudeCode := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyUserAgent, "claude-cli/2.1.0 (external, cli)")
+		return ctx
+	}
+
+	ctx := claudeCode()
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+	if !responsePassthroughActive(ctx, schemas.Anthropic, "claude-sonnet-4-5", "") {
+		t.Error("a passthrough attempt answers in passthrough")
+	}
+
+	ctx = claudeCode()
+	if !responsePassthroughActive(ctx, schemas.Anthropic, "claude-sonnet-4-5", "") {
+		t.Error("unset keeps the integration's own decision")
+	}
+
+	ctx = claudeCode()
+	ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+	if responsePassthroughActive(ctx, schemas.Anthropic, "claude-sonnet-4-5", "") {
+		t.Error("core turned raw-body passthrough off for this attempt, so the reply must be re-encoded")
+	}
+}
+
+// After provider-injected tools ran, the raw upstream reply is only the last of several
+// model turns. The Messages route must answer with the assembled response instead (the
+// router hands converters a copy without the raw bytes), while a single-turn Claude reply
+// still goes back as the provider's own bytes.
+func TestAnthropicMessagesResponsesConverterSkipsRawAfterInjectedTools(t *testing.T) {
+	var convert ResponsesResponseConverter
+	for _, route := range createAnthropicMessagesRouteConfig("", nil) {
+		if route.Path == "/v1/messages" {
+			convert = route.ResponsesResponseConverter
+		}
+	}
+	if convert == nil {
+		t.Fatal("no /v1/messages route")
+	}
+	raw := json.RawMessage(`{"raw":"turn 2 only"}`)
+	resp := func() *schemas.BifrostResponsesResponse {
+		return &schemas.BifrostResponsesResponse{
+			Output: []schemas.ResponsesMessage{{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Turn 1 text. Sunny.")},
+			}},
+			ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.Anthropic, OriginalModelRequested: "claude-sonnet-4-5", RawResponse: raw},
+		}
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughOverridesPresent, true)
+
+	single, err := convert(ctx, responsesResponseForConverter(ctx, resp()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := single.(json.RawMessage); string(got) != string(raw) {
+		t.Fatalf("a single-turn Claude reply goes back as the provider's bytes, got %T", single)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyInjectedToolsExecuted, true)
+	assembled, err := convert(ctx, responsesResponseForConverter(ctx, resp()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := assembled.(json.RawMessage); ok && string(got) == string(raw) {
+		t.Fatal("after injected tools ran, the last turn's raw reply must not stand in for the answer")
+	}
+}
+
+// Claude Code keeps two system markers but moves the tool-result marker forward.
+// Explicit-only lookup would lose the previous turn's conversation boundary.
+func TestAnthropicMessagesGPTPromptCacheRollingMarker(t *testing.T) {
+	for _, model := range []string{
+		"openai/gpt-5.6-sol", "openai/gpt-6-sol", "azure/gpt-6-sol",
+		"bedrock/global.openai.gpt-5.6-sol", "bedrock/global.openai.gpt-6-sol",
+		"bedrock_mantle/openai.gpt-6-sol",
+	} {
+		t.Run(model, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			for _, turn := range []string{"first", "second"} {
+				messages := `{"role":"user","content":"Call echo."},
+     {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"echo","input":{"text":"hello"}}]},
+     {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"RESULT_ONE"MARKER}]} `
+				if turn == "first" {
+					messages = strings.ReplaceAll(messages, "MARKER", `,"cache_control":{"type":"ephemeral"}`)
+				} else {
+					messages = strings.ReplaceAll(messages, "MARKER", "") + `,
+      {"role":"assistant","content":[{"type":"tool_use","id":"call_2","name":"echo","input":{"text":"again"}}]},
+      {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_2","content":"RESULT_TWO","cache_control":{"type":"ephemeral"}}]}`
+				}
+				raw := `{"model":"MODEL","max_tokens":64,"system":[
+     {"type":"text","text":"SYSTEM_ONE","cache_control":{"type":"ephemeral"}},
+     {"type":"text","text":"SYSTEM_TWO","cache_control":{"type":"ephemeral"}}],
+     "messages":[MESSAGES]}`
+				raw = strings.ReplaceAll(strings.ReplaceAll(raw, "MODEL", model), "MESSAGES", messages)
+				var incoming anthropic.AnthropicMessageRequest
+				if err := sonic.Unmarshal([]byte(raw), &incoming); err != nil {
+					t.Fatal(err)
+				}
+				for _, route := range createAnthropicMessagesRouteConfig("/anthropic", nil) {
+					request, err := route.RequestConverter(ctx, &incoming)
+					if err != nil {
+						t.Fatal(err)
+					}
+					outgoing := openai.ToOpenAIResponsesRequest(ctx, request.ResponsesRequest)
+					body, err := outgoing.MarshalJSON()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if gjson.GetBytes(body, "prompt_cache_options").Exists() {
+						t.Errorf("%s turn: rolling markers must keep implicit cache lookup: %s", turn, body)
+					}
+					var markers []string
+					gjson.GetBytes(body, "input").ForEach(func(_, item gjson.Result) bool {
+						for _, field := range []string{"content", "output"} {
+							item.Get(field).ForEach(func(_, block gjson.Result) bool {
+								if block.Get("cache_control").Exists() {
+									t.Errorf("Anthropic marker leaked onto wire: %s", body)
+								}
+								if block.Get("prompt_cache_breakpoint").Exists() {
+									if block.Get("prompt_cache_breakpoint.mode").String() != "explicit" {
+										t.Errorf("invalid block breakpoint: %s", body)
+									}
+									markers = append(markers, block.Get("text").String())
+								}
+								return true
+							})
+						}
+						return true
+					})
+					want := "SYSTEM_ONE,SYSTEM_TWO,RESULT_ONE"
+					if turn == "second" {
+						want = "SYSTEM_ONE,SYSTEM_TWO,RESULT_TWO"
+					}
+					if got := strings.Join(markers, ","); got != want {
+						t.Errorf("%s turn: markers = %q, want %q; body=%s", turn, got, want, body)
+					}
+				}
 			}
 		})
 	}

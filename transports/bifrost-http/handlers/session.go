@@ -21,6 +21,10 @@ import (
 type SessionHandler struct {
 	configStore   configstore.ConfigStore
 	wsTicketStore *WSTicketStore
+	// setupLock is the OSS setup-lock gate (see AuthMiddleware.SetupLockMiddleware). Nil
+	// when the gate is not installed (enterprise, or no config store), in which case
+	// is-auth-enabled never reports setup_required.
+	setupLock *AuthMiddleware
 }
 
 // NewSessionHandler creates a new session handler instance
@@ -31,22 +35,81 @@ func NewSessionHandler(configStore configstore.ConfigStore, wsTicketStore *WSTic
 	}
 }
 
+// SetSetupLock tells the handler the OSS setup-lock gate is installed, so is-auth-enabled
+// reports setup_required / setup_token_configured and ws-ticket issues setup-token tickets.
+func (h *SessionHandler) SetSetupLock(m *AuthMiddleware) {
+	h.setupLock = m
+}
+
+// setSetupSessionCookie writes (or, with an empty value, expires) the HttpOnly setup session
+// cookie. SameSite=Strict: it only ever needs to ride the dashboard's own requests.
+func setSetupSessionCookie(ctx *fasthttp.RequestCtx, value string, expires time.Time) {
+	cookie := fasthttp.AcquireCookie()
+	defer fasthttp.ReleaseCookie(cookie)
+	cookie.SetKey(SetupSessionCookie)
+	cookie.SetValue(value)
+	cookie.SetExpire(expires)
+	cookie.SetPath("/")
+	cookie.SetHTTPOnly(true)
+	cookie.SetSameSite(fasthttp.CookieSameSiteStrictMode)
+	if ctx.IsTLS() || string(ctx.Request.Header.Peek("X-Forwarded-Proto")) == "https" {
+		cookie.SetSecure(true)
+	}
+	ctx.Response.Header.SetCookie(cookie)
+}
+
+// startSetupSession handles POST /api/session/setup: while the OSS setup lock is active, it
+// trades the setup token (X-Bifrost-Setup-Token, checked here rather than trusting a cookie
+// so a session cannot extend itself) for an HttpOnly setup session cookie. The dashboard
+// keeps no copy of the token; the cookie authenticates its calls until it expires or
+// dashboard auth is enabled.
+func (h *SessionHandler) startSetupSession(ctx *fasthttp.RequestCtx) {
+	if h.setupLock == nil || h.setupLock.IsDashboardAuthActive() {
+		SendError(ctx, fasthttp.StatusConflict, "the setup lock is not active")
+		return
+	}
+	if !h.setupLock.CheckConfiguredSetupToken(string(ctx.Request.Header.Peek(SetupTokenHeader))) {
+		SendError(ctx, fasthttp.StatusForbidden, "invalid setup token")
+		return
+	}
+	value, expires, err := h.setupLock.IssueSetupSession(time.Now())
+	if err != nil {
+		SendError(ctx, fasthttp.StatusInternalServerError, "failed to start setup session")
+		return
+	}
+	setSetupSessionCookie(ctx, value, expires)
+	SendJSON(ctx, map[string]any{"expires_at": expires.UTC().Format(time.RFC3339)})
+}
+
+// setupLockState reports whether the setup-lock gate is currently locking the API and
+// whether the operator configured a setup token.
+func (h *SessionHandler) setupLockState() (setupRequired bool, setupTokenConfigured bool) {
+	if h.setupLock == nil {
+		return false, false
+	}
+	return !h.setupLock.IsDashboardAuthActive(), h.setupLock.HasSetupToken()
+}
+
 // RegisterRoutes registers the session-related routes
 func (h *SessionHandler) RegisterRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
 	r.POST("/api/session/login", lib.ChainMiddlewares(h.login, middlewares...))
 	r.POST("/api/session/logout", lib.ChainMiddlewares(h.logout, middlewares...))
 	r.GET("/api/session/is-auth-enabled", lib.ChainMiddlewares(h.isAuthEnabled, middlewares...))
 	r.POST("/api/session/ws-ticket", lib.ChainMiddlewares(h.issueWSTicket, middlewares...))
+	r.POST("/api/session/setup", lib.ChainMiddlewares(h.startSetupSession, middlewares...))
 }
 
 // isAuthEnabled handles GET /api/session/is-auth-enabled - Check if auth is enabled
 func (h *SessionHandler) isAuthEnabled(ctx *fasthttp.RequestCtx) {
+	setupRequired, setupTokenConfigured := h.setupLockState()
 	if h.configStore == nil {
 		SendJSON(ctx, map[string]any{
 			"is_auth_enabled":         false,
 			"has_valid_token":         false,
 			"auth_type":               "none",
 			"inference_auth_enforced": false,
+			"setup_required":          setupRequired,
+			"setup_token_configured":  setupTokenConfigured,
 		})
 		return
 	}
@@ -69,6 +132,8 @@ func (h *SessionHandler) isAuthEnabled(ctx *fasthttp.RequestCtx) {
 			"has_valid_token":         false,
 			"auth_type":               "none",
 			"inference_auth_enforced": inferenceAuthEnforced,
+			"setup_required":          setupRequired,
+			"setup_token_configured":  setupTokenConfigured,
 		})
 		return
 	}
@@ -92,6 +157,8 @@ func (h *SessionHandler) isAuthEnabled(ctx *fasthttp.RequestCtx) {
 		"has_valid_token":         hasValidToken,
 		"auth_type":               dashboardAuthType(authConfig.IsEnabled),
 		"inference_auth_enforced": inferenceAuthEnforced,
+		"setup_required":          setupRequired,
+		"setup_token_configured":  setupTokenConfigured,
 	})
 }
 
@@ -209,6 +276,10 @@ func (h *SessionHandler) logout(ctx *fasthttp.RequestCtx) {
 		cookie.SetSecure(true)
 	}
 	ctx.Response.Header.SetCookie(cookie)
+
+	// Drop any setup session as well, so a later return to the setup lock (auth disabled
+	// again) cannot be re-entered with a cookie from before.
+	setSetupSessionCookie(ctx, "", time.Now().Add(-time.Hour))
 
 	// delete session from database if token exists
 	if token != "" {

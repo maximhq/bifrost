@@ -2,7 +2,13 @@ package handlers
 
 import (
 	"errors"
+	"github.com/fasthttp/websocket"
+	bifrost "github.com/maximhq/bifrost/core"
+	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,13 +18,16 @@ import (
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
 type testWSHandlerStore struct {
-	matcher *lib.HeaderMatcher
+	matcher         *lib.HeaderMatcher
+	allowDirectKeys bool
 }
 
 func (s testWSHandlerStore) GetHeaderMatcher() *lib.HeaderMatcher {
@@ -45,11 +54,12 @@ func (s testWSHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 	return nil
 }
 
-func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool { return false }
-func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool     { return false }
-func (s testWSHandlerStore) ShouldAllowDirectKeys() bool                { return false }
-func (s testWSHandlerStore) GetMCPExternalServerURL() string            { return "" }
-func (s testWSHandlerStore) GetMCPExternalClientURL() string            { return "" }
+func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
+func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
+func (s testWSHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
+func (s testWSHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
+func (s testWSHandlerStore) GetMCPExternalServerURL() string                 { return "" }
+func (s testWSHandlerStore) GetMCPExternalClientURL() string                 { return "" }
 
 type timeoutNetError struct{}
 
@@ -141,6 +151,40 @@ func TestCreateBifrostContextFromAuth_SettlesIdentity(t *testing.T) {
 			if got := identity.Credential(); got.Kind != tc.wantKind || got.Value != tc.wantKey {
 				t.Fatalf("credential = %+v, want kind %q value %q", got, tc.wantKind, tc.wantKey)
 			}
+		})
+	}
+}
+
+// A caller's own provider key is honoured at upgrade under the same gate as on HTTP: the server
+// setting and the per-request header, with a virtual key never mistaken for one.
+func TestCreateBifrostContextFromAuth_DirectKey(t *testing.T) {
+	direct := map[string][]string{"x-bf-direct-key": {"true"}}
+	cases := map[string]struct {
+		store   testWSHandlerStore
+		auth    *authHeaders
+		wantKey string
+	}{
+		"bearer provider key":       {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{authorization: "Bearer sk-openai", headers: direct}, wantKey: "sk-openai"},
+		"x-api-key provider key":    {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{apiKey: "sk-openai", headers: direct}, wantKey: "sk-openai"},
+		"x-goog-api-key":            {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{googAPIKey: "AIza", headers: direct}, wantKey: "AIza"},
+		"virtual key is not direct": {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{authorization: "Bearer sk-bf-vk", headers: direct}},
+		"server setting off":        {store: testWSHandlerStore{}, auth: &authHeaders{authorization: "Bearer sk-openai", headers: direct}},
+		"header absent":             {store: testWSHandlerStore{allowDirectKeys: true}, auth: &authHeaders{authorization: "Bearer sk-openai"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := createBifrostContextFromAuth(tc.store, tc.auth)
+			defer cancel()
+
+			key, ok := ctx.Value(schemas.BifrostContextKeyDirectKey).(schemas.Key)
+			if tc.wantKey == "" {
+				assert.False(t, ok, "no direct key expected, got %+v", key)
+				return
+			}
+			require.True(t, ok, "expected a direct key on the connection context")
+			assert.Equal(t, "header-provided", key.ID)
+			assert.Equal(t, tc.wantKey, key.Value.GetValue())
+			assert.True(t, governance.PresentedCredentialResolved(ctx), "a direct key is a resolved credential")
 		})
 	}
 }
@@ -285,4 +329,57 @@ func TestHasWebSocketForwardedHeaders(t *testing.T) {
 		"x-trace-id": {"abc-123"},
 	})
 	assert.True(t, hasWebSocketForwardedHeaders(ctx))
+}
+
+// A session pins the pooled upstream it borrowed so later turns reuse it. When the session ends,
+// normally or after a recovered panic, that connection must go back through the pool exactly once:
+// closing it on the session alone leaves it counted in flight, and a pool at its limit then refuses
+// every later borrow and pushes requests onto the HTTP bridge.
+func TestEndSessionReleasesThePinnedPoolConnection(t *testing.T) {
+	SetLogger(bifrost.NewDefaultLogger(schemas.LogLevelError))
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := newWSTestUpgrader()
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer upstreamSrv.Close()
+	clientSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := newWSTestUpgrader()
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer clientSrv.Close()
+
+	pool := bfws.NewPool(&schemas.WSPoolConfig{MaxTotalConnections: 1})
+	defer pool.Close()
+	h := &WSResponsesHandler{pool: pool, sessions: bfws.NewSessionManager(10)}
+	key := bfws.PoolKey{Provider: schemas.OpenAI, KeyID: "key-1", Endpoint: "ws" + strings.TrimPrefix(upstreamSrv.URL, "http")}
+
+	for i := 0; i < 3; i++ {
+		clientConn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(clientSrv.URL, "http"), nil)
+		require.NoError(t, err)
+		session, err := h.sessions.Create(clientConn)
+		require.NoError(t, err)
+		upstream, err := pool.Get(key, nil, nil)
+		require.NoError(t, err, "session %d could not borrow: the previous session's connection was never released", i)
+		session.SetUpstream(upstream)
+		h.endSession(clientConn)
+		assert.True(t, upstream.IsClosed(), "the pinned connection is closed with its session")
+	}
 }

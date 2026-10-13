@@ -134,6 +134,36 @@ func TestResponsesAccumulator_MaxMergesRatherThanSums(t *testing.T) {
 	}
 }
 
+// Adaptive thinking that chose not to think streams an explicit thinking_tokens: 0
+// on message_delta. The accumulator must keep that breakdown, as the non-streaming
+// converter does, or the Bedrock invoke stream egress drops output_tokens_details
+// (#7649 follow-up). Billing is unchanged: a zero adds no reasoning cost.
+func TestResponsesAccumulator_KeepsExplicitZeroThinkingTokens(t *testing.T) {
+	usage := &schemas.ResponsesResponseUsage{}
+	billed := &schemas.BifrostLLMUsage{}
+
+	accumulateAnthropicResponsesUsage(usage, billed, mustParseUsage(t, `{"input_tokens": 63, "output_tokens": 1}`))
+	accumulateAnthropicResponsesUsage(usage, billed, mustParseUsage(t, zeroThinkingUsage))
+
+	if usage.OutputTokensDetails == nil {
+		t.Fatal("OutputTokensDetails is nil; an explicit thinking_tokens: 0 breakdown was dropped in streaming")
+	}
+	if r := usage.OutputTokensDetails.ReasoningTokens; r != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0", r)
+	}
+	if billed.CompletionTokensDetails != nil {
+		t.Errorf("billed CompletionTokensDetails = %+v, want nil for a zero breakdown", billed.CompletionTokensDetails)
+	}
+}
+
+func TestResponsesAccumulator_AbsentDetailsStayAbsent(t *testing.T) {
+	usage := &schemas.ResponsesResponseUsage{}
+	accumulateAnthropicResponsesUsage(usage, nil, mustParseUsage(t, `{"input_tokens": 10, "output_tokens": 5}`))
+	if usage.OutputTokensDetails != nil {
+		t.Errorf("OutputTokensDetails = %+v on a stream without a breakdown, want nil", usage.OutputTokensDetails)
+	}
+}
+
 func TestPassthroughStream_MergesThinkingTokensAcrossEvents(t *testing.T) {
 	var acc AnthropicPassthroughStreamUsage
 

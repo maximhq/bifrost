@@ -590,6 +590,23 @@ export default function VirtualKeyDetailSheet({
 								</div>
 							</div>
 
+							{/* Agent access grants: the registered agents this key may call. */}
+							<div className="space-y-4">
+								<h3 className="font-semibold">Agent access</h3>
+
+								{!virtualKey.agent_grants || virtualKey.agent_grants.length === 0 ? (
+									<span className="text-muted-foreground text-sm">No agents granted</span>
+								) : (
+									<div className="flex flex-wrap gap-1">
+										{virtualKey.agent_grants.map((grant) => (
+											<Badge key={grant.agent_name} variant="secondary" className="text-xs">
+												{grant.agent_name}
+											</Badge>
+										))}
+									</div>
+								)}
+							</div>
+
 							<DottedSeparator />
 
 							{/* Budget Information */}

@@ -1307,6 +1307,10 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 		return nil
 	}
 
+	// The legacy opt-in is the fine-grained-tool-streaming beta alone, which
+	// applies to every custom tool; carry it as the per-tool flag.
+	fineGrained := r.hasAnthropicBetaPrefix(anthropic.AnthropicEagerInputStreamingBetaHeaderPrefix)
+
 	var bedrockTools []BedrockTool
 	for _, toolIface := range toolsSlice {
 		toolMap, ok := toolIface.(map[string]interface{})
@@ -1360,6 +1364,11 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 		if deferLoading, ok := toolMap["defer_loading"].(bool); ok {
 			spec.DeferLoading = new(deferLoading)
 		}
+		if eager, ok := toolMap["eager_input_streaming"].(bool); ok {
+			spec.EagerInputStreaming = new(eager)
+		} else if fineGrained {
+			spec.EagerInputStreaming = new(true)
+		}
 
 		bedrockTools = append(bedrockTools, BedrockTool{ToolSpec: spec})
 
@@ -1392,6 +1401,30 @@ func (r *BedrockInvokeRequest) convertAnthropicTools() *BedrockToolConfig {
 	}
 
 	return toolConfig
+}
+
+// hasAnthropicBetaPrefix reports whether the body's anthropic_beta (a string
+// or an array of strings) lists a beta starting with prefix.
+func (r *BedrockInvokeRequest) hasAnthropicBetaPrefix(prefix string) bool {
+	var betas []string
+	switch v := r.AnthropicBeta.(type) {
+	case string:
+		betas = strings.Split(v, ",")
+	case []string:
+		betas = v
+	case []interface{}:
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				betas = append(betas, s)
+			}
+		}
+	}
+	for _, beta := range betas {
+		if strings.HasPrefix(strings.TrimSpace(beta), prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // convertAnthropicToolChoice converts Anthropic-format tool_choice to Bedrock ToolChoice.

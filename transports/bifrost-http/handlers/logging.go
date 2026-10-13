@@ -690,9 +690,11 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	parseAgentNamesFilter(ctx, filters)
 	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
 		filters.SessionID = sessionID
 	}
+	parseAgentCorrelationIDFilter(ctx, filters)
 	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
@@ -978,9 +980,11 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	parseAgentNamesFilter(ctx, filters)
 	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
 		filters.SessionID = sessionID
 	}
+	parseAgentCorrelationIDFilter(ctx, filters)
 	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
@@ -1147,6 +1151,14 @@ func calculateBucketSize(start, end *time.Time) int64 {
 	return logstore.DefaultBucketSize(start, end)
 }
 
+func parseAgentNamesFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	filters.AgentNames = parseCommaSeparated(string(ctx.QueryArgs().Peek("agent_names")))
+}
+
+func parseAgentCorrelationIDFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	filters.AgentCorrelationID = strings.TrimSpace(string(ctx.QueryArgs().Peek("agent_correlation_id")))
+}
+
 // parseComplexityFilters extracts the structured complexity filters shared by
 // log search, aggregate, and histogram endpoints.
 func parseComplexityFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
@@ -1226,9 +1238,11 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	parseAgentNamesFilter(ctx, filters)
 	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
 		filters.SessionID = sessionID
 	}
+	parseAgentCorrelationIDFilter(ctx, filters)
 	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
@@ -1502,10 +1516,23 @@ func (h *LoggingHandler) getLogsDimensionLatencyHistogram(ctx *fasthttp.RequestC
 	SendJSON(ctx, result)
 }
 
+// maintenanceDropReporter is the optional LogManager extension that splits out
+// drops incurred while the log writer was paused for a logstore migration. It is
+// asserted rather than added to LogManager so other implementations keep compiling.
+type maintenanceDropReporter interface {
+	GetDroppedDuringMaintenance(ctx context.Context) int64
+}
+
 // getDroppedRequests handles GET /api/logs/dropped - Get the number of dropped requests
 func (h *LoggingHandler) getDroppedRequests(ctx *fasthttp.RequestCtx) {
-	droppedRequests := h.logManager.GetDroppedRequests(ctx)
-	SendJSON(ctx, map[string]int64{"dropped_requests": droppedRequests})
+	// Read the maintenance subset before the total: a drop counted between the
+	// two reads then lands only in the total, so the subset never exceeds it.
+	response := map[string]int64{}
+	if reporter, ok := h.logManager.(maintenanceDropReporter); ok {
+		response["dropped_during_maintenance"] = reporter.GetDroppedDuringMaintenance(ctx)
+	}
+	response["dropped_requests"] = h.logManager.GetDroppedRequests(ctx)
+	SendJSON(ctx, response)
 }
 
 // ParseRankingLimit reads the row-cap query parameters shared by the ranking
@@ -1735,8 +1762,8 @@ func (h *LoggingHandler) applyCurrentRankingNames(ctx context.Context, result *l
 	ids := make([]string, 0, len(result.Rankings))
 	for _, row := range result.Rankings {
 		// The redacted lookups return every row for an empty id list, so only
-		// real entity ids are sent, never "" or the Unassigned bucket.
-		if row.ID != "" && row.ID != logstore.UnassignedDimensionID {
+		// real entity ids are sent, never "" or the Unassigned / Other buckets.
+		if row.ID != "" && row.ID != logstore.UnassignedDimensionID && row.ID != logstore.OtherDimensionID {
 			ids = append(ids, row.ID)
 		}
 	}
@@ -2785,6 +2812,12 @@ type recalculateCostFilters struct {
 	Period string `json:"period,omitempty"`
 }
 
+func parseMCPCorrelationFilters(ctx *fasthttp.RequestCtx, filters *logstore.MCPToolLogSearchFilters) {
+	filters.AgentNames = parseCommaSeparated(string(ctx.QueryArgs().Peek("agent_names")))
+	filters.SessionID = strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id")))
+	filters.AgentCorrelationID = strings.TrimSpace(string(ctx.QueryArgs().Peek("agent_correlation_id")))
+}
+
 // parseMCPFiltersAndPagination parses MCP tool log filters and pagination from query parameters.
 // Returns an error if any required parsing fails (e.g., invalid time format, invalid number format).
 func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilters, *logstore.PaginationOptions, error) {
@@ -2814,6 +2847,7 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
 		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
 	}
+	parseMCPCorrelationFilters(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
@@ -2946,6 +2980,7 @@ func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilter
 	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
 		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
 	}
+	parseMCPCorrelationFilters(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}

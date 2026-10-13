@@ -301,6 +301,17 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		return nil, fmt.Errorf("unsupported request type for semantic caching")
 	}
 
+	// identity_scope keeps entries with the identity that wrote them (see
+	// resolveIdentityScope). Like request_family it is set after the params, so a
+	// request body field of the same name can never claim another identity's
+	// scope; with scoping disabled such a field is dropped rather than hashed, so
+	// the key stays the plugin's own in both modes.
+	if state != nil && state.IdentityScope != nil {
+		metadata["identity_scope"] = state.IdentityScope
+	} else {
+		delete(metadata, "identity_scope")
+	}
+
 	return metadata, nil
 }
 
@@ -352,6 +363,8 @@ func isResponsesToolCallItem(t schemas.ResponsesMessageType) bool {
 		schemas.ResponsesMessageTypeCustomToolCall,
 		schemas.ResponsesMessageTypeComputerCall,
 		schemas.ResponsesMessageTypeLocalShellCall,
+		schemas.ResponsesMessageTypeShellCall,
+		schemas.ResponsesMessageTypeApplyPatchCall,
 		schemas.ResponsesMessageTypeMCPCall,
 		schemas.ResponsesMessageTypeMCPApprovalRequest:
 		return true
@@ -1049,6 +1062,9 @@ func (plugin *Plugin) extractSpeechParametersToMetadata(params *schemas.SpeechPa
 func (plugin *Plugin) extractEmbeddingParametersToMetadata(params *schemas.EmbeddingParameters, metadata map[string]interface{}) {
 	putIfSet(metadata, "encoding_format", params.EncodingFormat)
 	putIfSet(metadata, "dimensions", params.Dimensions)
+	putIfSet(metadata, "task_type", params.TaskType)
+	putIfSet(metadata, "title", params.Title)
+	putIfSet(metadata, "auto_truncate", params.AutoTruncate)
 	if len(params.ExtraParams) > 0 {
 		maps.Copy(metadata, params.ExtraParams)
 	}

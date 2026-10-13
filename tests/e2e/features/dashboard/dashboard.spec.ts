@@ -45,15 +45,16 @@ test.describe('Dashboard', () => {
         { timeout: 15000 }
       )
 
-      await dashboardPage.selectTimePeriod('1h')
+      // The dashboard opens on the last hour, so pick a different period to force a refetch.
+      await dashboardPage.selectTimePeriod('6h')
 
       // UI: trigger shows the selected period
       const label = await dashboardPage.getSelectedPeriodLabel()
-      expect(label).toContain('Last hour')
+      expect(label).toContain('Last 6 hours')
 
       // URL: selection is reflected in query state
       const url = dashboardPage.page.url()
-      expect(url).toMatch(/period=1h|start_time=\d+&end_time=\d+/)
+      expect(url).toMatch(/period=6h|start_time=\d+&end_time=\d+/)
 
       // Data: dashboard refetched with the new range
       await responsePromise
@@ -348,18 +349,14 @@ test.describe('Dashboard', () => {
     test('should open custom date range picker', async ({ dashboardPage }) => {
       await dashboardPage.waitForChartsToLoad()
 
-      // Look for date picker button
-      const datePicker = dashboardPage.page.getByRole('button').filter({ hasText: /Last|Custom/i }).first()
+      const datePicker = dashboardPage.getDatePickerTrigger()
       const isVisible = await datePicker.isVisible().catch(() => false)
 
       if (isVisible) {
         await datePicker.click()
 
-        // Should see date range options or calendar
-        const calendarVisible = await dashboardPage.page.locator('[role="dialog"], [role="listbox"]').isVisible().catch(() => false)
-        const optionsVisible = await dashboardPage.page.getByRole('option').first().isVisible().catch(() => false)
-
-        expect(calendarVisible || optionsVisible).toBe(true)
+        // Should see the presets and calendar popover
+        await expect(dashboardPage.page.locator('[data-radix-popper-content-wrapper]')).toBeVisible()
 
         // Close the picker
         await dashboardPage.page.keyboard.press('Escape')

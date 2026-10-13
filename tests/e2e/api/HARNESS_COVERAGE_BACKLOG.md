@@ -117,7 +117,7 @@ Sources:
 - [x] **Tool search** (`tool_search_tool_bm25`, `tool_search_tool_regex`) - Anthropic accept-path in folder 12; Bedrock InvokeModel routing (tool_search + defer_loading) pinned in folder 71
 - [x] **MCP toolset** (`mcp_toolset` server reference) — gated: folder 145.7 [PREVIEW]
 - [x] **Code execution v2** (`code_execution_20250825`) — audited: covered
-- [x] **Code execution programmatic** (`code_execution_20260120`) — audited: covered
+- [x] **Code execution programmatic** (`code_execution_20260120`) - folder 177 (responses-tool-vocabulary): 177.5 pins that a version-less `code_interpreter` plus a programmatic-restricted tool is RAISED to `code_execution_20260120` on the wire, since 20250825 has no programmatic tool calling; 177.7 pins that a dropped mcp caller does not raise it
 - [x] **Computer use new-gen** (`computer_20251124` + `text_editor_20250728` + `bash_20250124` for Opus 4.7/4.6/Sonnet 4.6) — audited: covered
 - [x] **PDF input** (`{ type: "document", source: { type: "base64", media_type: "application/pdf" } }`) - folder 75 (cowork-attachments): native + streaming + `/v1/chat/completions` `file.file_data` + `/v1/responses` `input_file.file_data`, plus Files API `file_id` in all three shapes, each asserting the wire payload via `x-bf-send-back-raw-request`
 - [x] **Citations** (`citations: { enabled: true }` on document blocks) — audited: covered (weak: status/shape assertions only)
@@ -127,7 +127,7 @@ Sources:
 - [x] **Effort** (`output_config: { effort: "low" | "medium" | "high" | "max" }` for Opus 4.5/4.6) — audited: covered
 - [x] **Format / structured output** (`output_config: { format: { type: "json_schema", schema: {...} } }`) — audited: covered (weak: status/shape assertions only)
 - [x] **Defer loading** (`defer_loading: true` on tools) — audited: covered
-- [x] **Allowed callers** (`allowed_callers: [...]` on tools) — audited: covered
+- [x] **Allowed callers** (`allowed_callers: [...]` on tools) - folder 177 (responses-tool-vocabulary): both translation directions asserted on the wire via `x-bf-send-back-raw-request` - OpenAI `programmatic` -> Anthropic `code_execution_20260120` (177.5), Anthropic versioned -> OpenAI `programmatic` (177.6), and dropped entirely on an `mcp_toolset`, which has no such field (177.7)
 - [x] **Eager input streaming** (`eager_input_streaming: true` on tools; beta) — audited: covered
 - [x] **Strict tool input** (`strict: true` for structured-outputs validation) — audited: covered (weak: status/shape assertions only)
 - [x] **Tool input examples** (`input_examples: [{ input, description }]`) — audited: covered

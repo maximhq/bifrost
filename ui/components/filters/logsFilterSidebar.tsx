@@ -14,7 +14,7 @@ import {
 	type LabelledMetadataFilterGroup,
 	type RecordedMetadataValues,
 } from "@/lib/registries/logs";
-import { useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
+import { useGetAgentsQuery, useGetAvailableFilterDataQuery, useGetProvidersQuery } from "@/lib/store";
 import {
 	COMPLEXITY_MECHANISM_LABELS,
 	COMPLEXITY_MECHANISM_VALUES,
@@ -127,7 +127,9 @@ export function LogsFilterSidebar({ filters, onFiltersChange }: LogsSidebarProps
 					))}
 					<ComplexityTierFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<ComplexityMechanismFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<AgentFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<RequestSessionFilter filters={filters} onFiltersChange={onFiltersChange} />
+					<AgentCorrelationFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<LocalCachingFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<UserFilter filters={filters} onFiltersChange={onFiltersChange} />
 					<TeamFilter filters={filters} onFiltersChange={onFiltersChange} />
@@ -523,7 +525,6 @@ function AppFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentPro
 		() => [...new Set([...availableApps, ...(filters.apps || [])])].sort().map((name) => ({ key: name, label: name })),
 		[availableApps, filters.apps],
 	);
-
 	if (!isUninitialized && !isLoading && availableApps.length === 0 && !hasActive && !opened) return null;
 
 	const selectedSet = new Set(filters.apps || []);
@@ -1004,6 +1005,38 @@ function ComplexityMechanismFilter({ filters, onFiltersChange, defaultOpen }: Fi
 // RequestSessionFilter
 // ---------------------------------------------------------------------------
 
+function AgentFilter({ filters, onFiltersChange }: FilterComponentProps) {
+	const selected = filters.agent_names ?? [];
+	const hasActive = selected.length > 0;
+	const [opened, setOpened] = useState(hasActive);
+	const searchInputRef = useAutoFocusOnOpen(opened);
+	const { data, isLoading } = useGetAgentsQuery(undefined, { skip: !opened && !hasActive });
+	const items = useMemo(
+		() =>
+			[...new Set([...(data?.agents.map((agent) => agent.name) ?? []), ...(filters.agent_names ?? [])])]
+				.sort()
+				.map((name) => ({ key: name, label: name })),
+		[data?.agents, filters.agent_names],
+	);
+
+	return (
+		<FilterSection title="Agent" defaultOpen={hasActive} loading={isLoading} onOpenChange={setOpened} testId="agent-filter-toggle">
+			<SearchableCheckboxList
+				inputRef={searchInputRef}
+				placeholder="Search agents"
+				items={items}
+				isSelected={(name) => selected.includes(name)}
+				onToggle={(name) => {
+					const next = selected.includes(name) ? selected.filter((agentName) => agentName !== name) : [...selected, name];
+					onFiltersChange({ ...filters, agent_names: next.length > 0 ? next : undefined });
+				}}
+				testIdPrefix="agent-filter"
+				normalizeTestIdKey
+			/>
+		</FilterSection>
+	);
+}
+
 function RequestSessionFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
 	const hasActive = !!filters.session_id;
 	return (
@@ -1016,6 +1049,24 @@ function RequestSessionFilter({ filters, onFiltersChange, defaultOpen }: FilterC
 					placeholder="Exact session ID"
 					className="h-8 border-0 pl-8 text-sm"
 					data-testid="request-session-id-filter-input"
+				/>
+			</div>
+		</FilterSection>
+	);
+}
+
+function AgentCorrelationFilter({ filters, onFiltersChange, defaultOpen }: FilterComponentProps) {
+	const hasActive = !!filters.agent_correlation_id;
+	return (
+		<FilterSection title="Agent correlation ID" defaultOpen={defaultOpen || hasActive} testId="agent-correlation-filter-toggle">
+			<div className="relative">
+				<Search className="text-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2" />
+				<Input
+					value={filters.agent_correlation_id || ""}
+					onChange={(event) => onFiltersChange({ ...filters, agent_correlation_id: event.target.value })}
+					placeholder="Exact Agent correlation ID"
+					className="h-8 border-0 pl-8 text-sm"
+					data-testid="agent-correlation-id-filter-input"
 				/>
 			</div>
 		</FilterSection>

@@ -176,6 +176,13 @@ func warpInferenceContext(ctx context.Context, config *schemas.WarpConfig, conve
 	if g := NewGrantFromContext(ctx); g != nil {
 		bifrostCtx.SetGrant(g)
 	}
+	// A signed-in user nothing grants model access to is still served. Reaching
+	// the chat route already proves their role allows Warp, and on a deployment
+	// without access profiles no user would ever hold a permit, so refusing them
+	// would make Warp admin-only there. Governance reads this as "treat such a
+	// user as a key-less request": one who does hold a profile is governed by it
+	// as before, and a virtual key the request presents still has to resolve.
+	bifrostCtx.SetValue(schemas.BifrostContextKeyAdmitUngrantedUser, true)
 	headers := map[string]string{"user-agent": UserAgent}
 	bifrostCtx.SetValue(schemas.MCPContextKeyIncludeClients, []string{excludeMCPToolsValue})
 	if conversationID != "" {

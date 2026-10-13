@@ -56,7 +56,7 @@ func (s *QdrantStore) CreateNamespace(ctx context.Context, namespace string, dim
 		} else {
 			existingDim := int(params.GetSize())
 			if existingDim != dimension {
-				return fmt.Errorf("namespace %q already exists with dimension %d but config requires %d — update vector_store_namespace to a new name or drop the existing collection manually", namespace, existingDim, dimension)
+				return dimensionMismatchError(namespace, existingDim, dimension, "collection")
 			}
 		}
 	}

@@ -27,6 +27,7 @@ type BifrostConfig struct {
 	Account            Account
 	LLMPlugins         []LLMPlugin
 	MCPPlugins         []MCPPlugin
+	A2APlugins         []A2APlugin
 	OAuth2Provider     OAuth2Provider
 	MCPHeadersProvider MCPHeadersProvider // Backend for MCPAuthTypePerUserHeaders credential storage; nil disables per-user-headers auth (resolver errors at use)
 	Logger             Logger
@@ -77,6 +78,7 @@ const (
 	Wafer         ModelProvider = "wafer"
 	GithubCopilot ModelProvider = "github-copilot"
 	Databricks    ModelProvider = "databricks"
+	Cloudflare    ModelProvider = "cloudflare"
 	Typesafe      ModelProvider = "typesafe"
 )
 
@@ -126,6 +128,7 @@ var StandardProviders = []ModelProvider{
 	Wafer,
 	GithubCopilot,
 	Databricks,
+	Cloudflare,
 	Typesafe,
 }
 
@@ -205,6 +208,9 @@ const (
 	UnknownRequest                 RequestType = "unknown"
 	WebSocketResponsesRequest      RequestType = "websocket_responses"
 	RealtimeRequest                RequestType = "realtime"
+	LiveRequest                    RequestType = "live"
+	LiveContentRequest             RequestType = "live_content"
+	LiveSidebandRequest            RequestType = "live_sideband"
 )
 
 // BifrostContextKey is a type for context keys used in Bifrost.
@@ -243,14 +249,15 @@ const (
 
 // BifrostContextKeyRequestType is a context key for the request type.
 const (
-	BifrostContextKeySessionToken      BifrostContextKey = "bifrost-session-token" // string (session token for authentication - set by auth middleware)
-	BifrostContextKeyVirtualKey        BifrostContextKey = "x-bf-vk"               // string
-	BifrostContextKeyAPIKeyName        BifrostContextKey = "x-bf-api-key"          // string (explicit key name selection)
-	BifrostContextKeyAPIKeyID          BifrostContextKey = "x-bf-api-key-id"       // string (explicit key ID selection, takes priority over name)
-	BifrostContextKeyDirectKey         BifrostContextKey = "x-bf-direct-key"       // schemas.Key (raw key supplied via x-bf-direct-key: true header; bypasses registered key pool)
-	BifrostContextKeyRequestID         BifrostContextKey = "request-id"            // string
-	BifrostContextKeyFallbackRequestID BifrostContextKey = "fallback-request-id"   // string
-	BifrostContextKeyBillingNonce      BifrostContextKey = "bifrost-billing-nonce" // string (internally minted per physical HTTP request; makes the billing-idempotency key unforgeable since request-id may be caller-supplied via x-request-id. Never read from headers, never echoed to the caller - DO NOT SET THIS MANUALLY)
+	BifrostContextKeySessionToken       BifrostContextKey = "bifrost-session-token" // string (session token for authentication - set by auth middleware)
+	BifrostContextKeyAcceptedCredential BifrostContextKey = "bifrost-accepted-credential"
+	BifrostContextKeyVirtualKey         BifrostContextKey = "x-bf-vk"               // string
+	BifrostContextKeyAPIKeyName         BifrostContextKey = "x-bf-api-key"          // string (explicit key name selection)
+	BifrostContextKeyAPIKeyID           BifrostContextKey = "x-bf-api-key-id"       // string (explicit key ID selection, takes priority over name)
+	BifrostContextKeyDirectKey          BifrostContextKey = "x-bf-direct-key"       // schemas.Key (raw key supplied via x-bf-direct-key: true header; bypasses registered key pool)
+	BifrostContextKeyRequestID          BifrostContextKey = "request-id"            // string
+	BifrostContextKeyFallbackRequestID  BifrostContextKey = "fallback-request-id"   // string
+	BifrostContextKeyBillingNonce       BifrostContextKey = "bifrost-billing-nonce" // string (internally minted per physical HTTP request; makes the billing-idempotency key unforgeable since request-id may be caller-supplied via x-request-id. Never read from headers, never echoed to the caller - DO NOT SET THIS MANUALLY)
 
 	// NOTE: []string is used for both keys, and by default all clients/tools are included (when nil).
 	// If "*" is present, all clients/tools are included, and [] means no clients/tools are included.
@@ -266,28 +273,12 @@ const (
 
 	BifrostContextKeySelectedKeyID                       BifrostContextKey = "bifrost-selected-key-id"                 // string (to store the selected key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedKeyName                     BifrostContextKey = "bifrost-selected-key-name"               // string (to store the selected key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceVirtualKeyID              BifrostContextKey = "bifrost-governance-virtual-key-id"       // string (to store the virtual key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceVirtualKeyName            BifrostContextKey = "bifrost-governance-virtual-key-name"     // string (to store the virtual key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceTeamID                    BifrostContextKey = "bifrost-governance-team-id"              // string (to store the team ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceTeamName                  BifrostContextKey = "bifrost-governance-team-name"            // string (to store the team name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceCustomerID                BifrostContextKey = "bifrost-governance-customer-id"          // string (to store the customer ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceCustomerName              BifrostContextKey = "bifrost-governance-customer-name"        // string (to store the customer name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRequestProvider           BifrostContextKey = "bifrost-governance-request-provider"     // string (the request's model provider, stamped in PreRequestHook so access resolution can apply provider-scoped grants - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceBusinessUnitID            BifrostContextKey = "bifrost-governance-business-unit-id"     // string (to store the business unit ID (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceBusinessUnitName          BifrostContextKey = "bifrost-governance-business-unit-name"   // string (to store the business unit name (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceTeamIDs                   BifrostContextKey = "bifrost-governance-team-ids"             // []string (all teams a user/AP request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceTeamNames                 BifrostContextKey = "bifrost-governance-team-names"           // []string (display names, aligned with team-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceBusinessUnitIDs           BifrostContextKey = "bifrost-governance-business-unit-ids"    // []string (distinct BUs across the user's teams; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceBusinessUnitNames         BifrostContextKey = "bifrost-governance-business-unit-names"  // []string (display names, aligned with business-unit-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceCustomerIDs               BifrostContextKey = "bifrost-governance-customer-ids"         // []string (distinct customers a user/team request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceCustomerNames             BifrostContextKey = "bifrost-governance-customer-names"       // []string (display names, aligned with customer-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceScopedCustomerID          BifrostContextKey = "bifrost-governance-scoped-customer-id"   // string (resolved customer the request is scoped to via the x-bf-customer-id / x-bf-customer-name header on a team-VK path; set by the enterprise governance plugin - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceProjectID                 BifrostContextKey = "bifrost-governance-project-id"           // string (the project a request is scoped to, once resolved and checked; every consumer reads the resolved value rather than the caller's header - DO NOT SET THIS MANUALLY)
-	BifrostContextKeyGovernanceProjectName               BifrostContextKey = "bifrost-governance-project-name"         // string (display name, aligned with project-id - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernanceRoutingRuleID             BifrostContextKey = "bifrost-governance-routing-rule-id"      // string (to store the routing rule ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceRoutingRuleName           BifrostContextKey = "bifrost-governance-routing-rule-name"    // string (to store the routing rule name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceComplexityTier            BifrostContextKey = "bifrost-governance-complexity-tier"      // string (complexity tier computed for routing, e.g. "SIMPLE"/"MEDIUM"/"COMPLEX"; only present when a routing rule referenced complexity_tier and classification produced a tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyGovernanceComplexityMechanism       BifrostContextKey = "bifrost-governance-complexity-mechanism" // string (how the effective complexity tier was determined: "semantic", "jev", "llm", "session", or "skipped" when classification was demanded but produced no tier; only present when a routing rule referenced complexity_tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
+	BifrostContextKeyGovernanceComplexityMechanism       BifrostContextKey = "bifrost-governance-complexity-mechanism" // string (how the effective complexity tier was determined: "semantic", "decision", "llm", "session", or "skipped" when classification was demanded but produced no tier; only present when a routing rule referenced complexity_tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyGovernanceComplexityScore           BifrostContextKey = "bifrost-governance-complexity-score"     // float64 (classifier score behind the tier: the semantic classifier's similarity to the nearest reference phrase; only present alongside a computed tier (set by bifrost routing plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyRoutingPinnedAPIKeyID               BifrostContextKey = "bifrost-routing-pinned-api-key-id"       // string (provider key ID pinned by a matched routing rule target; resolved against the configured key pool during key selection and takes precedence over a caller-supplied pin (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySelectedPromptName                  BifrostContextKey = "bifrost-selected-prompt-name"            // string (display name of the selected prompt (set by prompts plugin - DO NOT SET THIS MANUALLY))
@@ -327,9 +318,18 @@ const (
 	BifrostContextKeyUserAgent                           BifrostContextKey = "bifrost-user-agent"                               // string (set by bifrost)
 	BifrostContextKeyApp                                 BifrostContextKey = "app"                                              // string (canonical app key such as claude-code; set by plugins)
 	BifrostContextKeySkipBudgetAndRateLimits             BifrostContextKey = "bifrost-skip-budget-and-rate-limits"              // bool (set by bifrost for read-only requests like list models that don't consume quota)
+	BifrostContextKeySessionContinuation                 BifrostContextKey = "bifrost-session-continuation"                     // bool (a billing unit of an already-admitted session, e.g. a GPT Live window; not checked or counted as a request)
+	BifrostContextKeyLiveSessionID                       BifrostContextKey = "bifrost-live-session-id"                          // string (set by the live transport on every billing unit: the session the unit belongs to; logging folds units into one row per session)
+	BifrostContextKeyLiveUnit                            BifrostContextKey = "bifrost-live-unit"                                // string (set by the live transport: "voice" for a window of voice seconds, "backend" for one delegated Responses call)
+	BifrostContextKeyLiveSessionStart                    BifrostContextKey = "bifrost-live-session-start"                       // bool (set by the live transport on the unit that opens the session)
+	BifrostContextKeyLiveSessionEnd                      BifrostContextKey = "bifrost-live-session-end"                         // bool (set by the live transport on the unit that closes the session; its response output is the transcript)
+	BifrostContextKeyLiveDelegationID                    BifrostContextKey = "bifrost-live-delegation-id"                       // string (set by the live transport on a backend unit: the delegation its response ran)
+	BifrostContextKeyLiveDelegationStartMs               BifrostContextKey = "bifrost-live-delegation-start-ms"                 // int64 (set by the live transport on a backend unit: when its delegation began, on the session timeline)
+	BifrostContextKeyLiveDelegationFailed                BifrostContextKey = "bifrost-live-delegation-failed"                   // bool (set by the live transport on a backend unit the provider refused to run a delegation on)
 	BifrostContextKeySkipProviderCheck                   BifrostContextKey = "bifrost-skip-provider-check"                      // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the provider is the intercepted upstream rather than an operator choice; skips the virtual key and access profile provider allowlists)
 	BifrostContextKeySkipModelCheck                      BifrostContextKey = "bifrost-skip-model-check"                         // bool (set by the transport for requests that are evaluated but never routed, such as /inspect, where the model is the intercepted upstream model rather than an operator grant; skips the virtual key and access profile model allowlists)
 	BifrostContextKeySkipVirtualKeyUsageTracking         BifrostContextKey = "bifrost-skip-virtual-key-usage-tracking"          // bool (set by governance callers to skip VK usage while preserving VK auth/attribution)
+	BifrostContextKeyAdmitUngrantedUser                  BifrostContextKey = "bifrost-admit-ungranted-user"                     // bool (set by Warp: a signed-in user nothing grants access to is served ungoverned, as a key-less request is, instead of refused; a presented virtual key is still held to what it resolves to)
 	BifrostContextKeyTraceID                             BifrostContextKey = "bifrost-trace-id"                                 // string (per-request trace store handle - set by tracing middleware or stream pre-hooks; use BifrostContextKeyExportTraceID for the W3C trace ID)
 	BifrostContextKeyExportTraceID                       BifrostContextKey = "bifrost-export-trace-id"                          // string (W3C trace ID advertised to the caller via the x-bifrost-trace-id response header; equals the store handle when no traceparent was inherited - set by tracing middleware)
 	BifrostContextKeySpanID                              BifrostContextKey = "bifrost-span-id"                                  // string (current span ID for child span creation - set by tracer)
@@ -348,8 +348,6 @@ const (
 	BifrostContextKeySkipDBUpdate                        BifrostContextKey = "bifrost-skip-db-update"                           // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGovernancePluginName                BifrostContextKey = "governance-plugin-name"                           // string (name of the governance plugin that processed the request - set by bifrost)
 	BifrostContextKeyClusterNodeID                       BifrostContextKey = "bifrost-cluster-node-id"                          // string (cluster node ID for log attribution - set by enterprise server)
-	BifrostContextKeyGovernanceBudgetIDs                 BifrostContextKey = "bifrost-governance-budget-ids"                    // []string (budget IDs applicable to this request - set by governance plugin)
-	BifrostContextKeyGovernanceRateLimitIDs              BifrostContextKey = "bifrost-governance-rate-limit-ids"                // []string (rate limit IDs applicable to this request - set by governance plugin)
 	BifrostContextKeyPromptsPluginName                   BifrostContextKey = "prompts-plugin-name"                              // string (name of the prompts plugin to use - set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyIsEnterprise                        BifrostContextKey = "is-enterprise"                                    // bool (set by bifrost - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyAvailableProviders                  BifrostContextKey = "available-providers"                              // []ModelProvider (set by internal bifrost components - DO NOT SET THIS MANUALLY))
@@ -378,6 +376,9 @@ const (
 	BifrostContextKeyRealtimeSource                      BifrostContextKey = "bifrost-realtime-source"                          // string ("ei" or "lm")
 	BifrostContextKeyRealtimeEventType                   BifrostContextKey = "bifrost-realtime-event-type"                      // string
 	BifrostContextKeyRealtimeTransport                   BifrostContextKey = "bifrost-realtime-transport"                       // string ("websocket" or "webrtc")
+	BifrostContextKeyA2ADownstreamTransport              BifrostContextKey = "bifrost-a2a-downstream-transport"                 // string (A2A binding accepted by the gateway)
+	BifrostContextKeyA2ARequestOrigin                    BifrostContextKey = "bifrost-a2a-request-origin"                       // string (absolute HTTP origin used to reach the Agent Gateway)
+	BifrostContextKeyA2AUpstreamTransport                BifrostContextKey = "bifrost-a2a-upstream-transport"                   // string (A2A binding selected for the upstream agent)
 	BifrostContextKeyRealtimeVoice                       BifrostContextKey = "bifrost-realtime-voice"                           // string
 	BifrostIsAsyncRequest                                BifrostContextKey = "bifrost-is-async-request"                         // bool (set by bifrost - DO NOT SET THIS MANUALLY)) - whether the request is an async request (only used in gateway)
 	BifrostContextKeyRequestHeaders                      BifrostContextKey = "bifrost-request-headers"                          // map[string]string (all request headers with lowercased keys)
@@ -388,14 +389,12 @@ const (
 	BifrostContextKeyGuardrailMetadata                   BifrostContextKey = "bifrost-guardrail-debug"                          // *BifrostGuardrailMetadata (set by enterprise guardrails plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyGuardrailHeaders                    BifrostContextKey = "bifrost-guardrail-headers"                        // map[string]string (the headers guardrail rules match against as `headers`; set by the guardrails HTTP pre-hook, or by an in-process caller that sends no HTTP request, such as Warp)
 	BifrostContextKeyCacheMetadata                       BifrostContextKey = "bifrost-cache-debug"                              // *BifrostCacheMetadata (set by semantic cache plugin - DO NOT SET THIS MANUALLY)
+	BifrostContextKeyCacheLookup                         BifrostContextKey = "bifrost-cache-lookup"                             // *BifrostCacheMetadata (the semantic cache lookup's outcome, known before the response starts; read for stream response headers - set by semantic cache plugin)
 	BifrostContextKeyRoutingMetadata                     BifrostContextKey = "bifrost-routing-metadata"                         // *BifrostRoutingMetadata (set by routing plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyRedactionData                       BifrostContextKey = "bifrost-redaction-data"                           // RedactionData (set by enterprise guardrails plugin - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyDisableContentLogging               BifrostContextKey = "x-bf-disable-content-logging"                     // bool (per-request override for content logging; only honored when BifrostContextKeyAllowPerRequestStorageOverride is true. When retain_content_in_object_storage is on, disabled content is still offloaded to object storage as hidden instead of dropped)
 	BifrostContextKeySkipListModelsGovernanceFiltering   BifrostContextKey = "bifrost-skip-list-models-governance-filtering"    // bool (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeySCIMClaims                          BifrostContextKey = "scim_claims"
-	BifrostContextKeyUserID                              BifrostContextKey = "bifrost-user-id"                    // string (to store the user ID (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyUserName                            BifrostContextKey = "bifrost-user-name"                  // string (to store the user name (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
-	BifrostContextKeyUserEmail                           BifrostContextKey = "bifrost-user-email"                 // string (to store the user email (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyAuthCredential                      BifrostContextKey = "bifrost-auth-credential"            // schemas.Credential (what the request authenticated by, other than a virtual key presented in a header: set by the middleware that verified it, with the kind it names and the id it verified; read once when the request context settles who the request is)
 	BifrostContextKeyMCPInboundBearer                    BifrostContextKey = "bifrost-mcp-inbound-bearer"         // string (the caller's validated identity-provider token, used as the subject of delegated token exchange; set by the upstream auth layer - DO NOT SET THIS MANUALLY. SECURITY: live credential - never log its value)
 	BifrostContextKeyMCPInboundBearerOmitted             BifrostContextKey = "bifrost-mcp-inbound-bearer-omitted" // MCPInboundBearerOmittedReason (why a request that presented an identity-provider token carries no delegated-exchange subject; set by the upstream auth layer - DO NOT SET THIS MANUALLY)
@@ -412,6 +411,8 @@ const (
 	BifrostContextKeyDroppedUnsupportedTools             BifrostContextKey = "bifrost-dropped-unsupported-tools"          // []string (set by provider request builders — tool type strings silently dropped because the target provider/model doesn't support them)
 	BifrostContextKeyMCPAddedTools                       BifrostContextKey = "bifrost-mcp-added-tools"                    // []string (set by bifrost - DO NOT SET THIS MANUALLY)) - list of tools added to the request by MCP, all the tool are in the format "clientName-toolName"
 	BifrostContextKeyMCPInstructionsInjected             BifrostContextKey = "bifrost-mcp-instructions-injected"          // bool (set by bifrost - DO NOT SET THIS MANUALLY) - guards the agent loop from stacking the instructions block on every turn
+	BifrostContextKeyMCPInstructionsText                 BifrostContextKey = "bifrost-mcp-instructions-text"              // *string (set by bifrost - DO NOT SET THIS MANUALLY) - the injected instructions block, so prompt-cache placement can skip it
+	BifrostContextKeyMCPAgentServedRoute                 BifrostContextKey = "bifrost-mcp-agent-served-route"             // *RoutingInfo (set by the MCP agent loop - DO NOT SET THIS MANUALLY) - route that served turn 1; marks a continuation turn
 	BifrostContextKeyLargePayloadMode                    BifrostContextKey = "bifrost-large-payload-mode"                 // bool (set by bifrost - DO NOT SET THIS MANUALLY)) indicates large payload streaming mode is active
 	BifrostContextKeyLargePayloadReader                  BifrostContextKey = "bifrost-large-payload-reader"               // io.Reader (set by bifrost - DO NOT SET THIS MANUALLY)) upstream reader for large payloads
 	BifrostContextKeyLargePayloadContentLength           BifrostContextKey = "bifrost-large-payload-content-length"       // int (set by bifrost - DO NOT SET THIS MANUALLY)) content length for large payloads
@@ -437,21 +438,26 @@ const (
 	BifrostContextKeyMCPExtraHeaders                     BifrostContextKey = "bifrost-mcp-extra-headers"                  // map[string][]string (these headers are forwarded only to the MCP while tool execution if they are in the allowlist of the MCP client)
 	BifrostContextKeyMCPLogID                            BifrostContextKey = "bifrost-mcp-log-id"                         // string (unique UUID for each MCP tool log entry - set per goroutine by agent executor - DO NOT SET THIS MANUALLY)
 	BifrostContextKeyMCPUnattendedExecution              BifrostContextKey = "bifrost-mcp-unattended-execution"           // bool (set by the agent executor - DO NOT SET THIS MANUALLY) - true when a tool call runs without human approval, so Code Mode enforces tools_to_auto_execute on every nested call
+	BifrostContextKeyStreamTurnPending                   BifrostContextKey = "bifrost-stream-turn-pending"                // bool (set by bifrost - DO NOT SET THIS MANUALLY) - true while a provider-injected tool loop will start another upstream stream after the current one ends; the request's LLM span stays open until the client stream's last chunk
+	BifrostContextKeyInjectedToolsExecuted               BifrostContextKey = "bifrost-injected-tools-executed"            // bool (set by bifrost - DO NOT SET THIS MANUALLY) - the current attempt ran a provider-injected tool: it is not retried, and its response is assembled across turns
 	BifrostContextKeyMCPHealthCheckRequest               BifrostContextKey = "bifrost-mcp-health-check-request"           // bool (set by bifrost - DO NOT SET THIS MANUALLY) - true when the MCP connect/ping/list-tools request was generated by bifrost itself (periodic health checks, or the admin connection-verification probe) rather than originating from a caller
 	BifrostContextKeyCompatConvertTextToChat             BifrostContextKey = "bifrost-compat-convert-text-to-chat"        // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatConvertChatToResponses        BifrostContextKey = "bifrost-compat-convert-chat-to-responses"   // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldDropParams              BifrostContextKey = "bifrost-compat-should-drop-params"          // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatShouldConvertParams           BifrostContextKey = "bifrost-compat-should-convert-params"       // bool (per-request override from x-bf-compat header)
 	BifrostContextKeyCompatAzureDeepseek                 BifrostContextKey = "bifrost-compat-azure-deepseek"              // bool (per-request override from x-bf-compat header)
+	BifrostContextKeyCompatForceReasoningOnlyToResponses BifrostContextKey = "bifrost-compat-reasoning-only-to-responses" // bool (per-request override from x-bf-compat header)
+	BifrostContextKeyCompatConvertDecisionToResponses    BifrostContextKey = "bifrost-compat-decision-to-responses"       // bool (per-request override from x-bf-compat header)
 	BifrostContextKeySupportsAssistantPrefill            BifrostContextKey = "bifrost-supports-assistant-prefill"         // bool (set by compat plugin) - if model supports assistant prefill
 	BifrostContextKeyCompatDroppedParams                 BifrostContextKey = "bifrost-compat-dropped-params"              // []string (set by compat plugin) - params stripped from the request because the model catalog did not allowlist them; read back in PostLLMHook to populate extra_fields.dropped_compat_plugin_params
 	BifrostContextKeyAttemptTrail                        BifrostContextKey = "bifrost-attempt-trail"                      // []KeyAttemptRecord (set by bifrost - DO NOT SET THIS MANUALLY) - per-attempt key selection history
 	BifrostContextKeyDimensions                          BifrostContextKey = "bifrost-dimensions"                         // map[string]string (set by HTTP transport from x-bf-dim-* headers) BifrostContextKeyDimensions holds per-request key/value dimensions supplied via x-bf-dim-<key> request headers. These dimensions are forwarded to internal logs (as metadata)
 	BifrostContextKeyLoadBalancerAttempt                 BifrostContextKey = "bifrost-lb-attempt"                         // map[string]string (set by the enterprise load balancer plugin - DO NOT SET THIS MANUALLY) - flat, string-valued routing decision for the current attempt, every key prefixed with LoadBalancerMetadataPrefix; the logging plugin merges it into the log row's metadata, and a key-selection decision overwrites the previous attempt's value on the shared context
 	IsAPIKeyAuthContextKey                               BifrostContextKey = "is_api_key_auth"
-	IsLocalAdminContextKey                               BifrostContextKey = "is_local_admin"                // bool (set by auth middleware when password-based auth succeeds - local admin user bypasses RBAC)
-	BifrostContextKeyAuthBypassed                        BifrostContextKey = "bifrost-auth-bypassed"         // bool (set by auth middleware ONLY when dashboard/admin auth is unconfigured or disabled and the request was let through without any credential check - distinct from IsLocalAdminContextKey, which is also set on genuinely authenticated sessions; handlers gating especially dangerous capabilities (e.g. native plugin/subprocess loading) should check this, not IsLocalAdminContextKey)
-	BifrostContextKeyPassthroughOverridesPresent         BifrostContextKey = "passthrough_overrides_present" // bool (set by HTTP transport) - passthrough raw request requested
+	IsLocalAdminContextKey                               BifrostContextKey = "is_local_admin"                    // bool (set by auth middleware when password-based auth succeeds - local admin user bypasses RBAC)
+	BifrostContextKeyAuthBypassed                        BifrostContextKey = "bifrost-auth-bypassed"             // bool (set by auth middleware ONLY when dashboard/admin auth is unconfigured or disabled and the request was let through without any credential check - distinct from IsLocalAdminContextKey, which is also set on genuinely authenticated sessions; handlers gating especially dangerous capabilities (e.g. native plugin/subprocess loading) should check this, not IsLocalAdminContextKey)
+	BifrostContextKeySetupTokenAuthenticated             BifrostContextKey = "bifrost-setup-token-authenticated" // bool (set by the OSS setup-lock middleware when dashboard auth is not active and the request carried the operator's setup token - a real credential check, so handlers treat it as genuine auth rather than the fail-open bypass)
+	BifrostContextKeyPassthroughOverridesPresent         BifrostContextKey = "passthrough_overrides_present"     // bool (set by HTTP transport) - passthrough raw request requested
 	BifrostContextKeyConnectionClosed                    BifrostContextKey = "connection_closed"
 	BifrostContextKeyStreamBodyExhausted                 BifrostContextKey = "stream_body_exhausted"          // bool (set by bifrost - DO NOT SET THIS MANUALLY) - upstream body was read to EOF, so cleanup must not drain it again
 	BifrostContextKeyStreamParkedAfterFinish             BifrostContextKey = "stream_parked_after_finish"     // bool (set by bifrost - DO NOT SET THIS MANUALLY) - reader stopped on a heartbeat after finish_reason with the body still open, so cleanup must abandon the connection instead of draining it
@@ -460,6 +466,129 @@ const (
 	BifrostContextKeyAsyncWebhookEndpoint                BifrostContextKey = "bifrost-async-webhook-endpoint" // string (webhook endpoint name to notify when an async job finishes - carried as-is from the x-bf-async-webhook header; the submit path resolves and validates it before the job is created)
 	BifrostContextKeyUpstreamLatency                     BifrostContextKey = "bifrost-upstream-latency"       // *atomic.Int64 nanoseconds (set by bifrost - DO NOT SET THIS MANUALLY) - cumulative time blocked on provider sockets across every attempt; subtract from total to get Bifrost overhead
 	BifrostContextKeyStreamOverhead                      BifrostContextKey = "bifrost-stream-overhead"        // *streamOverhead (set by bifrost - DO NOT SET THIS MANUALLY) - per-chunk stream conversion CPU and downstream backpressure, carved out of the overhead breakdown's "core" bucket
+)
+
+// Request attribution keys the Grant now carries. Each holds a copy of what ctx.Grant() answers,
+// kept only for readers that have not moved to the Grant yet; new code reads the Grant.
+//
+// The replacements below say where each value lives, not code to paste: every step can be absent.
+// ctx.Grant() is nil when nothing governs the request, Identity() and Limits() are nil until they
+// are settled, VirtualKey(), User() and Project() are nil when unknown, and Teams(), Customers()
+// and BusinessUnits() are empty when unknown. Check each before reading through it, and check a
+// list's length before taking [0].
+const (
+	// string (to store the virtual key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().VirtualKey().ID instead.
+	BifrostContextKeyGovernanceVirtualKeyID BifrostContextKey = "bifrost-governance-virtual-key-id"
+
+	// string (to store the virtual key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().VirtualKey().Name instead.
+	BifrostContextKeyGovernanceVirtualKeyName BifrostContextKey = "bifrost-governance-virtual-key-name"
+
+	// string (to store the team ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().Teams()[0].ID instead.
+	BifrostContextKeyGovernanceTeamID BifrostContextKey = "bifrost-governance-team-id"
+
+	// string (to store the team name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().Teams()[0].Name instead.
+	BifrostContextKeyGovernanceTeamName BifrostContextKey = "bifrost-governance-team-name"
+
+	// string (to store the customer ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().Customers()[0].ID instead.
+	BifrostContextKeyGovernanceCustomerID BifrostContextKey = "bifrost-governance-customer-id"
+
+	// string (to store the customer name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().Customers()[0].Name instead.
+	BifrostContextKeyGovernanceCustomerName BifrostContextKey = "bifrost-governance-customer-name"
+
+	// string (to store the business unit ID (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().BusinessUnits()[0].ID instead.
+	BifrostContextKeyGovernanceBusinessUnitID BifrostContextKey = "bifrost-governance-business-unit-id"
+
+	// string (to store the business unit name (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().BusinessUnits()[0].Name instead.
+	BifrostContextKeyGovernanceBusinessUnitName BifrostContextKey = "bifrost-governance-business-unit-name"
+
+	// []string (all teams a user/AP request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use the IDs of ctx.Grant().Identity().Teams() instead.
+	BifrostContextKeyGovernanceTeamIDs BifrostContextKey = "bifrost-governance-team-ids"
+
+	// []string (display names, aligned with team-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use the Names of ctx.Grant().Identity().Teams() instead.
+	BifrostContextKeyGovernanceTeamNames BifrostContextKey = "bifrost-governance-team-names"
+
+	// []string (distinct BUs across the user's teams; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use the IDs of ctx.Grant().Identity().BusinessUnits() instead.
+	BifrostContextKeyGovernanceBusinessUnitIDs BifrostContextKey = "bifrost-governance-business-unit-ids"
+
+	// []string (display names, aligned with business-unit-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use the Names of ctx.Grant().Identity().BusinessUnits() instead.
+	BifrostContextKeyGovernanceBusinessUnitNames BifrostContextKey = "bifrost-governance-business-unit-names"
+
+	// []string (distinct customers a user/team request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use the IDs of ctx.Grant().Identity().Customers() instead.
+	BifrostContextKeyGovernanceCustomerIDs BifrostContextKey = "bifrost-governance-customer-ids"
+
+	// []string (display names, aligned with customer-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use the Names of ctx.Grant().Identity().Customers() instead.
+	BifrostContextKeyGovernanceCustomerNames BifrostContextKey = "bifrost-governance-customer-names"
+
+	// string (the project a request is scoped to, once resolved and checked; every consumer reads the resolved value rather than the caller's header - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use ctx.Grant().Identity().Project().ID instead.
+	BifrostContextKeyGovernanceProjectID BifrostContextKey = "bifrost-governance-project-id"
+
+	// string (display name, aligned with project-id - DO NOT SET THIS MANUALLY)
+	//
+	// Deprecated: use ctx.Grant().Identity().Project().Name instead.
+	BifrostContextKeyGovernanceProjectName BifrostContextKey = "bifrost-governance-project-name"
+
+	// []string (budget IDs applicable to this request - set by governance plugin)
+	//
+	// Deprecated: use the IDs of ctx.Grant().Limits().Budgets() instead. The two differ when the
+	// holder's usage is not tracked (BifrostContextKeySkipVirtualKeyUsageTracking): governance then
+	// writes only the provider-level and model-config budgets, a user's model configs included, while
+	// Budgets() still lists every budget the attempt answers to. A reader recording what an attempt is
+	// billed against must apply the same filter (grant.LimitsFrom).
+	BifrostContextKeyGovernanceBudgetIDs BifrostContextKey = "bifrost-governance-budget-ids"
+
+	// []string (rate limit IDs applicable to this request - set by governance plugin)
+	//
+	// Deprecated: use the IDs of ctx.Grant().Limits().RateLimits() instead. The two differ when the
+	// holder's usage is not tracked (BifrostContextKeySkipVirtualKeyUsageTracking): governance then
+	// writes only the provider-level and model-config rate limits, a user's model configs included,
+	// while RateLimits() still lists every rate limit the attempt answers to. A reader recording what
+	// an attempt is billed against must apply the same filter (grant.LimitsFrom).
+	BifrostContextKeyGovernanceRateLimitIDs BifrostContextKey = "bifrost-governance-rate-limit-ids"
+
+	// string (to store the user ID (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().User().ID instead.
+	BifrostContextKeyUserID BifrostContextKey = "bifrost-user-id"
+
+	// string (to store the user name (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().User().Name instead.
+	BifrostContextKeyUserName BifrostContextKey = "bifrost-user-name"
+
+	// string (to store the user email (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
+	//
+	// Deprecated: use ctx.Grant().Identity().User().Email instead.
+	BifrostContextKeyUserEmail BifrostContextKey = "bifrost-user-email"
 )
 
 // Headers a request uses to name the project it asks to be scoped by. The id takes precedence over
@@ -517,15 +646,19 @@ const LoadBalancerMetadataPrefix = "bifrost_alb_"
 // One record is appended per attempt regardless of whether the key changed between attempts.
 //
 // FailureClass and StatusCode are set on every failed attempt the provider answered (retryable or
-// terminal) and are empty on a successful attempt, on a cancelled one, and on an internal Bifrost
-// error. FailureClass is what the retry loop acted on; StatusCode is the raw status it was derived
-// from, kept so a consumer can tell a 401 from a 403 within the same class.
+// terminal), and on an attempt Bifrost ended: a timeout (the provider's, the request's deadline or a
+// TTFT miss) is FailureClassTimeout with 504, and a caller's cancellation is FailureClassCancelled
+// with 499. They are empty on a successful attempt and on an internal Bifrost error. FailureClass is
+// what the retry loop acted on; StatusCode is the raw status it was derived from, kept so a consumer
+// can tell a 401 from a 403 within the same class.
 //
-// FailReason is populated on the same attempts and is nil on the others. For the classes that
-// name what the provider refused it is the class's label: `rate_limit_error`, `authentication_error`,
-// `billing_error`, `model_access_error`, `model_retired_error`, `region_blocked_error`; otherwise the
-// provider's error Type is used, falling back to `unknown`. Use it to inspect what went wrong on a
-// given try.
+// FailReason is populated on the same attempts, except a cancelled one, and is nil on the others.
+// For the classes that name what the provider refused it is the class's label: `rate_limit_error`,
+// `authentication_error`, `billing_error`, `model_access_error`, `model_retired_error`,
+// `region_blocked_error`; a timeout is `request_timed_out`, or `ttft_timeout` for a TTFT miss;
+// otherwise the provider's error Type is used, falling back to `unknown`. A cancelled attempt has
+// none because FailReason says the key failed, and a caller leaving says nothing about the key.
+// Use it to inspect what went wrong on a given try.
 //
 // RetryAfter is the provider's own hint for how long to wait before trying this key again, in
 // milliseconds, carried from the error's ExtraFields.RetryAfter (see the retry hint sources in
@@ -601,10 +734,16 @@ type LargePayloadMetadata struct {
 //* Request Structs
 
 // Fallback represents a fallback model to be used if the primary model is not available.
+//
+// Inferred marks a fallback Bifrost added on its own (the model-catalog resolver promoting
+// every other provider that serves an unprefixed model), as opposed to one the caller or a
+// routing config named. It is never read from or written to the wire. See
+// Bifrost.shouldTryFallbacks for what it changes.
 type Fallback struct {
 	Provider ModelProvider `json:"provider"`
 	Model    string        `json:"model"`
 	KeyID    string        `json:"key_id,omitempty"` // pins a provider key for this attempt; empty means normal key selection
+	Inferred bool          `json:"-"`                // added by Bifrost, not named by the caller or a routing config
 }
 
 // BifrostRequest is the request struct for all bifrost requests.
@@ -655,6 +794,7 @@ type BifrostRequest struct {
 	FileRetrieveRequest          *BifrostFileRetrieveRequest
 	FileDeleteRequest            *BifrostFileDeleteRequest
 	FileContentRequest           *BifrostFileContentRequest
+	LiveContentRequest           *BifrostLiveContentRequest
 	CachedContentCreateRequest   *BifrostCachedContentCreateRequest
 	CachedContentListRequest     *BifrostCachedContentListRequest
 	CachedContentRetrieveRequest *BifrostCachedContentRetrieveRequest
@@ -760,6 +900,8 @@ func (br *BifrostRequest) GetRequestFields() (provider ModelProvider, model stri
 			return br.FileContentRequest.Provider, *br.FileContentRequest.Model, nil
 		}
 		return br.FileContentRequest.Provider, "", nil
+	case br.LiveContentRequest != nil:
+		return br.LiveContentRequest.Provider, "", nil
 	case br.CachedContentCreateRequest != nil:
 		return br.CachedContentCreateRequest.Provider, br.CachedContentCreateRequest.Model, nil
 	case br.CachedContentListRequest != nil:
@@ -1222,12 +1364,14 @@ type BifrostResponse struct {
 	VideoGenerationResponse       *BifrostVideoGenerationResponse
 	VideoDownloadResponse         *BifrostVideoDownloadResponse
 	VideoListResponse             *BifrostVideoListResponse
+	LiveSession                   *LiveSessionLog // GPT Live: what a session's closing unit reports for its log row
 	VideoDeleteResponse           *BifrostVideoDeleteResponse
 	FileUploadResponse            *BifrostFileUploadResponse
 	FileListResponse              *BifrostFileListResponse
 	FileRetrieveResponse          *BifrostFileRetrieveResponse
 	FileDeleteResponse            *BifrostFileDeleteResponse
 	FileContentResponse           *BifrostFileContentResponse
+	LiveContentResponse           *LiveContentResponse
 	CachedContentCreateResponse   *BifrostCachedContentCreateResponse
 	CachedContentListResponse     *BifrostCachedContentListResponse
 	CachedContentRetrieveResponse *BifrostCachedContentRetrieveResponse
@@ -1304,6 +1448,8 @@ func (r *BifrostResponse) GetExtraFields() *BifrostResponseExtraFields {
 		return &r.FileDeleteResponse.ExtraFields
 	case r.FileContentResponse != nil:
 		return &r.FileContentResponse.ExtraFields
+	case r.LiveContentResponse != nil:
+		return &r.LiveContentResponse.ExtraFields
 	case r.VideoGenerationResponse != nil:
 		return &r.VideoGenerationResponse.ExtraFields
 	case r.VideoDownloadResponse != nil:
@@ -1494,255 +1640,127 @@ func (r *BifrostResponse) PopulateExtraFields(requestType RequestType, provider 
 	}
 	switch {
 	case r.ListModelsResponse != nil:
-		r.ListModelsResponse.ExtraFields.RequestType = requestType
-		r.ListModelsResponse.ExtraFields.Provider = provider
-		r.ListModelsResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ListModelsResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ListModelsResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ModelRetrieveResponse != nil:
-		r.ModelRetrieveResponse.ExtraFields.RequestType = requestType
-		r.ModelRetrieveResponse.ExtraFields.Provider = provider
-		r.ModelRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ModelRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ModelRetrieveResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.TextCompletionResponse != nil:
-		r.TextCompletionResponse.ExtraFields.RequestType = requestType
-		r.TextCompletionResponse.ExtraFields.Provider = provider
-		r.TextCompletionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.TextCompletionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.TextCompletionResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ChatResponse != nil:
-		r.ChatResponse.ExtraFields.RequestType = requestType
-		r.ChatResponse.ExtraFields.Provider = provider
-		r.ChatResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ChatResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ChatResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ResponsesResponse != nil:
-		r.ResponsesResponse.ExtraFields.RequestType = requestType
-		r.ResponsesResponse.ExtraFields.Provider = provider
-		r.ResponsesResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ResponsesResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ResponsesResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ResponsesDeleteResponse != nil:
-		r.ResponsesDeleteResponse.ExtraFields.RequestType = requestType
-		r.ResponsesDeleteResponse.ExtraFields.Provider = provider
-		r.ResponsesDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ResponsesDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ResponsesDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ResponsesInputItemsResponse != nil:
-		r.ResponsesInputItemsResponse.ExtraFields.RequestType = requestType
-		r.ResponsesInputItemsResponse.ExtraFields.Provider = provider
-		r.ResponsesInputItemsResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ResponsesInputItemsResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ResponsesInputItemsResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ResponsesStreamResponse != nil:
-		r.ResponsesStreamResponse.ExtraFields.RequestType = requestType
-		r.ResponsesStreamResponse.ExtraFields.Provider = provider
-		r.ResponsesStreamResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ResponsesStreamResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ResponsesStreamResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CountTokensResponse != nil:
-		r.CountTokensResponse.ExtraFields.RequestType = requestType
-		r.CountTokensResponse.ExtraFields.Provider = provider
-		r.CountTokensResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CountTokensResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CountTokensResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CompactionResponse != nil:
-		r.CompactionResponse.ExtraFields.RequestType = requestType
-		r.CompactionResponse.ExtraFields.Provider = provider
-		r.CompactionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CompactionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CompactionResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.EmbeddingResponse != nil:
-		r.EmbeddingResponse.ExtraFields.RequestType = requestType
-		r.EmbeddingResponse.ExtraFields.Provider = provider
-		r.EmbeddingResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.EmbeddingResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.EmbeddingResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.RerankResponse != nil:
-		r.RerankResponse.ExtraFields.RequestType = requestType
-		r.RerankResponse.ExtraFields.Provider = provider
-		r.RerankResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.RerankResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.RerankResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.DecisionResponse != nil:
-		r.DecisionResponse.ExtraFields.RequestType = requestType
-		r.DecisionResponse.ExtraFields.Provider = provider
-		r.DecisionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.DecisionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.DecisionResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.SpeechResponse != nil:
-		r.SpeechResponse.ExtraFields.RequestType = requestType
-		r.SpeechResponse.ExtraFields.Provider = provider
-		r.SpeechResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.SpeechResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.SpeechResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.SpeechStreamResponse != nil:
-		r.SpeechStreamResponse.ExtraFields.RequestType = requestType
-		r.SpeechStreamResponse.ExtraFields.Provider = provider
-		r.SpeechStreamResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.SpeechStreamResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.SpeechStreamResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.TranscriptionResponse != nil:
-		r.TranscriptionResponse.ExtraFields.RequestType = requestType
-		r.TranscriptionResponse.ExtraFields.Provider = provider
-		r.TranscriptionResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.TranscriptionResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.TranscriptionResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.TranscriptionStreamResponse != nil:
-		r.TranscriptionStreamResponse.ExtraFields.RequestType = requestType
-		r.TranscriptionStreamResponse.ExtraFields.Provider = provider
-		r.TranscriptionStreamResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.TranscriptionStreamResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.TranscriptionStreamResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ImageGenerationResponse != nil:
-		r.ImageGenerationResponse.ExtraFields.RequestType = requestType
-		r.ImageGenerationResponse.ExtraFields.Provider = provider
-		r.ImageGenerationResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ImageGenerationResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ImageGenerationResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ImageGenerationStreamResponse != nil:
-		r.ImageGenerationStreamResponse.ExtraFields.RequestType = requestType
-		r.ImageGenerationStreamResponse.ExtraFields.Provider = provider
-		r.ImageGenerationStreamResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ImageGenerationStreamResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ImageGenerationStreamResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoGenerationResponse != nil:
-		r.VideoGenerationResponse.ExtraFields.RequestType = requestType
-		r.VideoGenerationResponse.ExtraFields.Provider = provider
-		r.VideoGenerationResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.VideoGenerationResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.VideoGenerationResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoDownloadResponse != nil:
-		r.VideoDownloadResponse.ExtraFields.RequestType = requestType
-		r.VideoDownloadResponse.ExtraFields.Provider = provider
-		r.VideoDownloadResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.VideoDownloadResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.VideoDownloadResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoListResponse != nil:
-		r.VideoListResponse.ExtraFields.RequestType = requestType
-		r.VideoListResponse.ExtraFields.Provider = provider
-		r.VideoListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.VideoListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.VideoListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.VideoDeleteResponse != nil:
-		r.VideoDeleteResponse.ExtraFields.RequestType = requestType
-		r.VideoDeleteResponse.ExtraFields.Provider = provider
-		r.VideoDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.VideoDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.VideoDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.FileUploadResponse != nil:
-		r.FileUploadResponse.ExtraFields.RequestType = requestType
-		r.FileUploadResponse.ExtraFields.Provider = provider
-		r.FileUploadResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.FileUploadResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.FileUploadResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.FileListResponse != nil:
-		r.FileListResponse.ExtraFields.RequestType = requestType
-		r.FileListResponse.ExtraFields.Provider = provider
-		r.FileListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.FileListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.FileListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.FileRetrieveResponse != nil:
-		r.FileRetrieveResponse.ExtraFields.RequestType = requestType
-		r.FileRetrieveResponse.ExtraFields.Provider = provider
-		r.FileRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.FileRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.FileRetrieveResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.FileDeleteResponse != nil:
-		r.FileDeleteResponse.ExtraFields.RequestType = requestType
-		r.FileDeleteResponse.ExtraFields.Provider = provider
-		r.FileDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.FileDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.FileDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.FileContentResponse != nil:
-		r.FileContentResponse.ExtraFields.RequestType = requestType
-		r.FileContentResponse.ExtraFields.Provider = provider
-		r.FileContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.FileContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.FileContentResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
+	case r.LiveContentResponse != nil:
+		setCoreExtraFields(&r.LiveContentResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.BatchCreateResponse != nil:
-		r.BatchCreateResponse.ExtraFields.RequestType = requestType
-		r.BatchCreateResponse.ExtraFields.Provider = provider
-		r.BatchCreateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.BatchCreateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.BatchCreateResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.BatchListResponse != nil:
-		r.BatchListResponse.ExtraFields.RequestType = requestType
-		r.BatchListResponse.ExtraFields.Provider = provider
-		r.BatchListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.BatchListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.BatchListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.BatchRetrieveResponse != nil:
-		r.BatchRetrieveResponse.ExtraFields.RequestType = requestType
-		r.BatchRetrieveResponse.ExtraFields.Provider = provider
-		r.BatchRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.BatchRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.BatchRetrieveResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.BatchCancelResponse != nil:
-		r.BatchCancelResponse.ExtraFields.RequestType = requestType
-		r.BatchCancelResponse.ExtraFields.Provider = provider
-		r.BatchCancelResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.BatchCancelResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.BatchCancelResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.BatchDeleteResponse != nil:
-		r.BatchDeleteResponse.ExtraFields.RequestType = requestType
-		r.BatchDeleteResponse.ExtraFields.Provider = provider
-		r.BatchDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.BatchDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.BatchDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.BatchResultsResponse != nil:
-		r.BatchResultsResponse.ExtraFields.RequestType = requestType
-		r.BatchResultsResponse.ExtraFields.Provider = provider
-		r.BatchResultsResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.BatchResultsResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.BatchResultsResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerCreateResponse != nil:
-		r.ContainerCreateResponse.ExtraFields.RequestType = requestType
-		r.ContainerCreateResponse.ExtraFields.Provider = provider
-		r.ContainerCreateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerCreateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerCreateResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerListResponse != nil:
-		r.ContainerListResponse.ExtraFields.RequestType = requestType
-		r.ContainerListResponse.ExtraFields.Provider = provider
-		r.ContainerListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerRetrieveResponse != nil:
-		r.ContainerRetrieveResponse.ExtraFields.RequestType = requestType
-		r.ContainerRetrieveResponse.ExtraFields.Provider = provider
-		r.ContainerRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerRetrieveResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerDeleteResponse != nil:
-		r.ContainerDeleteResponse.ExtraFields.RequestType = requestType
-		r.ContainerDeleteResponse.ExtraFields.Provider = provider
-		r.ContainerDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerFileCreateResponse != nil:
-		r.ContainerFileCreateResponse.ExtraFields.RequestType = requestType
-		r.ContainerFileCreateResponse.ExtraFields.Provider = provider
-		r.ContainerFileCreateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerFileCreateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerFileCreateResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerFileListResponse != nil:
-		r.ContainerFileListResponse.ExtraFields.RequestType = requestType
-		r.ContainerFileListResponse.ExtraFields.Provider = provider
-		r.ContainerFileListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerFileListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerFileListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerFileRetrieveResponse != nil:
-		r.ContainerFileRetrieveResponse.ExtraFields.RequestType = requestType
-		r.ContainerFileRetrieveResponse.ExtraFields.Provider = provider
-		r.ContainerFileRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerFileRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerFileRetrieveResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerFileContentResponse != nil:
-		r.ContainerFileContentResponse.ExtraFields.RequestType = requestType
-		r.ContainerFileContentResponse.ExtraFields.Provider = provider
-		r.ContainerFileContentResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerFileContentResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerFileContentResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.ContainerFileDeleteResponse != nil:
-		r.ContainerFileDeleteResponse.ExtraFields.RequestType = requestType
-		r.ContainerFileDeleteResponse.ExtraFields.Provider = provider
-		r.ContainerFileDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.ContainerFileDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.ContainerFileDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.OCRResponse != nil:
-		r.OCRResponse.ExtraFields.RequestType = requestType
-		r.OCRResponse.ExtraFields.Provider = provider
-		r.OCRResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.OCRResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.OCRResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.PassthroughResponse != nil:
-		r.PassthroughResponse.ExtraFields.RequestType = requestType
-		r.PassthroughResponse.ExtraFields.Provider = provider
-		r.PassthroughResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.PassthroughResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.PassthroughResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CachedContentCreateResponse != nil:
-		r.CachedContentCreateResponse.ExtraFields.RequestType = requestType
-		r.CachedContentCreateResponse.ExtraFields.Provider = provider
-		r.CachedContentCreateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CachedContentCreateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CachedContentCreateResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CachedContentListResponse != nil:
-		r.CachedContentListResponse.ExtraFields.RequestType = requestType
-		r.CachedContentListResponse.ExtraFields.Provider = provider
-		r.CachedContentListResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CachedContentListResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CachedContentListResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CachedContentRetrieveResponse != nil:
-		r.CachedContentRetrieveResponse.ExtraFields.RequestType = requestType
-		r.CachedContentRetrieveResponse.ExtraFields.Provider = provider
-		r.CachedContentRetrieveResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CachedContentRetrieveResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CachedContentRetrieveResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CachedContentUpdateResponse != nil:
-		r.CachedContentUpdateResponse.ExtraFields.RequestType = requestType
-		r.CachedContentUpdateResponse.ExtraFields.Provider = provider
-		r.CachedContentUpdateResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CachedContentUpdateResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CachedContentUpdateResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
 	case r.CachedContentDeleteResponse != nil:
-		r.CachedContentDeleteResponse.ExtraFields.RequestType = requestType
-		r.CachedContentDeleteResponse.ExtraFields.Provider = provider
-		r.CachedContentDeleteResponse.ExtraFields.OriginalModelRequested = originalModelRequested
-		r.CachedContentDeleteResponse.ExtraFields.ResolvedModelUsed = resolvedModel
+		setCoreExtraFields(&r.CachedContentDeleteResponse.ExtraFields, requestType, provider, originalModelRequested, resolvedModel)
+	}
+}
+
+// setCoreExtraFields writes the four core-owned fields, skipping any that already hold the
+// value. Core calls PopulateExtraFields again after RunPostLLMHooks, while plugins (governance,
+// logging, telemetry) may still be reading the same response from goroutines their post-hooks
+// started. The values almost always match the pre-hook population, so writing only on change
+// keeps that second pass read-only and race-free without changing the result.
+func setCoreExtraFields(ef *BifrostResponseExtraFields, requestType RequestType, provider ModelProvider, originalModelRequested, resolvedModelUsed string) {
+	if ef.RequestType != requestType {
+		ef.RequestType = requestType
+	}
+	if ef.Provider != provider {
+		ef.Provider = provider
+	}
+	if ef.OriginalModelRequested != originalModelRequested {
+		ef.OriginalModelRequested = originalModelRequested
+	}
+	if ef.ResolvedModelUsed != resolvedModelUsed {
+		ef.ResolvedModelUsed = resolvedModelUsed
 	}
 }
 
@@ -1987,7 +2005,7 @@ type BifrostCacheDebug = BifrostCacheMetadata
 // through their dedicated routing fields.
 type BifrostRoutingMetadata struct {
 	// Calls holds each billable internal classification call. A request may run
-	// a semantic embed and, when it produces no tier, one LLM or Jev fallback.
+	// a semantic embed and, when it produces no tier, one LLM or decision-model fallback.
 	// Both calls are retained so pricing, telemetry, and logs account for each.
 	Calls []BifrostRoutingCall `json:"calls,omitempty"`
 }
@@ -1995,7 +2013,7 @@ type BifrostRoutingMetadata struct {
 // BifrostRoutingCall records one billable routing-classification call.
 type BifrostRoutingCall struct {
 	// RequestType selects the provider pricing mode when token shape alone is
-	// ambiguous, as it is for Jev's decision request.
+	// ambiguous, as it is for the decision-model classifier's request.
 	RequestType  RequestType `json:"request_type,omitempty"`
 	ProviderUsed *string     `json:"provider_used,omitempty"`
 	ModelUsed    *string     `json:"model_used,omitempty"`
@@ -2262,9 +2280,14 @@ type BifrostErrorExtraFields struct {
 	// matched (i.e. RoutingInfo.ResolvedKeyAlias != nil), otherwise
 	// RoutingInfo.Model. Still populated for backward compatibility; new
 	// consumers should read from RoutingInfo.
-	ResolvedModelUsed         string                `json:"resolved_model_used,omitempty"`
-	RequestType               RequestType           `json:"request_type,omitempty"`
-	MCPRequestType            MCPRequestType        `json:"mcp_request_type,omitempty"`
+	ResolvedModelUsed string         `json:"resolved_model_used,omitempty"`
+	RequestType       RequestType    `json:"request_type,omitempty"`
+	MCPRequestType    MCPRequestType `json:"mcp_request_type,omitempty"`
+	// A2ARequestType and A2AAgentName are stamped by the Agent Gateway plugin gate
+	// on every wrapped error so PostA2AHook can discriminate the operation and its
+	// authorization resource from the failure path too, exactly as MCPRequestType does.
+	A2ARequestType            A2ARequestType        `json:"a2a_request_type,omitempty"`
+	A2AAgentName              string                `json:"a2a_agent_name,omitempty"`
 	RawRequest                interface{}           `json:"raw_request,omitempty"`
 	RawResponse               interface{}           `json:"raw_response,omitempty"`
 	ConvertedRequestType      RequestType           `json:"converted_request_type,omitempty"`

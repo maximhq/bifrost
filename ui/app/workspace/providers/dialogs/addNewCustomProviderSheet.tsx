@@ -86,6 +86,7 @@ export function AddCustomProviderSheetContent({ show = true, onClose, onSave }: 
 				list_models: true,
 				websocket_responses: true,
 				realtime: false,
+				live: false,
 			},
 			request_path_overrides: undefined,
 			is_key_less: false,

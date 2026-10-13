@@ -104,6 +104,10 @@ var reviewedSites = map[string]siteReview{
 		status: covered,
 		test:   "TestRemapRawToolVersionsForProvider_AllocationScaling",
 	},
+	"anthropic.ApplyDefaultEagerInputStreamingToRawBody": {
+		status: covered,
+		test:   "TestApplyDefaultEagerInputStreamingToRawBody_AllocationScaling",
+	},
 	"anthropic.StripUnsupportedFieldsFromRawBody": {
 		status: covered,
 		test:   "TestStripUnsupportedFieldsFromRawBody_AllocationScaling",
@@ -167,6 +171,19 @@ var reviewedSites = map[string]siteReview{
 	"vertex.stripVertexCountTokensUnsupportedFields": {
 		status: bounded,
 		reason: "loops over the fixed vertexCountTokensUnsupportedFields package var",
+	},
+	"configstore.migrationMovePricingOverrideSearchContextToWebSearch": {
+		status: elementSized,
+		reason: "one-time startup migration; each iteration rewrites that row's own small pricing_patch_json, " +
+			"never a request body",
+	},
+	"logstore.moveErrorRawBodiesToObject": {
+		status: bounded,
+		reason: "loops over the fixed 2-element errorRawBodyPaths package var",
+	},
+	"xai.ToProviderRealtimeEvent": {
+		status: bounded,
+		reason: "loops over a 4-element literal of server-owned session.update paths",
 	},
 }
 

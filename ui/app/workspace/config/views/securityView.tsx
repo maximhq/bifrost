@@ -11,11 +11,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
-import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
+import { getErrorMessage, useGetCoreConfigQuery, useIsAuthEnabledQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { AuthConfig, CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
 import { authProofOfControlSchema, SecretVar } from "@/lib/types/schemas";
 import { parseArrayFromText } from "@/lib/utils/array";
 import { formatCooldown } from "@/lib/utils/duration";
+import { getApiBaseUrl } from "@/lib/utils/port";
 import { getPasswordPolicyFailures, validateOrigins } from "@/lib/utils/validation";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetAuthTypeQuery } from "@enterprise/lib/store/apis/scimApi";
@@ -69,6 +70,12 @@ export default function SecurityView() {
 	// configured via setup_token in config.json (or BIFROST_SETUP_TOKEN), so this
 	// field only needs to show up that once.
 	const isFirstTimeSetup = !bifrostConfig?.auth_config;
+	// OSS setup lock: while it is active, this page only loads because the browser holds
+	// the HttpOnly setup session cookie from the login setup view. Every request (the
+	// save below included) carries it, and the server accepts it as first-admin proof,
+	// so the token is never asked for again here.
+	const { data: authState } = useIsAuthEnabledQuery(undefined, { skip: IS_ENTERPRISE });
+	const authorizedBySetupToken = isFirstTimeSetup && !IS_ENTERPRISE && !!authState?.setup_required;
 	// The config layout gates this query on loading, not on error, so a failed
 	// GET /api/config?from_db=true still renders this form with no config (the
 	// dashboard shell's own config request can succeed). isFirstTimeSetup then
@@ -139,6 +146,8 @@ export default function SecurityView() {
 		const enforceAuthOnInferenceChanged = localConfig.enforce_auth_on_inference !== config.enforce_auth_on_inference;
 		const allowDirectKeysChanged = localConfig.allow_direct_keys !== config.allow_direct_keys;
 		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
+		const enforceVKObjectOwnershipChanged =
+			(localConfig.enforce_vk_object_ownership ?? true) !== (config.enforce_vk_object_ownership ?? true);
 		const dualCredentialConflictBehaviorChanged =
 			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
 		const vkRotationCooldownChanged = formatCooldown(localConfig.vk_rotation_cooldown) !== formatCooldown(config.vk_rotation_cooldown);
@@ -152,6 +161,7 @@ export default function SecurityView() {
 			enforceAuthOnInferenceChanged ||
 			allowDirectKeysChanged ||
 			deleteExpiredVirtualKeysChanged ||
+			enforceVKObjectOwnershipChanged ||
 			dualCredentialConflictBehaviorChanged ||
 			vkRotationCooldownChanged
 		);
@@ -264,7 +274,7 @@ export default function SecurityView() {
 				passwordInputRef.current?.focus({ preventScroll: true });
 				return;
 			}
-			if (isFirstTimeSetup && authConfig.is_enabled && !setupToken.trim()) {
+			if (isFirstTimeSetup && authConfig.is_enabled && !authorizedBySetupToken && !setupToken.trim()) {
 				setSetupTokenErrorMessage(
 					"Enter the setup token configured by your operator to create the first admin account. It's set via setup_token in config.json or the BIFROST_SETUP_TOKEN environment variable.",
 				);
@@ -289,7 +299,7 @@ export default function SecurityView() {
 					? {
 							auth_config: {
 								...(authConfig.is_enabled && hasUsername && hasPassword ? authConfig : { ...authConfig, is_enabled: false }),
-								...(isFirstTimeSetup ? { setup_token: setupToken.trim() } : {}),
+								...(isFirstTimeSetup && !authorizedBySetupToken ? { setup_token: setupToken.trim() } : {}),
 								...(proof?.success && proof.data.current_password ? { current_password: proof.data.current_password } : {}),
 								...(proof?.success && proof.data.setup_token ? { setup_token: proof.data.setup_token } : {}),
 							},
@@ -300,6 +310,12 @@ export default function SecurityView() {
 			setCurrentPassword("");
 			setSetupTokenOpen(false);
 			toast.success("Security settings updated successfully.");
+			// Dashboard auth is now on, so the OSS setup lock is lifted. Expire the setup
+			// session cookie (logout clears it) and sign in with the new admin account.
+			if (showPasswordSection && authConfig.is_enabled && hasUsername && hasPassword && authorizedBySetupToken) {
+				await fetch(`${getApiBaseUrl()}/session/logout`, { method: "POST", credentials: "include" }).catch(() => undefined);
+				window.location.href = "/login";
+			}
 		} catch (error) {
 			const message = getErrorMessage(error);
 			const status = typeof error === "object" && error !== null && "status" in error ? (error as { status?: unknown }).status : undefined;
@@ -325,6 +341,7 @@ export default function SecurityView() {
 		setupToken,
 		currentPassword,
 		requiresProofOfControl,
+		authorizedBySetupToken,
 	]);
 
 	return (
@@ -368,6 +385,7 @@ export default function SecurityView() {
 									<Label htmlFor="admin-username">Username</Label>
 									<SecretVarInput
 										id="admin-username"
+										autoComplete="username"
 										type="text"
 										placeholder="Enter admin username or env.VAR_NAME"
 										value={authConfig.admin_username}
@@ -380,6 +398,10 @@ export default function SecurityView() {
 									<SecretVarInput
 										ref={passwordInputRef}
 										id="admin-password"
+										// new-password: password managers offer to save or generate here instead of
+										// filling a password saved for this host, which would silently replace what
+										// the operator typed.
+										autoComplete="new-password"
 										aria-invalid={!!passwordError}
 										aria-describedby={passwordError ? "admin-password-error" : undefined}
 										type="password"
@@ -457,7 +479,12 @@ export default function SecurityView() {
 										) : null}
 									</div>
 								) : null}
-								{isFirstTimeSetup && authConfig.is_enabled ? (
+								{isFirstTimeSetup && authConfig.is_enabled && authorizedBySetupToken ? (
+									<p className="text-muted-foreground text-xs" data-testid="security-setup-token-authorized">
+										Authorized with the setup token entered on the setup screen. Saving creates the admin account, after which the setup
+										token stops working.
+									</p>
+								) : isFirstTimeSetup && authConfig.is_enabled ? (
 									<div className="space-y-2">
 										<Label htmlFor="setup-token">Setup token</Label>
 										<Input
@@ -470,9 +497,9 @@ export default function SecurityView() {
 											onChange={(e) => handleSetupTokenChange(e.target.value)}
 										/>
 										<p className="text-muted-foreground text-xs">
-											No admin account exists yet, so this instance is reachable without a password. To finish setup, ask your operator for
-											the setup token configured via <code>setup_token</code> in <code>config.json</code> (or the{" "}
-											<code>BIFROST_SETUP_TOKEN</code> environment variable) and paste it here.
+											No admin account exists yet, so management APIs only accept the setup token. Enter the token configured via{" "}
+											<code>setup_token</code> in <code>config.json</code> (or the <code>BIFROST_SETUP_TOKEN</code> environment variable) to
+											create the admin account. Once it is enabled, the setup token stops working.
 										</p>
 									</div>
 								) : null}
@@ -615,6 +642,26 @@ export default function SecurityView() {
 						data-testid="security-delete-expired-virtual-keys-switch"
 						checked={localConfig.delete_expired_virtual_keys}
 						onCheckedChange={(checked) => handleConfigChange("delete_expired_virtual_keys", checked)}
+					/>
+				</div>
+				{/* Restrict Provider Objects to the Creating Virtual Key */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="enforce-vk-object-ownership" className="text-sm font-medium">
+							Restrict Provider Objects to the Creating Virtual Key
+						</label>
+						<p className="text-muted-foreground text-sm">
+							When enabled, files, batches, videos, containers, cached contents and live sessions created with a virtual key can only be
+							read, listed or deleted with that same key. Other virtual keys get a not-found error and do not see them in lists. Requests
+							without a virtual key are not affected. The creating key is recorded even while this is disabled, so enabling it again also
+							covers objects created in the meantime, except any whose creating key could not be recorded.
+						</p>
+					</div>
+					<Switch
+						id="enforce-vk-object-ownership"
+						data-testid="security-enforce-vk-object-ownership-switch"
+						checked={localConfig.enforce_vk_object_ownership ?? true}
+						onCheckedChange={(checked) => handleConfigChange("enforce_vk_object_ownership", checked)}
 					/>
 				</div>
 				{/* Allowed Origins */}

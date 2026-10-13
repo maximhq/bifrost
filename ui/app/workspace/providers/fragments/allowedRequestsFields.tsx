@@ -39,6 +39,7 @@ const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType
 		image_edit_stream: "/v1/images/edits",
 		image_variation: "/v1/images/variations",
 		count_tokens: "/v1/responses/tokens",
+		decisions: "/v1/decisions",
 	},
 	anthropic: {
 		chat_completion: "/v1/messages",
@@ -92,6 +93,7 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "image_variation", label: "Image Variation" },
 	{ key: "count_tokens", label: "Count Tokens" },
 	{ key: "decisions", label: "Decisions" },
+	{ key: "live", label: "Live" },
 ];
 
 // Path overrides replace the default path verbatim; these request paths embed a

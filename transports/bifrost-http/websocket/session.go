@@ -451,6 +451,7 @@ type SessionManager struct {
 	mu       sync.RWMutex
 	sessions map[*ws.Conn]*Session
 	maxConns int
+	closed   bool // set by CloseAll; Create refuses afterwards
 }
 
 // NewSessionManager creates a new session manager.
@@ -467,6 +468,9 @@ func (m *SessionManager) Create(clientConn *ws.Conn) (*Session, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.closed {
+		return nil, ErrSessionManagerClosed
+	}
 	if m.maxConns > 0 && len(m.sessions) >= m.maxConns {
 		return nil, ErrConnectionLimitReached
 	}
@@ -507,6 +511,7 @@ func (m *SessionManager) Count() int {
 // CloseAll closes all active sessions.
 func (m *SessionManager) CloseAll() {
 	m.mu.Lock()
+	m.closed = true
 	sessions := m.sessions
 	m.sessions = make(map[*ws.Conn]*Session)
 	m.mu.Unlock()

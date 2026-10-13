@@ -69,6 +69,15 @@ func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
 	return false
 }
 
+func (m *mockHandlerStore) IsProviderConfigured(provider schemas.ModelProvider) bool {
+	for _, p := range m.availableProviders {
+		if p == provider {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *mockHandlerStore) GetMCPExternalServerURL() string {
 	return ""
 }
@@ -541,7 +550,7 @@ func Test_handleStreamingBedrockUnknownErrorResponseFallsBackToEventStreamExcept
 				}
 			},
 		},
-	}, stream, rec.cancel)
+	}, "", stream, rec.cancel)
 
 	body, err := io.ReadAll(ctx.Response.BodyStream())
 	require.NoError(t, err)

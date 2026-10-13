@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1085,7 +1086,7 @@ func TestDeleteMCPLogsRequiresAuthenticatedAdmin(t *testing.T) {
 			am.UpdateWhitelistedRoutes(tc.whitelist)
 			middleware := am.APIMiddleware()
 			if tc.noConfigStore {
-				middleware = AuthBypassedMiddleware()
+				middleware = AuthBypassedMiddleware(nil, tc.whitelist)
 			}
 			r := router.New()
 			h.RegisterRoutes(r, middleware)
@@ -1249,6 +1250,42 @@ func TestFilterDataListsProjects(t *testing.T) {
 	}
 	if len(payload.Projects) != 1 || payload.Projects[0].ID != "proj-a" || payload.Projects[0].Name != "Atlas" {
 		t.Fatalf("expected the project pair under \"projects\", got %s", ctx.Response.Body())
+	}
+}
+
+// TestCorrelationFilterParsing keeps scalar correlation filters identical across
+// LLM list/stats/histogram and MCP list/stats/analytics endpoints.
+func TestCorrelationFilterParsing(t *testing.T) {
+	var ctx fasthttp.RequestCtx
+	ctx.Request.SetRequestURI("/api/logs?agent_names=library-research,code-reviewer&session_id=session-1&agent_correlation_id=agent-1")
+
+	llm := &logstore.SearchFilters{}
+	parseAgentNamesFilter(&ctx, llm)
+	llm.SessionID = strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id")))
+	parseAgentCorrelationIDFilter(&ctx, llm)
+	if llm.SessionID != "session-1" || llm.AgentCorrelationID != "agent-1" || !reflect.DeepEqual(llm.AgentNames, []string{"library-research", "code-reviewer"}) {
+		t.Fatalf("lost LLM correlation filters: %+v", llm)
+	}
+	if got := parseHistogramFilters(&ctx); got.SessionID != "session-1" || got.AgentCorrelationID != "agent-1" || !reflect.DeepEqual(got.AgentNames, llm.AgentNames) {
+		t.Fatalf("lost LLM histogram correlation filters: %+v", got)
+	}
+
+	list, _, err := parseMCPFiltersAndPagination(&ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stats, err := parseMCPFilters(&ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	analytics, err := parseMCPHistogramFilters(&ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, filters := range []*logstore.MCPToolLogSearchFilters{list, stats, analytics} {
+		if filters.SessionID != "session-1" || filters.AgentCorrelationID != "agent-1" || !reflect.DeepEqual(filters.AgentNames, llm.AgentNames) {
+			t.Fatalf("lost MCP correlation filters: %+v", filters)
+		}
 	}
 }
 
@@ -1486,5 +1523,47 @@ func TestApplyCurrentRankingNamesBatchesLookups(t *testing.T) {
 	}
 	for _, row := range res.Rankings {
 		require.Equal(t, "now-"+row.ID, row.Name)
+	}
+}
+
+// racingDropManager simulates a maintenance-window drop landing between the
+// handler's two counter reads: every read bumps both counters after answering.
+type racingDropManager struct {
+	dashboardLogManager
+	total, maintenance int64
+}
+
+func (m *racingDropManager) GetDroppedRequests(context.Context) int64 {
+	v := m.total
+	m.total++
+	m.maintenance++
+	return v
+}
+
+func (m *racingDropManager) GetDroppedDuringMaintenance(context.Context) int64 {
+	v := m.maintenance
+	m.total++
+	m.maintenance++
+	return v
+}
+
+// TestGetDroppedRequestsMaintenanceSubsetNeverExceedsTotal pins the response
+// invariant dropped_during_maintenance <= dropped_requests even when a drop is
+// counted between the two reads.
+func TestGetDroppedRequestsMaintenanceSubsetNeverExceedsTotal(t *testing.T) {
+	h := &LoggingHandler{logManager: &racingDropManager{}}
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodGet)
+	req.SetRequestURI("/api/logs/dropped")
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+	h.getDroppedRequests(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	var body map[string]int64
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+	total, maintenance := body["dropped_requests"], body["dropped_during_maintenance"]
+	if maintenance > total {
+		t.Fatalf("dropped_during_maintenance (%d) exceeds dropped_requests (%d): the subset must be read first", maintenance, total)
 	}
 }

@@ -630,7 +630,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	// literally contain "nova-2" fails the check and drops web_search/code_execution
 	// instead of converting them. Mirrors ToBedrockResponsesRequest, which already
 	// passes the canonical model to the same check.
-	toolConfig, modelDropped := convertToolConfigFromFiltered(ctx, caps.Model(), caps, bifrostReq.Params, filteredTools)
+	toolConfig, modelDropped, err := convertToolConfigFromFiltered(ctx, caps.Model(), caps, bifrostReq.Params, filteredTools)
+	if err != nil {
+		return err
+	}
 	if toolConfig != nil {
 		bedrockReq.ToolConfig = toolConfig
 	}
@@ -670,6 +673,14 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			}
 		}
 	}
+
+	var eagerFlags []*bool
+	for _, tool := range filteredTools {
+		if tool.Function != nil {
+			eagerFlags = append(eagerFlags, tool.EagerInputStreaming)
+		}
+	}
+	applyBedrockFineGrainedToolStreaming(ctx, bedrockReq, bifrostReq.Model, caps, eagerFlags)
 
 	// Convert reasoning config
 	if bifrostReq.Params.Reasoning != nil {
@@ -1544,6 +1555,53 @@ func appendAnthropicBetaToFields(fields *schemas.OrderedMap, header string) {
 	fields.Set("anthropic_beta", append(existing, header))
 }
 
+// applyBedrockFineGrainedToolStreaming opts a Claude Converse request into
+// fine-grained tool streaming. Without it Claude emits tool input one complete
+// JSON value at a time, so a long argument arrives as one burst after a long
+// silence. Converse has no slot for the per-tool eager_input_streaming flag
+// and Bedrock's edge consumes the outer anthropic-beta header, so the beta
+// must ride in additionalModelRequestFields.anthropic_beta.
+//
+// eagerFlags holds each custom function tool's eager_input_streaming value.
+// The beta is added when a tool sets it to true, the caller's anthropic-beta
+// asks for it, or a tool leaves it unset and
+// anthropic.ShouldDefaultEagerInputStreaming holds for the model. A request
+// whose custom tools all set it to false is left alone.
+func applyBedrockFineGrainedToolStreaming(ctx *schemas.BifrostContext, bedrockReq *BedrockConverseRequest, model string, caps schemas.ModelCaps, eagerFlags []*bool) {
+	if len(eagerFlags) == 0 || !schemas.IsAnthropicModelFamily(ctx, model) {
+		return
+	}
+	if !caps.SupportsEagerInputStreaming(anthropic.ProviderFeatures[schemas.Bedrock].EagerInputStreaming) {
+		return
+	}
+	want, hasUnset := false, false
+	for _, flag := range eagerFlags {
+		if flag == nil {
+			hasUnset = true
+		} else if *flag {
+			want = true
+		}
+	}
+	if !want {
+		for _, beta := range anthropic.MergeBetaHeaders(ctx, nil) {
+			if strings.HasPrefix(beta, anthropic.AnthropicEagerInputStreamingBetaHeaderPrefix) {
+				want = true
+				break
+			}
+		}
+	}
+	if !want && hasUnset {
+		want = anthropic.ShouldDefaultEagerInputStreaming(schemas.Bedrock, caps.Model())
+	}
+	if !want {
+		return
+	}
+	if bedrockReq.AdditionalModelRequestFields == nil {
+		bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+	}
+	appendAnthropicBetaToFields(bedrockReq.AdditionalModelRequestFields, anthropic.AnthropicEagerInputStreamingBetaHeader)
+}
+
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists
 func ensureChatToolConfigForConversation(ctx context.Context, bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest) {
 	if bedrockReq.ToolConfig != nil {
@@ -1737,24 +1795,44 @@ const foreignRedactedContentPrefix = "bifrost:redacted:v1:"
 // Bedrock blob) untouched and wraps anything else. Canonical, not merely decodable:
 // SDKs replay the decoded bytes re-encoded, so only a canonical blob comes back
 // byte-identical.
-func encodeRedactedContentForConverse(token string) string {
+//
+// A wrapped token also carries the reasoning item id it was issued under
+// (providerUtils.EmbedReasoningItemID). OpenAI and Azure bind encrypted reasoning
+// to that id and reject a replay under any other, and Converse has no field for it
+// (#7729). No provider gate is needed: the wrapper is Bifrost's own and is always
+// unwrapped on ingress, so the id never reaches an upstream inside a payload.
+//
+// The canonical check only guesses at origin from the token's characters. A caller
+// that knows a non-Bedrock upstream served the token wraps it with
+// wrapRedactedContentForConverse instead, since a foreign token can be canonical too.
+func encodeRedactedContentForConverse(id *string, token string) string {
 	if decoded, err := base64.StdEncoding.DecodeString(token); err == nil && base64.StdEncoding.EncodeToString(decoded) == token {
 		return token
 	}
-	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + token))
+	return wrapRedactedContentForConverse(id, token)
+}
+
+// wrapRedactedContentForConverse wraps token unconditionally, embedding id.
+func wrapRedactedContentForConverse(id *string, token string) string {
+	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + providerUtils.EmbedReasoningItemID(id, token)))
 }
 
 // decodeRedactedContentFromConverse unwraps a blob encodeRedactedContentForConverse
-// wrapped and returns every other blob unchanged.
-func decodeRedactedContentFromConverse(blob string) string {
+// wrapped, returning the reasoning item id it carried (nil if none) and the
+// upstream's token. Every other blob comes back unchanged with a nil id.
+func decodeRedactedContentFromConverse(blob string) (*string, string) {
 	decoded, err := base64.StdEncoding.DecodeString(blob)
 	if err != nil {
-		return blob
+		return nil, blob
 	}
-	if token, ok := strings.CutPrefix(string(decoded), foreignRedactedContentPrefix); ok {
-		return token
+	token, ok := strings.CutPrefix(string(decoded), foreignRedactedContentPrefix)
+	if !ok {
+		return nil, blob
 	}
-	return blob
+	if id, rest, found := providerUtils.ExtractReasoningItemID(token); found {
+		return id, rest
+	}
+	return nil, token
 }
 
 // newBedrockCachePoint builds a default cache point, attaching the TTL only for the values
@@ -2898,7 +2976,7 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 	}
 	// Strip unsupported server tools before the conversion loop.
 	filtered, _ := anthropic.ValidateChatToolsForProvider(params.Tools, schemas.ResolveModelCaps(schemas.Bedrock, model))
-	toolConfig, _ := convertToolConfigFromFiltered(nil, model, schemas.ResolveModelCaps(schemas.Bedrock, model), params, filtered)
+	toolConfig, _, _ := convertToolConfigFromFiltered(nil, model, schemas.ResolveModelCaps(schemas.Bedrock, model), params, filtered)
 	return toolConfig
 }
 
@@ -2930,9 +3008,9 @@ func convertToNovaSystemTool(systemToolName BedrockSystemToolType, isNova2 bool)
 // survive ValidateChatToolsForProvider via the Nova carve-out but only actually
 // work on Nova2 models). Callers combine this with ValidateChatToolsForProvider's
 // own dropped list for a complete picture.
-func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, caps schemas.ModelCaps, params *schemas.ChatParameters, filtered []schemas.ChatTool) (*BedrockToolConfig, []string) {
+func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, caps schemas.ModelCaps, params *schemas.ChatParameters, filtered []schemas.ChatTool) (*BedrockToolConfig, []string, error) {
 	if params == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	isNova2 := schemas.IsNova2Model(model)
@@ -2942,11 +3020,17 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		if tool.Function != nil {
 			// Serialize the parameters (or a default empty schema) to json.RawMessage
 			var schemaObjectBytes []byte
-			if tool.Function.Parameters != nil {
+			if parameters := tool.Function.Parameters; parameters != nil {
+				var err error
+				// Claude rejects oneOf/anyOf/allOf at the input_schema root.
+				if (len(parameters.OneOf) > 0 || len(parameters.AnyOf) > 0 || len(parameters.AllOf) > 0) && schemas.IsAnthropicModelFamily(ctx, model) {
+					if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
+						return nil, nil, err
+					}
+				}
 				// ToolFunctionParameters.MarshalJSON handles all fields including
 				// properties, required, enum, additionalProperties, $defs, etc.
-				var err error
-				schemaObjectBytes, err = providerUtils.MarshalSorted(tool.Function.Parameters)
+				schemaObjectBytes, err = providerUtils.MarshalSorted(parameters)
 				if err != nil {
 					continue
 				}
@@ -3003,7 +3087,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 	// doesn't support), omit ToolConfig entirely so the request is valid and
 	// the model simply answers without tool access.
 	if len(bedrockTools) == 0 {
-		return nil, droppedForModel
+		return nil, droppedForModel, nil
 	}
 
 	toolConfig := &BedrockToolConfig{
@@ -3060,7 +3144,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		}
 	}
 
-	return toolConfig, droppedForModel
+	return toolConfig, droppedForModel, nil
 }
 
 // convertToolChoice converts Bifrost tool choice to Bedrock format

@@ -285,6 +285,10 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 		rawErrBody := append([]byte(nil), resp.Body()...)
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
 	}
+	respBody, envelopeFailed := unwrapResultEnvelope(respBody)
+	if envelopeFailed {
+		return nil, providerUtils.EnrichError(ctx, parseTypesafeEnvelopeFailure(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
 
 	var typesafeResp TypesafeDecisionResponse
 	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &typesafeResp, jsonData, sendBackRawRequest, sendBackRawResponse)

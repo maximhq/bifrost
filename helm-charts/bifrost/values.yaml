@@ -173,6 +173,21 @@ tolerations: []
 
 affinity: {}
 
+# Spread Bifrost pods across failure domains (nodes, zones), to reduce the chance that
+# one node or zone going down takes every replica with it. Spreading is not a guarantee:
+# ScheduleAnyway only prefers it, and DoNotSchedule without minDomains can still place
+# every replica in the only eligible domain. Rendered into the pod spec's
+# topologySpreadConstraints on both the Deployment and the StatefulSet. A constraint
+# without a labelSelector gets this release's server pod labels filled in, so it
+# spreads only Bifrost's own replicas.
+topologySpreadConstraints: []
+  # - maxSkew: 1
+  #   topologyKey: topology.kubernetes.io/zone
+  #   whenUnsatisfiable: ScheduleAnyway     # prefer spreading across zones, never block scheduling
+  # - maxSkew: 1
+  #   topologyKey: kubernetes.io/hostname
+  #   whenUnsatisfiable: DoNotSchedule      # hard rule: at most 1 replica of difference per node
+
 # Deployment rolling update strategy. Applies to the Deployment only (not the
 # StatefulSet used for sqlite-with-persistence). Rendered verbatim into spec.strategy.
 # Empty ({}) uses the Kubernetes default (RollingUpdate, maxSurge 25%, maxUnavailable 25%).
@@ -252,6 +267,23 @@ bifrost:
   #       enabled: "env.BIFROST_AUDIT_VERBOSE"
   featureFlags: {}
 
+  # Global outbound proxy (the dashboard's proxy settings page) and which components use it.
+  # Renders into config.json's top-level proxy_config. Under sourceOfTruth "split" it is applied
+  # when new or changed and dashboard edits are kept otherwise; under "config.json" it is applied
+  # on every startup. Leave unset to manage the proxy from the dashboard.
+  # proxyConfig:
+  #   enabled: true
+  #   type: "http"                       # only http is supported
+  #   url: "http://proxy.example.com:8080"
+  #   username: "env.PROXY_USERNAME"     # optional; env.VAR_NAME supported
+  #   password: "env.PROXY_PASSWORD"     # optional; env.VAR_NAME supported
+  #   noProxy: "localhost,.internal.example.com"
+  #   timeout: 30                        # seconds
+  #   skipTlsVerify: false
+  #   enableForScim: true                # Enterprise: SCIM directory sync and identity-provider requests
+  #   enableForInference: false
+  #   enableForApi: false
+
   # Client configuration
   client:
     dropExcessRequests: false
@@ -289,6 +321,8 @@ bifrost:
       shouldDropParams: false
       shouldConvertParams: false
       azureDeepseek: false
+      # forceReasoningOnlyModelsToResponses: true  # Route chat requests to responses for models that cannot reason with tool calls, so reasoning is kept (default true)
+      # convertDecisionToResponses: false  # Emulate decision requests through the model's Responses API when it has no native decisions endpoint (default false)
     prometheusLabels: []
     # Header filtering configuration for x-bf-eh-* headers forwarded to LLM providers
     headerFilterConfig:
@@ -299,11 +333,13 @@ bifrost:
     # loggingHeaders: []                     # Headers to capture in log metadata
     # allowedHeaders: []                     # Additional allowed headers for CORS and WebSocket
     # hideDeletedVirtualKeysInFilters: false # Omit deleted virtual keys from logs/MCP filter data
+    # deleteExpiredVirtualKeys: false        # Daily job deletes virtual keys past expires_at (per-key delete_after_expire overrides)
     # whitelistedRoutes: []                  # Routes that bypass auth middleware
     # routingChainMaxDepth: 10               # Maximum depth for routing rule chain evaluation
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
+    # a2aExternalClientUrl: ""               # Public base URL for served agent cards and A2A push-notification callback URLs (push is disabled when unset). Supports env.VAR_NAME
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
     # mcpServerAuthMode: "headers"
@@ -313,6 +349,7 @@ bifrost:
     #   authCodeTtl: 300          # Authorization code lifetime in seconds (default 300, max 900)
     #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
     #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
+    #   allowedRedirectUris: []   # Exact remote OAuth client callback URIs to allow (loopback and Cursor callbacks need no entry)
 
   # Server configuration
   server:
@@ -321,6 +358,12 @@ bifrost:
     # pluginDownloadPrivateAllowlist:
     #   - "artifacts.internal.corp"
     #   - "10.0.0.0/8"
+    # Shared gRPC listener for the A2A agent gateway; gRPC stays disabled while either field is unset.
+    # Served agent cards advertise <agent-name>.<a2aGrpcBaseDomain>:<a2aGrpcPort>.
+    # a2aGrpcBaseDomain: "a2a.example.com"
+    # a2aGrpcPort: 9095
+    # Lets A2A push delivery reach loopback/private callback targets. Only for controlled dev/test environments; keep unset in production.
+    # a2aAllowPrivatePushCallbacks: true
 
   # Framework configuration
   framework:
@@ -391,6 +434,7 @@ bifrost:
   #     ca_cert_pem: ""               # PEM-encoded CA cert for SSL-intercepting proxies
   #   send_back_raw_response: false      # Include raw response in BifrostResponse
   #   store_raw_request_response: false  # Capture raw payloads for plugins only; not returned to client
+  #   ignore_provider_cost: false        # Ignore provider-reported usage.cost; price from Bifrost's model pricing and overrides
   #
   # anthropic:
   #   keys:
@@ -474,6 +518,15 @@ bifrost:
   #         # client_id: "env.DATABRICKS_CLIENT_ID"          # OAuth M2M service principal; set with client_secret
   #         # client_secret: "env.DATABRICKS_CLIENT_SECRET"  # and leave value empty
   #         # forward_gateway_tags: false         # Send Bifrost governance labels as Databricks-Ai-Gateway-Request-Tags
+  #
+  # # Cloudflare Workers AI example (requires cloudflare_key_config)
+  # cloudflare:
+  #   keys:
+  #     - name: "cloudflare-key"
+  #       value: "env.CLOUDFLARE_API_TOKEN"       # API token with Workers AI permission
+  #       weight: 1
+  #       cloudflare_key_config:
+  #         account_id: "env.CLOUDFLARE_ACCOUNT_ID"   # Required
 
   # Provider secrets - use existing Kubernetes secrets for provider API keys
   # These will be injected as environment variables that can be referenced in providers config
@@ -512,6 +565,9 @@ bifrost:
       #   # or a bare integer treated as seconds. Overrides toolManagerConfig.toolExecutionTimeout
       #   # for this server only. Omit or set to 0 to use the global default.
       #   toolExecutionTimeout: "30s"
+      #   # Require every connection to resolve to a public address (set automatically for
+      #   # clients registered without an admin credential check; once true it is never cleared).
+      #   requirePublicTarget: false
       #   # TLS configuration for HTTP and SSE connection types.
       #   # Use when the MCP server presents a self-signed or private CA certificate.
       #   tlsConfig:
@@ -614,6 +670,10 @@ bifrost:
       #   maxToolCalls: 64           # nested MCP tool calls
       #   maxValueBytes: 1048576     # each tool payload / converted result; 0 or at least 1024
       #   maxNestingDepth: 64        # value nesting depth; at most 1000
+      # bifrost.mcp.toolManagerConfig.oauthPrivateAllowlist -- hosts, IPs or CIDRs (no scheme or port) the MCP OAuth
+      # chain (discovery, client registration, token requests) may reach on loopback or private addresses, for MCP
+      # servers added by an authenticated admin or declared here. Link-local and cloud metadata are always refused.
+      # oauthPrivateAllowlist: ["localhost", "127.0.0.1"]
 
   # Plugins configuration
   plugins:
@@ -683,6 +743,8 @@ bifrost:
         cache_by_model: true
         cache_by_provider: true
         exclude_system_prompt: false
+        # cache_tool_call_responses: false  # Cache responses that carry tool calls (off: a replayed tool call runs in another caller's agent loop)
+        # disable_identity_scoping: false  # Share entries across virtual keys and users (off: an entry is only served to the identity that wrote it)
         vector_store_namespace: ""
 
     otel:
@@ -919,6 +981,9 @@ bifrost:
       #       reset_duration: "1Y"
       #   # Option B: single budget reference (pre-declared in governance.budgets)
       #   budget_id: "budget-1"
+      #   # Enterprise: hold an access profile (declared under accessProfiles) instead of
+      #   # budgets and a rate limit of its own; the two cannot be combined.
+      #   access_profile: "customer-profile"
     teams: []
       # - id: "team-1"
       #   name: "Team Name"
@@ -928,16 +993,25 @@ bifrost:
       #   profile: {}              # Team profile data
       #   config: {}               # Team configuration data
       #   claims: {}               # Team claims data
+      #   access_profile: "team-profile"  # Enterprise: access profile the team holds, instead of budget_id / rate_limit_id
+    # Enterprise: business unit definitions. Membership is managed by the IdP or the dashboard.
+    # businessUnits:
+    #   - id: "bu-emea"
+    #     name: "EMEA"
+    #     access_profile: "bu-profile"  # Access profile the business unit holds
+    #   # source_of_truth "split": access_profile applies when new or changed, dashboard changes kept otherwise.
+    #   # source_of_truth "config.json": enforced every startup; an entry without it has its profile removed.
     roles: []
       # - name: "dataAnalyst"
       #   description: "Read-only access for data analysts"
-      #   dac: "team-data"           # own-data | team-data | all-data (default: all-data)
+      #   dac: "team-data"           # own-data | team-data | business-unit-data | customer-data | all-data (default: all-data)
       #   # Optional per-entity overrides of the role's global dac. Resources supported as of
       #   # this chart release: Logs, MCPLogs, AuditLogs, VirtualKeys, Users, Teams, Customers,
       #   # BusinessUnits, RBAC, APIKeys, AccessProfiles, PromptRepository, RoutingRules,
       #   # GuardrailsConfig, MCPGateway, VirtualMCPs, Projects.
       #   entity_dac:
       #     VirtualKeys: "own-data"  # team-data everywhere else, but only their own keys
+      #     Logs: "customer-data"    # every log under the customers their teams or business units reach
       #   access_profiles:                    # Optional: names of all access profiles to grant
       #     - "analyst-profile"              # Takes precedence over deprecated access_profile
       #   permissions:
@@ -954,10 +1028,13 @@ bifrost:
       #   value: "sk-bf-..."           # Optional - auto-generated if omitted
       #   is_active: true
       #   expires_at: "2026-12-31T23:59:59Z"  # Optional RFC3339 expiry; requests rejected once passed. Omit for no expiry
+      #   delete_after_expire: true  # Delete the key once expires_at passes; omit to follow client.deleteExpiredVirtualKeys
+      #   disable_content_logging: true  # Per-key override of client.disableContentLogging; omit to inherit
       #   calendar_aligned: false  # Snap all budget resets for this key to calendar boundaries
       #   allow_all_providers: false  # Grant access to every provider (incl. ones added later); provider_configs still apply per-provider limits
-      #   team_id: "team-1"        # Mutually exclusive with customer_id
-      #   customer_id: ""          # Mutually exclusive with team_id
+      #   team_id: "team-1"        # Mutually exclusive with customer_id and business_unit_id
+      #   customer_id: ""          # Mutually exclusive with team_id and business_unit_id
+      #   business_unit_id: ""     # Mutually exclusive with team_id and customer_id
       #   rate_limit_id: "rate-limit-1"
       #   # Provider-specific configurations (empty means no providers allowed unless allow_all_providers is true)
       #   provider_configs:
@@ -1035,7 +1112,9 @@ bifrost:
       #       model: ""              # Empty means use original model
       #       provider_key_name: ""  # Optional provider key name (resolved to internal key_id at load time)
       #       weight: 1.0
-      #   fallbacks: ["openai"]
+      #       ttft_timeout_ms: 5000  # Optional: cut off a streaming attempt with no first token in 5s and run the next fallback
+      #   fallbacks: ["openai"]     # "provider/model" strings, or objects that pin a key:
+      #   # fallbacks: [{ provider: "azure", model: "gpt-4o", provider_key_name: "azure-eu" }]
       #   scope: "global"           # Options: global, team, customer, virtual_key
       #   scope_id: ""              # Required for non-global scopes
       #   priority: 0               # Lower = evaluated first
@@ -1049,10 +1128,12 @@ bifrost:
       #   request_types: ["chat_completion"]
       #   pricing_patch: "{\"input_cost_per_token\":0.000001,\"output_cost_per_token\":0.000002}"
     complexityAnalyzerConfig: null
-      # classifier: "jev"                  # Primary classifier: semantic (default) or jev
-      # jev:                               # Uses the configured Typesafe provider and its enabled key
+      # classifier: "decision"             # Primary classifier: semantic (default) or decision
+      # decision:                          # Decision model; credentials come from its provider's enabled key
+      #   provider: "typesafe"             # Provider serving the model (typesafe, or a custom provider with base_provider_type typesafe)
+      #   model: "jev-latest"              # Set together with provider; omit both for typesafe/jev-latest
       #   previous_message_count: 1        # Earlier user messages sent with the current request (0-5)
-      #   timeout: "1.5s"                  # Maximum wait for one Jev decision; usage counts toward request cost and budgets
+      #   timeout: "1.5s"                  # Maximum wait for one decision-model call; usage counts toward request cost and budgets
       #   criteria:                        # Optional: per-tier overrides; tiers are SIMPLE, MEDIUM, COMPLEX
       #     COMPLEX:
       #       definition: "..."            # Replaces the shipped definition of this tier (max 500 chars)
@@ -1074,7 +1155,7 @@ bifrost:
       #                                      #                   storage_mode on /api/routing/complexity-analyzer-status, and logged).
       #                                      #                   Qdrant, Weaviate, Redis and Pinecone are all supported here; chromem is
       #                                      #                   node-local even with a path, so it is private per pod.
-      #   fallback: "none"                 # none (default) | llm (requires llm below) | jev (uses Typesafe); runs when semantic produces no tier
+      #   fallback: "none"                 # none (default) | llm (requires llm below) | decision (uses the decision block); runs when semantic produces no tier
       # llm:                                # Chat-completion fallback classifier — inert unless semantic.fallback is "llm"
       #   provider: "openai"               # Provider used for the classification chat completion (must have an enabled key in bifrost.providers)
       #   model: "gpt-4o-mini"             # Small, fast chat model — every fallback classification waits on one completion from it
@@ -1082,9 +1163,9 @@ bifrost:
       #   prompt: ""                       # Replaces the shipped classification guidance (max 4000 chars); empty uses the shipped guidance
       #   message_history_count: 1         # Recent user messages sent to the classifier, oldest first (1 = latest only)
       #   count_toward_budgets: false      # Count classification completion cost toward virtual-key budgets (record-only, never enforced)
-      # session:                            # Optional session-aware routing; works with semantic or Jev primary
+      # session:                            # Optional session-aware routing; works with semantic or decision primary
       #   enabled: true                     # Retain the highest tier across sequential turns for 24 hours; overlapping requests are best-effort
-      # keywords:                          # Required when complexityAnalyzerConfig is non-null; Jev does not read these phrases
+      # keywords:                          # Required when complexityAnalyzerConfig is non-null; the decision model does not read these phrases
       #   simple_keywords: ["what is a mutex?", "fix the grammar in this sentence."]
       #   medium_keywords: ["add api-key auth: hash the keys, reject revoked ones, and never log them."]
       #   complex_keywords: ["balance testing, prescribing rules, and staffing against rising resistant infections."]
@@ -1355,6 +1436,7 @@ bifrost:
       # teamIdsField: "groups"                      # JWT claim for team/group IDs (default: "groups")
       # rolesField: "roles"                         # JWT claim for role names (optional)
       # scopes: []                                  # override the default OIDC scopes requested during login
+      # displayName: "Acme SSO"                     # login button label ("Sign in with <displayName>"); defaults to "SSO"
       # attributeRoleMappings: []
       # attributeTeamMappings: []
       # attributeBusinessUnitMappings: []
@@ -1544,6 +1626,27 @@ bifrost:
   #     max_response_payload_kbs: 256
   #     max_concurrent_deliveries: 10
 
+  # Agents: A2A agent registrations synced into the database at startup, reconciled by name.
+  # Rendered directly as top-level `agents` in config.json.
+  # agents:
+  #   - name: "library-research"
+  #     agent_card_url: "http://agent.internal:9087/.well-known/agent-card.json"
+  #     enabled: true                                  # Defaults to true when omitted
+  #     allow_by_default: false                        # Reachable by any virtual key without an explicit grant
+  #     forward_accepted_credential: false             # Forward the accepted Bifrost credential upstream as x-bf-vk
+  #     forward_accepted_credential_overrides_auth: false # Forward it as Authorization, replacing configured runtime auth
+  #     tenant: ""                                     # Optional tenant label
+  #     extension_uris: []                             # A2A extension URIs to advertise
+  #     virtual_key_ids: []                            # Virtual key IDs granted access to this agent
+  #     discovery_auth:                                # Auth for fetching the agent card (types: none, headers, oauth)
+  #       type: "headers"
+  #       headers:
+  #         Authorization: "env.AGENT_DISCOVERY_TOKEN"
+  #     runtime_auth:                                  # Auth attached to proxied agent requests
+  #       type: "headers"
+  #       headers:
+  #         Authorization: "env.AGENT_RUNTIME_AUTH"
+
   # Audit logs configuration for CADF-compliant activity logging
   auditLogs:
     disabled: false
@@ -1638,6 +1741,8 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
     # connMaxIdleTime: "5m"  # How long an idle connection is kept (config and logs stores use separate pools).
+    # statementTimeout: "120s"                  # Server-side statement_timeout per pool connection ("0" keeps the server default)
+    # idleInTransactionSessionTimeout: "120s"   # Ends sessions idle inside an open transaction ("0" keeps the server default)
 
     # Vault store for external secret management (enterprise).
     # Resolves "vault.<path>" references in config fields at load time.
@@ -1682,6 +1787,8 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
     # connMaxIdleTime: "5m"  # How long an idle connection is kept (config and logs stores use separate pools).
+    # statementTimeout: "120s"                  # Server-side statement_timeout per pool connection ("0" keeps the server default)
+    # idleInTransactionSessionTimeout: "120s"   # Ends sessions idle inside an open transaction ("0" keeps the server default)
     # Point the logs store at a SEPARATE external PostgreSQL than the config store (only when the
     # logs store resolves to postgres). When disabled (default), it shares the top-level `postgresql`
     # connection. Fields mirror `postgresql.external`.
@@ -1726,17 +1833,22 @@ storage:
     #   protocol: "native"    # Options: native, http (default: native)
     #   secure: false         # Enable TLS
     #   dialTimeout: 10000    # Connection dial timeout in milliseconds
+    #   maxQuerySize: 16777216  # ClickHouse max_query_size in bytes; raise it if team-scoped reads fail with "Max query size exceeded"
     #   cluster: ""           # Optional cluster name; runs DDL ON CLUSTER with replicated engines
     # Async writer queue and batch tuning. Omitted fields use Bifrost defaults.
     # writer:
     #   maxBatchSize: 1000
     #   batchInterval: "5s"
     #   maxBatchBytes: 314572800
-    #   writeQueueCapacity: 10000
+    #   writeQueueCapacity: 10000   # also buffers writes while another pod runs a log store migration
     #   deferredUsageConcurrency: 5
     # Keep selected payload fields in DB instead of offloading to object storage.
     # Uses log payload DB column names (e.g., input_history, output_message, raw_request, raw_response).
     objectStorageExcludeFields: []
+    # Request types whose logs are never offloaded to object storage (e.g., list_models).
+    # These logs are kept in full in the logs database instead. Hidden logs (content
+    # logging disabled with retainContentInObjectStorage on) are still offloaded.
+    objectStorageExcludeRequestTypes: []
 
     # Object storage for offloading large log payloads (optional)
     # When enabled, request/response payloads are stored in S3/GCS
@@ -2022,6 +2134,34 @@ envFrom: []
   # - configMapRef:
   #     name: my-configmap
 
-# Init containers to run before the main application container.
+# Regular sidecar containers, appended to the pod's containers after Bifrost. They run
+# alongside Bifrost with no start or stop ordering and share its network namespace, so
+# they can reach Bifrost on localhost:8080. For a container that must be up before Bifrost
+# starts and outlive it on shutdown, use a native sidecar under initContainers instead.
+extraContainers: []
+  # - name: port-forwarder               # serves all of Bifrost's routes (not only /metrics) on pod port 9090
+  #   image: alpine/socat:1.8.0.0
+  #   args: ["TCP-LISTEN:9090,fork,reuseaddr", "TCP:localhost:8080"]
+  #   ports:
+  #     - containerPort: 9090
+  #       name: http-alt
+
+# Init containers to run before the main application container, in order.
 # Provide a list of init containers using standard Kubernetes container spec.
+#
+# Native sidecars (Kubernetes 1.29+) follow the Kubernetes convention: an init container with
+# restartPolicy: Always starts before the containers after it and Bifrost, keeps running beside
+# Bifrost, is restarted if it exits, and is stopped after Bifrost on shutdown. Kubernetes waits
+# only for a sidecar to start, not to be ready: give one that Bifrost or a later init container
+# depends on a startupProbe. The chart refuses to render a native sidecar on older clusters.
 initContainers: []
+  # - name: cloud-sql-proxy             # with storage.mode: postgres and postgresql.external.host: "127.0.0.1"
+  #   image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.14.1
+  #   restartPolicy: Always             # makes this init container a native sidecar
+  #   args: ["--port=5432", "--health-check", "--http-address=0.0.0.0", "--http-port=9801", "my-project:us-central1:bifrost-db"]
+  #   startupProbe:                     # probes hit the pod IP, so probe the health listener, not 127.0.0.1:5432
+  #     httpGet:
+  #       path: /startup
+  #       port: 9801
+  #     periodSeconds: 1
+  #     failureThreshold: 30
