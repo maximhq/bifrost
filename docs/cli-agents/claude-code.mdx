@@ -102,6 +102,10 @@ Set `ANTHROPIC_CUSTOM_HEADERS` to `x-bf-vk: your-virtual-key`. This passes the v
 
 **Caveat:** Because the virtual key is sent as a custom header rather than as the bearer token, Claude Code falls back to standard Anthropic account authentication for the `Authorization` header. This means you still need to log in with an Anthropic account. No credits are needed on the Anthropic account since billing goes through your Bifrost virtual key, but the account login is still required.
 
+<Note>
+**Signing in with your identity provider (Enterprise):** to have users authenticate with their work account instead of a virtual key, run Code sessions in Claude Desktop on 3P. Its configuration covers Code sessions as well as Chat and Cowork. See [Claude Desktop: Authenticate with SSO](/cli-agents/claude-desktop#2b-authenticate-with-sso).
+</Note>
+
 ## Configuring Claude Code to work with Bifrost
 
 <Tip>
