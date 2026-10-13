@@ -28,13 +28,16 @@ import (
 // validateProviderBaseURLShape keeps appended operation paths in the URL path.
 // Destination validation follows authentication so anonymous callers cannot
 // trigger DNS lookups while submitting endpoint changes.
-// valueBearingExternalURLErrors are the two ValidateExternalURL failures that
-// repeat the URL back: the parse error quotes it, and the DNS error names the
-// hostname. Its other failures (empty, scheme, missing hostname, unspecified /
-// link-local / private address) name a CLASS and carry nothing resolved.
+// valueBearingExternalURLErrors are the ValidateExternalURL failures that repeat
+// part of the URL back: the parse error quotes the whole thing, the DNS error
+// names the hostname, and the scheme error appends "got: <scheme>" -- and a
+// resolved value's scheme is as much of it as its host. Its remaining failures
+// (empty, missing hostname, unspecified / link-local / private address) name a
+// CLASS and carry nothing resolved.
 var valueBearingExternalURLErrors = []string{
 	"invalid URL format",
 	"failed to resolve hostname",
+	"only https and http schemes are allowed",
 }
 
 // externalURLErrorForClient keeps a resolved secret out of a destination

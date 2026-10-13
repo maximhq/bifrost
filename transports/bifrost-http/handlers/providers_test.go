@@ -3303,6 +3303,30 @@ func TestExternalURLErrorKeepsResolvedSecretsOutOfTheResponse(t *testing.T) {
 		}
 	})
 
+	t.Run("the scheme of a resolved value is not echoed either", func(t *testing.T) {
+		// The scheme error appends "got: <scheme>", and a resolved value's scheme is
+		// as much of that value as its host: a tenant-shaped scheme would be read
+		// back to the caller verbatim. Only the fixed reason may survive.
+		const secretScheme = "tenant-secret123"
+		err := bifrost.ValidateExternalURL(secretScheme+"://example.com", false)
+		if err == nil {
+			t.Fatalf("%s:// unexpectedly validated", secretScheme)
+		}
+		if !strings.Contains(err.Error(), secretScheme) {
+			t.Skipf("ValidateExternalURL no longer names the scheme, nothing to redact: %v", err)
+		}
+		got := externalURLErrorForClient(schemas.NewSecretVar(ref), err)
+		if strings.Contains(got, secretScheme) {
+			t.Errorf("the message exposed the resolved scheme: %s", got)
+		}
+		if !strings.Contains(got, "only https and http schemes are allowed") {
+			t.Errorf("the reason was lost; want the fixed scheme reason in: %s", got)
+		}
+		if !strings.Contains(got, ref) {
+			t.Errorf("the message does not name the reference: %s", got)
+		}
+	})
+
 	t.Run("a literal keeps its diagnostic", func(t *testing.T) {
 		err := bifrost.ValidateExternalURL("https://"+secretHost, false)
 		if err == nil {
