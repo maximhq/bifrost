@@ -1169,6 +1169,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	if err := ApplyMCPOAuthPrivateAllowlist(config.ClientConfig.MCPOAuthPrivateAllowlist); err != nil {
 		return nil, fmt.Errorf("mcp_oauth_private_allowlist: %w", err)
 	}
+	if oc := config.ClientConfig.OAuth2ServerConfig; oc != nil && slices.Contains(oc.AllowedRedirectURIs, configstoreTables.AllowAnyRedirectURI) {
+		logger.Warn(`oauth2_server_config.allowed_redirect_uris contains "*": any MCP OAuth client may register any https callback, so only the consent page stands between a user and a phishing client`)
+	}
 	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
 	// 4a. Global proxy (store only). Loaded before providers so the first
 	// GetConfigForProvider already sees it for providers that inherit it.
@@ -1476,6 +1479,15 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 		// so the resolved value is checked too; the error never echoes it.
 		if oc == nil || !oc.IssuerURL.IsSet() || oc.IssuerURL.GetValue() == "" {
 			return fmt.Errorf("oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
+		}
+	}
+	// Entries match exactly, so a partial wildcard would silently approve nothing.
+	// PUT /api/config rejects one; config.json and older DB rows reach here.
+	if oc := cc.OAuth2ServerConfig; oc != nil {
+		for _, uri := range oc.AllowedRedirectURIs {
+			if uri != configstoreTables.AllowAnyRedirectURI && strings.Contains(uri, "*") {
+				return fmt.Errorf(`oauth2_server_config.allowed_redirect_uris supports only a bare "*" wildcard`)
+			}
 		}
 	}
 	// The allowlist relaxes an SSRF guard, so a typo must stop startup rather

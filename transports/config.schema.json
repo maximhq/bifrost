@@ -478,9 +478,9 @@
           "properties": {
             "allowed_redirect_uris": {
               "type": "array",
-              "items": { "type": "string", "format": "uri" },
+              "items": { "anyOf": [{ "type": "string", "const": "*" }, { "type": "string", "format": "uri", "not": { "pattern": "\\*" } }] },
               "default": [],
-              "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries. Remote callbacks are denied by default; changing this list through the API requires dashboard authentication."
+              "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries. Remote callbacks are denied by default; a bare \"*\" entry allows any https callback; private-use scheme callbacks still need an exact entry, and partial wildcards are rejected. Changing this list through the API requires dashboard authentication."
             },
             "issuer_url": {
               "anyOf": [
