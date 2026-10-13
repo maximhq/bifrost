@@ -36,7 +36,7 @@ type entrypoint struct {
 
 var entrypoints = []entrypoint{
 	{
-		pkg:        "github.com/maximhq/bifrost/transports/bifrost-http/lib",
+		pkg:        "github.com/maximhq/bifrost/transports/v2/bifrost-http/lib",
 		typeName:   "ConfigData",
 		schemaPath: "", // root schema node — collectProperties will find .properties
 		moduleDir:  "transports",
