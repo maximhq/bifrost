@@ -59,7 +59,7 @@
   # libgcc: GCC runtime library
   # ca-certificates: For HTTPS connections
   RUN apk upgrade --no-cache && \
-    apk add --no-cache musl libgcc ca-certificates zlib
+    apk add --no-cache musl libgcc ca-certificates zlib git
 
   # Create data directory and set up user
   COPY --from=builder /app/main .

@@ -22,7 +22,7 @@ WORKDIR /app
 
 # Install dependencies including gcc for CGO and sqlite (with latest security patches)
 RUN apk upgrade --no-cache && \
-  apk add --no-cache gcc musl-dev sqlite-dev binutils binutils-gold
+  apk add --no-cache gcc musl-dev sqlite-dev binutils binutils-gold git
 
 # Set environment for CGO-enabled build (required for go-sqlite3)
 ENV CGO_ENABLED=1 GOOS=linux
