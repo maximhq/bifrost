@@ -78,7 +78,19 @@
                   "quickstart/gateway/integrations"
                 ]
               },
-              "quickstart/cli/getting-started",
+              {
+                "group": "Bifrost CLI",
+                "icon": "laptop-code",
+                "pages": [
+                  "quickstart/cli/getting-started",
+                  "quickstart/cli/oss-setup",
+                  "quickstart/cli/enterprise-setup",
+                  "quickstart/cli/contexts",
+                  "quickstart/cli/coding-agents",
+                  "quickstart/cli/commands",
+                  "quickstart/cli/troubleshooting"
+                ]
+              },
               {
                 "group": "Use as Go SDK",
                 "icon": "code",
