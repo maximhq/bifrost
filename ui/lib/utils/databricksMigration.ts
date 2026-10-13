@@ -11,7 +11,7 @@ import {
 } from "@/lib/types/config";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { SecretVar } from "@/lib/types/schemas";
-import { toSecretVarFormValue } from "@/lib/utils/secretVarForm";
+import { isSecretVarSet, toSecretVarFormValue } from "@/lib/utils/secretVarForm";
 import { isRedacted } from "@/lib/utils/validation";
 
 /**
@@ -124,7 +124,7 @@ export const maskSecret = (secret: SecretVar | undefined): string => {
 	return `${value.slice(0, 4)}****${value.slice(-4)}`;
 };
 
-export const isSecretVarSet = (secret: SecretVar | undefined): boolean => Boolean(secret?.value?.trim() || secret?.ref?.trim());
+export { isSecretVarSet };
 
 /** True when a secret came back from the API as a masked placeholder and cannot be re-sent. */
 const isMaskedLiteral = (secret: SecretVar | undefined): boolean => {
