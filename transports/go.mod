@@ -1,4 +1,4 @@
-module github.com/maximhq/bifrost/transports
+module github.com/maximhq/bifrost/transports/v2
 
 go 1.27.0
 
