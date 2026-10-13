@@ -574,6 +574,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Only an omitted field keeps the stored placement; an explicit "" or null is a supplied
+	// value and must be one of the two placements like any other.
+	if _, present := clientConfigFields["extra_fields_placement"]; present &&
+		payload.ClientConfig.ExtraFieldsPlacement != configstoreTables.ExtraFieldsPlacementBody &&
+		payload.ClientConfig.ExtraFieldsPlacement != configstoreTables.ExtraFieldsPlacementHeaders {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("extra_fields_placement must be 'body' or 'headers', got %q", payload.ClientConfig.ExtraFieldsPlacement))
+		return
+	}
+
 	if err := validateMCPInstructionCaps(payload.ClientConfig.MCPMaxInstructionsPerClient, payload.ClientConfig.MCPMaxInstructionsTotal); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -733,6 +742,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// any live mutation.
 	if payload.ClientConfig.DualCredentialConflictBehavior != "" {
 		updatedConfig.DualCredentialConflictBehavior = payload.ClientConfig.DualCredentialConflictBehavior
+	}
+
+	// Copied only when sent (validated up front), so an omitted field keeps the stored placement.
+	if _, present := clientConfigFields["extra_fields_placement"]; present {
+		updatedConfig.ExtraFieldsPlacement = payload.ClientConfig.ExtraFieldsPlacement
 	}
 
 	// Only update MaxRequestBodySizeMB if explicitly provided (> 0) to avoid clearing stored value

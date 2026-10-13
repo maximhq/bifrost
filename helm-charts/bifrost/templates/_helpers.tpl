@@ -336,6 +336,9 @@ false
 {{- if .Values.bifrost.client.dualCredentialConflictBehavior }}
 {{- $_ := set $client "dual_credential_conflict_behavior" .Values.bifrost.client.dualCredentialConflictBehavior }}
 {{- end }}
+{{- if .Values.bifrost.client.extraFieldsPlacement }}
+{{- $_ := set $client "extra_fields_placement" .Values.bifrost.client.extraFieldsPlacement }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "enforceGovernanceHeader" }}
 {{- $_ := set $client "enforce_governance_header" .Values.bifrost.client.enforceGovernanceHeader }}
 {{- end }}

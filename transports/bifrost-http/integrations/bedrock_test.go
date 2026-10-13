@@ -69,6 +69,10 @@ func (m *mockHandlerStore) ShouldAllowDirectKeys() bool {
 	return false
 }
 
+func (m *mockHandlerStore) ShouldSendExtraFieldsInHeaders() bool {
+	return false
+}
+
 func (m *mockHandlerStore) IsProviderConfigured(provider schemas.ModelProvider) bool {
 	for _, p := range m.availableProviders {
 		if p == provider {

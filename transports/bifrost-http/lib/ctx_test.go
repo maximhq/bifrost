@@ -37,8 +37,9 @@ import (
 
 // testHandlerStore is a minimal HandlerStore for ctx tests.
 type testHandlerStore struct {
-	matcher         *HeaderMatcher
-	allowDirectKeys bool
+	matcher              *HeaderMatcher
+	allowDirectKeys      bool
+	extraFieldsInHeaders bool
 }
 
 func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
@@ -53,6 +54,7 @@ func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
+func (s testHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return s.extraFieldsInHeaders }
 func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
 func (s testHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                 { return "" }
@@ -2984,5 +2986,21 @@ func TestGatewayRefusedDirectKeyIsTheCallersOwn401(t *testing.T) {
 			}
 			requireGWHits(t, u, map[string]int{"sk-caller": 1, "sk-a1": 0})
 		})
+	}
+}
+
+func TestConvertToBifrostContext_MarksExtraFieldsInHeaders(t *testing.T) {
+	bodyCtx := &fasthttp.RequestCtx{}
+	_, cancel := ConvertToBifrostContext(bodyCtx, testHandlerStore{})
+	cancel()
+	if ExtraFieldsInHeaders(bodyCtx) {
+		t.Fatal("body mode must not mark the request")
+	}
+
+	headersCtx := &fasthttp.RequestCtx{}
+	_, cancel = ConvertToBifrostContext(headersCtx, testHandlerStore{extraFieldsInHeaders: true})
+	cancel()
+	if !ExtraFieldsInHeaders(headersCtx) {
+		t.Fatal("headers mode must mark the request")
 	}
 }

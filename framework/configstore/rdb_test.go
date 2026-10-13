@@ -2618,6 +2618,37 @@ func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
 	assert.NotEqual(t, onHash, offHash)
 }
 
+func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// Unset reads back as the column default, so existing installs keep extra_fields in the body.
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, tables.ExtraFieldsPlacementBody, result.ExtraFieldsPlacement)
+
+	headers := base
+	headers.ExtraFieldsPlacement = tables.ExtraFieldsPlacementHeaders
+	require.NoError(t, store.UpdateClientConfig(ctx, &headers))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, tables.ExtraFieldsPlacementHeaders, result.ExtraFieldsPlacement)
+
+	// Only the non-default value is hashed, so configs written before the field existed keep their hash.
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	body := base
+	body.ExtraFieldsPlacement = tables.ExtraFieldsPlacementBody
+	bodyHash, err := body.GenerateClientConfigHash()
+	require.NoError(t, err)
+	headersHash, err := headers.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, bodyHash)
+	assert.NotEqual(t, baseHash, headersHash)
+}
+
 func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

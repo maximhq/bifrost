@@ -102,6 +102,7 @@ type ClientConfig struct {
 	LogRetentionDays                      int                                   `json:"log_retention_days" validate:"min=1"`         // Number of days to retain logs (minimum 1 day)
 	EnforceAuthOnInference                bool                                  `json:"enforce_auth_on_inference"`                   // Require auth (VK, API key, or user token) on inference endpoints
 	DualCredentialConflictBehavior        tables.DualCredentialConflictBehavior `json:"dual_credential_conflict_behavior,omitempty"` // Behavior when both an IDP token and a VK are present on an inference request
+	ExtraFieldsPlacement                  tables.ExtraFieldsPlacement           `json:"extra_fields_placement,omitempty"`            // Where inference responses carry extra_fields: "body" (default) or "headers"
 	EnforceGovernanceHeader               bool                                  `json:"enforce_governance_header,omitempty"`         // Deprecated: use EnforceAuthOnInference
 	EnforceSCIMAuth                       bool                                  `json:"enforce_scim_auth,omitempty"`                 // Deprecated: use EnforceAuthOnInference
 	AllowedOrigins                        []string                              `json:"allowed_origins,omitempty"`                   // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
@@ -216,6 +217,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 
 	if c.DualCredentialConflictBehavior != "" && c.DualCredentialConflictBehavior != tables.DualCredentialConflictBehaviorPreferIDP {
 		hash.Write([]byte("dualCredentialConflictBehavior:" + string(c.DualCredentialConflictBehavior)))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.ExtraFieldsPlacement != "" && c.ExtraFieldsPlacement != tables.ExtraFieldsPlacementBody {
+		hash.Write([]byte("extraFieldsPlacement:" + string(c.ExtraFieldsPlacement)))
 	}
 
 	if c.Compat.ConvertTextToChat {
