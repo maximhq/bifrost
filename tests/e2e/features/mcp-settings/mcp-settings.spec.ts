@@ -205,6 +205,19 @@ test.describe('MCP Settings', () => {
       expect(saved?.allowed_redirect_uris ?? []).toEqual([])
     })
 
+    test('should refuse to save OAuth mode with an empty issuer URL', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await mcpSettingsPage.issuerUrlInput.fill('')
+      await expect(mcpSettingsPage.saveBtn).toBeEnabled()
+      await mcpSettingsPage.saveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/Issuer URL is required when MCP auth mode is OAuth or Both/i)
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { issuer_url?: unknown } | undefined
+      expect(JSON.stringify(saved?.issuer_url)).toContain('https://bifrost.e2e.test')
+    })
+
     test('should reject a non-https remote redirect URI without saving', async ({ mcpSettingsPage, request }) => {
       await mcpSettingsPage.goto()
       await mcpSettingsPage.advancedTrigger.click()

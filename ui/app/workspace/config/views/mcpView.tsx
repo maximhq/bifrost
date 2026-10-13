@@ -11,6 +11,7 @@ import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig, MCPCodeModeLimits } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
+import { isSecretVarSet } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle } from "lucide-react";
@@ -294,6 +295,11 @@ export default function MCPView() {
 
 			if (oauthModeActive && (isNaN(accessTokenTTL) || accessTokenTTL < 60)) {
 				toast.error("Access token TTL must be at least 60 seconds.");
+				return;
+			}
+
+			if (oauthModeActive && !isSecretVarSet(localConfig.oauth2_server_config?.issuer_url)) {
+				toast.error("Issuer URL is required when MCP auth mode is OAuth or Both.");
 				return;
 			}
 
@@ -664,12 +670,12 @@ export default function MCPView() {
 									{/* Issuer URL */}
 									<div className="space-y-1.5">
 										<label htmlFor="oauth2-issuer-url" className="text-sm font-medium">
-											Issuer URL
+											Issuer URL <span className="text-destructive">*</span>
 										</label>
 										<p className="text-muted-foreground text-sm">
 											Stable public URL advertised in discovery documents and embedded as the <code className="text-xs">iss</code> claim in
-											every JWT. Leave blank to derive it from the request <code className="text-xs">Host</code> header (sufficient for most
-											deployments). Multi-host or reverse-proxy deployments might need this. Supports env var syntax (e.g.{" "}
+											every JWT. Required in OAuth and Both modes: Bifrost never derives the issuer from the request{" "}
+											<code className="text-xs">Host</code> header, because that header is caller-controlled. Supports env var syntax (e.g.{" "}
 											<code className="text-xs">env.BIFROST_ISSUER_URL</code>).
 										</p>
 										<SecretVarInput

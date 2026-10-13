@@ -12,6 +12,7 @@ export class MCPSettingsPage extends BasePage {
   readonly advancedTrigger: Locator
   readonly allowedRedirectUrisInput: Locator
   readonly allowedRedirectUrisWildcardWarning: Locator
+  readonly issuerUrlInput: Locator
 
   constructor(page: Page) {
     super(page)
@@ -25,6 +26,7 @@ export class MCPSettingsPage extends BasePage {
     this.advancedTrigger = page.getByTestId('mcp-settings-advanced-trigger')
     this.allowedRedirectUrisInput = page.getByTestId('oauth2-allowed-redirect-uris-input')
     this.allowedRedirectUrisWildcardWarning = page.getByTestId('oauth2-allowed-redirect-uris-wildcard-warning')
+    this.issuerUrlInput = page.getByTestId('oauth2-issuer-url-input')
   }
 
   /** The remove button of one OAuth private allowlist entry, present while the entry is listed. */

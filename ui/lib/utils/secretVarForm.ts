@@ -9,6 +9,9 @@ function inferType(ref: string | undefined): SecretVar["type"] | undefined {
 
 export const emptySecretVar = (): SecretVar => ({ value: "", ref: "" });
 
+// isSecretVarSet reports whether a SecretVar carries a non-blank literal value or reference.
+export const isSecretVarSet = (secret: SecretVar | undefined): boolean => Boolean(secret?.value?.trim() || secret?.ref?.trim());
+
 // trimSecretVar strips stray whitespace from a SecretVar form value's literal value and reference.
 export const trimSecretVar = <T extends { value?: string; ref?: string } | undefined>(field: T): T => {
 	if (!field) return field;
