@@ -804,7 +804,16 @@ func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageConte
 	// Blocks that providers emit whole on output_item.added/done (compaction,
 	// fallback, rendered search entry point) plus the input-side block fields.
 	copy.ResponsesOutputMessageContentRenderedContent = clonePtr(original.ResponsesOutputMessageContentRenderedContent)
-	copy.ResponsesOutputMessageContentCompaction = clonePtr(original.ResponsesOutputMessageContentCompaction)
+	if original.ResponsesOutputMessageContentCompaction != nil {
+		copyCompaction := *original.ResponsesOutputMessageContentCompaction
+		if changes := copyCompaction.ToolChanges; changes != nil {
+			copyCompaction.ToolChanges = make([]schemas.ResponsesMessageContentBlock, len(changes))
+			for i, change := range changes {
+				copyCompaction.ToolChanges[i] = deepCopyResponsesMessageContentBlock(change)
+			}
+		}
+		copy.ResponsesOutputMessageContentCompaction = &copyCompaction
+	}
 	if original.ResponsesOutputMessageContentFallback != nil {
 		copyFallback := *original.ResponsesOutputMessageContentFallback
 		copyFallback.TriggerCategory = clonePtr(copyFallback.TriggerCategory)

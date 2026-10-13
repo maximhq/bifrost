@@ -848,6 +848,34 @@ func TestDeepCopyResponsesMessageContentBlockKeepsToolChangeAndGuardContent(t *t
 	require.Equal(t, newBlock(), copied)
 }
 
+// TestDeepCopyResponsesMessageContentBlockDoesNotShareCompactionToolChanges
+// covers the compaction block's tool_changes, which were shared with the
+// original event after the copy.
+func TestDeepCopyResponsesMessageContentBlockDoesNotShareCompactionToolChanges(t *testing.T) {
+	newBlock := func() schemas.ResponsesMessageContentBlock {
+		return schemas.ResponsesMessageContentBlock{
+			Type: schemas.ResponsesOutputMessageContentTypeCompaction,
+			ResponsesOutputMessageContentCompaction: &schemas.ResponsesOutputMessageContentCompaction{
+				Summary: "Earlier turns covered the schema.",
+				ToolChanges: []schemas.ResponsesMessageContentBlock{{
+					Type:       schemas.ResponsesInputMessageContentBlockTypeText,
+					Text:       schemas.Ptr("tool_addition"),
+					ToolChange: &schemas.ResponsesToolChangeTarget{Type: "function", Name: schemas.Ptr("lookup")},
+				}},
+			},
+		}
+	}
+	original := newBlock()
+
+	copied := deepCopyResponsesMessageContentBlock(original)
+
+	change := &original.ResponsesOutputMessageContentCompaction.ToolChanges[0]
+	*change.Text = "mutated"
+	*change.ToolChange.Name = "mutated"
+	original.ResponsesOutputMessageContentCompaction.ToolChanges[0].Type = schemas.ResponsesInputMessageContentBlockTypeImage
+	require.Equal(t, newBlock(), copied)
+}
+
 // Only output_item.done carries a custom_tool_call's `input`, so the accumulator
 // must take that item wholesale.
 func TestBuildResponsesMessagePreservesCustomToolCallInput(t *testing.T) {
