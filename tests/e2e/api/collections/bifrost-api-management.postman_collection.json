@@ -59,6 +59,8 @@
           "console.log('='.repeat(80) + '\\n');",
           "",
           "var code = pm.response.code;",
+          "// Session auth or the OSS setup token. Only a request with neither is an auth bypass.",
+          "var genuineAuth = !!(pm.variables.get('admin_auth_header') || pm.variables.get('setup_token'));",
           "var pass = (code >= 200 && code <= 299);",
           "if (!pass && code >= 400 && code < 500) {",
           "  try {",
@@ -106,7 +108,7 @@
           "    }",
           "  } catch (e) {}",
           "}",
-          "if (pluginRequests.indexOf(requestName) !== -1 && code === 403 && !pm.variables.get('admin_auth_header')) {",
+          "if (pluginRequests.indexOf(requestName) !== -1 && code === 403 && !genuineAuth) {",
           "  try {",
           "    var authBody = pm.response.json();",
           "    var authMsg = (authBody && authBody.error && authBody.error.message) ? authBody.error.message : '';",
@@ -120,8 +122,8 @@
           "// Writes that choose where Bifrost dials out (a provider base URL, the global",
           "// proxy URL, an MCP client target on a loopback, private or unresolvable host,",
           "// a test delivery to a private-network webhook) need an authenticated admin",
-          "// session. In the unauthenticated pass the server answers 403 and the request's",
-          "// own test asserts that; with admin_auth_header set the same 403 is a failure.",
+          "// session. Without a session or setup token the server answers 403 and the request's",
+          "// own test asserts that; with either credential the same 403 is a failure.",
           "var adminSessionGatedRequests = {",
           "  'Add Provider': /requires an authenticated admin session/i,",
           "  'Update Proxy Config': /requires an authenticated admin session/i,",
@@ -130,7 +132,7 @@
           "  'Create MCP Client (vMCP setup)': /unauthenticated callers cannot register MCP clients/i,",
           "  'Test Webhook Endpoint': /unauthenticated callers cannot test webhook endpoints/i",
           "};",
-          "if (adminSessionGatedRequests[requestName] && code === 403 && !pm.variables.get('admin_auth_header')) {",
+          "if (adminSessionGatedRequests[requestName] && code === 403 && !genuineAuth) {",
           "  try {",
           "    var gatedBody = pm.response.json();",
           "    var gatedMsg = (gatedBody && gatedBody.error && gatedBody.error.message) ? gatedBody.error.message : '';",
@@ -145,7 +147,7 @@
           "if (requestName === 'Add MCP Client (unsupported connection_type)' && code === 400) {",
           "  pass = true;",
           "}",
-          "if (requestName === 'Add MCP Client (unresolvable host)' && code === 500 && pm.variables.get('admin_auth_header')) {",
+          "if (requestName === 'Add MCP Client (unresolvable host)' && code === 500 && genuineAuth) {",
           "  try {",
           "    var connectBody = pm.response.json();",
           "    var connectMsg = (connectBody && connectBody.error && connectBody.error.message) ? connectBody.error.message : '';",
@@ -188,7 +190,7 @@
           "  };",
           "  // The proxy URL is only writable from an admin session: in the unauthenticated",
           "  // pass the stored value is whatever the deployment had (empty on a fresh database).",
-          "  if (!pm.variables.get('admin_auth_header')) nullable['Get Proxy Config'] = { url: true };",
+          "  if (!genuineAuth) nullable['Get Proxy Config'] = { url: true };",
           "  return nullable[name] || {};",
           "}",
           "function expectKeysWithValues(value, keys) {",
@@ -1862,7 +1864,7 @@
           "    case 'Get Proxy Config':",
           "      // Only the authenticated pass stored the fixed URL; the unauthenticated",
           "      // attempt is refused, which the request's own test asserts.",
-          "      if (pm.variables.get('admin_auth_header')) assertProxyConfig(body);",
+          "      if (genuineAuth) assertProxyConfig(body);",
           "      break;",
           "    case 'Update Proxy Config':",
           "      assertMessageContains(body, 'updated');",
@@ -2340,7 +2342,7 @@
                   "// server only accepts it from an authenticated admin session. Unauthenticated",
                   "// (dashboard auth disabled or unconfigured) the create is refused with 403.",
                   "pm.collectionVariables.unset('provider_created');",
-                  "var authed = !!pm.variables.get('admin_auth_header');",
+                  "var authed = !!(pm.variables.get('admin_auth_header') || pm.variables.get('setup_token')); // the OSS setup token is a credential check, not an auth bypass",
                   "if (!authed) {",
                   "  pm.test('Unauthenticated provider create with a base URL is refused (403)', function () {",
                   "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
@@ -4088,28 +4090,35 @@
       "description": "A virtual key with allow_all_providers grants every provider, including ones it holds no provider_config for; the configs it does hold are overrides rather than the whole grant. The listing routes used to answer from the provider_config rows alone, so such a key saw only the providers it happened to override and every other provider vanished from /api/models*, /v1/models and the VK model pickers, while inference on them kept working.",
       "item": [
         {
-          "name": "Baseline - catalog sizes with no VK",
+          "name": "Baseline - anthropic catalog size with no VK",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Baseline listing returns 200', function () { pm.response.to.have.status(200); });",
+                  "pm.test('Baseline anthropic listing returns 200', function () { pm.response.to.have.status(200); });",
                   "// Parse defensively: an SPA fallback, a 401/403 or any non-JSON body makes an unguarded",
                   "// pm.response.json() throw a script error, which aborts the run instead of failing a",
                   "// named assertion and strands every request after this one.",
                   "var body = null;",
                   "try { body = pm.response.json(); } catch (e) { body = null; }",
                   "var models = (body && body.models) || [];",
-                  "var counts = {};",
-                  "models.forEach(function (m) { if (m && m.provider) counts[m.provider] = (counts[m.provider] || 0) + 1; });",
-                  "pm.collectionVariables.set('vkall_base_anthropic', String(counts.anthropic || 0));",
-                  "pm.collectionVariables.set('vkall_base_openai', String(counts.openai || 0));",
-                  "// The scenario needs a provider to leave unnamed and one to override; without both",
-                  "// configured there is nothing to tell apart and the assertions below would pass vacuously.",
-                  "pm.test('anthropic is configured on this server', function () { pm.expect(counts.anthropic || 0).to.be.above(0); });",
-                  "pm.test('openai is configured on this server', function () { pm.expect(counts.openai || 0).to.be.above(1); });"
+                  "var total = Number(body && body.total);",
+                  "// Count from a provider-filtered listing, never from one page of the whole catalog: an",
+                  "// unfiltered page is capped and unsorted, so a provider's rows can land past the cap and",
+                  "// the count reads short once the catalog outgrows it.",
+                  "pm.test('anthropic listing is one complete page', function () {",
+                  "  pm.expect(models.length, 'total ' + total).to.eql(total);",
+                  "});",
+                  "pm.test('the listing holds only anthropic', function () {",
+                  "  var others = models.filter(function (m) { return !m || m.provider !== 'anthropic'; }).length;",
+                  "  pm.expect(others).to.eql(0);",
+                  "});",
+                  "pm.collectionVariables.set('vkall_base_anthropic', String(models.length));",
+                  "// The scenario needs a provider to leave unnamed; without it configured there is nothing",
+                  "// to tell apart and the assertions below would pass vacuously.",
+                  "pm.test('anthropic is configured on this server', function () { pm.expect(models.length).to.be.above(0); });"
                 ]
               }
             }
@@ -4118,7 +4127,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/models/details?limit=5000",
+              "raw": "{{base_url}}/api/models/details?provider=anthropic&limit=5000",
               "host": [
                 "{{base_url}}"
               ],
@@ -4128,6 +4137,69 @@
                 "details"
               ],
               "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                },
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Baseline - openai catalog size with no VK",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Baseline openai listing returns 200', function () { pm.response.to.have.status(200); });",
+                  "// Parse defensively: an SPA fallback, a 401/403 or any non-JSON body makes an unguarded",
+                  "// pm.response.json() throw a script error, which aborts the run instead of failing a",
+                  "// named assertion and strands every request after this one.",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var models = (body && body.models) || [];",
+                  "var total = Number(body && body.total);",
+                  "// Count from a provider-filtered listing, never from one page of the whole catalog: an",
+                  "// unfiltered page is capped and unsorted, so a provider's rows can land past the cap and",
+                  "// the count reads short once the catalog outgrows it.",
+                  "pm.test('openai listing is one complete page', function () {",
+                  "  pm.expect(models.length, 'total ' + total).to.eql(total);",
+                  "});",
+                  "pm.test('the listing holds only openai', function () {",
+                  "  var others = models.filter(function (m) { return !m || m.provider !== 'openai'; }).length;",
+                  "  pm.expect(others).to.eql(0);",
+                  "});",
+                  "pm.collectionVariables.set('vkall_base_openai', String(models.length));",
+                  "// The VK narrows openai to one model, so it needs more than one to show the narrowing.",
+                  "pm.test('openai is configured on this server', function () { pm.expect(models.length).to.be.above(1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/models/details?provider=openai&limit=5000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "details"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
                 {
                   "key": "limit",
                   "value": "5000"
@@ -4204,7 +4276,7 @@
           }
         },
         {
-          "name": "/api/models/details - unnamed provider is granted in full, overridden one stays narrowed",
+          "name": "/api/models/details - unnamed provider is granted in full",
           "event": [
             {
               "listen": "test",
@@ -4218,22 +4290,25 @@
                   "var body = null;",
                   "try { body = pm.response.json(); } catch (e) { body = null; }",
                   "var models = (body && body.models) || [];",
-                  "var counts = {};",
-                  "models.forEach(function (m) { if (m && m.provider) counts[m.provider] = (counts[m.provider] || 0) + 1; });",
+                  "var total = Number(body && body.total);",
+                  "// Count from a provider-filtered listing, never from one page of the whole catalog: an",
+                  "// unfiltered page is capped and unsorted, so a provider's rows can land past the cap and",
+                  "// the count reads short once the catalog outgrows it.",
+                  "pm.test('anthropic listing is one complete page', function () {",
+                  "  pm.expect(models.length, 'total ' + total).to.eql(total);",
+                  "});",
+                  "pm.test('the listing holds only anthropic', function () {",
+                  "  var others = models.filter(function (m) { return !m || m.provider !== 'anthropic'; }).length;",
+                  "  pm.expect(others).to.eql(0);",
+                  "});",
                   "var baseAnthropic = Number(pm.collectionVariables.get('vkall_base_anthropic'));",
-                  "var baseOpenai = Number(pm.collectionVariables.get('vkall_base_openai'));",
                   "// The regression: anthropic has no provider_config, so it is granted by the flag alone.",
                   "// Answering from the configs alone dropped it entirely.",
                   "pm.test('anthropic is listed though the VK names no config for it', function () {",
-                  "  pm.expect(counts.anthropic || 0).to.be.above(0);",
+                  "  pm.expect(models.length).to.be.above(0);",
                   "});",
                   "pm.test('anthropic is granted in full, not narrowed', function () {",
-                  "  pm.expect(counts.anthropic).to.eql(baseAnthropic);",
-                  "});",
-                  "// And the other half: a config the VK does hold still narrows its provider, so the fix",
-                  "// widens nothing it should not.",
-                  "pm.test('openai stays narrowed by its own config', function () {",
-                  "  pm.expect(counts.openai || 0).to.be.below(baseOpenai);",
+                  "  pm.expect(models.length).to.eql(baseAnthropic);",
                   "});"
                 ]
               }
@@ -4248,7 +4323,7 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/models/details?limit=5000",
+              "raw": "{{base_url}}/api/models/details?provider=anthropic&limit=5000",
               "host": [
                 "{{base_url}}"
               ],
@@ -4258,6 +4333,80 @@
                 "details"
               ],
               "query": [
+                {
+                  "key": "provider",
+                  "value": "anthropic"
+                },
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "/api/models/details - overridden provider stays narrowed",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('GET /api/models/details with VK returns 200', function () { pm.response.to.have.status(200); });",
+                  "// Parse defensively: an SPA fallback, a 401/403 or any non-JSON body makes an unguarded",
+                  "// pm.response.json() throw a script error, which aborts the run instead of failing a",
+                  "// named assertion and strands every request after this one.",
+                  "var body = null;",
+                  "try { body = pm.response.json(); } catch (e) { body = null; }",
+                  "var models = (body && body.models) || [];",
+                  "var total = Number(body && body.total);",
+                  "// Count from a provider-filtered listing, never from one page of the whole catalog: an",
+                  "// unfiltered page is capped and unsorted, so a provider's rows can land past the cap and",
+                  "// the count reads short once the catalog outgrows it.",
+                  "pm.test('openai listing is one complete page', function () {",
+                  "  pm.expect(models.length, 'total ' + total).to.eql(total);",
+                  "});",
+                  "pm.test('the listing holds only openai', function () {",
+                  "  var others = models.filter(function (m) { return !m || m.provider !== 'openai'; }).length;",
+                  "  pm.expect(others).to.eql(0);",
+                  "});",
+                  "var baseOpenai = Number(pm.collectionVariables.get('vkall_base_openai'));",
+                  "// The other half: a config the VK does hold still narrows its provider, so granting the",
+                  "// unnamed ones in full widens nothing it should not.",
+                  "pm.test('openai is listed through its own config', function () {",
+                  "  pm.expect(models.length).to.be.above(0);",
+                  "});",
+                  "pm.test('openai stays narrowed by its own config', function () {",
+                  "  pm.expect(models.length).to.be.below(baseOpenai);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkall_value}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/models/details?provider=openai&limit=5000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "models",
+                "details"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "openai"
+                },
                 {
                   "key": "limit",
                   "value": "5000"
@@ -6248,7 +6397,7 @@
                   "// loopback, private-network or link-local target needs an authenticated admin",
                   "// session; unauthenticated the server refuses before any connection is made.",
                   "pm.collectionVariables.unset('mcp_client_registered');",
-                  "var authed = !!pm.variables.get('admin_auth_header');",
+                  "var authed = !!(pm.variables.get('admin_auth_header') || pm.variables.get('setup_token')); // the OSS setup token is a credential check, not an auth bypass",
                   "if (!authed) {",
                   "  pm.test('Unauthenticated loopback MCP client registration is refused (403)', function () {",
                   "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
@@ -6435,7 +6584,7 @@
                   "// A target the resolver cannot classify is refused unauthenticated (fail",
                   "// closed). An admin may register it, but the connect attempt fails and the",
                   "// server reports that as a 500 without storing the client.",
-                  "var authed = !!pm.variables.get('admin_auth_header');",
+                  "var authed = !!(pm.variables.get('admin_auth_header') || pm.variables.get('setup_token')); // the OSS setup token is a credential check, not an auth bypass",
                   "if (!authed) {",
                   "  pm.test('Unauthenticated registration of an unresolvable target is refused (403)', function () {",
                   "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
@@ -6536,7 +6685,7 @@
                   "// Same gate as MCP Clients / Add MCP Client: a loopback target needs an",
                   "// authenticated admin session. The dependents below skip when this is refused.",
                   "pm.collectionVariables.unset('vmcp_client_registered');",
-                  "var authed = !!pm.variables.get('admin_auth_header');",
+                  "var authed = !!(pm.variables.get('admin_auth_header') || pm.variables.get('setup_token')); // the OSS setup token is a credential check, not an auth bypass",
                   "var b = null; try { b = pm.response.json(); } catch (e) { b = null; }",
                   "if (!authed) {",
                   "  pm.test('Unauthenticated loopback MCP client registration is refused (403)', function () {",
@@ -8647,7 +8796,7 @@
                   "// needs an authenticated admin session; unauthenticated the server refuses.",
                   "// Authenticated, the receiver (127.0.0.1:39199) is deliberately not listening,",
                   "// so the delivery result is reported rather than the request failing.",
-                  "var authed = !!pm.variables.get('admin_auth_header');",
+                  "var authed = !!(pm.variables.get('admin_auth_header') || pm.variables.get('setup_token')); // the OSS setup token is a credential check, not an auth bypass",
                   "if (!authed) {",
                   "  pm.test('Unauthenticated test of a private-network endpoint is refused (403)', function () {",
                   "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
@@ -8960,7 +9109,7 @@
                   "// unauthenticated pass attempts a loopback URL with a port stamped per run,",
                   "// so the refusal is provable even on a database where an earlier authenticated",
                   "// pass already stored the fixed URL (an unchanged URL is not a change to refuse).",
-                  "var attempted = pm.variables.get('admin_auth_header')",
+                  "var attempted = (pm.variables.get('admin_auth_header') || pm.variables.get('setup_token'))",
                   "  ? 'http://127.0.0.1:38080'",
                   "  : 'http://127.0.0.1:' + (20000 + (Date.now() % 10000));",
                   "pm.collectionVariables.set('proxy_attempted_url', attempted);",
@@ -8981,7 +9130,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "var authed = !!pm.variables.get('admin_auth_header');",
+                  "var authed = !!(pm.variables.get('admin_auth_header') || pm.variables.get('setup_token')); // the OSS setup token is a credential check, not an auth bypass",
                   "if (!authed) {",
                   "  pm.test('Unauthenticated proxy URL change is refused (403)', function () {",
                   "    pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(403);",
@@ -9026,7 +9175,7 @@
                   "var attempted = pm.collectionVariables.get('proxy_attempted_url');",
                   "var body = null;",
                   "try { body = pm.response.json(); } catch (e) { body = null; }",
-                  "if (!pm.variables.get('admin_auth_header')) {",
+                  "if (!(pm.variables.get('admin_auth_header') || pm.variables.get('setup_token'))) {",
                   "  pm.test('Refused proxy URL was not stored', function () {",
                   "    pm.expect(attempted, 'attempted url captured by Update Proxy Config').to.be.a('string').and.not.empty;",
                   "    pm.expect(body && body.url, 'body: ' + pm.response.text()).to.not.equal(attempted);",
@@ -9036,6 +9185,60 @@
                   "    pm.expect(body && body.url, 'body: ' + pm.response.text()).to.equal(attempted);",
                   "  });",
                   "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Teardown - Disable Proxy Config",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"enabled\": false, \"type\": \"http\", \"url\": \"http://127.0.0.1:38080\", \"timeout\": 30, \"enable_for_inference\": false, \"enable_for_api\": false, \"enable_for_scim\": false}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/proxy-config",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "proxy-config"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Only the authenticated pass stored a proxy (the unauthenticated update is refused",
+                  "// with 403), and only an admin session may change it back.",
+                  "if (!(pm.variables.get('admin_auth_header') || pm.variables.get('setup_token')) && typeof pm.execution !== 'undefined' && pm.execution.skipRequest) {",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The stored proxy points at a port nothing listens on; left enabled, every later",
+                  "// provider call in this pass fails to dial it.",
+                  "pm.test('Proxy is disabled again (200)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + pm.response.text()).to.equal(200);",
+                  "});"
                 ]
               }
             }
@@ -10825,8 +11028,13 @@
               "key.name = key.id;",
               "var keyPath = providerPath + '/keys/' + key.id;",
               "var canary = 'synthetic-secretvar-harness-canary-0123456789';",
-              "var ref = 'env.BIFROST_SECRET_REDACTION_CANARY';",
-              "var masked = canary.slice(0, 4) + new Array(25).join('*') + canary.slice(-4);",
+              "// Key server URLs must resolve to an http(s) URL, so they get a URL canary that embeds",
+              "// the base canary. The leak checks below cover both.",
+              "var canaries = {",
+              "  'env.BIFROST_SECRET_REDACTION_CANARY': canary,",
+              "  'env.BIFROST_SECRET_REDACTION_URL_CANARY': 'http://127.0.0.1/' + canary",
+              "};",
+              "function maskOf(v) { return v.slice(0, 4) + new Array(25).join('*') + v.slice(-4); }",
               "var headers = {'Content-Type': 'application/json'};",
               "var auth = pm.variables.get('admin_auth_header');",
               "if (auth) { headers.Authorization = auth; }",
@@ -10838,7 +11046,7 @@
               "var keyCreated = false;",
               "var secretPaths = [];",
               "function collectRefs(value, path) {",
-              "  if (value === ref) { secretPaths.push(path); }",
+              "  if (canaries[value]) { secretPaths.push({path: path, ref: value}); }",
               "  else if (value && typeof value === 'object') {",
               "    Object.keys(value).forEach(function (name) {",
               "      collectRefs(value[name], path ? path + '.' + name : name);",
@@ -10874,13 +11082,14 @@
               "    pm.expect(result.id).to.equal(key.id);",
               "    pm.expect(result.enabled).to.equal(false);",
               "    pm.expect(res.text(), 'resolved canary leaked').not.to.include(canary);",
-              "    secretPaths.forEach(function (path) {",
+              "    secretPaths.forEach(function (entry) {",
+              "      var path = entry.path;",
               "      var field = atPath(result, path);",
               "      pm.expect(field, path + ' missing').to.be.an('object');",
-              "      pm.expect(field.ref, path + ' reference').to.equal(ref);",
+              "      pm.expect(field.ref, path + ' reference').to.equal(entry.ref);",
               "      pm.expect(field.type, path + ' source').to.equal('env');",
               "      // Checking the exact mask also rejects unresolved/mismatched server canaries.",
-              "      pm.expect(field.value, path + ' unmasked or canary unset/mismatched').to.equal(masked);",
+              "      pm.expect(field.value, path + ' unmasked or canary unset/mismatched').to.equal(maskOf(canaries[entry.ref]));",
               "    });",
               "    pm.expect(result.aliases.literal.region.value).to.equal('us-east-1');",
               "    pm.expect(result.aliases.literal.project_id.value).to.equal('literal-project');",
@@ -11277,7 +11486,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"ollama\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"ollama_key_config\": {\n      \"url\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n    }\n  }\n}));"
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"ollama\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"ollama_key_config\": {\n      \"url\": \"env.BIFROST_SECRET_REDACTION_URL_CANARY\"\n    }\n  }\n}));"
                 ]
               }
             }
@@ -11361,7 +11570,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"openai\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"openai\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"oauth_key_config\": {\n      \"grant_type\": \"client_credentials\",\n      \"token_url\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"client_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"client_secret\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"private_key\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n    }\n  }\n}));"
                 ]
               }
             }
@@ -11445,7 +11654,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"sgl\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"sgl_key_config\": {\n      \"url\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n    }\n  }\n}));"
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"sgl\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"sgl_key_config\": {\n      \"url\": \"env.BIFROST_SECRET_REDACTION_URL_CANARY\"\n    }\n  }\n}));"
                 ]
               }
             }
@@ -11669,7 +11878,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"vllm\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"vllm_key_config\": {\n      \"url\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n      \"model_name\": \"secretvar-test-model\"\n    }\n  }\n}));"
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"vllm\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"vllm_key_config\": {\n      \"url\": \"env.BIFROST_SECRET_REDACTION_URL_CANARY\",\n      \"model_name\": \"secretvar-test-model\"\n    }\n  }\n}));"
                 ]
               }
             }
@@ -11894,6 +12103,34 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"typesafe\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    }\n  }\n}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/providers",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            }
+          }
+        },
+        {
+          "name": "cloudflare - provider key secret redaction",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set(\"secret_redaction_fixture\", JSON.stringify({\n  \"provider\": \"cloudflare\",\n  \"key\": {\n    \"value\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n    \"models\": [],\n    \"weight\": 1,\n    \"enabled\": false,\n    \"aliases\": {\n      \"probe\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"env.BIFROST_SECRET_REDACTION_CANARY\",\n        \"project_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n      },\n      \"literal\": {\n        \"model_id\": \"secretvar-test-model\",\n        \"region\": \"us-east-1\",\n        \"project_id\": \"literal-project\"\n      }\n    },\n    \"cloudflare_key_config\": {\n      \"account_id\": \"env.BIFROST_SECRET_REDACTION_CANARY\"\n    }\n  }\n}));"
                 ]
               }
             }

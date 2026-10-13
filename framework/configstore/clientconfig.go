@@ -125,6 +125,7 @@ type ClientConfig struct {
 	WhitelistedRoutes                     []string                              `json:"whitelisted_routes,omitempty"`                // Routes that bypass auth middleware
 	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
 	DeleteExpiredVirtualKeys              bool                                  `json:"delete_expired_virtual_keys"`                 // Delete expired virtual keys by default; a key's delete_after_expire overrides this
+	EnforceVKObjectOwnership              bool                                  `json:"enforce_vk_object_ownership"`                 // Restrict provider objects (files, batches, containers, ...) to the virtual key that created them
 	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
@@ -148,6 +149,7 @@ func (c *ClientConfig) IsMCPOAuthDiscoveryEnabled() bool {
 func (c *ClientConfig) UnmarshalJSON(data []byte) error {
 	type ClientConfigAlias ClientConfig
 	alias := ClientConfigAlias{
+		EnforceVKObjectOwnership: true, // an omitted field keeps provider objects bound to their creator
 		Compat: CompatConfig{
 			ConvertTextToChat:                   true,
 			ConvertChatToResponses:              true,
@@ -244,6 +246,10 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.DeleteExpiredVirtualKeys {
 		hash.Write([]byte("deleteExpiredVirtualKeys:true"))
+	}
+	// Default is true; only hash the opt-out to avoid config hash churn on upgrade.
+	if !c.EnforceVKObjectOwnership {
+		hash.Write([]byte("enforceVKObjectOwnership:false"))
 	}
 
 	// Always hash when non-zero — explicitly setting the default (10) is a meaningful
@@ -537,6 +543,14 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		}
 		hash.Write([]byte("oauth2AuthCodeTTL:" + strconv.Itoa(oc.AuthCodeTTL)))
 		hash.Write([]byte("oauth2AccessTokenTTL:" + strconv.Itoa(oc.AccessTokenTTL)))
+		// Unset policy fields contribute nothing so rows stored before they were
+		// hashed keep their hash; once set, a file edit must win over the DB row.
+		for _, uri := range oc.AllowedRedirectURIs {
+			hash.Write([]byte("oauth2AllowedRedirectURI:" + uri))
+		}
+		if oc.DisableVKIdentity {
+			hash.Write([]byte("oauth2DisableVKIdentity:true"))
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -2089,6 +2103,65 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 			return "", err
 		}
 		hash.Write(data)
+	}
+
+	// Hash openapi_config so a changed spec, upstream, credential set or option
+	// in config.json drifts the hash and triggers reconciliation. The spec is
+	// hashed by content (or by its file reference when the content was not
+	// inlined), credentials by ref or value like Headers above; server-computed
+	// metadata (sizes, counts) is derived from these and contributes nothing.
+	// spec_url is hashed whenever it is set, inline spec or not: relative
+	// servers (and Swagger 2.0 documents without a host) resolve against it, so
+	// it can pick the upstream even when it does not supply the document. An
+	// empty base_url means the same as none. Every field is length-framed, so
+	// no value can run into the field written after it.
+	if m.OpenAPIConfig != nil {
+		oc := m.OpenAPIConfig
+		writeField := func(label, value string) {
+			fmt.Fprintf(hash, "openapi:%d:%s=%d:%s;", len(label), label, len(value), value)
+		}
+		switch {
+		case oc.Spec != "":
+			specSum := sha256.Sum256([]byte(oc.Spec))
+			writeField("spec_sha256", hex.EncodeToString(specSum[:]))
+		case oc.SpecFile != nil && *oc.SpecFile != "":
+			writeField("spec_file", *oc.SpecFile)
+		}
+		if oc.SpecURL != nil && *oc.SpecURL != "" {
+			writeField("spec_url", *oc.SpecURL)
+		}
+		if oc.BaseURL != nil && *oc.BaseURL != "" {
+			writeField("base_url", *oc.BaseURL)
+		}
+		if len(oc.SecurityCredentials) > 0 {
+			names := make([]string, 0, len(oc.SecurityCredentials))
+			for name := range oc.SecurityCredentials {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				cred := oc.SecurityCredentials[name]
+				for _, part := range []struct {
+					label string
+					v     *schemas.SecretVar
+				}{{"value", cred.Value}, {"username", cred.Username}, {"password", cred.Password}} {
+					if part.v == nil {
+						continue
+					}
+					if part.v.IsFromSecret() {
+						writeField("cred_ref:"+name+":"+part.label, part.v.GetRawRef())
+					} else {
+						writeField("cred_val:"+name+":"+part.label, part.v.Val)
+					}
+				}
+			}
+		}
+		if oc.IncludeDeprecated {
+			writeField("include_deprecated", "true")
+		}
+		if oc.MaxResponseBytes != 0 {
+			writeField("max_response_bytes", fmt.Sprintf("%d", oc.MaxResponseBytes))
+		}
 	}
 
 	// will enable it in the future with a migration

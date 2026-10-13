@@ -978,7 +978,7 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 					ResponsesCodeInterpreterOutputLogs: &ResponsesCodeInterpreterOutputLogs{Type: "logs", Logs: "hello"},
 				}},
 			},
-			ResponsesMCPToolCall: &ResponsesMCPToolCall{ServerLabel: "repo"},
+			ServerLabel: Ptr("repo"),
 			ResponsesImageGenerationCall: &ResponsesImageGenerationCall{
 				Result:        "image",
 				Background:    Ptr("transparent"),
@@ -987,7 +987,7 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 				RevisedPrompt: Ptr("draw a cat"),
 				Size:          Ptr("1024x1024"),
 			},
-			ResponsesMCPListTools: &ResponsesMCPListTools{ServerLabel: "repo", Tools: []ResponsesMCPTool{{
+			ResponsesMCPListTools: &ResponsesMCPListTools{Tools: []ResponsesMCPTool{{
 				Name:        "read_file",
 				InputSchema: map[string]any{"type": "object", "properties": map[string]any{"path": "string"}},
 				Description: Ptr("read a file"),
@@ -2378,4 +2378,48 @@ func TestDeepCopyResponsesMessagePreservesToolChanges(t *testing.T) {
 	if cmp == nil || len(cmp.ToolChanges) != 1 || cmp.ToolChanges[0].ToolChange == nil {
 		t.Fatalf("compaction tool_changes lost on copy: %+v", cmp)
 	}
+}
+
+// server_label sat on two embedded structs (ResponsesMCPListTools and
+// ResponsesMCPToolCall) at the same depth, so encoding/json and sonic treated it
+// as ambiguous and dropped it both ways; replaying an mcp_list_tools or mcp_call
+// item then reached OpenAI without server_label and 400ed.
+func TestResponsesMCPItemsKeepServerLabel(t *testing.T) {
+	items := []string{
+		`{"type":"mcp_list_tools","id":"mcpl_1","server_label":"deepwiki","tools":[{"name":"ask","input_schema":{"type":"object"}}]}`,
+		`{"type":"mcp_call","id":"mcp_1","server_label":"deepwiki","name":"ask","arguments":"{}","output":"ok"}`,
+		`{"type":"mcp_approval_request","id":"mcpr_1","server_label":"deepwiki","name":"ask","arguments":"{}"}`,
+	}
+	for _, raw := range items {
+		t.Run(gjson.Get(raw, "type").String(), func(t *testing.T) {
+			for name, roundTrip := range map[string]func([]byte, *ResponsesMessage) ([]byte, error){
+				"sonic": func(b []byte, m *ResponsesMessage) ([]byte, error) {
+					if err := Unmarshal(b, m); err != nil {
+						return nil, err
+					}
+					return Marshal(m)
+				},
+				"encoding/json": func(b []byte, m *ResponsesMessage) ([]byte, error) {
+					if err := json.Unmarshal(b, m); err != nil {
+						return nil, err
+					}
+					return json.Marshal(m)
+				},
+			} {
+				var msg ResponsesMessage
+				out, err := roundTrip([]byte(raw), &msg)
+				require.NoError(t, err, name)
+				assert.Equal(t, "deepwiki", gjson.GetBytes(out, "server_label").String(), "%s dropped server_label: %s", name, out)
+			}
+		})
+	}
+
+	// Built in Go (no decode), the label must still reach the wire exactly once.
+	msg := ResponsesMessage{
+		Type:                 Ptr(ResponsesMessageTypeMCPListTools),
+		ResponsesToolMessage: &ResponsesToolMessage{ServerLabel: Ptr("deepwiki"), ResponsesMCPListTools: &ResponsesMCPListTools{}},
+	}
+	out, err := Marshal(msg)
+	require.NoError(t, err)
+	assert.Equal(t, "deepwiki", gjson.GetBytes(out, "server_label").String(), string(out))
 }

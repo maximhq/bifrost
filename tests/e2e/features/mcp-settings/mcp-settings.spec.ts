@@ -126,4 +126,109 @@ test.describe('MCP Settings', () => {
       expect(saved ?? []).toEqual(originalAllowlist)
     })
   })
+
+  test.describe('OAuth Allowed Redirect URIs', () => {
+    // Every test here rewrites the shared auth mode and oauth2_server_config, so they must not interleave.
+    test.describe.configure({ mode: 'serial' })
+    let originalAuthMode: unknown
+    let originalOAuth2Config: Record<string, unknown> | undefined
+
+    test.beforeEach(async ({ request }) => {
+      const client = (await coreConfigApi.get(request)).client_config
+      originalAuthMode = client.mcp_server_auth_mode
+      originalOAuth2Config = client.oauth2_server_config as Record<string, unknown> | undefined
+      // The field is only shown when OAuth discovery is on, which requires an issuer URL.
+      await coreConfigApi.updateClientConfig(request, {
+        mcp_server_auth_mode: 'both',
+        oauth2_server_config: {
+          issuer_url: 'https://bifrost.e2e.test',
+          auth_code_ttl: 300,
+          access_token_ttl: 600,
+          allowed_redirect_uris: [],
+        },
+      })
+    })
+
+    test.afterEach(async ({ request }) => {
+      await coreConfigApi.updateClientConfig(request, {
+        mcp_server_auth_mode: originalAuthMode ?? 'headers',
+        oauth2_server_config: originalOAuth2Config,
+      })
+    })
+
+    test('should add an allowed redirect URI and persist it', async ({ mcpSettingsPage, request }) => {
+      const uri = 'https://www.cursor.com/agents/mcp/oauth/callback'
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await mcpSettingsPage.allowedRedirectUrisInput.fill(uri)
+      await mcpSettingsPage.allowedRedirectUrisInput.press('Enter')
+      await expect(mcpSettingsPage.allowedRedirectUriEntry(uri)).toBeVisible()
+      await expect(mcpSettingsPage.saveBtn).toBeEnabled()
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { allowed_redirect_uris?: string[] } | undefined
+      expect(saved?.allowed_redirect_uris).toEqual([uri])
+
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+      await expect(mcpSettingsPage.allowedRedirectUriEntry(uri)).toBeVisible()
+      await expect(mcpSettingsPage.saveBtn).toBeDisabled()
+    })
+
+    test('should save a bare wildcard and warn about it', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+      await expect(mcpSettingsPage.allowedRedirectUrisWildcardWarning).toBeHidden()
+
+      await mcpSettingsPage.allowedRedirectUrisInput.fill('*')
+      await mcpSettingsPage.allowedRedirectUrisInput.press('Enter')
+      await expect(mcpSettingsPage.allowedRedirectUrisWildcardWarning).toBeVisible()
+      await mcpSettingsPage.saveBtn.click()
+      await mcpSettingsPage.waitForSuccessToast()
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { allowed_redirect_uris?: string[] } | undefined
+      expect(saved?.allowed_redirect_uris).toEqual(['*'])
+    })
+
+    test('should reject a partial wildcard without saving', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await mcpSettingsPage.allowedRedirectUrisInput.fill('https://*.e2e.test/callback')
+      await mcpSettingsPage.allowedRedirectUrisInput.press('Enter')
+      await mcpSettingsPage.saveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/allowed_redirect_uris supports only a bare "\*" wildcard/i)
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { allowed_redirect_uris?: string[] } | undefined
+      expect(saved?.allowed_redirect_uris ?? []).toEqual([])
+    })
+
+    test('should refuse to save OAuth mode with an empty issuer URL', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await mcpSettingsPage.issuerUrlInput.fill('')
+      await expect(mcpSettingsPage.saveBtn).toBeEnabled()
+      await mcpSettingsPage.saveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/Issuer URL is required when MCP auth mode is OAuth or Both/i)
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { issuer_url?: unknown } | undefined
+      expect(JSON.stringify(saved?.issuer_url)).toContain('https://bifrost.e2e.test')
+    })
+
+    test('should reject a non-https remote redirect URI without saving', async ({ mcpSettingsPage, request }) => {
+      await mcpSettingsPage.goto()
+      await mcpSettingsPage.advancedTrigger.click()
+
+      await mcpSettingsPage.allowedRedirectUrisInput.fill('http://app.e2e.test/callback')
+      await mcpSettingsPage.allowedRedirectUrisInput.press('Enter')
+      await mcpSettingsPage.saveBtn.click()
+      await expect(mcpSettingsPage.getToast('error')).toContainText(/allowed_redirect_uris contains an invalid callback URI/i)
+
+      const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { allowed_redirect_uris?: string[] } | undefined
+      expect(saved?.allowed_redirect_uris ?? []).toEqual([])
+    })
+  })
 })

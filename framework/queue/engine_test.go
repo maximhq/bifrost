@@ -1384,7 +1384,11 @@ func newLeaseLossLogger() *leaseLossLogger {
 }
 
 func (l *leaseLossLogger) record(msg string, args []any, idArg int) {
-	if !strings.HasPrefix(msg, "queue: lease lost") || len(args) <= idArg {
+	// A settle (ack, retry, dead-letter) that fails outright leaves the delivery leased until its
+	// lease runs out, after which it is redelivered, exactly as for a lost lease.
+	lost := strings.HasPrefix(msg, "queue: lease lost") ||
+		(strings.HasPrefix(msg, "queue: %s of delivery") && strings.HasSuffix(msg, "failed: %v"))
+	if !lost || len(args) <= idArg {
 		return
 	}
 	if id, ok := args[idArg].(string); ok {
@@ -1394,8 +1398,8 @@ func (l *leaseLossLogger) record(msg string, args []any, idArg int) {
 	}
 }
 
-// Warn sees "lease lost before <op> of delivery <id>"; Debug sees the
-// heartbeat's "lease lost for delivery <id>".
+// Warn sees "lease lost before <op> of delivery <id>" and "<op> of delivery
+// <id> ... failed"; Debug sees the heartbeat's "lease lost for delivery <id>".
 func (l *leaseLossLogger) Warn(msg string, args ...any)  { l.record(msg, args, 1) }
 func (l *leaseLossLogger) Debug(msg string, args ...any) { l.record(msg, args, 0) }
 

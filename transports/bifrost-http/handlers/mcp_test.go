@@ -17,7 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/oauth2"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -447,4 +447,50 @@ func TestAddMCPClient_OAuthOnLoopbackFollowsPrivateAllowlist(t *testing.T) {
 			assert.Contains(t, body, tc.wantBody)
 		})
 	}
+}
+
+// removeRecordingMCPManager records RemoveMCPClient calls; any other manager call panics.
+type removeRecordingMCPManager struct {
+	MCPManager
+	removed []string
+}
+
+func (m *removeRecordingMCPManager) RemoveMCPClient(_ context.Context, id string) error {
+	m.removed = append(m.removed, id)
+	return nil
+}
+
+// TestDeleteMCPClient_UnknownIDIsNotFound pins that deleting an MCP client id with
+// no row answers 404 and leaves the runtime manager untouched, while a known id is
+// still removed from both the store and the manager.
+func TestDeleteMCPClient_UnknownIDIsNotFound(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	manager := &removeRecordingMCPManager{}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}, mcpManager: manager}
+	del := func(id string) (int, string) {
+		var req fasthttp.Request
+		req.Header.SetMethod(fasthttp.MethodDelete)
+		ctx := initCtx(&req)
+		ctx.SetUserValue("id", id)
+		h.deleteMCPClient(ctx)
+		return ctx.Response.StatusCode(), string(ctx.Response.Body())
+	}
+
+	status, body := del("3f8e2a1c-0000-4000-8000-000000000000")
+	assert.Equal(t, fasthttp.StatusNotFound, status, body)
+	assert.Contains(t, body, "not found")
+	assert.Empty(t, manager.removed, "an unknown id must not reach the runtime manager")
+
+	require.NoError(t, store.CreateMCPClientConfig(context.Background(), &schemas.MCPClientConfig{
+		ID:               "mcp-delete-known",
+		Name:             "delete_known",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://example.invalid/mcp"),
+	}))
+	status, body = del("mcp-delete-known")
+	assert.Equal(t, fasthttp.StatusOK, status, body)
+	assert.Equal(t, []string{"mcp-delete-known"}, manager.removed)
+	_, err := store.GetMCPClientByID(context.Background(), "mcp-delete-known")
+	assert.ErrorIs(t, err, configstore.ErrNotFound)
 }

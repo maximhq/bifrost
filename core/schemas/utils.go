@@ -1710,10 +1710,10 @@ func DeepCopyResponsesMessage(original ResponsesMessage) ResponsesMessage {
 			copy.ResponsesToolMessage.ResponsesCodeInterpreterToolCall = &copyToolCall
 		}
 
-		// Deep copy ResponsesMCPToolCall.
-		if original.ResponsesToolMessage.ResponsesMCPToolCall != nil {
-			copyToolCall := *original.ResponsesToolMessage.ResponsesMCPToolCall
-			copy.ResponsesToolMessage.ResponsesMCPToolCall = &copyToolCall
+		// Deep copy ServerLabel (shared by the MCP items).
+		if original.ResponsesToolMessage.ServerLabel != nil {
+			serverLabel := *original.ResponsesToolMessage.ServerLabel
+			copy.ResponsesToolMessage.ServerLabel = &serverLabel
 		}
 
 		// Deep copy ResponsesImageGenerationCall.
@@ -2004,6 +2004,10 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 	if original.Text != nil {
 		copyText := *original.Text
 		copy.Text = &copyText
+	}
+
+	if original.ToolName != nil {
+		copy.ToolName = new(*original.ToolName)
 	}
 
 	// Reasoning replay fields: Signature and EncryptedContent are echoed back

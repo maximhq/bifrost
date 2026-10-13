@@ -139,8 +139,8 @@ func TestAttach_NamedProviderRoutesACustomProviderSession(t *testing.T) {
 }
 
 // A sideband names only a session id, yet it acts on the operator's key for the provider, so it
-// is held to the caller's virtual key as the primary session is: the provider must be allowed,
-// and the key it dials with must be one the virtual key may use.
+// is held to the caller's virtual key as the primary session is: the session must be the key's
+// own, the provider must be allowed, and the key it dials with must be one the virtual key may use.
 func TestAttach_SidebandIsHeldToTheVirtualKey(t *testing.T) {
 	requireFake(t)
 	t.Parallel()
@@ -157,24 +157,33 @@ func TestAttach_SidebandIsHeldToTheVirtualKey(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, status)
 	assert.Equal(t, 1, s.Connections(), "nothing reached the provider")
 
-	// A virtual key scoped to one of the provider's keys attaches on that key, never on another.
-	scoped := createVirtualKey(t, virtualKeySpec{provider: splitProvider, keyNames: []string{"split-backend"}})
-	named := vkHeaders(scoped)
+	// The session belongs to the virtual key that opened it: another key allowed on the provider
+	// is told the session does not exist, before a key is selected or anything is dialed.
+	other := createVirtualKey(t, virtualKeySpec{provider: splitProvider, keyNames: []string{"split-backend"}})
+	foreign := vkHeaders(other)
+	foreign["x-model-provider"] = splitProvider
+	_, status, err = attachSideband(t, s.ID(), foreign)
+	require.Error(t, err, "another virtual key's session")
+	assert.Equal(t, http.StatusNotFound, status)
+	assert.Equal(t, 1, s.Connections(), "nothing reached the provider")
+
+	// The opener attaches on a key its virtual key allows, never on another of the provider's.
+	named := vkHeaders(owner)
 	named["x-model-provider"] = splitProvider
 	sideband, _, err := attachSideband(t, s.ID(), named)
 	require.NoError(t, err)
 	s.WaitConnections(t, 2)
 	assert.Equal(t, s.ID(), sideband.WaitFor("session.started").Get("session.id").Str)
-	assert.Equal(t, []string{"Bearer sk-fake-split-backend"}, s.SidebandAuths(), "the sideband dials with the key the virtual key allows")
+	assert.Equal(t, []string{"Bearer sk-fake-split-all"}, s.SidebandAuths(), "the sideband dials with the key the virtual key allows")
 	sideband.Close()
 
-	// Each attempt is a row of its own naming the session and the key: the refusal, and the sideband.
-	refused := findSidebandLog(t, s.ID(), owner.ID)
+	// Each attempt the key was admitted to is a row of its own naming the session and the key:
+	// the refusal, and the sideband.
+	refused := findSidebandLog(t, s.ID(), owner.ID, "error")
 	assert.Equal(t, "error", refused.Get("status").Str)
-	row := findSidebandLog(t, s.ID(), scoped.ID)
-	assert.Equal(t, "success", row.Get("status").Str)
+	row := findSidebandLog(t, s.ID(), owner.ID, "success")
 	assert.Equal(t, splitProvider, row.Get("provider").Str)
-	assert.Equal(t, "split-backend", row.Get("selected_key_name").Str)
+	assert.Equal(t, "split-all", row.Get("selected_key_name").Str)
 	assert.False(t, row.Get("live_session").Exists(), "a sideband is not a session")
 }
 

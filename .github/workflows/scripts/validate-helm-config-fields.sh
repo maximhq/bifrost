@@ -1639,6 +1639,42 @@ fi
 ###############################################################################
 # Summary
 ###############################################################################
+# client.oauth2_server_config: the bare "*" wildcard and disable_vk_identity reach config.json,
+# and the values schema refuses the partial wildcards Bifrost rejects at startup.
+cat > "$TMPDIR/values-oauth2-redirects.yaml" <<'VALS'
+bifrost:
+  encryptionKey: "test-encryption-key-1234567890ab"
+  client:
+    mcpServerAuthMode: "oauth"
+    oauth2ServerConfig:
+      issuerUrl: "https://bifrost.example.com"
+      disableVkIdentity: true
+      allowedRedirectUris:
+        - "*"
+        - "https://www.cursor.com/agents/mcp/oauth/callback"
+VALS
+
+render_config "$TMPDIR/values-oauth2-redirects.yaml"
+assert_field_value 'client.oauth2_server_config.allowed_redirect_uris ("*" kept)' '.client.oauth2_server_config.allowed_redirect_uris' '["*", "https://www.cursor.com/agents/mcp/oauth/callback"]'
+assert_field_value 'client.oauth2_server_config.disable_vk_identity' '.client.oauth2_server_config.disable_vk_identity' 'true'
+
+for uri in 'https://*.example.com/callback' 'https://app.example.com/*' '**'; do
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 \
+       --set bifrost.encryptionKey=test-encryption-key-1234567890ab \
+       --set bifrost.client.mcpServerAuthMode=both \
+       --set bifrost.client.oauth2ServerConfig.issuerUrl=https://bifrost.example.com \
+       --set-json "bifrost.client.oauth2ServerConfig.allowedRedirectUris=[\"$uri\"]" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "client.oauth2_server_config.allowed_redirect_uris partial wildcard $uri is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject a partial wildcard${NC}"
+  elif grep -q "allowedRedirectUris" "$TMPDIR/render-err.txt"; then
+    report_result "client.oauth2_server_config.allowed_redirect_uris partial wildcard $uri is rejected" 0
+  else
+    report_result "client.oauth2_server_config.allowed_redirect_uris partial wildcard $uri is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
 echo ""
 echo "======================================================================"
 echo "🏁 Config JSON Field Validation Complete!"

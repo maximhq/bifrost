@@ -3477,6 +3477,49 @@ func TestGetPricing_ResponsesStreamFallsBackToChat(t *testing.T) {
 	assert.Equal(t, 0.000005, derefF(p.InputCostPerToken))
 }
 
+// TestCalculateCost_RealtimeCatalogMode verifies text and audio usage are priced from realtime rows.
+func TestCalculateCost_RealtimeCatalogMode(t *testing.T) {
+	pricing := configstoreTables.TableModelPricing{
+		Model: "gpt-realtime", Provider: "openai", Mode: "realtime",
+		InputCostPerToken: bifrost.Ptr(0.000004), OutputCostPerToken: bifrost.Ptr(0.000016),
+		InputCostPerAudioToken: bifrost.Ptr(0.000032), OutputCostPerAudioToken: bifrost.Ptr(0.000064),
+	}
+	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
+		makeKey(pricing.Model, pricing.Provider, pricing.Mode): pricing,
+	})
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Usage: &schemas.ResponsesResponseUsage{
+			InputTokens: 100, OutputTokens: 50, TotalTokens: 150,
+			InputTokensDetails:  &schemas.ResponsesResponseInputTokens{TextTokens: 40, AudioTokens: 60},
+			OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{TextTokens: 20, AudioTokens: 30},
+		},
+		ExtraFields: schemas.BifrostResponseExtraFields{
+			RequestType: schemas.RealtimeRequest, RoutingInfo: routingInfoFor(schemas.OpenAI, pricing.Model),
+		},
+	}}
+	breakdown := s.CalculateCostBreakdown(resp, nil)
+	require.NotNil(t, breakdown)
+	assert.InDelta(t, 0.00432, breakdown.TotalCost, 1e-12)
+	assert.InDelta(t, 0.00192, breakdown.InputCostDetails.AudioCost, 1e-12)
+	assert.InDelta(t, 0.00192, breakdown.OutputCostDetails.AudioCost, 1e-12)
+}
+
+// TestGetPricing_RealtimeModeOrder verifies realtime, responses, then chat precedence.
+func TestGetPricing_RealtimeModeOrder(t *testing.T) {
+	for _, modes := range [][]string{{"realtime", "responses", "chat"}, {"responses", "chat"}, {"chat"}} {
+		t.Run(modes[0], func(t *testing.T) {
+			entries := map[string]configstoreTables.TableModelPricing{}
+			for i, mode := range modes {
+				entries[makeKey("gpt-realtime", "openai", mode)] = chatPricing(float64(i+1), 0)
+			}
+			s := testStoreWithPricing(entries)
+			pricing := s.resolvePricing(routingInfoFor(schemas.OpenAI, "gpt-realtime"), schemas.RealtimeRequest, LookupScopes{Provider: "openai"})
+			require.NotNil(t, pricing)
+			assert.Equal(t, 1.0, derefF(pricing.InputCostPerToken))
+		})
+	}
+}
+
 func TestGetPricing_RealtimeFallsBackToChat(t *testing.T) {
 	s := testStoreWithPricing(map[string]configstoreTables.TableModelPricing{
 		makeKey("gpt-4o", "openai", "chat"): chatPricing(0.000005, 0.000015),

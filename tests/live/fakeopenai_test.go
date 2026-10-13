@@ -65,6 +65,7 @@ type fakeSession struct {
 // fakeConn is one connection of a session: a WebSocket, or a WebRTC data channel.
 type fakeConn interface {
 	send([]byte) error
+	bufferedAmount() uint64
 	close()
 	hangUp() // end the connection the orderly way, still without session.closed
 }
@@ -82,6 +83,8 @@ func (c *wsFakeConn) send(frame []byte) error {
 }
 
 func (c *wsFakeConn) close() { _ = c.conn.Close() }
+
+func (c *wsFakeConn) bufferedAmount() uint64 { return 0 }
 
 func (c *wsFakeConn) hangUp() {
 	c.mu.Lock()
@@ -114,6 +117,71 @@ func (c *dcFakeConn) send(frame []byte) error {
 }
 func (c *dcFakeConn) close()  { _ = c.pc.Close() }
 func (c *dcFakeConn) hangUp() { _ = c.pc.Close() }
+
+func (c *dcFakeConn) bufferedAmount() uint64 {
+	if c.dc.ReadyState() == webrtc.DataChannelStateClosed {
+		return 0
+	}
+	return c.dc.BufferedAmount()
+}
+
+// delayedFakeConn models a data channel whose final frames remain queued until the
+// transport acknowledges them. Sending a frame is not a delivery acknowledgment.
+type delayedFakeConn struct {
+	buffered atomic.Uint64
+	sent     chan struct{}
+	closed   chan struct{}
+}
+
+func (c *delayedFakeConn) send(frame []byte) error {
+	c.buffered.Add(uint64(len(frame)))
+	close(c.sent)
+	return nil
+}
+
+func (c *delayedFakeConn) bufferedAmount() uint64 { return c.buffered.Load() }
+func (c *delayedFakeConn) close()                 { close(c.closed) }
+func (c *delayedFakeConn) hangUp()                { c.close() }
+
+func TestFakeSessionCloseDrainsFinalFrames(t *testing.T) {
+	c := &delayedFakeConn{sent: make(chan struct{}), closed: make(chan struct{})}
+	s := &fakeSession{conns: []fakeConn{c}}
+	done := make(chan struct{})
+	go func() {
+		s.Close("close_requested", 97)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		c.buffered.Store(0)
+		await(t, done, "fake session close")
+	})
+	await(t, c.sent, "final usage queued")
+	select {
+	case <-c.closed:
+		t.Fatal("fake upstream closed with final usage still buffered")
+	case <-time.After(100 * time.Millisecond):
+	}
+	c.buffered.Store(0)
+	await(t, c.closed, "close after final usage drained")
+}
+
+func TestFakeSessionDisconnectDiscardsBufferedFrames(t *testing.T) {
+	for _, kind := range []string{"drop", "hangup"} {
+		t.Run(kind, func(t *testing.T) {
+			c := &delayedFakeConn{closed: make(chan struct{})}
+			c.buffered.Store(100)
+			s := &fakeSession{conns: []fakeConn{c}}
+			go func() {
+				if kind == "drop" {
+					s.Drop()
+				} else {
+					s.HangUp()
+				}
+			}()
+			awaitWithin(t, c.closed, time.Second, "disconnect without draining")
+		})
+	}
+}
 
 func startFakeOpenAI(addr string) (*fakeOpenAI, error) {
 	f := &fakeOpenAI{
@@ -596,7 +664,15 @@ func (s *fakeSession) Close(reason string, seconds float64) {
 	for _, c := range conns {
 		_ = c.send(frame)
 	}
-	time.Sleep(50 * time.Millisecond)
+	// SendText only queues SCTP data. Closing the peer after a fixed sleep can
+	// discard usage and session.closed on a slow runner, turning an orderly close
+	// into an upstream outage. Wait for acknowledgments, bounded for a lost peer.
+	deadline := time.Now().Add(frameTimeout)
+	for _, c := range conns {
+		for c.bufferedAmount() > 0 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 	for _, c := range conns {
 		c.close()
 	}

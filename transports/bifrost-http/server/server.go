@@ -27,6 +27,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/openapimcp"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
@@ -41,10 +42,10 @@ import (
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
-	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
@@ -362,12 +363,28 @@ type GovernanceInMemoryStore struct {
 	Config *lib.Config
 }
 
-// GetConfiguredProviders returns the configured provider map.
+// GetConfiguredProviders returns a snapshot of the configured provider map, built under the read
+// lock. Provider edits write to the live map in place, and the governance plugin indexes what
+// this returns after the lock is released (batchBaseProvider, modelMatcher), so handing back the
+// live map would be a concurrent map read and write, which is fatal rather than merely stale.
+// The copy is shallow: the configs themselves are shared and never modified by readers.
 func (s *GovernanceInMemoryStore) GetConfiguredProviders() map[schemas.ModelProvider]configstore.ProviderConfig {
-	// Use read lock for thread-safe access - no need to copy on hot path
 	s.Config.Mu.RLock()
 	defer s.Config.Mu.RUnlock()
-	return s.Config.Providers
+	snapshot := make(map[schemas.ModelProvider]configstore.ProviderConfig, len(s.Config.Providers))
+	for provider, config := range s.Config.Providers {
+		snapshot[provider] = config
+	}
+	return snapshot
+}
+
+// GetConfiguredProvider returns one provider's configuration, read under the lock without copying
+// the map, for the per-request model check that needs only that provider.
+func (s *GovernanceInMemoryStore) GetConfiguredProvider(provider schemas.ModelProvider) (configstore.ProviderConfig, bool) {
+	s.Config.Mu.RLock()
+	defer s.Config.Mu.RUnlock()
+	config, ok := s.Config.Providers[provider]
+	return config, ok
 }
 
 // GetConfiguredProviderNames builds the name slice under the lock, because provider edits write to
@@ -3297,6 +3314,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 	}
 
+	// openapi MCP clients synthesize their server from a spec; the framework
+	// package does that, core only knows the hook. Registered on the config
+	// passed to Init and again on the client below, so a manager created
+	// lazily (no mcp block in config.json) gets it too.
+	openAPIFactory := openapimcp.Factory(openapimcp.WithConfigDir(s.Config.ConfigDir()))
 	tableMCPConfig := s.Config.MCPConfig
 	var mcpConfig *schemas.MCPConfig
 	if tableMCPConfig != nil {
@@ -3305,6 +3327,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			mcpConfig.FetchNewRequestIDFunc = func(ctx *schemas.BifrostContext) string {
 				return uuid.New().String()
 			}
+			mcpConfig.InProcessServerFactory = openAPIFactory
 		}
 	}
 	// Initialize bifrost client
@@ -3328,6 +3351,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)
 	}
+	s.Client.SetMCPInProcessServerFactory(openAPIFactory)
 	logger.Info("bifrost client initialized")
 	// Sync plugin execution order from config to core (defensive — Init receives sorted list,
 	// but this ensures order consistency if the loading path changes in the future)
@@ -3367,7 +3391,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		// No auth runs in this mode, so mark every API request as bypassed; otherwise the
 		// handlers that require genuine auth for dangerous changes see an unmarked request and
 		// let it through.
-		apiMiddlewares = append(apiMiddlewares, handlers.AuthBypassedMiddleware())
+		apiMiddlewares = append(apiMiddlewares, handlers.AuthBypassedMiddleware(s.Config.ClientConfig.AllowedOrigins, s.Config.ClientConfig.WhitelistedRoutes))
 	} else {
 		// Use a signed (stateless) ticket store when an encryption key is configured
 		// so tickets are verifiable across nodes; otherwise fall back to in-memory.

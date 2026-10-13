@@ -286,8 +286,9 @@ var contentRowSessionOf sync.Map
 // sidebandRowOwner caches which provider session and virtual key each sideband row belongs to.
 var sidebandRowOwner sync.Map
 
-// findSidebandLog waits for the row a sideband on the session wrote under the virtual key.
-func findSidebandLog(t *testing.T, providerSessionID, virtualKeyID string) gjson.Result {
+// findSidebandLog waits for the row a sideband on the session wrote under the virtual key, with
+// the row status named by wantStatus when it is not empty.
+func findSidebandLog(t *testing.T, providerSessionID, virtualKeyID, wantStatus string) gjson.Result {
 	t.Helper()
 	deadline := time.Now().Add(rowWaitTimeout)
 	for {
@@ -303,8 +304,11 @@ func findSidebandLog(t *testing.T, providerSessionID, virtualKeyID string) gjson
 				owner = row.Get("metadata.provider_session_id").Str + "|" + row.Get("virtual_key_id").Str
 				sidebandRowOwner.Store(id, owner)
 			}
-			if owner == providerSessionID+"|"+virtualKeyID {
-				matches = append(matches, fetchLog(t, id))
+			if owner != providerSessionID+"|"+virtualKeyID {
+				continue
+			}
+			if row := fetchLog(t, id); wantStatus == "" || row.Get("status").Str == wantStatus {
+				matches = append(matches, row)
 			}
 		}
 		require.LessOrEqual(t, len(matches), 1, "one sideband logs one row, found %d for %s", len(matches), providerSessionID)
@@ -312,7 +316,7 @@ func findSidebandLog(t *testing.T, providerSessionID, virtualKeyID string) gjson
 			return matches[0]
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("no live_sideband row for session %s under virtual key %s", providerSessionID, virtualKeyID)
+			t.Fatalf("no %s live_sideband row for session %s under virtual key %s", wantStatus, providerSessionID, virtualKeyID)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
