@@ -15,6 +15,7 @@ import (
 	"net"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -103,6 +104,39 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 				t.Error("Next handler was not called")
 			}
 		})
+	}
+}
+
+// TestCorsMiddleware_ExposesBifrostResponseHeaders pins that a cross-origin browser client can
+// read the gateway's x-bifrost-* response headers. With client.extra_fields_placement =
+// "headers" they are the only place extra_fields reaches the client, and a browser hides any
+// response header that Access-Control-Expose-Headers does not list.
+func TestCorsMiddleware_ExposesBifrostResponseHeaders(t *testing.T) {
+	SetLogger(&mockLogger{})
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"https://app.example.com"}}}
+	handler := NewCorsMiddleware(config).Middleware()(func(ctx *fasthttp.RequestCtx) {})
+
+	for _, origin := range []string{"https://app.example.com", "http://localhost:3000"} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("Origin", origin)
+		handler(ctx)
+		exposed := strings.Split(string(ctx.Response.Header.Peek("Access-Control-Expose-Headers")), ", ")
+		for _, name := range []string{
+			"x-bifrost-request-id", "x-bifrost-trace-id", "x-bifrost-provider", "x-bifrost-request-type",
+			"x-bifrost-routing-info-provider", "x-bifrost-routing-info-model", "x-bifrost-cache-hit",
+			"x-bifrost-latency-ms", "x-bifrost-converted-request-type", "x-bifrost-error-type", "x-bifrost-retry-after-ms",
+		} {
+			if !slices.Contains(exposed, name) {
+				t.Errorf("origin %s: Access-Control-Expose-Headers %q does not list %s", origin, exposed, name)
+			}
+		}
+	}
+
+	blocked := &fasthttp.RequestCtx{}
+	blocked.Request.Header.Set("Origin", "https://malicious.com")
+	handler(blocked)
+	if got := blocked.Response.Header.Peek("Access-Control-Expose-Headers"); len(got) != 0 {
+		t.Errorf("a non-allowed origin must not get Access-Control-Expose-Headers, got %q", got)
 	}
 }
 
