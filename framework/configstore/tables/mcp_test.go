@@ -143,3 +143,27 @@ func TestSplitOpenAPIConfigForStorage_StoresReferencesNotResolvedSecrets(t *test
 	assert.True(t, cred.IsFromSecret())
 	assert.Equal(t, "literal-pass", loaded.OpenAPIConfig.SecurityCredentials["BasicAuth"].Password.GetValue())
 }
+
+// TestTableMCPClient_OpenAPIConfigPlaintextWithoutEncryptionKey pins what the
+// OpenAPI servers docs say about storage: openapi_config credentials are
+// encrypted only when an encryption key is configured; without one the JSON
+// column holds them in plain text.
+func TestTableMCPClient_OpenAPIConfigPlaintextWithoutEncryptionKey(t *testing.T) {
+	disableEncryption(t)
+	db := setupTestDB(t)
+	row := &TableMCPClient{
+		ClientID:       "openapi-plain",
+		Name:           "petstore_plain",
+		ConnectionType: string(schemas.MCPConnectionTypeOpenAPI),
+		AuthType:       string(schemas.MCPAuthTypeNone),
+		OpenAPIConfig: &schemas.MCPOpenAPIConfig{
+			Spec:                "openapi: 3.0.3\npaths: {}\n",
+			SecurityCredentials: map[string]schemas.MCPOpenAPICredential{"ApiKeyAuth": {Value: schemas.NewSecretVar("literal-secret")}},
+		},
+	}
+	require.NoError(t, db.Create(row).Error)
+	raw := rawRow(t, db, "config_mcp_clients", row.ID)
+	stored, _ := raw["openapi_config_json"].(string)
+	assert.Contains(t, stored, "literal-secret", "without an encryption key the credentials are stored as written")
+	assert.NotEqual(t, EncryptionStatusEncrypted, raw["encryption_status"])
+}
