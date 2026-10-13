@@ -8871,7 +8871,12 @@ func (bifrost *Bifrost) dispatchChat(ctx *schemas.BifrostContext, provider schem
 			if bifrostError != nil {
 				return nil, bifrostError
 			}
-			return responsesResponse.ToBifrostChatResponse(), nil
+			chatResponse := responsesResponse.ToBifrostChatResponse()
+			if chatResponse != nil {
+				// RawResponse is still the Responses body; integrations must not echo it as chat.
+				chatResponse.ExtraFields.ConvertedRequestType = schemas.ResponsesRequest
+			}
+			return chatResponse, nil
 		}
 	}
 	chatCompletionResponse, bifrostError := provider.ChatCompletion(ctx, key, prepareChatRequest(ctx, config, provider.GetProviderKey(), chatRequest))
@@ -8900,6 +8905,8 @@ func (bifrost *Bifrost) dispatchResponses(ctx *schemas.BifrostContext, provider 
 			}
 			responsesResponse := chatCompletionResponse.ToBifrostResponsesResponse()
 			responsesResponse.BackfillParams(original)
+			// RawResponse is still the chat body; integrations must not echo it as Responses.
+			responsesResponse.ExtraFields.ConvertedRequestType = schemas.ChatCompletionRequest
 			response.ResponsesResponse = responsesResponse
 			providerUtils.RestoreResponsesNamespaceToolCalls(preparedRequest.NamespaceToolAliases, response)
 			return response.ResponsesResponse, nil
@@ -8984,6 +8991,10 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 					return nil, bifrostError
 				}
 				response.TextCompletionResponse = chatCompletionResponse.ToBifrostTextCompletionResponse()
+				if response.TextCompletionResponse != nil {
+					// RawResponse is still the chat body; integrations must not echo it as text.
+					response.TextCompletionResponse.ExtraFields.ConvertedRequestType = schemas.ChatCompletionRequest
+				}
 				break
 			}
 		}

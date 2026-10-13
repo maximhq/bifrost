@@ -158,6 +158,47 @@ func TestWebRTCRelayRoutesPeerEndings(t *testing.T) {
 	})
 }
 
+// A disconnected peer connection is transient: ICE consent checks lapsed and may resume, and pion
+// moves a connection that does not recover to failed. Ending the session on disconnected billed a
+// slow first WebRTC session at its 15 s minimum and dropped the usage OpenAI reported afterwards.
+func TestWebRTCRelayDisconnectedIsNotAnEnding(t *testing.T) {
+	if logger == nil {
+		SetLogger(&mockLogger{})
+	}
+	t.Run("browser leg", func(t *testing.T) {
+		handler := newFakeWebRTCHandler()
+		relay := &webrtcRelay{handler: handler, upstreamConnectedOrError: make(chan error, 1)}
+		relay.onDownstreamState(webrtc.PeerConnectionStateDisconnected)
+		gone, _ := handler.counts()
+		assert.Equal(t, 0, gone, "disconnected must not end the browser side")
+		relay.onDownstreamState(webrtc.PeerConnectionStateFailed)
+		gone, _ = handler.counts()
+		assert.Equal(t, 1, gone, "failed ends the browser side")
+	})
+	t.Run("provider leg", func(t *testing.T) {
+		handler := newFakeWebRTCHandler()
+		relay := &webrtcRelay{handler: handler, upstreamConnectedOrError: make(chan error, 1)}
+		relay.onUpstreamState(webrtc.PeerConnectionStateDisconnected)
+		_, closed := handler.counts()
+		assert.Equal(t, 0, closed, "disconnected must not close the relay")
+		relay.onUpstreamState(webrtc.PeerConnectionStateFailed)
+		_, closed = handler.counts()
+		assert.Equal(t, 1, closed, "failed closes the relay")
+	})
+}
+
+// pion fails a connection disconnectedTimeout + failedTimeout after the last packet. That sum is
+// how long a peer that vanished without closing keeps its session (and its billing) open, so it
+// is pinned here; disconnected must stay shorter so a stall is ridden out before the leg ends.
+func TestWebRTCRelayICETimeouts(t *testing.T) {
+	assert.Equal(t, 10*time.Second, webrtcICEDisconnectedTimeout+webrtcICEFailedTimeout)
+	assert.Less(t, webrtcICEDisconnectedTimeout, webrtcICEDisconnectedTimeout+webrtcICEFailedTimeout)
+	assert.Less(t, webrtcICEKeepaliveInterval, webrtcICEDisconnectedTimeout, "keepalives must arrive well inside the disconnected window")
+	pc, err := newWebRTCPeerConnection()
+	require.NoError(t, err)
+	require.NoError(t, pc.Close())
+}
+
 func TestWebRTCRelayRegistryClosesAll(t *testing.T) {
 	t.Parallel()
 
