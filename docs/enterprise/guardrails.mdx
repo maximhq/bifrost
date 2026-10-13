@@ -198,7 +198,7 @@ After the rule's CEL expression matches, Bifrost applies the selected phase:
 | **Both** (`both`) | Run the input flow; if allowed, execute the tool and run the output flow. A block at either boundary stops processing |
 
 <Frame>
-  <img src="/media/guardrails/ui-mcp-guardrail-rule.png" alt="MCP guardrail rule editor showing the MCP target, before and after execution phases, a linked profile, and MCP client and tool conditions" />
+  <img src="/media/guardrails/guardrail-rule-mcp-execution-order.png" alt="MCP guardrail rule editor showing the MCP target, before and after execution phases, two linked profiles with their execution order, and MCP client and tool conditions" />
 </Frame>
 
 ### Choose Which Tool Calls to Guard
@@ -298,7 +298,7 @@ Guardrail Rules are custom policies that define when and how content validation 
 
 3. **Link Profiles**
    - Select one or more profiles to use for evaluation
-   - Bifrost evaluates linked profiles in their configured order and stops that rule when a profile intervenes or fails
+   - Bifrost evaluates linked profiles in the execution order shown under the profile picker. A block stops the remaining profiles for that rule; a provider error fails open and the next profile still runs. See [Profile Execution Order](#profile-execution-order)
 
 4. **Save and Test**
    - Click **Save Rule**
@@ -513,7 +513,7 @@ mcp_client == "github" && mcp_tool == "create_issue"
 Rules can be linked to multiple profiles for comprehensive validation:
 
 <Frame>
-  <img src="/media/guardrails/query-creation.png" alt="Rule configuration showing linked profiles" />
+  <img src="/media/guardrails/guardrail-rule-mcp-execution-order.png" alt="Rule configuration showing multiple linked profiles and their execution order" />
 </Frame>
 
 **Best Practices:**
@@ -525,6 +525,22 @@ Rules can be linked to multiple profiles for comprehensive validation:
 - Use multiple profiles for defense-in-depth (e.g., Bedrock + Patronus for PII, Azure + Gray Swan for content)
 - Set appropriate timeouts when using multiple profiles
 
+### Profile Execution Order
+
+When a rule links more than one profile, the rule editor shows an **Execution order** list under the profile picker. Profiles run top to bottom whenever the rule matches. Drag a profile by its handle to change its position.
+
+<Frame>
+  <img src="/media/guardrails/guardrail-rule-execution-order.png" alt="Guardrail rule editor with four linked profiles and an Execution order list that can be reordered by dragging" />
+</Frame>
+
+| Outcome of a profile | Effect on the remaining profiles |
+|----------------------|----------------------------------|
+| Allows the content | The next profile runs |
+| Blocks the content | Later profiles do not run and the rule returns the intervention |
+| Provider error or timeout | Fails open: the error is reported and the next profile still runs |
+
+Order matters most when profiles rewrite content. Put a cheap, local profile such as [Custom Regex](/enterprise/guardrails/custom-regex) first to redact or block obvious cases before the request is sent to an external provider. The order is saved with the rule. Through the API, list profiles in the order you want them to run in `selectedGuardrailProfiles`; duplicates are rejected.
+
 ---
 
 ## Managing Profiles
@@ -532,7 +548,7 @@ Rules can be linked to multiple profiles for comprehensive validation:
 Profiles are reusable configurations for guardrail providers. External providers include credentials, endpoints, and detection thresholds. Custom Regex and Secrets Detection run locally. Prompt Guardrails uses a configured Bifrost LLM provider and model as its judge.
 
 <Frame>
-  <img src="/media/guardrails/provider-aws-create.png" alt="Guardrail profiles list showing configured providers" />
+  <img src="/media/guardrails/guardrail-providers-list.png" alt="Guardrail Providers page listing every supported provider with the Presidio configurations table" />
 </Frame>
 
 ### Profile Properties

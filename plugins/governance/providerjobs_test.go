@@ -3,6 +3,7 @@ package governance
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -359,6 +360,107 @@ func TestPreLLMHookBindsProviderObjectsToTheCreatingVirtualKey(t *testing.T) {
 			assert.Nil(t, shortCircuit, "a request that presented no key is unrestricted")
 		})
 	}
+}
+
+// With client.enforce_vk_object_ownership turned off, every virtual key reaches every provider
+// object and lists come back whole, but creators are still recorded, so turning the setting back
+// on also binds what was created while it was off. Unset (nil) means on. The plugin reads the setting
+// through a pointer into the live client config, so a flip takes effect on the next request.
+func TestProviderObjectOwnershipFollowsTheClientSetting(t *testing.T) {
+	plugin, store := newProviderJobTestPlugin(t)
+	require.True(t, plugin.objectOwnershipEnforced(), "an unset setting enforces ownership")
+	enforced := false
+	plugin.objectOwnershipEnforcedFn = func() bool { return enforced }
+	other := "vk-someone-else"
+	for _, kind := range []string{configstoreTables.ProviderObjectKindFile, configstoreTables.ProviderObjectKindVideo, configstoreTables.ProviderObjectKindContainer, configstoreTables.ProviderObjectKindCachedContent} {
+		seedProviderObject(t, store, kind, "openai", kind+"-other", other)
+	}
+
+	for requestType := range providerObjectRequests("x") {
+		kind := providerObjectKindFor(requestType)
+		_, shortCircuit, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), providerObjectRequests(kind + "-other")[requestType])
+		require.NoError(t, err)
+		assert.Nil(t, shortCircuit, "%s: another key's object is reachable while the setting is off", requestType)
+	}
+
+	listCtx := func() *schemas.BifrostContext {
+		ctx := presentCtx(mcpTestVKValue)
+		_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.FileListRequest, FileListRequest: &schemas.BifrostFileListRequest{Provider: schemas.OpenAI}})
+		require.NoError(t, err)
+		require.Nil(t, shortCircuit)
+		return ctx
+	}
+	list := &schemas.BifrostResponse{FileListResponse: &schemas.BifrostFileListResponse{Data: []schemas.FileObject{{ID: "file-other"}, {ID: "file-unbound"}}}}
+	require.NoError(t, plugin.filterProviderObjectList(listCtx(), "openai", list))
+	assert.Len(t, list.FileListResponse.Data, 2, "the list is not narrowed while the setting is off")
+
+	// Creators are recorded while the setting is off: a plain create, and the automatic
+	// container whose marker the pre-hook leaves for the post-hook.
+	ctx := presentCtx(mcpTestVKValue)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.FileUploadRequest, FileUploadRequest: &schemas.BifrostFileUploadRequest{Provider: schemas.OpenAI}})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{FileUploadResponse: &schemas.BifrostFileUploadResponse{ID: "file-made-while-off",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.FileUploadRequest, Provider: schemas.OpenAI}}}, nil)
+	require.NoError(t, err)
+	ctx = presentCtx(mcpTestVKValue)
+	_, shortCircuit, err = plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ResponsesRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "m", Params: &schemas.ResponsesParameters{
+		Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeCodeInterpreter, ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Container: map[string]any{"type": "auto"}}}},
+	}}})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	callType := schemas.ResponsesMessageTypeCodeInterpreterCall
+	_, _, err = plugin.PostLLMHook(ctx, &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Output:      []schemas.ResponsesMessage{{Type: &callType, ResponsesToolMessage: &schemas.ResponsesToolMessage{ResponsesCodeInterpreterToolCall: &schemas.ResponsesCodeInterpreterToolCall{ContainerID: "cntr_auto_while_off"}}}},
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ResponsesRequest, Provider: schemas.OpenAI}}}, nil)
+	require.NoError(t, err)
+	rows, err := store.GetProviderObjectsByIDs(context.Background(), []string{
+		configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindFile, "openai", "file-made-while-off"),
+		configstoreTables.ProviderObjectID(configstoreTables.ProviderObjectKindContainer, "openai", "cntr_auto_while_off"),
+	})
+	require.NoError(t, err)
+	require.Len(t, rows, 2, "creators are recorded while the setting is off")
+	for _, row := range rows {
+		assert.Equal(t, "vk-mcp-stamp", row.VirtualKeyID)
+	}
+
+	// Turning the setting on binds the objects, including the ones recorded while it was off.
+	enforced = true
+	_, shortCircuit, err = plugin.PreLLMHook(presentCtx(mcpTestVKValue), providerObjectRequests("file-other")[schemas.FileRetrieveRequest])
+	require.NoError(t, err)
+	require.NotNil(t, shortCircuit, "another key's object is refused once the setting is on")
+	assert.Equal(t, 404, *shortCircuit.Error.StatusCode)
+	require.NoError(t, plugin.filterProviderObjectList(listCtx(), "openai", list))
+	require.Len(t, list.FileListResponse.Data, 1, "the list is narrowed once the setting is on")
+	assert.Equal(t, "file-unbound", list.FileListResponse.Data[0].ID)
+}
+
+// A provider list page can hold more items than one SQL statement binds: the OpenAI files list
+// returns up to 10000 per page, and each item is looked up under every provider name that shares
+// the upstream. The filter must still narrow the page instead of failing the request with a 500.
+func TestPostLLMHookFiltersAListLargerThanOneStatementBinds(t *testing.T) {
+	plugin, store := newProviderJobTestPlugin(t)
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-other", "vk-someone-else")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-own", "vk-mcp-stamp")
+	data := make([]schemas.FileObject, 0, 40002)
+	for i := 0; i < 40000; i++ {
+		data = append(data, schemas.FileObject{ID: fmt.Sprintf("file-shared-%05d", i)})
+	}
+	data = append(data, schemas.FileObject{ID: "file-other"}, schemas.FileObject{ID: "file-own"})
+
+	ctx := presentCtx(mcpTestVKValue)
+	_, shortCircuit, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.FileListRequest, FileListRequest: &schemas.BifrostFileListRequest{Provider: schemas.OpenAI}})
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	list := &schemas.BifrostResponse{FileListResponse: &schemas.BifrostFileListResponse{Data: data}}
+	require.NoError(t, plugin.filterProviderObjectList(ctx, "openai", list), "a large page is narrowed, not failed")
+	require.Len(t, list.FileListResponse.Data, 40001, "only the other key's file is removed")
+	ids := make(map[string]struct{}, len(list.FileListResponse.Data))
+	for _, item := range list.FileListResponse.Data {
+		ids[item.ID] = struct{}{}
+	}
+	assert.NotContains(t, ids, "file-other")
+	assert.Contains(t, ids, "file-own")
 }
 
 // A video is addressed with or without its ":provider" suffix; the row may carry either form.
@@ -1243,6 +1345,27 @@ func TestProviderObjectOwnersReadBatchRowsOnlyForUnrecordedFiles(t *testing.T) {
 	assert.NotContains(t, store.fileLookups[0], "file-own", "only the unrecorded file is looked up, under every form the provider accepts")
 }
 
+// A list page whose ids, across every form, outnumber the bind-parameter limit (a 10,000-item
+// file page under an openai provider that eight custom providers share reaches it) still has its
+// ownership read: another key's file is hidden and the lookup does not fail the page.
+func TestHiddenProviderObjectsReadsAPageOverTheBindParameterLimit(t *testing.T) {
+	plugin, store := newProviderJobTestPlugin(t)
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-other", "vk-someone-else")
+	seedProviderObject(t, store, configstoreTables.ProviderObjectKindFile, "openai", "file-own", "vk-mcp-stamp")
+	ids := make([]string, 0, 40002)
+	for i := range 40000 {
+		ids = append(ids, fmt.Sprintf("file-unrecorded-%05d", i))
+	}
+	ids = append(ids, "file-other", "file-own")
+
+	hidden, err := plugin.hiddenProviderObjects(presentCtx(mcpTestVKValue), configstoreTables.ProviderObjectKindFile, "openai", "vk-mcp-stamp", ids)
+	require.NoError(t, err)
+	require.NotNil(t, hidden)
+	assert.True(t, hidden("file-other"), "another key's file is hidden")
+	assert.False(t, hidden("file-own"))
+	assert.False(t, hidden("file-unrecorded-00001"), "an unrecorded file stays shared")
+}
+
 // A creator write that fails is tried once more before it is given up on and logged: the object
 // exists at the provider either way, and a bound object beats an unbound one.
 func TestPostLLMHookRetriesAFailedCreatorWriteOnce(t *testing.T) {
@@ -1292,6 +1415,8 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 	defer store.Close(context.Background())
 	plugin := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
 	plugin.configStore = store
+	enforced := false
+	plugin.objectOwnershipEnforcedFn = func() bool { return enforced }
 	text := "hello"
 	cases := map[string]func() *schemas.BifrostRequest{
 		"chat_no_references": func() *schemas.BifrostRequest {
@@ -1310,16 +1435,20 @@ func BenchmarkPreLLMHookProviderObjectChecks(b *testing.B) {
 				Body: []byte(`{"model":"gpt-4o","input":[{"role":"user","content":[{"type":"input_text","text":"hi"},{"type":"input_file","file_id":"file-bench"}]}]}`)}}
 		},
 	}
-	for _, name := range []string{"chat_no_references", "file_retrieve", "passthrough_no_references", "passthrough_responses_body"} {
-		build := cases[name]
-		b.Run(name, func(b *testing.B) {
-			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
-				if _, _, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), build()); err != nil {
-					b.Fatal(err)
+	// "on" is the default and runs every check; "off" is client.enforce_vk_object_ownership: false.
+	for _, mode := range []string{"off", "on"} {
+		for _, name := range []string{"chat_no_references", "file_retrieve", "passthrough_no_references", "passthrough_responses_body"} {
+			build := cases[name]
+			b.Run(mode+"/"+name, func(b *testing.B) {
+				enforced = mode == "on"
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					if _, _, err := plugin.PreLLMHook(presentCtx(mcpTestVKValue), build()); err != nil {
+						b.Fatal(err)
+					}
 				}
-			}
-		})
+			})
+		}
 	}
 }
 

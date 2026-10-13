@@ -1,18 +1,116 @@
 - [fix]: fail an OpenAI-family stream with a distinct error when a chunk cannot be decoded, instead of dropping the chunk and completing with HTTP 200 [@citrocat](https://github.com/citrocat)
-- [fix]: gpt-5.6+ requests carrying cache_control (for example Claude Code on /anthropic/v1/messages to OpenAI, Azure, Bedrock or Bedrock Mantle) are no longer switched to prompt_cache_options.mode "explicit". Explicit-only mode checks only the breakpoints in the current request, so a marker that moves every turn never read the previous turn back and the conversation was rewritten at the cache-write rate every turn. Markers are still translated to prompt_cache_breakpoint; the request stays in the default implicit mode, which keeps the 20-message lookback, and at most three translated breakpoints are kept to leave the implicit write slot free. Set prompt_cache_options.mode to "explicit" yourself to opt into explicit-only mode, which keeps up to four breakpoints [@akshaydeo](https://github.com/akshaydeo)
-- [fix]: report truncated Content-Length response streams and discard incomplete connections
-- [fix]: a tool_result flagged is_error on the Anthropic surface keeps its status "incomplete" marker on the OpenAI Responses wire, so a failed tool call is no longer indistinguishable from a successful one (#8195) [@shreyanshj10](https://github.com/shreyanshj10)
-- [fix]: Responses to chat conversion maps output_text to text on multi-part assistant turns, so replayed assistant history with more than one content part is no longer rejected as an unknown content variant (#8196) [@shreyanshj10](https://github.com/shreyanshj10)
-- [fix]: preserve cache_control, citations, prompt_cache_breakpoint and cachePoint in deepCopyChatContentBlock (#8215) [@Shashank2985](https://github.com/Shashank2985)
-- [fix]: Anthropic-compatible responses report stop_reason "stop_sequence" with the matched stop_sequence instead of end_turn/null when Claude (Anthropic or Vertex) stops on a requested stop sequence, in both streaming and non-streaming responses. The matched sequence now survives the Bifrost Responses round trip via an optional stop_sequence field; OpenAI-style "stop" finishes still map to end_turn [@jimseiwert](https://github.com/jimseiwert)
-- [feat]: Typesafe can back a custom provider (base_provider_type "typesafe"). The Typesafe provider now answers to the custom name for lookup, key selection and reporting, honours allowed_requests for decisions and list models, applies request_path_overrides, supports keyless listing, and the native model listing strips the custom provider prefix [@akshaydeo](https://github.com/akshaydeo)
-- [fix]: chat streams converted from a Responses upstream send the assistant role exactly once, on the first chunk. Turns with only reasoning and function_call items sent no role at all, so clients such as LangChain.js dropped the tool calls (#7693) [@hmdsefi](https://github.com/hmdsefi)
-- [fix]: preserve Mistral streaming text arrays and reject unsupported content blocks [@xujiantop-crypto](https://github.com/xujiantop-crypto)
-- [fix]: Anthropic error envelope always uses a documented error.type. Errors with no type were labelled api_error regardless of status (400 validation and unsupported-operation errors included), and Gemini/Vertex gRPC statuses such as INVALID_ARGUMENT were passed through verbatim. The type is now kept when already valid, mapped from google.rpc status names, or derived from the HTTP status the error is sent with [@jimseiwert](https://github.com/jimseiwert)
-- [fix]: Gemini/Vertex Responses conversion keeps function tools declared without input_schema instead of dropping them, and orders each batch of function responses to match the preceding function calls so Vertex (which strips call ids and pairs by position) no longer mis-pairs parallel tool results [@jimseiwert](https://github.com/jimseiwert)
-- [feat]: Bedrock guardrail selective evaluation. Converse guardContent blocks (messages and system) were parsed on ingress and then dropped in the Bedrock -> Bifrost conversion, and guardrailConfig had no tagSuffix, so neither AWS scoping mechanism reached the provider and agentic scaffolding tripped PROMPT_ATTACK on every turn. Canonical text blocks now carry a guard_content marker that both Bedrock converters honour, guardrailConfig accepts tagSuffix (and forwards streamProcessingMode on ingress), inline <amazon-bedrock-guardrails-guardContent_{suffix}> tags become guardContent entries on the Converse egress, and guard markers render as tags with amazon-bedrock-guardrailConfig on the Anthropic-native InvokeModel egress. The invoke ingress also reads the X-Amzn-Bedrock-Guardrail* request headers and lifts amazon-bedrock-guardrailConfig and a top-level guardrailConfig into the typed config; guardContent covers the image arm (png/jpeg inline bytes) as well as text; the same guard_content marker is available on Chat Completions content blocks, tagSuffix is validated (1-20 alphanumeric) with a 400 on every path, and InvokeModel-shaped replies carry amazon-bedrock-guardrailAction and amazon-bedrock-trace (last chunk on the streaming route) (#7696) [@akshaydeo](https://github.com/akshaydeo)
-- [fix]: map chat completion n to Gemini candidateCount (#7388) [@axelray-dev](https://github.com/axelray-dev)
-- [fix]: Bedrock InvokeModel keeps cache_control when any message's content is a plain string. BedrockMessage.Content is typed as content blocks, so one bare string anywhere in messages[] failed the standard unmarshal and diverted the whole request into the AI21 string fallback, which rebuilt the messages without calling applyMessageContentCacheControl. Every cache_control in the request was dropped rather than only the one on the string message, so prompt caching went off silently with just the system cachePoint surviving. The fallback now makes the same translation the standard path does (#7336) [@basil-k-aji-dev](https://github.com/basil-k-aji-dev)
-- [fix]: record output items before closing open items on Gemini streaming Responses. When parts (thoughts, function calls, text) and finishReason share a single upstream frame, response.completed now correctly populates the Output array instead of emitting empty output (#7341) [@wofiporia](https://github.com/wofiporia)
-- [fix]: web search action sources round-trip their name and no longer fabricate an empty url. OpenAI Responses web search can return specialized API sources ({"type":"api","name":"oai-weather"}) that carry a name and no URL; the typed source schema only modeled type and a required url, so decode dropped name and re-encode emitted "url":"", and the OpenAI request-side source sanitization rebuilt sources without name. url is now omitempty and name survives both the schema round-trip and the sanitization path (#7356) [@g-yixuan](https://github.com/g-yixuan)
-- [fix]: The Claude Code billing header is stripped again when an effort-only system message comes first. Since 2.2.6 kept per-message `output_config`, an effort-only `role:"system"` message (`content: []` with `output_config.effort`) ahead of the `x-anthropic-billing-header` system message pushed the header out of the first slot, so it survived ingress: guardrails evaluated it and non-Anthropic fallbacks received it as prompt text. Extraction now skips leading effort-only items, and Anthropic attempts get the header restored in place right after them (#8039) [@akshaydeo](https://github.com/akshaydeo)
+- feat: agent gateway runtime with A2A request, event and trace contracts, card discovery, A2A plugin pipeline, streaming, durable push delivery and opt-in private push callbacks; `schemas.Tracer` gains `ReleaseTrace`
+- feat: gpt live session schemas, live provider interface and openai implementation, with sideband attach routes, the `live_sideband` request type and delegation error recording
+- feat: add cloudflare workers ai provider with chat, responses, embeddings, model listing and native clef decisions
+- feat: inject any number of named provider-configured mcp tools into chat and responses requests, past tool filters, and execute them server side including streaming
+- feat: oauth_key_config mints bearer tokens for openai-compatible providers through a shared token cache, also used by databricks and github copilot
+- feat: normalise decision requests and answers to an openai-style list shape (map form deprecated) and add openai decision converters for the openai-format route
+- feat: native decision support for openai, perplexity, ollama and openrouter
+- feat: emulate decisions through responses only when the request is marked by convert_decision_to_responses
+- feat: Typesafe can back a custom provider (base_provider_type "typesafe") with its own name, keys, allowed_requests, request_path_overrides and keyless listing [@akshaydeo](https://github.com/akshaydeo)
+- feat: complexity router decision classifier support: RequestType on routing calls and decision cost tracking
+- feat: multimodal embedding input with per-item params for cohere, gemini, vertex, bedrock nova/titan and parasail
+- feat: shell and apply_patch tools, allowed_callers translation and gemini code execution on the responses api
+- feat: add ModelRetrieve operation for openai, anthropic, cohere, gemini, mistral and ollama
+- feat: xai realtime provider with client-secret minting; realtime events keep their own copy of raw bytes
+- feat: bedrock passthrough for InvokeAgent, knowledge-base Retrieve and ApplyGuardrail; pass through azure content filter annotations
+- feat: vertex aws workload identity federation and sdk-chain resolution for aws external_account json
+- feat: add ToolUsage.WebSearch usage and deprecate NumSearchQueries
+- feat: add IgnoreProviderCost to provider config
+- feat: add BifrostContextKeyCompatForceReasoningOnlyToResponses
+- feat: route chat requests with reasoning.mode to the responses api on openai and azure, and carry reasoning.summary through chat to responses conversion
+- feat: stamp the deepseek served model and read server_side_model from the datasheet
+- feat: classify provider failures (including timeout and cancelled), rotate keys past permanent per-key failures and carry provider retry hints on errors
+- feat: per-attempt first-token deadline for stream attempts with fallback handover
+- feat: requested_provider and requested_model on RoutingInfo and as reserved context keys
+- feat: Access.AllowsEveryModel for provider-wide model grants
+- feat: passthrough body model fields for governance checks
+- feat: require_public_target on MCP clients, enforced on every dial
+- feat: allowlisted private dialer for MCP OAuth
+- feat: capture, aggregate and inject upstream MCP server instructions, with per-client and total byte caps
+- feat: RefreshMCPClientTools for on-demand tool rediscovery
+- feat: detect dead MCP sessions on tool calls and reconnect; retry probe timeouts but not dead sessions or auth failures
+- feat: bound code mode execution with step, memory, source, log, tool-call, value and nesting limits
+- feat: process-wide HTTP client factory so MCP, OAuth, catalog sync and OTLP follow the global API proxy
+- feat: BifrostContextKeyGovernanceDisableContentLogging and bifrost.content_logging.disabled span attribute
+- feat: BifrostContextKeyLoadBalancerAttempt and LoadBalancerMetadataPrefix
+- feat: add HTTPTransportResponseHeadersHook and pooled HTTPResponseMetadata to HTTP transport plugins
+- feat: add Warp config schema, log embedding configuration, multi-model selection and agent error codes
+- feat: add BifrostContextKeyCacheLookup to carry the cache lookup outcome before a response exists
+- feat: add RawPayloadConsumer and raw request/response fields on LLM spans
+- feat: add StripTraceAttributes for per-connector attribute denylists
+- feat: add bifrost.cost.* attributes and BifrostContext.CalculateCostBreakdown for plugins
+- feat: add bifrost.app span attribute derived from User-Agent
+- feat: add TraceSessionID and TraceDimensions accessors for connector metric tags
+- feat: add typed LLMSpanData, SpanEnrichment and connector demand interfaces
+- feat: expose failure identity for pre-dispatch errors
+- feat: add BifrostGuardrailDetection for detect-only guardrail policy matches
+- feat: Bedrock guardrail selective evaluation: guardContent blocks (text and image) survive conversion, guardrailConfig accepts a validated tagSuffix and streamProcessingMode, InvokeModel reads X-Amzn-Bedrock-Guardrail* headers, and the same guard_content marker is available on Chat Completions content blocks (#7696) [@akshaydeo](https://github.com/akshaydeo)
+- chore: deprecate attribution context keys in favour of ctx.Grant() accessors
+- fix: gpt-5.6+ requests carrying cache_control are no longer switched to prompt_cache_options.mode "explicit"; markers still become prompt_cache_breakpoint (at most three in implicit mode, four when the caller sets explicit mode) [@akshaydeo](https://github.com/akshaydeo)
+- fix: report truncated Content-Length response streams and discard incomplete connections (thanks [@Constantine3](https://github.com/Constantine3)!)
+- fix: a tool_result flagged is_error keeps its status "incomplete" marker on the OpenAI Responses wire (#8195) (thanks [@shreyanshj10](https://github.com/shreyanshj10)!)
+- fix: Responses to chat conversion maps output_text to text on multi-part assistant turns (#8196) (thanks [@shreyanshj10](https://github.com/shreyanshj10)!)
+- fix: preserve cache_control, citations, prompt_cache_breakpoint and cachePoint in deepCopyChatContentBlock (#8215) (thanks [@Shashank2985](https://github.com/Shashank2985)!)
+- fix: Anthropic-compatible responses report stop_reason "stop_sequence" with the matched stop_sequence for Claude on Anthropic and Vertex, streaming and non-streaming (thanks [@jimseiwert](https://github.com/jimseiwert)!)
+- fix: Anthropic error envelope always uses a documented error.type, mapped from google.rpc status names or the HTTP status when needed (thanks [@jimseiwert](https://github.com/jimseiwert)!)
+- fix: Gemini/Vertex Responses conversion keeps function tools declared without input_schema and orders function responses to match the preceding calls (thanks [@jimseiwert](https://github.com/jimseiwert)!)
+- fix: chat streams converted from a Responses upstream send the assistant role exactly once, on the first chunk (#7693) (thanks [@hmdsefi](https://github.com/hmdsefi)!)
+- fix: preserve Mistral streaming text arrays and reject unsupported content blocks (thanks [@xujiantop-crypto](https://github.com/xujiantop-crypto)!)
+- fix: map chat completion n to Gemini candidateCount (#7388) (thanks [@axelray-dev](https://github.com/axelray-dev)!)
+- fix: record output items before closing open items on Gemini streaming Responses when parts and finishReason share a frame (#7341) (thanks [@wofiporia](https://github.com/wofiporia)!)
+- fix: strip the Claude Code billing header again when an effort-only system message comes first, and restore it in place for Anthropic attempts (#8039) [@akshaydeo](https://github.com/akshaydeo)
+- fix: infer http status for stream errors and key-selection failures
+- fix: skip catalog-inferred fallbacks on caller-fault errors; forward raw gemini logprobs
+- fix: refuse aggregate model listing with a direct key, return the provider's error for a refused direct key, and bind no session key for direct keys
+- fix: restore primary provider headers after exhausted fallbacks and name plugin-answered fallbacks in stream routing headers
+- fix: apply the global proxy to providers without their own and honour multi-entry no_proxy lists
+- fix: route every provider egress stack, auth client and url fetch through proxy_config, with https and ipv6 proxies
+- fix: build passthrough urls that stay on the provider host
+- fix: keep replicate file list pagination on the configured file endpoint
+- fix: validate azure realtime endpoint before use and contain websocket session panics
+- fix: fit output tokens and thinking budget per attempt after key selection
+- fix: clamp max_tokens and rewrite adaptive thinking for pre-adaptive claude models
+- fix: send custom tools as function tools when the datasheet marks them unsupported
+- fix: read default reasoning effort from the datasheet when deciding to strip sampling params
+- fix: add opt-out capability for reasoning.summary
+- fix: clear paired item ids when stripping rejected reasoning
+- fix: downgrade json_schema response_format to json_object on deepseek
+- fix: keep gemini responses-path parity for json mode, native tools, candidateCount, logprobs and urlContextMetadata
+- fix: normalize root schema compositions for claude tools on bedrock converse
+- fix: per-model tool schema policy for kimi on chat and responses
+- fix: carry anthropic mid-conversation tool changes through the responses representation
+- fix: disable genai raw-body passthrough for non-google providers and model garden models on vertex
+- fix: keep the vertex passthrough api version and poll veo operations in their own region
+- fix: preserve safeguard_results in streamed message_delta
+- fix: error on bedrock converse streams missing messageStop
+- fix: emit cachePoint after cached document blocks on bedrock converse
+- fix: keep reasoning item ids and encrypted tokens through bedrock converse and chat-to-responses replays; forward store
+- fix: preserve thinking block order for bare claude model ids
+- fix: computer tool actions array, computer tool muxing and server tool cache_control
+- fix: omit null logprobs on history output_text and keep stream extra_fields on the openai responses drop-in
+- fix: send only OpenAI embedding params to OpenAI-compatible providers; label Cohere embeddings_by_type
+- fix: gemini $ref tool outputs, vertex express auth and image/transcription extra params on fallbacks
+- fix: fan out gemini embedding taskType and title per entry
+- fix: capture raw request on bedrock and vertex embeddings
+- fix: forward anthropic extra params through bedrock conversion (thanks [@wangrat](https://github.com/wangrat)!)
+- fix: accept matching reasoning_effort and reasoning.effort (thanks [@Daltonganger](https://github.com/Daltonganger)!)
+- fix: align typesafe validation and fidelity with the typesafe sdk
+- fix: bound per-provider model list polls and resume pagination after the last returned id (thanks [@novai42](https://github.com/novai42)!)
+- fix: allow empty copilot key values for github app auth and distinguish 422 permission errors
+- fix: cohere replay thinking order, decisions tool_choice gate, served tier on chat bridge, bare sonar routing, mcp server_label, legacy prompt framing
+- fix: hold back retried stream errors from post-hooks
+- fix: end large-response previews on a utf-8 boundary
+- fix: float weighted key selection that ignores negative or non-finite weights
+- fix: session affinity skips direct-key fallbacks and caller key pins, drops bindings to removed keys in single-key pools, and falls back to sibling keys when a session-bound key is rejected outright
+- fix: read the message context before abandoning delivery
+- fix: route code-mode tool results through PostMCPHook before logging
+- fix: MCP agent loop keeps earlier turns, the turn-1 route and caller cache points
+- fix: keep the live MCP connection on a failed make-before-break re-dial and reconnect after a failed live-connection check
+- fix: preserve pending_verification through EnableClient and the connection checker
+- fix: report a rejected inbound bearer token separately from a missing one in token exchange
+- fix: treat only masked placeholders as keep-stored for OAuth credentials
+- fix: redact x-bf-vk in captured request headers
+- fix: add BifrostError.EffectiveHTTPStatus as the single source for the status a caller received
+- fix: add span attribute helpers for chat tools export
+- fix: defer trace completion for abandoned deliveries

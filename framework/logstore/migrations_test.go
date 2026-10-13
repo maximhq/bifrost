@@ -1069,3 +1069,69 @@ func TestAgentRawCaptureMigration(t *testing.T) {
 	require.NoError(t, db.Table("agent_logs").Where("id = ?", "existing").Count(&count).Error)
 	require.Equal(t, int64(1), count)
 }
+
+// TestIndexBuildersIgnoreSameNamedIndexInOtherSchema pins that the index
+// builders look for their index on this schema's table. A shared database can
+// hold another schema with its own logs tables (another deployment, or a test
+// package), and a valid same-named index there made the builders skip their
+// build, leaving this schema's table unindexed (so the cost and latency sorts
+// seq-scanned). The other schema is also on the search_path after this one, so
+// an unqualified DROP INDEX of a missing index would resolve to its copy: the
+// builders must leave it alone.
+func TestIndexBuildersIgnoreSameNamedIndexInOtherSchema(t *testing.T) {
+	const shadow = "logstore_test_shadow"
+	_, db := setupPerfTestDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.Exec("DROP SCHEMA IF EXISTS "+shadow+" CASCADE").Error)
+	require.NoError(t, db.Exec("CREATE SCHEMA "+shadow).Error)
+	t.Cleanup(func() { _ = db.Exec("DROP SCHEMA IF EXISTS " + shadow + " CASCADE").Error })
+
+	type index struct{ table, name string }
+	indexes := []index{
+		{"logs", "idx_logs_metadata_gin"},
+		{"logs", "idx_logs_team_ids_gin"},
+		{"logs", "idx_logs_business_unit_ids_gin"},
+		{"logs", "idx_logs_customer_ids_gin"},
+		{"logs", "idx_logs_histogram_cover"},
+		{"mcp_tool_logs", "idx_mcp_logs_histogram_cover"},
+	}
+	for _, idx := range performanceIndexes {
+		indexes = append(indexes, index{idx.table, idx.name})
+	}
+
+	// A valid same-named index in the shadow schema, and none in this one.
+	for _, idx := range indexes {
+		require.NoError(t, db.Exec(fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s (id text)", shadow, idx.table)).Error)
+		require.NoError(t, db.Exec(fmt.Sprintf("CREATE INDEX %s ON %s.%s (id)", idx.name, shadow, idx.table)).Error)
+		require.NoError(t, db.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s.%s", pgTestSchema, idx.name)).Error)
+	}
+
+	conn := acquirePerfTestSQLConn(t, ctx, db)
+	_, err := conn.ExecContext(ctx, fmt.Sprintf("SET search_path TO %s, %s", pgTestSchema, shadow))
+	require.NoError(t, err)
+	// Runs before the connection returns to the pool.
+	t.Cleanup(func() { _, _ = conn.ExecContext(context.Background(), "SET search_path TO "+pgTestSchema) })
+
+	require.NoError(t, ensureMetadataGINIndex(ctx, conn))
+	require.NoError(t, ensureMultiTeamBusinessUnitGINIndexes(ctx, conn))
+	require.NoError(t, ensureDashboardEnhancements(ctx, conn))
+	require.NoError(t, ensurePerformanceIndexes(ctx, conn, testLogger{}))
+
+	// Read pg_index directly rather than through pgIndexValid, which is the
+	// check under test: the index must be valid on this schema's table.
+	for _, idx := range indexes {
+		var built bool
+		require.NoError(t, db.Raw(`
+			SELECT COALESCE(bool_and(pi.indisvalid), false)
+			FROM pg_index pi
+			JOIN pg_class ic ON ic.oid = pi.indexrelid
+			WHERE pi.indrelid = to_regclass(?) AND ic.relname = ?
+		`, pgTestSchema+"."+idx.table, idx.name).Scan(&built).Error)
+		assert.True(t, built, "%s on %s.%s must be built despite a same-named index in %s", idx.name, pgTestSchema, idx.table, shadow)
+
+		var shadowKept bool
+		require.NoError(t, db.Raw("SELECT to_regclass(?) IS NOT NULL", shadow+"."+idx.name).Scan(&shadowKept).Error)
+		assert.True(t, shadowKept, "the builders must not drop %s.%s", shadow, idx.name)
+	}
+}

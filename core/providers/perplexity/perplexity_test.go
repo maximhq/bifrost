@@ -729,6 +729,51 @@ func newTestKey() schemas.Key {
 	return schemas.Key{Value: schemas.SecretVar{Val: "test-token"}, Models: []string{"*"}}
 }
 
+// TestResponses_RoutesSonarFamilyToChatCompletions pins the Responses routing: the
+// Sonar family, bare "sonar" included, is served only on /chat/completions (Perplexity's
+// /v1/responses answers `model "sonar" is not supported`), and every other model goes to
+// /v1/responses.
+func TestResponses_RoutesSonarFamilyToChatCompletions(t *testing.T) {
+	cases := []struct {
+		model    string
+		wantPath string
+	}{
+		{"sonar", "/chat/completions"},
+		{"perplexity/sonar", "/chat/completions"},
+		{"SONAR", "/chat/completions"},
+		{"sonar-pro", "/chat/completions"},
+		{"perplexity/sonar-reasoning-pro", "/chat/completions"},
+		{"openai/gpt-5.4", "/v1/responses"},
+		{"sonar2", "/v1/responses"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.model, func(t *testing.T) {
+			var capturedPath string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedPath = r.URL.Path
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = fmt.Fprint(w, `{"error":{"message":"stop here","type":"invalid_request_error"}}`)
+			}))
+			defer server.Close()
+
+			provider := newTestProvider(t, server.URL)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, _ = provider.Responses(ctx, newTestKey(), &schemas.BifrostResponsesRequest{
+				Provider: schemas.Perplexity,
+				Model:    tc.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+				}},
+			})
+			if capturedPath != tc.wantPath {
+				t.Errorf("path = %q, want %q", capturedPath, tc.wantPath)
+			}
+		})
+	}
+}
+
 // TestDecision_PostsToDecisionsAndTakesIDFromHeader pins the native call: the request goes
 // to /v1/decisions with Bearer auth, and the id comes from x-request-id since the body has none.
 func TestDecision_PostsToDecisionsAndTakesIDFromHeader(t *testing.T) {

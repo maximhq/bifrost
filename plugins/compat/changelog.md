@@ -1,0 +1,7 @@
+- feat: add convert_decision_to_responses setting (default off) and x-bf-compat feature; skip decision emulation for models served natively by openai, perplexity, ollama, openrouter and cloudflare
+- feat: add force_reasoning_only_models_to_responses toggle (default true)
+- feat: report reasoning.mode as dropped on providers without it
+- feat: implement HTTPTransportResponseHeadersHook as a no-op
+- fix: hand output token and thinking budget fitting to core through BifrostContextKeyConvertParamValues so it runs per attempt
+- fix: drop reasoning.summary for models that do not support it
+- chore: upgraded core to v1.12.0 and framework to v1.9.0
