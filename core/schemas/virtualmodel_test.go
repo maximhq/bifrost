@@ -158,6 +158,39 @@ func TestSelectNilSnapshotAndEmptyCandidates(t *testing.T) {
 	}
 }
 
+// A reader that keyed its entries the way the backend wrote them, rather than
+// lowercased, must still resolve. Without this the miss is silent and reads as an idle
+// GPU, so the gateway refuses or cold-loads a model that is plainly resident.
+func TestStateOfIsCaseInsensitive(t *testing.T) {
+	snapshot := &ResidencySnapshot{
+		Provider:      "omlx",
+		Authoritative: true,
+		States:        map[string]ResidencyState{"Qwen3.8-Flash-Next-oQ4e-mtp": ResidencyReady},
+	}
+	if got := snapshot.StateOf("qwen3.8-flash-next-oq4e-mtp"); got != ResidencyReady {
+		t.Fatalf("StateOf(lowercase) = %q, want %q", got, ResidencyReady)
+	}
+	model := &VirtualModel{Name: "qwen38", Provider: "omlx", Models: []string{"qwen3.8-flash-next-oq4e-mtp"}, OnProbeError: VirtualModelErrorOnProbeError}
+	res, err := SelectVirtualModelTarget(model, snapshot)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Model != "qwen3.8-flash-next-oq4e-mtp" {
+		t.Fatalf("Model = %q, want the resident candidate", res.Model)
+	}
+}
+
+func TestSetStateNormalizesKeys(t *testing.T) {
+	snapshot := &ResidencySnapshot{Provider: "ollama"}
+	snapshot.SetState("  Qwen3:30B ", ResidencyReady)
+	if got := snapshot.StateOf("qwen3:30b"); got != ResidencyReady {
+		t.Fatalf("StateOf = %q, want %q", got, ResidencyReady)
+	}
+	if _, ok := snapshot.States["qwen3:30b"]; !ok {
+		t.Fatalf("SetState stored the key unnormalized: %v", snapshot.States)
+	}
+}
+
 func TestNormalizeModelErrorPolicy(t *testing.T) {
 	if got := NormalizeModelErrorPolicy(" FIRST "); got != VirtualModelFirstOnProbeError {
 		t.Fatalf("NormalizeModelErrorPolicy(\" FIRST \") = %q, want %q", got, VirtualModelFirstOnProbeError)
