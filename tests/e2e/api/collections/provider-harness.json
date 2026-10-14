@@ -265713,6 +265713,453 @@
           }
         }
       ]
+    },
+    {
+      "name": "231. Responses instructions lead the system prompt ahead of developer input (instructions with developer)",
+      "description": "Top-level Responses `instructions` were dropped whenever the input also carried a system or developer message: the Anthropic converter (shared by Anthropic, Vertex, Azure, Bedrock InvokeModel, Bedrock Mantle, Fireworks, DeepSeek, vLLM and SGL), Bedrock Converse, Gemini (and Vertex Gemini), Cohere and Replicate used instructions only as a fallback when the input had no system content. Codex sends its base prompt in `instructions` and app rules as `developer` messages, so the base prompt never reached the model and the request still returned 200. OpenAI places `instructions` ahead of the input, and the Responses-to-Chat fallback in core/schemas/mux.go already did, so now instructions lead the system prompt everywhere: a separate leading block for Anthropic, Bedrock and Gemini, joined first with a newline for Cohere's single system turn. Each case reads the upstream body from extra_fields.raw_request and asserts BASE_RULES (instructions) and APP_RULES (developer) both reach the system prompt, instructions first. 231.1-231.3 pin the Anthropic converter on /v1/responses, its stream and the /openai/v1/responses drop-in Codex uses. 231.4 pins Bedrock Converse, 231.5-231.6 Gemini on both hosts, 231.7 Cohere. Not covered here: /anthropic, /genai and /bedrock have no `instructions` field, so they cannot carry the pair; Vertex/Azure/Mantle Claude and the other Anthropic-wire hosts reuse the converter 231.1-231.3 pin; Replicate is pinned by its Go unit test only, since the harness has no Replicate text rows (its one row is image generation).",
+      "item": [
+        {
+          "name": "231.1 anthropic/claude-haiku-4-5 /v1/responses instructions and developer message both reach system, instructions first (instructions with developer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('231.1 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var rr = (pm.response.json().extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('231.1 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 500)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var sys = rr.system;",
+                  "var texts = (Array.isArray(sys) ? sys : (typeof sys === 'string' ? [{ text: sys }] : [])).map(function (b) { return (b && b.text) || ''; });",
+                  "var joined = texts.join('\\n');",
+                  "pm.test('231.1 instructions and the developer message both reach the system prompt, instructions first', function () {",
+                  "  pm.expect(joined, 'instructions dropped from system: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(joined, 'developer message dropped from system: ' + wire.slice(0, 1500)).to.include('APP_RULES');",
+                  "  pm.expect(joined.indexOf('BASE_RULES'), 'instructions must lead the system prompt: ' + wire.slice(0, 1500)).to.be.below(joined.indexOf('APP_RULES'));",
+                  "});",
+                  "pm.test('231.1 instructions ride in their own leading system block', function () {",
+                  "  pm.expect(texts[0], 'first system block: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(texts[0], 'first system block: ' + wire.slice(0, 1500)).to.not.include('APP_RULES');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"instructions\": \"BASE_RULES: Reply in one short sentence.\",\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"APP_RULES: Never use emoji.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "231.2 anthropic/claude-haiku-4-5 /v1/responses stream instructions and developer message both reach system, instructions first (instructions with developer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('231.2 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "pm.test('231.2 response is SSE and reaches response.completed', function () {",
+                  "  pm.expect(pm.response.headers.get('content-type') || '').to.include('event-stream');",
+                  "  pm.expect(txt, txt.slice(-800)).to.include('response.completed');",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var terminal = null;",
+                  "txt.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data:') !== 0) { return; }",
+                  "  var ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { return; }",
+                  "  if (ev && ev.type === 'response.completed') { terminal = ev; }",
+                  "});",
+                  "var rr = terminal && terminal.extra_fields && terminal.extra_fields.raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('231.2 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 500)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var sys = rr.system;",
+                  "var texts = (Array.isArray(sys) ? sys : (typeof sys === 'string' ? [{ text: sys }] : [])).map(function (b) { return (b && b.text) || ''; });",
+                  "var joined = texts.join('\\n');",
+                  "pm.test('231.2 instructions and the developer message both reach the system prompt, instructions first', function () {",
+                  "  pm.expect(joined, 'instructions dropped from system: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(joined, 'developer message dropped from system: ' + wire.slice(0, 1500)).to.include('APP_RULES');",
+                  "  pm.expect(joined.indexOf('BASE_RULES'), 'instructions must lead the system prompt: ' + wire.slice(0, 1500)).to.be.below(joined.indexOf('APP_RULES'));",
+                  "});",
+                  "pm.test('231.2 instructions ride in their own leading system block', function () {",
+                  "  pm.expect(texts[0], 'first system block: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(texts[0], 'first system block: ' + wire.slice(0, 1500)).to.not.include('APP_RULES');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"instructions\": \"BASE_RULES: Reply in one short sentence.\",\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"APP_RULES: Never use emoji.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"max_output_tokens\": 64,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "231.3 anthropic/claude-haiku-4-5 /openai/v1/responses Codex-style drop-in instructions and developer message both reach system, instructions first (instructions with developer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('231.3 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var rr = (pm.response.json().extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('231.3 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 500)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var sys = rr.system;",
+                  "var texts = (Array.isArray(sys) ? sys : (typeof sys === 'string' ? [{ text: sys }] : [])).map(function (b) { return (b && b.text) || ''; });",
+                  "var joined = texts.join('\\n');",
+                  "pm.test('231.3 instructions and the developer message both reach the system prompt, instructions first', function () {",
+                  "  pm.expect(joined, 'instructions dropped from system: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(joined, 'developer message dropped from system: ' + wire.slice(0, 1500)).to.include('APP_RULES');",
+                  "  pm.expect(joined.indexOf('BASE_RULES'), 'instructions must lead the system prompt: ' + wire.slice(0, 1500)).to.be.below(joined.indexOf('APP_RULES'));",
+                  "});",
+                  "pm.test('231.3 instructions ride in their own leading system block', function () {",
+                  "  pm.expect(texts[0], 'first system block: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(texts[0], 'first system block: ' + wire.slice(0, 1500)).to.not.include('APP_RULES');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-haiku-4-5\",\n  \"instructions\": \"BASE_RULES: Reply in one short sentence.\",\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"APP_RULES: Never use emoji.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "231.4 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /v1/responses Converse system carries instructions first, then the developer message (instructions with developer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('231.4 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var rr = (pm.response.json().extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('231.4 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 500)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var sys = rr.system;",
+                  "var texts = (Array.isArray(sys) ? sys : (typeof sys === 'string' ? [{ text: sys }] : [])).map(function (b) { return (b && b.text) || ''; });",
+                  "var joined = texts.join('\\n');",
+                  "pm.test('231.4 instructions and the developer message both reach the system prompt, instructions first', function () {",
+                  "  pm.expect(joined, 'instructions dropped from system: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(joined, 'developer message dropped from system: ' + wire.slice(0, 1500)).to.include('APP_RULES');",
+                  "  pm.expect(joined.indexOf('BASE_RULES'), 'instructions must lead the system prompt: ' + wire.slice(0, 1500)).to.be.below(joined.indexOf('APP_RULES'));",
+                  "});",
+                  "pm.test('231.4 instructions ride in their own leading system block', function () {",
+                  "  pm.expect(texts[0], 'first system block: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(texts[0], 'first system block: ' + wire.slice(0, 1500)).to.not.include('APP_RULES');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"instructions\": \"BASE_RULES: Reply in one short sentence.\",\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"APP_RULES: Never use emoji.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "231.5 gemini/gemini-2.5-flash /v1/responses systemInstruction carries instructions first, then the developer message (instructions with developer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('231.5 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var rr = (pm.response.json().extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('231.5 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 500)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var texts = ((rr.systemInstruction || {}).parts || []).map(function (p) { return (p && p.text) || ''; });",
+                  "var joined = texts.join('\\n');",
+                  "pm.test('231.5 instructions and the developer message both reach the system prompt, instructions first', function () {",
+                  "  pm.expect(joined, 'instructions dropped from system: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(joined, 'developer message dropped from system: ' + wire.slice(0, 1500)).to.include('APP_RULES');",
+                  "  pm.expect(joined.indexOf('BASE_RULES'), 'instructions must lead the system prompt: ' + wire.slice(0, 1500)).to.be.below(joined.indexOf('APP_RULES'));",
+                  "});",
+                  "pm.test('231.5 instructions ride in their own leading system block', function () {",
+                  "  pm.expect(texts[0], 'first system block: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(texts[0], 'first system block: ' + wire.slice(0, 1500)).to.not.include('APP_RULES');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"instructions\": \"BASE_RULES: Reply in one short sentence.\",\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"APP_RULES: Never use emoji.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "231.6 vertex/gemini-2.5-flash /v1/responses systemInstruction carries instructions first, then the developer message (instructions with developer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('231.6 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var rr = (pm.response.json().extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('231.6 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 500)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var texts = ((rr.systemInstruction || {}).parts || []).map(function (p) { return (p && p.text) || ''; });",
+                  "var joined = texts.join('\\n');",
+                  "pm.test('231.6 instructions and the developer message both reach the system prompt, instructions first', function () {",
+                  "  pm.expect(joined, 'instructions dropped from system: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(joined, 'developer message dropped from system: ' + wire.slice(0, 1500)).to.include('APP_RULES');",
+                  "  pm.expect(joined.indexOf('BASE_RULES'), 'instructions must lead the system prompt: ' + wire.slice(0, 1500)).to.be.below(joined.indexOf('APP_RULES'));",
+                  "});",
+                  "pm.test('231.6 instructions ride in their own leading system block', function () {",
+                  "  pm.expect(texts[0], 'first system block: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(texts[0], 'first system block: ' + wire.slice(0, 1500)).to.not.include('APP_RULES');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"instructions\": \"BASE_RULES: Reply in one short sentence.\",\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"APP_RULES: Never use emoji.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "231.7 cohere/command-a-03-2025 /v1/responses system turn joins instructions first, then the developer message (instructions with developer)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('231.7 exact success status', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var rr = (pm.response.json().extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('231.7 raw_request captured', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 500)).to.be.an('object');",
+                  "});",
+                  "if (!rr) { return; }",
+                  "var texts = (rr.messages || []).filter(function (m) { return m && m.role === 'system'; }).map(function (m) { return typeof m.content === 'string' ? m.content : JSON.stringify(m.content); });",
+                  "var joined = texts.join('\\n');",
+                  "pm.test('231.7 instructions and the developer message both reach the system prompt, instructions first', function () {",
+                  "  pm.expect(joined, 'instructions dropped from system: ' + wire.slice(0, 1500)).to.include('BASE_RULES');",
+                  "  pm.expect(joined, 'developer message dropped from system: ' + wire.slice(0, 1500)).to.include('APP_RULES');",
+                  "  pm.expect(joined.indexOf('BASE_RULES'), 'instructions must lead the system prompt: ' + wire.slice(0, 1500)).to.be.below(joined.indexOf('APP_RULES'));",
+                  "});",
+                  "pm.test('231.7 both ride in the single system turn', function () {",
+                  "  pm.expect(texts.length, 'system turns: ' + wire.slice(0, 1500)).to.equal(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"cohere/command-a-03-2025\",\n  \"instructions\": \"BASE_RULES: Reply in one short sentence.\",\n  \"input\": [\n    {\n      \"role\": \"developer\",\n      \"content\": \"APP_RULES: Never use emoji.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello.\"\n    }\n  ],\n  \"max_output_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

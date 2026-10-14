@@ -159,6 +159,9 @@ func ToReplicateResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) (*
 				if supportsSystemPrompt(bifrostReq.Model) {
 					if input.SystemPrompt == nil {
 						input.SystemPrompt = params.Instructions
+					} else {
+						// Instructions lead the system prompt, ahead of any system input (OpenAI semantics)
+						input.SystemPrompt = new(*params.Instructions + "\n" + *input.SystemPrompt)
 					}
 				} else {
 					if input.Prompt != nil && *input.Prompt != "" {

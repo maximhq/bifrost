@@ -1460,6 +1460,38 @@ func TestBifrostToReplicateResponsesRequestConversion(t *testing.T) {
 			},
 		},
 		{
+			name: "Instructions_Lead_System_Input",
+			input: &schemas.BifrostResponsesRequest{
+				Model: "meta/llama-3.1-70b-instruct",
+				Input: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("Answer in French"),
+						},
+					},
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+						Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{
+							ContentStr: schemas.Ptr("Hello"),
+						},
+					},
+				},
+				Params: &schemas.ResponsesParameters{
+					Instructions: &instructions,
+				},
+			},
+			validate: func(t *testing.T, result *replicate.ReplicatePredictionRequest) {
+				require.NotNil(t, result)
+				require.NotNil(t, result.Input)
+				// Instructions and system input are complementary: both survive, instructions first
+				require.NotNil(t, result.Input.SystemPrompt)
+				assert.Equal(t, instructions+"\nAnswer in French", *result.Input.SystemPrompt)
+			},
+		},
+		{
 			name: "Version_ID",
 			input: &schemas.BifrostResponsesRequest{
 				Model: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
