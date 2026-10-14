@@ -48,6 +48,26 @@ func TestGenerateMCPClientHash_NeedsSessionStickiness_NilVsFalseVsTrue(t *testin
 	assert.NotEqual(t, trueHash, falseHash, "true and false must hash differently from each other")
 }
 
+// TestGenerateMCPClientHash_EndpointSlug: an omitted slug leaves the hash exactly as before the field was
+// hashed (no mass re-sync of stored clients), a declared one drifts it, and spellings that normalise
+// to the same slug hash the same.
+func TestGenerateMCPClientHash_EndpointSlug(t *testing.T) {
+	base := func(slug string) tables.TableMCPClient {
+		return tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", EndpointSlug: slug}
+	}
+	hash := func(slug string) string {
+		h, err := GenerateMCPClientHash(base(slug))
+		require.NoError(t, err)
+		return h
+	}
+
+	assert.Equal(t, "4e079178fdf0b46b348e3f1b415589e6bd519a73a280faf9200ad204ad389edf", hash(""),
+		"an omitted slug must not move existing stored hashes")
+	assert.NotEqual(t, hash(""), hash("custom"), "declaring a slug must drift the hash")
+	assert.NotEqual(t, hash("custom"), hash("other"), "changing a declared slug must drift the hash")
+	assert.Equal(t, hash("my-slug"), hash("My Slug"), "spellings of the same slug must hash the same")
+}
+
 // TestGenerateKeyHash_OAuthKeyConfigIsOrderIndependent pins that an unchanged OAuth key hashes
 // the same on every call. extra_params is a map; an encoder that walks it in iteration order
 // makes the hash differ between restarts, and reconcileProviderKeys then treats the stored key

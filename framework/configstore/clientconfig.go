@@ -2073,6 +2073,12 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	}
 	hash.Write([]byte("auth_type:" + authType))
 
+	// Hash a declared endpoint_slug (normalised) so editing it drifts the hash. Empty contributes
+	// nothing, so entries that omit it keep matching hashes stored before the field was hashed.
+	if m.EndpointSlug != "" {
+		hash.Write([]byte("endpoint_slug:" + Slugify(m.EndpointSlug)))
+	}
+
 	// Hash NeedsSessionStickiness so toggling it in config.json drifts the
 	// hash and triggers reconciliation — without this, editing only this
 	// field would leave the row's migration-backfilled (or nil-defaulted)
