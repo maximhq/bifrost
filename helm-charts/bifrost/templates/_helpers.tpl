@@ -901,7 +901,7 @@ false
 {{- end }}
 {{- /* Load Balancer Config */ -}}
 {{- if and .Values.bifrost.loadBalancer .Values.bifrost.loadBalancer.enabled }}
-{{- $lb := dict "enabled" true }}
+{{- $lb := dict }}
 {{- if hasKey .Values.bifrost.loadBalancer "directionSelectionEnabled" }}
 {{- $_ := set $lb "direction_selection_enabled" .Values.bifrost.loadBalancer.directionSelectionEnabled }}
 {{- end }}
@@ -917,11 +917,17 @@ false
 {{- if hasKey .Values.bifrost.loadBalancer "pruneFailedFallbacks" }}
 {{- $_ := set $lb "prune_failed_fallbacks" .Values.bifrost.loadBalancer.pruneFailedFallbacks }}
 {{- end }}
-{{- if .Values.bifrost.loadBalancer.trackerConfig }}
-{{- $_ := set $lb "tracker_config" .Values.bifrost.loadBalancer.trackerConfig }}
+{{- if hasKey .Values.bifrost.loadBalancer "rerouteTarget" }}
+{{- $_ := set $lb "reroute_target" .Values.bifrost.loadBalancer.rerouteTarget }}
 {{- end }}
-{{- if .Values.bifrost.loadBalancer.bootstrap }}
-{{- $_ := set $lb "bootstrap" .Values.bifrost.loadBalancer.bootstrap }}
+{{- if hasKey .Values.bifrost.loadBalancer "historyEnabled" }}
+{{- $_ := set $lb "history_enabled" .Values.bifrost.loadBalancer.historyEnabled }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "historyRetentionDays" }}
+{{- $_ := set $lb "history_retention_days" .Values.bifrost.loadBalancer.historyRetentionDays }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "snapshotPersistIntervalSeconds" }}
+{{- $_ := set $lb "snapshot_persist_interval_seconds" .Values.bifrost.loadBalancer.snapshotPersistIntervalSeconds }}
 {{- end }}
 {{- $_ := set $config "load_balancer_config" $lb }}
 {{- end }}

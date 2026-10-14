@@ -1126,18 +1126,27 @@ image:
 bifrost:
   loadBalancer:
     enabled: true
-    trackerConfig:
-      window_size: 100
-    bootstrap:
-      route_metrics: {}
-      direction_metrics: {}
-      routes: {}
+    directionSelectionEnabled: true
+    routeSelectionEnabled: false
+    appendFallbacksToPinned: true
+    rerouteFailedDirections: true
+    pruneFailedFallbacks: true
+    rerouteTarget: fallbacks
+    historyEnabled: false
+    historyRetentionDays: 14
+    snapshotPersistIntervalSeconds: 600
 VALS
 
 render_config "$TMPDIR/values-lb.yaml"
-assert_field_value 'load_balancer_config.enabled' '.load_balancer_config.enabled' 'true'
-assert_field 'load_balancer_config.tracker_config' '.load_balancer_config.tracker_config'
-assert_field 'load_balancer_config.bootstrap' '.load_balancer_config.bootstrap'
+assert_field_value 'load_balancer_config.direction_selection_enabled' '.load_balancer_config.direction_selection_enabled' 'true'
+assert_field_value 'load_balancer_config.route_selection_enabled' '.load_balancer_config.route_selection_enabled' 'false'
+assert_field_value 'load_balancer_config.append_fallbacks_to_pinned' '.load_balancer_config.append_fallbacks_to_pinned' 'true'
+assert_field_value 'load_balancer_config.reroute_failed_directions' '.load_balancer_config.reroute_failed_directions' 'true'
+assert_field_value 'load_balancer_config.prune_failed_fallbacks' '.load_balancer_config.prune_failed_fallbacks' 'true'
+assert_field_value 'load_balancer_config.reroute_target' '.load_balancer_config.reroute_target' '"fallbacks"'
+assert_field_value 'load_balancer_config.history_enabled' '.load_balancer_config.history_enabled' 'false'
+assert_field_value 'load_balancer_config.history_retention_days' '.load_balancer_config.history_retention_days' '14'
+assert_field_value 'load_balancer_config.snapshot_persist_interval_seconds' '.load_balancer_config.snapshot_persist_interval_seconds' '600'
 
 # Guardrails
 cat > "$TMPDIR/values-guardrails.yaml" << 'VALS'

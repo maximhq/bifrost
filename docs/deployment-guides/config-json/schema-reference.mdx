@@ -28,6 +28,8 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `guardrails_config` | object | Content moderation providers and CEL-based rules *(enterprise only)* | [Guardrails](/deployment-guides/config-json/guardrails) |
 | `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Access Profiles](/enterprise/access-profiles) |
 | `cluster_config` | object | Cluster mode settings: gossip, peers, and auto-discovery backends *(enterprise only)* | [Cluster](/deployment-guides/config-json/cluster) |
+| `load_balancer_config` | object | Adaptive routing settings: provider and key selection, redirects, fallback pruning, routing history *(enterprise only)* | [Adaptive Routing](/enterprise/adaptive-routing/overview#settings) |
+| `circuit_breaker_config` | object | Circuit breaker policies that move traffic from a primary provider and model to a fallback *(enterprise only)* | [Circuit Breaker](/enterprise/circuit-breaker) |
 | `config_store` | object | Configuration database backend - SQLite, PostgreSQL, or disabled (file-only mode) | [Storage](/deployment-guides/config-json/storage#config_store) |
 | `logs_store` | object | Request/response log database - SQLite, PostgreSQL, ClickHouse + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
 | `vector_store` | object | Vector database for semantic cache - Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
@@ -350,6 +352,22 @@ Enterprise-only clustering settings for multi-node deployments.
 | `discovery` | Auto-discovery configuration (`kubernetes`, `dns`, `udp`, `consul`, `etcd`, `mdns`) |
 
 Full documentation: [Cluster](/deployment-guides/config-json/cluster).
+
+---
+
+## `load_balancer_config`
+
+Enterprise-only. Supports `direction_selection_enabled`, `route_selection_enabled`, `append_fallbacks_to_pinned`, `reroute_failed_directions`, `reroute_target`, `prune_failed_fallbacks`, `history_enabled`, `history_retention_days`, and `snapshot_persist_interval_seconds`. Only the keys you list are applied; settings saved from the dashboard or API take precedence.
+
+Full documentation: [Adaptive Routing settings](/enterprise/adaptive-routing/overview#settings).
+
+---
+
+## `circuit_breaker_config`
+
+Enterprise-only. One sub-key: `policies` (array). A policy is inactive unless `enabled` is `true`.
+
+Full documentation: [Circuit Breaker](/enterprise/circuit-breaker).
 
 ---
 
