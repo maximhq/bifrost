@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="340" viewBox="0 0 1120 340" role="img" aria-labelledby="title desc">
+<title id="title">Keep task updates on the gateway path</title><desc id="desc">The agent calls Bifrost. Bifrost delivers to the original client callback.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C3B43"/></marker></defs>
+<rect width="1120" height="340" rx="20" fill="#F5FAF8"/>
+<g font-family="Inter, system-ui, -apple-system, sans-serif">
+<text x="36" y="45" font-size="23" font-weight="700" fill="#0C3B43">Keep task updates on the gateway path</text>
+<text x="36" y="73" font-size="15" fill="#53696C">The agent calls Bifrost. Bifrost delivers to the original client callback.</text>
+<rect x="40" y="145" width="240" height="120" rx="12" fill="#FFFFFF" stroke="#C4D8D3"/>
+<text x="60" y="179" font-size="19" font-weight="650" fill="#0C3B43">Your A2A agent</text>
+<text x="60" y="207" font-size="14" fill="#0C3B43" opacity="0.85">Stores a Bifrost callback</text>
+<text x="60" y="231" font-size="14" fill="#0C3B43" opacity="0.85">Sends task updates</text>
+<rect x="420" y="145" width="280" height="120" rx="12" fill="#0C3B43" stroke="#0C3B43"/>
+<text x="440" y="179" font-size="19" font-weight="650" fill="#FFFFFF">Bifrost</text>
+<text x="440" y="207" font-size="14" fill="#FFFFFF" opacity="0.85">Receives the notification</text>
+<text x="440" y="231" font-size="14" fill="#FFFFFF" opacity="0.85">Delivers and records attempts</text>
+<rect x="840" y="145" width="240" height="120" rx="12" fill="#FFFFFF" stroke="#C4D8D3"/>
+<text x="860" y="179" font-size="19" font-weight="650" fill="#0C3B43">Your callback</text>
+<text x="860" y="207" font-size="14" fill="#0C3B43" opacity="0.85">Receives the update</text>
+<text x="860" y="231" font-size="14" fill="#0C3B43" opacity="0.85">Returns a successful status</text>
+<path d="M 280 205 H 415" fill="none" stroke="#0C3B43" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="350" y="182" font-size="13" text-anchor="middle" fill="#53696C">push notification</text>
+<path d="M 700 205 H 835" fill="none" stroke="#0C3B43" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="770" y="182" font-size="13" text-anchor="middle" fill="#53696C">push delivery</text>
+</g></svg>
