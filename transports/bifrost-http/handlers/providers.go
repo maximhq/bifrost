@@ -1171,6 +1171,8 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 		fallback = schemas.IsPerplexityDeciderModel(model)
 	case provider == schemas.Ollama:
 		fallback = schemas.IsOllamaDecisionModel(model)
+	case provider == schemas.Databricks:
+		fallback = schemas.IsDatabricksDecisionModel(model)
 	}
 	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback)
 }

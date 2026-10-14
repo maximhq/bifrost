@@ -2456,6 +2456,13 @@ func IsMicrosoftDecisionModel(model string) bool {
 	return strings.HasPrefix(strings.ToLower(model), "microsoft-decision")
 }
 
+// IsDatabricksDecisionModel checks if the model is Databricks' ai_decide AI Function,
+// served on the workspace's AI Functions endpoint rather than a serving endpoint. It is a
+// single function, so the match is on the exact name.
+func IsDatabricksDecisionModel(model string) bool {
+	return strings.EqualFold(model, "ai_decide")
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {

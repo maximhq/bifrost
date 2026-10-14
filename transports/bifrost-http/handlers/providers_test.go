@@ -1477,6 +1477,38 @@ func TestListModels_DecisionsAzureListsMicrosoftDecisionModels(t *testing.T) {
 	}
 }
 
+// TestListModels_DecisionsDatabricksListsAIDecide pins that a decisions listing on
+// Databricks offers ai_decide, the one model its Decision serves natively, and not the
+// workspace's serving endpoints.
+func TestListModels_DecisionsDatabricksListsAIDecide(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	listed := []string{"ai_decide", "databricks-claude-sonnet-4", "databricks-gpt-oss-120b"}
+	h := providerHandlerForTest(schemas.Databricks, []schemas.Key{{ID: "key-a"}}, listed, listed)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=databricks&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	if want := []string{"ai_decide"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
 // TestListModels_DecisionsGPT6LunaOnlyOnOpenAIBase pins that the gpt-6-luna name rule
 // lists the family only on OpenAI or a custom provider on its base; any other provider
 // hosting it lists it only with a supports_decisions row.
