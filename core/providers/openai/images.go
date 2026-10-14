@@ -1,10 +1,12 @@
 package openai
 
 import (
+	"bytes"
 	"fmt"
 	"mime/multipart"
 	"net/http"
 	"strconv"
+	"strings"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -102,7 +104,7 @@ func (request *OpenAIImageVariationRequest) ToBifrostImageVariationRequest(ctx *
 }
 
 func ToOpenAIImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *OpenAIImageEditRequest {
-	if bifrostReq == nil || bifrostReq.Input == nil || bifrostReq.Input.Images == nil || bifrostReq.Input.Prompt == "" {
+	if bifrostReq == nil || bifrostReq.Input == nil || bifrostReq.Input.Prompt == "" {
 		return nil
 	}
 
@@ -120,6 +122,88 @@ func ToOpenAIImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Open
 	}
 
 	return req
+}
+
+// encodeOpenAIImageEditRequest selects the wire format without fetching image URLs.
+// OpenAI URL inputs use JSON references; uploaded bytes remain multipart.
+// Model support is validated by the upstream API.
+func encodeOpenAIImageEditRequest(
+	ctx *schemas.BifrostContext,
+	request *OpenAIImageEditRequest,
+	providerName schemas.ModelProvider,
+) ([]byte, string, *schemas.BifrostError) {
+	if request == nil || request.Input == nil || len(request.Input.Images) == 0 {
+		return nil, "", providerUtils.NewBifrostBadRequestError("at least one image is required for image edits")
+	}
+
+	hasURL, hasBytes := false, false
+	for i, image := range request.Input.Images {
+		switch {
+		case image.URL != "" && len(image.Image) > 0:
+			return nil, "", providerUtils.NewBifrostBadRequestError(fmt.Sprintf("image %d contains both a URL and image bytes", i))
+		case strings.TrimSpace(image.URL) != "":
+			hasURL = true
+		case len(image.Image) > 0:
+			hasBytes = true
+		default:
+			return nil, "", providerUtils.NewBifrostBadRequestError(fmt.Sprintf("image %d is empty; provide a URL or image bytes", i))
+		}
+	}
+	if hasURL && hasBytes {
+		return nil, "", providerUtils.NewBifrostBadRequestError("image edits cannot mix URL references and image bytes; upload all images or provide only URLs")
+	}
+	if hasURL {
+		if providerName != schemas.OpenAI {
+			return nil, "", providerUtils.NewBifrostBadRequestError(fmt.Sprintf(
+				"json image URL edits are not enabled for provider %q in this adapter; upload image bytes using multipart instead",
+				providerName,
+			))
+		}
+		if len(request.Mask) > 0 {
+			return nil, "", providerUtils.NewBifrostBadRequestError("image URL edits with a byte mask are not supported; upload all images and the mask using multipart instead")
+		}
+		if request.ResponseFormat != nil && *request.ResponseFormat != "b64_json" {
+			return nil, "", providerUtils.NewBifrostBadRequestError("this adapter only accepts an omitted response_format or b64_json for JSON image edits")
+		}
+		jsonRequest := toOpenAIImageEditJSONRequest(request)
+		body, err := providerUtils.MarshalSorted(jsonRequest)
+		if err == nil && ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+			body, err = providerUtils.MergeExtraParamsIntoJSON(body, request.ExtraParams)
+		}
+		if err != nil {
+			return nil, "", providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
+		}
+		return body, "application/json", nil
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := parseImageEditFormDataBodyFromRequest(writer, request, providerName); err != nil {
+		return nil, "", err
+	}
+	return body.Bytes(), writer.FormDataContentType(), nil
+}
+
+func toOpenAIImageEditJSONRequest(request *OpenAIImageEditRequest) *OpenAIImageEditJSONRequest {
+	images := make([]OpenAIImageEditReference, len(request.Input.Images))
+	for i, image := range request.Input.Images {
+		images[i] = OpenAIImageEditReference{ImageURL: image.URL}
+	}
+	return &OpenAIImageEditJSONRequest{
+		Model:             request.Model,
+		Images:            images,
+		Prompt:            request.Input.Prompt,
+		Background:        request.Background,
+		InputFidelity:     request.InputFidelity,
+		N:                 request.N,
+		OutputCompression: request.OutputCompression,
+		OutputFormat:      request.OutputFormat,
+		PartialImages:     request.PartialImages,
+		Quality:           request.Quality,
+		Size:              request.Size,
+		User:              request.User,
+		Stream:            request.Stream,
+	}
 }
 
 func parseImageEditFormDataBodyFromRequest(writer *multipart.Writer, openaiReq *OpenAIImageEditRequest, providerName schemas.ModelProvider) *schemas.BifrostError {
