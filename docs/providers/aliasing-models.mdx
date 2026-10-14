@@ -158,7 +158,7 @@ Every response includes a `routing_info` block in `extra_fields` describing the 
 | `routing_info.primary_provider` / `routing_info.primary_model` | Populated on fallback attempts with the primary attempt's provider/model |
 | `routing_info.requested_provider` / `routing_info.requested_model` | What the caller sent, before routing rules, load balancing or session routing rewrote it. `requested_provider` is omitted when the caller sent a bare model. |
 
-Each field is also sent as a response header, so SDK routes whose body has no `extra_fields` can read it: `x-bifrost-routing-info-provider`, `x-bifrost-routing-info-model`, `x-bifrost-routing-info-requested-model`, and so on.
+Each field is also sent as a response header, so SDK routes whose body has no `extra_fields` can read it: `x-bifrost-routing-info-provider`, `x-bifrost-routing-info-model`, `x-bifrost-routing-info-requested-model`, and so on; see [Response Headers](/providers/response-headers).
 
 When no alias matches, `resolved_key_alias` is omitted and `model` carries the wire identifier directly.
 

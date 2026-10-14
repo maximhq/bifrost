@@ -192,6 +192,7 @@
               "providers/self-hosted-decision-models",
               "providers/custom-pricing",
               "providers/request-options",
+              "providers/response-headers",
               "providers/test-harness-coverage"
             ]
           },
