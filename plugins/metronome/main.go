@@ -221,7 +221,7 @@ func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostR
 	// attempt keeps its own ID.
 	if extra.RequestType == schemas.DecisionRequest && schemas.ResolveBaseProvider(ctx, extra.Provider) == schemas.Typesafe {
 		if key := schemas.DecisionIdempotencyKey(ctx); key != "" {
-			transactionID = "bifrost-idem-" + schemas.DecisionIdempotencyScope(customer, provider, key)
+			transactionID = "bifrost-idem-" + schemas.DecisionIdempotencyScope(customer, provider, model, key)
 		}
 	}
 	event := Event[TokenUsage]{TransactionID: transactionID, CustomerID: customer, EventType: "token-billing", Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Properties: usage}

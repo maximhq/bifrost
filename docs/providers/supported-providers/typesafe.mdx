@@ -212,3 +212,20 @@ Success and error responses from the TypeSafe provider are relayed byte-for-byte
 | `jev-preview` | Preview alias, currently resolves to `jev-1.13.0` |
 
 Responses always report the resolved versioned model. TypeSafe bills input tokens only; the jev pricing, 64k context window, and rate limits are documented at [docs.typesafe.ai/models](https://docs.typesafe.ai/models).
+
+## Idempotency keys and exact request bodies
+
+The native `/typesafe/v1/systemone` route forwards the client's request bytes
+unchanged, except that the top-level `model` value is replaced with the model
+Bifrost routed to (governance routing, aliases and a `typesafe/` prefix are
+resolved first). A body with duplicate or case-variant top-level `model` keys
+is rejected with a 400.
+
+The client `Idempotency-Key` is never forwarded as sent. The upstream key is the
+SHA-256 of the virtual key ID, the wire model, and the client key, encoded as a
+JSON array, so tenants sharing an upstream credential cannot see each other's
+saved results, and a fallback to a different model gets its own key instead of
+reusing the primary's with a different body. Retries of the same attempt still
+replay. Requests without a virtual key ID share one namespace. Bifrost reads the
+key from `x-bf-eh-idempotency-key`, which always works; a plain
+`Idempotency-Key` header is read only when it is in the header allowlist.

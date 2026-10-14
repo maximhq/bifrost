@@ -13,7 +13,7 @@ rather than generated output; a decision emulated through an LLM keeps the
 output tokens that LLM generated.
 
 A TypeSafe decision sent with an `Idempotency-Key` uses a deterministic
-transaction ID derived from the virtual key, provider, and key. A replay whose
+transaction ID derived from the virtual key, provider, model, and key. A replay whose
 first event was delivered is deduplicated by Metronome; a replay whose first
 response was lost is billed once. Without a key, every attempt has its own ID.
 Bifrost's own spend tracking (governance budgets and logs) does not deduplicate

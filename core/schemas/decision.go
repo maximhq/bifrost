@@ -50,11 +50,14 @@ func DecisionIdempotencyKey(ctx context.Context) string {
 	return ""
 }
 
-// DecisionIdempotencyScope returns the hex SHA-256 of the parts joined with
-// ":". It is deterministic, so retries still match, while two tenants that
-// pick the same client key never collide once their virtual key ID is a part.
+// DecisionIdempotencyScope returns the hex SHA-256 of the parts encoded as a
+// JSON array of strings, so the encoding is injective: no two distinct part
+// lists hash the same input. It is deterministic, so retries still match, while
+// tenants that pick the same client key never collide once their virtual key ID
+// is a part. Callers without a virtual key ID pass "" and share one namespace.
 func DecisionIdempotencyScope(parts ...string) string {
-	sum := sha256.Sum256([]byte(strings.Join(parts, ":")))
+	encoded, _ := json.Marshal(parts)
+	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
 }
 

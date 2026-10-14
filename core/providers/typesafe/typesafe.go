@@ -247,6 +247,16 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 		return nil, bifrostErr
 	}
 
+	// Governance routing and aliases change only the parsed model, so the raw
+	// bytes carry the routed model before they are sent.
+	if len(request.RawRequestBody) > 0 && len(jsonData) > 0 {
+		routed, err := withRoutedModel(jsonData, request.Model)
+		if err != nil {
+			return nil, providerUtils.NewBifrostBadRequestError(err.Error())
+		}
+		jsonData = routed
+	}
+
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
@@ -262,7 +272,7 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
-	scopeIdempotencyKey(ctx, req)
+	scopeIdempotencyKey(ctx, req, request.Model)
 	req.SetBody(jsonData)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
