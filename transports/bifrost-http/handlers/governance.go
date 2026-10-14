@@ -367,6 +367,16 @@ func NewGovernanceHandler(manager GovernanceManager, configStore configstore.Con
 	}, nil
 }
 
+// errVirtualKeyBudgetRemoved refuses the singular budget field a virtual key no longer takes. The
+// decoder ignores unknown fields, so without this check the request returned 200 with no budget saved.
+var errVirtualKeyBudgetRemoved = errors.New("the 'budget' field is no longer supported on virtual keys; use 'budgets' (an array)")
+
+// virtualKeyBudgetFieldSent reports whether a request named the removed budget field. An explicit
+// null names nothing, like omitting the field.
+func virtualKeyBudgetFieldSent(raw json.RawMessage) bool {
+	return len(raw) > 0 && string(raw) != "null"
+}
+
 // CreateVirtualKeyRequest represents the request body for creating a virtual key
 type CreateVirtualKeyRequest struct {
 	Name            string `json:"name" validate:"required"`
@@ -390,6 +400,7 @@ type CreateVirtualKeyRequest struct {
 	// BusinessUnitID is the third owner a key can have. Business units are an enterprise table this
 	// handler does not model, so the id is stored as given; whoever owns business units validates it.
 	BusinessUnitID    *string                 `json:"business_unit_id,omitempty"`
+	Budget            json.RawMessage         `json:"budget,omitempty"`  // Removed: only read to refuse it, see errVirtualKeyBudgetRemoved
 	Budgets           []CreateBudgetRequest   `json:"budgets,omitempty"` // Multi-budget: each must have a unique reset_duration
 	RateLimit         *CreateRateLimitRequest `json:"rate_limit,omitempty"`
 	IsActive          *bool                   `json:"is_active,omitempty"`
@@ -445,6 +456,7 @@ type UpdateVirtualKeyRequest struct {
 	TeamID            schemas.OptionalJSON[string] `json:"team_id,omitempty"`
 	CustomerID        schemas.OptionalJSON[string] `json:"customer_id,omitempty"`
 	BusinessUnitID    schemas.OptionalJSON[string] `json:"business_unit_id,omitempty"`
+	Budget            json.RawMessage              `json:"budget,omitempty"`  // Removed: only read to refuse it, see errVirtualKeyBudgetRemoved
 	Budgets           []CreateBudgetRequest        `json:"budgets,omitempty"` // Multi-budget: replaces all VK-level budgets
 	RateLimit         *UpdateRateLimitRequest      `json:"rate_limit,omitempty"`
 	IsActive          *bool                        `json:"is_active,omitempty"`
@@ -2071,6 +2083,10 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "Invalid JSON")
 		return
 	}
+	if virtualKeyBudgetFieldSent(req.Budget) {
+		SendError(ctx, 400, errVirtualKeyBudgetRemoved.Error())
+		return
+	}
 	// Validate required fields
 	if req.Name == "" {
 		SendError(ctx, 400, "Virtual key name is required")
@@ -2480,6 +2496,10 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 	var req UpdateVirtualKeyRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
 		SendError(ctx, 400, "Invalid JSON")
+		return
+	}
+	if virtualKeyBudgetFieldSent(req.Budget) {
+		SendError(ctx, 400, errVirtualKeyBudgetRemoved.Error())
 		return
 	}
 	// A key belongs to at most one of a team, a customer or a business unit. Checked before anything
