@@ -345,7 +345,8 @@ Key:
       description: List of models this key cannot access (blacklist), which wins over `models`. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name; an empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     weight:
       type: number
-      description: Weight for load balancing
+      minimum: 0
+      description: Weight for load balancing. A negative weight is rejected with 400. A key with weight 0 is picked only when no other eligible key has a positive weight; when every weight is 0, keys are picked uniformly.
     aliases:
       type: object
       propertyNames:
