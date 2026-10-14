@@ -729,6 +729,12 @@ func HandleOpenAITextCompletionStreaming(
 		}
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		// Set by the first SSE chunk that fails to decode. A dropped chunk leaves
+		// the delivered stream missing content, so every terminal decision below
+		// has to fail instead of synthesizing a clean completion - a terminal
+		// marker arriving on either side of the hole would otherwise make the
+		// stream look healthy. The decoder error is kept as the surfaced cause.
+		var droppedChunkErr error
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
@@ -828,6 +834,9 @@ func HandleOpenAITextCompletionStreaming(
 				umErr := sonic.UnmarshalString(jsonData, &response)
 				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if umErr != nil {
+					if droppedChunkErr == nil {
+						droppedChunkErr = umErr
+					}
 					logger.Warn("Failed to parse stream response: %v", umErr)
 					continue
 				}
@@ -960,6 +969,13 @@ func HandleOpenAITextCompletionStreaming(
 		// before synthesizing the final chunk.
 		if !providerUtils.SSEStreamEndedOnMarker(sseReader) && finishReason == nil {
 			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+			return
+		}
+		// A terminal marker only proves the upstream finished talking, not that
+		// everything it said was delivered. Synthesizing the final chunk after a
+		// dropped frame would report a clean completion for a short stream.
+		if droppedChunkErr != nil {
+			providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, droppedChunkErr)
 			return
 		}
 
@@ -1462,6 +1478,12 @@ func HandleOpenAIChatCompletionStreaming(
 		}
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		// Set by the first SSE chunk that fails to decode. A dropped chunk leaves
+		// the delivered stream missing content, so every terminal decision below
+		// has to fail instead of synthesizing a clean completion - a terminal
+		// marker arriving on either side of the hole would otherwise make the
+		// stream look healthy. The decoder error is kept as the surfaced cause.
+		var droppedChunkErr error
 
 		chunkIndex := -1
 		usage := &schemas.BifrostLLMUsage{}
@@ -1613,6 +1635,9 @@ func HandleOpenAIChatCompletionStreaming(
 				umErr := sonic.UnmarshalString(jsonData, &response)
 				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if umErr != nil {
+					if droppedChunkErr == nil {
+						droppedChunkErr = umErr
+					}
 					logger.Warn("Failed to parse stream response: %v", umErr)
 					continue
 				}
@@ -1903,6 +1928,14 @@ func HandleOpenAIChatCompletionStreaming(
 		}
 		if !terminalSignalSeen {
 			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+			return
+		}
+		// A terminal signal only proves the upstream finished talking, not that
+		// everything it said was delivered. A dropped frame invalidates the check
+		// above rather than failing it, because a [DONE] or a finish_reason on
+		// either side of the hole still satisfies it.
+		if droppedChunkErr != nil {
+			providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, droppedChunkErr)
 			return
 		}
 
@@ -2385,6 +2418,12 @@ func HandleOpenAIResponsesStreaming(
 		}
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		// Set by the first SSE chunk that fails to decode. A dropped chunk leaves
+		// the delivered stream missing content, so every terminal decision below
+		// has to fail instead of synthesizing a clean completion - a terminal
+		// marker arriving on either side of the hole would otherwise make the
+		// stream look healthy. The decoder error is kept as the surfaced cause.
+		var droppedChunkErr error
 
 		lastChunkTime := startTime
 
@@ -2444,6 +2483,9 @@ func HandleOpenAIResponsesStreaming(
 				}
 				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if umErr != nil {
+					if droppedChunkErr == nil {
+						droppedChunkErr = umErr
+					}
 					logger.Warn("Failed to parse stream response: %v", umErr)
 					continue
 				}
@@ -2491,6 +2533,12 @@ func HandleOpenAIResponsesStreaming(
 
 			response.ExtraFields.ChunkIndex = response.SequenceNumber
 			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+				// A frame was dropped earlier in this stream, so the terminal event would
+				// hand the caller a completed response that is provably missing content.
+				if droppedChunkErr != nil {
+					providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, droppedChunkErr)
+					return
+				}
 				// Set raw request if enabled
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
@@ -2514,6 +2562,8 @@ func HandleOpenAIResponsesStreaming(
 		// indistinguishable to the client from a stream that just stopped emitting.
 		if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
 			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+		} else if droppedChunkErr != nil {
+			providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, droppedChunkErr)
 		}
 	}()
 
@@ -3040,6 +3090,12 @@ func HandleOpenAISpeechStreamRequest(
 		}
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		// Set by the first SSE chunk that fails to decode. A dropped chunk leaves
+		// the delivered stream missing content, so every terminal decision below
+		// has to fail instead of synthesizing a clean completion - a terminal
+		// marker arriving on either side of the hole would otherwise make the
+		// stream look healthy. The decoder error is kept as the surfaced cause.
+		var droppedChunkErr error
 		chunkIndex := -1
 
 		lastChunkTime := startTime
@@ -3084,6 +3140,9 @@ func HandleOpenAISpeechStreamRequest(
 			umErr := sonic.UnmarshalString(jsonData, &response)
 			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if umErr != nil {
+				if droppedChunkErr == nil {
+					droppedChunkErr = umErr
+				}
 				logger.Warn("Failed to parse stream response: %v", umErr)
 				continue
 			}
@@ -3113,6 +3172,12 @@ func HandleOpenAISpeechStreamRequest(
 			}
 
 			if response.Usage != nil {
+				// A frame was dropped earlier in this stream, so the terminal event would
+				// hand the caller a completed response that is provably missing content.
+				if droppedChunkErr != nil {
+					providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, droppedChunkErr)
+					return
+				}
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				if sendBackRawRequest {
 					providerUtils.ParseAndSetRawRequest(&response.ExtraFields, jsonBody)
@@ -3130,9 +3195,14 @@ func HandleOpenAISpeechStreamRequest(
 		// so falling out means the body ended early — a plain io.EOF that cannot be
 		// told from a healthy close. Without this the caller receives a silently
 		// truncated audio clip. Stay quiet when a read error was already reported
-		// (it sets the indicator) or when the provider at least sent [DONE].
-		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
-			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+		// (it sets the indicator) or when the provider sent [DONE] and every frame
+		// it sent decoded.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+				providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+			} else if droppedChunkErr != nil {
+				providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, droppedChunkErr)
+			}
 		}
 	}()
 
@@ -3620,6 +3690,12 @@ func HandleOpenAITranscriptionStreamRequest(
 		}
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		// Set by the first SSE chunk that fails to decode. A dropped chunk leaves
+		// the delivered stream missing content, so every terminal decision below
+		// has to fail instead of synthesizing a clean completion - a terminal
+		// marker arriving on either side of the hole would otherwise make the
+		// stream look healthy. The decoder error is kept as the surfaced cause.
+		var droppedChunkErr error
 		chunkIndex := -1
 
 		lastChunkTime := startTime
@@ -3681,9 +3757,11 @@ func HandleOpenAITranscriptionStreamRequest(
 				umErr := sonic.UnmarshalString(jsonData, response)
 				schemas.AddStreamParse(ctx, time.Since(parseStart))
 				if umErr != nil {
+					if droppedChunkErr == nil {
+						droppedChunkErr = umErr
+					}
 					logger.Warn("Failed to parse stream response: %v", umErr)
 					continue
-
 				}
 			}
 
@@ -3712,6 +3790,12 @@ func HandleOpenAITranscriptionStreamRequest(
 			}
 
 			if response.Usage != nil || response.Type == schemas.TranscriptionStreamResponseTypeDone {
+				// A frame was dropped earlier in this stream, so the terminal event would
+				// hand the caller a completed response that is provably missing content.
+				if droppedChunkErr != nil {
+					providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil, droppedChunkErr)
+					return
+				}
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 
@@ -3731,8 +3815,12 @@ func HandleOpenAITranscriptionStreamRequest(
 		// from a healthy close, leaving the caller with a silently truncated
 		// transcript. No raw request is attached: this endpoint sends multipart form
 		// data, not JSON.
-		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
-			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+				providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+			} else if droppedChunkErr != nil {
+				providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil, droppedChunkErr)
+			}
 		}
 	}()
 
@@ -4091,6 +4179,12 @@ func HandleOpenAIImageGenerationStreaming(
 		}
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		// Set by the first SSE chunk that fails to decode. A dropped chunk leaves
+		// the delivered stream missing content, so every terminal decision below
+		// has to fail instead of synthesizing a clean completion - a terminal
+		// marker arriving on either side of the hole would otherwise make the
+		// stream look healthy. The decoder error is kept as the surfaced cause.
+		var droppedChunkErr error
 
 		lastChunkTime := startTime
 		// Track chunk indices per image - similar to how speech/transcription track chunkIndex
@@ -4146,6 +4240,9 @@ func HandleOpenAIImageGenerationStreaming(
 			umErr := sonic.UnmarshalString(jsonData, &response)
 			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if umErr != nil {
+				if droppedChunkErr == nil {
+					droppedChunkErr = umErr
+				}
 				logger.Warn("Failed to parse stream response: %v", umErr)
 				continue
 			}
@@ -4283,6 +4380,12 @@ func HandleOpenAIImageGenerationStreaming(
 			}
 
 			if isCompleted {
+				// A frame was dropped earlier in this stream, so the terminal event would
+				// hand the caller a completed response that is provably missing content.
+				if droppedChunkErr != nil {
+					providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, droppedChunkErr)
+					return
+				}
 				if response.Usage != nil && maxImageIndex >= 0 {
 					if response.Usage.OutputTokensDetails == nil {
 						response.Usage.OutputTokensDetails = &schemas.ImageTokenDetails{}
@@ -4317,8 +4420,12 @@ func HandleOpenAIImageGenerationStreaming(
 		// body ended early — a plain io.EOF that cannot be told from a healthy
 		// close. Without this the caller keeps only the partial images and never
 		// learns the final one is missing.
-		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
-			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+				providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody)
+			} else if droppedChunkErr != nil {
+				providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, jsonBody, droppedChunkErr)
+			}
 		}
 	}()
 
@@ -5823,6 +5930,12 @@ func HandleOpenAIImageEditStreamRequest(
 		}
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		// Set by the first SSE chunk that fails to decode. A dropped chunk leaves
+		// the delivered stream missing content, so every terminal decision below
+		// has to fail instead of synthesizing a clean completion - a terminal
+		// marker arriving on either side of the hole would otherwise make the
+		// stream look healthy. The decoder error is kept as the surfaced cause.
+		var droppedChunkErr error
 
 		lastChunkTime := startTime
 		// Track chunk indices per image - similar to how speech/transcription track chunkIndex
@@ -5878,6 +5991,9 @@ func HandleOpenAIImageEditStreamRequest(
 			umErr := sonic.UnmarshalString(jsonData, &response)
 			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if umErr != nil {
+				if droppedChunkErr == nil {
+					droppedChunkErr = umErr
+				}
 				logger.Warn("Failed to parse stream response: %v", umErr)
 				continue
 			}
@@ -6015,6 +6131,12 @@ func HandleOpenAIImageEditStreamRequest(
 			}
 
 			if isCompleted {
+				// A frame was dropped earlier in this stream, so the terminal event would
+				// hand the caller a completed response that is provably missing content.
+				if droppedChunkErr != nil {
+					providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil, droppedChunkErr)
+					return
+				}
 				if response.Usage != nil && maxImageIndex >= 0 {
 					if response.Usage.OutputTokensDetails == nil {
 						response.Usage.OutputTokensDetails = &schemas.ImageTokenDetails{}
@@ -6046,8 +6168,12 @@ func HandleOpenAIImageEditStreamRequest(
 		// Without this the caller keeps only the partial images and never learns the
 		// final one is missing. No raw request is attached: this endpoint sends
 		// multipart form data, not JSON.
-		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
-			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+				providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil)
+			} else if droppedChunkErr != nil {
+				providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, logger, postHookSpanFinalizer, nil, droppedChunkErr)
+			}
 		}
 	}()
 

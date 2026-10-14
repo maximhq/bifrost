@@ -299,6 +299,12 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 		}
 
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		// Set by the first SSE chunk that fails to decode. A dropped chunk leaves
+		// the delivered stream missing content, so every terminal decision below
+		// has to fail instead of synthesizing a clean completion - a terminal
+		// marker arriving on either side of the hole would otherwise make the
+		// stream look healthy. The decoder error is kept as the surfaced cause.
+		var droppedChunkErr error
 		lastChunkTime := startTime
 
 		for {
@@ -334,6 +340,9 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 			}
 			schemas.AddStreamParse(ctx, time.Since(parseStart))
 			if err != nil {
+				if droppedChunkErr == nil {
+					droppedChunkErr = err
+				}
 				provider.logger.Warn("Failed to parse stream response: %v", err)
 				continue
 			}
@@ -359,6 +368,12 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 
 			response.ExtraFields.ChunkIndex = response.SequenceNumber
 			if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+				// A frame was dropped earlier in this stream, so the terminal event would
+				// hand the caller a completed response that is provably missing content.
+				if droppedChunkErr != nil {
+					providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, nil, droppedChunkErr)
+					return
+				}
 				response.ExtraFields.Latency = time.Since(startTime).Milliseconds()
 				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
 				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, &response, nil, nil, nil), responseChan, postHookSpanFinalizer)
@@ -376,6 +391,8 @@ func (provider *OpenAIProvider) ResponsesRetrieveStream(ctx *schemas.BifrostCont
 		// instead of closing the channel silently.
 		if !providerUtils.SSEStreamEndedOnMarker(sseReader) {
 			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, nil)
+		} else if droppedChunkErr != nil {
+			providerUtils.SendStreamUndecodableChunkError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, nil, droppedChunkErr)
 		}
 	}()
 

@@ -50,6 +50,11 @@ const (
 	ErrProviderRawResponseUnmarshal = "failed to unmarshal raw response from provider API"
 	ErrProviderResponseDecompress   = "failed to decompress provider's response"
 	ErrProviderStreamTruncated      = "provider closed the stream before sending a completion marker (upstream connection ended mid-stream)"
+	// Deliberately distinct from ErrProviderStreamTruncated: an undecodable chunk
+	// is dropped mid-stream while the stream itself keeps going, so a completion
+	// marker usually *was* received. Saying the connection ended mid-stream would
+	// point operators at the network instead of at the malformed frame.
+	ErrProviderStreamChunkUndecodable = "provider sent a stream chunk that could not be decoded; the chunk was dropped and the delivered stream is incomplete"
 )
 
 // NetworkConfig represents the network configuration for provider connections.
