@@ -266581,6 +266581,533 @@
           }
         }
       ]
+    },
+    {
+      "name": "234. Extra fields as response headers (extra-fields-in-headers) [SERIAL]",
+      "description": "Pins client.extra_fields_placement = \"headers\": inference responses drop the extra_fields object from the body (and from every SSE chunk) and carry its scalar fields as x-bifrost-* response headers instead. [SERIAL]: this changes client config every other row depends on (most rows read extra_fields from the body), so the harness runs the folder alone after the parallel sweep. It reads the stored client config, sends it back with extra_fields_placement = \"headers\", runs native /v1/chat/completions (unary and stream), /v1/responses, the /openai integration and an error, then restores the original placement, checks that body mode carries extra_fields again, and verifies the stored value. Red before the change: the setting does not exist, so extra_fields stays in the body. Run with FEATURE=\"extra-fields-in-headers\".",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai extra-fields-in-headers read current config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-fields-in-headers: read the stored client config', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  // A fresh install reads back log_retention_days 0, which PUT /api/config refuses (must be >= 1).",
+                  "  if (!cc.log_retention_days || cc.log_retention_days < 1) { cc.log_retention_days = 30; }",
+                  "  pm.collectionVariables.set('efhClientConfig', JSON.stringify(cc));",
+                  "  pm.collectionVariables.set('efhOriginal', cc.extra_fields_placement || 'body');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai extra-fields-in-headers switch placement to headers",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('efhClientConfig') || '{}');",
+                  "cc.extra_fields_placement = 'headers';",
+                  "pm.variables.set('efhBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-fields-in-headers: placement switched to headers', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{efhBody}}"
+            }
+          }
+        },
+        {
+          "name": "openai extra-fields-in-headers /v1/chat/completions unary - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat completion succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('the completion itself is intact', function () {",
+                  "  pm.expect(pm.response.json().choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('body carries no extra_fields', function () {",
+                  "  pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"');",
+                  "});",
+                  "pm.test('routed identity rides on x-bifrost-* headers', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('openai');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('chat_completion');",
+                  "});",
+                  "pm.test('latency moves to x-bifrost-latency-ms', function () {",
+                  "  var latency = pm.response.headers.get('x-bifrost-latency-ms');",
+                  "  pm.expect(latency, 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^[0-9]+$/);",
+                  "});",
+                  "pm.test('a browser origin can read the x-bifrost-* headers', function () {",
+                  "  var exposed = (pm.response.headers.get('access-control-expose-headers') || '').split(', ');",
+                  "  pm.expect(exposed, 'access-control-expose-headers: ' + exposed.join(', ')).to.include.members(['x-bifrost-provider', 'x-bifrost-request-type', 'x-bifrost-latency-ms']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "http://localhost:3000"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "openai extra-fields-in-headers /v1/chat/completions stream - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed chat completion succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('the stream delivered content chunks', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('data: ');",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('\"choices\"');",
+                  "});",
+                  "pm.test('no SSE chunk carries extra_fields', function () {",
+                  "  pm.expect(pm.response.text(), 'stream: ' + pm.response.text()).to.not.include('\"extra_fields\"');",
+                  "});",
+                  "pm.test('stream headers carry the routed identity', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('openai');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.include('gpt-4o-mini');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "openai extra-fields-in-headers /v1/responses unary - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('the response output is intact', function () {",
+                  "  pm.expect(pm.response.json().output, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('body carries no extra_fields', function () {",
+                  "  pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"');",
+                  "});",
+                  "pm.test('routed identity rides on x-bifrost-* headers', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('openai');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('responses');",
+                  "});",
+                  "pm.test('latency moves to x-bifrost-latency-ms', function () {",
+                  "  var latency = pm.response.headers.get('x-bifrost-latency-ms');",
+                  "  pm.expect(latency, 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^[0-9]+$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Say ok.\",\n  \"max_output_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "openai extra-fields-in-headers /openai/v1/chat/completions integration - gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('integration chat completion succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('the completion itself is intact', function () {",
+                  "  pm.expect(pm.response.json().choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('body carries no extra_fields', function () {",
+                  "  pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"');",
+                  "});",
+                  "pm.test('routed identity rides on x-bifrost-* headers', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('openai');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('chat_completion');",
+                  "});",
+                  "pm.test('latency moves to x-bifrost-latency-ms', function () {",
+                  "  var latency = pm.response.headers.get('x-bifrost-latency-ms');",
+                  "  pm.expect(latency, 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^[0-9]+$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai extra-fields-in-headers error drops extra_fields - openai/gpt-harness-missing-model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the provider rejects the unknown model with 404', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(404);",
+                  "  pm.expect(pm.response.json().error, pm.response.text()).to.be.an('object');",
+                  "});",
+                  "pm.test('body carries no extra_fields', function () {",
+                  "  pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"');",
+                  "});",
+                  "pm.test('the error still names the provider in a header', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('openai');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-harness-missing-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai extra-fields-in-headers restore original placement",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('efhClientConfig') || '{}');",
+                  "cc.extra_fields_placement = pm.collectionVariables.get('efhOriginal') || 'body';",
+                  "pm.variables.set('efhBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-fields-in-headers: original placement restored', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{efhBody}}"
+            }
+          }
+        },
+        {
+          "name": "openai extra-fields-in-headers body mode keeps extra_fields - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat completion succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('the restored placement decides where extra_fields goes', function () {",
+                  "  var restored = pm.collectionVariables.get('efhOriginal') || 'body';",
+                  "  var ef = pm.response.json().extra_fields;",
+                  "  if (restored === 'body') {",
+                  "    pm.expect(ef, pm.response.text()).to.be.an('object');",
+                  "    pm.expect((ef.routing_info || {}).provider, pm.response.text()).to.eql('openai');",
+                  "    pm.expect(pm.response.headers.get('x-bifrost-latency-ms'), 'body mode adds no new headers').to.be.oneOf([undefined, null]);",
+                  "  } else {",
+                  "    pm.expect(ef, pm.response.text()).to.be.oneOf([undefined, null]);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai extra-fields-in-headers original config restored",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-fields-in-headers: extra_fields_placement is back to what it was', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config || {};",
+                  "  pm.expect(cc.extra_fields_placement || 'body', pm.response.text()).to.eql(pm.collectionVariables.get('efhOriginal') || 'body');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
