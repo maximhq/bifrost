@@ -1,0 +1,1 @@
+- fix: OpenAI tool_search_call / tool_search_output items reach /anthropic clients — a client-executed search becomes a tool_use for the client's own search function, a hosted search becomes server_tool_use plus tool_search_tool_result
