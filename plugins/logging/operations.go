@@ -569,6 +569,59 @@ func isPassthroughErrorResponse(result *schemas.BifrostResponse) bool {
 
 // applyNonStreamingOutputToEntry applies non-streaming response data to a log entry.
 // shouldStoreRaw gates whether raw request/response bytes are written to the entry.
+// responseStopReason returns the stop reason a non-streaming response reports: the first choice's
+// finish reason for text and chat completions, the response-level stop reason for Responses.
+func responseStopReason(result *schemas.BifrostResponse) *string {
+	var stopReason *string
+	if result.TextCompletionResponse != nil && len(result.TextCompletionResponse.Choices) > 0 {
+		if choice := result.TextCompletionResponse.Choices[0]; choice.FinishReason != nil {
+			stopReason = choice.FinishReason
+		}
+	}
+	if result.ChatResponse != nil && len(result.ChatResponse.Choices) > 0 {
+		if choice := result.ChatResponse.Choices[0]; choice.FinishReason != nil {
+			stopReason = choice.FinishReason
+		}
+	}
+	if result.ResponsesResponse != nil && result.ResponsesResponse.StopReason != nil {
+		stopReason = result.ResponsesResponse.StopReason
+	}
+	return stopReason
+}
+
+// applyTextOutputToEntry sets the conversation output of a text, chat, Responses or compaction
+// response: text and chat completions become OutputMessage (text wrapped as an assistant message),
+// Responses and compaction output become ResponsesOutput. Callers gate it on content logging.
+func applyTextOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse) {
+	if result.TextCompletionResponse != nil {
+		if len(result.TextCompletionResponse.Choices) > 0 {
+			choice := result.TextCompletionResponse.Choices[0]
+			if choice.TextCompletionResponseChoice != nil {
+				entry.OutputMessageParsed = &schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: choice.TextCompletionResponseChoice.Text,
+					},
+				}
+			}
+		}
+	}
+	if result.ChatResponse != nil {
+		if len(result.ChatResponse.Choices) > 0 {
+			choice := result.ChatResponse.Choices[0]
+			if choice.ChatNonStreamResponseChoice != nil {
+				entry.OutputMessageParsed = choice.ChatNonStreamResponseChoice.Message
+			}
+		}
+	}
+	if result.ResponsesResponse != nil {
+		entry.ResponsesOutputParsed = result.ResponsesResponse.Output
+	}
+	if result.CompactionResponse != nil {
+		entry.ResponsesOutputParsed = result.CompactionResponse.Output
+	}
+}
+
 func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
 	defer applyRefusalLogOutcome(entry)
 	if result == nil {
@@ -591,18 +644,8 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 	extraFields := result.GetExtraFields()
 
 	// Extract stop_reason - always persist regardless of content logging settings
-	if result.TextCompletionResponse != nil && len(result.TextCompletionResponse.Choices) > 0 {
-		if choice := result.TextCompletionResponse.Choices[0]; choice.FinishReason != nil {
-			entry.StopReason = choice.FinishReason
-		}
-	}
-	if result.ChatResponse != nil && len(result.ChatResponse.Choices) > 0 {
-		if choice := result.ChatResponse.Choices[0]; choice.FinishReason != nil {
-			entry.StopReason = choice.FinishReason
-		}
-	}
-	if result.ResponsesResponse != nil && result.ResponsesResponse.StopReason != nil {
-		entry.StopReason = result.ResponsesResponse.StopReason
+	if stopReason := responseStopReason(result); stopReason != nil {
+		entry.StopReason = stopReason
 	}
 
 	if contentLoggingEnabled {
@@ -623,33 +666,7 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 		if result.ListModelsResponse != nil && result.ListModelsResponse.Data != nil {
 			entry.ListModelsOutputParsed = result.ListModelsResponse.Data
 		}
-		if result.TextCompletionResponse != nil {
-			if len(result.TextCompletionResponse.Choices) > 0 {
-				choice := result.TextCompletionResponse.Choices[0]
-				if choice.TextCompletionResponseChoice != nil {
-					entry.OutputMessageParsed = &schemas.ChatMessage{
-						Role: schemas.ChatMessageRoleAssistant,
-						Content: &schemas.ChatMessageContent{
-							ContentStr: choice.TextCompletionResponseChoice.Text,
-						},
-					}
-				}
-			}
-		}
-		if result.ChatResponse != nil {
-			if len(result.ChatResponse.Choices) > 0 {
-				choice := result.ChatResponse.Choices[0]
-				if choice.ChatNonStreamResponseChoice != nil {
-					entry.OutputMessageParsed = choice.ChatNonStreamResponseChoice.Message
-				}
-			}
-		}
-		if result.ResponsesResponse != nil {
-			entry.ResponsesOutputParsed = result.ResponsesResponse.Output
-		}
-		if result.CompactionResponse != nil {
-			entry.ResponsesOutputParsed = result.CompactionResponse.Output
-		}
+		applyTextOutputToEntry(entry, result)
 		if result.EmbeddingResponse != nil && len(result.EmbeddingResponse.Data) > 0 {
 			entry.EmbeddingOutputParsed = result.EmbeddingResponse.Data
 		}

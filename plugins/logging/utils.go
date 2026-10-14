@@ -635,6 +635,27 @@ func retryOnNotFound(ctx context.Context, operation func() error) error {
 	return lastErr
 }
 
+// textRequestParamsAndTools returns the logged params and tools of a text completion, chat or
+// Responses request: the request's own params, plus its tools in chat shape (Responses tools are
+// converted with ToChatTool). It returns nil for every other request kind. The request for the
+// type must be set with non-nil Params, as every converter guarantees. PreLLMHook and passthrough log
+// parsing both use it, so a parsed passthrough row records the same fields as a typed request.
+func textRequestParamsAndTools(request *schemas.BifrostRequest) (interface{}, []schemas.ChatTool) {
+	switch request.RequestType {
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
+		return request.TextCompletionRequest.Params, nil
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		return request.ChatRequest.Params, request.ChatRequest.Params.Tools
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+		var tools []schemas.ChatTool
+		for _, tool := range request.ResponsesRequest.Params.Tools {
+			tools = append(tools, *tool.ToChatTool())
+		}
+		return request.ResponsesRequest.Params, tools
+	}
+	return nil, nil
+}
+
 // extractInputHistory extracts input history from request input
 func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]schemas.ChatMessage, []schemas.ResponsesMessage) {
 	if request.ChatRequest != nil {
