@@ -267876,6 +267876,283 @@
           }
         }
       ]
+    },
+    {
+      "name": "239. Deferred tools get a tool search on gpt-5.4+ (deferred tool search)",
+      "description": "Issue #8361: an Anthropic Messages request (Claude Code with ENABLE_TOOL_SEARCH) sends tools with defer_loading and its own tool_search function, and replays search turns as tool_result blocks holding tool_reference. OpenAI gpt-5.4+ rejects deferred functions unless the request carries a tool_search tool (\"Deferred tools require tools.tool_search\"), and Bifrost kept defer_loading without adding one. Bifrost now provisions the search: the client search function becomes a client-executed tool_search and its history replays as tool_search_call / tool_search_output; with no search tool at all it adds OpenAI's hosted tool_search. Cases pin the issue payload on the messages route (non-streaming via raw_request, streaming to message_stop), the hosted provisioning on the messages route, and the same provisioning on /v1/responses.",
+      "item": [
+        {
+          "name": "openai/gpt-6-sol messages route: client tool_search function becomes a client-executed tool_search - #8361",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"tool_search\",\n      \"description\": \"Load deferred tool definitions by name.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\",\n            \"description\": \"IATA city code\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_01\",\n          \"name\": \"tool_search\",\n          \"input\": {\n            \"query\": \"select:fetch_weather_report\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_01\",\n          \"content\": [\n            {\n              \"type\": \"tool_reference\",\n              \"tool_name\": \"fetch_weather_report\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "// Before the fix the deferred tool reached OpenAI with defer_loading and no tool_search:",
+                  "// 400 \"Deferred tools require tools.tool_search\".",
+                  "pm.test('deferred tool search client: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('deferred tool search client: the search function goes out as a client tool_search', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  var search = tools.filter(function (x) { return x.type === 'tool_search'; });",
+                  "  pm.expect(search.length, 'exactly one tool_search expected: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  pm.expect(search[0].execution, 'the client search function must map to execution client: ' + JSON.stringify(search[0])).to.eql('client');",
+                  "  pm.expect(tools.filter(function (x) { return x.type === 'function' && x.name === 'tool_search'; }).length, 'tool_search must not also go out as a plain function: ' + wire.slice(0, 800)).to.eql(0);",
+                  "  var fn = tools.filter(function (x) { return x.name === 'fetch_weather_report'; })[0];",
+                  "  pm.expect(fn, 'fetch_weather_report missing from outbound tools: ' + wire.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(fn.defer_loading, 'fetch_weather_report must stay deferred: ' + JSON.stringify(fn)).to.eql(true);",
+                  "});",
+                  "pm.test('deferred tool search client: the search turn replays as tool_search_call + tool_search_output', function () {",
+                  "  var input = (rr && rr.input) || [];",
+                  "  var calls = input.filter(function (x) { return x.type === 'tool_search_call'; });",
+                  "  var outs = input.filter(function (x) { return x.type === 'tool_search_output'; });",
+                  "  pm.expect(calls.length, 'want one tool_search_call: ' + wire.slice(0, 1200)).to.eql(1);",
+                  "  pm.expect(calls[0].call_id, 'tool_search_call keeps the tool_use id').to.eql('toolu_01');",
+                  "  pm.expect(calls[0].arguments, 'tool_search_call arguments must be an object').to.be.an('object');",
+                  "  pm.expect(outs.length, 'want one tool_search_output: ' + wire.slice(0, 1200)).to.eql(1);",
+                  "  var loaded = (outs[0].tools || []).map(function (x) { return x.name; });",
+                  "  pm.expect(loaded, 'the tool_reference must load fetch_weather_report').to.include('fetch_weather_report');",
+                  "  pm.expect(input.filter(function (x) { return x.type === 'function_call' && x.name === 'tool_search'; }).length, 'search call must not replay as a function_call').to.eql(0);",
+                  "});",
+                  "pm.test('deferred tool search client: Anthropic-shaped reply', function () {",
+                  "  pm.expect(body.type, 'want an Anthropic message: ' + txt.slice(0, 400)).to.eql('message');",
+                  "  pm.expect(body.content, 'want content blocks').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-6-sol messages route stream: client tool_search function streams to message_stop - #8361",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"max_tokens\": 256,\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"name\": \"tool_search\",\n      \"description\": \"Load deferred tool definitions by name.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\",\n            \"description\": \"IATA city code\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_01\",\n          \"name\": \"tool_search\",\n          \"input\": {\n            \"query\": \"select:fetch_weather_report\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_01\",\n          \"content\": [\n            {\n              \"type\": \"tool_reference\",\n              \"tool_name\": \"fetch_weather_report\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('deferred tool search client stream: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('deferred tool search client stream: completes without an error event', function () {",
+                  "  pm.expect(txt, 'stream must not carry an error event: ' + txt.slice(0, 600)).to.not.include('event: error');",
+                  "  pm.expect(txt, 'stream must not carry the deferred-tools rejection').to.not.include('Deferred tools require');",
+                  "  pm.expect(txt, 'stream must reach message_stop: ' + txt.slice(-600)).to.include('message_stop');",
+                  "});",
+                  "pm.test('deferred tool search client stream: every content_block_start carries a block', function () {",
+                  "  var lines = txt.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; });",
+                  "  lines.forEach(function (l) {",
+                  "    var ev; try { ev = JSON.parse(l.slice(6)); } catch (e) { return; }",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(ev.content_block, 'content_block_start without a block: ' + l).to.be.an('object');",
+                  "      pm.expect(ev.content_block.type, 'content_block_start without a type: ' + l).to.be.a('string');",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-6-sol messages route: deferred tools with no search tool get the hosted tool_search - #8361",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"lookup_city_code\",\n      \"description\": \"Look up the IATA code for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather for an IATA city code.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo (city code TYO)?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('deferred tool search hosted: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('deferred tool search hosted: OpenAI hosted tool_search added, defer_loading kept', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  var search = tools.filter(function (x) { return x.type === 'tool_search'; });",
+                  "  pm.expect(search.length, 'exactly one tool_search expected: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  pm.expect(search[0].execution, 'hosted tool_search carries no client execution: ' + JSON.stringify(search[0])).to.not.eql('client');",
+                  "  var fn = tools.filter(function (x) { return x.name === 'fetch_weather_report'; })[0];",
+                  "  pm.expect(fn && fn.defer_loading, 'fetch_weather_report must stay deferred: ' + wire.slice(0, 800)).to.eql(true);",
+                  "});",
+                  "pm.test('deferred tool search hosted: any hosted search comes back as a paired server_tool_use + tool_search_tool_result', function () {",
+                  "  var content = body.content || [];",
+                  "  var uses = content.filter(function (b) { return b.type === 'server_tool_use'; });",
+                  "  var results = content.filter(function (b) { return b.type === 'tool_search_tool_result'; });",
+                  "  pm.expect(results.length, 'each server_tool_use needs its tool_search_tool_result: ' + JSON.stringify(content).slice(0, 800)).to.eql(uses.length);",
+                  "  results.forEach(function (r) {",
+                  "    pm.expect(uses.map(function (u) { return u.id; }), 'tool_search_tool_result must reference its server_tool_use').to.include(r.tool_use_id);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-6-sol /v1/responses deferred function with no tool_search gets the hosted tool_search - #8361",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('deferred tool search responses: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('deferred tool search responses: hosted tool_search added, defer_loading kept', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  pm.expect(tools.filter(function (x) { return x.type === 'tool_search'; }).length, 'want the hosted tool_search: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  var fn = tools.filter(function (x) { return x.name === 'get_weather'; })[0];",
+                  "  pm.expect(fn && fn.defer_loading, 'get_weather must stay deferred: ' + wire.slice(0, 800)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

@@ -1,1 +1,2 @@
 - fix: OpenAI tool_search_call / tool_search_output items reach /anthropic clients — a client-executed search becomes a tool_use for the client's own search function, a hosted search becomes server_tool_use plus tool_search_tool_result
+- fix: deferred tools on OpenAI gpt-5.4+ (and Azure / Bedrock gpt) get the tool_search OpenAI requires instead of a 400 — a client search function (Claude Code's ToolSearch) becomes a client-executed tool_search with its history replayed as tool_search_call / tool_search_output, otherwise the hosted tool_search is added (#8361)
