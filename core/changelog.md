@@ -1,0 +1,1 @@
+- Added the TypeSafe (System One) provider with the /v1/decisions endpoint and /typesafe native routes.

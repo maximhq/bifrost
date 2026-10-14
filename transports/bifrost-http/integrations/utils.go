@@ -368,6 +368,10 @@ func (g *GenericRouter) extractAndParseFallbacks(ctx *schemas.BifrostContext, re
 		if bifrostReq.RerankRequest != nil {
 			bifrostReq.RerankRequest.Fallbacks = parsedFallbacks
 		}
+	case schemas.DecisionRequest:
+		if bifrostReq.DecisionRequest != nil {
+			bifrostReq.DecisionRequest.Fallbacks = parsedFallbacks
+		}
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
 		if bifrostReq.SpeechRequest != nil {
 			bifrostReq.SpeechRequest.Fallbacks = parsedFallbacks

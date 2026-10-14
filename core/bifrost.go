@@ -47,6 +47,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/runway"
 	"github.com/maximhq/bifrost/core/providers/sarvam"
 	"github.com/maximhq/bifrost/core/providers/sgl"
+	"github.com/maximhq/bifrost/core/providers/typesafe"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/providers/vllm"
@@ -1395,6 +1396,46 @@ func (bifrost *Bifrost) RerankRequest(ctx *schemas.BifrostContext, req *schemas.
 		return nil, err
 	}
 	return response.RerankResponse, nil
+}
+
+// DecisionRequest sends an decision request to the specified provider.
+func (bifrost *Bifrost) DecisionRequest(ctx *schemas.BifrostContext, req *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	if req == nil {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "decision request is nil",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType: schemas.DecisionRequest,
+			},
+		}
+	}
+	// A nil state is forwarded as JSON null: the TypeSafe SDKs allow it and the
+	// endpoint decides whether it is acceptable.
+	if len(req.Questions) == 0 {
+		return nil, &schemas.BifrostError{
+			IsBifrostError: false,
+			Error: &schemas.ErrorField{
+				Message: "questions not provided for decision request",
+			},
+			ExtraFields: schemas.BifrostErrorExtraFields{
+				RequestType:            schemas.DecisionRequest,
+				Provider:               req.Provider,
+				OriginalModelRequested: req.Model,
+				ResolvedModelUsed:      req.Model,
+			},
+		}
+	}
+	bifrostReq := bifrost.getBifrostRequest()
+	bifrostReq.RequestType = schemas.DecisionRequest
+	bifrostReq.DecisionRequest = req
+
+	response, err := bifrost.handleRequest(ctx, bifrostReq)
+	if err != nil {
+		return nil, err
+	}
+	return response.DecisionResponse, nil
 }
 
 // OCRRequest sends an OCR request to the specified provider.
@@ -4394,6 +4435,8 @@ func (bifrost *Bifrost) createBaseProvider(providerKey schemas.ModelProvider, co
 		return fireworks.NewFireworksProvider(config, bifrost.logger)
 	case schemas.Sarvam:
 		return sarvam.NewSarvamProvider(config, bifrost.logger)
+	case schemas.Typesafe:
+		return typesafe.NewTypesafeProvider(config, bifrost.logger)
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", targetProviderKey)
 	}
@@ -4978,6 +5021,14 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
 		fallbackReq.RerankRequest = &tmp
+	}
+	if req.DecisionRequest != nil {
+		tmp := *req.DecisionRequest
+		tmp.Provider = fallback.Provider
+		tmp.Model = fallback.Model
+		// The client's raw body belongs to the primary attempt only.
+		tmp.RawRequestBody = nil
+		fallbackReq.DecisionRequest = &tmp
 	}
 	if req.OCRRequest != nil {
 		tmp := *req.OCRRequest
@@ -7156,6 +7207,32 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 			return nil, bifrostError
 		}
 		response.RerankResponse = rerankResponse
+	case schemas.DecisionRequest:
+		decisionResponse, bifrostError := provider.Decision(req.Context, key, req.BifrostRequest.DecisionRequest)
+		// A provider without native decision support returns unsupported_operation;
+		// emulate the judgment through that provider's model (tool-calling /
+		// structured output). Covers both an LLM named as the decision model and an
+		// LLM reached as a fallback - both flow through this one case.
+		if isUnsupportedOperation(bifrostError) {
+			// unsupported_operation also covers a policy denial (AllowedRequests without
+			// Decision). Emulate only when the operation is actually permitted, so a
+			// config that denies Decision cannot run it through the chat/responses path.
+			var customProviderConfig *schemas.CustomProviderConfig
+			if config != nil {
+				customProviderConfig = config.CustomProviderConfig
+			}
+			if denyErr := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), customProviderConfig, schemas.DecisionRequest); denyErr != nil {
+				if req.BifrostRequest.DecisionRequest != nil {
+					denyErr.ExtraFields.OriginalModelRequested = req.BifrostRequest.DecisionRequest.Model
+				}
+				return nil, denyErr
+			}
+			decisionResponse, bifrostError = bifrost.emulateDecisionViaResponses(req.Context, provider, key, req.BifrostRequest.DecisionRequest)
+		}
+		if bifrostError != nil {
+			return nil, bifrostError
+		}
+		response.DecisionResponse = decisionResponse
 	case schemas.OCRRequest:
 		var customProviderConfig *schemas.CustomProviderConfig
 		if config != nil {
@@ -8239,6 +8316,7 @@ func resetBifrostRequest(req *schemas.BifrostRequest) {
 	req.CompactionRequest = nil
 	req.EmbeddingRequest = nil
 	req.RerankRequest = nil
+	req.DecisionRequest = nil
 	req.OCRRequest = nil
 	req.SpeechRequest = nil
 	req.TranscriptionRequest = nil

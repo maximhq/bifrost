@@ -40,6 +40,9 @@ type TokenUsage struct {
 	OutputTokens      int    `json:"output_tokens"`
 	CachedInputTokens int    `json:"cached_input_tokens"`
 	CachedWriteTokens int    `json:"cached_write_tokens"`
+	// RequestType is set only for decision events ("decisions") so billable
+	// metrics can tell them apart; generation events keep their existing shape.
+	RequestType string `json:"request_type,omitempty"`
 }
 
 type requestKey string
@@ -143,12 +146,23 @@ func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostR
 			return resp, upstreamErr, nil
 		}
 	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest, schemas.ResponsesRequest:
+	case schemas.DecisionRequest:
 	default:
 		return resp, upstreamErr, nil
 	}
 	usage, ok := extractUsage(resp)
 	if !ok {
 		return resp, upstreamErr, nil
+	}
+	if extra.RequestType == schemas.DecisionRequest {
+		usage.RequestType = string(schemas.DecisionRequest)
+		// TypeSafe-family endpoints charge input tokens only; their output
+		// tokens are answer bookkeeping, not generated output. A decision
+		// emulated through an LLM keeps the output tokens that LLM generated
+		// and its provider bills.
+		if schemas.ResolveBaseProvider(ctx, extra.Provider) == schemas.Typesafe {
+			usage.OutputTokens = 0
+		}
 	}
 	if usage.InputTokens < 0 || usage.OutputTokens < 0 || usage.CachedInputTokens < 0 || usage.CachedWriteTokens < 0 {
 		p.logger.Warn("[metronome] skipped inconsistent token counts")
@@ -199,7 +213,18 @@ func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostR
 	}
 	retries, _ := ctx.Value(schemas.BifrostContextKeyNumberOfRetries).(int)
 	id := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%s:%s", attempt, retries, provider, model)))
-	event := Event[TokenUsage]{TransactionID: fmt.Sprintf("bifrost-%x", id), CustomerID: customer, EventType: "token-billing", Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Properties: usage}
+	transactionID := fmt.Sprintf("bifrost-%x", id)
+	// A System One decision with an Idempotency-Key is billed at most once per
+	// (virtual key, provider, key): a replay whose first event was delivered
+	// is deduplicated by Metronome, while a replay whose first response was
+	// lost is still billed because no event exists yet. Without a key, every
+	// attempt keeps its own ID.
+	if extra.RequestType == schemas.DecisionRequest && schemas.ResolveBaseProvider(ctx, extra.Provider) == schemas.Typesafe {
+		if key := schemas.DecisionIdempotencyKey(ctx); key != "" {
+			transactionID = "bifrost-idem-" + schemas.DecisionIdempotencyScope(customer, provider, model, key)
+		}
+	}
+	event := Event[TokenUsage]{TransactionID: transactionID, CustomerID: customer, EventType: "token-billing", Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Properties: usage}
 	// Copy scalar usage before returning: Bifrost may release pooled responses.
 	p.mu.RLock()
 	if !p.closed {
@@ -221,6 +246,9 @@ func extractUsage(resp *schemas.BifrostResponse) (TokenUsage, bool) {
 		chat = resp.ChatResponse.Usage
 	case resp.TextCompletionResponse != nil:
 		chat = resp.TextCompletionResponse.Usage
+	case resp.DecisionResponse != nil:
+		// Nil for a free idempotent replay, which is then not exported.
+		chat = resp.DecisionResponse.Usage
 	case resp.ResponsesResponse != nil:
 		responses = resp.ResponsesResponse.Usage
 	case resp.ResponsesStreamResponse != nil && resp.ResponsesStreamResponse.Response != nil:

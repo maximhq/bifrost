@@ -430,6 +430,9 @@
         "wafer": {
           "$ref": "#/$defs/provider"
         },
+        "typesafe": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
@@ -7169,6 +7172,7 @@
         "responses",
         "embedding",
         "rerank",
+        "decisions",
         "speech",
         "transcription",
         "image_generation",
@@ -7221,7 +7225,8 @@
             "runware",
             "fireworks",
             "sarvam",
-            "wafer"
+            "wafer",
+            "typesafe"
           ],
           "description": "Base provider type to extend"
         },
@@ -7283,6 +7288,9 @@
               "type": "boolean"
             },
             "rerank": {
+              "type": "boolean"
+            },
+            "decisions": {
               "type": "boolean"
             },
             "ocr": {

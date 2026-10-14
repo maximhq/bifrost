@@ -3849,3 +3849,22 @@ func TestCalculateCostForUsage_NoServerSideFallback_Unchanged(t *testing.T) {
 	assert.InDelta(t, 38*(10.0/1_000_000)+345*(50.0/1_000_000),
 		s.CalculateCostForUsage(usage, schemas.Anthropic, "claude-fable-5", schemas.ResponsesRequest, nil), 1e-12)
 }
+
+func TestComputeDecisionCost_InputOnlyBilling(t *testing.T) {
+	p := configstoreTables.TableModelPricing{InputCostPerToken: bifrost.Ptr(0.000001)}
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 2000, CompletionTokens: 50, TotalTokens: 2050}
+	assert.InDelta(t, 0.002, computeDecisionCost(&p, usage, serviceTier{}), 1e-12)
+}
+
+func TestComputeDecisionCost_OutputRateHonored(t *testing.T) {
+	p := configstoreTables.TableModelPricing{
+		InputCostPerToken:  bifrost.Ptr(0.000001),
+		OutputCostPerToken: bifrost.Ptr(0.000002),
+	}
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1000, CompletionTokens: 100, TotalTokens: 1100}
+	assert.InDelta(t, 0.0012, computeDecisionCost(&p, usage, serviceTier{}), 1e-12)
+}
+
+func TestComputeDecisionCost_NilUsage(t *testing.T) {
+	assert.Equal(t, 0.0, computeDecisionCost(&configstoreTables.TableModelPricing{}, nil, serviceTier{}))
+}
