@@ -15,6 +15,7 @@ export * from "./mcpLogsApi";
 export * from "./mcpPerUserHeadersApi";
 export * from "./mcpSessionsApi";
 export * from "./notificationsApi";
+export * from "./rssFeedsApi";
 export * from "./sidekiqApi";
 export * from "./oauth2ConsentApi";
 export * from "./warpApi";
