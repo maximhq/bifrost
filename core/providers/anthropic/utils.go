@@ -855,7 +855,17 @@ func StripUnsupportedFieldsFromRawBody(jsonBody []byte, provider schemas.ModelPr
 	if caps.AdaptiveOnlyThinking(DefaultAdaptiveOnlyThinking(model)) {
 		// See the typed path for why this is gated on RejectsEnabledThinking
 		// rather than the enclosing predicate (Mythos Preview keeps "enabled").
-		if RejectsEnabledThinking(caps) &&
+		//
+		// PreservesCallerRequestSurface models are exempt one step further: the
+		// rewrite is driven by a family inference, and the caller is entitled to
+		// the provider's own answer to the request they actually sent. Unlike
+		// the typed strip, this helper is reached only with a body that already
+		// IS a native Anthropic Messages request (the raw/passthrough path and
+		// Vertex's publisher endpoint), so the model predicate alone is the same
+		// scope the typed path gets from its ingress witness -- and the point of
+		// exempting both together is that the raw and typed paths must agree
+		// about what the caller asked for.
+		if RejectsEnabledThinking(caps) && !PreservesCallerRequestSurface(model) &&
 			providerUtils.GetJSONField(jsonBody, "thinking.type").String() == "enabled" {
 			jsonBody, err = providerUtils.SetJSONField(jsonBody, "thinking.type", "adaptive")
 			if err != nil {
@@ -1464,7 +1474,13 @@ func fitRawThinkingBudget(jsonBody []byte, maxTokens int) ([]byte, error) {
 	}
 	fitted, ok := fitThinkingBudget(nil, effort, maxTokens)
 	if !ok {
-		return jsonBody, nil
+		// The lowered max_tokens leaves no room for any budget, so there is no
+		// valid "enabled" object to send. Leaving the caller's budget in place
+		// forwards one the provider rejects -- and this is reached only when the
+		// clamp above actually LOWERED max_tokens, so the invalid pair is ours,
+		// not the caller's. Dropping thinking is what the typed restore does and
+		// what stripUnsupportedAnthropicFields does for the pre-adaptive family.
+		return providerUtils.DeleteJSONField(jsonBody, "thinking")
 	}
 	return providerUtils.SetJSONField(jsonBody, "thinking.budget_tokens", fitted)
 }
@@ -1487,6 +1503,33 @@ func DefaultCanDisableReasoning(model string) bool {
 //
 // Source: https://platform.claude.com/docs/en/build-with-claude/thinking
 func DefaultSupportsBetweenToolsThinking(model string) bool {
+	return IsSonnet55Plus(model)
+}
+
+// PreservesCallerRequestSurface reports whether this provider forwards the
+// caller's reasoning and sampling surface verbatim instead of rewriting it into
+// the shape a model-family substring predicate infers.
+//
+// The family predicates above are inferences from published request surfaces,
+// and where they fire the converter substitutes a different configuration than
+// the caller sent: AdaptiveOnlyThinking rewrites
+// thinking:{"type":"enabled",budget_tokens:N} to adaptive and discards the
+// budget, and drops temperature / top_p / top_k outright. For a model whose
+// surface this build has not characterised, an inference is not a good enough
+// reason to answer a different request: the caller's own values are forwarded
+// and the PROVIDER's typed answer is what the caller sees. That is also what
+// the raw/passthrough path already does for all three sampling parameters, so
+// preserving them removes a divergence where one client got a silent 200 and
+// another got the provider's 400 for the same body.
+//
+// Deliberately narrow: Sonnet 5.5 only, so every older model keeps the existing
+// behaviour byte for byte. This predicate answers only the model question;
+// narrowing to a NATIVE Anthropic Messages request is the caller's job, and
+// both callers do it -- the typed egress requires a recorded
+// anthropicNativeRequestSurface, and StripUnsupportedFieldsFromRawBody is only
+// ever reached with a body that already is one. So an OpenAI-shaped inbound
+// dialect routed to this same model is unaffected either way.
+func PreservesCallerRequestSurface(model string) bool {
 	return IsSonnet55Plus(model)
 }
 
