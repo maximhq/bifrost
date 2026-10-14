@@ -394,6 +394,7 @@ func (h *PluginsHandler) createPlugin(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "plugin.created", "plugin", plugin.Name, plugin.Name, nil, h.auditPlugin(plugin))
 	ctx.SetStatusCode(fasthttp.StatusCreated)
 	SendJSON(ctx, map[string]any{
 		"message": "Plugin created successfully",
@@ -444,6 +445,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		}
 		missing = true
 	}
+	before := h.auditPlugin(existingPlugin)
 
 	// Unmarshalling the request body
 	var request UpdatePluginRequest
@@ -574,6 +576,7 @@ func (h *PluginsHandler) updatePlugin(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	lib.RecordAuditChange(ctx, "plugin.updated", "plugin", name, name, before, h.auditPlugin(plugin))
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Plugin updated successfully",
 		"plugin":  h.buildPluginResponse(ctx, plugin),
@@ -643,6 +646,8 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 	}
 	defer h.lockPlugin(name)()
 
+	existingPlugin, _ := h.configStore.GetPlugin(ctx, name)
+	before := h.auditPlugin(existingPlugin)
 	if err := h.configStore.DeletePlugin(ctx, name); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Plugin not found")
@@ -659,6 +664,7 @@ func (h *PluginsHandler) deletePlugin(ctx *fasthttp.RequestCtx) {
 			return
 		}
 	}
+	lib.RecordAuditChange(ctx, "plugin.deleted", "plugin", name, name, before, nil)
 	SendJSON(ctx, map[string]interface{}{
 		"message": "Plugin deleted successfully",
 	})

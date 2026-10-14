@@ -1735,6 +1735,7 @@ func loadClientConfig(ctx context.Context, config *Config, configData *ConfigDat
 	} else {
 		// Full hash mismatch - file changed, sync from file (file takes precedence)
 		logger.Info("client config was updated in config.json, syncing. Note that: file config takes precedence.")
+		noteConfigFileApplied("client_config", "client")
 		sanitizeMCPExternalOAuthURLs(configData.Client)
 		config.ClientConfig = configData.Client
 		config.ClientConfig.ConfigHash = fileHash
@@ -1985,12 +1986,14 @@ func mergeProviderWithHash(
 	if !exists {
 		// New provider - add from config.json
 		providersInConfigStore[provider] = providerCfgInFile
+		noteConfigFileApplied("provider", string(provider))
 		return
 	}
 	// Provider exists in DB - compare hashes
 	if existingCfg.ConfigHash != providerCfgInFile.ConfigHash {
 		// Hash mismatch - config.json was changed, sync from file
 		logger.Debug("config hash mismatch for provider %s, syncing from config file", provider)
+		noteConfigFileApplied("provider", string(provider))
 		mergedKeys := mergeProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
 		providerCfgInFile.Keys = mergedKeys
 		providersInConfigStore[provider] = providerCfgInFile
@@ -2727,6 +2730,7 @@ func mergeMCPConfig(ctx context.Context, config *Config, configData *ConfigData,
 				found = true
 				if existingClientConfig.ConfigHash != fileHash {
 					logger.Debug("config hash mismatch for MCP client %q, syncing from config file", newClientConfig.Name)
+					noteConfigFileApplied("mcp_client", newClientConfig.Name)
 					newClientConfig.ID = existingClientConfig.ID
 					// Pin immutable fields to their stored values and carry
 					// server-side verification state (authorized OAuth link,

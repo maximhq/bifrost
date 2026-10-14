@@ -284,11 +284,19 @@ func (h *OAuthHandler) getOAuthConfigStatus(ctx *fasthttp.RequestCtx) {
 func (h *OAuthHandler) revokeOAuthConfig(ctx *fasthttp.RequestCtx) {
 	configID := ctx.UserValue("id").(string)
 
+	var before map[string]any
+	if h.store != nil && h.store.ConfigStore != nil {
+		if cfg, err := h.store.ConfigStore.GetOauthConfigByID(ctx, configID); err == nil && cfg != nil {
+			before = map[string]any{"status": cfg.Status, "authorize_url": cfg.AuthorizeURL, "token_url": cfg.TokenURL, "server_url": lib.RedactURLCredentials(cfg.ServerURL)}
+		}
+	}
+
 	if err := h.oauthProvider.RevokeToken(ctx, configID); err != nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to revoke OAuth token: %v", err))
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "oauth_config.token_revoked", "oauth_config", configID, configID, before, nil)
 	SendJSON(ctx, map[string]interface{}{
 		"message": "OAuth token revoked successfully",
 	})

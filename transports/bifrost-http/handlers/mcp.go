@@ -368,6 +368,16 @@ func (h *MCPHandler) startMCPClientReauthorization(ctx *fasthttp.RequestCtx, rer
 	if reregisterClient {
 		response["registered_client_id"] = newClientID
 		response["previous_client_id"] = previousClientID
+		h.recordMCPClientAction(ctx, "mcp_client.reregistered", clientConfig.ID, clientConfig.Name, map[string]any{
+			"auth_type":         clientConfig.AuthType,
+			"oauth_config_id":   flowInitiation.OauthConfigID,
+			"client_id_changed": rotated,
+		})
+	} else {
+		h.recordMCPClientAction(ctx, "mcp_client.reauthorization_started", clientConfig.ID, clientConfig.Name, map[string]any{
+			"auth_type":       clientConfig.AuthType,
+			"oauth_config_id": flowInitiation.OauthConfigID,
+		})
 	}
 	SendJSON(ctx, response)
 }
@@ -437,6 +447,10 @@ func (h *MCPHandler) initiateMCPClientVerification(ctx *fasthttp.RequestCtx) {
 
 	completeURL := fmt.Sprintf("/api/mcp/client/%s/complete-oauth", flowInitiation.OauthConfigID)
 	statusURL := fmt.Sprintf("/api/oauth/config/%s/status", flowInitiation.OauthConfigID)
+	h.recordMCPClientAction(ctx, "mcp_client.verification_initiated", clientConfig.ID, clientConfig.Name, map[string]any{
+		"auth_type":       clientConfig.AuthType,
+		"oauth_config_id": flowInitiation.OauthConfigID,
+	})
 	SendJSON(ctx, map[string]any{
 		"status":          "pending_oauth",
 		"oauth_config_id": flowInitiation.OauthConfigID,
@@ -730,6 +744,10 @@ func (h *MCPHandler) verifyMCPClientHeaders(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	h.recordMCPClientAction(ctx, "mcp_client.headers_verified", clientConfig.ID, clientConfig.Name, map[string]any{
+		"tools_count": len(tools),
+		"header_keys": canonKeys,
+	})
 	SendJSON(ctx, map[string]any{
 		"status":      "success",
 		"message":     fmt.Sprintf("MCP client verified. %d tools discovered. Each user will submit their own header values on first tool use.", len(tools)),
@@ -895,6 +913,9 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 		logger.Warn(fmt.Sprintf("failed to retain admin exchange credential for MCP client %s: %v", clientConfig.ID, retainErr))
 	}
 
+	h.recordMCPClientAction(ctx, "mcp_client.exchange_verified", clientConfig.ID, clientConfig.Name, map[string]any{
+		"tools_count": len(tools),
+	})
 	SendJSON(ctx, map[string]any{
 		"status":      "success",
 		"message":     fmt.Sprintf("MCP client verified. %d tools discovered. Callers' identity tokens are exchanged automatically on each tool use.", len(tools)),
@@ -1409,6 +1430,7 @@ func (h *MCPHandler) forceSyncMCPLibrary(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "mcp_library.synced", "mcp_library", "mcp_library", "MCP library", nil, map[string]any{"entries_synced": count})
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": fmt.Sprintf("MCP library sync completed, %d entries synced", count),
@@ -1803,6 +1825,13 @@ func (h *MCPHandler) reconnectMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reconnect MCP client: %v", err))
 		return
 	}
+	var reconnectedState map[string]any
+	if h.client != nil {
+		if state, stateErr := h.getMCPClientRuntimeState(id); stateErr == nil && state != "" {
+			reconnectedState = map[string]any{"state": state}
+		}
+	}
+	h.recordMCPClientAction(ctx, "mcp_client.reconnected", id, "", reconnectedState)
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client reconnected successfully",
@@ -1858,6 +1887,7 @@ func (h *MCPHandler) refreshMCPClientTools(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to refresh MCP client tools: %v", err))
 		return
 	}
+	h.recordMCPClientAction(ctx, "mcp_client.tools_refreshed", id, "", map[string]any{"tool_count": count})
 	SendJSON(ctx, map[string]any{
 		"status":     "success",
 		"message":    "MCP client tools refreshed successfully",
@@ -2401,6 +2431,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
+		lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", schemasConfig.ID, schemasConfig.Name, nil, auditMCPClient(h.store, schemasConfig))
 		SendJSON(ctx, map[string]any{
 			"status":  "success",
 			"message": fmt.Sprintf("MCP client registered. %d tools discovered. Each user will submit their own headers on first tool use.", len(tools)),
@@ -2554,6 +2585,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		if adminResponse == nil {
 			message = "MCP client registered in pending verification. Verify it from an identity-authenticated session to discover tools."
 		}
+		lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", schemasConfig.ID, schemasConfig.Name, nil, auditMCPClient(h.store, schemasConfig))
 		SendJSON(ctx, map[string]any{
 			"status":  "success",
 			"message": message,
@@ -2813,6 +2845,7 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", schemasConfig.ID, schemasConfig.Name, nil, auditMCPClient(h.store, schemasConfig))
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client connected successfully",
@@ -2850,6 +2883,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusNotFound, "MCP client not found")
 		return
 	}
+	before := auditMCPClient(h.store, existingConfig)
 	if rejectSecretReferencesIfAuthBypassed(ctx, mcpClientSecretReferences(req.Headers, nil, req.OauthConfig, req.TokenExchange, req.TLSConfig, req.OpenAPIConfig)) {
 		return
 	}
@@ -3725,6 +3759,7 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			message += ". This client now connects per call instead of maintaining a persistent connection: the existing shared connection was closed."
 		}
 	}
+	lib.RecordAuditChange(ctx, "mcp_client.updated", "mcp_client", id, name, before, auditMCPClient(h.store, schemasConfig))
 	if sharedConnectErr != nil {
 		SendJSON(ctx, map[string]any{
 			"status":  "partial_success",
@@ -3756,6 +3791,12 @@ func (h *MCPHandler) deleteMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid id: %v", err))
 		return
 	}
+	targetName := id
+	existing := findMCPClientConfig(h.store, id)
+	if existing != nil {
+		targetName = existing.Name
+	}
+	before := auditMCPClient(h.store, existing)
 	// Delete from DB first to avoid memory/DB inconsistency if DB delete fails
 	if h.store.ConfigStore != nil {
 		if err := h.store.ConfigStore.DeleteMCPClientConfig(ctx, id); err != nil {
@@ -3776,6 +3817,7 @@ func (h *MCPHandler) deleteMCPClient(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to remove MCP client: %v", err))
 		return
 	}
+	lib.RecordAuditChange(ctx, "mcp_client.deleted", "mcp_client", id, targetName, before, nil)
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP client removed successfully",
@@ -4059,6 +4101,12 @@ func (h *MCPHandler) completePerUserOAuthAdminRepair(ctx *fasthttp.RequestCtx, b
 	}
 	h.mcpManager.SetClientTools(clientConfig.ID, tools, toolNameMapping, serverInstructions)
 
+	h.recordMCPClientAction(ctx, "mcp_client.oauth_completed", clientConfig.ID, clientConfig.Name, map[string]any{
+		"auth_type":       clientConfig.AuthType,
+		"oauth_config_id": oauthConfigID,
+		"outcome":         "admin_credential_repaired",
+		"tools_count":     len(tools),
+	})
 	SendJSON(ctx, map[string]any{
 		"status":      "success",
 		"message":     fmt.Sprintf("Admin discovery credential repaired successfully. %d tools discovered.", len(tools)),
@@ -4204,6 +4252,11 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 			if h.mcpManager.RequiresPerCallConnection(reauthClientConfig) {
 				successMsg = "MCP client re-authorized and tools refreshed successfully"
 			}
+			h.recordMCPClientAction(ctx, "mcp_client.oauth_completed", reauthClientConfig.ID, reauthClientConfig.Name, map[string]any{
+				"auth_type":       reauthClientConfig.AuthType,
+				"oauth_config_id": oauthConfigID,
+				"outcome":         "reauthorized",
+			})
 			SendJSON(ctx, map[string]any{"status": "success", "message": successMsg})
 			return
 		}
@@ -4385,6 +4438,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 		if isUpdateFlow {
 			message = fmt.Sprintf("OAuth credentials updated and verified successfully. %d tools discovered.", len(tools))
 		}
+		h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(tools))
 		SendJSON(ctx, map[string]any{"status": "success", "message": message, "tools_count": len(tools)})
 		return
 	}
@@ -4507,6 +4561,7 @@ func (h *MCPHandler) completeMCPClientOAuth(ctx *fasthttp.RequestCtx) {
 	if isUpdateFlow {
 		message = "MCP client OAuth credentials updated successfully"
 	}
+	h.recordMCPClientOAuthCompletion(ctx, mcpClientConfig, oauthConfigID, isUpdateFlow, configBootstrap, len(mcpClientConfig.DiscoveredTools))
 	SendJSON(ctx, map[string]any{"status": "success", "message": message})
 }
 
@@ -4660,6 +4715,7 @@ func (h *MCPHandler) createMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "mcp_library_entry.created", "mcp_library_entry", strconv.FormatUint(uint64(entry.ID), 10), entry.Name, nil, auditMCPLibraryEntry(entry))
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP library server published successfully",
@@ -4697,6 +4753,7 @@ func (h *MCPHandler) deleteMCPLibraryEntry(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "mcp_library_entry.deleted", "mcp_library_entry", idStr, idStr, map[string]any{"id": id}, nil)
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
 		"message": "MCP library server removed successfully",
@@ -4738,5 +4795,63 @@ func (h *MCPHandler) refreshMCPClientOnAssignedVirtualKeys(ctx context.Context, 
 		if _, err := h.governanceManager.ReloadVirtualKey(ctx, id); err != nil {
 			logger.Error(fmt.Sprintf("failed to reload virtual key %s after MCP client update: %v", id, err))
 		}
+	}
+}
+
+// recordMCPClientAction records an action-style audit event against an MCP client, naming it from the in-memory config when available.
+func (h *MCPHandler) recordMCPClientAction(ctx *fasthttp.RequestCtx, eventName, clientID, clientName string, after map[string]any) {
+	if clientName == "" {
+		clientName = clientID
+		if existing := findMCPClientConfig(h.store, clientID); existing != nil && existing.Name != "" {
+			clientName = existing.Name
+		}
+	}
+	lib.RecordAuditChange(ctx, eventName, "mcp_client", clientID, clientName, nil, after)
+}
+
+// auditMCPLibraryEntry snapshots a library entry without URL credentials or stdio args/env, which a custom entry may carry inline.
+func auditMCPLibraryEntry(entry *configstoreTables.TableMCPLibrary) map[string]any {
+	if entry == nil {
+		return nil
+	}
+	snap := map[string]any{
+		"id":                   entry.ID,
+		"slug":                 entry.Slug,
+		"name":                 entry.Name,
+		"description":          entry.Description,
+		"category":             entry.Category,
+		"connection_type":      entry.ConnectionType,
+		"auth_type":            entry.AuthType,
+		"required_header_keys": entry.RequiredHeaderKeys,
+		"publisher":            entry.Publisher,
+		"tags":                 entry.Tags,
+		"source":               entry.Source,
+	}
+	if entry.ConnectionURL != "" {
+		snap["connection_url"] = lib.RedactURLCredentials(entry.ConnectionURL)
+	}
+	if entry.StdioConfig != nil {
+		snap["stdio_command"] = entry.StdioConfig.Command
+	}
+	return snap
+}
+
+// recordMCPClientOAuthCompletion records complete-oauth, plus mcp_client.created when the flow created the client row.
+func (h *MCPHandler) recordMCPClientOAuthCompletion(ctx *fasthttp.RequestCtx, cfg *schemas.MCPClientConfig, oauthConfigID string, isUpdateFlow, configBootstrap bool, toolsCount int) {
+	outcome := "connected"
+	switch {
+	case isUpdateFlow && configBootstrap:
+		outcome = "bootstrap_verified"
+	case isUpdateFlow:
+		outcome = "credentials_updated"
+	}
+	h.recordMCPClientAction(ctx, "mcp_client.oauth_completed", cfg.ID, cfg.Name, map[string]any{
+		"auth_type":       cfg.AuthType,
+		"oauth_config_id": oauthConfigID,
+		"outcome":         outcome,
+		"tools_count":     toolsCount,
+	})
+	if !isUpdateFlow {
+		lib.RecordAuditChange(ctx, "mcp_client.created", "mcp_client", cfg.ID, cfg.Name, nil, auditMCPClient(h.store, cfg))
 	}
 }
