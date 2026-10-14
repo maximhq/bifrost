@@ -93,19 +93,33 @@ func defaultSupportsAsyncTools(model string) bool {
 	return strings.Contains(bareModelLower(model), "gpt-6")
 }
 
-// omittedEffortReasons reports OpenAI reasoning models that still reason when
-// reasoning.effort is omitted. Only GPT-5.1 through GPT-5.4 default to "none";
-// their -pro variants always reason.
-func omittedEffortReasons(model string) bool {
+// defaultReasoningEffort is the name-based fallback for
+// ModelCaps.DefaultReasoningEffort, per OpenAI's model pages: GPT-5.1 through
+// GPT-5.4 default to "none", the -pro variants to "high", and every other
+// reasoning model (o-series, gpt-5, gpt-5.5, gpt-5.6, gpt-6) to "medium".
+// Non-reasoning models answer "".
+func defaultReasoningEffort(model string) string {
 	if !IsOpenAIReasoningModel(model) {
-		return false
+		return ""
 	}
 	m := bareModelLower(model)
-	if strings.Contains(m, "-pro") {
-		return true
+	switch {
+	case strings.Contains(m, "-pro"):
+		return schemas.ReasoningEffortHigh
+	case strings.Contains(m, "gpt-5.1"), strings.Contains(m, "gpt-5.2"),
+		strings.Contains(m, "gpt-5.3"), strings.Contains(m, "gpt-5.4"):
+		return schemas.ReasoningEffortNone
+	default:
+		return schemas.ReasoningEffortMedium
 	}
-	return !strings.Contains(m, "gpt-5.1") && !strings.Contains(m, "gpt-5.2") &&
-		!strings.Contains(m, "gpt-5.3") && !strings.Contains(m, "gpt-5.4")
+}
+
+// omittedEffortReasons reports whether the model still reasons when
+// reasoning.effort is omitted: the datasheet's default_reasoning_effort, else
+// the name-based default.
+func omittedEffortReasons(caps schemas.ModelCaps, model string) bool {
+	effort := caps.DefaultReasoningEffort(defaultReasoningEffort(model))
+	return effort != "" && effort != schemas.ReasoningEffortNone
 }
 
 // defaultEffortControl widens the base low/medium/high ladder with the effort

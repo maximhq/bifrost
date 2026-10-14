@@ -96,17 +96,17 @@ func (p *Plugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.Bifros
 	// Populate fallbacks from the remaining catalog candidates so the request gets
 	// cross-provider resilience automatically — matches the governance and load
 	// balancing plugins, which both promote unselected candidates to fallbacks
-	// when the caller didn't configure any. Only fires when the caller passed
-	// none; an explicit fallback list (even an empty one set deliberately) is
-	// always respected. Model refinement is not needed here: GetProvidersForModel
-	// only returns providers that already serve this exact model string.
+	// when the caller didn't configure any. Model refinement is not needed here:
+	// GetProvidersForModel only returns providers that already serve this exact
+	// model string. They are marked Inferred, so core does not let a provider the
+	// caller never named answer a request the primary refused as malformed.
 	if len(existingFallbacks) == 0 && len(candidates) > 1 {
 		fallbacks := make([]schemas.Fallback, 0, len(candidates)-1)
 		for _, prov := range candidates {
 			if prov == selected {
 				continue
 			}
-			fallbacks = append(fallbacks, schemas.Fallback{Provider: prov, Model: model})
+			fallbacks = append(fallbacks, schemas.Fallback{Provider: prov, Model: model, Inferred: true})
 		}
 		if len(fallbacks) > 0 {
 			req.SetFallbacks(fallbacks)

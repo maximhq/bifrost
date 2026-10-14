@@ -318,7 +318,7 @@ const SidebarItemView = ({
 				className={buttonClassName}
 				onClick={handleClick}
 				aria-label={item.title}
-				data-testid={`sidebar-item-btn-${slug(item.title)}`}
+				data-testid={`sidebar-item-btn-${item.testId ?? slug(item.title)}`}
 			>
 				{innerContent}
 			</SidebarMenuButton>
@@ -370,7 +370,7 @@ const SidebarItemView = ({
 		<SidebarMenuItem key={item.title}>
 			{isSidebarCollapsed && hasSubItems ? (
 				<Popover open={flyoutOpen} onOpenChange={setFlyoutOpen}>
-					<div data-testid={`sidebar-flyout-trigger-${slug(item.title)}`}>
+					<div data-testid={`sidebar-flyout-trigger-${item.testId ?? slug(item.title)}`}>
 						{/* The trigger must be the button itself: aria-haspopup/aria-expanded are invalid on a role-less div. */}
 						<PopoverTrigger asChild onMouseEnter={openFlyout} onMouseLeave={closeFlyout}>
 							{menuButton}
@@ -383,7 +383,7 @@ const SidebarItemView = ({
 						className="w-48 p-1"
 						onMouseEnter={openFlyout}
 						onMouseLeave={closeFlyout}
-						data-testid={`sidebar-flyout-content-${slug(item.title)}`}
+						data-testid={`sidebar-flyout-content-${item.testId ?? slug(item.title)}`}
 					>
 						<div className="text-muted-foreground px-2 py-1.5 text-xs font-medium">{item.title}</div>
 						{item.subItems?.map((subItem) => {
@@ -801,7 +801,8 @@ export default function AppSidebar() {
 				],
 			},
 			{
-				title: "MCP Gateway",
+				title: "MCP Servers",
+				testId: "mcp-gateway", // keep the pre-rename E2E selector stable
 				icon: MCPIcon,
 				description: "MCP configuration",
 				url: "/workspace/mcp-gateway",
@@ -1115,11 +1116,27 @@ export default function AppSidebar() {
 							hasAccess: hasPromptRepositoryAccess,
 						},
 						{
-							title: "Skills Repository",
+							title: "Skills",
 							url: "/workspace/skills-repo",
 							icon: BookOpenText,
-							description: "Skills repository",
-							hasAccess: hasSkillsRepositoryAccess,
+							description: "Manage skills and marketplace settings",
+							hasAccess: hasSkillsRepositoryAccess || hasSettingsAccess,
+							subItems: [
+								{
+									title: "Skills Repository",
+									url: "/workspace/skills-repo",
+									icon: BookOpenText,
+									description: "Skills repository",
+									hasAccess: hasSkillsRepositoryAccess,
+								},
+								{
+									title: "Skills Settings",
+									url: "/workspace/config/skills",
+									icon: Settings,
+									description: "Skills marketplace configuration",
+									hasAccess: hasSettingsAccess,
+								},
+							],
 						},
 					]
 				: []),
@@ -1453,7 +1470,7 @@ export default function AppSidebar() {
 		});
 	};
 
-	const configExceptions = ["/workspace/config/logging"];
+	const configExceptions = ["/workspace/config/logging", "/workspace/config/skills"];
 
 	const isActiveRoute = (url: string) => {
 		if (url === "/" && pathname === "/") return true;

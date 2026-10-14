@@ -9,6 +9,7 @@ import { buildMidConvSystemCacheParityFolder } from "./lib/midconv-system-cache-
 import { buildCrossProviderCacheMatrixFolder } from "./lib/crossprovider-cache-matrix.mjs";
 import { buildDirectCacheParityFolder } from "./lib/direct-cache-parity.mjs";
 import { injectChainedVarGuards } from "./lib/chained-vars.mjs";
+import { routeScriptCallsThroughSetupToken } from "./lib/setup-token.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -404,6 +405,12 @@ collection.event.unshift({
   },
 });
 
+// That prerequest reaches only each row's own request. A call a script sends itself through
+// pm.sendRequest - creating a run-scoped provider, key, virtual key or rule, or reading /api/logs -
+// is a separate request, so those scripts are routed through a helper that adds the token to
+// calls aimed at this gateway's /api. See lib/setup-token.mjs.
+const tokenRoutedScripts = routeScriptCallsThroughSetupToken(collection, SETUP_TOKEN_VAR);
+
 writeFileSync(out, `${JSON.stringify(collection, null, 2)}\n`);
 const generatedCount = generatedFolders.reduce((sum, folder) => sum + folder.item.length, 0) + cachingItems.length;
-console.error(`[augment-provider-harness] wrote ${out} with ${generatedCount} generated requests, ${guardedCount} chained-var guards`);
+console.error(`[augment-provider-harness] wrote ${out} with ${generatedCount} generated requests, ${guardedCount} chained-var guards, ${tokenRoutedScripts} scripts sending the setup token`);

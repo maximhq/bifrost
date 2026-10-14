@@ -296,7 +296,7 @@ func (s *WeaviateStore) GetNearest(
 	fields := []graphql.Field{
 		{Name: "_additional", Fields: []graphql.Field{
 			{Name: "id"},
-			{Name: "certainty"},
+			{Name: "distance"},
 		}},
 	}
 
@@ -304,9 +304,12 @@ func (s *WeaviateStore) GetNearest(
 		fields = append(fields, graphql.Field{Name: field})
 	}
 
+	// threshold and the returned score are cosine similarity, the scale every store uses. Classes
+	// use Weaviate's default cosine distance, which is 1 - cosine similarity. Its certainty is
+	// (1 + cosine) / 2, so filtering by certainty would admit cosine 0.6 under a 0.8 threshold.
 	nearVector := s.client.GraphQL().NearVectorArgBuilder().
 		WithVector(vector).
-		WithCertainty(float32(threshold))
+		WithDistance(float32(1 - threshold))
 
 	search := s.client.GraphQL().Get().
 		WithClassName(className).
@@ -372,20 +375,18 @@ func (s *WeaviateStore) GetNearest(
 			continue
 		}
 
-		// Safely extract certainty/score with default value
+		// Score is cosine similarity, 1 - cosine distance; 0 if the distance is missing or unreadable.
 		var score float64
-		if certaintyRaw, exists := additional["certainty"]; exists && certaintyRaw != nil {
-			switch v := certaintyRaw.(type) {
+		if distanceRaw, exists := additional["distance"]; exists && distanceRaw != nil {
+			switch v := distanceRaw.(type) {
 			case float64:
-				score = v
+				score = 1 - v
 			case float32:
-				score = float64(v)
+				score = 1 - float64(v)
 			case int:
-				score = float64(v)
+				score = 1 - float64(v)
 			case int64:
-				score = float64(v)
-			default:
-				score = 0.0 // Default score if type conversion fails
+				score = 1 - float64(v)
 			}
 		}
 
@@ -533,6 +534,33 @@ func newWeaviateStore(ctx context.Context, config *WeaviateConfig, logger schema
 	return store, nil
 }
 
+// checkStoredVectorDimension refuses to reopen a class at a dimension other than the one its
+// vectors already have, as every store does. Weaviate keeps no dimension on the class itself (the
+// HNSW config ignores a vectorDimensions key), so one stored vector is sampled instead. An empty
+// class has nothing to compare and passes. A failed sample is logged and the check skipped, as
+// Qdrant does when it cannot inspect a collection, so a transient read error never blocks startup.
+func (s *WeaviateStore) checkStoredVectorDimension(ctx context.Context, className string, dimension int) error {
+	if dimension <= 0 {
+		return nil
+	}
+	objects, err := s.client.Data().ObjectsGetter().
+		WithClassName(className).
+		WithLimit(1).
+		WithVector().
+		Do(ctx)
+	if err != nil {
+		s.logger.Warn(fmt.Sprintf("could not sample class %q for dimension validation (check skipped): %v", className, err))
+		return nil
+	}
+	if len(objects) == 0 || objects[0] == nil || len(objects[0].Vector) == 0 {
+		return nil
+	}
+	if existing := len(objects[0].Vector); existing != dimension {
+		return dimensionMismatchError(className, existing, dimension, "class")
+	}
+	return nil
+}
+
 func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, dimension int, properties map[string]VectorStoreProperties) error {
 	// Reject names Weaviate would silently auto-capitalize: writes via REST
 	// route fine, but the GraphQL read path is case-strict and breaks.
@@ -549,7 +577,7 @@ func (s *WeaviateStore) CreateNamespace(ctx context.Context, className string, d
 	}
 
 	if exists {
-		return nil
+		return s.checkStoredVectorDimension(ctx, className, dimension)
 	}
 
 	// Create properties

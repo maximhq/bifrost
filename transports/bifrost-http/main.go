@@ -64,10 +64,10 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	"github.com/maximhq/bifrost/transports/bifrost-http/profiling"
-	bifrostServer "github.com/maximhq/bifrost/transports/bifrost-http/server"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/profiling"
+	bifrostServer "github.com/maximhq/bifrost/transports/v2/bifrost-http/server"
 )
 
 //go:embed all:ui

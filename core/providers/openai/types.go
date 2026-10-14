@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/bytedance/sonic"
@@ -151,6 +152,244 @@ func (r *OpenAIEmbeddingRequest) GetExtraParams() map[string]interface{} {
 func (r *OpenAIEmbeddingRequest) SetExtraParams(params map[string]interface{}) {
 	r.ExtraParams = params
 	r.EmbeddingParameters.ExtraParams = params
+}
+
+// OpenAIDecisionRequest is the body of OpenAI's POST /v1/decisions, and of
+// Bifrost's /openai/v1/decisions route. Its input is the shared decision
+// input, whose text and message forms are OpenAI's; its questions are OpenAI's
+// own, which take text only and have no criteria. A top-level field this type
+// does not model is kept in ExtraParams, so a field a newer SDK sends reaches
+// the provider rather than being dropped.
+type OpenAIDecisionRequest struct {
+	Model            string                   `json:"model"`
+	Input            schemas.DecisionInput    `json:"input"`
+	Questions        []OpenAIDecisionQuestion `json:"questions"`
+	SafetyIdentifier *string                  `json:"safety_identifier,omitempty"`
+	Fallbacks        []string                 `json:"fallbacks,omitempty"` // Bifrost routing only; never sent upstream
+	ExtraParams      map[string]interface{}   `json:"-"`                   // native extensions, merged onto the wire under the passthrough flag
+}
+
+// OpenAIDecisionQuestion is one question of OpenAI's decisions request: text
+// instructions and, by type, choices or levels described in text. Unlike the
+// shared question it has no criteria and no structured values, so
+// ToOpenAIDecisionRequest renders both as text.
+type OpenAIDecisionQuestion struct {
+	Type         schemas.DecisionType   `json:"type"`
+	Name         *string                `json:"name,omitempty"`
+	Instructions string                 `json:"instructions"`
+	Choices      []OpenAIDecisionChoice `json:"choices,omitempty"`
+	Levels       []OpenAIDecisionLevel  `json:"levels,omitempty"`
+
+	unknown []string // fields sent that OpenAI's question does not define
+}
+
+// UnmarshalJSON decodes the question and records the fields OpenAI's question
+// does not define (Typesafe's criteria, say), so the route can reject them by
+// name rather than drop them unseen.
+func (q *OpenAIDecisionQuestion) UnmarshalJSON(data []byte) error {
+	type alias OpenAIDecisionQuestion
+	if err := sonic.Unmarshal(data, (*alias)(q)); err != nil {
+		return err
+	}
+	q.unknown = unknownJSONFields(data, "type", "name", "instructions", "choices", "levels")
+	return nil
+}
+
+// OpenAIDecisionChoice is one option of a choice question: a string or boolean
+// value and an optional text description.
+type OpenAIDecisionChoice struct {
+	Value       schemas.DecisionScalar `json:"value"`
+	Description *string                `json:"description,omitempty"`
+
+	unknown []string // fields sent that OpenAI's choice does not define
+}
+
+// UnmarshalJSON decodes the choice and records the fields OpenAI's choice does
+// not define.
+func (c *OpenAIDecisionChoice) UnmarshalJSON(data []byte) error {
+	type alias OpenAIDecisionChoice
+	if err := sonic.Unmarshal(data, (*alias)(c)); err != nil {
+		return err
+	}
+	c.unknown = unknownJSONFields(data, "value", "description")
+	return nil
+}
+
+// OpenAIDecisionLevel is one ordered level of a score question: a label and an
+// optional text description.
+type OpenAIDecisionLevel struct {
+	Label       string  `json:"label"`
+	Description *string `json:"description,omitempty"`
+
+	unknown []string // fields sent that OpenAI's level does not define
+}
+
+// UnmarshalJSON decodes the level and records the fields OpenAI's level does
+// not define.
+func (l *OpenAIDecisionLevel) UnmarshalJSON(data []byte) error {
+	type alias OpenAIDecisionLevel
+	if err := sonic.Unmarshal(data, (*alias)(l)); err != nil {
+		return err
+	}
+	l.unknown = unknownJSONFields(data, "label", "description")
+	return nil
+}
+
+// unknownJSONFields returns the keys of a JSON object that are not among
+// known, in the order sent.
+func unknownJSONFields(data []byte, known ...string) []string {
+	var unknown []string
+	gjson.ParseBytes(data).ForEach(func(key, _ gjson.Result) bool {
+		if !slices.Contains(known, key.String()) {
+			unknown = append(unknown, key.String())
+		}
+		return true
+	})
+	return unknown
+}
+
+// openAIDecisionRequestKnownFields are the top-level keys OpenAIDecisionRequest
+// models; any other key is kept in ExtraParams.
+var openAIDecisionRequestKnownFields = map[string]bool{
+	"model":             true,
+	"input":             true,
+	"questions":         true,
+	"safety_identifier": true,
+	"fallbacks":         true,
+}
+
+// UnmarshalJSON decodes the modelled fields and keeps every other top-level
+// field, compacted, in ExtraParams.
+func (r *OpenAIDecisionRequest) UnmarshalJSON(data []byte) error {
+	type alias OpenAIDecisionRequest
+	if err := sonic.Unmarshal(data, (*alias)(r)); err != nil {
+		return err
+	}
+	r.ExtraParams = nil
+	gjson.ParseBytes(data).ForEach(func(key, value gjson.Result) bool {
+		name := key.String()
+		if openAIDecisionRequestKnownFields[name] {
+			return true
+		}
+		if r.ExtraParams == nil {
+			r.ExtraParams = make(map[string]interface{})
+		}
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, []byte(value.Raw)); err == nil {
+			r.ExtraParams[name] = json.RawMessage(compact.Bytes())
+		} else {
+			r.ExtraParams[name] = json.RawMessage(value.Raw)
+		}
+		return true
+	})
+	return nil
+}
+
+// GetExtraParams implements providerUtils.RequestBodyWithExtraParams.
+func (r *OpenAIDecisionRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// OpenAIDecisionResponse is the body of a successful POST /v1/decisions
+// response from OpenAI, its Decision object: it has no id. Answers are the
+// shared decision answers, whose JSON is OpenAI's. It is decoded from OpenAI's
+// reply; the /openai/v1/decisions route renders OpenAIDecisionRouteResponse
+// instead.
+type OpenAIDecisionResponse struct {
+	Model   string                 `json:"model"`
+	Answers []OpenAIDecisionAnswer `json:"answers"`
+	Usage   *OpenAIDecisionUsage   `json:"usage,omitempty"`
+}
+
+// OpenAIDecisionRouteResponse is a normalized decision response on the
+// /openai/v1/decisions route: the response itself (model, Laya's routing, and
+// Bifrost's extra_fields, as on the other OpenAI routes), with only the fields
+// OpenAI shapes differently replaced. It follows the chat route's
+// openAIChatResponse, so a field added to BifrostDecisionResponse reaches this
+// route without being copied here.
+type OpenAIDecisionRouteResponse struct {
+	*schemas.BifrostDecisionResponse
+	// Answers replaces the shared answers so an unnamed one carries name null.
+	Answers []OpenAIDecisionAnswer `json:"answers"`
+	// Usage replaces Bifrost's usage with OpenAI's names and token details.
+	Usage *OpenAIDecisionUsage `json:"usage,omitempty"`
+}
+
+// OpenAIDecisionAnswer is a decision answer on OpenAI's wire, where name is
+// always present and null for an unnamed question. The shared answer omits an
+// absent name, which is the normalized /v1/decisions shape.
+type OpenAIDecisionAnswer struct {
+	schemas.DecisionAnswer
+}
+
+// MarshalJSON writes the answer with name set to null when the question had
+// none.
+func (a OpenAIDecisionAnswer) MarshalJSON() ([]byte, error) {
+	if a.Name != nil {
+		return sonic.Marshal(a.DecisionAnswer)
+	}
+	type answer schemas.DecisionAnswer
+	return sonic.Marshal(struct {
+		Type schemas.DecisionType `json:"type"`
+		Name *string              `json:"name"`
+		answer
+	}{Type: a.Type, answer: answer(a.DecisionAnswer)})
+}
+
+// OpenAIDecisionUsage is the token usage of a decisions response. The token
+// details (cached input tokens among them) are OpenAI's and are kept both ways.
+type OpenAIDecisionUsage struct {
+	InputTokens         int                                    `json:"input_tokens"`
+	InputTokensDetails  *schemas.ResponsesResponseInputTokens  `json:"input_tokens_details,omitempty"`
+	OutputTokens        int                                    `json:"output_tokens"`
+	OutputTokensDetails *schemas.ResponsesResponseOutputTokens `json:"output_tokens_details,omitempty"`
+	TotalTokens         int                                    `json:"total_tokens"`
+
+	// Laya-specific fields
+	StateTokens        *int     `json:"state_tokens,omitempty"`
+	StateTokensDropped *int     `json:"state_tokens_dropped,omitempty"`
+	Truncated          *bool    `json:"truncated,omitempty"`
+	TruncatedQuestions []string `json:"truncated_questions,omitempty"`
+}
+
+// ToBifrostLLMUsage converts the usage into Bifrost's shape, or nil. The token
+// counts and details map as for a Responses usage.
+func (u *OpenAIDecisionUsage) ToBifrostLLMUsage() *schemas.BifrostLLMUsage {
+	if u == nil {
+		return nil
+	}
+	usage := (&schemas.ResponsesResponseUsage{
+		InputTokens:         u.InputTokens,
+		InputTokensDetails:  u.InputTokensDetails,
+		OutputTokens:        u.OutputTokens,
+		OutputTokensDetails: u.OutputTokensDetails,
+		TotalTokens:         u.TotalTokens,
+	}).ToBifrostLLMUsage()
+	usage.StateTokens = u.StateTokens
+	usage.StateTokensDropped = u.StateTokensDropped
+	usage.Truncated = u.Truncated
+	usage.TruncatedQuestions = u.TruncatedQuestions
+	return usage
+}
+
+// toOpenAIDecisionUsage converts Bifrost's usage into the decisions shape, or
+// nil.
+func toOpenAIDecisionUsage(u *schemas.BifrostLLMUsage) *OpenAIDecisionUsage {
+	if u == nil {
+		return nil
+	}
+	tokens := u.ToResponsesResponseUsage()
+	return &OpenAIDecisionUsage{
+		InputTokens:         tokens.InputTokens,
+		InputTokensDetails:  tokens.InputTokensDetails,
+		OutputTokens:        tokens.OutputTokens,
+		OutputTokensDetails: tokens.OutputTokensDetails,
+		TotalTokens:         tokens.TotalTokens,
+		StateTokens:         u.StateTokens,
+		StateTokensDropped:  u.StateTokensDropped,
+		Truncated:           u.Truncated,
+		TruncatedQuestions:  u.TruncatedQuestions,
+	}
 }
 
 // OpenAIRerankRequest represents an OpenAI-compatible rerank request
@@ -656,19 +895,30 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				// as an array of content blocks and has to be flattened here.
 				// Strict upstream implementations (e.g. Ollama Cloud) return a
 				// 400 otherwise.
-				if msg.ResponsesToolMessage.Output != nil &&
-					msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil &&
-					isFunctionCallOutputBlocksFlattenable(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) {
-					flattened := flattenFunctionCallOutputBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+				// tool_reference is Anthropic-only; OpenAI has no block for it.
+				var outputBlocks []schemas.ResponsesMessageContentBlock
+				hadToolReferences := false
+				if msg.ResponsesToolMessage.Output != nil {
+					outputBlocks, hadToolReferences = withoutToolReferenceBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+				}
+				if hadToolReferences && len(outputBlocks) == 0 {
+					empty := ""
+					outputCopy := *msg.ResponsesToolMessage.Output
+					outputCopy.ResponsesToolCallOutputStr = &empty
+					outputCopy.ResponsesFunctionToolCallOutputBlocks = nil
+					toolMsgCopy.Output = &outputCopy
+					toolMsgModified = true
+				} else if outputBlocks != nil && isFunctionCallOutputBlocksFlattenable(outputBlocks) {
+					flattened := flattenFunctionCallOutputBlocks(outputBlocks)
 					outputCopy := *msg.ResponsesToolMessage.Output
 					outputCopy.ResponsesToolCallOutputStr = &flattened
 					outputCopy.ResponsesFunctionToolCallOutputBlocks = nil
 					toolMsgCopy.Output = &outputCopy
 					toolMsgModified = true
-				} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+				} else if outputBlocks != nil {
 					// Strip CacheControl and FileType from tool message output blocks if needed
-					hasToolModification := false
-					for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+					hasToolModification := hadToolReferences
+					for _, block := range outputBlocks {
 						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
 							hasToolModification = true
 							break
@@ -677,8 +927,8 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 					if hasToolModification {
 						outputCopy := *msg.ResponsesToolMessage.Output
-						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
-						for j, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(outputBlocks))
+						for j, block := range outputBlocks {
 							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
 							if needsBlockCopy {
 								blockCopy := block
@@ -796,7 +1046,14 @@ func hasAnthropicOnlyResponsesToolFlags(t schemas.ResponsesTool, keepDeferLoadin
 		responsesToolCallersNeedRewrite(t) ||
 		len(t.InputExamples) > 0 ||
 		t.EagerInputStreaming != nil ||
-		(t.ResponsesToolCodeInterpreter != nil && t.ResponsesToolCodeInterpreter.Version != nil)
+		(t.ResponsesToolCodeInterpreter != nil && t.ResponsesToolCodeInterpreter.Version != nil) ||
+		hasAnthropicMCPToolsetConfig(t)
+}
+
+// hasAnthropicMCPToolsetConfig reports whether an MCP tool carries the Anthropic mcp_toolset
+// configuration (default_config / tool_configs), which OpenAI's mcp tool does not accept.
+func hasAnthropicMCPToolsetConfig(t schemas.ResponsesTool) bool {
+	return t.ResponsesToolMCP != nil && (t.ResponsesToolMCP.DefaultConfig != nil || len(t.ResponsesToolMCP.ToolConfigs) > 0)
 }
 
 // responsesToolCallersNeedRewrite reports whether allowed_callers has to change
@@ -944,6 +1201,9 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 				return true
 			}
 			for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+				if block.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+					return true
+				}
 				if block.CacheControl != nil {
 					return true
 				}
@@ -987,6 +1247,23 @@ func isFunctionCallOutputBlocksFlattenable(blocks []schemas.ResponsesMessageCont
 		}
 	}
 	return true
+}
+
+// withoutToolReferenceBlocks returns blocks minus any tool_reference blocks and
+// whether any were removed. The input slice is returned unchanged when none are.
+func withoutToolReferenceBlocks(blocks []schemas.ResponsesMessageContentBlock) ([]schemas.ResponsesMessageContentBlock, bool) {
+	if !slices.ContainsFunc(blocks, func(b schemas.ResponsesMessageContentBlock) bool {
+		return b.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference
+	}) {
+		return blocks, false
+	}
+	filtered := make([]schemas.ResponsesMessageContentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type != schemas.ResponsesInputMessageContentBlockTypeToolReference {
+			filtered = append(filtered, block)
+		}
+	}
+	return filtered, true
 }
 
 // flattenFunctionCallOutputBlocks concatenates the text of every block in the
@@ -1119,6 +1396,12 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 				}
 				toolCopy.InputExamples = nil
 				toolCopy.EagerInputStreaming = nil
+				if hasAnthropicMCPToolsetConfig(toolCopy) {
+					mcpCopy := *toolCopy.ResponsesToolMCP
+					mcpCopy.DefaultConfig = nil
+					mcpCopy.ToolConfigs = nil
+					toolCopy.ResponsesToolMCP = &mcpCopy
+				}
 				if toolCopy.ResponsesToolCodeInterpreter != nil && toolCopy.ResponsesToolCodeInterpreter.Version != nil {
 					ciCopy := *toolCopy.ResponsesToolCodeInterpreter
 					ciCopy.Version = nil

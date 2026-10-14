@@ -14,6 +14,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"gorm.io/gorm"
 )
@@ -489,6 +490,17 @@ func (s *testConfigStore) GetMCPClientConfigByID(_ context.Context, id string) (
 		return nil, nil
 	}
 	return cfg, nil
+}
+
+func (s *testConfigStore) GetMCPClientByOauthConfigID(_ context.Context, oauthConfigID string) (*tables.TableMCPClient, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, cfg := range s.mcpClients {
+		if cfg.OauthConfigID != nil && *cfg.OauthConfigID == oauthConfigID {
+			return &tables.TableMCPClient{ClientID: cfg.ID, OauthConfigID: cfg.OauthConfigID, RequirePublicTarget: cfg.RequirePublicTarget}, nil
+		}
+	}
+	return nil, configstore.ErrNotFound
 }
 
 func TestRetainAndRefreshExchangeAdminCredential(t *testing.T) {

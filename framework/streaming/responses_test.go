@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -623,7 +624,6 @@ func TestBuildResponsesMessagePreservesCustomToolCallInput(t *testing.T) {
 	}
 }
 
-
 // TestBuildResponsesMessageKeepsShellCallPayload covers a streamed shell turn.
 // The item deep copy lists every action variant by hand, so a missing shell
 // branch left the assembled log row with an empty action and no commands.
@@ -732,4 +732,27 @@ func TestBuildResponsesMessageKeepsShellCallOutput(t *testing.T) {
 	require.Equal(t, "hello\n", output.ResponsesShellCallOutput[0].Stdout)
 	require.Equal(t, 0, *output.ResponsesShellCallOutput[0].Outcome.ExitCode)
 	require.Equal(t, 1000, *msgs[0].ResponsesToolMessage.ResponsesShellCall.MaxOutputLength)
+}
+
+// TestResponsesStreamRetainsStopReason reproduces a synthetic refusal followed by a metadata-only terminal chunk.
+func TestResponsesStreamRetainsStopReason(t *testing.T) {
+	for _, reason := range []string{"refusal", "content_filter", "stop", "future_reason"} {
+		t.Run(reason, func(t *testing.T) {
+			acc := testResponsesAccumulator(t)
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			ctx.SetValue(schemas.BifrostContextKeyAccumulatorID, "stop-"+reason)
+			response := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Response: &schemas.BifrostResponsesResponse{StopReason: schemas.Ptr(reason)},
+			}}
+			_, err := acc.processResponsesStreamingResponse(ctx, response, nil)
+			require.NoError(t, err)
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			tail := &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{}}
+			tail.ResponsesStreamResponse.ExtraFields.ChunkIndex = 1
+			got, err := acc.processResponsesStreamingResponse(ctx, tail, nil)
+			require.NoError(t, err)
+			require.NotNil(t, got.Data.FinishReason)
+			require.Equal(t, reason, *got.Data.FinishReason)
+		})
+	}
 }

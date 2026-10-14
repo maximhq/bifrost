@@ -12,6 +12,10 @@ import (
 // servers (governed by MCPClientConfig.AuthType).
 type MCPServerAuthMode string
 
+// AllowAnyRedirectURI as an allowed_redirect_uris entry approves every remote
+// callback that passes the redirect URI shape checks.
+const AllowAnyRedirectURI = "*"
+
 const (
 	DefaultAuthCodeTTL    = 300 // 5 minutes
 	MaxAuthCodeTTL        = 900 // 15 minutes — hard ceiling; enforced at config save and at code issuance
@@ -40,7 +44,7 @@ const (
 // MCPServerAuthMode is MCPServerAuthModeBoth or MCPServerAuthModeOAuth.
 // Not a table of its own.
 type OAuth2ServerConfig struct {
-	AllowedRedirectURIs []string `json:"allowed_redirect_uris,omitempty"` // Exact administrator-approved remote callbacks.
+	AllowedRedirectURIs []string `json:"allowed_redirect_uris,omitempty"` // Exact administrator-approved remote callbacks, or AllowAnyRedirectURI.
 	// IssuerURL is Bifrost's OAuth authorization-server identity — it appears
 	// as the `issuer` in discovery documents and as the `iss` claim in every
 	// issued JWT. Supports env var syntax ("env.MY_VAR"). Required whenever MCP

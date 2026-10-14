@@ -1975,6 +1975,14 @@ PricingPatch:
     output_cost_per_token_flex:
       type: number
       minimum: 0
+    input_cost_per_token_decisions:
+      type: number
+      minimum: 0
+      description: Input token cost for decision requests. A decision rate always wins over input_cost_per_token, whether it comes from the datasheet or an override; input_cost_per_token is only the fallback when no decision rate is set.
+    output_cost_per_token_decisions:
+      type: number
+      minimum: 0
+      description: Output token cost for decision requests. A decision rate always wins over output_cost_per_token, whether it comes from the datasheet or an override; output_cost_per_token is only the fallback when no decision rate is set.
     input_cost_per_token_fast:
       type: number
       minimum: 0
@@ -2000,6 +2008,13 @@ PricingPatch:
       type: number
       minimum: 0
     output_cost_per_token_above_128k_tokens:
+      type: number
+      minimum: 0
+    # Costs - 100k Tier
+    input_cost_per_token_above_100k_tokens:
+      type: number
+      minimum: 0
+    output_cost_per_token_above_100k_tokens:
       type: number
       minimum: 0
     # Costs - 200k Tier
@@ -2060,6 +2075,15 @@ PricingPatch:
       type: number
       minimum: 0
     cache_creation_input_token_cost_above_1hr_above_200k_tokens:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_above_100k_tokens:
+      type: number
+      minimum: 0
+    cache_read_input_token_cost_above_100k_tokens:
+      type: number
+      minimum: 0
+    cache_creation_input_token_cost_above_1hr_above_100k_tokens:
       type: number
       minimum: 0
     cache_creation_input_audio_token_cost:
@@ -2692,10 +2716,10 @@ ComplexityDecisionConfig:
   properties:
     provider:
       type: string
-      description: Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`.
+      description: Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`.
     model:
       type: string
-      description: Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`.
+      description: Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`.
     previous_message_count:
       type: integer
       minimum: 0

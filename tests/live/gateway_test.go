@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,12 @@ func apiCall(method, path string, body any, headers map[string]string) (int, []b
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// OSS setup lock: /api needs the setup token while dashboard auth is not active; a deployed
+	// gateway with dashboard auth needs the admin's Authorization header instead.
+	req.Header.Set("X-Bifrost-Setup-Token", setupToken())
+	if auth := os.Getenv("BIFROST_ADMIN_AUTH"); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
@@ -46,6 +53,15 @@ func apiCall(method, path string, body any, headers map[string]string) (int, []b
 	return resp.StatusCode, raw, err
 }
 
+// setupToken returns the setup token the live test gateway is configured with
+// (tests/live/config.json setup_token), overridable through the environment.
+func setupToken() string {
+	if v := os.Getenv("BIFROST_SETUP_TOKEN"); v != "" {
+		return v
+	}
+	return "bifrost-live-setup-token"
+}
+
 func mustAPI(t *testing.T, method, path string, body any) gjson.Result {
 	t.Helper()
 	status, raw, err := apiCall(method, path, body, nil)
@@ -56,6 +72,8 @@ func mustAPI(t *testing.T, method, path string, body any) gjson.Result {
 
 // virtualKeySpec is what a test needs of a key: which models it may use and what it may spend.
 type virtualKeySpec struct {
+	provider        string   // the one provider config's provider; openai when empty
+	keyNames        []string // the provider keys the virtual key may use; every key when empty
 	allowedModels   []string
 	budgetUSD       *float64
 	requestMaxLimit *int64
@@ -75,9 +93,17 @@ func createVirtualKey(t *testing.T, spec virtualKeySpec) virtualKey {
 	if len(allowed) == 0 {
 		allowed = []string{"*"}
 	}
+	provider := spec.provider
+	if provider == "" {
+		provider = "openai"
+	}
+	keyIDs := []string{"*"}
+	if len(spec.keyNames) > 0 {
+		keyIDs = providerKeyIDs(t, provider, spec.keyNames)
+	}
 	body := map[string]any{
 		"name":             "live-e2e " + t.Name() + " " + fmt.Sprint(time.Now().UnixNano()),
-		"provider_configs": []any{map[string]any{"provider": "openai", "weight": 1.0, "allowed_models": allowed, "key_ids": []string{"*"}}},
+		"provider_configs": []any{map[string]any{"provider": provider, "weight": 1.0, "allowed_models": allowed, "key_ids": keyIDs}},
 	}
 	if spec.budgetUSD != nil {
 		body["budgets"] = []any{map[string]any{"max_limit": *spec.budgetUSD, "reset_duration": "1h"}}
@@ -112,6 +138,19 @@ func createVirtualKey(t *testing.T, spec virtualKeySpec) virtualKey {
 		}
 	})
 	return vk
+}
+
+// providerKeyIDs resolves provider key names to the ids a virtual key's key_ids names.
+func providerKeyIDs(t *testing.T, provider string, names []string) []string {
+	t.Helper()
+	resp := mustAPI(t, http.MethodGet, "/api/providers/"+provider+"/keys", nil)
+	ids := make([]string, 0, len(names))
+	for _, name := range names {
+		id := resp.Get(`keys.#(name=="` + name + `").id`).Str
+		require.NotEmpty(t, id, "provider %s has no key named %s: %.300s", provider, name, resp.Raw)
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 // waitBudgetUsage waits for a budget to reflect a spend; governance records it asynchronously.
@@ -243,6 +282,45 @@ func liveLogRows(t *testing.T, providerSessionID string) []gjson.Result {
 
 // contentRowSessionOf caches which provider session each download row belongs to.
 var contentRowSessionOf sync.Map
+
+// sidebandRowOwner caches which provider session and virtual key each sideband row belongs to.
+var sidebandRowOwner sync.Map
+
+// findSidebandLog waits for the row a sideband on the session wrote under the virtual key, with
+// the row status named by wantStatus when it is not empty.
+func findSidebandLog(t *testing.T, providerSessionID, virtualKeyID, wantStatus string) gjson.Result {
+	t.Helper()
+	deadline := time.Now().Add(rowWaitTimeout)
+	for {
+		status, raw, err := apiCall(http.MethodGet, "/api/logs?objects=live_sideband&limit=500&start_time="+suiteStart.Format(time.RFC3339Nano), nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "list logs: %s", raw)
+		var matches []gjson.Result
+		for _, summary := range gjson.GetBytes(raw, "logs").Array() {
+			id := summary.Get("id").Str
+			owner, known := sidebandRowOwner.Load(id)
+			if !known {
+				row := fetchLog(t, id)
+				owner = row.Get("metadata.provider_session_id").Str + "|" + row.Get("virtual_key_id").Str
+				sidebandRowOwner.Store(id, owner)
+			}
+			if owner != providerSessionID+"|"+virtualKeyID {
+				continue
+			}
+			if row := fetchLog(t, id); wantStatus == "" || row.Get("status").Str == wantStatus {
+				matches = append(matches, row)
+			}
+		}
+		require.LessOrEqual(t, len(matches), 1, "one sideband logs one row, found %d for %s", len(matches), providerSessionID)
+		if len(matches) == 1 {
+			return matches[0]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no %s live_sideband row for session %s under virtual key %s", wantStatus, providerSessionID, virtualKeyID)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
 
 // findContentLog waits for the row a recording download leaves, found by the provider's session
 // id in its metadata. A download is a request of its own, so it never shares the session's row.

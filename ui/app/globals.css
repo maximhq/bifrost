@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "streamdown/styles.css";
 
 @source "../app/**/*.tsx";
 @source "../node_modules/streamdown/dist/*.js";
@@ -640,6 +641,44 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 	right: 0 !important;
 	transform: translate(35%, -35%) !important;
 }
+/* Warp motion.
+
+   An underdamped spring (bounce 0.22) sampled into linear(). It overshoots by 2%
+   and settles visually around 250ms; the 500ms durations below cover its tail.
+   Browsers without linear() leave the property unset and each rule falls back
+   to ease-out-quart. */
+@supports (animation-timing-function: linear(0, 1)) {
+	:root {
+		--warp-spring: linear(
+			0,
+			0.046,
+			0.154,
+			0.289,
+			0.43,
+			0.563,
+			0.679,
+			0.775,
+			0.852,
+			0.91,
+			0.952,
+			0.982,
+			1.001,
+			1.012,
+			1.018,
+			1.02,
+			1.019,
+			1.017,
+			1.015,
+			1.012,
+			1.009,
+			1.007,
+			1.005,
+			1.003,
+			1
+		);
+	}
+}
+
 /* A turn arriving in the Warp transcript.
 
    It rises rather than fades alone: the transcript grows downward, so a message
@@ -658,14 +697,111 @@ div.content-container:has(.no-border-parent) #trial-notification-banner {
 	}
 }
 
+/* The reply waits a beat after the sent message, the way a typing indicator
+   follows a send, so the two do not land as one block. */
 .warp-message-in {
-	animation: warp-message-in 180ms ease-out;
+	animation: warp-message-in 200ms ease-out 120ms both;
 }
 
-/* Reduced motion keeps the message, drops the travel. Vestibular triggers come
-   from movement, not from opacity, so the fade is safe to keep. */
+/* A message the user just sent. It springs up out of the composer with a small
+   overshoot, growing from the bottom right where the send button sits. */
+@keyframes warp-message-send {
+	from {
+		opacity: 0;
+		transform: translateY(20px) scale(0.94);
+	}
+	40% {
+		opacity: 1;
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.warp-message-send {
+	transform-origin: bottom right;
+	animation: warp-message-send 500ms var(--warp-spring, cubic-bezier(0.165, 0.84, 0.44, 1));
+}
+
+/* A piece of a live answer: a tool row, a chart. Shorter travel than a message,
+   since it lands inside one that is already on screen. */
+@keyframes warp-reveal {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.warp-reveal {
+	animation: warp-reveal 220ms cubic-bezier(0.165, 0.84, 0.44, 1) both;
+}
+
+/* A tool call's spinner resolving into a check or a warning. */
+@keyframes warp-pop {
+	from {
+		opacity: 0;
+		transform: scale(0.4);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+
+.warp-pop {
+	animation: warp-pop 500ms var(--warp-spring, cubic-bezier(0.165, 0.84, 0.44, 1)) both;
+}
+
+/* A finished lookup's check drawing itself in, the way a pen stroke lands:
+   fast at the start, easing into the end of the tick. */
+@keyframes warp-check-draw {
+	from {
+		stroke-dashoffset: 1;
+	}
+	to {
+		stroke-dashoffset: 0;
+	}
+}
+
+.warp-check-draw {
+	stroke-dasharray: 1;
+	animation: warp-check-draw 320ms cubic-bezier(0.165, 0.84, 0.44, 1) both;
+}
+
+@keyframes warp-fade-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+.warp-fade-in {
+	animation: warp-fade-in 200ms ease-out both;
+}
+
+/* Thinking shows in the gaps between lookups. The delay keeps a gap shorter than
+   it from flashing the row in and straight back out. */
+.warp-thinking-in {
+	animation: warp-fade-in 200ms ease-out 200ms both;
+}
+
+/* [data-sd-animate] is the span streamdown wraps around each streamed word. */
 @media (prefers-reduced-motion: reduce) {
-	.warp-message-in {
+	.warp-message-in,
+	.warp-message-send,
+	.warp-reveal,
+	.warp-pop,
+	.warp-check-draw,
+	.warp-fade-in,
+	.warp-thinking-in,
+	[data-sd-animate] {
 		animation: none;
 	}
 }

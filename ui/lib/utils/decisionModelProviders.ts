@@ -4,10 +4,11 @@ import type { ModelProvider } from "@/lib/types/config";
 
 // Decision-model provider detection, for the Complexity Router only.
 //
-// Laya, Nimble, and Clef (on Cloudflare Workers AI) are decision models. Operators reach them by
-// adding a CUSTOM provider on the Typesafe base format, because none of them is a first-class
-// provider. Custom providers have no logo of their own: the name is whatever the operator typed,
-// and the base format would give all three Typesafe's mark. These helpers recognise which of the
+// Laya, Nimble, and Clef are decision models. Operators reach Laya and Nimble by adding a CUSTOM
+// provider on the Typesafe base format, because neither is a first-class provider. Clef is served
+// by the first-class cloudflare provider, but setups that predate it reach it the same custom way,
+// so it is still recognised here. Custom providers have no logo of their own: the name is whatever
+// the operator typed, and the base format would give all three Typesafe's mark. These helpers recognise which of the
 // three model families a custom provider serves, so surfaces that list decision providers can show
 // that family's logo instead.
 //

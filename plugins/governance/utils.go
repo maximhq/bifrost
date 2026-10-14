@@ -4,6 +4,7 @@ package governance
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -57,7 +58,7 @@ func IsModelRequiredForRequest(requestType schemas.RequestType) bool {
 	// Responses retrieve/delete/cancel/input_items target a response_id, not a model.
 	// Video edit's model is optional too — the OpenAI SDKs send none and the provider infers it from
 	// the source video — so it is evaluated only when the caller supplies one, same as passthrough.
-	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.CachedContentListRequest || requestType == schemas.CachedContentRetrieveRequest || requestType == schemas.CachedContentUpdateRequest || requestType == schemas.CachedContentDeleteRequest || requestType == schemas.ResponsesRetrieveRequest || requestType == schemas.ResponsesRetrieveStreamRequest || requestType == schemas.ResponsesDeleteRequest || requestType == schemas.ResponsesCancelRequest || requestType == schemas.ResponsesInputItemsRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.VideoEditRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest || requestType == schemas.LiveContentRequest {
+	if requestType == schemas.ListModelsRequest || requestType == schemas.MCPToolExecutionRequest || requestType == schemas.BatchCreateRequest || requestType == schemas.BatchListRequest || requestType == schemas.BatchRetrieveRequest || requestType == schemas.BatchCancelRequest || requestType == schemas.BatchResultsRequest || requestType == schemas.FileUploadRequest || requestType == schemas.FileListRequest || requestType == schemas.FileRetrieveRequest || requestType == schemas.FileDeleteRequest || requestType == schemas.FileContentRequest || requestType == schemas.ContainerCreateRequest || requestType == schemas.ContainerListRequest || requestType == schemas.ContainerRetrieveRequest || requestType == schemas.ContainerDeleteRequest || requestType == schemas.ContainerFileCreateRequest || requestType == schemas.ContainerFileListRequest || requestType == schemas.ContainerFileRetrieveRequest || requestType == schemas.ContainerFileContentRequest || requestType == schemas.ContainerFileDeleteRequest || requestType == schemas.CachedContentListRequest || requestType == schemas.CachedContentRetrieveRequest || requestType == schemas.CachedContentUpdateRequest || requestType == schemas.CachedContentDeleteRequest || requestType == schemas.ResponsesRetrieveRequest || requestType == schemas.ResponsesRetrieveStreamRequest || requestType == schemas.ResponsesDeleteRequest || requestType == schemas.ResponsesCancelRequest || requestType == schemas.ResponsesInputItemsRequest || requestType == schemas.VideoRetrieveRequest || requestType == schemas.VideoDownloadRequest || requestType == schemas.VideoListRequest || requestType == schemas.VideoDeleteRequest || requestType == schemas.VideoRemixRequest || requestType == schemas.VideoEditRequest || requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest || requestType == schemas.LiveContentRequest || requestType == schemas.LiveSidebandRequest {
 		return false
 	}
 	return true
@@ -66,14 +67,22 @@ func IsModelRequiredForRequest(requestType schemas.RequestType) bool {
 // batchModelBoundByProvider reports whether a provider's batch API runs the model named on the
 // batch create request. Gemini (models/{m}:batchGenerateContent), Vertex (job model) and Bedrock
 // (required modelId) do; OpenAI and Azure take only the uploaded input, whose rows each name their
-// own model, so the request's model is at most a pricing hint there.
-func batchModelBoundByProvider(provider schemas.ModelProvider) bool {
-	switch provider {
+// own model, so the request's model is at most a pricing hint there. A custom provider runs its
+// base provider's batch API under its own name, so it is judged by the base type the configured
+// providers record for it; a provider the store does not know is judged by its name.
+func batchModelBoundByProvider(provider schemas.ModelProvider, configured InMemoryStore) bool {
+	switch batchBaseProvider(provider, configured) {
 	case schemas.OpenAI, schemas.Azure:
 		return false
 	default:
 		return true
 	}
+}
+
+// batchBaseProvider is the provider whose implementation runs provider's requests: the base type
+// of a custom provider, otherwise provider itself.
+func batchBaseProvider(provider schemas.ModelProvider, configured InMemoryStore) schemas.ModelProvider {
+	return configuredBaseProvider(configured, provider)
 }
 
 // IsModelCheckedWhenPresent reports whether a request type whose model is optional
@@ -95,9 +104,15 @@ func IsModelCheckedWhenPresent(requestType schemas.RequestType) bool {
 
 // getWeight safely dereferences a *float64 weight pointer, returning 1.0 as default if nil.
 // This allows distinguishing between "not set" (nil -> 1.0) and "explicitly set to 0" (0.0).
+// A negative or non-finite weight counts as 0: the API rejects one, but config.json and older rows
+// can still carry it, and summed into the draw it would select the first provider whatever the
+// other weights say.
 func getWeight(w *float64) float64 {
 	if w == nil {
 		return 1.0
+	}
+	if *w < 0 || math.IsNaN(*w) || math.IsInf(*w, 0) {
+		return 0
 	}
 	return *w
 }

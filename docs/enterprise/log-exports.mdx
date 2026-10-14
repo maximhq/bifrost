@@ -16,17 +16,27 @@ logs_store
 ├── type            (sqlite | postgres | clickhouse)
 ├── config          (SQLite path, or Postgres / ClickHouse connection)
 ├── object_storage              ← S3 or GCS payload offload (optional)
-└── object_storage_exclude_fields
+├── object_storage_exclude_fields
+└── object_storage_exclude_request_types
 ```
 
 Retention is configured separately, at `client_config.log_retention_days` - see [Retention policy](#retention-policy) below.
 
 When `logs_store.object_storage` is set:
 
-1. Bifrost writes per-request metadata (timestamps, provider, model, latency, token counts, cost, status, IDs) to the logs database.
+1. Bifrost writes per-request metadata (timestamps, provider, model, latency, token counts, cost, status, IDs) to the logs database, along with each failed request's error details (except on content-hidden logs, see below), so error type, error code and status code breakdowns keep working.
 2. Large payload fields (request body, response body, streamed chunks, tool call arguments, etc.) are uploaded to the configured bucket under `prefix/`.
 3. The database row stores the object key, so the UI and API can fetch the payload on demand.
 4. `object_storage_exclude_fields` lets you skip specific fields from offload (for example, when you do not want to retain raw user prompts at all).
+5. `object_storage_exclude_request_types` lets you skip whole request types from offload (for example, `list_models`).
+
+<Note>
+Error details stay in the database with three limits:
+
+- **Content-hidden logs** (content logging disabled with `retain_content_in_object_storage` on) keep no error details in the database. Their error details are offloaded with the rest of the payload, so these logs are left out of the error type, error code and status code breakdowns.
+- **Raw provider bodies** that error details carry when raw request/response storage is on are offloaded with the rest of the payload. Only the queryable error fields stay in the database row. Listing `error_details` in `object_storage_exclude_fields` keeps the whole value, bodies included, in the database.
+- **Logs written by earlier versions** with object storage on hold their error details only in object storage. They are not backfilled, so they stay out of the error breakdowns. Opening one of those logs still shows its error details.
+</Note>
 
 Only **S3** and **GCS** are supported today. Azure Blob, local filesystem, and data warehouse destinations are not implemented.
 
@@ -100,7 +110,9 @@ S3 fields (all values support the `env.<NAME>` indirection to read from environm
 | `endpoint` | optional | Override for S3-compatible stores (MinIO, Cloudflare R2, Wasabi). |
 | `force_path_style` | optional | Set `true` for most S3-compatible endpoints. |
 | `prefix` | optional | Object key prefix. Defaults to `bifrost`. |
-| `compress` | optional | Gzip payloads before upload. Defaults to `false`. |
+| `compress` | optional | Legacy gzip switch, same as `"compression": "gzip"`. Defaults to `false`. |
+| `format` | optional | `json` (default) or `parquet`. See [Payload format](#payload-format-json-or-parquet). |
+| `compression` | optional | `none`, `gzip`, `snappy` or `zstd`. For `json` only `none` and `gzip` are allowed. Defaults to `none` for JSON (`gzip` when `compress` is `true`) and `snappy` for Parquet. |
 
 A live example is checked in at `examples/configs/withobjectstorages3/config.json`.
 
@@ -141,6 +153,94 @@ GCS fields:
 
 A live example is checked in at `examples/configs/withobjectstoragegcs/config.json`.
 
+### Payload format: JSON or Parquet
+
+By default each offloaded payload is stored as a JSON object. Set `format` to `parquet` to store each payload as a single-row Parquet file instead, so the bucket can be queried directly with Athena, Spark, Trino or DuckDB. Parquet is supported on **S3** only for now.
+
+```json
+{
+  "logs_store": {
+    "object_storage": {
+      "type": "s3",
+      "bucket": "env.AWS_S3_BUCKET",
+      "region": "env.AWS_REGION",
+      "prefix": "bifrost/logs",
+      "format": "parquet",
+      "compression": "zstd"
+    }
+  }
+}
+```
+
+Format and compression are separate settings:
+
+| `format` | `compression` | Object key | Stored body |
+|---|---|---|---|
+| `json` | `none` (default) | `<prefix>/logs/YYYY/MM/DD/HH/<id>.json.gz` | Plain JSON with no `Content-Encoding`. The key keeps the `.json.gz` suffix even though the body is not compressed. |
+| `json` | `gzip` | `<prefix>/logs/YYYY/MM/DD/HH/<id>.json.gz` | Gzipped JSON, stored with `Content-Encoding: gzip`. |
+| `parquet` | `none`, `gzip`, `snappy` (default), `zstd` | `<prefix>/logs/YYYY/MM/DD/HH/<id>.parquet` | Parquet file using that page codec. No outer gzip or `Content-Encoding` is added, so the file stays readable by Parquet tooling. |
+
+For `json`, the legacy `compress: true` is the same as `compression: gzip`.
+
+MCP tool logs and A2A agent logs follow the same layout under `mcp-logs/` and `agent-logs/`.
+
+Each Parquet file holds one row. Every payload field becomes a nullable UTF8 column named after its database column (`input_history`, `output_message`, `raw_request`, `token_usage`, ...). String values are stored as is; nested values (for example MCP tool arguments) are stored as JSON text, and their column names are listed in the file's `bifrost.json_columns` key-value metadata. Objects are uploaded with `Content-Type: application/vnd.apache.parquet`.
+
+**Switching formats**, in either direction, does not rewrite existing objects. Bifrost keeps serving logs written before the switch: when the object in the configured format is missing, it reads the object in the other format at the same path (`.json.gz` or `.parquet`), and deleting a log removes both. A log updated after the switch (for example, a streamed response finishing) is rewritten in the configured format, and the copy in the old format is deleted, so each log keeps a single object.
+
+To query request-log payloads from Athena in a bucket that has only ever been written with `format: parquet`:
+
+```sql
+CREATE EXTERNAL TABLE bifrost_log_payloads (
+  `timestamp`    string,
+  provider       string,
+  model          string,
+  status         string,
+  input_history  string,
+  output_message string,
+  params         string,
+  token_usage    string,
+  raw_request    string,
+  raw_response   string
+)
+STORED AS PARQUET
+LOCATION 's3://<bucket>/<prefix>/logs/';
+```
+
+Columns that a given log does not have are read as `NULL`. The log ID is the object's file name, available in Athena as `regexp_extract("$path", '([^/]+)\.parquet$', 1)`, for joining back to the logs database.
+
+<Warning>
+Athena reads every file under a table's `LOCATION` and does not filter by file extension. In a bucket that switched from `json` to `parquet`, the hour folders written before the switch hold `.json.gz` objects, and a log from before the switch that is updated afterwards is rewritten as `.parquet` in its original hour folder. So pre-switch folders can hold both formats, and pointing the table above at `logs/` fails on the JSON files.
+</Warning>
+
+For a bucket that switched formats, use partition projection over the hour folders and start the range at the first full hour after the switch, so Athena never lists a folder that can hold JSON:
+
+```sql
+CREATE EXTERNAL TABLE bifrost_log_payloads (
+  `timestamp`    string,
+  provider       string,
+  model          string,
+  status         string,
+  input_history  string,
+  output_message string,
+  token_usage    string
+)
+PARTITIONED BY (hour string)
+STORED AS PARQUET
+LOCATION 's3://<bucket>/<prefix>/logs/'
+TBLPROPERTIES (
+  'projection.enabled'          = 'true',
+  'projection.hour.type'        = 'date',
+  'projection.hour.format'      = 'yyyy/MM/dd/HH',
+  'projection.hour.range'       = '<first full hour after the switch, e.g. 2026/10/14/00>,NOW',
+  'projection.hour.interval'    = '1',
+  'projection.hour.interval.unit' = 'HOURS',
+  'storage.location.template'   = 's3://<bucket>/<prefix>/logs/${hour}/'
+);
+```
+
+Payloads from before the switch stay readable through Bifrost but are left out of this table. Engines that can filter by file name do not need the cutoff. For example, DuckDB can read `read_parquet('s3://<bucket>/<prefix>/logs/**/*.parquet')`, and Spark can use `spark.read.option("pathGlobFilter", "*.parquet").option("recursiveFileLookup", "true").parquet("s3://<bucket>/<prefix>/logs/")`.
+
 ### Choosing what stays in the database vs. what is offloaded
 
 By default, every offloadable payload field is uploaded to object storage. `object_storage_exclude_fields` lets you pin specific fields to the **database only**, so they are never written to the bucket. Listed fields are **not dropped** - they continue to live in the logs DB row as before. Everything not listed is offloaded.
@@ -172,6 +272,27 @@ Typical use cases:
 
 - **Data residency**: keep raw prompts and responses inside the DB (which may itself sit inside a controlled VPC) while still benefiting from offload for less sensitive fields.
 - **Operational queries**: keep `input_history` in the DB so SQL queries and the UI's search can run against the full conversation without paying an object-fetch round trip.
+
+### Excluding request types
+
+`object_storage_exclude_request_types` keeps every log of the listed request types out of the bucket. Use it for traffic you do not need in your data lake, such as model listing calls. Those logs are still written to the logs DB in full, so they keep showing up in the UI and API.
+
+Values are request type names as they appear in the log `object` field, for example `list_models`, `embedding`, `chat_completion` or `chat_completion_stream`. Streaming and non-streaming variants are separate types, so list both if you want to exclude both.
+
+```json
+{
+  "logs_store": {
+    "object_storage": { "...": "..." },
+    "object_storage_exclude_request_types": ["list_models"]
+  }
+}
+```
+
+Hidden logs are the exception. If content logging is disabled and `retain_content_in_object_storage` is on, logs of an excluded request type are still offloaded as hidden content, so that content stays out of the DB.
+
+<Note>
+This is not the same as `client.hidden_request_types`. That setting hides request types from the logs view, dashboard, and log read APIs. It does not change what is written to the DB or uploaded to object storage.
+</Note>
 
 ### Guardrail redaction
 
@@ -321,7 +442,7 @@ Once configured, the existing **Logs** screen in the UI transparently fetches pa
 
 1. Send a request through Bifrost.
 2. Confirm a row appears in the logs DB (visible via the UI's **Logs** screen).
-3. List the bucket under your `prefix/`. You should see one or more objects per request.
+3. List the bucket under your `prefix/`. You should see one or more objects per request, ending in `.json.gz` or, with `format: parquet`, `.parquet`.
 4. Open the log entry in the UI. The payload pane should render the content fetched from object storage.
 
 If the bucket stays empty, check the Bifrost logs for `objectstore` errors. The most common causes are missing credentials, a region/endpoint mismatch, or a bucket policy that blocks the credentials' principal.
