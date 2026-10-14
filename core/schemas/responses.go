@@ -1274,7 +1274,7 @@ type ResponsesParametersReasoning struct {
 	Effort          *string `json:"effort"`                     // "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" (any value other than "none" will enable reasoning)
 	GenerateSummary *string `json:"generate_summary,omitempty"` // Deprecated: use summary instead
 	Mode            *string `json:"mode,omitempty"`             // "standard" | "pro" (reasoning execution mode)
-	Summary         *string `json:"summary"`                    // "auto" | "concise" | "detailed"
+	Summary         *string `json:"summary,omitempty"`          // "auto" | "concise" | "detailed"; omitempty so a nil Summary is absent, not "summary": null (Ark rejects the field)
 	MaxTokens       *int    `json:"max_tokens,omitempty"`       // Maximum number of tokens to generate for the reasoning output (required for anthropic)
 	Type            *string `json:"type,omitempty"`             // Anthropic thinking.type: "between_tools" (no up-front thinking); independent of effort
 }
