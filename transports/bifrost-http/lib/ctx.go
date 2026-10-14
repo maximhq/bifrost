@@ -30,6 +30,9 @@ const (
 	FastHTTPUserValueBifrostContext = "__bifrost_context"
 	// FastHTTPUserValueBifrostCancel stores the cancel func for the active shared Bifrost context.
 	FastHTTPUserValueBifrostCancel = "__bifrost_context_cancel"
+	// FastHTTPUserValueExtraFieldsInHeaders marks requests whose responses carry extra_fields as
+	// x-bifrost-* headers instead of in the body (client.extra_fields_placement = "headers").
+	FastHTTPUserValueExtraFieldsInHeaders = "__bifrost_extra_fields_in_headers"
 	// FastHTTPUserValueLargeResponseMode marks requests that streamed a large response body.
 	// It is used by transport middleware to avoid re-buffering response bodies for post-hooks.
 	FastHTTPUserValueLargeResponseMode = "__bifrost_large_response_mode"
@@ -210,6 +213,16 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 	return ResolveSessionIDFromHeaders(headers)
 }
 
+// ExtraFieldsInHeaders reports whether this request's responses carry extra_fields as headers
+// instead of in the body. ConvertToBifrostContext marks the request from client config.
+func ExtraFieldsInHeaders(ctx *fasthttp.RequestCtx) bool {
+	if ctx == nil {
+		return false
+	}
+	inHeaders, _ := ctx.UserValue(FastHTTPUserValueExtraFieldsInHeaders).(bool)
+	return inHeaders
+}
+
 // ConvertToBifrostContext converts a FastHTTP RequestCtx to a Bifrost context,
 // preserving important header values for monitoring and tracing purposes.
 //
@@ -309,6 +322,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		mcpHeaderCombinedAllowlist = store.GetMCPHeaderCombinedAllowlist()
 		allowPerRequestStorageOverride = store.ShouldAllowPerRequestStorageOverride()
 		allowPerRequestRawOverride = store.ShouldAllowPerRequestRawOverride()
+		if store.ShouldSendExtraFieldsInHeaders() {
+			ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		}
 	}
 	// Reuse a shared request-scoped context when available.
 	var bifrostCtx *schemas.BifrostContext

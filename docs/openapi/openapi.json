@@ -122007,6 +122007,15 @@
                 "type": "boolean",
                 "description": "Whether to enforce virtual key authentication on inference requests"
               },
+              "extra_fields_placement": {
+                "type": "string",
+                "enum": [
+                  "body",
+                  "headers"
+                ],
+                "default": "body",
+                "description": "Where inference responses carry Bifrost's extra_fields metadata. 'body' (default) keeps the extra_fields object in the JSON body. 'headers' removes extra_fields from the body (and from every streaming chunk) and sends its scalar fields as x-bifrost-* response headers. In 'headers' mode the large and nested fields are dropped and not sent anywhere: raw_request, raw_response, routing_metadata, guardrail_debug, parse_errors, and on errors key_statuses, billed_usage and mcp_auth_required. Streaming responses only carry the fields known before the first chunk (routing identity, fallback index, cache lookup); per-chunk latency, chunk_index and final totals are dropped."
+              },
               "vk_rotation_cooldown": {
                 "type": [
                   "string",
@@ -122444,6 +122453,15 @@
               "enforce_auth_on_inference": {
                 "type": "boolean",
                 "description": "Whether to enforce virtual key authentication on inference requests"
+              },
+              "extra_fields_placement": {
+                "type": "string",
+                "enum": [
+                  "body",
+                  "headers"
+                ],
+                "default": "body",
+                "description": "Where inference responses carry Bifrost's extra_fields metadata. 'body' (default) keeps the extra_fields object in the JSON body. 'headers' removes extra_fields from the body (and from every streaming chunk) and sends its scalar fields as x-bifrost-* response headers. In 'headers' mode the large and nested fields are dropped and not sent anywhere: raw_request, raw_response, routing_metadata, guardrail_debug, parse_errors, and on errors key_statuses, billed_usage and mcp_auth_required. Streaming responses only carry the fields known before the first chunk (routing identity, fallback index, cache lookup); per-chunk latency, chunk_index and final totals are dropped."
               },
               "vk_rotation_cooldown": {
                 "type": [

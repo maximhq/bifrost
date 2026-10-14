@@ -21,6 +21,16 @@ const (
 	DualCredentialConflictBehaviorPreferIDP DualCredentialConflictBehavior = "prefer_idp"
 )
 
+// ExtraFieldsPlacement controls where inference responses carry Bifrost's extra_fields metadata.
+type ExtraFieldsPlacement string
+
+const (
+	// ExtraFieldsPlacementBody keeps extra_fields in the JSON body (default when unset).
+	ExtraFieldsPlacementBody ExtraFieldsPlacement = "body"
+	// ExtraFieldsPlacementHeaders removes extra_fields from the body and sends its scalar fields as x-bifrost-* headers.
+	ExtraFieldsPlacementHeaders ExtraFieldsPlacement = "headers"
+)
+
 // TableClientConfig represents global client configuration in the database
 type TableClientConfig struct {
 	ID                                    uint                           `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -41,6 +51,7 @@ type TableClientConfig struct {
 	EnforceGovernanceHeader               bool                           `gorm:"" json:"enforce_governance_header"`
 	EnforceSCIMAuth                       bool                           `gorm:"default:false" json:"enforce_scim_auth"`
 	DualCredentialConflictBehavior        DualCredentialConflictBehavior `gorm:"column:dual_credential_conflict_behavior;type:varchar(20);not null;default:'prefer_idp'" json:"dual_credential_conflict_behavior"`
+	ExtraFieldsPlacement                  ExtraFieldsPlacement           `gorm:"column:extra_fields_placement;type:varchar(20);not null;default:'body'" json:"extra_fields_placement"`
 	MaxRequestBodySizeMB                  int                            `gorm:"default:100" json:"max_request_body_size_mb"`
 	MCPAgentDepth                         int                            `gorm:"default:10" json:"mcp_agent_depth"`
 	MCPToolExecutionTimeout               int                            `gorm:"default:30" json:"mcp_tool_execution_timeout"`               // Timeout for individual tool execution in seconds (default: 30)

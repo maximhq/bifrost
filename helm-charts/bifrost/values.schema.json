@@ -613,6 +613,11 @@
               "enum": ["error", "prefer_vk", "prefer_idp"],
               "description": "Behavior when an inference request presents both an IDP access token and a virtual key (x-bf-vk). 'error' rejects with 400; 'prefer_vk' drops the IDP token and uses the VK; 'prefer_idp' (default) uses the IDP token for identity."
             },
+            "extraFieldsPlacement": {
+              "type": "string",
+              "enum": ["body", "headers"],
+              "description": "Where inference responses carry Bifrost's extra_fields metadata. 'body' (default) keeps the extra_fields object in the JSON body. 'headers' removes extra_fields from the body (and from every streaming chunk) and sends its scalar fields as x-bifrost-* response headers. In 'headers' mode the large and nested fields are dropped and not sent anywhere: raw_request, raw_response, routing_metadata, guardrail_debug, parse_errors, and on errors key_statuses, billed_usage and mcp_auth_required. Streaming responses only carry the fields known before the first chunk (routing identity, fallback index, cache lookup); per-chunk latency, chunk_index and final totals are dropped."
+            },
             "enforceSCIMAuth": {
               "type": "boolean",
               "description": "Deprecated: use enforceAuthOnInference"

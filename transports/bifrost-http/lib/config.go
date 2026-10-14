@@ -93,6 +93,8 @@ type HandlerStore interface {
 	ShouldAllowPerRequestRawOverride() bool
 	// ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header
 	ShouldAllowDirectKeys() bool
+	// ShouldSendExtraFieldsInHeaders returns whether inference responses carry extra_fields as headers instead of in the body
+	ShouldSendExtraFieldsInHeaders() bool
 	// IsProviderConfigured reports whether provider has a configuration on this gateway
 	IsProviderConfigured(provider schemas.ModelProvider) bool
 	// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
@@ -7555,6 +7557,14 @@ func (c *Config) ShouldEnforceVKObjectOwnership() bool {
 	c.Mu.RLock()
 	defer c.Mu.RUnlock()
 	return c.ClientConfig == nil || c.ClientConfig.EnforceVKObjectOwnership
+}
+
+// ShouldSendExtraFieldsInHeaders reports client.extra_fields_placement == "headers". It reads under
+// Mu, the lock config saves and reloads hold while they copy the client config in; unset means body.
+func (c *Config) ShouldSendExtraFieldsInHeaders() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig != nil && c.ClientConfig.ExtraFieldsPlacement == configstoreTables.ExtraFieldsPlacementHeaders
 }
 
 // ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.

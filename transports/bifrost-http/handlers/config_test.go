@@ -534,6 +534,54 @@ func TestUpdateConfig_EnforceVKObjectOwnershipPresence(t *testing.T) {
 	}
 }
 
+// extra_fields_placement is copied only when sent, so a partial save keeps the stored value,
+// and anything other than body/headers is refused before any live mutation.
+func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() configtables.ExtraFieldsPlacement {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.ExtraFieldsPlacement
+	}
+
+	headers := putConfigCtx(`{"client_config":{"log_retention_days":8,"extra_fields_placement":"headers"}}`)
+	h.updateConfig(headers)
+	require.Equal(t, fasthttp.StatusOK, headers.Response.StatusCode(), string(headers.Response.Body()))
+	assert.True(t, cfg.ShouldSendExtraFieldsInHeaders())
+	assert.Equal(t, configtables.ExtraFieldsPlacementHeaders, stored())
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.True(t, cfg.ShouldSendExtraFieldsInHeaders(), "an omitted field keeps the live value")
+	assert.Equal(t, configtables.ExtraFieldsPlacementHeaders, stored(), "an omitted field keeps the stored value")
+
+	// Only an omitted field keeps the stored value: an explicit empty string or null is a
+	// supplied value, and anything other than body/headers is refused before any change.
+	for _, body := range []string{
+		`{"client_config":{"log_retention_days":8,"extra_fields_placement":"trailers"}}`,
+		`{"client_config":{"log_retention_days":8,"extra_fields_placement":""}}`,
+		`{"client_config":{"log_retention_days":8,"extra_fields_placement":null}}`,
+	} {
+		refused := putConfigCtx(body)
+		h.updateConfig(refused)
+		assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), "%s: %s", body, refused.Response.Body())
+		assert.True(t, cfg.ShouldSendExtraFieldsInHeaders(), "%s left the live value unchanged", body)
+		assert.Equal(t, configtables.ExtraFieldsPlacementHeaders, stored(), "%s left the stored value unchanged", body)
+	}
+
+	body := putConfigCtx(`{"client_config":{"log_retention_days":8,"extra_fields_placement":"body"}}`)
+	h.updateConfig(body)
+	require.Equal(t, fasthttp.StatusOK, body.Response.StatusCode(), string(body.Response.Body()))
+	assert.False(t, cfg.ShouldSendExtraFieldsInHeaders())
+	assert.Equal(t, configtables.ExtraFieldsPlacementBody, stored())
+}
+
 // TestUpdateConfig_MCPOAuthPrivateAllowlist pins how PUT /api/config handles
 // mcp_oauth_private_allowlist: an authenticated admin sets it and it is
 // persisted; an omitted field keeps it; a caller admitted with auth bypassed

@@ -314,6 +314,13 @@ bifrost:
     # access token and a virtual key (x-bf-vk). Options: "error" (reject with 400),
     # "prefer_vk" (drop IDP token, use VK), "prefer_idp" (default, IDP token wins for identity).
     # dualCredentialConflictBehavior: "prefer_idp"
+    # extraFieldsPlacement -- Where inference responses carry extra_fields metadata. Options:
+    # "body" (default, extra_fields in the JSON body) or "headers" (removed from the body and
+    # stream chunks, scalar fields sent as x-bifrost-* headers). In "headers" mode raw_request,
+    # raw_response, routing_metadata, guardrail_debug and parse_errors are dropped, and on errors
+    # key_statuses, billed_usage and mcp_auth_required too. Streams only carry fields known
+    # before the first chunk; per-chunk latency, chunk_index and final totals are dropped.
+    # extraFieldsPlacement: "body"
     maxRequestBodySizeMb: 100
     compat:
       convertTextToChat: false
