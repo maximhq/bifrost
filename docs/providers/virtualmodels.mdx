@@ -1,0 +1,139 @@
+---
+title: "Virtual Models"
+description: "Point one model name at whichever of several models is already resident in GPU memory, so a request never evicts a loaded model to fetch another."
+icon: "layer-group"
+---
+
+## Overview
+
+A virtual model is a name your application sends that has no fixed target. At request time Bifrost asks the backend what it currently holds in memory and routes to the first candidate that is resident. If nothing is resident it sends your first candidate and lets the backend cold-load it.
+
+This solves a specific problem with self-hosted engines. On a single GPU — or a machine with unified memory running oMLX, llama.cpp and ollama together — naming a model that is *not* loaded is not a harmless mistake. The backend must free whatever is loaded to bring yours in, and the model that was serving other traffic with a warm KV cache pays for it. Static aliases cannot express this, because the right target depends on state that only exists at request time.
+
+```json title="config.json"
+"providers": {
+  "omlx": {
+    "keys": [{ "name": "omlx-local", "value": "arstesting", "models": ["*"] }],
+    "network_config": {
+      "base_url": "http://192.168.2.162:8090",
+      "allow_private_network": true
+    },
+    "model_residency": { "adapter": "omlx" }
+  }
+},
+"virtual_models": {
+  "qwen38": {
+    "provider": "omlx",
+    "models": ["Qwen3.8-Flash-Next-oQ4e-mtp", "Qwen3.8-27B-oQ8e-fp16-mtp"],
+    "on_probe_error": "error"
+  }
+}
+```
+
+Your application sends `"model": "qwen38"` to any OpenAI-compatible route, streaming included.
+
+## How selection works
+
+Order matters, and it is the whole design:
+
+1. **First candidate reported resident wins** — even if it is last in your list. A loaded model is worth more than a preference.
+2. **Otherwise the first candidate still loading** — the request joins a load already in progress instead of starting a competing one.
+3. **Otherwise the first candidate** — accepting the cold load you asked for.
+
+Responses report the **concrete** model that ran, so usage, cost and logs stay accurate. The virtual name travels separately.
+
+### When residency cannot be read
+
+`on_probe_error` decides, and the default is deliberate:
+
+| Value | Behaviour | When to use |
+|-------|-----------|-------------|
+| `"error"` (default) | The request fails with `virtual_model_resolution_error` | Any deployment where sending the wrong name means evicting a loaded model |
+| `"first"` | Sends the first candidate regardless | Disposable scratch GPU, or a backend you accept as unreachable |
+
+A failed or unparseable probe is **not** read as "nothing is loaded". That distinction matters: treating silence as an empty GPU would issue a cold load for every candidate in turn and evict exactly what you were trying to keep resident. A probe that times out yields `unknown`, which is a different answer from `unloaded`, and only `unloaded` means free.
+
+When a refresh fails but an earlier reading exists, that reading is still used — the backend really did say it — with `observed_at` showing how old it is.
+
+## Adapters
+
+`model_residency.adapter` says how to read one provider's memory. It is per provider, not per model, because a provider is one backend with one memory.
+
+| Adapter | Endpoint | Shape |
+|---------|----------|-------|
+| `omlx` | `GET /v1/models/status` | `loaded` and `is_loading` booleans per model, plus memory accounting |
+| `llamacpp` | `GET /v1/models` | `status.value` of `loaded` / `loading` / `unloaded` on every entry |
+| `ollama` | `GET /api/ps` | **native, not OpenAI-compatible** — see below |
+| `custom` | your `path` | your `fields` mapping |
+| `auto` (default) | tries the above | remembers which one answered |
+
+`auto` costs at most one GET per engine, once per endpoint. The winner is cached, so later probes go straight to it. Order is oMLX, llama.cpp, ollama — ollama is last on purpose, because a machine with nothing loaded answers its process list with an empty array, which would otherwise look like a successful probe and mask the other engines.
+
+The `[llamacpp](https://github.com/ggml-org/llama.cpp)` router's `/props` is **not** sufficient: measured against a live router it reported `model_path: "none"` while a model was loaded. The per-model `status` object is the reliable field.
+
+### Ollama reaches outside the OpenAI surface
+
+Ollama's OpenAI-compatible `/v1/models` returns only `created_at`, `id`, `object` and `owned_by` — verified against a live v0.35 server. Residency exists nowhere on that surface, so the ollama adapter reads its native `/api/ps`. A custom OpenAI-compatible provider pointed at ollama therefore has no residency to read and will report `unknown`; use the native ollama provider, or the `custom` adapter against a backend that actually exposes it.
+
+### Arbitrary engines
+
+`custom` maps any JSON onto the vocabulary, so a backend nobody shipped an adapter for still works by configuration:
+
+```json title="config.json"
+"model_residency": {
+  "adapter": "custom",
+  "path": "/internal/serving",
+  "fields": { "items": "data.models", "id": "name", "loaded": "in_memory", "loading": "warming" },
+  "timeout_ms": 2000,
+  "cache_ttl_ms": 0
+}
+```
+
+With neither `loaded` nor `loading` mapped, the list itself is read as the set of resident models. Nothing beyond what you write is inferred.
+
+`cache_ttl_ms` defaults to `0`, meaning every request probes. That is measured, not naive: a populated oMLX endpoint answers `/v1/models/status` in 7–31 ms with a ~4.5 KB body. Raise the TTL only for a backend whose probe is genuinely slow or rate-limited. Concurrent requests coalesce on one probe per endpoint regardless, so a cache miss under load is one GET rather than one per request.
+
+## Discovery
+
+Virtual names appear in `GET /v1/models` and `GET /api/models`, so a client that validates a model against discovery before using it will accept them. Each entry carries `bifrost:virtual` plus its provider and candidates so a client can tell a virtual name from a real one.
+
+`GET /v1/models/{name}` answers for a virtual name from Bifrost rather than forwarding upstream, and includes live residency per candidate:
+
+```json
+{
+  "id": "qwen38",
+  "owned_by": "omlx",
+  "additional_attributes": {
+    "bifrost:virtual": "true",
+    "bifrost:candidate-models": "Qwen3.8-Flash-Next-oQ4e-mtp,Qwen3.8-27B-oQ8e-fp16-mtp",
+    "bifrost:candidate-residency": "Qwen3.8-Flash-Next-oQ4e-mtp=ready,Qwen3.8-27B-oQ8e-fp16-mtp=unloaded",
+    "bifrost:resident-model": "Qwen3.8-Flash-Next-oQ4e-mtp"
+  }
+}
+```
+
+Listings do not probe. A `/v1/models` call that fanned out to every configured backend would turn a metadata request into a residency read of every GPU on the network; residency belongs on the single-model route, where one backend answers.
+
+<Tip>
+  Set `x-bf-verbose: true` to see the decision. `x-bifrost-resolved-model` reports the concrete model that served the request, and the routing trail records `virtual-model` with the reason — `first resident candidate`, `no candidate resident; joining an in-progress load`, and so on.
+</Tip>
+
+## How this differs from other Bifrost features
+
+| | Name → target | Decided | Survives backend restart | Enforced by |
+|---|---|---|---|---|
+| **Key aliases** | fixed | config time | yes | key selection |
+| **[Routing rules](./routing-rules)** | fixed | config time | yes | routing engine |
+| **Virtual models** | **whatever is resident** | **request time** | n/a — re-read every request | core, before key selection |
+
+Use aliases and routing rules when you already know the target. Use a virtual model when the correct target depends on GPU state you cannot know in advance.
+
+Resolution runs **after** the routing plugins and **before** session routing and key selection. Governance and routing rules therefore keep first refusal on the name you actually sent, while keys filter on the concrete model that will serve.
+
+## Limitations
+
+- **Config file only.** `virtual_models` is read from `config.json` at startup. There is no dashboard CRUD yet, so editing one requires a restart.
+- **One provider per virtual model.** Candidates must live on the same backend, because that is the only memory the probe can see. Cross-engine virtual models need host-level serialisation, which is not implemented — on a box where oMLX and ollama share memory, two virtual models on different providers cannot coordinate, so pick one engine per virtual model.
+- **Governance is enforced on the concrete model.** Budgets and permissions that reference a virtual name are not understood; grant the underlying models.
+- Mid-request eviction by the backend is possible. Resolution reflects what was true at probe time; `observed_at` is carried so you can see the gap.
+- There is no automatic candidate fallback chain. A stale pick normally succeeds by cold-loading rather than 404ing, so inventing a chain would add loads and evictions without producing a fresher observation. Configure explicit fallbacks as normal if you want them.

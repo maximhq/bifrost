@@ -188,6 +188,7 @@
               "providers/provider-routing",
               "providers/session-affinity",
               "providers/aliasing-models",
+              "providers/virtualmodels",
               "providers/reasoning",
               "providers/performance",
               "providers/custom-providers",
