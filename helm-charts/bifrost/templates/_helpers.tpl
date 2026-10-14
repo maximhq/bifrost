@@ -336,6 +336,9 @@ false
 {{- if .Values.bifrost.client.dualCredentialConflictBehavior }}
 {{- $_ := set $client "dual_credential_conflict_behavior" .Values.bifrost.client.dualCredentialConflictBehavior }}
 {{- end }}
+{{- if .Values.bifrost.client.extraFieldsPlacement }}
+{{- $_ := set $client "extra_fields_placement" .Values.bifrost.client.extraFieldsPlacement }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "enforceGovernanceHeader" }}
 {{- $_ := set $client "enforce_governance_header" .Values.bifrost.client.enforceGovernanceHeader }}
 {{- end }}
@@ -464,7 +467,10 @@ false
 {{- if .Values.bifrost.client.mcpExternalClientUrl }}
 {{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
 {{- end }}
-{{- if .Values.bifrost.client.a2aExternalClientUrl }}
+{{- if hasKey .Values.bifrost.client "skillsExternalClientUrl" }}
+{{- $_ := set $client "skills_external_client_url" .Values.bifrost.client.skillsExternalClientUrl }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "a2aExternalClientUrl" }}
 {{- $_ := set $client "a2a_external_client_url" .Values.bifrost.client.a2aExternalClientUrl }}
 {{- end }}
 {{- if .Values.bifrost.client.mcpServerAuthMode }}

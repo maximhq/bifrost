@@ -2998,3 +2998,33 @@ func TestInvokeIngressCarriesEagerInputStreaming(t *testing.T) {
 		})
 	}
 }
+
+// An InvokeModel body is where AWS documents disable_parallel_tool_use for Claude; converting
+// it to Converse must keep the instruction instead of dropping it with the rest of tool_choice.
+func TestToBedrockConverseRequest_InvokeDisableParallelToolUse(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		choice map[string]interface{}
+		want   *bool
+	}{
+		{"disable true", map[string]interface{}{"type": "auto", "disable_parallel_tool_use": true}, schemas.Ptr(false)},
+		{"disable false", map[string]interface{}{"type": "any", "disable_parallel_tool_use": false}, schemas.Ptr(true)},
+		{"absent", map[string]interface{}{"type": "auto"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &BedrockInvokeRequest{
+				ModelID: "global.anthropic.claude-sonnet-4-6",
+				Messages: []BedrockMessage{
+					{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("Weather in Tokyo, Paris and Lima?")}}},
+				},
+				Tools:      []interface{}{anthropicToolMap("get_weather", nil)},
+				ToolChoice: tc.choice,
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, bifrostReq.Params.ParallelToolCalls)
+		})
+	}
+}

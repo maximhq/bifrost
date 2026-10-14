@@ -2006,6 +2006,10 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 		copy.Text = &copyText
 	}
 
+	if original.ToolName != nil {
+		copy.ToolName = new(*original.ToolName)
+	}
+
 	// Reasoning replay fields: Signature and EncryptedContent are echoed back
 	// verbatim to the provider, so they must survive the deep copy.
 	if original.Signature != nil {
@@ -2441,6 +2445,22 @@ func IsOllamaDecisionModel(model string) bool {
 		}
 	}
 	return false
+}
+
+// IsMicrosoftDecisionModel checks if the model is one of Microsoft's decision models
+// on Azure ("Microsoft-Decision-1"), served on the resource's systemone endpoint rather
+// than chat. The match is on the model name, so a deployment named otherwise is
+// recognized only when its key's deployments map it from that name. Later versions
+// share the prefix.
+func IsMicrosoftDecisionModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "microsoft-decision")
+}
+
+// IsDatabricksDecisionModel checks if the model is Databricks' ai_decide AI Function,
+// served on the workspace's AI Functions endpoint rather than a serving endpoint. It is a
+// single function, so the match is on the exact name.
+func IsDatabricksDecisionModel(model string) bool {
+	return strings.EqualFold(model, "ai_decide")
 }
 
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports

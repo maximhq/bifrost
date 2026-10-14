@@ -12,6 +12,57 @@ test.describe("LLM Logs", () => {
   });
 
   test.describe("Logs Display", () => {
+    for (const scenario of [
+      { name: "stored desktop", app: "Antigravity Desktop", userAgent: "antigravity/2.23.0", label: "Antigravity Desktop" },
+      { name: "stored cli", app: "Antigravity CLI", userAgent: "antigravity-cli/1.0", label: "Antigravity CLI" },
+      { name: "raw-only desktop", app: undefined, userAgent: "Antigravity/2.23.0", label: "Antigravity Desktop" },
+      { name: "edge app key", app: "antigravity-desktop", userAgent: "antigravity/2.23.0", label: "Antigravity Desktop" },
+    ]) {
+      test(`should display synthetic Antigravity ${scenario.name} attribution`, async ({ page, logsPage }) => {
+        const timestamp = new Date().toISOString();
+        await page.route((url) => url.pathname === "/api/logs", async (route) => {
+          if (route.request().method() !== "GET") return route.continue();
+          await route.fulfill({ json: {
+            logs: [{
+              id: `synthetic-antigravity-${Date.now()}`,
+              object: "chat.completion",
+              timestamp,
+              created_at: timestamp,
+              provider: "openai",
+              model: "synthetic-model",
+              number_of_retries: 0,
+              fallback_index: 0,
+              status: "success",
+              stream: false,
+              latency: 120,
+              cost: 0,
+              app: scenario.app,
+              user_agent: scenario.userAgent,
+              input_history: [],
+              responses_input_history: [],
+            }],
+            pagination: { limit: 50, offset: 0, sort_by: "timestamp", order: "desc" },
+            stats: {
+              total_requests: 1,
+              success_rate: 100,
+              user_facing_success_rate: 100,
+              user_facing_total_requests: 1,
+              average_latency: 120,
+              total_tokens: 0,
+              prompt_tokens: 0,
+              completion_tokens: 0,
+              total_cost: 0,
+            },
+            has_logs: true,
+          } });
+        });
+        await logsPage.goto();
+        const table = page.getByTestId("logs-table");
+        await expect(table.getByText(scenario.label, { exact: true })).toBeVisible();
+        await expect(table.getByRole("img", { name: scenario.label, exact: true })).toHaveAttribute("src", "/images/harness/antigravity.svg");
+      });
+    }
+
     test("should display logs table", async ({ logsPage }) => {
       // Table should be visible after goto (which waits for load)
       const tableExists = await logsPage.logsTable

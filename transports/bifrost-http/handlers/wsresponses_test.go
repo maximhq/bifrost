@@ -4,7 +4,7 @@ import (
 	"errors"
 	"github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +19,7 @@ import (
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -57,6 +57,7 @@ func (s testWSHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 func (s testWSHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
 func (s testWSHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
 func (s testWSHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
+func (s testWSHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return false }
 func (s testWSHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
 func (s testWSHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testWSHandlerStore) GetMCPExternalClientURL() string                 { return "" }

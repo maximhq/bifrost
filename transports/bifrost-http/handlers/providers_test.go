@@ -18,7 +18,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	governanceplugin "github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1434,6 +1434,114 @@ func TestListModels_DecisionsOllamaListsSystemOneModels(t *testing.T) {
 	slices.Sort(names)
 	if want := []string{"clef-flash", "nimble", "tev1:0.8b"}; !slices.Equal(names, want) {
 		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsAzureListsMicrosoftDecisionModels pins that decisions=true
+// lists Microsoft's decision models on Azure, by name or through a key alias whose
+// target is a deployment named otherwise, and not gpt-6-luna or chat deployments:
+// Azure serves those as chat models.
+func TestListModels_DecisionsAzureListsMicrosoftDecisionModels(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	key := schemas.Key{ID: "key-a", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{
+		"Microsoft-Decision-1": {ModelID: "Decision-1"},
+	}}
+	listed := []string{"Microsoft-Decision-1", "microsoft-decision-2", "gpt-6-luna", "gpt-4o"}
+	h := providerHandlerForTest(schemas.Azure, []schemas.Key{key}, listed, listed)
+	catalog := modelCatalogForPricingJSON(t, []byte(`{"azure/gpt-4o": {"provider":"azure","mode":"chat"}}`))
+	catalog.SetKeyConfigForProvider(schemas.Azure, []schemas.Key{key})
+	h.inMemoryStore.ModelCatalog = catalog
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=azure&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	slices.Sort(names)
+	if want := []string{"Microsoft-Decision-1", "microsoft-decision-2"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsDatabricksListsAIDecide pins that a decisions listing on
+// Databricks offers ai_decide, the one model its Decision serves natively, and not the
+// workspace's serving endpoints.
+func TestListModels_DecisionsDatabricksListsAIDecide(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	listed := []string{"ai_decide", "databricks-claude-sonnet-4", "databricks-gpt-oss-120b"}
+	h := providerHandlerForTest(schemas.Databricks, []schemas.Key{{ID: "key-a"}}, listed, listed)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=databricks&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	names := make([]string, 0, len(resp.Models))
+	for _, model := range resp.Models {
+		names = append(names, model.Name)
+	}
+	if want := []string{"ai_decide"}; !slices.Equal(names, want) {
+		t.Fatalf("expected %v, got %v", want, names)
+	}
+}
+
+// TestListModels_DecisionsGPT6LunaOnlyOnOpenAIBase pins that the gpt-6-luna name rule
+// lists the family only on OpenAI or a custom provider on its base; any other provider
+// hosting it lists it only with a supports_decisions row.
+func TestListModels_DecisionsGPT6LunaOnlyOnOpenAIBase(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	for provider, wantListed := range map[schemas.ModelProvider]bool{"my-openai": true, schemas.Groq: false} {
+		models := []string{"gpt-6-luna", "gpt-4o"}
+		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
+		if provider == "my-openai" {
+			config := h.inMemoryStore.Providers[provider]
+			config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
+			h.inMemoryStore.Providers[provider] = config
+		}
+
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=" + string(provider) + "&decisions=true&limit=10")
+		h.listModels(ctx)
+
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", provider, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		listed := len(resp.Models) == 1 && resp.Models[0].Name == "gpt-6-luna"
+		if listed != wantListed || (!wantListed && len(resp.Models) != 0) {
+			t.Fatalf("%s: listed gpt-6-luna = %v (models %#v), want %v", provider, listed, resp.Models, wantListed)
+		}
 	}
 }
 

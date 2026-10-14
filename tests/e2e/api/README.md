@@ -561,6 +561,34 @@ key-endpoint case targets the `azure` provider (part of the shared
 **Retry logic (CI)**
 When `CI=1` or `CI=true` is set (case-insensitive), each failing request in the V1 collection is retried up to 3 times before moving to the next request. This helps with flaky tests in CI. The runner passes the value through to Newman when the environment variable is set (e.g. `CI=1 ./runners/run-newman-inference-tests.sh --env openai` or `CI=true ./runners/run-newman-inference-tests.sh --env openai`). Retry attempts are logged to the console as `[RETRY] Request "..." failed (attempt n/3). Retrying...`.
 
+### Extra fields placement tests
+
+`collections/bifrost-v1-extra-fields-placement.postman_collection.json` pins
+`client.extra_fields_placement`, streaming and non-streaming. Body mode (the
+default) keeps `extra_fields` in JSON bodies and SSE chunks and adds no new
+headers. Headers mode removes `extra_fields` from every body, chunk and error
+body and carries the routed identity and scalar fields as `x-bifrost-*` headers
+on `/v1/chat/completions`, `/v1/responses` and `/openai/v1/chat/completions`,
+each unary and streaming, plus a provider 4xx. Streams carry only what is known
+before the first chunk, so the stream checks assert the identity headers and not
+`x-bifrost-latency-ms`. A request with an `Origin` checks that
+`Access-Control-Expose-Headers` lists the `x-bifrost-*` headers. The routing
+identity headers that existed before this setting (`x-bifrost-provider`, original
+and resolved model, request type, `x-bifrost-fallback-index` and every
+`x-bifrost-routing-info-*`) are pinned against regression: in body mode each must
+equal its `extra_fields` value, and the same unary, streaming and fallback
+requests must return the same values in headers mode. Setup snapshots
+`client_config` and Teardown restores it.
+
+It makes about ten small live completions against the configured provider
+(`openai` by default). `runners/run-newman-api-tests.sh` runs it after the
+request guard tests; set `BIFROST_E2E_SKIP_EXTRA_FIELDS_PLACEMENT=1` to skip it.
+Standalone, against a gateway with dashboard auth disabled:
+
+```bash
+BIFROST_BASE_URL=http://localhost:8080 ./runners/individual/run-newman-extra-fields-placement-tests.sh
+```
+
 ### Integration Endpoint Tests
 
 ```bash

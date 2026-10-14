@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"hash"
 	"math"
+	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -102,6 +104,7 @@ type ClientConfig struct {
 	LogRetentionDays                      int                                   `json:"log_retention_days" validate:"min=1"`         // Number of days to retain logs (minimum 1 day)
 	EnforceAuthOnInference                bool                                  `json:"enforce_auth_on_inference"`                   // Require auth (VK, API key, or user token) on inference endpoints
 	DualCredentialConflictBehavior        tables.DualCredentialConflictBehavior `json:"dual_credential_conflict_behavior,omitempty"` // Behavior when both an IDP token and a VK are present on an inference request
+	ExtraFieldsPlacement                  tables.ExtraFieldsPlacement           `json:"extra_fields_placement,omitempty"`            // Where inference responses carry extra_fields: "body" (default) or "headers"
 	EnforceGovernanceHeader               bool                                  `json:"enforce_governance_header,omitempty"`         // Deprecated: use EnforceAuthOnInference
 	EnforceSCIMAuth                       bool                                  `json:"enforce_scim_auth,omitempty"`                 // Deprecated: use EnforceAuthOnInference
 	AllowedOrigins                        []string                              `json:"allowed_origins,omitempty"`                   // Additional allowed origins for CORS and WebSocket (localhost is always allowed)
@@ -129,6 +132,7 @@ type ClientConfig struct {
 	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
+	SkillsExternalClientURL               *schemas.SecretVar                    `json:"skills_external_client_url,omitempty"`        // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
 	A2AStoreRawRequestResponse            bool                                  `json:"a2a_store_raw_request_response"`
 	A2AExternalClientURL                  *schemas.SecretVar                    `json:"a2a_external_client_url,omitempty"` // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs. Supports env var syntax ("env.MY_VAR") and vault refs
 	MCPServerAuthMode                     tables.MCPServerAuthMode              `json:"mcp_server_auth_mode,omitempty"`    // How /mcp authenticates inbound clients: headers (default), both, or oauth.
@@ -216,6 +220,11 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 
 	if c.DualCredentialConflictBehavior != "" && c.DualCredentialConflictBehavior != tables.DualCredentialConflictBehaviorPreferIDP {
 		hash.Write([]byte("dualCredentialConflictBehavior:" + string(c.DualCredentialConflictBehavior)))
+	}
+
+	// Only hash non-default value to avoid legacy config hash churn on upgrade.
+	if c.ExtraFieldsPlacement != "" && c.ExtraFieldsPlacement != tables.ExtraFieldsPlacementBody {
+		hash.Write([]byte("extraFieldsPlacement:" + string(c.ExtraFieldsPlacement)))
 	}
 
 	if c.Compat.ConvertTextToChat {
@@ -512,12 +521,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			hash.Write([]byte("externalClientURL:val:" + c.MCPExternalClientURL.GetValue()))
 		}
 	}
+	if c.SkillsExternalClientURL != nil {
+		if c.SkillsExternalClientURL.IsFromSecret() {
+			hash.Write([]byte("skillsExternalClientURL:ref:" + c.SkillsExternalClientURL.GetRawRef()))
+		} else {
+			hash.Write([]byte("skillsExternalClientURL:val:" + c.SkillsExternalClientURL.GetValue()))
+		}
+	}
 
 	// Only hashed when set to avoid hash churn on existing configs that predate the field.
 	if c.A2AStoreRawRequestResponse {
 		hash.Write([]byte("a2aStoreRawRequestResponse:true"))
 	}
-	if c.A2AExternalClientURL.IsSet() {
+	if c.A2AExternalClientURL != nil {
 		if c.A2AExternalClientURL.IsFromSecret() {
 			hash.Write([]byte("a2aExternalClientURL:ref:" + c.A2AExternalClientURL.GetRawRef()))
 		} else {
@@ -543,6 +559,14 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		}
 		hash.Write([]byte("oauth2AuthCodeTTL:" + strconv.Itoa(oc.AuthCodeTTL)))
 		hash.Write([]byte("oauth2AccessTokenTTL:" + strconv.Itoa(oc.AccessTokenTTL)))
+		// Unset policy fields contribute nothing so rows stored before they were
+		// hashed keep their hash; once set, a file edit must win over the DB row.
+		for _, uri := range oc.AllowedRedirectURIs {
+			hash.Write([]byte("oauth2AllowedRedirectURI:" + uri))
+		}
+		if oc.DisableVKIdentity {
+			hash.Write([]byte("oauth2DisableVKIdentity:true"))
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -600,6 +624,9 @@ func sortedStringsJSON(values []string) ([]byte, error) {
 // Redacted returns a copy of ClientConfig with any env-backed SecretVar fields masked.
 func (c *ClientConfig) Redacted() ClientConfig {
 	out := *c
+	if c.SkillsExternalClientURL != nil && c.SkillsExternalClientURL.IsFromSecret() {
+		out.SkillsExternalClientURL = c.SkillsExternalClientURL.Redacted()
+	}
 	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromSecret() {
 		out.MCPExternalClientURL = c.MCPExternalClientURL.Redacted()
 	}
@@ -1346,6 +1373,22 @@ func GenerateVirtualKeyHash(vk tables.TableVirtualKey) (string, error) {
 			hash.Write([]byte("disableContentLogging:false"))
 		}
 	}
+	// Hash Metadata only when the key has some, so every key that predates the column keeps its
+	// hash. Written as JSON-encoded [key, value] pairs in key order, so map iteration order cannot
+	// move the hash and no key/value boundary is ambiguous.
+	if len(vk.Metadata) > 0 {
+		pairs := make([][2]string, 0, len(vk.Metadata))
+		for k, v := range vk.Metadata {
+			pairs = append(pairs, [2]string{k, v})
+		}
+		sort.Slice(pairs, func(i, j int) bool { return pairs[i][0] < pairs[j][0] })
+		data, err := sonic.Marshal(pairs)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("metadata:"))
+		hash.Write(data)
+	}
 	// Hash ExpiresAt only when set, so rows created before expiry existed keep their hash
 	if vk.ExpiresAt != nil {
 		hash.Write([]byte("expiresAt:" + vk.ExpiresAt.UTC().Format(time.RFC3339Nano)))
@@ -2030,6 +2073,12 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 	}
 	hash.Write([]byte("auth_type:" + authType))
 
+	// Hash a declared endpoint_slug (normalised) so editing it drifts the hash. Empty contributes
+	// nothing, so entries that omit it keep matching hashes stored before the field was hashed.
+	if m.EndpointSlug != "" {
+		hash.Write([]byte("endpoint_slug:" + Slugify(m.EndpointSlug)))
+	}
+
 	// Hash NeedsSessionStickiness so toggling it in config.json drifts the
 	// hash and triggers reconciliation — without this, editing only this
 	// field would leave the row's migration-backfilled (or nil-defaulted)
@@ -2095,6 +2144,65 @@ func GenerateMCPClientHash(m tables.TableMCPClient) (string, error) {
 			return "", err
 		}
 		hash.Write(data)
+	}
+
+	// Hash openapi_config so a changed spec, upstream, credential set or option
+	// in config.json drifts the hash and triggers reconciliation. The spec is
+	// hashed by content (or by its file reference when the content was not
+	// inlined), credentials by ref or value like Headers above; server-computed
+	// metadata (sizes, counts) is derived from these and contributes nothing.
+	// spec_url is hashed whenever it is set, inline spec or not: relative
+	// servers (and Swagger 2.0 documents without a host) resolve against it, so
+	// it can pick the upstream even when it does not supply the document. An
+	// empty base_url means the same as none. Every field is length-framed, so
+	// no value can run into the field written after it.
+	if m.OpenAPIConfig != nil {
+		oc := m.OpenAPIConfig
+		writeField := func(label, value string) {
+			fmt.Fprintf(hash, "openapi:%d:%s=%d:%s;", len(label), label, len(value), value)
+		}
+		switch {
+		case oc.Spec != "":
+			specSum := sha256.Sum256([]byte(oc.Spec))
+			writeField("spec_sha256", hex.EncodeToString(specSum[:]))
+		case oc.SpecFile != nil && *oc.SpecFile != "":
+			writeField("spec_file", *oc.SpecFile)
+		}
+		if oc.SpecURL != nil && *oc.SpecURL != "" {
+			writeField("spec_url", *oc.SpecURL)
+		}
+		if oc.BaseURL != nil && *oc.BaseURL != "" {
+			writeField("base_url", *oc.BaseURL)
+		}
+		if len(oc.SecurityCredentials) > 0 {
+			names := make([]string, 0, len(oc.SecurityCredentials))
+			for name := range oc.SecurityCredentials {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				cred := oc.SecurityCredentials[name]
+				for _, part := range []struct {
+					label string
+					v     *schemas.SecretVar
+				}{{"value", cred.Value}, {"username", cred.Username}, {"password", cred.Password}} {
+					if part.v == nil {
+						continue
+					}
+					if part.v.IsFromSecret() {
+						writeField("cred_ref:"+name+":"+part.label, part.v.GetRawRef())
+					} else {
+						writeField("cred_val:"+name+":"+part.label, part.v.Val)
+					}
+				}
+			}
+		}
+		if oc.IncludeDeprecated {
+			writeField("include_deprecated", "true")
+		}
+		if oc.MaxResponseBytes != 0 {
+			writeField("max_response_bytes", fmt.Sprintf("%d", oc.MaxResponseBytes))
+		}
 	}
 
 	// will enable it in the future with a migration
@@ -2409,4 +2517,20 @@ type GovernanceConfig struct {
 	PricingOverrides         []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
 	AuthConfig               *AuthConfig                   `json:"auth_config,omitempty"`
 	ComplexityAnalyzerConfig *ComplexityAnalyzerConfig     `json:"complexity_analyzer_config,omitempty"`
+}
+
+// ValidatePublicBaseURL accepts an empty setting or a public HTTP base URL without private URL components.
+// Errors omit the value because it may contain credentials resolved from a secret reference.
+func ValidatePublicBaseURL(value string) error {
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("must be an absolute HTTP or HTTPS URL")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(value, "#") {
+		return fmt.Errorf("must not contain userinfo, query, or fragment components")
+	}
+	return nil
 }

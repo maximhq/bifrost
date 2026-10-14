@@ -13,7 +13,7 @@ import (
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 type bifrostBatchResultFetcher struct {

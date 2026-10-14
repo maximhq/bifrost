@@ -2895,6 +2895,7 @@ func buildBedrockServerToolChoice(params *schemas.ChatParameters, filtered []sch
 		}
 	}
 
+	var choice map[string]any
 	switch choiceType {
 	case schemas.ChatToolChoiceTypeFunction, schemas.ChatToolChoiceTypeCustom,
 		schemas.ChatToolChoiceType("tool"):
@@ -2906,14 +2907,10 @@ func buildBedrockServerToolChoice(params *schemas.ChatParameters, filtered []sch
 		if _, ok := serverToolNames[pinnedName]; !ok {
 			return nil, false
 		}
-		bytes, err := providerUtils.MarshalSorted(map[string]any{
+		choice = map[string]any{
 			"type": "tool",
 			"name": pinnedName,
-		})
-		if err != nil {
-			return nil, false
 		}
-		return json.RawMessage(bytes), true
 
 	case schemas.ChatToolChoiceTypeAny, schemas.ChatToolChoiceTypeRequired:
 		// When function/custom tools are present, Converse's typed
@@ -2921,16 +2918,50 @@ func buildBedrockServerToolChoice(params *schemas.ChatParameters, filtered []sch
 		if hasFunctionOrCustom || len(serverToolNames) == 0 {
 			return nil, false
 		}
-		bytes, err := providerUtils.MarshalSorted(map[string]any{"type": "any"})
-		if err != nil {
-			return nil, false
-		}
-		return json.RawMessage(bytes), true
+		choice = map[string]any{"type": "any"}
 
 	default:
 		// auto, none, allowed_tools, empty, unknown — no tunneling.
 		return nil, false
 	}
+
+	// This choice is the only tool_choice Claude sees, so parallel_tool_calls rides on it.
+	if params.ParallelToolCalls != nil && !*params.ParallelToolCalls {
+		choice["disable_parallel_tool_use"] = true
+	}
+	bytes, err := providerUtils.MarshalSorted(choice)
+	if err != nil {
+		return nil, false
+	}
+	return json.RawMessage(bytes), true
+}
+
+// applyBedrockParallelToolUse carries parallel_tool_calls=false to Claude, which Converse can
+// only express as additionalModelRequestFields.tool_choice.disable_parallel_tool_use.
+func applyBedrockParallelToolUse(bedrockReq *BedrockConverseRequest) {
+	// A tunneled server-tool choice already carries the flag, and a caller-supplied one wins.
+	if _, ok := bedrockReq.AdditionalModelRequestFields.Get("tool_choice"); ok {
+		return
+	}
+	_, hasServerTools := bedrockReq.AdditionalModelRequestFields.Get("tools")
+	hasTools := bedrockReq.ToolConfig != nil && len(bedrockReq.ToolConfig.Tools) > 0
+	if !hasTools && !hasServerTools {
+		return
+	}
+	choice := schemas.NewOrderedMap()
+	if hasTools {
+		// A type here conflicts with toolConfig.toolChoice (ValidationException), so the typed field holds it.
+		if bedrockReq.ToolConfig.ToolChoice == nil {
+			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{Auto: &BedrockToolChoiceAuto{}}
+		}
+	} else {
+		choice.Set("type", "auto")
+	}
+	choice.Set("disable_parallel_tool_use", true)
+	if bedrockReq.AdditionalModelRequestFields == nil {
+		bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+	}
+	bedrockReq.AdditionalModelRequestFields.Set("tool_choice", choice)
 }
 
 // deriveBedrockBetaHeadersForToolType maps an Anthropic server-tool Type string

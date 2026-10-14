@@ -21,7 +21,7 @@ import (
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
@@ -370,18 +370,14 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	providerConfig, err := h.inMemoryStore.GetProviderConfigRaw(provider)
-	if err != nil {
+	// Deletion stays allowed on keyless providers: a provider switched from
+	// keyed to keyless keeps its old keys, and this is the only way to remove them.
+	if _, err := h.inMemoryStore.GetProviderConfigRaw(provider); err != nil {
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
 			return
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
-		return
-	}
-
-	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
-		SendError(ctx, fasthttp.StatusBadRequest, "Cannot delete keys on a keyless provider")
 		return
 	}
 

@@ -1,0 +1,247 @@
+---
+title: "Agent access"
+description: "Grant agents to virtual keys, use enterprise access profiles, and scope requests to projects."
+icon: "shield-check"
+---
+
+Registering an agent gives it a gateway address. Grants decide which authenticated callers can use it.
+
+Start with a dedicated virtual key for your application. Add more callers as you need them. Agent access is separate from permission to use LLM providers or MCP tools, so an agent grant alone does not authorize the agent's later LLM or MCP calls.
+
+<Warning>
+For a protected gateway, enable authentication enforcement. Without it, requests that present no identity can pass through anonymously; explicit grants do not make anonymous traffic private. Set `client.enforce_auth_on_inference` to `true`, or `bifrost.client.enforceAuthOnInference: true` in Helm.
+</Warning>
+
+## Grant a virtual key access
+
+In **Agent Gateway**, add or edit an agent, find **Access**, and choose **Add key**. Select the virtual keys that should call this agent and save.
+
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-access.png"
+    alt="An agent&#x27;s explicit virtual-key grant and Allow any virtual key toggle"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+You can also edit a virtual key's **Agent access** and add the agent by its registration name. Both views manage the same grant.
+
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-vk-agent-access.png"
+    alt="The virtual-key edit sheet&#x27;s Agent access section with registered agent grants"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+Send that key on your client requests:
+
+```http
+x-bf-vk: <your-virtual-key>
+```
+
+The key must be valid and active. A key granted `library-research` can call that agent's gateway routes; it does not gain access to every other registered agent.
+
+### Allow any virtual key
+
+Enable **Allow any virtual key** when every valid virtual key should be able to reach the agent without an explicit grant. In Enterprise, authenticated users also receive this default agent access. An admitted project's access rule still applies.
+
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-allow-any-key.png"
+    alt="Allow any virtual key enabled in the agent registration form"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+The toggle preserves explicit selections. If you select two keys, enable it, then disable it later, those two grants remain. While the toggle is on, those selections are hidden because other valid callers have default access too.
+
+<Note>
+This setting does not create credentials, activate disabled keys, or authenticate a caller. It also does not replace project membership or a project's access restrictions.
+</Note>
+
+<Accordion title="Declare agent grants through config.json or Helm">
+Use virtual key IDs, not their secret values, in an agent's `virtual_key_ids`.
+
+<Tabs>
+<Tab title="config.json">
+```json
+{
+  "client": {
+    "enforce_auth_on_inference": true
+  },
+  "agents": [
+    {
+      "name": "library-research",
+      "agent_card_url": "https://research.example.com/.well-known/agent-card.json",
+      "allow_by_default": false,
+      "virtual_key_ids": ["application-key-id", "evaluation-key-id"]
+    }
+  ]
+}
+```
+</Tab>
+<Tab title="Helm values">
+```yaml
+bifrost:
+  client:
+    enforceAuthOnInference: true
+  agents:
+    - name: library-research
+      agent_card_url: https://research.example.com/.well-known/agent-card.json
+      allow_by_default: false
+      virtual_key_ids:
+        - application-key-id
+        - evaluation-key-id
+```
+</Tab>
+</Tabs>
+
+The keys must already exist. Keep the rest of your agent registration, such as authentication, in the same declaration. `allow_by_default: true` enables default access while retaining `virtual_key_ids`.
+
+For `config.json`, a virtual key can alternatively declare `agent_grants: [{ "agent_name": "library-research" }]` under `governance.virtual_keys`. In Helm, use the agent's `virtual_key_ids` as shown above; the virtual-key values renderer does not currently copy `agent_grants`.
+</Accordion>
+
+## Enterprise access profiles
+
+Use an [access profile](/enterprise/access-profiles) when several users or groups need the same agents.
+
+1. Edit the profile and add the registration names under **Agent access**.
+2. Apply the profile to the intended holders. Profiles can be assigned to users directly, through roles or identity-provider mappings, or attached to teams, business units, and customers.
+3. When changing an existing profile, propagate **Agent access** to the assigned copies that should receive the change.
+
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-profile-agent-access.png"
+    alt="Agent access and Save &amp; Propagate in the access-profile edit sheet"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+A user's active access profiles grant their named agents. Multiple profiles add their grants together. An inactive or expired profile does not grant access. A profile without agent grants adds no agents, although an agent allowing default access can still be available.
+
+For a user's virtual key, check the user's active access profiles before adding direct grants. These keys use the combined grants of their user's active profiles and may be locked against direct edits. The agent's access view also shows associated access profiles.
+
+<Accordion title="Declare profile agent access">
+Add agent grants to your existing profile declaration. These examples show the relevant fields; keep the profile's provider, MCP, and limit configuration alongside them.
+
+<Tabs>
+<Tab title="config.json">
+```json
+{
+  "access_profiles": [
+    {
+      "name": "Research team",
+      "is_active": true,
+      "agent_grants": [
+        { "agent_name": "library-research" }
+      ]
+    }
+  ]
+}
+```
+</Tab>
+<Tab title="Helm values">
+```yaml
+bifrost:
+  accessProfiles:
+    - name: Research team
+      is_active: true
+      agent_grants:
+        - agent_name: library-research
+```
+</Tab>
+</Tabs>
+
+Assign the profile through the dashboard or your existing provisioning configuration. See [access profiles](/enterprise/access-profiles) for assignment and propagation.
+</Accordion>
+
+## Enterprise projects
+
+A [project](/enterprise/projects) adds a scope to an individual request. For example, the same engineer can call an agent for a research project without placing every other request in that project.
+
+Add the agent to the project's **Agent access**, configure membership, and send one project header with the caller's authentication:
+
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-project-agent-access.png"
+    alt="The project&#x27;s Agent access section with library-research selected"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+```http
+x-bf-vk: <your-virtual-key>
+x-bf-project-name: research-evaluation
+```
+
+See [Projects](/enterprise/projects#how-a-request-resolves) for project headers, membership, and access rules. Agent Gateway currently falls back to the caller's agent grants when the named project is unknown or the caller is not a member, so restrict those grants too.
+
+<Accordion title="Declare a project's agent access">
+Add these grants to an existing project declaration. Membership is managed through the dashboard or API, separately from `config.json`.
+
+<Note>
+Enterprise supports `agent_grants` on projects and access profiles. The current OSS configuration schema does not yet list those two fields, so an editor using that schema may flag them.
+</Note>
+
+<Tabs>
+<Tab title="config.json">
+```json
+{
+  "governance": {
+    "projects": [
+      {
+        "name": "research-evaluation",
+        "is_active": true,
+        "access_rule": "intersect",
+        "membership_mode": "explicit",
+        "accounting_mode": "both",
+        "agent_grants": [
+          { "agent_name": "library-research" }
+        ]
+      }
+    ]
+  }
+}
+```
+</Tab>
+<Tab title="Helm values">
+```yaml
+bifrost:
+  governance:
+    projects:
+      - name: research-evaluation
+        is_active: true
+        access_rule: intersect
+        membership_mode: explicit
+        accounting_mode: both
+        agent_grants:
+          - agent_name: library-research
+```
+</Tab>
+</Tabs>
+
+Keep other project settings and grants in the same declaration. See [projects](/enterprise/projects) for membership and accounting modes.
+</Accordion>
+
+## Keep the agent's later calls attributed
+
+An agent can pass its gateway access check and still have an LLM or MCP request denied. Those requests use their own provider and tool grants.
+
+Enable [credential forwarding](/features/agent-gateway/authentication#forward-bifrost-authentication) and configure your agent server to reuse the caller's Bifrost credential. If the work belongs to a project, preserve its project header on those calls too. Otherwise they lose that project scope.
+
+## Diagnose an access failure
+
+Check these in order:
+
+1. Is the agent enabled and is the registration name correct?
+2. Is the client sending a valid, active credential? An explicitly invalid key is refused even if another user identity is available.
+3. Does the key or its governing profile grant the agent, or does the agent allow default access?
+4. If a project header is present, is the caller admitted to that project and does its access rule allow the agent? An unadmitted project currently falls back to caller access, as described above.
+5. If only an LLM or MCP call fails, inspect that call's provider or tool permissions and the credential your server used.
+
+Use [Agent Logs](/features/agent-gateway/observability) to inspect the failed operation. Check the reported error before changing permissions; an upstream authentication failure needs a different fix from a gateway access denial.
+
+For JSON-RPC clients, inspect the response's `error` field as well as its HTTP status. A denied agent operation returns a protocol error such as `-31403`, with a message identifying the agent or project that refused access. A successful HTTP exchange alone does not prove the operation succeeded.
+
+Next, read [Messages, tasks, and events](./messages-and-tasks) to send work to your registered agent and follow its progress.

@@ -284,24 +284,27 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 // markDecisionForEmulation marks a decision request for emulation through the
 // Responses API unless the model catalog lists the model as a native decisions
 // model: its supports_decisions row, or without a row the decisions model
-// families the providers recognize by name (gpt-6-luna outside OpenRouter,
-// Typesafe's typesafe/ models, Clef on Cloudflare, deciders on Perplexity,
-// System One models on Ollama).
-// OpenRouter serves gpt-6-luna's decisions under its own id
-// (openai/gpt-6-luna-decisions, marked by its datasheet row), and rejects its
-// gpt-6-luna chat models on the decisions endpoint, so those are emulated.
+// families the providers recognize by name (gpt-6-luna on OpenAI, Typesafe's
+// typesafe/ models, Clef on Cloudflare, deciders on Perplexity, System One
+// models on Ollama, Microsoft's decision models on Azure, ai_decide on Databricks).
+// gpt-6-luna is native by name only on OpenAI: another provider hosting it
+// (an Azure deployment, OpenRouter's gpt-6-luna chat models) serves it as a
+// chat model, so it is emulated unless that provider's datasheet row says
+// otherwise (OpenRouter's openai/gpt-6-luna-decisions).
 // Typesafe serves every model natively, so it is never marked. Custom
-// providers have no catalog rows, so one serving a decisions model under an
-// unrecognized name would be emulated; the docs ask users to leave the setting
-// off for them.
+// providers have no catalog rows and are matched by their own name, so one
+// serving a decisions model (on the Typesafe base, or gpt-6-luna on the OpenAI
+// base) would be emulated; the docs ask users to leave the setting off for them.
 func (p *CompatPlugin) markDecisionForEmulation(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string) {
 	if provider == schemas.Typesafe {
 		return
 	}
-	fallback := (provider != schemas.OpenRouter && schemas.DefaultSupportsDecisions(model)) || schemas.IsTypesafeModel(model) ||
+	fallback := (provider == schemas.OpenAI && schemas.DefaultSupportsDecisions(model)) || schemas.IsTypesafeModel(model) ||
 		(provider == schemas.Cloudflare && schemas.IsClefModel(model)) ||
 		(provider == schemas.Perplexity && schemas.IsPerplexityDeciderModel(model)) ||
-		(provider == schemas.Ollama && schemas.IsOllamaDecisionModel(model))
+		(provider == schemas.Ollama && schemas.IsOllamaDecisionModel(model)) ||
+		(provider == schemas.Azure && schemas.IsMicrosoftDecisionModel(model)) ||
+		(provider == schemas.Databricks && schemas.IsDatabricksDecisionModel(model))
 	if schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback) {
 		return
 	}

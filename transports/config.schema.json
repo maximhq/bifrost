@@ -197,6 +197,15 @@
           ],
           "description": "Controls behavior when an inference request carries both an IDP access token (Authorization: Bearer <jwt>) and a virtual key (x-bf-vk header). 'error' rejects with 400. 'prefer_vk' drops the IDP token and authenticates via the VK. 'prefer_idp' (default) uses the IDP token for identity."
         },
+        "extra_fields_placement": {
+          "type": "string",
+          "enum": [
+            "body",
+            "headers"
+          ],
+          "default": "body",
+          "description": "Where inference responses carry Bifrost's extra_fields metadata. 'body' (default) keeps the extra_fields object in the JSON body. 'headers' removes extra_fields from the body (and from every streaming chunk) and sends its scalar fields as x-bifrost-* response headers. In 'headers' mode the large and nested fields are dropped and not sent anywhere: raw_request, raw_response, routing_metadata, guardrail_debug, parse_errors, and on errors key_statuses, billed_usage and mcp_auth_required. Streaming responses only carry the fields known before the first chunk (routing identity, fallback index, cache lookup); per-chunk latency, chunk_index and final totals are dropped."
+        },
         "enforce_scim_auth": {
           "type": "boolean",
           "description": "Deprecated: use enforce_auth_on_inference"
@@ -425,6 +434,40 @@
           ],
           "description": "Public base URL Bifrost uses as the redirect_uri when acting as an OAuth client to upstream MCP servers (Notion, Jira, etc.). Set when Bifrost's callback endpoint is reached via a different URL than its server-side metadata. Supports env var syntax: \"env.MY_VAR\"."
         },
+        "skills_external_client_url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "plain_text",
+                    "env",
+                    "vault"
+                  ]
+                },
+                "env_var": {
+                  "type": "string"
+                },
+                "from_env": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "Public base URL for Skills Repository marketplaces. Required to enable Claude Code and Codex marketplace serving; skill management and downloads remain available when unset. Supports env var and vault references."
+        },
         "a2a_store_raw_request_response": {
           "type": "boolean",
           "default": false,
@@ -462,7 +505,7 @@
               "additionalProperties": false
             }
           ],
-          "description": "Bifrost's public base URL for the Agent Gateway, used in served agent cards and push-notification callback URLs. If unset, served agent cards fall back to the incoming Host header and A2A push notifications are disabled. Supports env var syntax: \"env.MY_VAR\"."
+          "description": "Bifrost's public base URL for the Agent Gateway, used in served agent cards and push-notification callback URLs. Required to enable Agent Gateway protocol endpoints. When unset, agent traffic is rejected while management APIs remain available. Supports env var syntax: \"env.MY_VAR\"."
         },
         "mcp_server_auth_mode": {
           "type": "string",
@@ -478,9 +521,9 @@
           "properties": {
             "allowed_redirect_uris": {
               "type": "array",
-              "items": { "type": "string", "format": "uri" },
+              "items": { "anyOf": [{ "type": "string", "const": "*" }, { "type": "string", "format": "uri", "not": { "pattern": "\\*" } }] },
               "default": [],
-              "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries. Remote callbacks are denied by default; changing this list through the API requires dashboard authentication."
+              "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries. Remote callbacks are denied by default; a bare \"*\" entry allows any https callback; private-use scheme callbacks still need an exact entry, and partial wildcards are rejected. Changing this list through the API requires dashboard authentication."
             },
             "issuer_url": {
               "anyOf": [
@@ -1278,6 +1321,28 @@
               "disable_content_logging": {
                 "type": "boolean",
                 "description": "Per-key override of client.disable_content_logging for requests made with this virtual key. Omit to inherit the client setting. true keeps request and response content out of the log store and out of OpenTelemetry export for this key's traffic; other observability connectors follow their own disable_content_logging until they adopt the trace mark. When content logging ends up disabled for a request, the log row is still written without content; with client.retain_content_in_object_storage on and an object-storage-backed log store, the full payload is then kept there as hidden content that the API and UI never serve. false forces content into the log store even when the client setting is true; observability connectors keep following their own disable_content_logging. The x-bf-disable-content-logging request header, when client.allow_per_request_content_storage_override is on, still takes precedence over this value for the log store."
+              },
+              "metadata": {
+                "type": "object",
+                "description": "Custom key/value metadata for this virtual key (for example cost_center, project, owner, environment). Copied onto every log entry the key produces, so logs and spend can be filtered by it; on a key collision it overrides request-supplied log metadata (x-bf-lh-* headers, configured logging headers, x-bf-dim-* dimensions). Keys may contain letters, digits, '.', '_' and '-' (max 256 characters) and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
+                "maxProperties": 50,
+                "propertyNames": {
+                  "pattern": "^[a-zA-Z0-9._-]{1,256}$",
+                  "not": {
+                    "anyOf": [
+                      {
+                        "const": "isAsyncRequest"
+                      },
+                      {
+                        "pattern": "^bifrost_alb_"
+                      }
+                    ]
+                  }
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "maxLength": 512
+                }
               },
               "team_id": {
                 "type": "string",
@@ -3302,10 +3367,64 @@
             },
             "compress": {
               "type": "boolean",
-              "description": "Enable gzip compression for stored objects. Default: false",
+              "description": "Legacy gzip switch, equivalent to compression \"gzip\". An explicit compression value takes precedence. Default: false",
               "default": false
+            },
+            "format": {
+              "type": "string",
+              "enum": [
+                "json",
+                "parquet"
+              ],
+              "description": "Encoding of offloaded log payload objects. json writes {id}.json.gz objects; parquet writes single-row {id}.parquet files (one UTF8 column per payload field) readable by Athena, Spark and DuckDB. Objects written before a format change stay readable. parquet is supported on s3 only. Default: json",
+              "default": "json"
+            },
+            "compression": {
+              "type": "string",
+              "enum": [
+                "none",
+                "gzip",
+                "snappy",
+                "zstd"
+              ],
+              "description": "Compression for offloaded log payload objects. For json it is applied to the whole object (none or gzip only). For parquet it is the page codec inside the file (none, gzip, snappy or zstd), and no outer gzip is added. Default: none for json (gzip when compress is true), snappy for parquet."
             }
           },
+          "allOf": [
+            {
+              "if": {
+                "anyOf": [
+                  {
+                    "not": {
+                      "required": [
+                        "format"
+                      ]
+                    }
+                  },
+                  {
+                    "properties": {
+                      "format": {
+                        "const": "json"
+                      }
+                    },
+                    "required": [
+                      "format"
+                    ]
+                  }
+                ]
+              },
+              "then": {
+                "properties": {
+                  "compression": {
+                    "enum": [
+                      "none",
+                      "gzip"
+                    ]
+                  }
+                }
+              }
+            }
+          ],
           "required": [
             "type",
             "bucket"
@@ -3549,7 +3668,9 @@
                 "description": "Use path-style URLs for S3 (required for MinIO). Default: false",
                 "default": false
               },
-              "compress": true
+              "compress": true,
+              "format": true,
+              "compression": true
             },
             "dependentRequired": {
               "access_key_id": [
@@ -3681,7 +3802,14 @@
                 ],
                 "description": "GCP project ID override. Supports env var reference"
               },
-              "compress": true
+              "compress": true,
+              "format": {
+                "enum": [
+                  "json"
+                ],
+                "description": "parquet is not supported for gcs yet"
+              },
+              "compression": true
             },
             "additionalProperties": false
           }
@@ -8204,9 +8332,83 @@
             "stdio",
             "http",
             "sse",
-            "inprocess"
+            "inprocess",
+            "openapi"
           ],
-          "description": "Connection type for MCP client"
+          "description": "Connection type for MCP client. 'openapi' synthesizes an in-process MCP server from an OpenAPI/Swagger document (see openapi_config); its tools proxy HTTP calls to the described API."
+        },
+        "openapi_config": {
+          "type": "object",
+          "description": "Configuration for connection_type 'openapi'. At least one of spec (inline JSON/YAML text), spec_file (path relative to the config directory, read at load) or spec_url (fetched at every connect) supplies the document, in that order of precedence; the others then record where it came from. Supported documents: Swagger 2.0, OpenAPI 3.0, 3.1 and 3.2.",
+          "properties": {
+            "spec": {
+              "type": "string",
+              "description": "Inline OpenAPI/Swagger document (JSON or YAML text)."
+            },
+            "spec_file": {
+              "type": "string",
+              "description": "Path to the document, relative to the config.json directory (or absolute). Read once at load; the content is what gets persisted."
+            },
+            "spec_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
+              "description": "http(s) URL of the document. Fetched at connect time when spec and spec_file are not given; next to spec it records the source and resolves relative servers."
+            },
+            "base_url": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
+              "description": "Upstream API base URL. Defaults to the document's first server entry; required when the document declares none or only relative ones."
+            },
+            "security_credentials": {
+              "type": "object",
+              "description": "Credentials keyed by the document's securitySchemes name. apiKey and http-bearer schemes take value; http-basic takes username and password. Values support env.VAR and vault.path references.",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "include_deprecated": {
+              "type": "boolean",
+              "default": false,
+              "description": "Expose operations the document marks deprecated."
+            },
+            "max_response_bytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Cap on the upstream response body returned to the model (0 = default 64 KiB)."
+            }
+          },
+          "anyOf": [
+            {
+              "required": [
+                "spec"
+              ]
+            },
+            {
+              "required": [
+                "spec_file"
+              ]
+            },
+            {
+              "required": [
+                "spec_url"
+              ]
+            }
+          ],
+          "additionalProperties": false
         },
         "connection_string": {
           "type": "string",
@@ -8570,6 +8772,52 @@
               ]
             }
           }
+        },
+        {
+          "$comment": "openapi_config only applies to connection_type 'openapi'; forbid it elsewhere so a misplaced block fails validation instead of being silently ignored.",
+          "if": {
+            "not": {
+              "properties": {
+                "connection_type": {
+                  "const": "openapi"
+                }
+              },
+              "required": [
+                "connection_type"
+              ]
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "openapi_config"
+              ]
+            }
+          }
+        },
+        {
+          "$comment": "A synthesized OpenAPI server has no remote MCP handshake to authenticate: only none, headers and per_user_headers apply. OAuth-flavored and token-exchange auth types are refused.",
+          "if": {
+            "properties": {
+              "connection_type": {
+                "const": "openapi"
+              }
+            },
+            "required": [
+              "connection_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "auth_type": {
+                "enum": [
+                  "none",
+                  "headers",
+                  "per_user_headers"
+                ]
+              }
+            }
+          }
         }
       ],
       "oneOf": [
@@ -8581,6 +8829,16 @@
           },
           "required": [
             "stdio_config"
+          ]
+        },
+        {
+          "properties": {
+            "connection_type": {
+              "const": "openapi"
+            }
+          },
+          "required": [
+            "openapi_config"
           ]
         },
         {

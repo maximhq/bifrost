@@ -571,6 +571,12 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_batch_jobs_file_id_indexes"}, run: migrationAddBatchJobsFileIDIndexes},
 	{IDs: []string{"add_provider_objects_object_id_index"}, run: migrationAddProviderObjectsObjectIDIndex},
 	{IDs: []string{"add_client_config_enforce_vk_object_ownership_column"}, run: migrationAddClientConfigEnforceVKObjectOwnershipColumn},
+	{IDs: []string{"add_mcp_client_openapi_spec_column"}, run: migrationAddMCPClientOpenAPISpecColumn},
+	{IDs: []string{"add_mcp_client_openapi_config_json_column"}, run: migrationAddMCPClientOpenAPIConfigJSONColumn},
+	{IDs: []string{"add_client_config_extra_fields_placement_column"}, run: migrationAddClientConfigExtraFieldsPlacementColumn},
+	{IDs: []string{"add_skills_external_client_url_column"}, run: migrationAddSkillsExternalClientURLColumn},
+	{IDs: []string{"backfill_skills_external_client_url"}, run: migrationBackfillSkillsExternalClientURL},
+	{IDs: []string{"add_virtual_key_metadata_column"}, run: migrationAddVirtualKeyMetadataColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -10333,6 +10339,54 @@ func migrationDropNonVKOauthUserRows(ctx context.Context, db *gorm.DB, logger sc
 	})
 }
 
+// migrationAddSkillsExternalClientURLColumn adds the public marketplace URL setting.
+// DDL runs separately from the backfill so its exclusive lock is released before updating rows.
+func migrationAddSkillsExternalClientURLColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "add_skills_external_client_url_column",
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "SkillsExternalClientURL")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_skills_external_client_url_column is non-rollbackable: dropping it would discard marketplace configuration")
+		},
+	})
+}
+
+// migrationBackfillSkillsExternalClientURL seeds the marketplace URL from the current MCP client URL.
+// Existing skills overrides win, and the MCP setting remains unchanged.
+func migrationBackfillSkillsExternalClientURL(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "backfill_skills_external_client_url",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn("config_client", "mcp_external_client_url") {
+				return nil
+			}
+			var rows []struct {
+				ID                   uint
+				MCPExternalClientURL string
+			}
+			if err := tx.Table("config_client").Select("id, mcp_external_client_url").Where("(skills_external_client_url IS NULL OR skills_external_client_url = '') AND mcp_external_client_url IS NOT NULL AND mcp_external_client_url != ''").Find(&rows).Error; err != nil {
+				return err
+			}
+			for _, row := range rows {
+				value := schemas.NewSecretVar(row.MCPExternalClientURL).GetValue()
+				if value == "" || ValidatePublicBaseURL(value) != nil {
+					continue
+				}
+				if err := tx.Table("config_client").Where("id = ?", row.ID).Update("skills_external_client_url", row.MCPExternalClientURL).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("backfill_skills_external_client_url is non-rollbackable: migrated marketplace configuration must be preserved")
+		},
+	})
+}
+
 // migrationDropMCPExternalServerURL drops the mcp_external_server_url column
 // from config_client. This URL was used to advertise Bifrost as an OAuth
 // authorization server (.well-known endpoints, WWW-Authenticate header on
@@ -12064,6 +12118,30 @@ func migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx context.Context,
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "enforce_vk_object_ownership")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigExtraFieldsPlacementColumn adds extra_fields_placement to
+// config_client. It defaults to "body", so an upgrade keeps extra_fields in the JSON
+// body of inference responses, as it was before the setting existed.
+func migrationAddClientConfigExtraFieldsPlacementColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_extra_fields_placement_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "extra_fields_placement")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "extra_fields_placement")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
@@ -13861,6 +13939,17 @@ func migrationSwapProviderJobIndexes(ctx context.Context, db *gorm.DB, logger sc
 						return fmt.Errorf("failed to check whether %s is valid: %w", idx.name, err)
 					}
 					if !valid {
+						waited, err := waitForPostgresIndexBuild(tx, idx.name)
+						if err != nil {
+							return err
+						}
+						if waited {
+							if valid, err = postgresIndexIsValid(tx, "batch_jobs", idx.name); err != nil {
+								return fmt.Errorf("failed to check whether %s is valid: %w", idx.name, err)
+							}
+						}
+					}
+					if !valid {
 						if err := tx.Exec("DROP INDEX CONCURRENTLY IF EXISTS " + idx.name).Error; err != nil {
 							return fmt.Errorf("failed to clear a partial %s: %w", idx.name, err)
 						}
@@ -14940,6 +15029,60 @@ func migrationAddMCPClientRequirePublicTargetColumn(ctx context.Context, db *gor
 	return nil
 }
 
+// migrationAddMCPClientOpenAPISpecColumn adds config_mcp_clients.openapi_spec, the raw
+// OpenAPI document of an openapi-type client. Plaintext (no secrets) and large, hence a
+// column of its own. NULL/empty for every other connection type, so no backfill.
+func migrationAddMCPClientOpenAPISpecColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_openapi_spec_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "openapi_spec")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackMCPClientOpenAPISpecColumn(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client openapi spec migration: %s", err.Error())
+	}
+	return nil
+}
+
+func rollbackMCPClientOpenAPISpecColumn(*gorm.DB) error {
+	return fmt.Errorf("add_mcp_client_openapi_spec_column is non-rollbackable: dropping openapi_spec would permanently delete the only stored copy of every openapi client's document; the column is additive and older binaries safely ignore it")
+}
+
+// migrationAddMCPClientOpenAPIConfigJSONColumn adds config_mcp_clients.openapi_config_json:
+// the base URL, security credentials, options and server-computed metadata of an
+// openapi-type client, encrypted at rest like the other credential-bearing columns.
+func migrationAddMCPClientOpenAPIConfigJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_mcp_client_openapi_config_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableMCPClient{}, "openapi_config_json")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackMCPClientOpenAPIConfigJSONColumn(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running mcp client openapi config json migration: %s", err.Error())
+	}
+	return nil
+}
+
+func rollbackMCPClientOpenAPIConfigJSONColumn(*gorm.DB) error {
+	return fmt.Errorf("add_mcp_client_openapi_config_json_column is non-rollbackable: dropping openapi_config_json would permanently delete every openapi client's base URL and stored credentials; the column is additive and older binaries safely ignore it")
+}
+
 // postgresIndexOnTable looks up index name among the indexes of table (the
 // table visible on the current search_path). It returns the index's
 // schema-qualified name and whether it is valid, or found=false when table has
@@ -14963,6 +15106,48 @@ func postgresIndexOnTable(tx *gorm.DB, table, name string) (qualified string, va
 		return "", false, false, err
 	}
 	return rows[0].Qualified, rows[0].Valid, true, nil
+}
+
+// concurrentIndexBuildPollInterval is how often waitForPostgresIndexBuild
+// re-checks a concurrent build that another backend is still running.
+const concurrentIndexBuildPollInterval = 2 * time.Second
+
+// waitForPostgresIndexBuild blocks while a backend is still running CREATE INDEX
+// CONCURRENTLY (or REINDEX CONCURRENTLY) for index, and reports whether it waited.
+//
+// An index under a concurrent build reads indisvalid=false, the same as the
+// leftover of an interrupted build, and that build can outlive the pod that
+// started it: when a pod is killed, Postgres ends its idle advisory-lock session
+// at once but keeps the busy build running until it next touches the socket. The
+// next pod then holds the migration lock and sees what looks like a leftover.
+// Dropping it blocks behind the live build and then fails one side with "tuple
+// concurrently updated". Callers that drop an INVALID index call this first and
+// re-check validity when it waited: a finished build is kept, and only an index
+// still INVALID with no build running is dropped.
+//
+// Postgres hides index_relid in pg_stat_progress_create_index for backends of
+// another role unless the caller has pg_read_all_stats. Bifrost nodes share one
+// role; a hidden build reads as "not building" and keeps the drop-and-rebuild path.
+func waitForPostgresIndexBuild(tx *gorm.DB, index string) (bool, error) {
+	ctx := tx.Statement.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for waited := false; ; waited = true {
+		var building bool
+		if err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM pg_stat_progress_create_index
+			WHERE index_relid = pg_catalog.to_regclass(?))`, index).Scan(&building).Error; err != nil {
+			return waited, fmt.Errorf("check concurrent build of %s: %w", index, err)
+		}
+		if !building {
+			return waited, nil
+		}
+		select {
+		case <-ctx.Done():
+			return waited, fmt.Errorf("wait for concurrent build of %s: %w", index, ctx.Err())
+		case <-time.After(concurrentIndexBuildPollInterval):
+		}
+	}
 }
 
 // ensureIndexConcurrently creates index name on table with the given column
@@ -14996,6 +15181,17 @@ func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where 
 	qualified, valid, found, err := postgresIndexOnTable(tx, table, name)
 	if err != nil {
 		return fmt.Errorf("check index %s: %w", name, err)
+	}
+	if found && !valid {
+		waited, err := waitForPostgresIndexBuild(tx, qualified)
+		if err != nil {
+			return err
+		}
+		if waited {
+			if qualified, valid, found, err = postgresIndexOnTable(tx, table, name); err != nil {
+				return fmt.Errorf("check index %s: %w", name, err)
+			}
+		}
 	}
 	if found && valid {
 		return nil
@@ -15909,4 +16105,53 @@ func migrationAddA2ARawCaptureSetting(ctx context.Context, db *gorm.DB, logger s
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "A2AStoreRawRequestResponse")
 		},
 	})
+}
+
+// migrationAddVirtualKeyMetadataColumn adds the nullable metadata column to
+// governance_virtual_keys. Existing keys keep NULL (no metadata), and
+// GenerateVirtualKeyHash only hashes metadata when the key has some, so no
+// config_hash backfill is needed.
+func migrationAddVirtualKeyMetadataColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_metadata_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "metadata"); err != nil {
+				return fmt.Errorf("failed to add metadata column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_virtual_key_metadata_column is non-rollbackable: dropping metadata would permanently delete every virtual key's metadata; the column is additive and older binaries safely ignore it")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationLockTimeout bounds how long a column migration waits for its table lock on postgres.
+const migrationLockTimeout = "5s"
+
+// setMigrationLockTimeout bounds the table-lock wait of the schema changes that follow in tx on
+// postgres. ALTER TABLE needs an ACCESS EXCLUSIVE lock even to add a nullable column, and while it
+// waits behind a long-running transaction every later query on the table queues behind it. With
+// the bound the migration fails fast instead (lock_not_available), the transaction rolls back, and
+// the next startup retries. SET LOCAL scopes it to the migration's transaction (migrator runs each
+// migration in one by default). Other dialects have no table-lock wait to bound.
+func setMigrationLockTimeout(tx *gorm.DB) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
+	}
+	if err := tx.Exec("SET LOCAL lock_timeout = '" + migrationLockTimeout + "'").Error; err != nil {
+		return fmt.Errorf("set migration lock_timeout: %w", err)
+	}
+	return nil
 }

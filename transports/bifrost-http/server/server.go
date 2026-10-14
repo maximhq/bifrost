@@ -27,6 +27,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/openapimcp"
 	dynamicPlugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/framework/temptoken"
@@ -41,10 +42,10 @@ import (
 	"github.com/maximhq/bifrost/plugins/routing/complexity"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
-	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	dto "github.com/prometheus/client_model/go"
@@ -1186,16 +1187,18 @@ func (s *BifrostHTTPServer) ReloadProvider(ctx context.Context, provider schemas
 		// unroutable rather than just the ones that moved.
 		keep := make(map[string]struct{}, len(inMemoryKeys)+1)
 		if isKeylessProvider {
-			// Keyless providers cache under the empty-string sentinel, which
-			// is also what the OnKey* helpers write under for this provider.
+			// Keyless providers cache only under the empty-string sentinel,
+			// which is also what the OnKey* helpers write under. Entries under
+			// a residual key's ID are never refetched, so they are pruned.
 			keep[""] = struct{}{}
-		}
-		for _, key := range inMemoryKeys {
-			// Mirror RefreshLiveModelsForProvider's skip rule: a disabled key
-			// is never refetched, so retaining its entries would serve models
-			// for a key core rejects at routing time.
-			if keyEnabled(key) {
-				keep[key.ID] = struct{}{}
+		} else {
+			for _, key := range inMemoryKeys {
+				// Mirror RefreshLiveModelsForProvider's skip rule: a disabled key
+				// is never refetched, so retaining its entries would serve models
+				// for a key core rejects at routing time.
+				if keyEnabled(key) {
+					keep[key.ID] = struct{}{}
+				}
 			}
 		}
 		s.Config.ModelCatalog.RetainLiveKeys(provider, keep)
@@ -2099,15 +2102,19 @@ func (s *BifrostHTTPServer) RefreshLiveModelsForAllKeys(ctx context.Context, pro
 // Callers are responsible for invalidating stale entries first when keys
 // have been removed from the provider's set.
 func (s *BifrostHTTPServer) RefreshLiveModelsForProvider(ctx context.Context, provider schemas.ModelProvider, keys []schemas.Key) {
+	// Keyless providers fetch once under the "" sentinel whatever keys are
+	// still stored: core skips key selection for them entirely, and a provider
+	// switched from keyed to keyless keeps its old (often disabled) keys, which
+	// must not decide whether discovery runs.
+	if isKeylessProvider(provider, s.Config) {
+		s.FetchAndStoreLiveForKey(ctx, provider, "")
+		return
+	}
 	if len(keys) == 0 {
 		// Empty key slice + non-keyless provider would write under the "" sentinel
 		// reserved for keyless providers — colliding with the keyless namespace and
 		// triggering an unauthenticated fetch for a provider that requires a key.
-		if !isKeylessProvider(provider, s.Config) {
-			logger.Warn("model discovery skipped for provider %s: no keys configured", provider)
-			return
-		}
-		s.FetchAndStoreLiveForKey(ctx, provider, "")
+		logger.Warn("model discovery skipped for provider %s: no keys configured", provider)
 		return
 	}
 	var wg sync.WaitGroup
@@ -2968,7 +2975,7 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	webhookHandler := handlers.NewWebhookHandler(callbacks, s.Config, s.WebhookDispatcher)
 	webhookHandler.RegisterRoutes(s.Router, middlewares...)
-	skillsServingHandler := handlers.NewSkillsServingHandler(s.Config.ConfigStore, s.Config.ObjectStore)
+	skillsServingHandler := handlers.NewSkillsServingHandler(s.Config.ConfigStore, s.Config.ObjectStore, s.Config)
 	if skillsServingHandler != nil {
 		skillsServingHandler.RegisterRoutes(s.Router, middlewares...)
 	}
@@ -3313,6 +3320,11 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 		}
 	}
 
+	// openapi MCP clients synthesize their server from a spec; the framework
+	// package does that, core only knows the hook. Registered on the config
+	// passed to Init and again on the client below, so a manager created
+	// lazily (no mcp block in config.json) gets it too.
+	openAPIFactory := openapimcp.Factory(openapimcp.WithConfigDir(s.Config.ConfigDir()))
 	tableMCPConfig := s.Config.MCPConfig
 	var mcpConfig *schemas.MCPConfig
 	if tableMCPConfig != nil {
@@ -3321,6 +3333,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 			mcpConfig.FetchNewRequestIDFunc = func(ctx *schemas.BifrostContext) string {
 				return uuid.New().String()
 			}
+			mcpConfig.InProcessServerFactory = openAPIFactory
 		}
 	}
 	// Initialize bifrost client
@@ -3344,6 +3357,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to initialize bifrost: %v", err)
 	}
+	s.Client.SetMCPInProcessServerFactory(openAPIFactory)
 	logger.Info("bifrost client initialized")
 	// Sync plugin execution order from config to core (defensive — Init receives sorted list,
 	// but this ensures order consistency if the loading path changes in the future)

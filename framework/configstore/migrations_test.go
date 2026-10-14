@@ -4389,6 +4389,63 @@ func TestMigrationAddVirtualKeyDisableContentLoggingColumn(t *testing.T) {
 	assert.Equal(t, storedOff.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
 }
 
+// TestMigrationAddVirtualKeyMetadataColumn pins the metadata column: the migration adds it and is
+// idempotent, a key without metadata reads back with none, and the config hash only moves when the
+// key has metadata, so every pre-existing key keeps the hash synchronization already stored for it.
+func TestMigrationAddVirtualKeyMetadataColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "metadata"), "metadata column must not exist before migration")
+	require.NoError(t, migrationAddVirtualKeyMetadataColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "metadata"))
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_metadata_column").Error)
+	require.NoError(t, migrationAddVirtualKeyMetadataColumn(ctx, db, testMigrationLogger))
+
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+	plain := tables.TableVirtualKey{ID: "vk-md-none", Name: "vk-md-none", Value: *schemas.NewSecretVar("sk-bf-vk-md-none")}
+	tagged := tables.TableVirtualKey{ID: "vk-md-tagged", Name: "vk-md-tagged", Value: *schemas.NewSecretVar("sk-bf-vk-md-tagged"), Metadata: map[string]string{"cost_center": "cc-42", "env": "prod"}}
+	for _, vk := range []*tables.TableVirtualKey{&plain, &tagged} {
+		hash, err := GenerateVirtualKeyHash(*vk)
+		require.NoError(t, err)
+		vk.ConfigHash = hash
+		require.NoError(t, db.Create(vk).Error)
+	}
+	read := func(id string) tables.TableVirtualKey {
+		var stored tables.TableVirtualKey
+		require.NoError(t, db.First(&stored, "id = ?", id).Error)
+		return stored
+	}
+	assert.Nil(t, read(plain.ID).Metadata)
+	storedTagged := read(tagged.ID)
+	assert.Equal(t, map[string]string{"cost_center": "cc-42", "env": "prod"}, storedTagged.Metadata)
+	recomputed, err := GenerateVirtualKeyHash(storedTagged)
+	require.NoError(t, err)
+	assert.Equal(t, storedTagged.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
+
+	// Hash stability: nil and empty metadata hash like a key from before the column existed, any
+	// metadata moves the hash, and a value change moves it again.
+	same := tables.TableVirtualKey{ID: plain.ID, Name: plain.Name, Value: *schemas.NewSecretVar("sk-bf-vk-md-none")}
+	hashWith := func(md map[string]string) string {
+		same.Metadata = md
+		hash, err := GenerateVirtualKeyHash(same)
+		require.NoError(t, err)
+		return hash
+	}
+	assert.Equal(t, plain.ConfigHash, hashWith(nil), "no metadata must hash exactly like a key from before the column existed")
+	assert.Equal(t, plain.ConfigHash, hashWith(map[string]string{}), "empty metadata must hash like no metadata")
+	withMD := hashWith(map[string]string{"cost_center": "cc-42"})
+	assert.NotEqual(t, plain.ConfigHash, withMD, "adding metadata must change the hash")
+	assert.NotEqual(t, withMD, hashWith(map[string]string{"cost_center": "cc-43"}), "changing a value must change the hash")
+	assert.NotEqual(t, hashWith(map[string]string{"a": "bc"}), hashWith(map[string]string{"ab": "c"}), "key/value boundaries must not be ambiguous")
+	for range 20 {
+		assert.Equal(t, hashWith(map[string]string{"a": "1", "b": "2", "c": "3"}), hashWith(map[string]string{"c": "3", "b": "2", "a": "1"}), "map order must not move the hash")
+	}
+}
+
 // TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable pins that rolling the
 // column back is refused rather than performed. The column is the only home for a key's own
 // content-logging decision, and a nil reads as "inherit": dropping it would not merely lose
@@ -4850,4 +4907,127 @@ func TestA2ARawCaptureSettingMigration(t *testing.T) {
 	var enabled bool
 	require.NoError(t, db.Table("config_client").Select("a2a_store_raw_request_response").Where("id = 1").Scan(&enabled).Error)
 	require.False(t, enabled)
+}
+
+// TestMigrationAddMCPClientOpenAPIColumns_RollbackRefuses: the openapi columns
+// hold the only stored copy of a client's spec and its encrypted credentials,
+// so both rollbacks refuse rather than drop them and report success.
+func TestMigrationAddMCPClientOpenAPIColumns_RollbackRefuses(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`CREATE TABLE config_mcp_clients (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id VARCHAR(255) NOT NULL UNIQUE)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	ctx := context.Background()
+	require.NoError(t, migrationAddMCPClientOpenAPISpecColumn(ctx, db, testMigrationLogger))
+	require.NoError(t, migrationAddMCPClientOpenAPIConfigJSONColumn(ctx, db, testMigrationLogger))
+
+	for column, rollback := range map[string]func(*gorm.DB) error{
+		"openapi_spec":        rollbackMCPClientOpenAPISpecColumn,
+		"openapi_config_json": rollbackMCPClientOpenAPIConfigJSONColumn,
+	} {
+		err := rollback(db)
+		require.Error(t, err, "rollback of %s must refuse", column)
+		assert.Contains(t, err.Error(), "non-rollbackable")
+		assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column), "a refused rollback must leave %s intact", column)
+	}
+}
+
+// TestMigrationAddMCPClientOpenAPIColumns_Idempotent runs both openapi column
+// migrations against a config_mcp_clients table created without them and again
+// once they exist: both passes succeed, both columns are present, and existing
+// rows are untouched.
+func TestMigrationAddMCPClientOpenAPIColumns_Idempotent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE config_mcp_clients (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			client_id VARCHAR(255) NOT NULL UNIQUE,
+			name VARCHAR(255) NOT NULL UNIQUE,
+			connection_type VARCHAR(20) NOT NULL,
+			tools_to_execute_json TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	now := time.Now()
+	require.NoError(t, db.Exec(`INSERT INTO config_mcp_clients (client_id, name, connection_type, tools_to_execute_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, "pre-existing", "pre_existing", "http", `["*"]`, now, now).Error)
+
+	ctx := context.Background()
+	for pass := 1; pass <= 2; pass++ {
+		require.NoError(t, migrationAddMCPClientOpenAPISpecColumn(ctx, db, testMigrationLogger), "spec column pass %d", pass)
+		require.NoError(t, migrationAddMCPClientOpenAPIConfigJSONColumn(ctx, db, testMigrationLogger), "config json column pass %d", pass)
+	}
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, "openapi_spec"))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, "openapi_config_json"))
+
+	var row struct {
+		Name              string
+		OpenAPISpec       *string
+		OpenAPIConfigJSON *string
+	}
+	require.NoError(t, db.Table("config_mcp_clients").Select("name, openapi_spec, openapi_config_json").Where("client_id = ?", "pre-existing").Scan(&row).Error)
+	assert.Equal(t, "pre_existing", row.Name)
+	assert.True(t, row.OpenAPISpec == nil || *row.OpenAPISpec == "")
+	assert.Nil(t, row.OpenAPIConfigJSON)
+}
+
+// TestMigrationSkillsExternalClientURL copies the current MCP client URL without overwriting explicit skills configuration.
+func TestMigrationSkillsExternalClientURL(t *testing.T) {
+	t.Setenv("BIFROST_URL", "https://bifrost.example.com")
+	for _, legacy := range []bool{true, false} {
+		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
+			db := setupTestDB(t)
+			ctx := context.Background()
+			require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+			require.NoError(t, migrationAddSkillsExternalClientURLColumn(ctx, db, testMigrationLogger))
+			require.True(t, db.Migrator().HasColumn("config_client", "skills_external_client_url"))
+			if legacy {
+				require.NoError(t, db.Exec("ALTER TABLE config_client ADD COLUMN mcp_external_client_url VARCHAR(512)").Error)
+				require.NoError(t, db.Exec("INSERT INTO config_client (id, mcp_external_client_url, skills_external_client_url) VALUES (1, ?, NULL), (2, ?, ?), (3, '', NULL)", "env.BIFROST_URL", "https://mcp.example", "https://skills.example").Error)
+			} else {
+				require.NoError(t, db.Exec("INSERT INTO config_client (id) VALUES (1)").Error)
+			}
+			require.NoError(t, migrationAddSkillsExternalClientURLColumn(ctx, db, testMigrationLogger))
+			require.NoError(t, migrationBackfillSkillsExternalClientURL(ctx, db, testMigrationLogger))
+			require.NoError(t, migrationBackfillSkillsExternalClientURL(ctx, db, testMigrationLogger))
+			var rows []struct {
+				ID                      int
+				SkillsExternalClientURL string
+			}
+			require.NoError(t, db.Table("config_client").Order("id").Find(&rows).Error)
+			if legacy {
+				require.Equal(t, "env.BIFROST_URL", rows[0].SkillsExternalClientURL)
+				require.Equal(t, "https://skills.example", rows[1].SkillsExternalClientURL)
+				require.Empty(t, rows[2].SkillsExternalClientURL)
+				var mcpURL string
+				require.NoError(t, db.Table("config_client").Select("mcp_external_client_url").Where("id = 1").Scan(&mcpURL).Error)
+				require.Equal(t, "env.BIFROST_URL", mcpURL)
+			} else {
+				require.Empty(t, rows[0].SkillsExternalClientURL)
+			}
+		})
+	}
+}
+
+// TestMigrationSkillsURLSkipsPrivateComponents preserves MCP credentials without publishing them as marketplace URLs.
+func TestMigrationSkillsURLSkipsPrivateComponents(t *testing.T) {
+	t.Setenv("BIFROST_UNSAFE_MCP_URL", "https://user:password@example.com")
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY, mcp_external_client_url TEXT, skills_external_client_url TEXT)").Error)
+	for i, value := range []string{"https://user:password@example.com", "https://example.com?token=private", "https://example.com?", "env.BIFROST_UNSAFE_MCP_URL", "https://safe.example/path"} {
+		require.NoError(t, db.Exec("INSERT INTO config_client (id, mcp_external_client_url) VALUES (?, ?)", i+1, value).Error)
+	}
+	require.NoError(t, migrationBackfillSkillsExternalClientURL(context.Background(), db, testMigrationLogger))
+	var rows []struct {
+		ID                      int
+		SkillsExternalClientURL string
+	}
+	require.NoError(t, db.Table("config_client").Order("id").Find(&rows).Error)
+	for _, row := range rows[:4] {
+		require.Empty(t, row.SkillsExternalClientURL)
+	}
+	require.Equal(t, "https://safe.example/path", rows[4].SkillsExternalClientURL)
 }

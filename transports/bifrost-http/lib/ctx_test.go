@@ -37,8 +37,9 @@ import (
 
 // testHandlerStore is a minimal HandlerStore for ctx tests.
 type testHandlerStore struct {
-	matcher         *HeaderMatcher
-	allowDirectKeys bool
+	matcher              *HeaderMatcher
+	allowDirectKeys      bool
+	extraFieldsInHeaders bool
 }
 
 func (s testHandlerStore) GetHeaderMatcher() *HeaderMatcher                      { return s.matcher }
@@ -53,6 +54,7 @@ func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList {
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool      { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool          { return false }
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                     { return s.allowDirectKeys }
+func (s testHandlerStore) ShouldSendExtraFieldsInHeaders() bool            { return s.extraFieldsInHeaders }
 func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool { return false }
 func (s testHandlerStore) GetMCPExternalServerURL() string                 { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                 { return "" }
@@ -824,6 +826,12 @@ func TestBuildBaseURL(t *testing.T) {
 		{name: "x-bf-forwarded-proto uppercase trimmed", host: host, xbfProto: " HTTPS ", want: "https://" + host},
 		{name: "x-bf-forwarded-proto comma list", host: host, xbfProto: "https, http", want: "https://" + host},
 		{name: "x-bf-forwarded-proto http stays http", host: host, xbfProto: "http", want: "http://" + host},
+		{name: "hostname missing", external: "https://:8080", host: host, want: "http://" + host},
+		{name: "empty fragment override rejected", external: "https://proxy.example.com#", host: host, want: "http://" + host},
+		{name: "userinfo override rejected", external: "https://user:password@proxy.example.com", host: host, want: "http://" + host},
+		{name: "query override rejected", external: "https://proxy.example.com?token=private", host: host, want: "http://" + host},
+		{name: "fragment override rejected", external: "https://proxy.example.com#private", host: host, want: "http://" + host},
+		{name: "non HTTP override rejected", external: "ftp://proxy.example.com", host: host, want: "http://" + host},
 		{name: "external override wins", external: "https://proxy.example.com", host: host, xfProto: "http", want: "https://proxy.example.com"},
 		{name: "external override trailing slash trimmed", external: "https://proxy.example.com/", host: host, want: "https://proxy.example.com"},
 		{name: "invalid external falls back to inference", external: "not-a-url", host: host, xbfProto: "https", want: "https://" + host},
@@ -2984,5 +2992,21 @@ func TestGatewayRefusedDirectKeyIsTheCallersOwn401(t *testing.T) {
 			}
 			requireGWHits(t, u, map[string]int{"sk-caller": 1, "sk-a1": 0})
 		})
+	}
+}
+
+func TestConvertToBifrostContext_MarksExtraFieldsInHeaders(t *testing.T) {
+	bodyCtx := &fasthttp.RequestCtx{}
+	_, cancel := ConvertToBifrostContext(bodyCtx, testHandlerStore{})
+	cancel()
+	if ExtraFieldsInHeaders(bodyCtx) {
+		t.Fatal("body mode must not mark the request")
+	}
+
+	headersCtx := &fasthttp.RequestCtx{}
+	_, cancel = ConvertToBifrostContext(headersCtx, testHandlerStore{extraFieldsInHeaders: true})
+	cancel()
+	if !ExtraFieldsInHeaders(headersCtx) {
+		t.Fatal("headers mode must mark the request")
 	}
 }

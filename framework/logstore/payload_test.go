@@ -8,6 +8,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/objectstore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -183,6 +184,36 @@ func TestObjectKey(t *testing.T) {
 	ts := time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC)
 	key := ObjectKey("bifrost", ts, "req_abc123")
 	assert.Equal(t, "bifrost/logs/2026/04/03/14/req_abc123.json.gz", key)
+}
+
+func TestHybridObjectKeysFollowFormat(t *testing.T) {
+	ts := time.Date(2026, 4, 3, 14, 0, 0, 0, time.UTC)
+	h := &HybridLogStore{prefix: "bifrost"}
+
+	h.setObjectFormat(objectstore.FormatJSON, objectstore.CompressionGzip)
+	jsonKey := ObjectKey("bifrost", ts, "req_1")
+	parquetKey := "bifrost/logs/2026/04/03/14/req_1.parquet"
+	assert.Equal(t, jsonKey, h.logKey(ts, "req_1"), "json keeps the existing keys")
+	assert.Equal(t, MCPToolObjectKey("bifrost", ts, "mcp_1"), h.mcpToolKey(ts, "mcp_1"))
+	assert.Equal(t, AgentLogObjectKey("bifrost", ts, "a2a_1"), h.agentLogKey(ts, "a2a_1"))
+	assert.Equal(t, parquetKey, h.alternateKey(jsonKey), "json keys fall back to parquet after a switch back")
+	assert.Equal(t, []string{jsonKey, parquetKey}, h.withAlternateKeys(jsonKey))
+
+	h.setObjectFormat(objectstore.FormatParquet, objectstore.CompressionSnappy)
+	assert.Equal(t, parquetKey, h.logKey(ts, "req_1"))
+	assert.Equal(t, "bifrost/mcp-logs/2026/04/03/14/mcp_1.parquet", h.mcpToolKey(ts, "mcp_1"))
+	assert.Equal(t, "bifrost/agent-logs/2026/04/03/14/a2a_1.parquet", h.agentLogKey(ts, "a2a_1"))
+	assert.Equal(t, jsonKey, h.alternateKey(parquetKey))
+	assert.Equal(t, []string{parquetKey, jsonKey}, h.withAlternateKeys(parquetKey))
+	assert.Empty(t, h.alternateKey("bifrost/skills/abc"), "keys outside the payload formats have no alternate")
+
+	gcs := &HybridLogStore{prefix: "bifrost", singleFormat: true}
+	gcs.setObjectFormat(objectstore.FormatJSON, objectstore.CompressionGzip)
+	assert.Empty(t, gcs.alternateKey(jsonKey), "a json-only backend never probes parquet keys")
+	assert.Equal(t, []string{jsonKey}, gcs.withAlternateKeys(jsonKey))
+
+	h.setObjectFormat(objectstore.FormatParquet, objectstore.CompressionSnappy)
+	assert.Equal(t, objectstore.CompressionSnappy, h.parquetCompression)
 }
 
 func TestMCPToolObjectKey(t *testing.T) {

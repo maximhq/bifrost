@@ -5,7 +5,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/plugins/routing"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 // TestGetRoutingPluginResolvesRegisteredPlugin pins the type the routing plugin is looked up

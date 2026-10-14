@@ -15,7 +15,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -176,6 +176,7 @@ func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
 		return
 	}
+	body = lib.StripExtraFieldsIfInHeaders(ctx, body)
 	ctx.SetBody(append(body, '\n'))
 }
 
@@ -189,6 +190,7 @@ func SendJSONWithStatus(ctx *fasthttp.RequestCtx, data interface{}, statusCode i
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
 		return
 	}
+	body = lib.StripExtraFieldsIfInHeaders(ctx, body)
 	ctx.SetBody(append(body, '\n'))
 }
 
@@ -224,6 +226,17 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 	lib.ApplyBifrostErrorResponseHeaders(ctx, nil, bifrostErr.ExtraFields)
 
 	ctx.SetContentType("application/json")
+	if lib.ExtraFieldsInHeaders(ctx) {
+		body, encodeErr := json.Marshal(bifrostErr)
+		if encodeErr != nil {
+			logger.Warn(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+			ctx.SetBodyString(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
+			return
+		}
+		ctx.SetBody(append(lib.StripExtraFields(body), '\n'))
+		return
+	}
 	if encodeErr := json.NewEncoder(ctx).Encode(bifrostErr); encodeErr != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)

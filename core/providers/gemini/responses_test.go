@@ -1427,3 +1427,56 @@ func TestNativeToolRawBytesWinUntilCleared(t *testing.T) {
 		t.Fatalf("clearing raw must marshal from the typed fields: %s", rebuilt)
 	}
 }
+
+// TestToGeminiResponsesRequest_InstructionsLeadSystemInput: top-level instructions and
+// system/developer input both reach systemInstruction, instructions first (OpenAI places
+// instructions ahead of input). Previously instructions were dropped whenever the input
+// carried system content.
+func TestToGeminiResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
+	user := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+	developer := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("DEVELOPER_MUST_SURVIVE")},
+	}
+
+	tests := []struct {
+		name         string
+		instructions *string
+		input        []schemas.ResponsesMessage
+		want         []string
+	}{
+		{"instructions and developer input both reach system, instructions first", schemas.Ptr("BASE_MUST_SURVIVE"), []schemas.ResponsesMessage{developer, user}, []string{"BASE_MUST_SURVIVE", "DEVELOPER_MUST_SURVIVE"}},
+		{"instructions alone", schemas.Ptr("BASE_MUST_SURVIVE"), []schemas.ResponsesMessage{user}, []string{"BASE_MUST_SURVIVE"}},
+		{"developer input alone", nil, []schemas.ResponsesMessage{developer, user}, []string{"DEVELOPER_MUST_SURVIVE"}},
+		{"empty instructions add nothing", schemas.Ptr(""), []schemas.ResponsesMessage{developer, user}, []string{"DEVELOPER_MUST_SURVIVE"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := ToGeminiResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    "gemini-2.5-flash",
+				Input:    tc.input,
+				Params:   &schemas.ResponsesParameters{Instructions: tc.instructions},
+			})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if out.SystemInstruction == nil {
+				t.Fatalf("systemInstruction missing, want %q", tc.want)
+			}
+			var got []string
+			for _, part := range out.SystemInstruction.Parts {
+				got = append(got, part.Text)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("systemInstruction parts = %q, want %q", got, tc.want)
+			}
+			if len(out.Contents) != 1 || out.Contents[0].Role != "user" {
+				t.Fatalf("expected only the user turn in contents, got %+v", out.Contents)
+			}
+		})
+	}
+}

@@ -242,6 +242,9 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 						{Text: *bifrostReq.Params.Instructions},
 					},
 				}
+			} else if *bifrostReq.Params.Instructions != "" {
+				// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
+				geminiReq.SystemInstruction.Parts = append([]*Part{{Text: *bifrostReq.Params.Instructions}}, geminiReq.SystemInstruction.Parts...)
 			}
 		}
 

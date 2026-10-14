@@ -102,9 +102,9 @@ export default function AgentGatewayView() {
 						External Client URL
 					</label>
 					<p className="text-muted-foreground text-sm">
-						Bifrost&apos;s public base URL, used for served agent cards and push-notification callback URLs. If left blank, agent cards fall
-						back to the incoming <code className="text-xs">Host</code> header and <b>push notifications are disabled</b>. Supports env var
-						syntax (e.g. <code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
+						Bifrost&apos;s public base URL, used for served agent cards and push-notification callback URLs. If left blank, all agent
+						protocol endpoints are disabled. Agent management remains available. Supports env var syntax (e.g.{" "}
+						<code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
 					</p>
 					<SecretVarInput
 						id="a2a-external-client-url"

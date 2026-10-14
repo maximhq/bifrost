@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -30,6 +30,9 @@ const (
 	FastHTTPUserValueBifrostContext = "__bifrost_context"
 	// FastHTTPUserValueBifrostCancel stores the cancel func for the active shared Bifrost context.
 	FastHTTPUserValueBifrostCancel = "__bifrost_context_cancel"
+	// FastHTTPUserValueExtraFieldsInHeaders marks requests whose responses carry extra_fields as
+	// x-bifrost-* headers instead of in the body (client.extra_fields_placement = "headers").
+	FastHTTPUserValueExtraFieldsInHeaders = "__bifrost_extra_fields_in_headers"
 	// FastHTTPUserValueLargeResponseMode marks requests that streamed a large response body.
 	// It is used by transport middleware to avoid re-buffering response bodies for post-hooks.
 	FastHTTPUserValueLargeResponseMode = "__bifrost_large_response_mode"
@@ -210,6 +213,16 @@ func ResolveSessionIDFromRequest(h *fasthttp.RequestHeader) string {
 	return ResolveSessionIDFromHeaders(headers)
 }
 
+// ExtraFieldsInHeaders reports whether this request's responses carry extra_fields as headers
+// instead of in the body. ConvertToBifrostContext marks the request from client config.
+func ExtraFieldsInHeaders(ctx *fasthttp.RequestCtx) bool {
+	if ctx == nil {
+		return false
+	}
+	inHeaders, _ := ctx.UserValue(FastHTTPUserValueExtraFieldsInHeaders).(bool)
+	return inHeaders
+}
+
 // ConvertToBifrostContext converts a FastHTTP RequestCtx to a Bifrost context,
 // preserving important header values for monitoring and tracing purposes.
 //
@@ -309,6 +322,9 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 		mcpHeaderCombinedAllowlist = store.GetMCPHeaderCombinedAllowlist()
 		allowPerRequestStorageOverride = store.ShouldAllowPerRequestStorageOverride()
 		allowPerRequestRawOverride = store.ShouldAllowPerRequestRawOverride()
+		if store.ShouldSendExtraFieldsInHeaders() {
+			ctx.SetUserValue(FastHTTPUserValueExtraFieldsInHeaders, true)
+		}
 	}
 	// Reuse a shared request-scoped context when available.
 	var bifrostCtx *schemas.BifrostContext
@@ -892,31 +908,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	return bifrostCtx, cancel
 }
 
-// ValidateBaseURL checks that a URL is parseable with both scheme and host —
-// the same gate BuildBaseURL applies before honoring an override. Empty values
-// are accepted (caller decides whether absence is allowed). Logging is the
-// caller's responsibility. The error intentionally omits the offending value:
-// callers may pass URLs resolved from env vars (e.g. `env.MY_SECRET_URL`), so
-// echoing the value back in API responses or logs would let an attacker probe
-// process env state by feeding malformed env-var references.
-func ValidateBaseURL(val string) error {
-	if val == "" {
-		return nil
-	}
-	parsed, err := url.Parse(val)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("must be a fully-qualified URL with scheme and host (e.g. https://proxy.example.com)")
-	}
-	return nil
-}
-
 // BuildBaseURL returns the effective base URL for OAuth callbacks and metadata discovery.
 // When externalBaseURL is non-empty (set via config/UI/API), it takes priority so that
 // deployments behind a reverse proxy advertise the proxy's public URL rather than the
 // internal Host header seen by Bifrost.
 func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 	if override := strings.TrimRight(strings.TrimSpace(externalBaseURL), "/"); override != "" {
-		if parsed, err := url.Parse(override); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		if configstore.ValidatePublicBaseURL(override) == nil {
 			return override
 		}
 	}

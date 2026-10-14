@@ -144,6 +144,7 @@ export const baseApi = createApi({
 		"MCPLogs",
 		"Providers",
 		"MCPClients",
+		"MCPClientOpenAPISpec",
 		"Config",
 		"CacheConfig",
 		"VirtualKeys",
