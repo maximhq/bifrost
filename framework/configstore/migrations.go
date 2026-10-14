@@ -574,6 +574,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_openapi_spec_column"}, run: migrationAddMCPClientOpenAPISpecColumn},
 	{IDs: []string{"add_mcp_client_openapi_config_json_column"}, run: migrationAddMCPClientOpenAPIConfigJSONColumn},
 	{IDs: []string{"add_client_config_extra_fields_placement_column"}, run: migrationAddClientConfigExtraFieldsPlacementColumn},
+	{IDs: []string{"add_skills_external_client_url_column"}, run: migrationAddSkillsExternalClientURLColumn},
+	{IDs: []string{"backfill_skills_external_client_url"}, run: migrationBackfillSkillsExternalClientURL},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -10332,6 +10334,54 @@ func migrationDropNonVKOauthUserRows(ctx context.Context, db *gorm.DB, logger sc
 			// modes re-authenticate after rollback the same way they would
 			// after the forward migration.
 			return nil
+		},
+	})
+}
+
+// migrationAddSkillsExternalClientURLColumn adds the public marketplace URL setting.
+// DDL runs separately from the backfill so its exclusive lock is released before updating rows.
+func migrationAddSkillsExternalClientURLColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "add_skills_external_client_url_column",
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "SkillsExternalClientURL")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_skills_external_client_url_column is non-rollbackable: dropping it would discard marketplace configuration")
+		},
+	})
+}
+
+// migrationBackfillSkillsExternalClientURL seeds the marketplace URL from the current MCP client URL.
+// Existing skills overrides win, and the MCP setting remains unchanged.
+func migrationBackfillSkillsExternalClientURL(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "backfill_skills_external_client_url",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn("config_client", "mcp_external_client_url") {
+				return nil
+			}
+			var rows []struct {
+				ID                   uint
+				MCPExternalClientURL string
+			}
+			if err := tx.Table("config_client").Select("id, mcp_external_client_url").Where("(skills_external_client_url IS NULL OR skills_external_client_url = '') AND mcp_external_client_url IS NOT NULL AND mcp_external_client_url != ''").Find(&rows).Error; err != nil {
+				return err
+			}
+			for _, row := range rows {
+				value := schemas.NewSecretVar(row.MCPExternalClientURL).GetValue()
+				if value == "" || ValidatePublicBaseURL(value) != nil {
+					continue
+				}
+				if err := tx.Table("config_client").Where("id = ?", row.ID).Update("skills_external_client_url", row.MCPExternalClientURL).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("backfill_skills_external_client_url is non-rollbackable: migrated marketplace configuration must be preserved")
 		},
 	})
 }

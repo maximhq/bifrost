@@ -266160,6 +266160,427 @@
           }
         }
       ]
+    },
+    {
+      "name": "233. Agent and skills endpoints require an explicit public url [SERIAL]",
+      "description": "Uses the unchanged tests/integrations/python/config.json profile: a2a_external_client_url and skills_external_client_url must be unset, enforce_auth_on_inference must be false, Git must be installed, and management requests require the configured setup token. These checks make no configuration mutations and no provider calls. They pin fail-closed serving for cards, JSON-RPC, REST, push ingress, and Claude/Codex catalogs and Git endpoints, while agent management remains available. Set URLs in a separate configured run to test enabled serving; Go regressions cover that behavior and spoofed headers.",
+      "item": [
+        {
+          "name": "233.1 explicit public url GET /agents/a2a/url-gate-fixture/.well-known/agent-card.json [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('a2a_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/agents/a2a/url-gate-fixture/.well-known/agent-card.json"
+          }
+        },
+        {
+          "name": "233.2 explicit public url POST /agents/a2a/url-gate-fixture/json-rpc [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('a2a_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/agents/a2a/url-gate-fixture/json-rpc"
+          }
+        },
+        {
+          "name": "233.3 explicit public url GET /agents/a2a/url-gate-fixture/rest/tasks/fixture [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('a2a_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/agents/a2a/url-gate-fixture/rest/tasks/fixture"
+          }
+        },
+        {
+          "name": "233.4 explicit public url POST /agents/a2a/url-gate-fixture/push/callback [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('a2a_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/agents/a2a/url-gate-fixture/push/callback"
+          }
+        },
+        {
+          "name": "233.5 explicit public url GET /api/skills/serve/claude-code/.claude-plugin/marketplace.json [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/claude-code/.claude-plugin/marketplace.json"
+          }
+        },
+        {
+          "name": "233.6 explicit public url GET /api/skills/serve/codex/.agents/plugins/marketplace.json [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/codex/.agents/plugins/marketplace.json"
+          }
+        },
+        {
+          "name": "233.7 explicit public url GET /api/skills/serve/claude-code.git/info/refs?service=git-upload-pack [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/claude-code.git/info/refs?service=git-upload-pack"
+          }
+        },
+        {
+          "name": "233.8 explicit public url POST /api/skills/serve/claude-code.git/git-upload-pack [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/claude-code.git/git-upload-pack"
+          }
+        },
+        {
+          "name": "233.9 explicit public url GET /api/skills/serve/codex/info/refs?service=git-upload-pack [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/codex/info/refs?service=git-upload-pack"
+          }
+        },
+        {
+          "name": "233.10 explicit public url POST /api/skills/serve/codex/git-upload-pack [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/codex/git-upload-pack"
+          }
+        },
+        {
+          "name": "233.11 explicit public url GET /api/skills/serve/codex/plugins/bifrost-fixture/info/refs?service=git-upload-pack [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/codex/plugins/bifrost-fixture/info/refs?service=git-upload-pack"
+          }
+        },
+        {
+          "name": "233.12 explicit public url POST /api/skills/serve/claude-code/plugins/bifrost-fixture/git-upload-pack [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/claude-code/plugins/bifrost-fixture/git-upload-pack"
+          }
+        },
+        {
+          "name": "233.13 explicit public url GET /api/agents",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Agent management remains available without the public URL', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().agents).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/agents"
+          }
+        }
+      ]
     }
   ]
 }

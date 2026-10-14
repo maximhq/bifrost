@@ -1519,7 +1519,7 @@ func ApplyMCPOAuthPrivateAllowlist(entries []string) error {
 	return nil
 }
 
-// sanitizeMCPExternalOAuthURLs validates the MCP external OAuth URL overrides
+// sanitizeMCPExternalOAuthURLs validates the MCP, Agent Gateway, and skills public URL overrides
 // on a ClientConfig and clears any invalid override so it cannot leak into
 // OAuth URL generation. The warning intentionally omits the offending value:
 // these fields support env-var references (`env.MY_VAR`), and echoing the
@@ -1529,12 +1529,16 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 	if client == nil {
 		return
 	}
-	if err := ValidateBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
+	if err := configstore.ValidatePublicBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
 		logger.Warn("mcp_external_client_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
 		client.MCPExternalClientURL = nil
 	}
-	if err := ValidateBaseURL(client.A2AExternalClientURL.GetValue()); err != nil {
-		logger.Warn("a2a_external_client_url %v; override will be ignored and agent card and push callback URLs will fall back to the request Host header", err)
+	if err := configstore.ValidatePublicBaseURL(client.SkillsExternalClientURL.GetValue()); err != nil {
+		logger.Warn("skills_external_client_url %v; marketplace serving will be disabled", err)
+		client.SkillsExternalClientURL = nil
+	}
+	if err := configstore.ValidatePublicBaseURL(client.A2AExternalClientURL.GetValue()); err != nil {
+		logger.Warn("a2a_external_client_url %v; Agent Gateway protocol endpoints will be disabled", err)
 		client.A2AExternalClientURL = nil
 	}
 }
@@ -7584,17 +7588,32 @@ func (c *Config) IsProviderConfigured(provider schemas.ModelProvider) bool {
 // redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 // if not configured. Resolves env var references automatically.
 func (c *Config) GetMCPExternalClientURL() string {
-	return c.ClientConfig.MCPExternalClientURL.GetValue()
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return ""
+	}
+	value := c.ClientConfig.MCPExternalClientURL.GetValue()
+	if configstore.ValidatePublicBaseURL(value) != nil {
+		return ""
+	}
+	return value
 }
 
 // GetA2AExternalClientURL returns the configured external base URL used for Agent Gateway
 // push-notification callback URLs and served agent card URLs, or empty string if not
 // configured. Resolves env var references automatically.
 func (c *Config) GetA2AExternalClientURL() string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
 	if c.ClientConfig == nil || c.ClientConfig.A2AExternalClientURL == nil {
 		return ""
 	}
-	return c.ClientConfig.A2AExternalClientURL.GetValue()
+	value := c.ClientConfig.A2AExternalClientURL.GetValue()
+	if configstore.ValidatePublicBaseURL(value) != nil {
+		return ""
+	}
+	return value
 }
 
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.
@@ -10601,4 +10620,18 @@ func (c *Config) GetMCPClientOpenAPISpec(id string) (spec string, isOpenAPI bool
 		}
 	}
 	return "", false, false
+}
+
+// GetSkillsExternalClientURL returns the configured public marketplace URL without request-header fallbacks.
+func (c *Config) GetSkillsExternalClientURL() string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return ""
+	}
+	value := c.ClientConfig.SkillsExternalClientURL.GetValue()
+	if err := configstore.ValidatePublicBaseURL(value); err != nil {
+		return ""
+	}
+	return strings.TrimRight(value, "/")
 }

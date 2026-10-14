@@ -108,6 +108,8 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `disable_db_pings_in_health` | boolean | `false` | Exclude DB connectivity from `/health` |
 | `routing_chain_max_depth` | integer | `10` | Max routing rule chain evaluation depth |
 | `mcp_external_client_url` | string \| EnvVar | - | Public base URL used as `redirect_uri` against upstream MCP OAuth providers; supports `"env.MY_VAR"` |
+| `a2a_external_client_url` | string or secret reference | - | Public base URL required for Agent Gateway protocol operations; management remains available when unset |
+| `skills_external_client_url` | string or secret reference | - | Public base URL required for skills marketplace registration and serving; skill management and downloads remain available when unset |
 
 Full documentation: [Client Configuration](/deployment-guides/config-json/client).
 

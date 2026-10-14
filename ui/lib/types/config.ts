@@ -774,6 +774,7 @@ export interface BifrostConfig {
 	is_logs_connected: boolean;
 	is_object_storage_connected?: boolean;
 	is_git_available: boolean;
+	skills_marketplace_base_url?: string;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
 	env_label?: string;
@@ -856,6 +857,7 @@ export interface CoreConfig {
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
+	skills_external_client_url?: SecretVar;
 	a2a_external_client_url?: SecretVar;
 	a2a_store_raw_request_response?: boolean;
 	mcp_server_auth_mode?: "headers" | "both" | "oauth";

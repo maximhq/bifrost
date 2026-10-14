@@ -25,14 +25,14 @@ The gateway accepts A2A v1. An explicitly incompatible `A2A-Version` is rejected
 
 ## Set the public base URL
 
-Set **External Client URL** before configuring push notifications. Bifrost uses this base URL to build the callback address that upstream agents send updates to. Without it, push notifications are disabled and push-configuration requests fail. Use an address the agents can reach.
+Set **External Client URL** to enable Agent Gateway protocol operations. Use Bifrost's public base URL, reachable by your clients and upstream agents. Bifrost uses it for endpoints advertised in served agent cards and for push-notification callback URLs, including behind a reverse proxy.
 
-This URL also sets the public address advertised in served agent cards, including when Bifrost runs behind a proxy.
+When this URL is unset or its reference resolves to an empty value, HTTP agent-card, JSON-RPC, REST, and push-callback endpoints return **503 Service Unavailable**. A2A gRPC operations return **UNAVAILABLE**, even if the gRPC listener is configured. Agent registration, editing, and other management APIs remain available.
 
 <Frame>
   <img
     src="/media/agent-gateway/ui-settings.png"
-    alt="Agent Gateway settings with the public URL and raw capture controls"
+    alt="Agent Gateway settings showing that an unset public URL disables protocol endpoints while management remains available"
     style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
   />
 </Frame>
@@ -61,7 +61,7 @@ bifrost:
 </Tab>
 </Tabs>
 
-Without this setting, served HTTP agent cards use the incoming request host.
+Bifrost does not infer this URL from `Host` or forwarded request headers. Configure it explicitly.
 
 ### Push callback routing
 

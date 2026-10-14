@@ -467,7 +467,10 @@ false
 {{- if .Values.bifrost.client.mcpExternalClientUrl }}
 {{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
 {{- end }}
-{{- if .Values.bifrost.client.a2aExternalClientUrl }}
+{{- if hasKey .Values.bifrost.client "skillsExternalClientUrl" }}
+{{- $_ := set $client "skills_external_client_url" .Values.bifrost.client.skillsExternalClientUrl }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "a2aExternalClientUrl" }}
 {{- $_ := set $client "a2a_external_client_url" .Values.bifrost.client.a2aExternalClientUrl }}
 {{- end }}
 {{- if .Values.bifrost.client.mcpServerAuthMode }}

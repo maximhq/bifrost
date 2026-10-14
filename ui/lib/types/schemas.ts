@@ -1295,6 +1295,7 @@ export const coreConfigSchema = z.object({
 		.optional(),
 	mcp_enable_temp_token_auth: z.boolean().default(false),
 	mcp_oauth_private_allowlist: z.array(z.string()).optional(),
+	skills_external_client_url: secretVarSchema.optional(),
 });
 
 // Bifrost config schema
@@ -1304,6 +1305,7 @@ export const bifrostConfigSchema = z.object({
 	is_cache_connected: z.boolean(),
 	is_logs_connected: z.boolean(),
 	is_git_available: z.boolean().optional().default(false),
+	skills_marketplace_base_url: z.string().optional(),
 });
 
 // Network and proxy form schema - combined for the NetworkFormFragment

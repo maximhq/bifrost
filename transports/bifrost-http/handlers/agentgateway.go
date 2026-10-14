@@ -235,6 +235,7 @@ func (h *AgentGatewayHandler) RegisterManagementRoutes(r *router.Router, middlew
 // RegisterProtocolRoutes mounts all A2A endpoints through the supplied transport
 // middleware and the Agent Gateway authentication boundary.
 func (h *AgentGatewayHandler) RegisterProtocolRoutes(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	middlewares = append([]schemas.BifrostHTTPMiddleware{h.requireAgentGatewayURL}, middlewares...)
 	r.GET("/agents/a2a/{name}/.well-known/agent-card.json", lib.ChainMiddlewares(h.card, middlewares...))
 	r.POST("/agents/a2a/{name}"+agent.GatewayJSONRPCPathSuffix, lib.ChainMiddlewares(h.protocol, middlewares...))
 	for _, method := range []string{fasthttp.MethodGet, fasthttp.MethodPost, fasthttp.MethodDelete} {
@@ -247,13 +248,29 @@ func (h *AgentGatewayHandler) RegisterProtocolRoutes(r *router.Router, middlewar
 // agent authenticates with the per-config token Bifrost minted at push-config
 // registration, never with a downstream virtual key.
 func (h *AgentGatewayHandler) RegisterPushIngressRoute(r *router.Router, middlewares ...schemas.BifrostHTTPMiddleware) {
+	middlewares = append([]schemas.BifrostHTTPMiddleware{h.requireAgentGatewayURL}, middlewares...)
 	r.POST("/agents/a2a/{name}"+agent.GatewayPushCallbackPathSuffix, lib.ChainMiddlewares(h.pushCallback, middlewares...))
+}
+
+// requireAgentGatewayURL rejects disabled protocol endpoints before authentication or plugin short-circuits.
+func (h *AgentGatewayHandler) requireAgentGatewayURL(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		if h.config.GetA2AExternalClientURL() == "" {
+			SendError(ctx, fasthttp.StatusServiceUnavailable, "agent gateway disabled: configure a2a_external_client_url")
+			return
+		}
+		next(ctx)
+	}
 }
 
 // pushCallback accepts one upstream push event. Authentication, task
 // verification, and durable enqueueing are the manager's responsibility; the
 // transport only carries the token header and body across.
 func (h *AgentGatewayHandler) pushCallback(ctx *fasthttp.RequestCtx) {
+	if h.config.GetA2AExternalClientURL() == "" {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "agent gateway disabled: configure a2a_external_client_url")
+		return
+	}
 	token := string(ctx.Request.Header.Peek(agent.PushNotificationTokenHeader))
 	workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
 	defer cancel()
@@ -866,13 +883,18 @@ func (h *AgentGatewayHandler) rest(ctx *fasthttp.RequestCtx) {
 // serveProtocol performs protocol dispatch after HTTP middleware has established
 // authentication. Authorization remains in PreA2A after SDK decoding.
 func (h *AgentGatewayHandler) serveProtocol(ctx *fasthttp.RequestCtx, binding agentBinding) {
+	baseURL := strings.TrimRight(h.config.GetA2AExternalClientURL(), "/")
+	if baseURL == "" {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "agent gateway disabled: configure a2a_external_client_url")
+		return
+	}
 	authentication, _ := ctx.UserValue(agentGatewayAuthenticationContextKey).(agentAuthenticationResult)
 	name := pathName(ctx)
 	var handler http.Handler
 	var found bool
 	switch binding {
 	case agentBindingCard:
-		handler, found = h.manager.CardHandler(name, lib.BuildBaseURL(ctx, h.config.GetA2AExternalClientURL()))
+		handler, found = h.manager.CardHandler(name, baseURL)
 	case agentBindingREST:
 		handler, found = h.manager.RESTHandler(name)
 		if found {
@@ -910,7 +932,7 @@ func (h *AgentGatewayHandler) serveProtocol(ctx *fasthttp.RequestCtx, binding ag
 		}
 	}
 	downstreamTransport := binding.String()
-	requestOrigin := lib.BuildBaseURL(ctx, h.config.GetA2AExternalClientURL())
+	requestOrigin := baseURL
 	ctx.SetUserValue(schemas.BifrostContextKeyA2ADownstreamTransport, downstreamTransport)
 	ctx.SetUserValue(schemas.BifrostContextKeyA2ARequestOrigin, requestOrigin)
 	if bifrostCtx, ok := ctx.UserValue(agentGatewayBifrostContextKey).(*schemas.BifrostContext); ok {

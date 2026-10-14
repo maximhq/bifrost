@@ -15,6 +15,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/agent"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
@@ -100,7 +101,7 @@ func TestAgentGatewaySSEStreamsIncrementallyOverFastHTTPRoute(t *testing.T) {
 	mux.Handle("/rpc", a2asrv.NewJSONRPCHandler(upstreamHandler))
 
 	store := &agentAuthStore{}
-	config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: false}}
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway"), EnforceAuthOnInference: false}}
 	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{AuthPolicy: AgentGatewayAuthPolicy(config)})
 	require.NoError(t, err)
 	closeManager := sync.OnceFunc(manager.Close)
