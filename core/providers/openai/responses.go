@@ -661,6 +661,9 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				break
 			}
 		}
+		// Anthropic uses input_container for managed file references, while the
+		// OpenAI Responses API expects the same file_id under input_file.
+		message = normalizeContainerFileInput(message)
 
 		// OpenAI's Responses schema requires "detail" on input_image items, and strict
 		// downstream validators (e.g. vLLM importing the official OpenAI types) reject
@@ -1182,7 +1185,32 @@ func samplingParamUnsupported(caps schemas.ModelCaps, field, model, effort strin
 	return caps.FieldUnsupported(field, fallback)
 }
 
-// filterUnsupportedTools removes tool types that OpenAI doesn't support
+// normalizeContainerFileInput maps Anthropic's managed-file block to the
+// equivalent OpenAI Responses file block without mutating the caller's input.
+func normalizeContainerFileInput(message schemas.ResponsesMessage) schemas.ResponsesMessage {
+	if message.Content == nil || len(message.Content.ContentBlocks) == 0 {
+		return message
+	}
+
+	changed := false
+	newBlocks := make([]schemas.ResponsesMessageContentBlock, len(message.Content.ContentBlocks))
+	copy(newBlocks, message.Content.ContentBlocks)
+	for i := range newBlocks {
+		if newBlocks[i].Type == schemas.ResponsesInputMessageContentBlockTypeContainer {
+			newBlocks[i].Type = schemas.ResponsesInputMessageContentBlockTypeFile
+			changed = true
+		}
+	}
+	if !changed {
+		return message
+	}
+
+	contentCopy := *message.Content
+	contentCopy.ContentBlocks = newBlocks
+	message.Content = &contentCopy
+	return message
+}
+
 // defaultImageDetail fills "auto" into any input_image content block missing the
 // detail field. Clones content on write — the Content pointer and the image block
 // pointers inside it are shared with the caller's input.

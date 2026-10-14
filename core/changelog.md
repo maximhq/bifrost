@@ -1,0 +1,1 @@
+- fix: preserve managed file references across Gemini and OpenAI Responses conversions, and reject unsupported input_audio content before Anthropic dispatch (#7345) [@axelray-dev](https://github.com/axelray-dev)
