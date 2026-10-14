@@ -1,7 +1,9 @@
 package logging
 
 import (
+	"bytes"
 	"context"
+	"mime/multipart"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -26,6 +28,7 @@ const (
 )
 
 type passthroughCall struct {
+	contentType  string // defaults to application/json
 	provider     schemas.ModelProvider
 	model        string
 	path         string
@@ -43,6 +46,10 @@ func runPassthroughCall(t *testing.T, cfg *Config, requestID string, call passth
 	plugin, err := Init(context.Background(), cfg, testLogger{}, store, nil, nil, nil)
 	require.NoError(t, err)
 
+	contentType := call.contentType
+	if contentType == "" {
+		contentType = "application/json"
+	}
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyRequestID, requestID)
 	if setup != nil {
@@ -56,7 +63,7 @@ func runPassthroughCall(t *testing.T, cfg *Config, requestID string, call passth
 			Method:      "POST",
 			Path:        call.path,
 			Body:        []byte(call.requestBody),
-			SafeHeaders: map[string]string{"content-type": "application/json"},
+			SafeHeaders: map[string]string{"content-type": contentType},
 		},
 	})
 	require.NoError(t, err)
@@ -265,6 +272,38 @@ func TestPassthroughLogParsesMediaRoutes(t *testing.T) {
 		require.NotNil(t, row.ImageGenerationOutputParsed)
 		require.Len(t, row.ImageGenerationOutputParsed.Data, 1)
 	})
+}
+
+// TestPassthroughLogSummarizesMultipartUploads pins that a multipart passthrough upload is logged as
+// its form fields and file sizes (never the file bytes) and parses into the typed transcription row.
+func TestPassthroughLogSummarizesMultipartUploads(t *testing.T) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	require.NoError(t, w.WriteField("model", "whisper-1"))
+	require.NoError(t, w.WriteField("language", "en"))
+	audio := bytes.Repeat([]byte{0x00, 0xff, 0x7f}, 2000)
+	part, err := w.CreateFormFile("file", "clip.mp3")
+	require.NoError(t, err)
+	_, err = part.Write(audio)
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	row := runPassthroughCall(t, &Config{}, "req-pt-multipart", passthroughCall{
+		contentType: w.FormDataContentType(), provider: schemas.OpenAI, model: "whisper-1", path: "/v1/audio/transcriptions",
+		requestBody: buf.String(), status: 200, responseBody: `{"text":"hello from the clip"}`,
+	}, nil, nil)
+
+	require.NotContains(t, row.PassthroughRequestBody, string(audio[:60]), "file bytes must never be stored")
+	require.Contains(t, row.PassthroughRequestBody, `"filename":"clip.mp3"`)
+	require.Contains(t, row.PassthroughRequestBody, `"bytes":6000`)
+	params := passthroughParamsMap(t, row)
+	require.Equal(t, true, params["multipart_summary"])
+	require.Equal(t, string(schemas.TranscriptionRequest), params["parsed_type"])
+	require.NotNil(t, row.TranscriptionInputParsed)
+	require.Equal(t, "clip.mp3", row.TranscriptionInputParsed.Filename)
+	require.Empty(t, row.TranscriptionInputParsed.File)
+	require.NotNil(t, row.TranscriptionOutputParsed)
+	require.Equal(t, "hello from the clip", row.TranscriptionOutputParsed.Text)
 }
 
 func TestMarkPassthroughForParsing(t *testing.T) {

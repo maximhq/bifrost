@@ -1000,6 +1000,10 @@ export function LogDetailView({
 	const displayErrorMessage = log.error_details?.error.message || errorMessageFallback;
 	const passthroughRequestBody = applyRedactionMapping(log.passthrough_request_body, activeInputRevealMapping);
 	const passthroughResponseBody = applyRedactionMapping(log.passthrough_response_body, activeOutputRevealMapping);
+	// Multipart uploads are logged as their form fields and file sizes; the file bytes are not stored.
+	const passthroughRequestTitle = passthroughParams?.multipart_summary
+		? "Request Body (form fields; file contents not stored)"
+		: "Request Body";
 	const videoOutput = log.video_generation_output || log.video_retrieve_output || log.video_download_output || log.video_delete_output;
 	const videoListOutput = log.video_list_output;
 	const pluginLogCount = (() => {
@@ -2729,7 +2733,11 @@ export function LogDetailView({
 						)}
 
 						{isPassthrough && !isParsedPassthrough && passthroughRequestBody && (
-							<PassthroughBodyBox title="Request Body" body={passthroughRequestBody} testId="logdetails-passthrough-request-body" />
+							<PassthroughBodyBox
+								title={passthroughRequestTitle}
+								body={passthroughRequestBody}
+								testId="logdetails-passthrough-request-body"
+							/>
 						)}
 						{isPassthrough && !isParsedPassthrough && passthroughResponseBody && log.status !== "processing" && (
 							<PassthroughBodyBox title="Response Body" body={passthroughResponseBody} testId="logdetails-passthrough-response-body" />
@@ -3236,7 +3244,11 @@ export function LogDetailView({
 
 					<TabsContent value="raw" className="space-y-3">
 						{isParsedPassthrough && passthroughRequestBody && (
-							<PassthroughBodyBox title="Request Body" body={passthroughRequestBody} testId="logdetails-passthrough-request-body" />
+							<PassthroughBodyBox
+								title={passthroughRequestTitle}
+								body={passthroughRequestBody}
+								testId="logdetails-passthrough-request-body"
+							/>
 						)}
 						{isParsedPassthrough && passthroughResponseBody && log.status !== "processing" && (
 							<PassthroughBodyBox title="Response Body" body={passthroughResponseBody} testId="logdetails-passthrough-response-body" />
