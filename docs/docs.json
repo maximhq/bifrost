@@ -226,6 +226,24 @@
             ]
           },
           {
+            "group": "Agent Gateway",
+            "icon": "robot",
+            "pages": [
+              "features/agent-gateway/overview",
+              "features/agent-gateway/registration",
+              "features/agent-gateway/authentication",
+              "features/agent-gateway/access-control",
+              "features/agent-gateway/messages-and-tasks",
+              "features/agent-gateway/integrating-your-agent",
+              "features/agent-gateway/observability",
+              "features/agent-gateway/configuration",
+              "features/agent-gateway/transports-and-recovery",
+              "features/agent-gateway/push-notifications",
+              "features/agent-gateway/connectors",
+              "features/agent-gateway/troubleshooting"
+            ]
+          },
+          {
             "group": "Custom plugins",
             "icon": "puzzle-piece",
             "pages": [
@@ -1304,6 +1322,41 @@
                   "GET /api/mcp/tool-groups/{id}",
                   "PUT /api/mcp/tool-groups/{id}",
                   "DELETE /api/mcp/tool-groups/{id}"
+                ]
+              },
+              {
+                "group": "Agent Gateway",
+                "expanded": false,
+                "pages": [
+                  "POST /api/agents",
+                  "GET /api/agents",
+                  "GET /api/agents/{name}",
+                  "PUT /api/agents/{name}",
+                  "DELETE /api/agents/{name}",
+                  "POST /api/agents/inspect",
+                  "GET /api/agents/push-configs",
+                  "DELETE /api/agents/push-configs/{agent}/{task}/{config}",
+                  "GET /api/agents/history",
+                  "DELETE /api/agents/history",
+                  "GET /api/agents/history/stats",
+                  "GET /api/agents/history/histogram",
+                  "GET /api/agents/history/top-agents",
+                  "GET /api/agents/history/filterdata",
+                  "GET /api/agents/history/{id}",
+                  "GET /agents/a2a/{name}/.well-known/agent-card.json",
+                  "POST /agents/a2a/{name}/json-rpc",
+                  "POST /agents/a2a/{name}/rest/message:send",
+                  "POST /agents/a2a/{name}/rest/message:stream",
+                  "GET /agents/a2a/{name}/rest/tasks",
+                  "GET /agents/a2a/{name}/rest/tasks/{taskId}",
+                  "POST /agents/a2a/{name}/rest/tasks/{taskId}:cancel",
+                  "POST /agents/a2a/{name}/rest/tasks/{taskId}:subscribe",
+                  "POST /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs",
+                  "GET /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs",
+                  "GET /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs/{configId}",
+                  "DELETE /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs/{configId}",
+                  "GET /agents/a2a/{name}/rest/extendedAgentCard",
+                  "POST /agents/a2a/{name}/push/callback"
                 ]
               },
               {
