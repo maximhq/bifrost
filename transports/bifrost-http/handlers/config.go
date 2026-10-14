@@ -279,6 +279,14 @@ func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "patch body must contain at least one key")
 		return
 	}
+	before := map[string]any{}
+	if current, err := h.store.ConfigStore.GetClientMetadata(ctx); err == nil {
+		for k := range patch {
+			if v, ok := current[k]; ok {
+				before[k] = v
+			}
+		}
+	}
 	if err := h.store.ConfigStore.UpdateClientMetadata(ctx, patch); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusConflict, fmt.Sprintf("failed to update metadata: %v", err))
@@ -287,6 +295,13 @@ func (h *ConfigHandler) updateMetadata(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to update metadata: %v", err))
 		return
 	}
+	after := map[string]any{}
+	for k, v := range patch {
+		if v != nil {
+			after[k] = v
+		}
+	}
+	lib.RecordAuditChange(ctx, "config_metadata.updated", "config_metadata", "client_metadata", "Client metadata", before, after)
 	SendJSON(ctx, map[string]any{"success": true})
 }
 
@@ -446,6 +461,7 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// pointer or slice fields.
 	copied := *currentConfig
 	updatedConfig := &copied
+	before := lib.AuditSnapshot(currentConfig.Redacted())
 
 	// Validate first-admin setup before any live mutation or persistence below.
 	var existingAuthConfig *configstore.AuthConfig
@@ -1232,6 +1248,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	h.store.Mu.RLock()
+	after := h.store.ClientConfig.Redacted()
+	h.store.Mu.RUnlock()
+	lib.RecordAuditChange(ctx, "config.updated", "config", "client_config", "client_config", before, after)
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	SendJSON(ctx, map[string]any{
 		"status":  "success",
@@ -1251,6 +1271,7 @@ func (h *ConfigHandler) forceSyncPricing(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to force pricing sync: %v", err))
 		return
 	}
+	lib.RecordAuditChange(ctx, "pricing.synced", "pricing", "pricing", "Pricing", nil, map[string]any{"forced": true})
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	SendJSON(ctx, map[string]any{
@@ -1372,6 +1393,10 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	var before json.RawMessage
+	if existingConfig, err := h.store.ConfigStore.GetProxyConfig(ctx); err == nil {
+		before = auditProxyConfig(existingConfig)
+	}
 	// Save proxy config
 	if err := h.store.ConfigStore.UpdateProxyConfig(ctx, &payload); err != nil {
 		logger.Warn("failed to save proxy configuration: %v", err)
@@ -1414,6 +1439,7 @@ func (h *ConfigHandler) updateProxyConfig(ctx *fasthttp.RequestCtx) {
 		logger.Warn("failed to set restart required config: %v", err)
 	}
 
+	lib.RecordAuditChange(ctx, "proxy_config.updated", "proxy_config", "proxy_config", "proxy_config", before, auditProxyConfig(newProxyConfig))
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	SendJSON(ctx, map[string]any{
 		"status":  "success",

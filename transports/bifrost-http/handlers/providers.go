@@ -519,6 +519,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(payload.Provider)
 	if err != nil {
 		logger.Warn("Failed to get redacted config for provider %s: %v", payload.Provider, err)
+		lib.RecordAuditChange(ctx, "provider.created", "provider", string(payload.Provider), string(payload.Provider), nil, auditProviderConfig(config.Redacted()))
 		// Fall back to the saved config, redacted and without keys
 		sanitized := config.Redacted()
 		sanitized.Keys = nil
@@ -529,6 +530,7 @@ func (h *ProviderHandler) addProvider(ctx *fasthttp.RequestCtx) {
 
 	response := h.getProviderResponseFromConfig(payload.Provider, *redactedConfig, ProviderStatusActive)
 
+	lib.RecordAuditChange(ctx, "provider.created", "provider", string(payload.Provider), string(payload.Provider), nil, auditProviderConfig(redactedConfig))
 	SendJSON(ctx, response)
 }
 
@@ -603,6 +605,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	before := auditProviderConfig(oldRedactedConfig)
 	if oldRedactedConfig == nil {
 		oldRedactedConfig = &configstore.ProviderConfig{}
 	}
@@ -781,6 +784,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 	redactedConfig, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
 	if err != nil {
 		logger.Warn("Failed to get redacted config for provider %s: %v", provider, err)
+		lib.RecordAuditChange(ctx, "provider.updated", "provider", string(provider), string(provider), before, auditProviderConfig(config.Redacted()))
 		// Fall back to the saved config, redacted and without keys
 		sanitized := config.Redacted()
 		sanitized.Keys = nil
@@ -791,6 +795,7 @@ func (h *ProviderHandler) updateProvider(ctx *fasthttp.RequestCtx) {
 
 	response := h.getProviderResponseFromConfig(provider, *redactedConfig, ProviderStatusActive)
 
+	lib.RecordAuditChange(ctx, "provider.updated", "provider", string(provider), string(provider), before, auditProviderConfig(redactedConfig))
 	SendJSON(ctx, response)
 }
 
@@ -803,13 +808,16 @@ func (h *ProviderHandler) deleteProvider(ctx *fasthttp.RequestCtx) {
 	}
 
 	// Check if provider exists
-	if _, err := h.inMemoryStore.GetProviderConfigRedacted(provider); err != nil && !errors.Is(err, lib.ErrNotFound) {
+	existing, err := h.inMemoryStore.GetProviderConfigRedacted(provider)
+	if err != nil && !errors.Is(err, lib.ErrNotFound) {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Failed to get provider: %v", err))
 		return
 	}
 
 	if err := h.modelsManager.RemoveProvider(ctx, provider); err != nil {
 		logger.Warn("Failed to delete models for provider %s: %v", provider, err)
+	} else {
+		lib.RecordAuditChange(ctx, "provider.deleted", "provider", string(provider), string(provider), auditProviderConfig(existing), nil)
 	}
 
 	response := ProviderResponse{
@@ -1790,6 +1798,7 @@ func (h *ProviderHandler) upsertModelCatalogEntries(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("failed to upsert catalog entries: %v", err))
 		return
 	}
+	lib.RecordAuditChange(ctx, "model_catalog.updated", "model_catalog", "model_catalog", "Model catalog", nil, map[string]any{"count": len(payload), "entries": payload})
 	ctx.SetStatusCode(fasthttp.StatusNoContent)
 }
 

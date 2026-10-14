@@ -7,6 +7,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -287,6 +288,7 @@ func (h *WebhookHandler) createWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reload webhook endpoint in memory: %v, please restart bifrost to sync with the database", err))
 		return
 	}
+	lib.RecordAuditChange(ctx, "webhook.created", "webhook", endpoint.ID, endpoint.Name, nil, auditWebhookEndpoint(endpoint))
 	// The store left the plaintext secret on the struct after commit, so this
 	// response can show it exactly once.
 	SendJSONWithStatus(ctx, map[string]any{
@@ -316,6 +318,10 @@ func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	// real values — restore the stored value so an edit that touches other
 	// fields cannot corrupt the headers.
 	existing, hasExisting := h.store.WebhookEndpointByID(id)
+	var before json.RawMessage
+	if hasExisting {
+		before = auditWebhookEndpoint(existing)
+	}
 	if len(req.Headers) > 0 && hasExisting {
 		for name, value := range req.Headers {
 			if value.IsMaskedPlaceholder() {
@@ -360,6 +366,7 @@ func (h *WebhookHandler) updateWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Webhook endpoint missing from memory after reload, please restart bifrost to sync with the database")
 		return
 	}
+	lib.RecordAuditChange(ctx, "webhook.updated", "webhook", updated.ID, updated.Name, before, auditWebhookEndpoint(updated))
 	SendJSON(ctx, redactedWebhookEndpoint(updated))
 }
 
@@ -374,6 +381,12 @@ func (h *WebhookHandler) deleteWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
+	targetName := id
+	var before json.RawMessage
+	if existing, ok := h.store.WebhookEndpointByID(id); ok {
+		targetName = existing.Name
+		before = auditWebhookEndpoint(existing)
+	}
 	if err := h.store.ConfigStore.DeleteWebhookEndpoint(ctx, id); err != nil {
 		if errors.Is(err, configstore.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, "Webhook endpoint not found")
@@ -386,6 +399,7 @@ func (h *WebhookHandler) deleteWebhookEndpoint(ctx *fasthttp.RequestCtx) {
 	if err := h.manager.RemoveWebhookEndpoint(ctx, id); err != nil {
 		logger.Error("failed to remove webhook endpoint from memory: %v", err)
 	}
+	lib.RecordAuditChange(ctx, "webhook.deleted", "webhook", id, targetName, before, nil)
 	SendJSON(ctx, map[string]any{"status": "success"})
 }
 
@@ -414,6 +428,7 @@ func (h *WebhookHandler) rotateWebhookEndpointSecret(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to reload webhook endpoint in memory: %v, please restart bifrost to sync with the database", err))
 		return
 	}
+	lib.RecordAuditChange(ctx, "webhook.secret_rotated", "webhook", rotated.ID, rotated.Name, nil, map[string]any{"webhook_id": rotated.ID, "secret_rotated": true})
 	SendJSON(ctx, map[string]any{
 		"endpoint": redactedWebhookEndpoint(rotated),
 		"secret":   rotated.Secret.GetValue(),
@@ -686,6 +701,11 @@ func (h *WebhookHandler) redeliverWebhook(ctx *fasthttp.RequestCtx) {
 	if h.dispatcher != nil {
 		h.dispatcher.Wake()
 	}
+	lib.RecordAuditChange(ctx, "webhook.redelivered", "webhook", endpoint.ID, endpoint.Name, nil, map[string]any{
+		"delivery_id": id,
+		"webhook_id":  delivery.WebhookID,
+		"event":       delivery.Event,
+	})
 	SendJSONWithStatus(ctx, map[string]any{
 		"status":     "queued",
 		"webhook_id": delivery.WebhookID,
