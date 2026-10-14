@@ -193,7 +193,7 @@ func refreshTestMatViews(t *testing.T, db *gorm.DB) {
 	t.Helper()
 	resetTestMatViewRefreshGate()
 	ctx := context.Background()
-	err := refreshMatViews(ctx, db)
+	err := refreshMatViews(ctx, db, 0)
 	require.NoError(t, err, "Failed to refresh materialized views")
 }
 

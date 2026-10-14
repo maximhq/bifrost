@@ -1250,8 +1250,16 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 	var err error
 	// Initialize config store
 	if configData.ConfigStoreConfig != nil && configData.ConfigStoreConfig.Enabled {
-		// Explicit config store configuration from config.json
-		config.ConfigStore, err = configstore.NewConfigStore(ctx, configData.ConfigStoreConfig, logger)
+		// Explicit config store configuration from config.json. Its migrations
+		// pause materialized-view refreshes under the log store's
+		// migration_matview_cancel_after when config.json carries the log store;
+		// a log store configured only in the database is not readable until the
+		// config store has migrated, so the default applies then.
+		var storeOpts []configstore.Option
+		if configData.LogsStoreConfig != nil {
+			storeOpts = append(storeOpts, configstore.WithMigrationMatViewPause(logstore.MigrationMatViewPauseOptions(configData.LogsStoreConfig, logger)))
+		}
+		config.ConfigStore, err = configstore.NewConfigStore(ctx, configData.ConfigStoreConfig, logger, storeOpts...)
 		if err != nil {
 			return err
 		}
