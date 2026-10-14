@@ -1,0 +1,2463 @@
+agents:
+  post:
+    operationId: agents_post
+    summary: Register agent
+    description: Fetch and validate an upstream A2A v1 Agent Card, then persist the registration. Enabled
+      defaults to true. Uses management authentication.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '201':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/AgentRegistrationView
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/agents.yaml#/AgentCreateRequest
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentGateway:Create` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+  get:
+    operationId: agents_get
+    summary: List agents
+    description: List all registrations, including disabled agents. Upstream credentials are redacted.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agents:
+                  type: array
+                  items:
+                    $ref: ../../schemas/management/agents.yaml#/AgentRegistrationView
+                count:
+                  type: integer
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentGateway:View` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+agent:
+  get:
+    operationId: agent_get
+    summary: Get agent
+    description: Read a registration with secret values redacted.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/AgentRegistrationView
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentGateway:View` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+  put:
+    operationId: agent_put
+    summary: Replace agent
+    description: Replace the full registration. agent_card_url and enabled must be supplied. Omitted optional
+      fields are cleared. A masked secret placeholder preserves its stored value.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/AgentRegistrationView
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/agents.yaml#/AgentUpdateRequest
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentGateway:Update` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+  delete:
+    operationId: agent_delete
+    summary: Delete agent
+    description: Remove the registration and its virtual key grants.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '204':
+        description: Success
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentGateway:Delete` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+inspect-agent:
+  post:
+    operationId: inspect_agent_post
+    summary: Inspect agent card
+    description: Fetch and validate an upstream A2A v1 card without registering the agent. Returns interfaces,
+      capabilities, skills, security requirements, and warnings. Discovery credentials are used only for
+      this fetch.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/AgentInspectResponse
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/agents.yaml#/AgentInspectRequest
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentGateway:Create` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+agent-push-configs:
+  get:
+    operationId: agent_push_configs_get
+    summary: List stored push configurations
+    description: List downstream callback configurations. Notification tokens and callback authentication
+      credentials are never returned.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                push_configs:
+                  type: array
+                  items:
+                    $ref: ../../schemas/management/agents.yaml#/AgentPushConfigView
+                agent_names:
+                  type: array
+                  items:
+                    type: string
+                count:
+                  type: integer
+                total_count:
+                  type: integer
+                limit:
+                  type: integer
+                offset:
+                  type: integer
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+    parameters:
+    - name: agent_names
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Comma-separated agent names.
+    - name: task_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: config_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: url
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+      description: Page size. Nonpositive values default to 25; values above 100 are clamped to 100.
+    - name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+      description: Page offset. Negative values are clamped to zero.
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentGateway:View` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+agent-push-config:
+  delete:
+    operationId: agent_push_config_delete
+    summary: Delete stored push configuration
+    description: Delete one downstream callback configuration by agent, task, and configuration ID.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '204':
+        description: Success
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+    parameters:
+    - name: agent
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: task
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: config
+      in: path
+      required: true
+      schema:
+        type: string
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentGateway:Delete` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+agent-history:
+  get:
+    operationId: agent_history_get
+    summary: List agent history
+    description: Search Agent Gateway operations and events. hydrate=true returns request operations with
+      child events and payloads; otherwise returns compact metadata. Payload credentials are redacted.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: ../../schemas/management/agents.yaml#/AgentLogHistoryResult
+              - $ref: ../../schemas/management/agents.yaml#/AgentLogOperationResult
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+      '503':
+        description: Logs store is unavailable.
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/BifrostError
+    parameters:
+    - name: agent_name
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: operation
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: user_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: virtual_key_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: team_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: customer_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: business_unit_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: project_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: event_type
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: task_state
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: status
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: record_kind
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: request_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: trace_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: task_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: context_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: push_config_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: delivery_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: attempt_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: search
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: start_time
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+      description: RFC3339 timestamp.
+    - name: end_time
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+      description: RFC3339 timestamp.
+    - name: group_sessions
+      in: query
+      required: false
+      schema:
+        type: boolean
+      description: Group sessions unless an explicit request, trace, task, context, push configuration,
+        delivery, or attempt ID is supplied.
+    - name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 50
+        minimum: 1
+        maximum: 1000
+    - name: offset
+      in: query
+      required: false
+      schema:
+        type: integer
+        default: 0
+        minimum: 0
+    - name: sort_by
+      in: query
+      required: false
+      schema:
+        type: string
+        enum:
+        - timestamp
+        - latency
+        default: timestamp
+    - name: order
+      in: query
+      required: false
+      schema:
+        type: string
+        enum:
+        - asc
+        - desc
+        default: desc
+    - name: selected_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: hydrate
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: false
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentLogs:View` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+  delete:
+    operationId: agent_history_delete
+    summary: Delete agent history
+    description: Delete selected logs and correlated stream events. Requires a nonempty list of log IDs.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+      '503':
+        description: Logs store is unavailable.
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/BifrostError
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - ids
+            properties:
+              ids:
+                type: array
+                minItems: 1
+                items:
+                  type: string
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentLogs:Delete` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+agent-history-stats:
+  get:
+    operationId: agent_history_stats_get
+    summary: Get agent history statistics
+    description: Returns counts, success rate as a percentage, and average latency in milliseconds.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/AgentLogStats
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+      '503':
+        description: Logs store is unavailable.
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/BifrostError
+    parameters:
+    - name: agent_name
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: operation
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: user_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: virtual_key_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: team_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: customer_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: business_unit_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: project_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: event_type
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: task_state
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: status
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: record_kind
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: request_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: trace_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: task_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: context_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: push_config_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: delivery_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: attempt_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: search
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: start_time
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+      description: RFC3339 timestamp.
+    - name: end_time
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+      description: RFC3339 timestamp.
+    - name: group_sessions
+      in: query
+      required: false
+      schema:
+        type: boolean
+      description: Group sessions unless an explicit request, trace, task, context, push configuration,
+        delivery, or attempt ID is supplied.
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentLogs:View` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+agent-history-histogram:
+  get:
+    operationId: agent_history_histogram_get
+    summary: Get agent history histogram
+    description: Returns operation counts in time buckets selected from the requested time range.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/AgentHistogramResult
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+      '503':
+        description: Logs store is unavailable.
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/BifrostError
+    parameters:
+    - name: agent_name
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: operation
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: user_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: virtual_key_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: team_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: customer_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: business_unit_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: project_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: event_type
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: task_state
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: status
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: record_kind
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: request_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: trace_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: task_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: context_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: push_config_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: delivery_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: attempt_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: search
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: start_time
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+      description: RFC3339 timestamp.
+    - name: end_time
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+      description: RFC3339 timestamp.
+    - name: group_sessions
+      in: query
+      required: false
+      schema:
+        type: boolean
+      description: Group sessions unless an explicit request, trace, task, context, push configuration,
+        delivery, or attempt ID is supplied.
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentLogs:View` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+agent-history-top-agents:
+  get:
+    operationId: agent_history_top_agents_get
+    summary: Get top agents
+    description: Returns up to ten agents ranked by operation count.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/AgentTopAgentsResult
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+      '503':
+        description: Logs store is unavailable.
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/BifrostError
+    parameters:
+    - name: agent_name
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: operation
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: user_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: virtual_key_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: team_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: customer_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: business_unit_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: project_id
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: event_type
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: task_state
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: status
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: record_kind
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Accepts repeated parameters or comma-separated values.
+    - name: request_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: trace_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: task_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: context_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: push_config_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: delivery_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: attempt_id
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: search
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: start_time
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+      description: RFC3339 timestamp.
+    - name: end_time
+      in: query
+      required: false
+      schema:
+        type: string
+        format: date-time
+      description: RFC3339 timestamp.
+    - name: group_sessions
+      in: query
+      required: false
+      schema:
+        type: boolean
+      description: Group sessions unless an explicit request, trace, task, context, push configuration,
+        delivery, or attempt ID is supplied.
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentLogs:View` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+agent-history-filterdata:
+  get:
+    operationId: agent_history_filterdata_get
+    summary: Get agent history filter values
+    description: Return up to 100 matching values per requested dimension.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/AgentFilterData
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+      '503':
+        description: Logs store is unavailable.
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/BifrostError
+    parameters:
+    - name: dimensions
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Comma-separated users, virtual_keys, teams, customers, business_units, or projects.
+        Omit to return all dimensions.
+    - name: q
+      in: query
+      required: false
+      schema:
+        type: string
+      description: Search text for dimension values.
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentLogs:View` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+agent-history-entry:
+  get:
+    operationId: agent_history_entry_get
+    summary: Get agent history entry
+    description: Return log detail. hydrate=true includes child events for the request operation. Protocol
+      payload credentials are redacted.
+    tags:
+    - Agent Gateway
+    security:
+    - ManagementBearerAuth: []
+    - BasicAuth: []
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: ../../schemas/management/agents.yaml#/AgentLogDetail
+              - $ref: ../../schemas/management/agents.yaml#/AgentLogOperation
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+      '503':
+        description: Logs store is unavailable.
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/BifrostError
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: hydrate
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: false
+    x-mint:
+      content: '**Required Permissions**
+
+
+        | Permission | Granted via |
+
+        | --- | --- |
+
+        | `AgentLogs:View` | RBAC role or API key scope |
+
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+
+        '
+agent-card:
+  get:
+    operationId: agent_card_get
+    summary: Get gateway agent card
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. Returns the card with gateway interfaces and downstream security metadata. Unknown
+      or disabled agents return 404. Responses require private cache revalidation.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2AAgentCard
+      '401':
+        description: Authentication required; empty body.
+      '404':
+        description: Unknown or disabled agent; empty body.
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+agent-json-rpc:
+  post:
+    operationId: agent_json_rpc_post
+    summary: Call agent over JSON-RPC
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. A2A v1 JSON-RPC 2.0. SendStreamingMessage and SubscribeToTask return SSE. Protocol
+      errors are JSON-RPC error envelopes; unsupported A2A-Version returns HTTP 200 with error code -32009.
+      Unknown or disabled agents return an empty 404. gRPC is a separate listener advertised by the card
+      when configured. SSE data events contain JSON-RPC response envelopes with A2A events.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2AJSONRPCResponse
+          text/event-stream:
+            schema:
+              type: string
+      '401':
+        description: Authentication required. Error code -31401.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2AJSONRPCError
+      '404':
+        description: Unknown or disabled agent; empty body.
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: A2A-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A v1 only. Omit to use the SDK default, or provide a 1.x version.
+    - name: A2A-Extensions
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A extension URIs requested by the client.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/agents.yaml#/A2AJSONRPCRequest
+          example:
+            jsonrpc: '2.0'
+            id: 1
+            method: SendMessage
+            params:
+              message:
+                messageId: message-1
+                role: ROLE_USER
+                parts:
+                - text: Hello
+agent-rest-message-send:
+  post:
+    operationId: agent_rest_message_send_post
+    summary: Send message
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. A2A v1 HTTP+JSON binding. Errors use the A2A REST error envelope. Unknown or
+      disabled agents return an empty 404.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ASendMessageResponse
+      '400':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '401':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '403':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '404':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '500':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '501':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: A2A-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A v1 only. Omit to use the SDK default, or provide a 1.x version.
+    - name: A2A-Extensions
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A extension URIs requested by the client.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/agents.yaml#/A2ASendMessageRequest
+agent-rest-message-stream:
+  post:
+    operationId: agent_rest_message_stream_post
+    summary: Send streaming message
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. A2A v1 HTTP+JSON binding. Errors use the A2A REST error envelope. Unknown or
+      disabled agents return an empty 404.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: SSE stream. Each data event contains an A2A event; failures after streaming starts
+          are sent in the stream.
+        content:
+          text/event-stream:
+            schema:
+              type: string
+      '400':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '401':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '403':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '404':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '500':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '501':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: A2A-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A v1 only. Omit to use the SDK default, or provide a 1.x version.
+    - name: A2A-Extensions
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A extension URIs requested by the client.
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/agents.yaml#/A2ASendMessageRequest
+agent-rest-tasks:
+  get:
+    operationId: agent_rest_tasks_get
+    summary: List tasks
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. A2A v1 HTTP+JSON binding. Errors use the A2A REST error envelope. Unknown or
+      disabled agents return an empty 404.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2AListTasksResponse
+      '400':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '401':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '403':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '404':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '500':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '501':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: A2A-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A v1 only. Omit to use the SDK default, or provide a 1.x version.
+    - name: A2A-Extensions
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A extension URIs requested by the client.
+    - name: contextId
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: status
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: pageSize
+      in: query
+      required: false
+      schema:
+        type: integer
+    - name: pageToken
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: historyLength
+      in: query
+      required: false
+      schema:
+        type: integer
+    - name: statusTimestampAfter
+      in: query
+      required: false
+      schema:
+        type: string
+    - name: includeArtifacts
+      in: query
+      required: false
+      schema:
+        type: boolean
+agent-rest-tasks-taskId:
+  get:
+    operationId: agent_rest_tasks_taskId_get
+    summary: Get task
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. A2A v1 HTTP+JSON binding. Errors use the A2A REST error envelope. Unknown or
+      disabled agents return an empty 404.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ATask
+      '400':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '401':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '403':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '404':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '500':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '501':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: A2A-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A v1 only. Omit to use the SDK default, or provide a 1.x version.
+    - name: A2A-Extensions
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A extension URIs requested by the client.
+    - name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: historyLength
+      in: query
+      required: false
+      schema:
+        type: integer
+agent-rest-tasks-taskId-cancel:
+  post:
+    operationId: agent_rest_tasks_taskId_cancel_post
+    summary: Cancel task
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. A2A v1 HTTP+JSON binding. Errors use the A2A REST error envelope. Unknown or
+      disabled agents return an empty 404.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ATask
+      '400':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '401':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '403':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '404':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '500':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '501':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: A2A-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A v1 only. Omit to use the SDK default, or provide a 1.x version.
+    - name: A2A-Extensions
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A extension URIs requested by the client.
+    - name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+agent-rest-tasks-taskId-subscribe:
+  post:
+    operationId: agent_rest_tasks_taskId_subscribe_post
+    summary: Subscribe to task
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. A2A v1 HTTP+JSON binding. Errors use the A2A REST error envelope. Unknown or
+      disabled agents return an empty 404.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: SSE stream. Each data event contains an A2A event; failures after streaming starts
+          are sent in the stream.
+        content:
+          text/event-stream:
+            schema:
+              type: string
+      '400':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '401':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '403':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '404':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '500':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '501':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: A2A-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A v1 only. Omit to use the SDK default, or provide a 1.x version.
+    - name: A2A-Extensions
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A extension URIs requested by the client.
+    - name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+agent-rest-tasks-taskId-pushNotificationConfigs:
+  post:
+    operationId: agent_rest_tasks_taskId_pushNotificationConfigs_post
+    summary: Create task push configuration
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. A2A v1 HTTP+JSON binding. Errors use the A2A REST error envelope. Unknown or
+      disabled agents return an empty 404.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2APushConfig
+      '400':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '401':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '403':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '404':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '500':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '501':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: A2A-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A v1 only. Omit to use the SDK default, or provide a 1.x version.
+    - name: A2A-Extensions
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A extension URIs requested by the client.
+    - name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/agents.yaml#/A2APushConfig
+  get:
+    operationId: agent_rest_tasks_taskId_pushNotificationConfigs_get
+    summary: List task push configurations
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. A2A v1 HTTP+JSON binding. Errors use the A2A REST error envelope. Unknown or
+      disabled agents return an empty 404.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2AListTaskPushConfigResponse
+      '400':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '401':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '403':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '404':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '500':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '501':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: A2A-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A v1 only. Omit to use the SDK default, or provide a 1.x version.
+    - name: A2A-Extensions
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A extension URIs requested by the client.
+    - name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+agent-rest-tasks-taskId-pushNotificationConfigs-configId:
+  get:
+    operationId: agent_rest_tasks_taskId_pushNotificationConfigs_configId_get
+    summary: Get task push configuration
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. A2A v1 HTTP+JSON binding. Errors use the A2A REST error envelope. Unknown or
+      disabled agents return an empty 404.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2APushConfig
+      '400':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '401':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '403':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '404':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '500':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '501':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: A2A-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A v1 only. Omit to use the SDK default, or provide a 1.x version.
+    - name: A2A-Extensions
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A extension URIs requested by the client.
+    - name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: configId
+      in: path
+      required: true
+      schema:
+        type: string
+  delete:
+    operationId: agent_rest_tasks_taskId_pushNotificationConfigs_configId_delete
+    summary: Delete task push configuration
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. A2A v1 HTTP+JSON binding. Errors use the A2A REST error envelope. Unknown or
+      disabled agents return an empty 404.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: Configuration deleted; empty body.
+      '400':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '401':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '403':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '404':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '500':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '501':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: A2A-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A v1 only. Omit to use the SDK default, or provide a 1.x version.
+    - name: A2A-Extensions
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A extension URIs requested by the client.
+    - name: taskId
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: configId
+      in: path
+      required: true
+      schema:
+        type: string
+agent-rest-extendedAgentCard:
+  get:
+    operationId: agent_rest_extendedAgentCard_get
+    summary: Get extended agent card
+    description: 'Accepts a Bifrost virtual key in x-bf-vk, Authorization: Bearer, x-api-key, or x-goog-api-key.
+      Authentication is required when enforce_auth_on_inference is enabled. An explicitly supplied invalid
+      key is rejected even when authentication is optional. Access remains subject to agent grants and
+      governance policy. A2A v1 HTTP+JSON binding. Errors use the A2A REST error envelope. Unknown or
+      disabled agents return an empty 404.'
+    tags:
+    - Agent Gateway
+    security:
+    - VirtualKeyAuth: []
+    - VirtualKeyBearerAuth: []
+    - VirtualKeyApiKeyAuth: []
+    - VirtualKeyGoogleAuth: []
+    - {}
+    responses:
+      '200':
+        description: Success
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2AAgentCard
+      '400':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '401':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '403':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '404':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '500':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+      '501':
+        description: A2A REST error. A missing or disabled agent may return an empty 404.
+        content:
+          application/json:
+            schema:
+              $ref: ../../schemas/management/agents.yaml#/A2ARESTError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    - name: A2A-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A v1 only. Omit to use the SDK default, or provide a 1.x version.
+    - name: A2A-Extensions
+      in: header
+      required: false
+      schema:
+        type: string
+      description: A2A extension URIs requested by the client.
+agent-push-callback:
+  post:
+    operationId: agent_push_callback_post
+    summary: Receive upstream push notification
+    description: Upstream-only callback. Present the per-configuration token minted by Bifrost in A2A-Notification-Token.
+      Bifrost verifies the event and task, then queues delivery to the registered downstream callback.
+      Retransmissions are deduplicated. A downstream virtual key does not authenticate this endpoint.
+    tags:
+    - Agent Gateway
+    security:
+    - AgentNotificationTokenAuth: []
+    responses:
+      '202':
+        description: Notification accepted; empty body.
+      '400':
+        $ref: ../../openapi.yaml#/components/responses/BadRequest
+      '401':
+        $ref: ../../openapi.yaml#/components/responses/Unauthorized
+      '404':
+        $ref: ../../openapi.yaml#/components/responses/NotFound
+      '500':
+        $ref: ../../openapi.yaml#/components/responses/InternalError
+      '403':
+        $ref: ../../openapi.yaml#/components/responses/Forbidden
+      '413':
+        description: Push payload exceeds the 1 MiB limit.
+        content:
+          application/json:
+            schema:
+              $ref: ../../openapi.yaml#/components/schemas/BifrostError
+    parameters:
+    - name: name
+      in: path
+      required: true
+      schema:
+        type: string
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: ../../schemas/management/agents.yaml#/A2AEvent

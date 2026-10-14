@@ -73,6 +73,8 @@ security:
   - ApiKeyAuth: []
 
 tags:
+  - name: Agent Gateway
+    description: Agent registrations, A2A protocol calls, push callbacks, and operation history
   # Unified Inference API
   - name: Models
     description: Model listing and information
@@ -1359,8 +1361,61 @@ paths:
   /api/warp/conversations/{id}:
     $ref: "./paths/management/warp.yaml#/warp-conversation-by-id"
 
+  # Agent Gateway
+  /api/agents:
+    $ref: "./paths/management/agents.yaml#/agents"
+  /api/agents/{name}:
+    $ref: "./paths/management/agents.yaml#/agent"
+  /api/agents/inspect:
+    $ref: "./paths/management/agents.yaml#/inspect-agent"
+  /api/agents/push-configs:
+    $ref: "./paths/management/agents.yaml#/agent-push-configs"
+  /api/agents/push-configs/{agent}/{task}/{config}:
+    $ref: "./paths/management/agents.yaml#/agent-push-config"
+  /api/agents/history:
+    $ref: "./paths/management/agents.yaml#/agent-history"
+  /api/agents/history/stats:
+    $ref: "./paths/management/agents.yaml#/agent-history-stats"
+  /api/agents/history/histogram:
+    $ref: "./paths/management/agents.yaml#/agent-history-histogram"
+  /api/agents/history/top-agents:
+    $ref: "./paths/management/agents.yaml#/agent-history-top-agents"
+  /api/agents/history/filterdata:
+    $ref: "./paths/management/agents.yaml#/agent-history-filterdata"
+  /api/agents/history/{id}:
+    $ref: "./paths/management/agents.yaml#/agent-history-entry"
+  /agents/a2a/{name}/.well-known/agent-card.json:
+    $ref: "./paths/management/agents.yaml#/agent-card"
+  /agents/a2a/{name}/json-rpc:
+    $ref: "./paths/management/agents.yaml#/agent-json-rpc"
+  /agents/a2a/{name}/rest/message:send:
+    $ref: "./paths/management/agents.yaml#/agent-rest-message-send"
+  /agents/a2a/{name}/rest/message:stream:
+    $ref: "./paths/management/agents.yaml#/agent-rest-message-stream"
+  /agents/a2a/{name}/rest/tasks:
+    $ref: "./paths/management/agents.yaml#/agent-rest-tasks"
+  /agents/a2a/{name}/rest/tasks/{taskId}:
+    $ref: "./paths/management/agents.yaml#/agent-rest-tasks-taskId"
+  /agents/a2a/{name}/rest/tasks/{taskId}:cancel:
+    $ref: "./paths/management/agents.yaml#/agent-rest-tasks-taskId-cancel"
+  /agents/a2a/{name}/rest/tasks/{taskId}:subscribe:
+    $ref: "./paths/management/agents.yaml#/agent-rest-tasks-taskId-subscribe"
+  /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs:
+    $ref: "./paths/management/agents.yaml#/agent-rest-tasks-taskId-pushNotificationConfigs"
+  /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs/{configId}:
+    $ref: "./paths/management/agents.yaml#/agent-rest-tasks-taskId-pushNotificationConfigs-configId"
+  /agents/a2a/{name}/rest/extendedAgentCard:
+    $ref: "./paths/management/agents.yaml#/agent-rest-extendedAgentCard"
+  /agents/a2a/{name}/push/callback:
+    $ref: "./paths/management/agents.yaml#/agent-push-callback"
+
 components:
   securitySchemes:
+    AgentNotificationTokenAuth:
+      type: apiKey
+      in: header
+      name: A2A-Notification-Token
+      description: Gateway-minted per-configuration token for upstream push callbacks only.
     BearerAuth:
       type: http
       scheme: bearer
@@ -1518,6 +1573,129 @@ components:
             $ref: "./schemas/inference/common.yaml#/BifrostError"
 
   schemas:
+    # Agent Gateway
+    A2ASendMessageResponse:
+      $ref: "./schemas/management/agents.yaml#/A2ASendMessageResponse"
+    AgentCreateRequest:
+      $ref: "./schemas/management/agents.yaml#/AgentCreateRequest"
+    AgentUpstreamAuth:
+      $ref: "./schemas/management/agents.yaml#/AgentUpstreamAuth"
+    AgentUpstreamOAuthConfig:
+      $ref: "./schemas/management/agents.yaml#/AgentUpstreamOAuthConfig"
+    AgentUpstreamTLSConfig:
+      $ref: "./schemas/management/agents.yaml#/AgentUpstreamTLSConfig"
+    AgentUpdateRequest:
+      $ref: "./schemas/management/agents.yaml#/AgentUpdateRequest"
+    AgentInspectRequest:
+      $ref: "./schemas/management/agents.yaml#/AgentInspectRequest"
+    AgentInspectResponse:
+      $ref: "./schemas/management/agents.yaml#/AgentInspectResponse"
+    A2AAgentCard:
+      $ref: "./schemas/management/agents.yaml#/A2AAgentCard"
+    A2AAgentInterface:
+      $ref: "./schemas/management/agents.yaml#/A2AAgentInterface"
+    A2AAgentCapabilities:
+      $ref: "./schemas/management/agents.yaml#/A2AAgentCapabilities"
+    A2AAgentExtension:
+      $ref: "./schemas/management/agents.yaml#/A2AAgentExtension"
+    A2AAgentProvider:
+      $ref: "./schemas/management/agents.yaml#/A2AAgentProvider"
+    A2AAgentCardSignature:
+      $ref: "./schemas/management/agents.yaml#/A2AAgentCardSignature"
+    A2AAgentSkill:
+      $ref: "./schemas/management/agents.yaml#/A2AAgentSkill"
+    AgentInspectedAgentInterface:
+      $ref: "./schemas/management/agents.yaml#/AgentInspectedAgentInterface"
+    AgentInspectedAgentSkill:
+      $ref: "./schemas/management/agents.yaml#/AgentInspectedAgentSkill"
+    AgentInspectedAgentExtension:
+      $ref: "./schemas/management/agents.yaml#/AgentInspectedAgentExtension"
+    AgentInspectedSecurityScheme:
+      $ref: "./schemas/management/agents.yaml#/AgentInspectedSecurityScheme"
+    AgentRegistrationView:
+      $ref: "./schemas/management/agents.yaml#/AgentRegistrationView"
+    AgentPushConfigView:
+      $ref: "./schemas/management/agents.yaml#/AgentPushConfigView"
+    AgentLogSummary:
+      $ref: "./schemas/management/agents.yaml#/AgentLogSummary"
+    AgentOverheadBucket:
+      $ref: "./schemas/management/agents.yaml#/AgentOverheadBucket"
+    AgentLogDetail:
+      $ref: "./schemas/management/agents.yaml#/AgentLogDetail"
+    AgentLogOperation:
+      $ref: "./schemas/management/agents.yaml#/AgentLogOperation"
+    AgentLogHistoryResult:
+      $ref: "./schemas/management/agents.yaml#/AgentLogHistoryResult"
+    AgentPaginationOptions:
+      $ref: "./schemas/management/agents.yaml#/AgentPaginationOptions"
+    AgentLogOperationResult:
+      $ref: "./schemas/management/agents.yaml#/AgentLogOperationResult"
+    AgentLogStats:
+      $ref: "./schemas/management/agents.yaml#/AgentLogStats"
+    AgentTopAgentsResult:
+      $ref: "./schemas/management/agents.yaml#/AgentTopAgentsResult"
+    AgentTopAgentResult:
+      $ref: "./schemas/management/agents.yaml#/AgentTopAgentResult"
+    AgentHistogramResult:
+      $ref: "./schemas/management/agents.yaml#/AgentHistogramResult"
+    AgentHistogramBucket:
+      $ref: "./schemas/management/agents.yaml#/AgentHistogramBucket"
+    AgentFilterData:
+      $ref: "./schemas/management/agents.yaml#/AgentFilterData"
+    AgentFilterKeyPair:
+      $ref: "./schemas/management/agents.yaml#/AgentFilterKeyPair"
+    A2ASendMessageRequest:
+      $ref: "./schemas/management/agents.yaml#/A2ASendMessageRequest"
+    A2ASendMessageConfig:
+      $ref: "./schemas/management/agents.yaml#/A2ASendMessageConfig"
+    A2APushConfig:
+      $ref: "./schemas/management/agents.yaml#/A2APushConfig"
+    A2APushAuthInfo:
+      $ref: "./schemas/management/agents.yaml#/A2APushAuthInfo"
+    A2AMessage:
+      $ref: "./schemas/management/agents.yaml#/A2AMessage"
+    A2APart:
+      $ref: "./schemas/management/agents.yaml#/A2APart"
+    A2AGetTaskRequest:
+      $ref: "./schemas/management/agents.yaml#/A2AGetTaskRequest"
+    A2AListTasksRequest:
+      $ref: "./schemas/management/agents.yaml#/A2AListTasksRequest"
+    A2ACancelTaskRequest:
+      $ref: "./schemas/management/agents.yaml#/A2ACancelTaskRequest"
+    A2ASubscribeToTaskRequest:
+      $ref: "./schemas/management/agents.yaml#/A2ASubscribeToTaskRequest"
+    A2AGetExtendedAgentCardRequest:
+      $ref: "./schemas/management/agents.yaml#/A2AGetExtendedAgentCardRequest"
+    A2AGetTaskPushConfigRequest:
+      $ref: "./schemas/management/agents.yaml#/A2AGetTaskPushConfigRequest"
+    A2AListTaskPushConfigRequest:
+      $ref: "./schemas/management/agents.yaml#/A2AListTaskPushConfigRequest"
+    A2ADeleteTaskPushConfigRequest:
+      $ref: "./schemas/management/agents.yaml#/A2ADeleteTaskPushConfigRequest"
+    A2ATask:
+      $ref: "./schemas/management/agents.yaml#/A2ATask"
+    A2AArtifact:
+      $ref: "./schemas/management/agents.yaml#/A2AArtifact"
+    A2ATaskStatus:
+      $ref: "./schemas/management/agents.yaml#/A2ATaskStatus"
+    A2AListTasksResponse:
+      $ref: "./schemas/management/agents.yaml#/A2AListTasksResponse"
+    A2AListTaskPushConfigResponse:
+      $ref: "./schemas/management/agents.yaml#/A2AListTaskPushConfigResponse"
+    A2ATaskStatusUpdateEvent:
+      $ref: "./schemas/management/agents.yaml#/A2ATaskStatusUpdateEvent"
+    A2ATaskArtifactUpdateEvent:
+      $ref: "./schemas/management/agents.yaml#/A2ATaskArtifactUpdateEvent"
+    A2AEvent:
+      $ref: "./schemas/management/agents.yaml#/A2AEvent"
+    A2AJSONRPCError:
+      $ref: "./schemas/management/agents.yaml#/A2AJSONRPCError"
+    A2ARESTError:
+      $ref: "./schemas/management/agents.yaml#/A2ARESTError"
+    A2AJSONRPCRequest:
+      $ref: "./schemas/management/agents.yaml#/A2AJSONRPCRequest"
+    A2AJSONRPCResponse:
+      $ref: "./schemas/management/agents.yaml#/A2AJSONRPCResponse"
     # ==================== Common ====================
     ModelProvider:
       $ref: "./schemas/inference/common.yaml#/ModelProvider"
