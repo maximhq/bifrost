@@ -665,3 +665,10 @@ func BenchmarkPGTextSafetyRow(b *testing.B) {
 		})
 	}
 }
+
+func TestLogPassthroughObjectType(t *testing.T) {
+	require.Equal(t, "chat_completion", (&Log{Object: "chat_completion"}).PassthroughObjectType())
+	require.Equal(t, "passthrough", (&Log{Object: "chat_completion", IsPassthrough: true}).PassthroughObjectType())
+	require.Equal(t, "passthrough_stream", (&Log{Object: "chat_completion_stream", IsPassthrough: true, Stream: true}).PassthroughObjectType())
+	require.Equal(t, "passthrough", (&Log{Object: "passthrough", IsPassthrough: true}).PassthroughObjectType())
+}
