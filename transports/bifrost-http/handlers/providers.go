@@ -961,6 +961,10 @@ type modelListQuery struct {
 	// Decisions keeps only models that serve decisions natively, by the same
 	// capability rule the provider applies at request time.
 	Decisions bool
+	// CredentialPresented marks a request that offered a virtual key. With no resolved access it
+	// distinguishes a caller who presented nothing, and keeps the unfiltered listing, from one
+	// governance refused, who is shown no virtual names.
+	CredentialPresented bool
 	// VK-based filtering: populated when a virtual key is found in request headers.
 	// HasVKFilter=true restricts providers/models to those allowed by the VK.
 	HasVKFilter bool
@@ -1328,6 +1332,7 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 	// the concrete listing gives when nothing was resolved. Virtual names are filtered by it, so
 	// a settled grant is never shown a virtual model built on a provider or candidate it lacks.
 	query.Access = resolveVirtualModelAccess(bifrostCtx, h.modelsManager)
+	query.CredentialPresented = virtualKeyPresented(ctx)
 	if query.Access != nil {
 		query.HasVKFilter = true
 	}
@@ -1398,9 +1403,10 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 	// granted nothing is shown nothing, and before pagination and the total, so a virtual
 	// model is neither confined to page two nor missing from the count. Skipped when the
 	// caller asked only for models that support decisions, which virtual models make no
-	// claim about.
+	// claim about. They take the search filter too: concrete names are narrowed by it a few
+	// lines up, so a search for one string must not answer with every virtual name.
 	if !query.Decisions {
-		models = append(models, virtualListedModels(h.inMemoryStore, providers, query.Access)...)
+		models = append(models, virtualListedModels(h.inMemoryStore, providers, query.Access, query.CredentialPresented, query.Query)...)
 	}
 
 	total := len(models)

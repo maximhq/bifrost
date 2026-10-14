@@ -177,6 +177,30 @@ func installVirtualModels(config *Config, virtualModels map[string]schemas.Virtu
 	return nil
 }
 
+// VirtualModelResolver hands core the resolver, or a nil interface when nothing is configured.
+// The check is on the concrete pointer because a nil *VirtualModelService placed in the
+// interface compares non-nil: core would then call through it on every request and panic, which
+// is the state a gateway with no virtual_models is in. Only this side of the boundary can see it.
+func (c *Config) VirtualModelResolver() schemas.VirtualModelResolver {
+	if c == nil || c.VirtualModels == nil {
+		return nil
+	}
+	return c.VirtualModels
+}
+
+// residencyHeaderSet reports whether the operator already set this header, matched the way HTTP
+// matches names. Providers that authenticate with a custom scheme keep it: replacing it with a
+// bearer fails every probe, and on the default on_probe_error of error that turns every
+// virtual-model request into a 502 for a reason the operator cannot see in their own config.
+func residencyHeaderSet(headers map[string]string, name string) bool {
+	for existing := range headers {
+		if strings.EqualFold(existing, name) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildResidencyTarget turns provider network config into a probe target.
 func buildResidencyTarget(provider schemas.ModelProvider, providerCfg configstore.ProviderConfig) (*residencyTarget, error) {
 	networkCfg := providerCfg.NetworkConfig
@@ -219,7 +243,7 @@ func buildResidencyTarget(provider schemas.ModelProvider, providerCfg configstor
 	// The first enabled key is the probe credential. Residency is a property of the
 	// backend rather than of a key, and every key on one local engine endpoint reads
 	// the same memory, so there is nothing to distribute.
-	if bearer := firstEnabledKeyValue(providerCfg.Keys); bearer != "" {
+	if bearer := firstEnabledKeyValue(providerCfg.Keys); bearer != "" && !residencyHeaderSet(extraHeaders, "Authorization") {
 		extraHeaders["Authorization"] = "Bearer " + bearer
 	}
 
@@ -278,7 +302,12 @@ func residencyTLSConfig(networkCfg *schemas.NetworkConfig) (*tls.Config, error) 
 
 // Lookup is memory-only, as schemas.VirtualModelResolver requires: it is called on
 // every request to decide whether the request is even virtual.
+// Lookup is nil-safe: a nil service means no virtual models, which is the common case and never
+// an error, and callers reach it through an interface that cannot express "absent".
 func (s *VirtualModelService) Lookup(name string) (*schemas.VirtualModel, bool) {
+	if s == nil {
+		return nil, false
+	}
 	registry := s.registry.load()
 	if registry == nil {
 		return nil, false
@@ -292,6 +321,9 @@ func (s *VirtualModelService) Lookup(name string) (*schemas.VirtualModel, bool) 
 
 // List returns every configured virtual model, sorted by name.
 func (s *VirtualModelService) List() []*schemas.VirtualModel {
+	if s == nil {
+		return nil
+	}
 	registry := s.registry.load()
 	if registry == nil {
 		return nil
@@ -307,6 +339,9 @@ func (s *VirtualModelService) List() []*schemas.VirtualModel {
 // Enabled reports whether any virtual model is configured, so the listing handlers can
 // skip their work entirely on a gateway that does not use this feature.
 func (s *VirtualModelService) Enabled() bool {
+	if s == nil {
+		return false
+	}
 	registry := s.registry.load()
 	return registry != nil && len(registry.entries) > 0
 }

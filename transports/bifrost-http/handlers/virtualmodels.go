@@ -9,6 +9,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/valyala/fasthttp"
 )
 
 // Virtual models are Bifrost's own names, so Bifrost is the authority on their metadata:
@@ -49,7 +50,7 @@ func virtualModelDescriptor(vm *schemas.VirtualModel) schemas.Model {
 // And it appends after pagination rather than participating in it, because a virtual model
 // is not a row in any provider's list to page over - it is configuration, and dropping it
 // from page two onwards would make it look intermittent.
-func appendVirtualModels(resp *schemas.BifrostListModelsResponse, cfg *lib.Config, provider schemas.ModelProvider, access schemas.Access) {
+func appendVirtualModels(resp *schemas.BifrostListModelsResponse, cfg *lib.Config, provider schemas.ModelProvider, access schemas.Access, credentialPresented bool) {
 	if resp == nil || !virtualModelsEnabled(cfg) {
 		return
 	}
@@ -61,7 +62,7 @@ func appendVirtualModels(resp *schemas.BifrostListModelsResponse, cfg *lib.Confi
 		if provider != "" && vm.Provider != provider {
 			continue
 		}
-		if !virtualModelAllowed(vm, access) {
+		if !virtualModelAllowed(vm, access, credentialPresented) {
 			continue
 		}
 		if seen[strings.ToLower(vm.Name)] {
@@ -79,7 +80,7 @@ func appendVirtualModels(resp *schemas.BifrostListModelsResponse, cfg *lib.Confi
 //
 // The name arrives as it did in the path, so it may still carry a provider prefix. Both
 // "qwen38" and "omlx/qwen38" address the same virtual model.
-func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName string, access schemas.Access) (*schemas.BifrostModelRetrieveResponse, bool) {
+func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName string, access schemas.Access, credentialPresented bool) (*schemas.BifrostModelRetrieveResponse, bool) {
 	if !virtualModelsEnabled(cfg) {
 		return nil, false
 	}
@@ -100,7 +101,7 @@ func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName
 		return nil, false
 	}
 
-	if !virtualModelAllowed(vm, access) {
+	if !virtualModelAllowed(vm, access, credentialPresented) {
 		return nil, true
 	}
 	descriptor := virtualModelDescriptor(vm)
@@ -129,13 +130,21 @@ func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName
 // caller has already been narrowed to, rather than consulting the whole config, so a virtual key
 // cannot be shown a model built on a provider it was not granted. An empty provider list shows
 // nothing: there is no provider in play for the name to belong to.
-func virtualListedModels(cfg *lib.Config, allowed []schemas.ModelProvider, access schemas.Access) []listedModel {
+//
+// The search filter is applied here rather than by the caller: concrete names are narrowed by the
+// same predicate a few lines up, and a search for one string that answered with every virtual name
+// would be a filter that quietly does not cover half the list. Keeping it inside the function is
+// what stops it being forgotten by the next call site.
+func virtualListedModels(cfg *lib.Config, allowed []schemas.ModelProvider, access schemas.Access, credentialPresented bool, query string) []listedModel {
 	if !virtualModelsEnabled(cfg) {
 		return nil
 	}
 	out := make([]listedModel, 0)
 	for _, vm := range cfg.VirtualModels.List() {
-		if !slices.Contains(allowed, vm.Provider) || !virtualModelAllowed(vm, access) {
+		if !slices.Contains(allowed, vm.Provider) || !virtualModelAllowed(vm, access, credentialPresented) {
+			continue
+		}
+		if !matchesModelQuery(vm.Name, query) {
 			continue
 		}
 		out = append(out, listedModel{Name: vm.Name, Provider: vm.Provider})
@@ -147,7 +156,8 @@ func virtualListedModels(cfg *lib.Config, allowed []schemas.ModelProvider, acces
 // for it. Nil is the same reading the concrete models listing gives: no governance deployed, or no
 // grant on a route that does not carry one. Authentication is settled upstream by the auth layer;
 // this answers only what a settled caller may see, so a virtual name's candidates are never
-// published ahead of the grants that cover them.
+// published ahead of the grants that cover them. Callers pair it with virtualKeyPresented to tell
+// an unrestricted request apart from a refused one, which nil alone cannot express.
 func (h *CompletionHandler) virtualModelAccess(ctx *schemas.BifrostContext) schemas.Access {
 	if h.modelsManager == nil {
 		return nil
@@ -173,9 +183,16 @@ func resolveVirtualModelAccess(ctx *schemas.BifrostContext, manager ModelsManage
 }
 
 // virtualModelAllowed requires grants for every candidate before exposing its metadata.
-func virtualModelAllowed(vm *schemas.VirtualModel, access schemas.Access) bool {
+//
+// An unresolved access is two different cases and they must not share a default. A caller that
+// presented no credential keeps the unfiltered reading the concrete listing gives, since
+// authentication is the auth layer's job and these two routes do not run it. A caller that DID
+// present one and resolved to nothing is not that caller: admitting them would publish a virtual
+// name and its candidate layout to a credential governance refused, and the retrieve route would
+// go on to spend a residency probe on it. So an unresolved presented credential is denied.
+func virtualModelAllowed(vm *schemas.VirtualModel, access schemas.Access, credentialPresented bool) bool {
 	if access == nil {
-		return true
+		return !credentialPresented
 	}
 	if !access.IsProviderAllowed(string(vm.Provider)) {
 		return false
@@ -192,4 +209,12 @@ func virtualModelAllowed(vm *schemas.VirtualModel, access schemas.Access) bool {
 // pays nothing at all.
 func virtualModelsEnabled(cfg *lib.Config) bool {
 	return cfg != nil && cfg.VirtualModels != nil && cfg.VirtualModels.Enabled()
+}
+
+// virtualKeyPresented reports whether the request offered a virtual key. It reads the headers
+// rather than the resolved grants because these routes run outside the auth middleware, so on
+// them a presented key is exactly what the client says it presented. It reuses the canonical
+// header parser the auth middleware uses, so "presented" means the same thing here as there.
+func virtualKeyPresented(ctx *fasthttp.RequestCtx) bool {
+	return ctx != nil && virtualKeyFromHeaders(ctx) != ""
 }
