@@ -629,6 +629,7 @@ type ProviderConfig struct {
 	StoreRawRequestResponse  bool                              `json:"store_raw_request_response"`            // Capture raw request/response for internal logging only; strip from API responses returned to clients
 	IgnoreProviderCost       bool                              `json:"ignore_provider_cost"`                  // Ignore provider-reported usage.cost and price from Bifrost's catalog
 	CustomProviderConfig     *schemas.CustomProviderConfig     `json:"custom_provider_config,omitempty"`      // Custom provider configuration
+	ModelResidency           *schemas.ModelResidencyConfig     `json:"model_residency,omitempty"`             // How to read which models are resident in this backend's memory, for virtual models
 	OpenAIConfig             *schemas.OpenAIConfig             `json:"openai_config,omitempty"`               // OpenAI-specific configuration
 	PromptCache              *schemas.PromptCacheConfig        `json:"prompt_cache,omitempty"`                // Prompt-cache breakpoint injection
 	InjectedTools            []schemas.InjectedTool            `json:"injected_tools,omitempty"`              // MCP tools injected and auto-executed server side
@@ -652,6 +653,7 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 		StoreRawRequestResponse:  p.StoreRawRequestResponse,
 		IgnoreProviderCost:       p.IgnoreProviderCost,
 		CustomProviderConfig:     p.CustomProviderConfig,
+		ModelResidency:           p.ModelResidency,
 		OpenAIConfig:             p.OpenAIConfig,
 		PromptCache:              p.PromptCache,
 		InjectedTools:            p.InjectedTools,

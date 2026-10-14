@@ -16,6 +16,82 @@ import (
 // probes (ollama /api/ps, llama.cpp /v1/models, oMLX /v1/models/status) live behind
 // VirtualModelResolver, implemented by the transport.
 
+// ResidencyAdapter names the reader for a backend's residency. Auto tries the known
+// engines once per provider and remembers which answered, so an operator on a stock
+// oMLX or llama.cpp endpoint configures nothing.
+type ResidencyAdapter string
+
+const (
+	ResidencyAdapterAuto     ResidencyAdapter = "auto"
+	ResidencyAdapterOllama   ResidencyAdapter = "ollama"
+	ResidencyAdapterLlamaCPP ResidencyAdapter = "llamacpp"
+	ResidencyAdapterOMLX     ResidencyAdapter = "omlx"
+	ResidencyAdapterCustom   ResidencyAdapter = "custom"
+)
+
+// NormalizeResidencyAdapter maps an unvalidated config string to a known adapter,
+// defaulting to auto. An unrecognized name is not silently ignored: it falls back to
+// auto, which reports unknown rather than pretending a model is resident.
+func NormalizeResidencyAdapter(raw string) ResidencyAdapter {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case string(ResidencyAdapterOllama):
+		return ResidencyAdapterOllama
+	case string(ResidencyAdapterLlamaCPP):
+		return ResidencyAdapterLlamaCPP
+	case string(ResidencyAdapterOMLX):
+		return ResidencyAdapterOMLX
+	case string(ResidencyAdapterCustom):
+		return ResidencyAdapterCustom
+	default:
+		return ResidencyAdapterAuto
+	}
+}
+
+// ResidencyFieldMap maps an arbitrary engine's JSON onto the residency vocabulary.
+// It exists so a backend nobody has shipped an adapter for still works by config
+// alone; it never guesses, so a missing mapping reports unknown rather than inferring.
+type ResidencyFieldMap struct {
+	Items   string `json:"items,omitempty"`   // dot path to the entry array, e.g. "models" or "data.models"
+	ID      string `json:"id,omitempty"`      // field on each entry naming the model
+	Loaded  string `json:"loaded,omitempty"`  // boolean field, true means resident
+	Loading string `json:"loading,omitempty"` // boolean field, true means load in progress
+}
+
+// ModelResidencyConfig tells the gateway how to read residency from one provider
+// instance. It is per provider, not per model: a provider is one backend with one
+// memory, so the reader is a property of the endpoint.
+type ModelResidencyConfig struct {
+	Adapter    ResidencyAdapter  `json:"adapter"`                // "auto" (default), "ollama", "llamacpp", "omlx" or "custom"
+	Path       string            `json:"path,omitempty"`         // endpoint path, defaults per adapter; required for custom
+	TimeoutMS  int               `json:"timeout_ms,omitempty"`   // per-probe timeout, default 2000
+	CacheTTLMS int               `json:"cache_ttl_ms,omitempty"` // 0 probes every request, which is the default
+	Fields     *ResidencyFieldMap `json:"fields,omitempty"`      // required when adapter is custom
+}
+
+// Residency defaults, chosen against the measured cost of a real probe: a stock
+// endpoint answers in 7-31ms, so no cache is the honest default and caching is the
+// opt-in for a backend whose probe is slow or rate limited.
+const (
+	DefaultResidencyProbeTimeoutMS = 2000
+	DefaultResidencyCacheTTLMS     = 0
+)
+
+// Timeout returns the probe timeout.
+func (c *ModelResidencyConfig) Timeout() time.Duration {
+	if c == nil || c.TimeoutMS <= 0 {
+		return DefaultResidencyProbeTimeoutMS * time.Millisecond
+	}
+	return time.Duration(c.TimeoutMS) * time.Millisecond
+}
+
+// CacheTTL returns how long a reading may be reused.
+func (c *ModelResidencyConfig) CacheTTL() time.Duration {
+	if c == nil || c.CacheTTLMS <= 0 {
+		return DefaultResidencyCacheTTLMS * time.Millisecond
+	}
+	return time.Duration(c.CacheTTLMS) * time.Millisecond
+}
+
 // ResidencyState is the normalized answer to "is this model resident right now".
 // Engine adapters map their own shapes into these four values and nothing else
 // reaches the selection logic.
@@ -52,10 +128,10 @@ func NormalizeModelErrorPolicy(raw string) VirtualModelErrorPolicy {
 // behaviour, which is why it is a slice and not a set.
 type VirtualModel struct {
 	Name         string                    `json:"name"`         // name clients send, matched case-insensitively
-	Provider     ModelProvider           `json:"provider"`     // configured provider instance, not a base_provider_type
+	Provider     ModelProvider           `json:"provider"`       // configured provider instance, not a base_provider_type
 	Models       []string                `json:"models"`         // candidates, in preference order
 	OnProbeError VirtualModelErrorPolicy `json:"on_probe_error"` // "error" (default) or "first"
-	Description  string                  `json:"description"`      // operator note, never used for routing
+	Description  string                  `json:"description"`    // operator note, never used for routing
 }
 
 // Validate rejects definitions that cannot be routed, however they arrived — config
