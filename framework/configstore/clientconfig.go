@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"hash"
 	"math"
+	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -130,6 +132,7 @@ type ClientConfig struct {
 	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
+	SkillsExternalClientURL               *schemas.SecretVar                    `json:"skills_external_client_url,omitempty"`        // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
 	A2AStoreRawRequestResponse            bool                                  `json:"a2a_store_raw_request_response"`
 	A2AExternalClientURL                  *schemas.SecretVar                    `json:"a2a_external_client_url,omitempty"` // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs. Supports env var syntax ("env.MY_VAR") and vault refs
 	MCPServerAuthMode                     tables.MCPServerAuthMode              `json:"mcp_server_auth_mode,omitempty"`    // How /mcp authenticates inbound clients: headers (default), both, or oauth.
@@ -518,12 +521,19 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			hash.Write([]byte("externalClientURL:val:" + c.MCPExternalClientURL.GetValue()))
 		}
 	}
+	if c.SkillsExternalClientURL != nil {
+		if c.SkillsExternalClientURL.IsFromSecret() {
+			hash.Write([]byte("skillsExternalClientURL:ref:" + c.SkillsExternalClientURL.GetRawRef()))
+		} else {
+			hash.Write([]byte("skillsExternalClientURL:val:" + c.SkillsExternalClientURL.GetValue()))
+		}
+	}
 
 	// Only hashed when set to avoid hash churn on existing configs that predate the field.
 	if c.A2AStoreRawRequestResponse {
 		hash.Write([]byte("a2aStoreRawRequestResponse:true"))
 	}
-	if c.A2AExternalClientURL.IsSet() {
+	if c.A2AExternalClientURL != nil {
 		if c.A2AExternalClientURL.IsFromSecret() {
 			hash.Write([]byte("a2aExternalClientURL:ref:" + c.A2AExternalClientURL.GetRawRef()))
 		} else {
@@ -614,6 +624,9 @@ func sortedStringsJSON(values []string) ([]byte, error) {
 // Redacted returns a copy of ClientConfig with any env-backed SecretVar fields masked.
 func (c *ClientConfig) Redacted() ClientConfig {
 	out := *c
+	if c.SkillsExternalClientURL != nil && c.SkillsExternalClientURL.IsFromSecret() {
+		out.SkillsExternalClientURL = c.SkillsExternalClientURL.Redacted()
+	}
 	if c.MCPExternalClientURL != nil && c.MCPExternalClientURL.IsFromSecret() {
 		out.MCPExternalClientURL = c.MCPExternalClientURL.Redacted()
 	}
@@ -2482,4 +2495,20 @@ type GovernanceConfig struct {
 	PricingOverrides         []tables.TablePricingOverride `json:"pricing_overrides,omitempty"`
 	AuthConfig               *AuthConfig                   `json:"auth_config,omitempty"`
 	ComplexityAnalyzerConfig *ComplexityAnalyzerConfig     `json:"complexity_analyzer_config,omitempty"`
+}
+
+// ValidatePublicBaseURL accepts an empty setting or a public HTTP base URL without private URL components.
+// Errors omit the value because it may contain credentials resolved from a secret reference.
+func ValidatePublicBaseURL(value string) error {
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("must be an absolute HTTP or HTTPS URL")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || strings.Contains(value, "#") {
+		return fmt.Errorf("must not contain userinfo, query, or fragment components")
+	}
+	return nil
 }

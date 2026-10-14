@@ -10,7 +10,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/maxim"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
@@ -908,31 +908,13 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	return bifrostCtx, cancel
 }
 
-// ValidateBaseURL checks that a URL is parseable with both scheme and host —
-// the same gate BuildBaseURL applies before honoring an override. Empty values
-// are accepted (caller decides whether absence is allowed). Logging is the
-// caller's responsibility. The error intentionally omits the offending value:
-// callers may pass URLs resolved from env vars (e.g. `env.MY_SECRET_URL`), so
-// echoing the value back in API responses or logs would let an attacker probe
-// process env state by feeding malformed env-var references.
-func ValidateBaseURL(val string) error {
-	if val == "" {
-		return nil
-	}
-	parsed, err := url.Parse(val)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("must be a fully-qualified URL with scheme and host (e.g. https://proxy.example.com)")
-	}
-	return nil
-}
-
 // BuildBaseURL returns the effective base URL for OAuth callbacks and metadata discovery.
 // When externalBaseURL is non-empty (set via config/UI/API), it takes priority so that
 // deployments behind a reverse proxy advertise the proxy's public URL rather than the
 // internal Host header seen by Bifrost.
 func BuildBaseURL(ctx *fasthttp.RequestCtx, externalBaseURL string) string {
 	if override := strings.TrimRight(strings.TrimSpace(externalBaseURL), "/"); override != "" {
-		if parsed, err := url.Parse(override); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		if configstore.ValidatePublicBaseURL(override) == nil {
 			return override
 		}
 	}

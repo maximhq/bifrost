@@ -6,6 +6,10 @@ icon: "wrench"
 
 Find the failing hop first. A card fetch, agent request, model call, and push delivery use different endpoints and can require different credentials.
 
+## Gateway operations return 503 or UNAVAILABLE
+
+Check **Agents → Agent Settings → External Client URL**. If it is empty, or its environment variable or vault reference resolves to an empty value, Bifrost disables Agent Gateway protocol operations. HTTP endpoints return **503 Service Unavailable** and A2A gRPC operations return **UNAVAILABLE**. Registration and management can still succeed. Set Bifrost's public base URL to enable traffic; request headers do not provide a fallback.
+
 ## The card will not fetch
 
 Check the full card URL from Bifrost's network. A URL reachable from your laptop may not be reachable from a container or cluster node. The card must be an A2A card, not an HTML login page.

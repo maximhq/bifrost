@@ -1351,3 +1351,67 @@ func TestUpdateConfig_CompatReloadFailureReportsFailedRestore(t *testing.T) {
 	assert.Equal(t, 2, writes, "the handler must attempt the restore write")
 	assert.True(t, cfg.ClientConfig.Compat.ConvertTextToChat, "in-memory compat must stay unchanged")
 }
+
+// TestGetConfigSkillsMarketplaceURL exposes the live resolved URL used by marketplace serving.
+func TestGetConfigSkillsMarketplaceURL(t *testing.T) {
+	t.Setenv("BIFROST_TEST_SKILLS_URL", "https://skills.example/prefix/")
+	for _, value := range []string{"", "http://127.0.0.1:8080", "env.BIFROST_TEST_SKILLS_URL"} {
+		t.Run(value, func(t *testing.T) {
+			cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{SkillsExternalClientURL: schemas.NewSecretVar(value)}}
+			h := &ConfigHandler{store: cfg}
+			ctx := &fasthttp.RequestCtx{}
+			h.getConfig(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			var response struct {
+				MarketplaceURL *string `json:"skills_marketplace_base_url"`
+			}
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &response))
+			require.NotNil(t, response.MarketplaceURL, "the field must be present even when marketplace serving is disabled")
+			require.Equal(t, strings.TrimRight(cfg.ClientConfig.SkillsExternalClientURL.GetValue(), "/"), *response.MarketplaceURL)
+		})
+	}
+}
+
+// TestUpdateConfig_SkillsExternalClientURLPresence pins persistence and partial-update semantics.
+func TestUpdateConfig_SkillsExternalClientURLPresence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.SkillsExternalClientURL = schemas.NewSecretVar("https://bifrost.example.com")
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	require.NotNil(t, cfg.ClientConfig.SkillsExternalClientURL)
+	assert.Equal(t, "https://bifrost.example.com", cfg.ClientConfig.SkillsExternalClientURL.GetValue())
+	persisted, err := store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	require.NotNil(t, persisted.SkillsExternalClientURL)
+	assert.Equal(t, "https://bifrost.example.com", persisted.SkillsExternalClientURL.GetValue())
+
+	cleared := putConfigCtx(`{"client_config":{"log_retention_days":8,"skills_external_client_url":null}}`)
+	h.updateConfig(cleared)
+	require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode(), string(cleared.Response.Body()))
+	assert.Nil(t, cfg.ClientConfig.SkillsExternalClientURL)
+	persisted, err = store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	require.NotNil(t, persisted.SkillsExternalClientURL)
+	assert.Empty(t, persisted.SkillsExternalClientURL.GetValue())
+}
+
+// TestUpdateConfigRejectsPrivateSkillsURLComponents prevents public catalogs from exposing URL credentials.
+func TestUpdateConfigRejectsPrivateSkillsURLComponents(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, value := range []string{"https://user:password@example.com", "https://example.com?token=private", "https://example.com?"} {
+		store := newRealOAuth2Store(t)
+		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+		h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+		ctx := putConfigCtx(fmt.Sprintf(`{"client_config":{"log_retention_days":8,"skills_external_client_url":%q}}`, value))
+		h.updateConfig(ctx)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+		require.Contains(t, string(ctx.Response.Body()), "skills_external_client_url")
+		require.NotContains(t, string(ctx.Response.Body()), value)
+	}
+}
