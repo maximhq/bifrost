@@ -263264,6 +263264,421 @@
           }
         }
       ]
+    },
+    {
+      "name": "231. Databricks ai_decide decisions (databricks-decisions)",
+      "description": "The databricks provider serves the ai_decide AI Function natively on POST {workspace_url}/api/2.0/ai-functions/ai-decide. The body is Typesafe's systemone request without model, which ai_decide rejects, with options.version pinned to 1.0; the reply wraps the answers in response and names a noul value probability. ai_decide is the only model Databricks serves natively for decisions; the harness key allows only ai_decide, so the unsupported gate for other models is pinned by unit tests only. The function is text-only and reads an image part as JSON text with a 200, so an image is a local 400, and it answers a null state with no answers, so an empty input is a local 400. Fields are strict: an extra one forwarded with passthrough is Databricks' 400, and its own validation errors pass through. With convert_decision_to_responses on, ai_decide is still served natively. Each route that reaches Databricks' Decision is covered: /v1/decisions, /openai/v1/decisions and /typesafe/v1/systemone.",
+      "item": [
+        {
+          "name": "/v1/decisions - mixed kinds return typed answers - databricks/ai_decide",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ai_decide answers every kind natively', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  var a = body.answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(a.map(function (x) { return x.type; })).to.eql(['predicate', 'choice', 'score']);",
+                  "  pm.expect(a[0].probability, 'the noul probability is read as the predicate probability').to.be.within(0, 1);",
+                  "  pm.expect(['billing', 'bug', 'other']).to.include(a[1].choice);",
+                  "  pm.expect(a[2].score).to.be.within(0, 2);",
+                  "  pm.expect(body.model).to.eql('ai_decide');",
+                  "  pm.expect(body.extra_fields.provider).to.eql('databricks');",
+                  "  pm.expect(body.extra_fields).to.not.have.property('converted_request_type');",
+                  "});",
+                  "pm.test('the body carries no model and pins the function version', function () {",
+                  "  var rr = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr).to.not.have.property('model');",
+                  "  pm.expect(rr.options).to.eql({ version: '1.0' });",
+                  "  pm.expect(rr.questions.is_frustrated.type).to.eql('noul');",
+                  "  pm.expect(rr.questions.urgency.criteria).to.be.an('array').with.lengthOf(3);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/ai_decide\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges, refunds, invoices\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\",\n          \"description\": \"anything else\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"Rate how urgently this ticket needs a human reply\",\n      \"levels\": [\n        {\n          \"label\": \"0\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"1\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"2\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - structured object input - databricks/ai_decide",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a JSON object input is sent as the state', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].probability, 'a third request is a repeat contact: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/ai_decide\",\n  \"input\": {\n    \"message\": \"Checkout is down again. This is my third request.\",\n    \"customer_contact_count\": 3\n  },\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"repeat_contact\",\n      \"instructions\": \"Has the customer contacted support before?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - stays native with decision emulation on - databricks/ai_decide",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ai_decide on Databricks is not emulated through Responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.extra_fields, 'body: ' + pm.response.text()).to.not.have.property('converted_request_type');",
+                  "  pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/ai_decide\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - input_image rejected locally - databricks/ai_decide",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an image never reaches the text-only function', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('input_image');",
+                  "  pm.expect(pm.response.text()).to.include('this provider cannot read');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/ai_decide\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is the screenshot.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - extra top-level field rejected by Databricks - databricks/ai_decide",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a passthrough field reaches Databricks, which rejects it', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('Unexpected parameters');",
+                  "  pm.expect(pm.response.text()).to.include('foo');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/ai_decide\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ],\n  \"foo\": \"bar\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - eleven score levels rejected by Databricks - databricks/ai_decide",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ai_decide validates the question and its error passes through', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('2 to 10 level descriptions');",
+                  "  pm.expect(pm.response.text()).to.include('BAD_REQUEST');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/ai_decide\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"Rate the urgency\",\n      \"levels\": [\n        {\n          \"label\": \"0\",\n          \"description\": \"level 0\"\n        },\n        {\n          \"label\": \"1\",\n          \"description\": \"level 1\"\n        },\n        {\n          \"label\": \"2\",\n          \"description\": \"level 2\"\n        },\n        {\n          \"label\": \"3\",\n          \"description\": \"level 3\"\n        },\n        {\n          \"label\": \"4\",\n          \"description\": \"level 4\"\n        },\n        {\n          \"label\": \"5\",\n          \"description\": \"level 5\"\n        },\n        {\n          \"label\": \"6\",\n          \"description\": \"level 6\"\n        },\n        {\n          \"label\": \"7\",\n          \"description\": \"level 7\"\n        },\n        {\n          \"label\": \"8\",\n          \"description\": \"level 8\"\n        },\n        {\n          \"label\": \"9\",\n          \"description\": \"level 9\"\n        },\n        {\n          \"label\": \"10\",\n          \"description\": \"level 10\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/decisions - OpenAI shape - databricks/ai_decide",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ai_decide answers in the OpenAI shape', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(body.answers.map(function (x) { return x.name; })).to.eql(['is_frustrated', 'category', 'urgency']);",
+                  "  pm.expect(body.extra_fields.provider).to.eql('databricks');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"databricks/ai_decide\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges, refunds, invoices\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\",\n          \"description\": \"anything else\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"Rate how urgently this ticket needs a human reply\",\n      \"levels\": [\n        {\n          \"label\": \"0\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"1\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"2\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/typesafe/v1/systemone - native questions round trip - databricks/ai_decide",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native systemone through Databricks succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('all three native answer types come back, noul under its systemone name', function () {",
+                  "  pm.expect(body.model).to.eql('ai_decide');",
+                  "  pm.expect(body.answers.is_frustrated.type).to.eql('noul');",
+                  "  pm.expect(body.answers.is_frustrated.noul).to.be.within(0, 1);",
+                  "  pm.expect(body.answers.category.type).to.eql('choice');",
+                  "  pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.choice);",
+                  "  pm.expect(body.answers.urgency.type).to.eql('score');",
+                  "  pm.expect(body.answers.urgency.score).to.be.within(0, 2);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"state\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"model\": \"databricks/ai_decide\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"type\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"type\": \"score\",\n      \"instructions\": \"Rate how urgently this needs a human reply\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered soon\",\n        \"needs a reply today\"\n      ]\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /typesafe/v1/systemone - null state rejected locally - databricks/ai_decide",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a null state is a local 400, since ai_decide answers it with no answers', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('decision input is required');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"state\": null,\n  \"model\": \"databricks/ai_decide\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

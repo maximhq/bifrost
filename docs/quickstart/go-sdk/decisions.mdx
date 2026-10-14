@@ -4,7 +4,7 @@ description: "Ask questions about some input and get typed answers with Bifrost 
 icon: "scale-balanced"
 ---
 
-Use the Go SDK to get structured judgments - probabilities, choices, and rubric scores - from judgment models such as TypeSafe's jev family, OpenAI's gpt-6-luna, Cloudflare's Clef, or Perplexity's deciders.
+Use the Go SDK to get structured judgments - probabilities, choices, and rubric scores - from judgment models such as TypeSafe's jev family, OpenAI's gpt-6-luna, Cloudflare's Clef, Perplexity's deciders, Azure's Microsoft-Decision-1, or Databricks' ai_decide.
 
 Provider/model examples:
 - TypeSafe: `Provider: schemas.Typesafe`, `Model: "jev-1.13.0"` (aliases: `jev-latest`, `jev-preview`)
@@ -13,6 +13,8 @@ Provider/model examples:
 - Cloudflare: `Provider: schemas.Cloudflare`, `Model: "clef-flash"` (the key needs `CloudflareKeyConfig.AccountID`)
 - Perplexity: `Provider: schemas.Perplexity`, `Model: "pplx-decider-v1.1-27b"` or `"pplx-decider-v1-27b"`
 - Ollama: `Provider: schemas.Ollama`, `Model: "nimble"` (any pulled System One model)
+- Azure: `Provider: schemas.Azure`, `Model: "Microsoft-Decision-1"` (a key alias maps it to your deployment)
+- Databricks: `Provider: schemas.Databricks`, `Model: "ai_decide"` (the key needs `DatabricksKeyConfig.WorkspaceURL`)
 - Laya or Nimble: the name of your [custom provider](/providers/self-hosted-decision-models), for example `Provider: "laya"`, `Model: "english"`
 
 See [Decisions](/quickstart/gateway/decisions#providers) for which providers read image parts.

@@ -286,7 +286,7 @@ func (p *CompatPlugin) markForConversion(ctx *schemas.BifrostContext, provider s
 // model: its supports_decisions row, or without a row the decisions model
 // families the providers recognize by name (gpt-6-luna on OpenAI, Typesafe's
 // typesafe/ models, Clef on Cloudflare, deciders on Perplexity, System One
-// models on Ollama, Microsoft's decision models on Azure).
+// models on Ollama, Microsoft's decision models on Azure, ai_decide on Databricks).
 // gpt-6-luna is native by name only on OpenAI: another provider hosting it
 // (an Azure deployment, OpenRouter's gpt-6-luna chat models) serves it as a
 // chat model, so it is emulated unless that provider's datasheet row says
@@ -303,7 +303,8 @@ func (p *CompatPlugin) markDecisionForEmulation(ctx *schemas.BifrostContext, pro
 		(provider == schemas.Cloudflare && schemas.IsClefModel(model)) ||
 		(provider == schemas.Perplexity && schemas.IsPerplexityDeciderModel(model)) ||
 		(provider == schemas.Ollama && schemas.IsOllamaDecisionModel(model)) ||
-		(provider == schemas.Azure && schemas.IsMicrosoftDecisionModel(model))
+		(provider == schemas.Azure && schemas.IsMicrosoftDecisionModel(model)) ||
+		(provider == schemas.Databricks && schemas.IsDatabricksDecisionModel(model))
 	if schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback) {
 		return
 	}

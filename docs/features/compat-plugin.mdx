@@ -121,6 +121,7 @@ With `convert_decision_to_responses` on, Bifrost instead:
    - `pplx-decider-*` on `perplexity`
    - `nimble`, `tev1`, `clef`, `clef-flash`, and `laya` (any tag) on `ollama`
    - `Microsoft-Decision-1` on `azure`
+   - `ai_decide` on `databricks`
 2. If it is, calls the provider's decisions endpoint without any conversion
 3. If not, encodes the questions as a forced function tool, sends the input to the model's Responses API, and maps the call's arguments back to typed answers
 
