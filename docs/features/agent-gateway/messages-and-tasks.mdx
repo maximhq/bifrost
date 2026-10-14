@@ -10,7 +10,16 @@ A message is what you send. A task is the work the agent does in response. A con
 
 For example, you ask a travel agent to plan a trip. It may need your dates before it can finish. That is still one task, even though it takes more than one message.
 
-![A task can ask for more input before returning artifacts and completing](/media/agent-gateway/task-flow.svg)
+```mermaid
+sequenceDiagram
+    participant Client as Your application
+    participant Agent as Travel agent
+    Client->>Agent: Plan a trip to Lisbon
+    Agent-->>Client: Task created, input required: How many days?
+    Client->>Agent: Make it three days, using the same task ID
+    Note over Agent: Task is working
+    Agent-->>Client: Task completed with itinerary and file artifacts
+```
 
 ## Follow the IDs
 
@@ -142,7 +151,13 @@ In a task response, read `result.task.artifacts[].parts[]`. A text part has `tex
 
 We sent our travel agent a request for a three-day Lisbon itinerary. After it completed, we opened its operation in **Agent Logs** and selected **Conversation**. The screenshot shows the returned `lisbon-itinerary.txt` and image artifacts for individual days. Each artifact has a name and description; **Download** saves the itinerary, and **Metadata** reveals the image's additional fields.
 
-![A completed travel task with an itinerary download and visual artifacts](/media/agent-gateway/ui-artifacts.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-artifacts.png"
+    alt="A completed travel task with an itinerary download and visual artifacts"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 </Accordion>
 

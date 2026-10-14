@@ -9,7 +9,12 @@ An application asks your research agent a question. The agent calls a model, loo
 
 Agent Gateway puts Bifrost on that path. Register an existing agent, give callers its Bifrost endpoint, and inspect its requests in Agent Logs.
 
-![Applications call agents through Bifrost Agent Gateway, with model and tool calls returning through Bifrost](/media/agent-gateway/gateway-flow.svg)
+```mermaid
+flowchart LR
+    App["Your application"] -->|A2A| Gateway["Bifrost Agent Gateway<br/>Access checks and logs"]
+    Gateway -->|A2A| Agent["Your agent<br/>Tasks and artifacts"]
+    Agent -->|"Model and tool calls"| Models["Bifrost LLM / MCP gateway"]
+```
 
 ## Agent Gateway and A2A
 

@@ -19,7 +19,13 @@ The Agent Card is an A2A discovery document. It describes what an agent can do, 
 
 In **Agent Gateway**, add or edit an agent. Expand the card options next to the Agent Card URL and configure authentication before fetching the card.
 
-![Expanded Card fetch options with an example Authorization header for a protected agent card](/media/agent-gateway/ui-card-fetch-options.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-card-fetch-options.png"
+    alt="Expanded Card fetch options with an example Authorization header for a protected agent card"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 Choose **No authentication** for a public card, **Headers** for a token or custom header, or **OAuth 2.0 client credentials** when Bifrost must obtain an access token.
 
@@ -31,11 +37,23 @@ Card authentication only authenticates the card fetch. Configure request authent
 
 After you fetch the card, **Request authentication** selects the authentication type and required fields advertised by the agent. Enter the credentials your agent expects in those fields. For example, a card advertising bearer authentication adds an `Authorization` field where you enter `Bearer YOUR_AGENT_TOKEN`.
 
-![Request authentication selected from the agent card, with an example Authorization value](/media/agent-gateway/ui-registration-auth.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-registration-auth.png"
+    alt="Request authentication selected from the agent card, with an example Authorization value"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 If the card offers alternatives, select a **Card requirement**. Names joined with `+` are requirements that must be satisfied together.
 
-![Card requirement selector offering agentBearer or the combined agentBearer + workspaceKey requirement](/media/agent-gateway/ui-card-requirements.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-card-requirements.png"
+    alt="Card requirement selector offering agentBearer or the combined agentBearer + workspaceKey requirement"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 | Type | What to supply |
 | --- | --- |
@@ -49,13 +67,21 @@ Turn on **Configure manually** when the card's requirements are incorrect, canno
 
 For example, if the card requires an `Authorization` header but your server accepts `X-Agent-Key`, enable **Configure manually**, select **Headers**, and configure `X-Agent-Key` with the value your server expects.
 
-![Manual authentication enabled with a custom X-Agent-Key header](/media/agent-gateway/ui-manual-auth.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-manual-auth.png"
+    alt="Manual authentication enabled with a custom X-Agent-Key header"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 This option applies to request authentication. Card authentication is always configured independently because Bifrost has not read the card yet.
 
 <Warning>
 Selecting **No authentication** means Bifrost sends no configured runtime credential. Use it when your agent accepts unauthenticated requests or authenticates with the caller's forwarded credential.
 </Warning>
+
+<span id="forward-bifrost-authentication" />
 
 ## Forward the caller's Bifrost authentication
 
@@ -69,7 +95,18 @@ Bifrost forwards the credential it accepted for the incoming request, using that
 
 With forwarding enabled, the caller's credential follows this path:
 
-![The caller's Bifrost credential passes through Agent Gateway to the agent, which reuses it for Bifrost model and tool calls](/media/agent-gateway/credential-flow.svg)
+```mermaid
+sequenceDiagram
+    participant Client as Your application
+    participant Gateway as Agent Gateway
+    participant Agent as Your agent
+    participant Models as Bifrost LLM / MCP gateway
+    Client->>Gateway: Agent request with x-bf-vk: caller-key
+    Note over Gateway: Validate the caller's credential
+    Gateway->>Agent: Forward x-bf-vk when forwarding is enabled
+    Agent->>Models: Model or tool request with x-bf-vk: caller-key
+    Note over Models: Apply caller access rules and attribute usage
+```
 
 <Note>
 The gateway toggle covers Bifrost → agent. Your server must handle agent → Bifrost. Keep the forwarded credential scoped to the request, including asynchronous task work, and send it only to your Bifrost endpoint.
@@ -86,7 +123,13 @@ When both need the same header, select a policy:
 | **Keep the configured agent authentication** | The configured credential wins on a collision. The accepted Bifrost credential is forwarded when its header has no configured value. This is the default. |
 | **Use the incoming Bifrost authentication** | The accepted Bifrost credential replaces the configured credential on the same header. |
 
-![The same-header policy menu with options to keep configured agent authentication or use incoming Bifrost authentication](/media/agent-gateway/ui-same-header-policy.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-same-header-policy.png"
+    alt="The same-header policy menu with options to keep configured agent authentication or use incoming Bifrost authentication"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 <Tip>
 For an agent that relies entirely on the forwarded credential, enable **Configure manually**, select **No authentication**, then enable **Forward Bifrost authentication**. Leave card authentication configured if fetching the card still requires a separate secret.
@@ -98,7 +141,13 @@ Once your agent reuses the caller's credential, [attach the correlation headers]
 
 Expand **TLS and certificates** for card authentication or request authentication. Each connection has its own settings.
 
-![Expanded request TLS settings with certificate verification, CA certificate, and mTLS client certificate and key fields](/media/agent-gateway/ui-request-tls.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-request-tls.png"
+    alt="Expanded request TLS settings with certificate verification, CA certificate, and mTLS client certificate and key fields"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 | Setting | Use it when |
 | --- | --- |

@@ -16,11 +16,23 @@ For a protected gateway, enable authentication enforcement. Without it, requests
 
 In **Agent Gateway**, add or edit an agent, find **Access**, and choose **Add key**. Select the virtual keys that should call this agent and save.
 
-![An agent's explicit virtual-key grant and Allow any virtual key toggle](/media/agent-gateway/ui-access.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-access.png"
+    alt="An agent&#x27;s explicit virtual-key grant and Allow any virtual key toggle"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 You can also edit a virtual key's **Agent access** and add the agent by its registration name. Both views manage the same grant.
 
-![The virtual-key edit sheet's Agent access section with registered agent grants](/media/agent-gateway/ui-vk-agent-access.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-vk-agent-access.png"
+    alt="The virtual-key edit sheet&#x27;s Agent access section with registered agent grants"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 Send that key on your client requests:
 
@@ -34,7 +46,13 @@ The key must be valid and active. A key granted `library-research` can call that
 
 Enable **Allow any virtual key** when every valid virtual key should be able to reach the agent without an explicit grant. In Enterprise, authenticated users also receive this default agent access. An admitted project's access rule still applies.
 
-![Allow any virtual key enabled in the agent registration form](/media/agent-gateway/ui-allow-any-key.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-allow-any-key.png"
+    alt="Allow any virtual key enabled in the agent registration form"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 The toggle preserves explicit selections. If you select two keys, enable it, then disable it later, those two grants remain. While the toggle is on, those selections are hidden because other valid callers have default access too.
 
@@ -92,7 +110,13 @@ Use an [access profile](/enterprise/access-profiles) when several users or group
 2. Apply the profile to the intended holders. Profiles can be assigned to users directly, through roles or identity-provider mappings, or attached to teams, business units, and customers.
 3. When changing an existing profile, propagate **Agent access** to the assigned copies that should receive the change.
 
-![Agent access and Save & Propagate in the access-profile edit sheet](/media/agent-gateway/ui-profile-agent-access.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-profile-agent-access.png"
+    alt="Agent access and Save &amp; Propagate in the access-profile edit sheet"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 A user's active access profiles grant their named agents. Multiple profiles add their grants together. An inactive or expired profile does not grant access. A profile without agent grants adds no agents, although an agent allowing default access can still be available.
 
@@ -138,7 +162,13 @@ A [project](/enterprise/projects) adds a scope to an individual request. For exa
 
 Add the agent to the project's **Agent access**, configure membership, and send one project header with the caller's authentication:
 
-![The project's Agent access section with library-research selected](/media/agent-gateway/ui-project-agent-access.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-project-agent-access.png"
+    alt="The project&#x27;s Agent access section with library-research selected"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 ```http
 x-bf-vk: <your-virtual-key>
@@ -198,7 +228,7 @@ Keep other project settings and grants in the same declaration. See [projects](/
 
 An agent can pass its gateway access check and still have an LLM or MCP request denied. Those requests use their own provider and tool grants.
 
-Enable [credential forwarding](/features/agent-gateway/authentication#forward-the-caller%E2%80%99s-bifrost-authentication) and configure your agent server to reuse the caller's Bifrost credential. If the work belongs to a project, preserve its project header on those calls too. Otherwise they lose that project scope.
+Enable [credential forwarding](/features/agent-gateway/authentication#forward-bifrost-authentication) and configure your agent server to reuse the caller's Bifrost credential. If the work belongs to a project, preserve its project header on those calls too. Otherwise they lose that project scope.
 
 ## Diagnose an access failure
 

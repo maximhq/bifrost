@@ -16,7 +16,13 @@ Search matches log metadata such as agent, operation, IDs, and errors. It does n
 
 For these screenshots, we sent two questions to our research agent in one conversation and ran a separate travel-agent example. Your logs will contain your own agents, messages, and IDs.
 
-![Agent Logs showing two research messages in the same context](/media/agent-gateway/ui-logs.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-logs.png"
+    alt="Agent Logs showing two research messages in the same context"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 <Tip>
 Click a displayed ID to filter by it. Right-click it to copy its value. Filters live in the page URL, so you can share a filtered view with someone who has access to those logs.
@@ -45,17 +51,35 @@ To connect model and tool calls, your agent must [send the correlation headers](
 <Tab title="Operations">
 We opened our research session to see both requests and the agent's responses in one conversation.
 
-![A research session with two operations, eight LLM calls, and two MCP calls](/media/agent-gateway/ui-session.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-session.png"
+    alt="A research session with two operations, eight LLM calls, and two MCP calls"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 </Tab>
 <Tab title="LLM Logs">
 We selected **LLM Logs** on the same session. Its eight model calls span both research requests, with latency, tokens, and cost for each call.
 
-![Eight model calls linked to the research session](/media/agent-gateway/ui-session-llm.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-session-llm.png"
+    alt="Eight model calls linked to the research session"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 </Tab>
 <Tab title="MCP Logs">
 We selected **MCP Logs** to see the session's two Context7 tool calls, which resolved the library and retrieved its documentation.
 
-![Two Context7 tool calls linked to the research session](/media/agent-gateway/ui-session-mcp.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-session-mcp.png"
+    alt="Two Context7 tool calls linked to the research session"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 </Tab>
 </Tabs>
 
@@ -65,7 +89,13 @@ The detail view shows the operation, gateway status, agent, transports, availabl
 
 We opened our research agent's `SendMessage` operation. The summary shows its status, IDs, transports, and latency; **Conversation** shows the request, completed task, and returned artifact.
 
-![A SendMessage operation with its summary and Conversation tab visible](/media/agent-gateway/ui-operation.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-operation.png"
+    alt="A SendMessage operation with its summary and Conversation tab visible"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 | View | What to look for |
 | --- | --- |
@@ -88,7 +118,13 @@ Read task-state updates to follow progress. Read artifact updates to see output 
 
 We opened our travel agent's `SendStreamingMessage` operation and selected **Events**. Its five updates show the initial task, progress, artifact output, and completion in order. The first **Artifact updated** event is expanded to show the itinerary text emitted during the stream.
 
-![A travel task's five ordered streaming events, including status and artifact updates](/media/agent-gateway/ui-stream-events.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-stream-events.png"
+    alt="A travel task&#x27;s five ordered streaming events, including status and artifact updates"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 ### Inspect files and metadata
 
@@ -96,7 +132,13 @@ In the conversation or event view, inspect the artifact name, description, and p
 
 Our travel agent returned a **Lisbon itinerary** artifact with a description and a `text/plain` file named `lisbon-itinerary.txt`. Its **Download** action saves the file.
 
-![A Lisbon itinerary file artifact showing its name, description, filename, MIME type, and Download action](/media/agent-gateway/ui-file-artifact.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-file-artifact.png"
+    alt="A Lisbon itinerary file artifact showing its name, description, filename, MIME type, and Download action"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 ### Follow model and tool failures
 
@@ -113,17 +155,35 @@ A successful A2A response can contain a failed task. The operation's **Success**
 <Accordion title="See the task's model calls">
 
 We selected **LLM Logs** on our research task's operation. The five model calls below carry that task's correlation ID.
-![Five model calls correlated to one research task](/media/agent-gateway/ui-correlated-llm.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-correlated-llm.png"
+    alt="Five model calls correlated to one research task"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 </Accordion>
 <Accordion title="See the task's tool calls">
 
 We selected **MCP Logs** on the same operation. These two Context7 calls resolved the library and retrieved its documentation.
-![Two Context7 tool calls correlated to the same research task](/media/agent-gateway/ui-correlated-mcp.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-correlated-mcp.png"
+    alt="Two Context7 tool calls correlated to the same research task"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 </Accordion>
 <Accordion title="See a failed task inside a successful request">
 
 We asked our travel agent to plan a trip without available flights. The agent returned an HTTP 200 JSON-RPC response with the task in `result`, so the operation is logged as **Success**. The task itself reported `failed` because no flights were available.
-![A successful SendMessage operation returning a failed travel task with a reason](/media/agent-gateway/ui-failed-task.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-failed-task.png"
+    alt="A successful SendMessage operation returning a failed travel task with a reason"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 </Accordion>
 </AccordionGroup>
 
@@ -141,7 +201,13 @@ The Agents filter is conversation-based. If several agents share the same contex
 
 Raw capture is disabled by default. Enable it in **Agents → Agent Settings → Capture Raw Request and Response**, then make a fresh request. The [configuration guide](./configuration#capture-raw-http-payloads) covers config.json and Helm deployment options.
 
-![Capture Raw Request and Response enabled in Agent Settings](/media/agent-gateway/ui-raw-capture-setting.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-raw-capture-setting.png"
+    alt="Capture Raw Request and Response enabled in Agent Settings"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 Raw capture is separate from the structured conversation and event views. You can still read those views without storing raw HTTP payloads, subject to content-logging settings.
 
@@ -150,7 +216,13 @@ When capture exists, use the display and download actions to inspect the stored 
 <Accordion title="See a captured HTTP request and response">
 
 We enabled raw capture before sending our research request, then opened its **Raw Capture** tab. The screenshot shows the stored request and response and their download links.
-![Raw Capture with separate request and response downloads for a research task](/media/agent-gateway/ui-raw-capture.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-raw-capture.png"
+    alt="Raw Capture with separate request and response downloads for a research task"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 </Accordion>
 
 Capture is limited to 1 MiB in each direction. Oversized or incomplete bodies are omitted. A missing capture therefore does not mean the agent returned an empty response. Local push-config GET and LIST operations do not have an upstream HTTP exchange to capture.
@@ -179,7 +251,13 @@ Compare similar operations and transports. A long-lived stream and a single task
 <Accordion title="See an overhead breakdown">
 
 We expanded **More details** on our research operation to inspect its measured gateway overhead. The breakdown separates protocol handling from the other processing categories.
-![An agent operation's timing breakdown with Protocol library, Processing, and other categories](/media/agent-gateway/ui-overhead.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-overhead.png"
+    alt="An agent operation&#x27;s timing breakdown with Protocol library, Processing, and other categories"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 </Accordion>
 
 <Accordion title="Why are correlated logs missing?">
