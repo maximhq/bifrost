@@ -268153,6 +268153,145 @@
           ]
         }
       ]
+    },
+    {
+      "name": "240. Deferred tools on models without tool search use the gateway search (gateway tool search)",
+      "description": "A request that defers tools (defer_loading) on a model with no tool search of its own (Gemini, older GPT, Bedrock non-Claude, ...) used to get every tool loaded up front. Bifrost now holds the deferred tools back and offers the model a bifrost_tool_search function; when the model calls it, Bifrost searches the deferred tools in the gateway, loads the matches and calls the model again, and the caller sees one response without the search call. Cases pin the upstream wire (raw_request carries bifrost_tool_search and no defer_loading) and that the search call never reaches the caller, on /v1/responses and the Anthropic messages route.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash /v1/responses deferred function loads through the gateway tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What is the weather in Paris? Use a weather tool.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"lookup_city_code\",\n      \"description\": \"Look up the IATA code for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"max_output_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "var wire = typeof rr === 'string' ? rr : JSON.stringify(rr || null);",
+                  "pm.test('gateway tool search responses: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search responses: the upstream gets bifrost_tool_search, not defer_loading', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
+                  "  pm.expect(wire, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  pm.expect(wire, 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
+                  "});",
+                  "pm.test('gateway tool search responses: the search call never reaches the caller', function () {",
+                  "  var output = body.output || [];",
+                  "  pm.expect(output.filter(function (x) { return x.type === 'function_call' && x.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(output).slice(0, 800)).to.eql(0);",
+                  "  output.filter(function (x) { return x.type === 'function_call'; }).forEach(function (call) {",
+                  "    pm.expect(['lookup_city_code', 'get_weather'], 'calls only declared tools').to.include(call.name);",
+                  "  });",
+                  "});",
+                  "pm.test('gateway tool search responses: the deferred get_weather was loaded and called', function () {",
+                  "  var calls = (body.output || []).filter(function (x) { return x.type === 'function_call' && x.name === 'get_weather'; });",
+                  "  pm.expect(calls.length, 'want a get_weather call - a text-only reply never exercises deferred loading: ' + JSON.stringify(body.output || []).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-2.5-flash messages route: deferred tool loads through the gateway tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"name\": \"lookup_city_code\",\n      \"description\": \"Look up the IATA code for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use a weather tool.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "var wire = typeof rr === 'string' ? rr : JSON.stringify(rr || null);",
+                  "pm.test('gateway tool search messages: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search messages: the upstream gets bifrost_tool_search, not defer_loading', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
+                  "  pm.expect(wire, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  pm.expect(wire, 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
+                  "});",
+                  "pm.test('gateway tool search messages: the search call never reaches the caller', function () {",
+                  "  var content = body.content || [];",
+                  "  pm.expect(content.filter(function (b) { return b.type === 'tool_use' && b.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(content).slice(0, 800)).to.eql(0);",
+                  "  content.filter(function (b) { return b.type === 'tool_use'; }).forEach(function (b) {",
+                  "    pm.expect(['lookup_city_code', 'get_weather'], 'calls only declared tools').to.include(b.name);",
+                  "  });",
+                  "});",
+                  "pm.test('gateway tool search messages: the deferred get_weather was loaded and called', function () {",
+                  "  var uses = (body.content || []).filter(function (b) { return b.type === 'tool_use' && b.name === 'get_weather'; });",
+                  "  pm.expect(uses.length, 'want a get_weather tool_use - a text-only reply never exercises deferred loading: ' + JSON.stringify(body.content || []).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
