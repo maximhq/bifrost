@@ -942,6 +942,13 @@ func TestWithGatewayToolSearch(t *testing.T) {
 	assert.Nil(t, withGatewayToolSearch(nil, deferredToolsResponsesRequest(schemas.Anthropic, "claude-sonnet-4-6"), schemas.Anthropic, "claude-sonnet-4-6"),
 		"Claude searches natively")
 
+	stream := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
+	stream.RequestType = schemas.ResponsesStreamRequest
+	assert.NotNil(t, withGatewayToolSearch(nil, stream, schemas.Gemini, "gemini-3.8-flash"), "streaming attempts search too")
+	chat := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
+	chat.RequestType = schemas.ChatCompletionRequest
+	assert.Nil(t, withGatewayToolSearch(nil, chat, schemas.Gemini, "gemini-3.8-flash"), "chat requests carry no deferred tools")
+
 	eager := deferredToolsResponsesRequest(schemas.Gemini, "gemini-3.8-flash")
 	eager.ResponsesRequest.Params.Tools[1].DeferLoading = nil
 	assert.Nil(t, withGatewayToolSearch(nil, eager, schemas.Gemini, "gemini-3.8-flash"), "nothing deferred")

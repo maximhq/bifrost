@@ -743,7 +743,8 @@ func (bifrost *Bifrost) injectedToolsForAttempt(ctx *schemas.BifrostContext, con
 // The check costs one pass over the request's tools and allocates nothing when no
 // tool is deferred.
 func withGatewayToolSearch(set *injectedToolSet, req *schemas.BifrostRequest, baseProvider schemas.ModelProvider, model string) *injectedToolSet {
-	if req.RequestType != schemas.ResponsesRequest || !toolsearch.Candidate(req.ResponsesRequest) ||
+	if (req.RequestType != schemas.ResponsesRequest && req.RequestType != schemas.ResponsesStreamRequest) ||
+		!toolsearch.Candidate(req.ResponsesRequest) ||
 		toolsearch.NativeSupport(baseProvider, model) {
 		return set
 	}
