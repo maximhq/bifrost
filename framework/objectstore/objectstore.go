@@ -49,6 +49,32 @@ type ObjectStore interface {
 type PutOptions struct {
 	ContentType     string // Defaults to application/json.
 	SkipCompression bool   // Store the body as is, with no gzip Content-Encoding.
+	// Retention, when set, write-locks the object until RetainUntil (S3 Object
+	// Lock, GCS object retention). The bucket must have object locking enabled.
+	Retention *Retention
+}
+
+// Object lock modes. Compliance cannot be lifted by anyone, including the
+// account root, before RetainUntil; governance can by a privileged principal.
+const (
+	ObjectLockGovernance = "governance"
+	ObjectLockCompliance = "compliance"
+)
+
+// Retention write-locks an object until RetainUntil.
+type Retention struct {
+	Mode        string
+	RetainUntil time.Time
+}
+
+// ErrObjectLocked is returned when a write would replace a retention-locked object.
+var ErrObjectLocked = errors.New("objectstore: object is retention-locked")
+
+// ObjectLockVerifier is implemented by stores that can confirm their bucket
+// accepts per-object retention, so a misconfigured bucket fails at startup
+// instead of on the first archived window.
+type ObjectLockVerifier interface {
+	VerifyObjectLock(ctx context.Context) error
 }
 
 // OptionsPutter is implemented by stores that accept per-object write options.

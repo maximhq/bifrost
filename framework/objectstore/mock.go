@@ -16,6 +16,7 @@ type InMemoryObjectStore struct {
 	tags      map[string]map[string]string
 	types     map[string]string
 	createdAt map[string]time.Time
+	retained  map[string]time.Time
 
 	// PutErr, if set, is returned by Put for simulating failures.
 	PutErr error
@@ -30,6 +31,7 @@ func NewInMemoryObjectStore() *InMemoryObjectStore {
 		tags:      make(map[string]map[string]string),
 		types:     make(map[string]string),
 		createdAt: make(map[string]time.Time),
+		retained:  make(map[string]time.Time),
 	}
 }
 
@@ -45,6 +47,12 @@ func (m *InMemoryObjectStore) PutWithOptions(_ context.Context, key string, data
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if until, ok := m.retained[key]; ok && time.Now().Before(until) {
+		return ErrObjectLocked
+	}
+	if opts.Retention != nil {
+		m.retained[key] = opts.Retention.RetainUntil
+	}
 	// Store a copy to avoid mutation.
 	cp := make([]byte, len(data))
 	copy(cp, data)
@@ -97,6 +105,9 @@ func (m *InMemoryObjectStore) ListByPrefix(_ context.Context, prefix string) ([]
 func (m *InMemoryObjectStore) Delete(_ context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if until, ok := m.retained[key]; ok && time.Now().Before(until) {
+		return ErrObjectLocked
+	}
 	delete(m.objects, key)
 	delete(m.tags, key)
 	delete(m.types, key)
@@ -167,4 +178,17 @@ func (m *InMemoryObjectStore) SetCreatedAt(key string, t time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.createdAt[key] = t
+}
+
+// VerifyObjectLock always succeeds: the in-memory store honours retention.
+func (m *InMemoryObjectStore) VerifyObjectLock(context.Context) error {
+	return nil
+}
+
+// RetainedUntil reports the retention set on key, if any.
+func (m *InMemoryObjectStore) RetainedUntil(key string) (time.Time, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	until, ok := m.retained[key]
+	return until, ok
 }
