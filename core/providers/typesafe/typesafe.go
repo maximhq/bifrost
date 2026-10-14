@@ -295,6 +295,14 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	// A same-key idempotent replay returns the saved result without another
+	// evaluation or charge. Its body still carries the original usage, so drop
+	// it here: cost, logging and usage export then record nothing for the
+	// replay instead of charging the original operation twice. The native
+	// /typesafe route still relays the body verbatim.
+	if isIdempotentReplay(resp) {
+		bifrostResp.Usage = nil
+	}
 	if sendBackRawRequest {
 		bifrostResp.ExtraFields.RawRequest = rawRequest
 	}

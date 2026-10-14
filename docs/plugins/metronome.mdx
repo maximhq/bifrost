@@ -5,8 +5,14 @@ description: "Export token and external Fish Audio usage from the Regali fork"
 
 Metronome is an opt-in **builtin plugin** in the REGALITECH fork. It exports
 successful Chat Completions, Text Completions and Responses usage, including
-completed streams, as `token-billing` events. Authenticated external Fish Audio
-reports produce `fishaudio-usage` events.
+completed streams, as `token-billing` events. Successful decisions
+(`/v1/decisions` and `/typesafe/v1/systemone`) produce `token-billing` events
+too, marked with `request_type: "decisions"`. TypeSafe-family decisions report
+input tokens only, because their output tokens are free answer bookkeeping
+rather than generated output; a decision emulated through an LLM keeps the
+output tokens that LLM generated. A same-key idempotent replay
+(`X-Idempotency-Replayed: true`) carries no usage and produces no event.
+Authenticated external Fish Audio reports produce `fishaudio-usage` events.
 
 ## Build and configure
 
