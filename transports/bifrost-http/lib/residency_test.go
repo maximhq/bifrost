@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 )
 
 // The fixtures here are the shapes recorded from a live oMLX, llama.cpp router and
@@ -202,5 +203,98 @@ func TestProbeResidencyAllReadersFail(t *testing.T) {
 	}
 	if _, _, err := probeResidency(t.Context(), target, "", http.DefaultClient); err == nil {
 		t.Fatal("expected an error when every reader fails")
+	}
+}
+
+// A provider that authenticates with its own scheme keeps it. Replacing extra_headers with a
+// bearer fails every probe against that backend, and on the default on_probe_error of error every
+// virtual-model request then answers 502 for a cause the operator cannot see in their own config.
+func TestProbeKeepsOperatorAuthorizationHeader(t *testing.T) {
+	network := func(headers map[string]string) *schemas.NetworkConfig {
+		return &schemas.NetworkConfig{
+			BaseURL:             "http://127.0.0.1:1",
+			AllowPrivateNetwork: true,
+			ExtraHeaders:        headers,
+		}
+	}
+	keys := []schemas.Key{{Value: *schemas.NewSecretVar("sk-local")}}
+
+	kept := buildProbeTarget(t, configstore.ProviderConfig{
+		NetworkConfig: network(map[string]string{"authorization": "Custom op-token"}),
+		Keys:          keys,
+	})
+	if got := kept.headers["authorization"]; got != "Custom op-token" {
+		t.Fatalf("operator authorization = %q, want it preserved untouched", got)
+	}
+	if got := kept.headers["Authorization"]; got != "" {
+		t.Fatalf("a second Authorization header appeared: %q", got)
+	}
+
+	filled := buildProbeTarget(t, configstore.ProviderConfig{
+		NetworkConfig: network(nil),
+		Keys:          keys,
+	})
+	if got := filled.headers["Authorization"]; got != "Bearer sk-local" {
+		t.Fatalf("authorization = %q, want the provider key as a bearer", got)
+	}
+}
+
+func buildProbeTarget(t *testing.T, providerCfg configstore.ProviderConfig) *residencyTarget {
+	t.Helper()
+	target, err := buildResidencyTarget("omlx", providerCfg)
+	if err != nil {
+		t.Fatalf("build failed: %v", err)
+	}
+	return target
+}
+
+// With no virtual models configured the service is never installed, and a nil pointer sitting in
+// the VirtualModelResolver interface compares non-nil - which is the trap, since core checks
+// != nil and would then call through it on every request. The accessor must hand back a real nil.
+func TestVirtualModelResolverIsNilWhenNothingIsConfigured(t *testing.T) {
+	var absent *Config
+	if absent.VirtualModelResolver() != nil {
+		t.Fatal("nil config returned a resolver")
+	}
+
+	cfg := &Config{}
+	trap := schemas.VirtualModelResolver(cfg.VirtualModels)
+	if trap == nil {
+		t.Fatal("control failed: a nil pointer placed in an interface is non-nil, which is the bug being guarded")
+	}
+	if _, ok := trap.Lookup("anything"); ok {
+		t.Fatal("control failed: the typed-nil resolver claimed to know a model")
+	}
+
+	if got := cfg.VirtualModelResolver(); got != nil {
+		t.Fatalf("unconfigured gateway returned a non-nil resolver: %v", got)
+	}
+
+	service := NewVirtualModelService(nil, nil)
+	if err := service.Install(map[string]schemas.VirtualModel{
+		"local-chat": {Name: "local-chat", Provider: "omlx", Models: []string{"flash"}},
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"omlx": {NetworkConfig: &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", AllowPrivateNetwork: true}},
+	}); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+	cfg.VirtualModels = service
+	if cfg.VirtualModelResolver() == nil {
+		t.Fatal("a configured gateway returned no resolver")
+	}
+}
+
+// The service is reached through an interface, so a nil receiver has to read as "no virtual
+// models" rather than panic: that is the ordinary state of a gateway that does not use this.
+func TestNilVirtualModelServiceIsInert(t *testing.T) {
+	var service *VirtualModelService
+	if service.Enabled() {
+		t.Fatal("nil service reported enabled")
+	}
+	if vm, ok := service.Lookup("local-chat"); ok || vm != nil {
+		t.Fatalf("nil service resolved a model: %v %v", vm, ok)
+	}
+	if got := service.List(); got != nil {
+		t.Fatalf("nil service listed %v", got)
 	}
 }

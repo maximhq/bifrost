@@ -33,19 +33,19 @@ func TestVirtualDiscoveryRestrictedAccess(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			listing := &schemas.BifrostListModelsResponse{}
-			appendVirtualModels(listing, cfg, "", tt.access)
+			appendVirtualModels(listing, cfg, "", tt.access, false)
 			if len(listing.Data) != tt.want {
 				t.Fatalf("inference listing = %+v, want %d entries", listing.Data, tt.want)
 			}
 
-			management := virtualListedModels(cfg, []schemas.ModelProvider{"omlx", "ollama"}, tt.access)
+			management := virtualListedModels(cfg, []schemas.ModelProvider{"omlx", "ollama"}, tt.access, false, "")
 			if len(management) != tt.want {
 				t.Fatalf("management listing = %+v, want %d entries", management, tt.want)
 			}
 
 			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 			defer ctx.Cancel()
-			retrieved, handled := virtualModelRetrieve(ctx, cfg, "qwen38", tt.access)
+			retrieved, handled := virtualModelRetrieve(ctx, cfg, "qwen38", tt.access, false)
 			if !handled {
 				t.Fatal("virtual name was not handled")
 			}
@@ -62,11 +62,11 @@ func TestVirtualDiscoveryRestrictedAccess(t *testing.T) {
 func TestVirtualDiscoveryUnfilteredWithoutAccess(t *testing.T) {
 	cfg := testVirtualConfig(t)
 	listing := &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "gpt-4o"}}}
-	appendVirtualModels(listing, cfg, "", nil)
+	appendVirtualModels(listing, cfg, "", nil, false)
 	if len(listing.Data) != 3 {
 		t.Fatalf("got %d entries, want both virtual names beside the concrete one", len(listing.Data))
 	}
-	if got := len(virtualListedModels(cfg, []schemas.ModelProvider{"omlx"}, nil)); got != 1 {
+	if got := len(virtualListedModels(cfg, []schemas.ModelProvider{"omlx"}, nil, false, "")); got != 1 {
 		t.Fatalf("management listing = %d, want the omlx virtual name", got)
 	}
 }
@@ -77,7 +77,7 @@ func TestVirtualDiscoveryUnfilteredWithoutAccess(t *testing.T) {
 func TestVirtualRetrieveRejectsWrongProvider(t *testing.T) {
 	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
 	defer ctx.Cancel()
-	resp, handled := virtualModelRetrieve(ctx, testVirtualConfig(t), "ollama/qwen38", nil)
+	resp, handled := virtualModelRetrieve(ctx, testVirtualConfig(t), "ollama/qwen38", nil, false)
 	if !handled || resp != nil {
 		t.Fatalf("wrong provider prefix returned %+v handled=%v, want nothing handled", resp, handled)
 	}
@@ -168,6 +168,69 @@ func BenchmarkVirtualModelAllowed(b *testing.B) {
 	access := accessForProviderPermits(schemas.ProviderPermit{Provider: "omlx", AllowedModels: schemas.WhiteList{"*"}})
 	b.ReportAllocs()
 	for b.Loop() {
-		virtualModelAllowed(vm, access)
+		virtualModelAllowed(vm, access, false)
+	}
+}
+
+// An unresolved access is two cases and they must not share a default. A caller that presented no
+// credential keeps the unfiltered listing, because authentication belongs to the auth layer and
+// these routes do not run it. A caller that DID present a virtual key and resolved to nothing was
+// refused by governance: it is shown no virtual names, and a direct lookup is denied rather than
+// spending a residency probe on a credential that has no right to the backend.
+func TestVirtualDiscoveryDeniesUnresolvedCredential(t *testing.T) {
+	cfg := testVirtualConfig(t)
+
+	listing := &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "gpt-4o"}}}
+	appendVirtualModels(listing, cfg, "", nil, true)
+	if len(listing.Data) != 1 || listing.Data[0].ID != "gpt-4o" {
+		t.Fatalf("a presented-but-unresolved credential was shown virtual names: %+v", listing.Data)
+	}
+
+	management := virtualListedModels(cfg, []schemas.ModelProvider{"omlx", "ollama"}, nil, true, "")
+	if len(management) != 0 {
+		t.Fatalf("management listing = %+v, want nothing for a refused credential", management)
+	}
+
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	defer ctx.Cancel()
+	resp, handled := virtualModelRetrieve(ctx, cfg, "qwen38", nil, true)
+	if !handled {
+		t.Fatal("virtual name was forwarded upstream instead of answered here")
+	}
+	if resp != nil {
+		t.Fatalf("retrieve returned %+v, want denial", resp)
+	}
+
+	// Same shape, no credential presented: unchanged, so the dashboard keeps working.
+	appendVirtualModels(listing, cfg, "", nil, false)
+	if len(listing.Data) != 3 {
+		t.Fatalf("unrestricted caller = %d entries, want the virtual names kept", len(listing.Data))
+	}
+}
+
+// Virtual names take the same search filter concrete names take. A search for one string must not
+// answer with every virtual name, and it uses the shared matcher, so a query that matches a
+// concrete name through normalization matches a virtual one the same way.
+func TestVirtualListedModelsTakeTheSearchFilter(t *testing.T) {
+	cfg := testVirtualConfig(t)
+	providers := []schemas.ModelProvider{"omlx", "ollama"}
+
+	if got := len(virtualListedModels(cfg, providers, nil, false, "")); got != 2 {
+		t.Fatalf("empty query = %d entries, want both virtual names", got)
+	}
+
+	filtered := virtualListedModels(cfg, providers, nil, false, "qwen")
+	if len(filtered) != 1 || filtered[0].Name != "qwen38" {
+		t.Fatalf("query qwen = %+v, want only qwen38", filtered)
+	}
+
+	// The matcher normalizes separators; a virtual name must behave like a concrete one.
+	normalized := virtualListedModels(cfg, providers, nil, false, "qwen-38")
+	if len(normalized) != 1 || normalized[0].Name != "qwen38" {
+		t.Fatalf("query qwen-38 = %+v, want qwen38 through normalization", normalized)
+	}
+
+	if got := virtualListedModels(cfg, providers, nil, false, "nothing-matches"); len(got) != 0 {
+		t.Fatalf("unmatched query = %+v, want nothing", got)
 	}
 }
