@@ -75,6 +75,12 @@ func defaultCanDisableReasoning(model string) bool {
 // (https://developers.openai.com/api/docs/guides/tools-tool-search). Azure and
 // Bedrock serve the same OpenAI models on the same wire; other OpenAI-compatible
 // backends are not assumed to understand defer_loading.
+// SupportsToolSearch reports whether provider serves model with OpenAI's tool search
+// (and so accepts defer_loading), the gate ToOpenAIResponsesRequest applies.
+func SupportsToolSearch(provider schemas.ModelProvider, model string) bool {
+	return schemas.ResolveModelCaps(provider, model).SupportsToolSearch(defaultSupportsToolSearch(provider, model))
+}
+
 func defaultSupportsToolSearch(provider schemas.ModelProvider, model string) bool {
 	switch provider {
 	case schemas.OpenAI, schemas.Azure, schemas.Bedrock, schemas.BedrockMantle:
