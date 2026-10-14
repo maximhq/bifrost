@@ -619,7 +619,11 @@ func (h *HybridLogStore) skipsOffload(entry *Log) bool {
 	if entry.ContentHidden {
 		return false
 	}
-	_, ok := h.excludedRequestTypes[entry.Object]
+	if _, ok := h.excludedRequestTypes[entry.Object]; ok {
+		return true
+	}
+	// A passthrough row stored under its inferred type still honours an exclusion of passthrough.
+	_, ok := h.excludedRequestTypes[entry.PassthroughObjectType()]
 	return ok
 }
 

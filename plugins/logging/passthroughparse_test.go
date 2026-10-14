@@ -101,6 +101,10 @@ var openAIChatCall = passthroughCall{provider: schemas.OpenAI, model: "gpt-4o", 
 func TestPassthroughLogParsesOpenAIChat(t *testing.T) {
 	row := runPassthroughCall(t, &Config{}, "req-pt-chat", openAIChatCall, nil, nil)
 
+	// Stored under the inferred type, tagged as passthrough.
+	require.Equal(t, string(schemas.ChatCompletionRequest), row.Object)
+	require.True(t, row.IsPassthrough)
+
 	require.Len(t, row.InputHistoryParsed, 2)
 	require.Equal(t, "weather in Paris?", *row.InputHistoryParsed[1].Content.ContentStr)
 	require.Len(t, row.ToolsParsed, 1)
@@ -152,6 +156,8 @@ func TestPassthroughLogParsesCustomProviderByBaseType(t *testing.T) {
 	}, nil)
 
 	require.Equal(t, "my-claude", row.Provider)
+	require.Equal(t, string(schemas.ResponsesRequest), row.Object)
+	require.True(t, row.IsPassthrough)
 	require.NotEmpty(t, row.ResponsesOutputParsed)
 	params := passthroughParamsMap(t, row)
 	require.Equal(t, string(schemas.Anthropic), params["base_provider"])
@@ -180,6 +186,9 @@ func TestPassthroughLogSkipsParsingWithoutContentLogging(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			row := runPassthroughCall(t, tt.cfg, "req-pt-off", openAIChatCall, tt.setup, tt.afterPre)
+			// The route still types the row: typing reads no content.
+			require.Equal(t, string(schemas.ChatCompletionRequest), row.Object)
+			require.True(t, row.IsPassthrough)
 			require.Empty(t, row.InputHistoryParsed)
 			require.Empty(t, row.ResponsesInputHistoryParsed)
 			require.Nil(t, row.OutputMessageParsed)
@@ -235,6 +244,8 @@ func TestPassthroughLogParsingIsBestEffort(t *testing.T) {
 		}, nil, nil)
 		require.Empty(t, row.InputHistoryParsed)
 		require.Equal(t, `{"training_file":"f"}`, row.PassthroughRequestBody)
+		require.Equal(t, string(schemas.PassthroughRequest), row.Object)
+		require.True(t, row.IsPassthrough)
 	})
 }
 
@@ -306,26 +317,73 @@ func TestPassthroughLogSummarizesMultipartUploads(t *testing.T) {
 	require.Equal(t, "hello from the clip", row.TranscriptionOutputParsed.Text)
 }
 
-func TestMarkPassthroughForParsing(t *testing.T) {
+// TestPassthroughErrorWithoutPendingEntryIsTagged pins that a passthrough call that fails with no
+// pending entry (the minimal error row PostLLMHook writes on its own) is still tagged is_passthrough,
+// so every passthrough row carries the tag the logs API documents.
+func TestPassthroughErrorWithoutPendingEntryIsTagged(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-pt-error-no-pending")
+	statusCode := 502
+	_, _, err = plugin.PostLLMHook(ctx, nil, &schemas.BifrostError{
+		StatusCode: &statusCode,
+		Error:      &schemas.ErrorField{Message: "upstream failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType: schemas.PassthroughRequest,
+			Provider:    schemas.OpenAI,
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	row, err := store.FindByID(context.Background(), "req-pt-error-no-pending")
+	require.NoError(t, err)
+	require.Equal(t, string(schemas.PassthroughRequest), row.Object, "with no route recorded the row keeps its passthrough type")
+	require.True(t, row.IsPassthrough)
+	require.Empty(t, row.InputHistoryParsed)
+}
+
+func TestTagPassthroughEntry(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	chatRoute := &InitialLogData{PassthroughMethod: "POST", PassthroughPath: "/v1/chat/completions"}
 
 	chat := &logstore.Log{Object: string(schemas.ChatCompletionRequest), Provider: "openai"}
-	markPassthroughForParsing(ctx, chat, true)
+	tagPassthroughEntry(ctx, chat, chatRoute, true)
 	require.Empty(t, chat.PassthroughParseFormat, "typed rows are never flagged")
+	require.False(t, chat.IsPassthrough)
 
-	off := &logstore.Log{Object: string(schemas.PassthroughRequest), Provider: "openai"}
-	markPassthroughForParsing(ctx, off, false)
-	require.Empty(t, off.PassthroughParseFormat, "rows without stored content are never flagged")
+	off := &logstore.Log{Object: string(schemas.PassthroughRequest), Provider: "openai", Model: "gpt-4o"}
+	tagPassthroughEntry(ctx, off, chatRoute, false)
+	require.Empty(t, off.PassthroughParseFormat, "rows without stored content are never parsed")
+	require.True(t, off.IsPassthrough)
+	require.Equal(t, string(schemas.ChatCompletionRequest), off.Object, "the route types the row whatever the content policy")
 
-	first := &logstore.Log{Object: string(schemas.PassthroughStreamRequest), Provider: "openai"}
-	markPassthroughForParsing(ctx, first, true)
-	require.Equal(t, schemas.OpenAI, first.PassthroughParseFormat, "without a stamped base type the row's provider is the format")
+	stream := &logstore.Log{Object: string(schemas.PassthroughStreamRequest), Provider: "openai", Model: "gpt-4o"}
+	tagPassthroughEntry(ctx, stream, chatRoute, true)
+	require.Equal(t, schemas.OpenAI, stream.PassthroughParseFormat, "without a stamped base type the row's provider is the format")
+	require.Equal(t, string(schemas.ChatCompletionStreamRequest), stream.Object)
+
+	// A GET on a generation route (listing stored chat completions) is not that request.
+	list := &logstore.Log{Object: string(schemas.PassthroughRequest), Provider: "openai", Model: "gpt-4o"}
+	tagPassthroughEntry(ctx, list, &InitialLogData{PassthroughMethod: "GET", PassthroughPath: "/v1/chat/completions"}, true)
+	require.True(t, list.IsPassthrough)
+	require.Equal(t, string(schemas.PassthroughRequest), list.Object)
+
+	unknown := &logstore.Log{Object: string(schemas.PassthroughRequest), Provider: "openai"}
+	tagPassthroughEntry(ctx, unknown, &InitialLogData{PassthroughMethod: "POST", PassthroughPath: "/v1/fine-tuning/jobs"}, true)
+	require.True(t, unknown.IsPassthrough)
+	require.Equal(t, string(schemas.PassthroughRequest), unknown.Object, "a route with no typed equivalent stays passthrough")
 
 	// A fallback attempt runs PostLLMHook with its own stamped base type.
 	ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Anthropic)
-	fallback := &logstore.Log{Object: string(schemas.PassthroughRequest), Provider: "my-claude"}
-	markPassthroughForParsing(ctx, fallback, true)
+	fallback := &logstore.Log{Object: string(schemas.PassthroughRequest), Provider: "my-claude", Model: "claude-sonnet-4-5"}
+	tagPassthroughEntry(ctx, fallback, &InitialLogData{PassthroughMethod: "POST", PassthroughPath: "/v1/messages"}, true)
 	require.Equal(t, schemas.Anthropic, fallback.PassthroughParseFormat)
+	require.Equal(t, string(schemas.ResponsesRequest), fallback.Object)
+	require.Equal(t, "my-claude", fallback.Provider)
 }
 
 // TestApplyParsedPassthroughStream covers the streaming row, whose response body is the raw SSE text
@@ -334,7 +392,9 @@ func TestApplyParsedPassthroughStream(t *testing.T) {
 	plugin := &LoggerPlugin{logger: testLogger{}}
 	entry := &logstore.Log{
 		ID:                      "req-pt-stream",
-		Object:                  string(schemas.PassthroughStreamRequest),
+		Object:                  string(schemas.ResponsesStreamRequest),
+		IsPassthrough:           true,
+		Stream:                  true,
 		Provider:                "anthropic",
 		PassthroughParseFormat:  schemas.Anthropic,
 		ParamsParsed:            &schemas.PassthroughLogParams{Method: "POST", Path: "/v1/messages", StatusCode: 200, Model: "claude-sonnet-4-5"},
@@ -375,26 +435,30 @@ func TestApplyParsedPassthroughLeavesUnflaggedRowsAlone(t *testing.T) {
 	require.Nil(t, entry.OutputMessageParsed)
 }
 
-// BenchmarkMarkPassthroughForParsing records the request-path cost: a string compare for typed rows
-// and passthrough rows without content, plus one context read for a flagged passthrough row.
-func BenchmarkMarkPassthroughForParsing(b *testing.B) {
+// BenchmarkTagPassthroughEntry records the request-path cost: a string compare for typed rows, and
+// for a passthrough row one context read plus the route inference (suffix checks), and a second
+// context read when content is stored.
+func BenchmarkTagPassthroughEntry(b *testing.B) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+	route := &InitialLogData{PassthroughMethod: "POST", PassthroughPath: "/v1/chat/completions"}
 	cases := []struct {
 		name    string
-		entry   *logstore.Log
+		object  string
 		content bool
 	}{
-		{"typed_row", &logstore.Log{Object: string(schemas.ChatCompletionRequest), Provider: "openai"}, true},
-		{"passthrough_content_off", &logstore.Log{Object: string(schemas.PassthroughRequest), Provider: "openai"}, false},
-		{"passthrough_flagged", &logstore.Log{Object: string(schemas.PassthroughRequest), Provider: "openai"}, true},
+		{"typed_row", string(schemas.ChatCompletionRequest), true},
+		{"passthrough_content_off", string(schemas.PassthroughRequest), false},
+		{"passthrough_flagged", string(schemas.PassthroughRequest), true},
 	}
 	for _, c := range cases {
 		b.Run(c.name, func(b *testing.B) {
+			entry := &logstore.Log{Provider: "openai", Model: "gpt-4o"}
 			b.ReportAllocs()
 			for b.Loop() {
-				c.entry.PassthroughParseFormat = ""
-				markPassthroughForParsing(ctx, c.entry, c.content)
+				entry.Object = c.object
+				entry.PassthroughParseFormat = ""
+				tagPassthroughEntry(ctx, entry, route, c.content)
 			}
 		})
 	}

@@ -835,3 +835,82 @@ func TestParseGeminiJSONArrayStreamCut(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, r, "nothing decoded, nothing to keep")
 }
+
+func TestInferRequestType(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		method   string
+		path     string
+		stream   bool
+		want     schemas.RequestType
+	}{
+		{"openai chat", schemas.OpenAI, "gpt-4o", "POST", "/v1/chat/completions", false, schemas.ChatCompletionRequest},
+		{"openai chat stream", schemas.OpenAI, "gpt-4o", "POST", "/v1/chat/completions", true, schemas.ChatCompletionStreamRequest},
+		{"codex responses stream", schemas.OpenAI, "gpt-5", "POST", "/backend-api/codex/responses", true, schemas.ResponsesStreamRequest},
+		{"openai embeddings stream has no stream variant", schemas.OpenAI, "text-embedding-3-small", "POST", "/v1/embeddings", true, schemas.EmbeddingRequest},
+		{"anthropic messages", schemas.Anthropic, "claude-sonnet-4-5", "POST", "/v1/messages", false, schemas.ResponsesRequest},
+		{"azure foundry anthropic", schemas.Azure, "claude-sonnet-4-5", "POST", "/anthropic/v1/messages", false, schemas.ResponsesRequest},
+		{"vertex claude streamRawPredict", schemas.Vertex, "claude-sonnet-4-5", "POST", "/projects/p/locations/l/publishers/anthropic/models/claude-sonnet-4-5:streamRawPredict", true, schemas.ResponsesStreamRequest},
+		{"vertex mistral", schemas.Vertex, "mistral-large", "POST", "/projects/p/locations/l/publishers/mistralai/models/mistral-large:rawPredict", false, schemas.ChatCompletionRequest},
+		{"gemini generate stream", schemas.Gemini, "gemini-2.5-flash", "POST", "/models/gemini-2.5-flash:streamGenerateContent?alt=sse", true, schemas.ResponsesStreamRequest},
+		{"openai fine-tuning has no typed equivalent", schemas.OpenAI, "", "POST", "/v1/fine-tuning/jobs", false, ""},
+		{"bedrock agent route", schemas.Bedrock, "", "POST", "/agents/a/agentAliases/b/sessions/c/text", false, ""},
+		{"custom provider name is not a wire format", "my-openai", "gpt-4o", "POST", "/v1/chat/completions", false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, InferRequestType(tt.provider, tt.model, tt.method, tt.path, tt.stream))
+		})
+	}
+}
+
+func BenchmarkInferRequestType(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = InferRequestType(schemas.OpenAI, "gpt-4o", "POST", "/v1/chat/completions", true)
+	}
+}
+
+// TestInferRequestTypeMethods pins row typing under every HTTP method on every typed route: only POST
+// types a passthrough row, every other method leaves it passthrough, and the one method-dependent
+// collection, OpenAI's /containers, is a create on POST and a list on GET.
+func TestInferRequestTypeMethods(t *testing.T) {
+	routes := []struct {
+		provider schemas.ModelProvider
+		model    string
+		path     string
+		onPost   schemas.RequestType
+	}{
+		{schemas.OpenAI, "gpt-4o", "/v1/chat/completions", schemas.ChatCompletionRequest},
+		{schemas.OpenAI, "gpt-5", "/v1/responses", schemas.ResponsesRequest},
+		{schemas.OpenAI, "text-embedding-3-small", "/v1/embeddings", schemas.EmbeddingRequest},
+		{schemas.OpenAI, "gpt-4o-mini-tts", "/v1/audio/speech", schemas.SpeechRequest},
+		{schemas.OpenAI, "whisper-1", "/v1/audio/transcriptions", schemas.TranscriptionRequest},
+		{schemas.OpenAI, "gpt-image-1", "/v1/images/edits", schemas.ImageEditRequest},
+		{schemas.OpenAI, "", "/v1/containers", schemas.ContainerCreateRequest},
+		{schemas.Azure, "gpt-4o", "/openai/deployments/gpt-4o/chat/completions", schemas.ChatCompletionRequest},
+		{schemas.Azure, "claude-sonnet-4-5", "/anthropic/v1/messages", schemas.ResponsesRequest},
+		{schemas.Anthropic, "claude-sonnet-4-5", "/v1/messages", schemas.ResponsesRequest},
+		{schemas.Anthropic, "claude-sonnet-4-5", "/v1/messages/count_tokens", schemas.CountTokensRequest},
+		{schemas.Gemini, "gemini-2.5-flash", "/models/gemini-2.5-flash:generateContent", schemas.ResponsesRequest},
+		{schemas.Gemini, "gemini-embedding-001", "/models/gemini-embedding-001:embedContent", schemas.EmbeddingRequest},
+		{schemas.Vertex, "text-embedding-005", "/projects/p/locations/l/publishers/google/models/text-embedding-005:predict", schemas.EmbeddingRequest},
+		{schemas.Vertex, "claude-sonnet-4-5", "/projects/p/locations/l/publishers/anthropic/models/claude-sonnet-4-5:rawPredict", schemas.ResponsesRequest},
+	}
+	for _, route := range routes {
+		for _, method := range []string{"POST", "post", "GET", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", ""} {
+			want := schemas.RequestType("")
+			switch {
+			case strings.EqualFold(method, "POST"):
+				want = route.onPost
+			case method == "GET" && route.path == "/v1/containers":
+				want = schemas.ContainerListRequest
+			}
+			t.Run(string(route.provider)+" "+method+" "+route.path, func(t *testing.T) {
+				require.Equal(t, want, InferRequestType(route.provider, route.model, method, route.path, false))
+			})
+		}
+	}
+}

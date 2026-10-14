@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/maximhq/bifrost/framework/queryscope"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1108,7 +1109,10 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.UserAgents) == 0 &&
 		len(f.TeamIDs) == 0 &&
 		len(f.BusinessUnitIDs) == 0 &&
-		len(f.CustomerIDs) == 0
+		len(f.CustomerIDs) == 0 &&
+		// The hourly views group by object_type only; a passthrough row stored under its inferred
+		// type is told apart by is_passthrough, which they do not carry.
+		!slices.ContainsFunc(f.Objects, IsPassthroughObjectType)
 }
 
 // canUseMatViewStatusFilter reports whether every requested status is terminal,
