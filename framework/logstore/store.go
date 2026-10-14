@@ -277,7 +277,10 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 			_ = inner.Close(ctx)
 			return nil, fmt.Errorf("failed to ping object store: %w", err)
 		}
-		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields, config.ObjectStorageExcludeRequestTypes), nil
+		hybrid := newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields, config.ObjectStorageExcludeRequestTypes)
+		hybrid.setObjectFormat(config.ObjectStorage.ResolvedFormat(), config.ObjectStorage.ResolvedCompression())
+		hybrid.singleFormat = config.ObjectStorage.Type == objectstore.StoreTypeGCS // gcs rejects parquet, so no object is ever in the other format
+		return hybrid, nil
 	}
 	return inner, nil
 }

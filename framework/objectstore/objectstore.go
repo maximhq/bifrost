@@ -44,3 +44,26 @@ type ObjectStore interface {
 	// Close releases resources held by the store.
 	Close() error
 }
+
+// PutOptions overrides how a single object is written.
+type PutOptions struct {
+	ContentType     string // Defaults to application/json.
+	SkipCompression bool   // Store the body as is, with no gzip Content-Encoding.
+}
+
+// OptionsPutter is implemented by stores that accept per-object write options.
+// It is separate from ObjectStore so existing implementations keep compiling.
+type OptionsPutter interface {
+	PutWithOptions(ctx context.Context, key string, data []byte, tags map[string]string, opts PutOptions) error
+}
+
+// PutWith writes through PutWithOptions when the store supports it and falls
+// back to Put otherwise. Callers that need the options honoured (for example a
+// parquet body that must not be gzipped again) should only pass stores that
+// implement OptionsPutter; NewObjectStore and the in-memory store all do.
+func PutWith(ctx context.Context, store ObjectStore, key string, data []byte, tags map[string]string, opts PutOptions) error {
+	if p, ok := store.(OptionsPutter); ok {
+		return p.PutWithOptions(ctx, key, data, tags, opts)
+	}
+	return store.Put(ctx, key, data, tags)
+}

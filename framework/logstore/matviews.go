@@ -714,15 +714,29 @@ func ensureIndexes(ctx context.Context, conn *sql.Conn, defs []matviewIndexDef) 
 		// the view this connection would refresh, not a same-named one in
 		// another schema, which would otherwise count as ready and leave the
 		// real view without the unique index REFRESH CONCURRENTLY needs.
-		var indexReady bool
-		if err := conn.QueryRowContext(ctx, fmt.Sprintf(`
+		readyQuery := fmt.Sprintf(`
 			SELECT COALESCE(bool_and(%s), false)
 			FROM pg_index pi
 			JOIN pg_class ic ON ic.oid = pi.indexrelid
 			WHERE pi.indrelid = to_regclass($1)
 			  AND ic.relname = $2
-		`, validityExpr), idx.view, idx.name).Scan(&indexReady); err != nil {
+		`, validityExpr)
+		var indexReady bool
+		if err := conn.QueryRowContext(ctx, readyQuery, idx.view, idx.name).Scan(&indexReady); err != nil {
 			return fmt.Errorf("failed to check matview index %s validity: %w", idx.name, err)
+		}
+		if !indexReady {
+			// A build another node is still running reads as INVALID too; wait
+			// for it rather than drop it (see pgWaitForIndexBuild).
+			waited, err := pgWaitForIndexBuild(ctx, conn, idx.name)
+			if err != nil {
+				return err
+			}
+			if waited {
+				if err := conn.QueryRowContext(ctx, readyQuery, idx.view, idx.name).Scan(&indexReady); err != nil {
+					return fmt.Errorf("failed to check matview index %s validity: %w", idx.name, err)
+				}
+			}
 		}
 		if indexReady {
 			continue

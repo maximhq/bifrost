@@ -3302,10 +3302,64 @@
             },
             "compress": {
               "type": "boolean",
-              "description": "Enable gzip compression for stored objects. Default: false",
+              "description": "Legacy gzip switch, equivalent to compression \"gzip\". An explicit compression value takes precedence. Default: false",
               "default": false
+            },
+            "format": {
+              "type": "string",
+              "enum": [
+                "json",
+                "parquet"
+              ],
+              "description": "Encoding of offloaded log payload objects. json writes {id}.json.gz objects; parquet writes single-row {id}.parquet files (one UTF8 column per payload field) readable by Athena, Spark and DuckDB. Objects written before a format change stay readable. parquet is supported on s3 only. Default: json",
+              "default": "json"
+            },
+            "compression": {
+              "type": "string",
+              "enum": [
+                "none",
+                "gzip",
+                "snappy",
+                "zstd"
+              ],
+              "description": "Compression for offloaded log payload objects. For json it is applied to the whole object (none or gzip only). For parquet it is the page codec inside the file (none, gzip, snappy or zstd), and no outer gzip is added. Default: none for json (gzip when compress is true), snappy for parquet."
             }
           },
+          "allOf": [
+            {
+              "if": {
+                "anyOf": [
+                  {
+                    "not": {
+                      "required": [
+                        "format"
+                      ]
+                    }
+                  },
+                  {
+                    "properties": {
+                      "format": {
+                        "const": "json"
+                      }
+                    },
+                    "required": [
+                      "format"
+                    ]
+                  }
+                ]
+              },
+              "then": {
+                "properties": {
+                  "compression": {
+                    "enum": [
+                      "none",
+                      "gzip"
+                    ]
+                  }
+                }
+              }
+            }
+          ],
           "required": [
             "type",
             "bucket"
@@ -3549,7 +3603,9 @@
                 "description": "Use path-style URLs for S3 (required for MinIO). Default: false",
                 "default": false
               },
-              "compress": true
+              "compress": true,
+              "format": true,
+              "compression": true
             },
             "dependentRequired": {
               "access_key_id": [
@@ -3681,7 +3737,14 @@
                 ],
                 "description": "GCP project ID override. Supports env var reference"
               },
-              "compress": true
+              "compress": true,
+              "format": {
+                "enum": [
+                  "json"
+                ],
+                "description": "parquet is not supported for gcs yet"
+              },
+              "compression": true
             },
             "additionalProperties": false
           }

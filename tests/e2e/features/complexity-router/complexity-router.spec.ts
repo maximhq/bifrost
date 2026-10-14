@@ -38,7 +38,7 @@ test.describe('Complexity Router', () => {
           })
         },
       )
-      // The configured providers, plus OpenRouter, Cloudflare, Perplexity, Ollama and a custom provider built on OpenAI.
+      // The configured providers, plus OpenRouter, Cloudflare, Perplexity, Ollama, Azure and a custom provider built on OpenAI.
       await page.route(
         (url) => url.pathname === '/api/providers',
         async (route) => {
@@ -47,12 +47,13 @@ test.describe('Complexity Router', () => {
           const body = await response.json()
           body.providers = [
             ...(body.providers ?? []).filter(
-              (p: { name: string }) => ![CUSTOM_OPENAI, 'openrouter', 'cloudflare', 'perplexity', 'ollama'].includes(p.name),
+              (p: { name: string }) => ![CUSTOM_OPENAI, 'openrouter', 'cloudflare', 'perplexity', 'ollama', 'azure'].includes(p.name),
             ),
             { name: 'openrouter', provider_status: 'active', keys: [] },
             { name: 'cloudflare', provider_status: 'active', keys: [] },
             { name: 'perplexity', provider_status: 'active', keys: [] },
             { name: 'ollama', provider_status: 'active', keys: [] },
+            { name: 'azure', provider_status: 'active', keys: [] },
             {
               name: CUSTOM_OPENAI,
               provider_status: 'active',
@@ -117,6 +118,13 @@ test.describe('Complexity Router', () => {
         saved: 'tev1:0.8b-q8_0',
         decisions: ['tev1:0.8b-q8_0', 'nimble'],
         chat: ['llama3.1:latest'],
+      },
+      // Azure lists every deployment; only Microsoft's decision models are offered.
+      {
+        provider: 'azure',
+        saved: 'Microsoft-Decision-1',
+        decisions: ['Microsoft-Decision-1'],
+        chat: ['gpt-4o'],
       },
     ]
 
