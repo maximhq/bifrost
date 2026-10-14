@@ -527,11 +527,9 @@ func parseStatusList(body map[string]any, _ *residencyTarget, snapshot *schemas.
 		if !ok {
 			continue
 		}
-		name := firstString(entry, "id", "model", "model_alias", "name")
-		if name == "" {
-			continue
-		}
-		seen = true
+		// Register every name the entry offers. oMLX serves an alias that differs from
+		// the id - embeddinggemma-2-bf16 is aliased embeddinggemma-2 - and a candidate
+		// may legitimately be written either way.
 		state := schemas.ResidencyUnloaded
 		switch strings.ToLower(firstString(entry, "value", "state", "status")) {
 		case "loaded", "ready", "ready_to_use":
@@ -545,7 +543,18 @@ func parseStatusList(body map[string]any, _ *residencyTarget, snapshot *schemas.
 		if boolField(entry, "is_loading") {
 			state = schemas.ResidencyLoading
 		}
-		snapshot.SetState(name, state)
+		registered := false
+		for _, key := range []string{"id", "model", "model_alias", "name"} {
+			name := stringField(entry, key)
+			if name == "" {
+				continue
+			}
+			snapshot.SetState(name, state)
+			registered = true
+		}
+		if registered {
+			seen = true
+		}
 	}
 	if !seen {
 		return fmt.Errorf("no model entries the reader understood")
