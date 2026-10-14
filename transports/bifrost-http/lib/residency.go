@@ -545,7 +545,7 @@ func parseStatusList(body map[string]any, _ *residencyTarget, snapshot *schemas.
 		if boolField(entry, "is_loading") {
 			state = schemas.ResidencyLoading
 		}
-		snapshot.States[strings.ToLower(name)] = state
+		snapshot.SetState(name, state)
 	}
 	if !seen {
 		return fmt.Errorf("no model entries the reader understood")
@@ -572,7 +572,7 @@ func parseOllamaProcesses(body map[string]any, _ *residencyTarget, snapshot *sch
 		// references the digest working.
 		for _, name := range []string{stringField(entry, "name"), stringField(entry, "model")} {
 			if name != "" {
-				snapshot.States[strings.ToLower(name)] = schemas.ResidencyReady
+				snapshot.SetState(name, schemas.ResidencyReady)
 			}
 		}
 	}
@@ -613,7 +613,7 @@ func parseCustom(body map[string]any, target *residencyTarget, snapshot *schemas
 				state = schemas.ResidencyLoading
 			}
 		}
-		snapshot.States[strings.ToLower(name)] = state
+		snapshot.SetState(name, state)
 	}
 	snapshot.Authoritative = true
 	return nil

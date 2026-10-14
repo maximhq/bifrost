@@ -186,21 +186,42 @@ type ResidencySnapshot struct {
 	Provider      ModelProvider
 	Authoritative bool
 	ObservedAt    time.Time
-	States        map[string]ResidencyState // lowercased candidate name to state
+	States        map[string]ResidencyState // candidate name to state; write it with SetState
+}
+
+// SetState records a candidate's state, normalizing the key so the lookup cannot miss
+// on case. Adapters write through this rather than the map directly.
+func (s *ResidencySnapshot) SetState(model string, state ResidencyState) {
+	if s == nil {
+		return
+	}
+	if s.States == nil {
+		s.States = make(map[string]ResidencyState, 4)
+	}
+	s.States[strings.ToLower(strings.TrimSpace(model))] = state
 }
 
 // StateOf reads a candidate, defaulting to unknown. Defaulting to unknown means an
 // adapter that reports less can only make the gateway more conservative, never more
 // eager to load.
+//
+// The fallback scan is deliberate. A reader that keyed its entries the way the backend
+// wrote them, rather than lowercased, would otherwise report every candidate unknown and
+// refuse to route a model that is sitting resident in memory - a silent failure that
+// looks like an idle GPU. Snapshots hold a handful of entries, so the scan is free.
 func (s *ResidencySnapshot) StateOf(model string) ResidencyState {
 	if s == nil || s.States == nil {
 		return ResidencyUnknown
 	}
-	state, ok := s.States[strings.ToLower(strings.TrimSpace(model))]
-	if !ok {
-		return ResidencyUnknown
+	if state, ok := s.States[strings.ToLower(strings.TrimSpace(model))]; ok {
+		return state
 	}
-	return state
+	for name, state := range s.States {
+		if strings.EqualFold(name, model) {
+			return state
+		}
+	}
+	return ResidencyUnknown
 }
 
 // VirtualModelResolution is the decision plus the evidence behind it. Members and
