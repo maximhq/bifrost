@@ -283,6 +283,29 @@ func TestUserAgentFromContextFallsBackToUserAgentKey(t *testing.T) {
 	}
 }
 
+// TestAntigravityLogClassification preserves synthetic raw agents while giving logs distinct built-in labels and honoring custom mappings.
+func TestAntigravityLogClassification(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	for userAgent, expected := range map[string]string{"antigravity/2.23.0": "Antigravity Desktop", "antigravity-cli/1.0": "Antigravity CLI"} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"user-agent": userAgent})
+		ctx.SetValue(schemas.BifrostContextKeyUserAgent, "bifrost-edge/0.1.0")
+		actual := userAgentFromContext(ctx)
+		if actual != userAgent || plugin.detectAppFromUserAgent(actual) != expected {
+			t.Fatalf("user agent %q was not classified as %s", actual, expected)
+		}
+		entry := &logstore.Log{}
+		applyUserAgent(entry, actual)
+		if entry.App == nil || *entry.App != expected || entry.UserAgent == nil || *entry.UserAgent != userAgent {
+			t.Fatalf("log lost raw agent or classification: %+v", entry)
+		}
+	}
+	plugin.userAgentMappings.Store([]compiledUserAgentMapping{{Pattern: "antigravity/", MatchType: schemas.UserAgentMappingMatchTypeContains, App: "Custom Antigravity"}})
+	if actual := plugin.detectAppFromUserAgent("antigravity/2.23.0"); actual != "Custom Antigravity" {
+		t.Fatalf("custom mapping overridden: %s", actual)
+	}
+}
+
 func TestPreLLMHookSetsAppContextFromDetectedApp(t *testing.T) {
 	store := newTestStore(t)
 	defer store.Close(context.Background())
