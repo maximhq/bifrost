@@ -6,6 +6,7 @@ package typesafe
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -230,8 +231,14 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	if err := providerUtils.CheckOperationAllowed(schemas.Typesafe, provider.customProviderConfig, schemas.DecisionRequest); err != nil {
 		return nil, err
 	}
+	// The native route forwards the client's exact bytes. A fallback attempt
+	// carries none, so it is built from the parsed request instead.
+	var bodyCtx context.Context = ctx
+	if len(request.RawRequestBody) == 0 {
+		bodyCtx = context.WithValue(ctx, schemas.BifrostContextKeyUseRawRequestBody, false)
+	}
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
+		bodyCtx,
 		request,
 		func() (providerUtils.RequestBodyWithExtraParams, error) {
 			return ToTypesafeDecisionRequest(request)
@@ -255,6 +262,7 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	if key.Value.GetValue() != "" {
 		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	}
+	scopeIdempotencyKey(ctx, req)
 	req.SetBody(jsonData)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -295,14 +303,10 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
 	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
-	// A same-key idempotent replay returns the saved result without another
-	// evaluation or charge. Its body still carries the original usage, so drop
-	// it here: cost, logging and usage export then record nothing for the
-	// replay instead of charging the original operation twice. The native
-	// /typesafe route still relays the body verbatim.
-	if isIdempotentReplay(resp) {
-		bifrostResp.Usage = nil
-	}
+	// A replay keeps the original usage: the first attempt may have been
+	// charged while its response was lost. The Metronome plugin derives a
+	// deterministic transaction ID from the idempotency key so a replay whose
+	// first event was delivered is deduplicated there.
 	if sendBackRawRequest {
 		bifrostResp.ExtraFields.RawRequest = rawRequest
 	}

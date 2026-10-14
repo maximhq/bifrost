@@ -50,6 +50,12 @@ func CreateTypesafeRouteConfigs(pathPrefix string) []RouteConfig {
 				if len(decisionReq.ExtraParams) > 0 && ctx != nil {
 					ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 				}
+				// Hosted idempotency rejects a different body under the same
+				// key, so forward the client's exact bytes (state numbers
+				// stay unrounded); the parsed request only drives routing.
+				if ctx != nil {
+					ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+				}
 				return &schemas.BifrostRequest{
 					DecisionRequest: decisionReq,
 				}, nil

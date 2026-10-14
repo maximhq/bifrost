@@ -111,3 +111,40 @@ func TestSDKFidelityTypesafeSystemOneRouteRelaysNativeBodies(t *testing.T) {
 		t.Error("errors Bifrost raised itself must use the rebuilt envelope")
 	}
 }
+
+// TestTypesafeSystemOneRouteForwardsExactBody pins that the native route marks
+// the request for raw forwarding, so numeric state precision and byte layout
+// survive, while the parsed request still supplies the routing model.
+func TestTypesafeSystemOneRouteForwardsExactBody(t *testing.T) {
+	var route *RouteConfig
+	for _, r := range CreateTypesafeRouteConfigs("/typesafe") {
+		if r.Path == "/typesafe/v1/systemone" {
+			r := r
+			route = &r
+			break
+		}
+	}
+	if route == nil {
+		t.Fatal("systemone route not registered")
+	}
+	body := []byte(`{"model":"jev-1.13.0","state":{"id":9007199254740993},"questions":{"q":{"type":"noul","instructions":"x"}}}`)
+	incoming := route.GetRequestTypeInstance(context.Background())
+	if err := parseJSONRequestBody(body, incoming); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	converted, err := route.RequestConverter(ctx, incoming)
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); !raw {
+		t.Fatal("raw request body flag not set")
+	}
+	if converted.DecisionRequest.Model == "" {
+		t.Fatal("model must still be extracted for routing")
+	}
+	converted.SetRawRequestBody(body)
+	if string(converted.DecisionRequest.RawRequestBody) != string(body) {
+		t.Fatal("raw body not carried on the request")
+	}
+}

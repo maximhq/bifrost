@@ -2,9 +2,13 @@ package schemas
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // BifrostDecisionRequest asks a list of questions about some evidence (Input).
@@ -27,6 +31,31 @@ type BifrostDecisionRequest struct {
 // GetRawRequestBody returns the raw request body for the decision request.
 func (r *BifrostDecisionRequest) GetRawRequestBody() []byte {
 	return r.RawRequestBody
+}
+
+// DecisionIdempotencyKey returns the client's Idempotency-Key for a decision
+// request, as forwarded through the extra-headers context value (the
+// x-bf-eh-idempotency-key header, or Idempotency-Key when allowlisted). It
+// returns "" when the client sent none.
+func DecisionIdempotencyKey(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	headers, _ := ctx.Value(BifrostContextKeyExtraHeaders).(map[string][]string)
+	for name, values := range headers {
+		if strings.EqualFold(name, "idempotency-key") && len(values) > 0 {
+			return strings.TrimSpace(values[len(values)-1])
+		}
+	}
+	return ""
+}
+
+// DecisionIdempotencyScope returns the hex SHA-256 of the parts joined with
+// ":". It is deterministic, so retries still match, while two tenants that
+// pick the same client key never collide once their virtual key ID is a part.
+func DecisionIdempotencyScope(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, ":")))
+	return hex.EncodeToString(sum[:])
 }
 
 // DecisionType identifies how a question is decided, and what an answer is.

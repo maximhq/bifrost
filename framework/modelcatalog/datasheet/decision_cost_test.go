@@ -24,6 +24,6 @@ func TestCalculateCostForUsage_TypesafeDecision(t *testing.T) {
 	assert.InDelta(t, 296*4.2e-8, got, 1e-15)
 	assert.Greater(t, got, 0.0)
 
-	// A free idempotent replay carries no usage and costs nothing.
+	// A response without usage costs nothing.
 	assert.Equal(t, 0.0, s.CalculateCostForUsage(nil, schemas.Typesafe, "jev-1.13.0", schemas.DecisionRequest, nil))
 }

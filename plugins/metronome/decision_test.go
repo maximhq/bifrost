@@ -63,11 +63,51 @@ func TestEmulatedDecisionKeepsGeneratedOutput(t *testing.T) {
 	}
 }
 
-// TestDecisionReplayWithoutUsageIsNotExported pins that a free idempotent
-// replay, which the provider reports without usage, creates no billable event.
-func TestDecisionReplayWithoutUsageIsNotExported(t *testing.T) {
-	if event, ok := exportDecision(t, audioContext("vk-1", "request"), decisionResponse(schemas.Typesafe, "jev-1.13.0", nil)); ok {
-		t.Fatalf("replay without usage was exported: %+v", event)
+// idemContext is a decision context for a virtual key carrying a client
+// Idempotency-Key; each call stands for a fresh attempt.
+func idemContext(vk, key string) *schemas.BifrostContext {
+	ctx := audioContext(vk, "request")
+	if key != "" {
+		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{"idempotency-key": {key}})
+	}
+	return ctx
+}
+
+// TestDecisionIdempotentReplayIsBilledReplaySafely pins that a replay keeps its
+// usage and shares the original transaction ID, so Metronome deduplicates it
+// when the first event arrived and bills it when the first response was lost.
+func TestDecisionIdempotentReplayIsBilledReplaySafely(t *testing.T) {
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 2}
+	first, ok1 := exportDecision(t, idemContext("vk-1", "key-1"), decisionResponse(schemas.Typesafe, "jev-1.13.0", usage))
+	replay, ok2 := exportDecision(t, idemContext("vk-1", "key-1"), decisionResponse(schemas.Typesafe, "jev-1.13.0", usage))
+	if !ok1 || !ok2 {
+		t.Fatalf("first and replay must both be exported: %v %v", ok1, ok2)
+	}
+	if first.TransactionID != replay.TransactionID || replay.Properties.InputTokens != 10 {
+		t.Fatalf("replay must reuse the transaction ID and usage: %q vs %q", first.TransactionID, replay.TransactionID)
+	}
+	// A lost first response leaves only the replay, which is still exported.
+	other, _ := exportDecision(t, idemContext("vk-2", "key-1"), decisionResponse(schemas.Typesafe, "jev-1.13.0", usage))
+	diffKey, _ := exportDecision(t, idemContext("vk-1", "key-2"), decisionResponse(schemas.Typesafe, "jev-1.13.0", usage))
+	if other.TransactionID == first.TransactionID || diffKey.TransactionID == first.TransactionID {
+		t.Fatal("tenants and keys must not share a transaction ID")
+	}
+}
+
+// TestDecisionWithoutIdempotencyKeyKeepsPerAttemptID pins that no key leaves
+// each attempt on its own UUID-based ID, and that other request types ignore
+// the header.
+func TestDecisionWithoutIdempotencyKeyKeepsPerAttemptID(t *testing.T) {
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 10}
+	a, _ := exportDecision(t, idemContext("vk-1", ""), decisionResponse(schemas.Typesafe, "jev-1.13.0", usage))
+	b, _ := exportDecision(t, idemContext("vk-1", ""), decisionResponse(schemas.Typesafe, "jev-1.13.0", usage))
+	if a.TransactionID == b.TransactionID {
+		t.Fatal("attempts without a key must not share an ID")
+	}
+	c1, _ := exportDecision(t, idemContext("vk-1", "key-1"), tokenIdentityResponse())
+	c2, _ := exportDecision(t, idemContext("vk-1", "key-1"), tokenIdentityResponse())
+	if c1.TransactionID == c2.TransactionID || strings.HasPrefix(c1.TransactionID, "bifrost-idem-") {
+		t.Fatal("chat events must stay per-attempt")
 	}
 }
 

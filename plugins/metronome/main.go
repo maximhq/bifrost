@@ -213,7 +213,18 @@ func (p *Plugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostR
 	}
 	retries, _ := ctx.Value(schemas.BifrostContextKeyNumberOfRetries).(int)
 	id := sha256.Sum256([]byte(fmt.Sprintf("%s:%d:%s:%s", attempt, retries, provider, model)))
-	event := Event[TokenUsage]{TransactionID: fmt.Sprintf("bifrost-%x", id), CustomerID: customer, EventType: "token-billing", Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Properties: usage}
+	transactionID := fmt.Sprintf("bifrost-%x", id)
+	// A System One decision with an Idempotency-Key is billed at most once per
+	// (virtual key, provider, key): a replay whose first event was delivered
+	// is deduplicated by Metronome, while a replay whose first response was
+	// lost is still billed because no event exists yet. Without a key, every
+	// attempt keeps its own ID.
+	if extra.RequestType == schemas.DecisionRequest && schemas.ResolveBaseProvider(ctx, extra.Provider) == schemas.Typesafe {
+		if key := schemas.DecisionIdempotencyKey(ctx); key != "" {
+			transactionID = "bifrost-idem-" + schemas.DecisionIdempotencyScope(customer, provider, key)
+		}
+	}
+	event := Event[TokenUsage]{TransactionID: transactionID, CustomerID: customer, EventType: "token-billing", Timestamp: time.Now().UTC().Format(time.RFC3339Nano), Properties: usage}
 	// Copy scalar usage before returning: Bifrost may release pooled responses.
 	p.mu.RLock()
 	if !p.closed {

@@ -5026,6 +5026,8 @@ func (bifrost *Bifrost) prepareFallbackRequest(req *schemas.BifrostRequest, fall
 		tmp := *req.DecisionRequest
 		tmp.Provider = fallback.Provider
 		tmp.Model = fallback.Model
+		// The client's raw body belongs to the primary attempt only.
+		tmp.RawRequestBody = nil
 		fallbackReq.DecisionRequest = &tmp
 	}
 	if req.OCRRequest != nil {

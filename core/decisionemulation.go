@@ -39,6 +39,14 @@ func (bifrost *Bifrost) emulateDecisionViaResponses(
 	if req == nil || len(req.Questions) == 0 {
 		return nil, providerUtils.NewBifrostBadRequestError("decision request requires at least one question")
 	}
+	// A raw native body (the /typesafe route) describes a decision wire shape;
+	// the chat model must be built from the parsed request instead.
+	if ctx != nil {
+		if raw, _ := ctx.Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); raw {
+			ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, false)
+			defer ctx.SetValue(schemas.BifrostContextKeyUseRawRequestBody, true)
+		}
+	}
 	// Extensions the caller asked to reach the wire (e.g. images) have no
 	// meaning to an emulating chat model; refusing beats a silent text-only
 	// answer.
