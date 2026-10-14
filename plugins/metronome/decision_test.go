@@ -126,3 +126,43 @@ func TestGenerationEventShapeUnchanged(t *testing.T) {
 		t.Fatalf("generation event gained request_type: %s", payload)
 	}
 }
+
+func creditDecisionUsage() *schemas.BifrostLLMUsage {
+	return &schemas.BifrostLLMUsage{
+		PromptTokens: 296, CompletionTokens: 20, CreditCostUSD: "0.031",
+		Cost: &schemas.BifrostCost{TotalCost: 0.031},
+	}
+}
+
+// TestCreditPricedDecisionCarriesUSDSpend pins that a hosted decision priced
+// from credits is exported in the existing event with its exact USD spend and
+// no billable token counts, and that a replay still yields one transaction.
+func TestCreditPricedDecisionCarriesUSDSpend(t *testing.T) {
+	first, ok1 := exportDecision(t, idemContext("vk-1", "key-1"), decisionResponse(schemas.Typesafe, "jev-1.13.0", creditDecisionUsage()))
+	replay, ok2 := exportDecision(t, idemContext("vk-1", "key-1"), decisionResponse(schemas.Typesafe, "jev-1.13.0", creditDecisionUsage()))
+	if !ok1 || !ok2 {
+		t.Fatal("credit-priced decision was not exported")
+	}
+	if first.EventType != "token-billing" || first.Properties.CostUSD != "0.031" || first.Properties.InputTokens != 0 || first.Properties.OutputTokens != 0 {
+		t.Fatalf("event = %+v", first)
+	}
+	if first.TransactionID != replay.TransactionID || !strings.HasPrefix(first.TransactionID, "bifrost-idem-") {
+		t.Fatalf("replay must share the transaction ID: %q vs %q", first.TransactionID, replay.TransactionID)
+	}
+}
+
+// TestNativeDecisionAndChatEventsHaveNoCostUSD pins that events without credit
+// pricing keep their existing shape.
+func TestNativeDecisionAndChatEventsHaveNoCostUSD(t *testing.T) {
+	native, _ := exportDecision(t, audioContext("vk-1", "request"), decisionResponse(schemas.Typesafe, "jev-1.13.0", &schemas.BifrostLLMUsage{PromptTokens: 10}))
+	chat, _ := exportDecision(t, audioContext("vk-1", "request"), tokenIdentityResponse())
+	for _, e := range []Event[TokenUsage]{native, chat} {
+		payload, _ := json.Marshal(e.Properties)
+		if strings.Contains(string(payload), "cost_usd") {
+			t.Fatalf("unexpected cost_usd: %s", payload)
+		}
+	}
+	if native.Properties.InputTokens != 10 {
+		t.Fatalf("native decision tokens changed: %+v", native.Properties)
+	}
+}

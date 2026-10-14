@@ -561,11 +561,23 @@ type ProviderConfig struct {
 	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
 	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
+	TypesafeConfig          *TypesafeConfig       `json:"typesafe_config,omitempty"`
 }
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
 type OpenAIConfig struct {
 	DisableStore bool `json:"disable_store"` // When true, forces store=false on all outgoing OpenAI requests (default: false)
+}
+
+// TypesafeConfig holds TypeSafe/System One provider configuration.
+type TypesafeConfig struct {
+	// USDPerCredit is the USD price of one System One credit as an exact
+	// decimal string (for example "0.002"). Hosted System One (system-one.dev)
+	// bills in credits reported in the X-System-One-Credits response header, so
+	// its decisions are priced only when this is set. Unset by default: no
+	// price is published, and hosted decision requests are rejected until one
+	// is configured. It has no effect on other endpoints.
+	USDPerCredit string `json:"usd_per_credit,omitempty"`
 }
 
 func (config *ProviderConfig) CheckAndSetDefaults() {

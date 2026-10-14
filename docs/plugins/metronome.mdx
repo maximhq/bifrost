@@ -12,6 +12,11 @@ input tokens only, because their output tokens are free answer bookkeeping
 rather than generated output; a decision emulated through an LLM keeps the
 output tokens that LLM generated.
 
+A hosted System One decision priced from credits (see the TypeSafe provider
+page) carries its exact USD spend in the same event as `cost_usd` (a decimal
+string) with its token counts zeroed, so token metrics do not also charge it.
+Other events have no `cost_usd`.
+
 A TypeSafe decision sent with an `Idempotency-Key` uses a deterministic
 transaction ID derived from the virtual key, provider, model, and key. A replay whose
 first event was delivered is deduplicated by Metronome; a replay whose first

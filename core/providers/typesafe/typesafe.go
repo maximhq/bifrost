@@ -28,6 +28,7 @@ type TypesafeProvider struct {
 	networkConfig        schemas.NetworkConfig         // Network configuration including extra headers
 	sendBackRawRequest   bool                          // Whether to include raw request in BifrostResponse
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
+	creditPrice          *creditPrice                  // Configured USD per hosted credit; nil when unset
 	defaultBaseURL       bool                          // No base_url override: the built-in jev catalog applies alongside the live listing
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 }
@@ -53,6 +54,14 @@ func NewTypesafeProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
+	var price *creditPrice
+	if config.TypesafeConfig != nil {
+		var err error
+		if price, err = parseCreditPrice(config.TypesafeConfig.USDPerCredit); err != nil {
+			return nil, err
+		}
+	}
+
 	defaultBaseURL := config.NetworkConfig.BaseURL == ""
 	if defaultBaseURL {
 		config.NetworkConfig.BaseURL = typesafeDefaultBaseURL
@@ -66,6 +75,7 @@ func NewTypesafeProvider(config *schemas.ProviderConfig, logger schemas.Logger) 
 		networkConfig:        config.NetworkConfig,
 		sendBackRawRequest:   config.SendBackRawRequest,
 		sendBackRawResponse:  config.SendBackRawResponse,
+		creditPrice:          price,
 		defaultBaseURL:       defaultBaseURL,
 		customProviderConfig: config.CustomProviderConfig,
 	}, nil
@@ -231,6 +241,14 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	if err := providerUtils.CheckOperationAllowed(schemas.Typesafe, provider.customProviderConfig, schemas.DecisionRequest); err != nil {
 		return nil, err
 	}
+	requestURL := provider.buildRequestURL(ctx, typesafeSystemOnePath, schemas.DecisionRequest)
+	hosted := isHostedEndpoint(requestURL)
+	// Hosted System One bills in credits that only the response reports. With
+	// no configured price its decisions cannot be priced, so they are refused
+	// before sending rather than billed as zero.
+	if hosted && provider.creditPrice == nil {
+		return nil, providerUtils.NewBifrostOperationError("hosted System One bills in credits: set typesafe_config.usd_per_credit on the provider before routing decisions to it", nil)
+	}
 	// The native route forwards the client's exact bytes. A fallback attempt
 	// carries none, so it is built from the parsed request instead.
 	var bodyCtx context.Context = ctx
@@ -266,7 +284,7 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.buildRequestURL(ctx, typesafeSystemOnePath, schemas.DecisionRequest))
+	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -309,6 +327,12 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	bifrostResp, bifrostErr := ToBifrostDecisionResponse(&typesafeResp, request)
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, respBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	if hosted {
+		if err := applyCredits(resp, provider.creditPrice, bifrostResp); err != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(err.Error(), nil), jsonData, respBody, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 	}
 
 	bifrostResp.ExtraFields.Latency = latency.Milliseconds()

@@ -1078,6 +1078,9 @@
               },
               "openai_config": {
                 "$ref": "#/$defs/openai_config"
+              },
+              "typesafe_config": {
+                "$ref": "#/$defs/typesafe_config"
               }
             },
             "required": ["name"]
@@ -3925,6 +3928,18 @@
         "disable_store": {
           "type": "boolean",
           "description": "Disable OpenAI Responses API conversation storage."
+        }
+      },
+      "additionalProperties": false
+    },
+    "typesafe_config": {
+      "type": "object",
+      "description": "TypeSafe/System One provider settings",
+      "properties": {
+        "usd_per_credit": {
+          "type": "string",
+          "pattern": "^[0-9]+(\\.[0-9]+)?$",
+          "description": "USD price of one hosted System One credit as an exact decimal string. Applies only to system-one.dev endpoints; unset by default, and hosted decisions are rejected until it is set."
         }
       },
       "additionalProperties": false

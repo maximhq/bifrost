@@ -51,7 +51,9 @@ func (s *Store) CalculateCostForUsage(usage *schemas.BifrostLLMUsage, provider s
 	}
 
 	// If the provider already computed cost, trust it (matches calculateBaseCost).
-	if usage.Cost != nil && usage.Cost.TotalCost > 0 {
+	// A credit-priced System One decision is trusted even at zero credits so it
+	// never falls back to token rates.
+	if usage.Cost != nil && (usage.Cost.TotalCost > 0 || usage.CreditCostUSD != "") {
 		return usage.Cost.TotalCost
 	}
 
@@ -150,7 +152,9 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 	input := extractCostInput(result)
 
 	// If provider already computed cost, use it
-	if input.usage != nil && input.usage.Cost != nil && input.usage.Cost.TotalCost > 0 {
+	// (a credit-priced System One decision even at zero credits, so it never
+	// falls back to token rates)
+	if input.usage != nil && input.usage.Cost != nil && (input.usage.Cost.TotalCost > 0 || input.usage.CreditCostUSD != "") {
 		return input.usage.Cost.TotalCost
 	}
 

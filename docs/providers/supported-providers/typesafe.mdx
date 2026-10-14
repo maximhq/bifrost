@@ -52,6 +52,43 @@ Configure TypeSafe as a provider with a bearer API key:
 }
 ```
 
+### Hosted System One credit pricing
+
+Hosted System One (`system-one.dev` and its subdomains, matched on the parsed
+host) bills in credits, which it reports only in the `X-System-One-Credits`
+response header. Set the USD price of one credit as an exact decimal string in
+`typesafe_config` (provider config, also in the `typesafe_config` field of the
+provider API):
+
+```json
+{
+  "providers": {
+    "typesafe": {
+      "network_config": { "base_url": "https://api.system-one.dev" },
+      "typesafe_config": { "usd_per_credit": "0.002" },
+      "keys": [{ "name": "System One", "value": "env.SYSTEM_ONE_API_KEY", "weight": 1, "models": ["*"] }]
+    }
+  }
+}
+```
+
+The value above is an example; no price is published, so the setting is unset
+by default. Behavior on a hosted endpoint:
+
+- **Price set:** the decision's cost is credits × price, computed in exact
+  decimal arithmetic and converted to a float only at the end. It is used for
+  spend, logs and governance budgets in place of token rates, and the Metronome
+  event carries it as `cost_usd`. A malformed header (not a plain non-negative
+  decimal) fails the request with an error naming the header, because the
+  decision was already charged and cannot be priced safely. A response without
+  the header (for example a free idempotent replay) keeps token usage.
+- **Price unset:** decision requests are rejected before they are sent, with a
+  configuration error naming `typesafe_config.usd_per_credit`. Hosted usage is
+  never billed as zero.
+
+Other endpoints, including api.typesafe.ai and self-hosted ones, ignore both the
+header and the setting and keep native token pricing.
+
 ### Custom TypeSafe Providers
 
 A custom provider can use `typesafe` as its `base_provider_type`, for example to reach a second TypeSafe endpoint with its own keys alongside the standard `typesafe` provider:

@@ -359,6 +359,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"make_base_pricing_columns_nullable"}, run: migrationMakeBasePricingColumnsNullable},
 	{IDs: []string{"add_allow_on_all_virtual_keys_column"}, run: migrationAddAllowOnAllVirtualKeysColumn},
 	{IDs: []string{"add_open_ai_config_json_column"}, run: migrationAddOpenAIConfigJSONColumn},
+	{IDs: []string{"add_typesafe_config_json_column"}, run: migrationAddTypesafeConfigJSONColumn},
 	{IDs: []string{"add_key_blacklisted_models_json_column"}, run: migrationAddKeyBlacklistedModelsJSONColumn},
 	{IDs: []string{"add_chain_rule_column_to_routing_rules"}, run: migrationAddChainRuleColumnToRoutingRules},
 	{IDs: []string{"drop_deployment_columns_and_add_aliases"}, run: migrationDropDeploymentColumnsAndAddAliases},
@@ -6897,6 +6898,34 @@ func migrationAddOpenAIConfigJSONColumn(ctx context.Context, db *gorm.DB, logger
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running add_open_ai_config_json_column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddTypesafeConfigJSONColumn adds the typesafe_config_json column to the provider table
+func migrationAddTypesafeConfigJSONColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_typesafe_config_json_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := addColumnIfNotExists(tx, logger, &tables.TableProvider{}, "TypesafeConfigJSON"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := dropColumnIfExists(tx, logger, &tables.TableProvider{}, "typesafe_config_json"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running add_typesafe_config_json_column migration: %s", err.Error())
 	}
 	return nil
 }
