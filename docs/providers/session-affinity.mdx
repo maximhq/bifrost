@@ -113,7 +113,7 @@ Affinity runs after every routing engine has had its say, and again inside each 
 Without health signals, a session follows its binding until the request actually fails. Bifrost Enterprise checks the binding against what this node's Adaptive Load Balancer and circuit breaker know before following it:
 
 - **Provider level**: if the load balancer marks the bound provider as failed for the requested model on this node (every key in that direction has failed), the binding is dropped and the routing decision stands. The next served request rebinds the session.
-- **Key level**: if the load balancer marks the bound key's route as failed on this node, holds the key because the provider refused it (see [Held Keys](/enterprise/adaptive-load-balancing#held-keys)), or the circuit breaker holds the key back, the binding is dropped and a key is picked normally. The next served request rebinds the session to the key that served it.
+- **Key level**: if the load balancer marks the bound key's route as failed on this node, holds the key because the provider refused it (see [Held keys](/enterprise/adaptive-routing/how-it-works#held-keys)), or the circuit breaker holds the key back, the binding is dropped and a key is picked normally. The next served request rebinds the session to the key that served it.
 
 Bindings live in the shared KV store and replicate across the cluster, while health is measured per node. A node that sees a provider failing drops the binding for every node. A node that has not observed the failure yet still follows the binding until its own load balancer marks the route as failed or the request fails there. A key held because the provider refused it is the exception: the hold reaches every node, so each one drops the binding before sending the key another request.
 
@@ -213,6 +213,6 @@ A three-node cluster. The session is bound to Azure and `prod-eu-2`.
 
 - **[Request Options](/providers/request-options#session-stickiness-session-id)** - Every session header, the coding-harness header list, and the Go SDK context keys
 - **[Provider Routing](/providers/provider-routing)** - How governance, Adaptive Load Balancing, and the model catalog build the chain affinity reorders
-- **[Adaptive Load Balancing](/enterprise/adaptive-load-balancing)** - The health signals Enterprise affinity checks before following a binding
+- **[Adaptive Routing](/enterprise/adaptive-routing/how-it-works)**: the health signals Enterprise affinity checks before following a binding
 - **[Circuit Breaker](/enterprise/circuit-breaker)** - Key-level sub-circuits that take a bound key out of the pool
 - **[Complexity Router](/features/complexity-router#session-aware-routing)** - Session-stable complexity tiers that compose with affinity
