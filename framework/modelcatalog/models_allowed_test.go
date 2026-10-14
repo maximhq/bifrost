@@ -1,9 +1,11 @@
 package modelcatalog
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
 	"github.com/maximhq/bifrost/framework/modelcatalog/live"
@@ -48,6 +50,103 @@ func TestIsModelAllowedForProvider_ExplicitList(t *testing.T) {
 			got := mc.IsModelAllowedForProvider(provider, tc.model, nil, tc.allowed)
 			if got != tc.want {
 				t.Errorf("IsModelAllowedForProvider(%q, %v) = %v, want %v", tc.model, tc.allowed, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsModelAllowedForProvider_KeyAliases pins #6620: a request names a model by a key alias
+// ("claude-sonnet"), and an allowlist that names the model the alias resolves to
+// ("us.anthropic.claude-sonnet-4-6") must permit it. Aliases only ever widen a name to the
+// model it stands for, so the allowlist still decides which models can be reached.
+func TestIsModelAllowedForProvider_KeyAliases(t *testing.T) {
+	mc := &ModelCatalog{
+		datasheet: datasheet.NewTestStore(nil),
+		live:      live.New(nil),
+		keyconf:   keyconfig.New(nil),
+		done:      make(chan struct{}),
+	}
+	mc.initCaches()
+	provider := schemas.Bedrock
+	const canonical = "us.anthropic.claude-sonnet-4-6"
+	withAliases := func(aliases ...schemas.KeyAliases) *configstore.ProviderConfig {
+		cfg := &configstore.ProviderConfig{}
+		for _, a := range aliases {
+			cfg.Keys = append(cfg.Keys, schemas.Key{Aliases: a})
+		}
+		return cfg
+	}
+	withDisabled := func(cfg *configstore.ProviderConfig, extra schemas.Key) *configstore.ProviderConfig {
+		off := false
+		extra.Enabled = &off
+		cfg.Keys = append(cfg.Keys, extra)
+		return cfg
+	}
+	sonnet := schemas.KeyAliases{"claude-sonnet": {ModelID: canonical}}
+
+	cases := []struct {
+		name    string
+		model   string
+		cfg     *configstore.ProviderConfig
+		allowed schemas.WhiteList
+		want    bool
+	}{
+		{"alias of an allowed canonical id is allowed", "claude-sonnet", withAliases(sonnet), schemas.WhiteList{canonical}, true},
+		{"alias match is case-insensitive like alias resolution", "Claude-Sonnet", withAliases(sonnet), schemas.WhiteList{canonical}, true},
+		{"every key maps the alias", "claude-sonnet", withAliases(sonnet, sonnet), schemas.WhiteList{canonical}, true},
+		{"a key without the alias would send the name through as written", "claude-sonnet", withAliases(nil, sonnet), schemas.WhiteList{canonical}, false},
+		{"another key maps the alias to a model that is not allowed", "claude-sonnet", withAliases(sonnet, schemas.KeyAliases{"claude-sonnet": {ModelID: "us.anthropic.claude-opus-4-6"}}), schemas.WhiteList{canonical}, false},
+		{"a disabled key is never selected, so it is ignored", "claude-sonnet", withDisabled(withAliases(sonnet), schemas.Key{}), schemas.WhiteList{canonical}, true},
+		{"names differing only in case that map elsewhere must all be allowed", "Claude-Sonnet", withAliases(schemas.KeyAliases{"claude-sonnet": {ModelID: canonical}, "CLAUDE-SONNET": {ModelID: "us.anthropic.claude-opus-4-6"}}), schemas.WhiteList{canonical}, false},
+		{"an empty alias target allows nothing", "claude-sonnet", withAliases(schemas.KeyAliases{"claude-sonnet": {ModelID: ""}}), schemas.WhiteList{canonical}, false},
+		{"alias allowed by a regex entry on its target", "claude-sonnet", withAliases(sonnet), schemas.WhiteList{"regex:^us\\.anthropic\\..*"}, true},
+		{"alias whose target is not allowed stays blocked", "claude-sonnet", withAliases(sonnet), schemas.WhiteList{"us.anthropic.claude-haiku-4-5"}, false},
+		{"unknown name stays blocked", "claude-opus", withAliases(sonnet), schemas.WhiteList{canonical}, false},
+		{"no provider config means no aliases", "claude-sonnet", nil, schemas.WhiteList{canonical}, false},
+		{"keys without aliases change nothing", "claude-sonnet", withAliases(nil), schemas.WhiteList{canonical}, false},
+		{"the canonical id itself is still allowed", canonical, withAliases(sonnet), schemas.WhiteList{canonical}, true},
+		{"an alias in the list is still matched by name", "claude-sonnet", withAliases(sonnet), schemas.WhiteList{"claude-sonnet"}, true},
+		{"the canonical id is not opened by an alias-only allowlist", canonical, withAliases(sonnet), schemas.WhiteList{"claude-sonnet"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mc.IsModelAllowedForProvider(provider, tc.model, tc.cfg, tc.allowed)
+			if got != tc.want {
+				t.Errorf("IsModelAllowedForProvider(%q, %v) = %v, want %v", tc.model, tc.allowed, got, tc.want)
+			}
+		})
+	}
+}
+
+// BenchmarkIsModelAllowedForProvider_ExplicitList is the per-request model check against an
+// explicit allowlist. "direct" is the common case and must not change; "alias" and "blocked" are
+// the paths the key-alias lookup adds work to, on a provider with 3 keys of 20 aliases each.
+func BenchmarkIsModelAllowedForProvider_ExplicitList(b *testing.B) {
+	mc := &ModelCatalog{
+		datasheet: datasheet.NewTestStore(nil),
+		live:      live.New(nil),
+		keyconf:   keyconfig.New(nil),
+		done:      make(chan struct{}),
+	}
+	mc.initCaches()
+	cfg := &configstore.ProviderConfig{}
+	for k := 0; k < 3; k++ {
+		aliases := schemas.KeyAliases{}
+		for a := 0; a < 20; a++ {
+			aliases[fmt.Sprintf("alias-%d", a)] = schemas.AliasConfig{ModelID: fmt.Sprintf("us.vendor.model-%d", a)}
+		}
+		cfg.Keys = append(cfg.Keys, schemas.Key{Aliases: aliases})
+	}
+	allowed := schemas.WhiteList{"us.vendor.model-19", "us.vendor.other"}
+	for _, tc := range []struct{ name, model string }{
+		{"direct", "us.vendor.other"},
+		{"alias", "alias-19"},
+		{"blocked", "not-a-model"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				_ = mc.IsModelAllowedForProvider(schemas.Bedrock, tc.model, cfg, allowed)
 			}
 		})
 	}

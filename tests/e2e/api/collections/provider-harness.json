@@ -263679,6 +263679,278 @@
           }
         }
       ]
+    },
+    {
+      "name": "232. Virtual key allowed_models match key aliases (deepseek alias-allowlist)",
+      "description": "A key alias is a client-facing name for a provider model (here deepseek-v4-flash-anthropic stands for deepseek-v4-flash). Key aliases are resolved only at key selection, after governance has checked the request, so governance compared the alias name against allowed_models and refused a request for the alias even when the virtual key allowed the model it stands for (403 model_blocked, #6620). The check now also accepts a name that every enabled key of the provider maps to an allowed model; a key without the alias would send the name through as written, so one key mapping it is not enough, and the match is one way. A virtual key allows only deepseek-v4-flash. Requesting the alias of that model must be admitted; requesting the model by name still is; requesting the alias of a model the key does not allow (deepseek-v4-pro-anthropic) must still be refused with model_blocked. Red before the change: the alias request returned 403 model_blocked. The cases make two small live DeepSeek calls, and the run-scoped virtual key is deleted at the end.",
+      "item": [
+        {
+          "name": "deepseek alias-allowlist setup: create a virtual key that allows only deepseek-v4-flash - alias-allowlist - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The run id keeps parallel runs against one server from colliding on the key name.",
+                  "function startFresh() {",
+                  "  pm.collectionVariables.unset('aliasAllowVkId');",
+                  "  pm.collectionVariables.unset('aliasAllowVkValue');",
+                  "  pm.collectionVariables.set('aliasAllowVkName', 'harness-alias-allowlist-run-' + Date.now() + '-' + pm.variables.replaceIn('{{$guid}}'));",
+                  "}",
+                  "// A key a previous run failed to delete is retained; delete it before this run replaces it.",
+                  "var staleVkId = pm.collectionVariables.get('aliasAllowVkId');",
+                  "if (!staleVkId) {",
+                  "  startFresh();",
+                  "} else {",
+                  "  var headers = {};",
+                  "  var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "  if (managementToken) { headers.Authorization = 'Bearer ' + managementToken; }",
+                  "  pm.sendRequest({url: pm.variables.replaceIn('{{baseUrl}}') + '/api/governance/virtual-keys/' + staleVkId, method: 'DELETE', header: headers}, function (err, response) {",
+                  "    var deleted = !err && (response.code === 200 || response.code === 404);",
+                  "    pm.test('alias-allowlist: the retained virtual key from an earlier run is deleted', function () {",
+                  "      pm.expect(err, 'stale key ' + staleVkId + ' delete errored: ' + err).to.equal(null);",
+                  "      pm.expect([200, 404], 'stale key ' + staleVkId + ' not deleted: ' + (response && response.text())).to.include(response.code);",
+                  "    });",
+                  "    if (deleted) { startFresh(); return; }",
+                  "    pm.collectionVariables.unset('aliasAllowVkValue');",
+                  "    pm.execution.skipRequest();",
+                  "  });",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-allowlist: virtual key created', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = {};",
+                  "try { vk = pm.response.json().virtual_key || {}; } catch (e) { vk = {}; }",
+                  "pm.test('alias-allowlist: the virtual key has an id and a value', function () {",
+                  "  pm.expect(vk.id, 'no id: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "  pm.expect(vk.value, 'no value: ' + pm.response.text()).to.be.a('string').and.not.equal('');",
+                  "});",
+                  "if (vk.id) { pm.collectionVariables.set('aliasAllowVkId', vk.id); }",
+                  "if (vk.value) { pm.collectionVariables.set('aliasAllowVkValue', vk.value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"{{aliasAllowVkName}}\",\"is_active\":true,\"provider_configs\":[{\"provider\":\"deepseek\",\"key_ids\":[\"*\"],\"allowed_models\":[\"deepseek-v4-flash\"]}]}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash-anthropic is admitted when the key allows the model the alias stands for - alias-allowlist - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasAllowVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-allowlist: the alias of an allowed model is admitted by the virtual key', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(pm.response.text(), 'blocked by governance: ' + pm.response.text()).to.not.contain('model_blocked');",
+                  "  pm.expect(body.choices, 'no choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasAllowVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 1000,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "deepseek/deepseek-v4-flash is still admitted by name (control) - alias-allowlist - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasAllowVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-allowlist: the allowed model itself is admitted by the virtual key', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var body = {};",
+                  "  try { body = pm.response.json(); } catch (e) { body = {}; }",
+                  "  pm.expect(pm.response.text(), 'blocked by governance: ' + pm.response.text()).to.not.contain('model_blocked');",
+                  "  pm.expect(body.choices, 'no choices: ' + pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasAllowVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-flash\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 1000,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "[EXPECT-403] deepseek/deepseek-v4-pro-anthropic stays blocked: its alias resolves to a model the key does not allow - alias-allowlist - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('aliasAllowVkValue')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-allowlist: an alias of a model that is not allowed is refused', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'not a governance refusal: ' + pm.response.text()).to.contain('model_blocked');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{aliasAllowVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"deepseek/deepseek-v4-pro-anthropic\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hello in exactly one word.\"\n    }\n  ],\n  \"max_tokens\": 1000,\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        },
+        {
+          "name": "deepseek alias-allowlist cleanup: delete the virtual key - alias-allowlist - #6620",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Nothing was created, so there is nothing to delete.",
+                  "if (!pm.collectionVariables.get('aliasAllowVkId')) { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('alias-allowlist: virtual key deleted', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "// Keep the id when the key is still there, so the next run retries the delete.",
+                  "if (pm.response.code === 200 || pm.response.code === 404) {",
+                  "  pm.collectionVariables.unset('aliasAllowVkId');",
+                  "  pm.collectionVariables.unset('aliasAllowVkValue');",
+                  "  pm.collectionVariables.unset('aliasAllowVkName');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{aliasAllowVkId}}"
+          }
+        }
+      ]
     }
   ]
 }
