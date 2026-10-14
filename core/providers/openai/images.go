@@ -138,10 +138,11 @@ func encodeOpenAIImageEditRequest(
 
 	hasURL, hasBytes := false, false
 	for i, image := range request.Input.Images {
+		hasImageURL := strings.TrimSpace(image.URL) != ""
 		switch {
-		case image.URL != "" && len(image.Image) > 0:
+		case hasImageURL && len(image.Image) > 0:
 			return nil, "", providerUtils.NewBifrostBadRequestError(fmt.Sprintf("image %d contains both a URL and image bytes", i))
-		case strings.TrimSpace(image.URL) != "":
+		case hasImageURL:
 			hasURL = true
 		case len(image.Image) > 0:
 			hasBytes = true

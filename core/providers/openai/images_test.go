@@ -209,12 +209,17 @@ func TestImageEditURLWireFormat(t *testing.T) {
 func TestImageEditBytesKeepMultipart(t *testing.T) {
 	t.Parallel()
 	png := []byte("\x89PNG\r\n\x1a\nimage bytes")
-	for _, stream := range []bool{false, true} {
-		name := "unary"
-		if stream {
-			name = "streaming"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		url    string
+		stream bool
+	}{
+		{name: "unary"},
+		{name: "streaming", stream: true},
+		{name: "blank URL/unary", url: "   "},
+		{name: "blank URL/streaming", url: " \t\r\n ", stream: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			client, requests := imageEditWireClient(t)
 			request := &schemas.BifrostImageEditRequest{
@@ -222,12 +227,12 @@ func TestImageEditBytesKeepMultipart(t *testing.T) {
 				Model:    "custom-deployment",
 				Input: &schemas.ImageEditInput{
 					Prompt: "Improve clarity",
-					Images: []schemas.ImageInput{{Image: png}},
+					Images: []schemas.ImageInput{{URL: test.url, Image: png}},
 				},
 				Params: &schemas.ImageEditParameters{Mask: png, Quality: schemas.Ptr("low")},
 			}
 			err := callImageEditWire(
-				schemas.NewBifrostContext(t.Context(), schemas.NoDeadline), client, request, schemas.Azure, stream,
+				schemas.NewBifrostContext(t.Context(), schemas.NoDeadline), client, request, schemas.Azure, test.stream,
 			)
 			if err == nil || err.Error.Message != "captured upstream request" {
 				t.Fatalf("expected upstream capture error, got %+v", err)
@@ -260,7 +265,7 @@ func TestImageEditBytesKeepMultipart(t *testing.T) {
 					t.Errorf("%s bytes changed: %q, %v", field, got, err)
 				}
 			}
-			if stream && form.Value["stream"][0] != "true" {
+			if test.stream && form.Value["stream"][0] != "true" {
 				t.Error("multipart stream flag missing")
 			}
 		})
