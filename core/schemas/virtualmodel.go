@@ -61,11 +61,11 @@ type ResidencyFieldMap struct {
 // instance. It is per provider, not per model: a provider is one backend with one
 // memory, so the reader is a property of the endpoint.
 type ModelResidencyConfig struct {
-	Adapter    ResidencyAdapter  `json:"adapter"`                // "auto" (default), "ollama", "llamacpp", "omlx" or "custom"
-	Path       string            `json:"path,omitempty"`         // endpoint path, defaults per adapter; required for custom
-	TimeoutMS  int               `json:"timeout_ms,omitempty"`   // per-probe timeout, default 2000
-	CacheTTLMS int               `json:"cache_ttl_ms,omitempty"` // 0 probes every request, which is the default
-	Fields     *ResidencyFieldMap `json:"fields,omitempty"`      // required when adapter is custom
+	Adapter    ResidencyAdapter   `json:"adapter"`                // "auto" (default), "ollama", "llamacpp", "omlx" or "custom"
+	Path       string             `json:"path,omitempty"`         // endpoint path, defaults per adapter; required for custom
+	TimeoutMS  int                `json:"timeout_ms,omitempty"`   // per-probe timeout, default 2000
+	CacheTTLMS int                `json:"cache_ttl_ms,omitempty"` // 0 probes every request, which is the default
+	Fields     *ResidencyFieldMap `json:"fields,omitempty"`       // required when adapter is custom
 }
 
 // Residency defaults, chosen against the measured cost of a real probe: a stock
@@ -127,7 +127,7 @@ func NormalizeModelErrorPolicy(raw string) VirtualModelErrorPolicy {
 // it may resolve to. Models order is the preference order and is user-visible
 // behaviour, which is why it is a slice and not a set.
 type VirtualModel struct {
-	Name         string                    `json:"name"`         // name clients send, matched case-insensitively
+	Name         string                  `json:"name"`           // name clients send, matched case-insensitively
 	Provider     ModelProvider           `json:"provider"`       // configured provider instance, not a base_provider_type
 	Models       []string                `json:"models"`         // candidates, in preference order
 	OnProbeError VirtualModelErrorPolicy `json:"on_probe_error"` // "error" (default) or "first"
