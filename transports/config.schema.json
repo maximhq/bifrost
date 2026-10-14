@@ -5109,10 +5109,103 @@
     },
     "proxy_config": {
       "$ref": "#/$defs/global_proxy_config"
+    },
+    "virtual_models": {
+      "type": "object",
+      "description": "Resident-aware virtual models. Keys are the names clients send; each resolves at request time to whichever of its candidates the provider reports resident in memory, so a request never evicts a loaded model by naming one that is not loaded. The provider must declare model_residency so its residency can be read.",
+      "additionalProperties": {
+        "$ref": "#/$defs/virtual_model_config"
+      }
     }
   },
   "additionalProperties": false,
   "$defs": {
+    "virtual_model_config": {
+      "type": "object",
+      "description": "A user-defined model name and the ordered candidates it may resolve to.",
+      "required": ["provider", "models"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "Configured provider instance that owns the candidates, keyed by provider name rather than base_provider_type."
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "description": "Candidate model names in preference order. The first reported resident wins; if none is resident the first is sent and the backend cold-loads it."
+        },
+        "on_probe_error": {
+          "type": "string",
+          "enum": ["error", "first"],
+          "default": "error",
+          "description": "What to do when residency cannot be established. \"error\" refuses the request, which is the default because sending an unresolved name either 404s or evicts a resident model. \"first\" sends the first candidate regardless."
+        },
+        "description": {
+          "type": "string",
+          "description": "Operator note shown in the dashboard. Never used for routing."
+        }
+      }
+    },
+    "model_residency_config": {
+      "type": "object",
+      "description": "How to read which models are resident in one provider's memory. Per provider, not per model: a provider is one backend with one memory.",
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "type": "string",
+          "enum": ["auto", "ollama", "llamacpp", "omlx", "custom"],
+          "default": "auto",
+          "description": "Which reader to use. \"auto\" tries the known engines once per provider and remembers which answered. ollama is read through its native /api/ps because its OpenAI-compatible /v1/models carries no residency field."
+        },
+        "path": {
+          "type": "string",
+          "description": "Endpoint path to read residency from. Defaults per adapter; required when adapter is custom."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2000,
+          "description": "Per-probe timeout. A stock endpoint answers in tens of milliseconds."
+        },
+        "cache_ttl_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "How long a reading may be reused. 0, the default, probes every request; raise it only for a backend whose probe is slow or rate limited. A failed refresh still serves the last good reading with its original observed_at."
+        },
+        "fields": {
+          "$ref": "#/$defs/residency_field_map"
+        }
+      }
+    },
+    "residency_field_map": {
+      "type": "object",
+      "description": "Maps an engine's JSON onto the residency vocabulary, so a backend with no shipped adapter works by config alone. Required when adapter is custom.",
+      "required": ["items", "id"],
+      "additionalProperties": false,
+      "properties": {
+        "items": {
+          "type": "string",
+          "description": "Dot path to the array of entries, e.g. \"models\" or \"data.models\"."
+        },
+        "id": {
+          "type": "string",
+          "description": "Field on each entry naming the model."
+        },
+        "loaded": {
+          "type": "string",
+          "description": "Boolean field, true means resident. When neither loaded nor loading is mapped, the list itself is read as the set of resident models."
+        },
+        "loading": {
+          "type": "string",
+          "description": "Boolean field, true means a load is in progress."
+        }
+      }
+    },
     "global_proxy_config": {
       "type": "object",
       "description": "Global outbound proxy (the dashboard's proxy settings page) and which components use it. Under source_of_truth \"split\" it is applied when new or changed and dashboard edits are kept otherwise; under \"config.json\" it is applied on every startup. Omit to manage the proxy from the dashboard. Not the same as a provider's own proxy_config.",
