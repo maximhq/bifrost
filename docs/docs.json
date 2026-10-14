@@ -1533,6 +1533,19 @@
                 ]
               },
               {
+                "group": "News Feeds",
+                "expanded": false,
+                "pages": [
+                  "GET /api/rss/feeds",
+                  "POST /api/rss/feeds",
+                  "PUT /api/rss/feeds/{id}",
+                  "DELETE /api/rss/feeds/{id}",
+                  "GET /api/rss/items",
+                  "GET /api/rss/settings",
+                  "PUT /api/rss/settings"
+                ]
+              },
+              {
                 "group": "Warp",
                 "expanded": false,
                 "pages": [
