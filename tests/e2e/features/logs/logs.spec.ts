@@ -872,8 +872,11 @@ test.describe("LLM Logs", () => {
       passthrough_request_body: requestBody,
       passthrough_response_body: responseBody,
     })
+    // Stored under the type inferred from its route and tagged as passthrough.
     const parsedRow = {
       ...passthroughRow('pt-parsed', 'passthrough-parsed-model', 10_000),
+      object: 'chat_completion',
+      is_passthrough: true,
       params: {
         method: 'POST',
         path: '/v1/chat/completions',
@@ -890,7 +893,8 @@ test.describe("LLM Logs", () => {
       output_message: { role: 'assistant', content: 'It decodes raw bodies.' },
       stop_reason: 'stop',
     }
-    const rawRow = passthroughRow('pt-raw', 'passthrough-raw-model', 5_000)
+    // A route with no typed equivalent stays passthrough.
+    const rawRow = { ...passthroughRow('pt-raw', 'passthrough-raw-model', 5_000), is_passthrough: true }
 
     test.beforeEach(async ({ page }) => {
       const rows = [rawRow, parsedRow]
@@ -931,7 +935,12 @@ test.describe("LLM Logs", () => {
 
     test('should render a parsed passthrough row as a conversation', async ({ logsPage, page }) => {
       await logsPage.goto()
+      // The table shows the inferred type with a Passthrough tag.
+      const tableRow = logsPage.tableRows.filter({ hasText: 'passthrough-parsed-model' }).first()
+      await expect(tableRow.getByTestId('logs-table-passthrough-tag')).toBeVisible()
+      await expect(tableRow).toContainText(/chat/i)
       await openRow(logsPage, 'passthrough-parsed-model')
+      await expect(page.getByTestId('logdetails-passthrough-tag')).toBeVisible()
 
       const sheet = logsPage.logDetailSheet
       await expect(sheet.getByText('What is passthrough parsing?')).toBeVisible()
@@ -957,7 +966,11 @@ test.describe("LLM Logs", () => {
 
     test('should keep the raw body view for a passthrough row that did not parse', async ({ logsPage, page }) => {
       await logsPage.goto()
+      // Its badge already says Passthrough, so there is no extra tag.
+      const tableRow = logsPage.tableRows.filter({ hasText: 'passthrough-raw-model' }).first()
+      await expect(tableRow.getByTestId('logs-table-passthrough-tag')).toHaveCount(0)
       await openRow(logsPage, 'passthrough-raw-model')
+      await expect(page.getByTestId('logdetails-passthrough-tag')).toHaveCount(0)
 
       const sheet = logsPage.logDetailSheet
       await expect(page.getByTestId('logdetails-passthrough-request-body')).toBeVisible()

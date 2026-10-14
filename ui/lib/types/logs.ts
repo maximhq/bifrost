@@ -735,6 +735,7 @@ export interface PassthroughLogParams {
 export interface LogEntry {
 	id: string;
 	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
+	is_passthrough?: boolean; // came through a passthrough route; object is the inferred type, or passthrough when none is known
 	parent_request_id?: string;
 	timestamp: string; // ISO string format from Go time.Time
 	provider: string;
