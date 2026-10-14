@@ -105611,16 +105611,6 @@
               }
             }
           },
-          "403": {
-            "description": "Forbidden — authenticated, but not permitted to perform this action",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
-          },
           "404": {
             "description": "Resource not found",
             "content": {
@@ -105631,8 +105621,8 @@
               }
             }
           },
-          "413": {
-            "description": "Push payload exceeds the 1 MiB limit.",
+          "500": {
+            "description": "Internal server error",
             "content": {
               "application/json": {
                 "schema": {
@@ -105641,8 +105631,18 @@
               }
             }
           },
-          "500": {
-            "description": "Internal server error",
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Push payload exceeds the 1 MiB limit.",
             "content": {
               "application/json": {
                 "schema": {
