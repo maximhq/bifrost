@@ -225,6 +225,7 @@ func (h *ConfigHandler) getConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	mapConfig["is_git_available"] = CheckGitAvailability()
+	mapConfig["skills_marketplace_base_url"] = h.store.GetSkillsExternalClientURL()
 	mapConfig["is_cache_connected"] = h.store.VectorStore != nil
 	mapConfig["is_logs_connected"] = h.store.LogsStore != nil
 	mapConfig["is_object_storage_connected"] = h.store.LogsStoreConfig != nil && h.store.LogsStoreConfig.ObjectStorage != nil
@@ -341,11 +342,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// applies live mutations (drop-excess flag, MCP tool-manager reload, compat
 	// plugin reload, in-memory MCP config) before persisting, so a late
 	// rejection would leave the process in a partially-updated state.
-	if err := lib.ValidateBaseURL(payload.ClientConfig.MCPExternalClientURL.GetValue()); err != nil {
+	if err := configstore.ValidatePublicBaseURL(payload.ClientConfig.MCPExternalClientURL.GetValue()); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("mcp_external_client_url %v", err))
 		return
 	}
-	if err := lib.ValidateBaseURL(payload.ClientConfig.A2AExternalClientURL.GetValue()); err != nil {
+	if err := configstore.ValidatePublicBaseURL(payload.ClientConfig.SkillsExternalClientURL.GetValue()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("skills_external_client_url %v", err))
+		return
+	}
+	if err := configstore.ValidatePublicBaseURL(payload.ClientConfig.A2AExternalClientURL.GetValue()); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("a2a_external_client_url %v", err))
 		return
 	}
@@ -574,6 +579,15 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	// Only an omitted field keeps the stored placement; an explicit "" or null is a supplied
+	// value and must be one of the two placements like any other.
+	if _, present := clientConfigFields["extra_fields_placement"]; present &&
+		payload.ClientConfig.ExtraFieldsPlacement != configstoreTables.ExtraFieldsPlacementBody &&
+		payload.ClientConfig.ExtraFieldsPlacement != configstoreTables.ExtraFieldsPlacementHeaders {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("extra_fields_placement must be 'body' or 'headers', got %q", payload.ClientConfig.ExtraFieldsPlacement))
+		return
+	}
+
 	if err := validateMCPInstructionCaps(payload.ClientConfig.MCPMaxInstructionsPerClient, payload.ClientConfig.MCPMaxInstructionsTotal); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
@@ -735,6 +749,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		updatedConfig.DualCredentialConflictBehavior = payload.ClientConfig.DualCredentialConflictBehavior
 	}
 
+	// Copied only when sent (validated up front), so an omitted field keeps the stored placement.
+	if _, present := clientConfigFields["extra_fields_placement"]; present {
+		updatedConfig.ExtraFieldsPlacement = payload.ClientConfig.ExtraFieldsPlacement
+	}
+
 	// Only update MaxRequestBodySizeMB if explicitly provided (> 0) to avoid clearing stored value
 	if payload.ClientConfig.MaxRequestBodySizeMB > 0 {
 		if payload.ClientConfig.MaxRequestBodySizeMB != currentConfig.MaxRequestBodySizeMB {
@@ -817,6 +836,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	// the field. An explicit null still clears the override.
 	if _, present := clientConfigFields["a2a_store_raw_request_response"]; present {
 		updatedConfig.A2AStoreRawRequestResponse = payload.ClientConfig.A2AStoreRawRequestResponse
+	}
+	if _, present := clientConfigFields["skills_external_client_url"]; present {
+		updatedConfig.SkillsExternalClientURL = payload.ClientConfig.SkillsExternalClientURL
 	}
 	if _, present := clientConfigFields["a2a_external_client_url"]; present {
 		updatedConfig.A2AExternalClientURL = payload.ClientConfig.A2AExternalClientURL

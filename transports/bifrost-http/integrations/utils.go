@@ -186,7 +186,7 @@ func (g *GenericRouter) sendStreamError(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 		return
 	}
 
-	ctx.SetBody(errorJSON)
+	ctx.SetBody(lib.StripExtraFieldsIfInHeaders(ctx, errorJSON))
 }
 
 // sendError sends an error response with the appropriate status code and JSON body.
@@ -221,7 +221,7 @@ func (g *GenericRouter) sendError(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.
 		return
 	}
 
-	ctx.SetBody(errorBody)
+	ctx.SetBody(lib.StripExtraFieldsIfInHeaders(ctx, errorBody))
 }
 
 // sendSuccess sends a successful response with HTTP 200 status and JSON body.
@@ -241,7 +241,7 @@ func (g *GenericRouter) sendSuccess(ctx *fasthttp.RequestCtx, bifrostCtx *schema
 		return
 	}
 
-	ctx.SetBody(responseBody)
+	ctx.SetBody(lib.StripExtraFieldsIfInHeaders(ctx, responseBody))
 }
 
 // tryStreamLargeResponse checks if large response mode was activated by the provider,

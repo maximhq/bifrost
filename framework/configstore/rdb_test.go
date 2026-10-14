@@ -14,6 +14,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/postgres"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -1630,6 +1631,55 @@ func TestUpdateVirtualKey_PersistsBusinessUnitOwner(t *testing.T) {
 	assert.Nil(t, result.BusinessUnitID, "clearing the business unit must write NULL")
 }
 
+// TestVirtualKeyMetadata_PersistsThroughCreateAndUpdate pins the metadata round trip: create
+// stores it, update replaces it (the update path names its columns, so a missing "metadata" would
+// silently drop the change), an empty map clears it to NULL, and invalid metadata is refused.
+func TestVirtualKeyMetadata_PersistsThroughCreateAndUpdate(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	vk := &tables.TableVirtualKey{
+		ID:       "vk-metadata",
+		Name:     "Metadata",
+		Value:    *schemas.NewSecretVar("vk-metadata-value"),
+		Metadata: map[string]string{"cost_center": "cc-42", "owner": "team-a@example.com"},
+	}
+	require.NoError(t, store.CreateVirtualKey(ctx, vk))
+	result, err := store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"cost_center": "cc-42", "owner": "team-a@example.com"}, result.Metadata)
+
+	vk.Metadata = map[string]string{"cost_center": "cc-7"}
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"cost_center": "cc-7"}, result.Metadata, "an update must replace the metadata")
+
+	// An update that does not set metadata (nil), such as a config.json sync of an entry without a
+	// metadata field, keeps what is stored; only an explicit empty map clears it.
+	vk.Metadata = nil
+	vk.Description = "edited elsewhere"
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"cost_center": "cc-7"}, result.Metadata, "a nil metadata must keep the stored value")
+	assert.Equal(t, "edited elsewhere", result.Description)
+
+	vk.Metadata = map[string]string{}
+	require.NoError(t, store.UpdateVirtualKey(ctx, vk))
+	var raw *string
+	require.NoError(t, store.DB().Table("governance_virtual_keys").Select("metadata").Where("id = ?", vk.ID).Scan(&raw).Error)
+	assert.Nil(t, raw, "clearing the metadata must write NULL, not an empty object")
+	result, err = store.GetVirtualKey(ctx, vk.ID)
+	require.NoError(t, err)
+	assert.Empty(t, result.Metadata)
+
+	vk.Metadata = map[string]string{"bad key": "x"}
+	require.ErrorContains(t, store.UpdateVirtualKey(ctx, vk), "invalid metadata key")
+	bad := &tables.TableVirtualKey{ID: "vk-metadata-bad", Name: "Bad", Value: *schemas.NewSecretVar("vk-metadata-bad-value"), Metadata: map[string]string{"bifrost_alb_provider": "x"}}
+	require.ErrorContains(t, store.CreateVirtualKey(ctx, bad), "reserved")
+}
+
 func TestUpdateVirtualKey_PreservesRotationStateOnPlainUpdate(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2618,6 +2668,37 @@ func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
 	assert.NotEqual(t, onHash, offHash)
 }
 
+func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// Unset reads back as the column default, so existing installs keep extra_fields in the body.
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, tables.ExtraFieldsPlacementBody, result.ExtraFieldsPlacement)
+
+	headers := base
+	headers.ExtraFieldsPlacement = tables.ExtraFieldsPlacementHeaders
+	require.NoError(t, store.UpdateClientConfig(ctx, &headers))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, tables.ExtraFieldsPlacementHeaders, result.ExtraFieldsPlacement)
+
+	// Only the non-default value is hashed, so configs written before the field existed keep their hash.
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	body := base
+	body.ExtraFieldsPlacement = tables.ExtraFieldsPlacementBody
+	bodyHash, err := body.GenerateClientConfigHash()
+	require.NoError(t, err)
+	headersHash, err := headers.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, bodyHash)
+	assert.NotEqual(t, baseHash, headersHash)
+}
+
 func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2783,12 +2864,12 @@ func TestGenerateClientConfigHash_A2AExternalClientURL(t *testing.T) {
 	baseHash, err := base.GenerateClientConfigHash()
 	require.NoError(t, err)
 
-	// An unset A2A external client URL must not change the hash: existing
-	// deployments see no config drift after upgrade.
+	// Explicit clearing must change the hash so file reconciliation disables
+	// an A2A URL previously configured through the dashboard.
 	unset := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, A2AExternalClientURL: schemas.NewSecretVar("")}
 	unsetHash, err := unset.GenerateClientConfigHash()
 	require.NoError(t, err)
-	assert.Equal(t, baseHash, unsetHash)
+	assert.NotEqual(t, baseHash, unsetHash)
 
 	// A configured URL is a meaningful config change.
 	withURL := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, A2AExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com")}
@@ -5521,4 +5602,173 @@ func TestA2ARawCaptureConfigRoundTrip(t *testing.T) {
 	other, err := config.GenerateClientConfigHash()
 	require.NoError(t, err)
 	require.NotEqual(t, want, other)
+}
+
+// TestGenerateClientConfigHash_SkillsExternalClientURL keeps unset hashes stable and distinguishes configured URLs.
+func TestGenerateClientConfigHash_SkillsExternalClientURL(t *testing.T) {
+	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+
+	// An explicit empty URL must differ from omission so file reconciliation
+	// can disable a URL previously configured through the dashboard or migration.
+	unset := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, SkillsExternalClientURL: schemas.NewSecretVar("")}
+	unsetHash, err := unset.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, unsetHash)
+
+	// A configured URL is a meaningful config change.
+	withURL := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, SkillsExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com")}
+	urlHash, err := withURL.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, urlHash)
+	t.Setenv("BIFROST_SKILLS_URL_TEST", "https://skills.example")
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.UpdateClientConfig(context.Background(), base))
+	withEnv, err := store.GetClientConfig(context.Background())
+	require.NoError(t, err)
+	withEnv.SkillsExternalClientURL = schemas.NewSecretVar("env.BIFROST_SKILLS_URL_TEST")
+	require.NoError(t, store.UpdateClientConfig(context.Background(), withEnv))
+	stored, err := store.GetClientConfig(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "env.BIFROST_SKILLS_URL_TEST", stored.SkillsExternalClientURL.GetRawRef())
+	require.Equal(t, "https://skills.example", stored.SkillsExternalClientURL.GetValue())
+	wantHash, err := withEnv.GenerateClientConfigHash()
+	require.NoError(t, err)
+	gotHash, err := stored.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.Equal(t, wantHash, gotHash)
+	redacted := stored.Redacted()
+	require.NotEqual(t, "https://skills.example", redacted.SkillsExternalClientURL.GetValue())
+	require.Equal(t, "env.BIFROST_SKILLS_URL_TEST", redacted.SkillsExternalClientURL.GetRawRef())
+}
+
+// TestValidatePublicBaseURL permits public base paths and rejects credential-bearing components without echoing input.
+func TestValidatePublicBaseURL(t *testing.T) {
+	for _, value := range []string{"", "https://skills.example/path", "http://localhost:8080", "https://example.com/path%23section", "http://[::1]:8080"} {
+		require.NoError(t, ValidatePublicBaseURL(value))
+	}
+	for _, value := range []string{"https://user:password@example.com", "https://example.com?token=private", "https://example.com?", "https://example.com#private", "ftp://example.com", "not a URL", "https://:8080", "https://example.com#"} {
+		err := ValidatePublicBaseURL(value)
+		require.Error(t, err, value)
+		require.NotContains(t, err.Error(), value)
+	}
+}
+
+// vkMetadataPGSchema keeps these tests' tables apart from the shared test schema, so the whole
+// schema can be dropped afterwards.
+const vkMetadataPGSchema = "configstore_vk_metadata_test"
+
+// vkMetadataStoreBackends returns the SQLite store and, when the local test Postgres is reachable,
+// a Postgres store with the virtual key tables. The metadata filter is dialect-specific SQL, so
+// both must agree.
+func vkMetadataStoreBackends(t *testing.T) map[string]*RDBConfigStore {
+	t.Helper()
+	backends := map[string]*RDBConfigStore{"sqlite": setupRDBTestStore(t)}
+	if pg := trySetupPostgresVKMetadataStore(t); pg != nil {
+		backends["postgres"] = pg
+	}
+	return backends
+}
+
+// trySetupPostgresVKMetadataStore returns a Postgres store in its own schema, or nil when the
+// local test Postgres is not reachable. Once the server answers, any setup error (schema
+// creation, migration) fails the test instead of quietly dropping the Postgres backend, so the
+// dialect-specific metadata filter cannot go untested while the run still passes on SQLite.
+func trySetupPostgresVKMetadataStore(t *testing.T) *RDBConfigStore {
+	t.Helper()
+	db, err := gorm.Open(postgres.Open(strings.Replace(postgresDSN, pgTestSchema, vkMetadataPGSchema, 1)), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		return nil
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil
+	}
+	if sqlDB.Ping() != nil {
+		_ = sqlDB.Close()
+		return nil
+	}
+	// Registered before the schema statements so the connection is closed even if they fail.
+	t.Cleanup(func() {
+		_ = db.Exec("DROP SCHEMA IF EXISTS " + vkMetadataPGSchema + " CASCADE").Error
+		_ = sqlDB.Close()
+	})
+	require.NoError(t, db.Exec("DROP SCHEMA IF EXISTS "+vkMetadataPGSchema+" CASCADE").Error)
+	require.NoError(t, db.Exec("CREATE SCHEMA "+vkMetadataPGSchema).Error)
+	require.NoError(t, db.AutoMigrate(
+		&tables.TableCustomer{},
+		&tables.TableTeam{},
+		&tables.TableBudget{},
+		&tables.TableRateLimit{},
+		&tables.TableProvider{},
+		&tables.TableKey{},
+		&tables.TableMCPClient{},
+		&tables.TableVirtualKey{},
+		&tables.TableVirtualKeyProviderConfig{},
+		&tables.TableVirtualKeyProviderConfigKey{},
+		&tables.TableVirtualKeyMCPConfig{},
+		&tables.TableAgentRegistration{},
+		&tables.TableVirtualKeyAgentGrant{},
+	))
+	require.NoError(t, db.SetupJoinTable(&tables.TableVirtualKeyProviderConfig{}, "Keys", &tables.TableVirtualKeyProviderConfigKey{}))
+	s := &RDBConfigStore{logger: nil}
+	s.db.Store(db)
+	s.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
+		return fn(ctx, s.DB())
+	}
+	s.refreshPoolFn = func(ctx context.Context) error { return nil }
+	return s
+}
+
+func TestGetVirtualKeysPaginated_MetadataFiltersAndSearch(t *testing.T) {
+	for name, store := range vkMetadataStoreBackends(t) {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			seed := []*tables.TableVirtualKey{
+				{ID: "vk-md-a", Name: "alpha", Value: *schemas.NewSecretVar("vk-md-a-val"), Metadata: map[string]string{"cost_center": "cc-42", "env": "prod"}},
+				{ID: "vk-md-b", Name: "bravo", Value: *schemas.NewSecretVar("vk-md-b-val"), Metadata: map[string]string{"cost_center": "cc-42", "env": "dev"}},
+				{ID: "vk-md-c", Name: "charlie", Value: *schemas.NewSecretVar("vk-md-c-val"), Metadata: map[string]string{"cost_center": "cc-7", "owner.email": "Ops@Example.com", "quote": `say "hi"`}},
+				{ID: "vk-md-none", Name: "delta", Value: *schemas.NewSecretVar("vk-md-none-val")},
+				{ID: "vk-md-amp", Name: "echo", Value: *schemas.NewSecretVar("vk-md-amp-val"), Metadata: map[string]string{"vendor": "AT&T <us>"}},
+			}
+			for _, vk := range seed {
+				require.NoError(t, store.CreateVirtualKey(ctx, vk))
+			}
+
+			tests := []struct {
+				name    string
+				params  VirtualKeyQueryParams
+				wantIDs []string
+			}{
+				{name: "one pair", params: VirtualKeyQueryParams{MetadataFilters: map[string]string{"cost_center": "cc-42"}}, wantIDs: []string{"vk-md-a", "vk-md-b"}},
+				{name: "pairs AND together", params: VirtualKeyQueryParams{MetadataFilters: map[string]string{"cost_center": "cc-42", "env": "prod"}}, wantIDs: []string{"vk-md-a"}},
+				{name: "dotted key", params: VirtualKeyQueryParams{MetadataFilters: map[string]string{"owner.email": "Ops@Example.com"}}, wantIDs: []string{"vk-md-c"}},
+				{name: "value with quotes", params: VirtualKeyQueryParams{MetadataFilters: map[string]string{"quote": `say "hi"`}}, wantIDs: []string{"vk-md-c"}},
+				{name: "value match is exact", params: VirtualKeyQueryParams{MetadataFilters: map[string]string{"cost_center": "cc-4"}}, wantIDs: nil},
+				{name: "unknown key", params: VirtualKeyQueryParams{MetadataFilters: map[string]string{"team": "x"}}, wantIDs: nil},
+				{name: "invalid key matches nothing", params: VirtualKeyQueryParams{MetadataFilters: map[string]string{`a" OR 1=1 --`: "x"}}, wantIDs: nil},
+				{name: "filter narrows search", params: VirtualKeyQueryParams{Search: "a", MetadataFilters: map[string]string{"env": "dev"}}, wantIDs: []string{"vk-md-b"}},
+				{name: "search matches metadata value", params: VirtualKeyQueryParams{Search: "cc-7"}, wantIDs: []string{"vk-md-c"}},
+				{name: "search on metadata is case-insensitive", params: VirtualKeyQueryParams{Search: "ops@example"}, wantIDs: []string{"vk-md-c"}},
+				// The stored JSON escapes &, < and >, so the search term must be matched in that encoding.
+				{name: "search matches metadata values with & and <", params: VirtualKeyQueryParams{Search: "at&t <us"}, wantIDs: []string{"vk-md-amp"}},
+				// LIKE metacharacters in the term match literally: "cc_7" must not match "cc-7".
+				{name: "search treats _ literally in metadata", params: VirtualKeyQueryParams{Search: "cc_7"}, wantIDs: nil},
+			}
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					vks, total, err := store.GetVirtualKeysPaginated(ctx, tt.params)
+					require.NoError(t, err)
+					var got []string
+					for _, vk := range vks {
+						got = append(got, vk.ID)
+					}
+					sort.Strings(got)
+					assert.Equal(t, tt.wantIDs, got)
+					assert.Equal(t, int64(len(tt.wantIDs)), total)
+				})
+			}
+		})
+	}
 }

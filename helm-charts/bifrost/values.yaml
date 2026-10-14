@@ -314,6 +314,13 @@ bifrost:
     # access token and a virtual key (x-bf-vk). Options: "error" (reject with 400),
     # "prefer_vk" (drop IDP token, use VK), "prefer_idp" (default, IDP token wins for identity).
     # dualCredentialConflictBehavior: "prefer_idp"
+    # extraFieldsPlacement -- Where inference responses carry extra_fields metadata. Options:
+    # "body" (default, extra_fields in the JSON body) or "headers" (removed from the body and
+    # stream chunks, scalar fields sent as x-bifrost-* headers). In "headers" mode raw_request,
+    # raw_response, routing_metadata, guardrail_debug and parse_errors are dropped, and on errors
+    # key_statuses, billed_usage and mcp_auth_required too. Streams only carry fields known
+    # before the first chunk; per-chunk latency, chunk_index and final totals are dropped.
+    # extraFieldsPlacement: "body"
     maxRequestBodySizeMb: 100
     compat:
       convertTextToChat: false
@@ -339,7 +346,8 @@ bifrost:
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
-    # a2aExternalClientUrl: ""               # Public base URL for served agent cards and A2A push-notification callback URLs (push is disabled when unset). Supports env.VAR_NAME
+    # skillsExternalClientUrl: "https://bifrost.example.com" # Public base URL for skills marketplaces; unset disables marketplace serving, not skill management or downloads. Supports env.VAR_NAME and vault references
+    # a2aExternalClientUrl: ""               # Public base URL for agent cards and push callbacks; unset disables all Agent Gateway protocol endpoints, not management. Supports env.VAR_NAME
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
     # mcpServerAuthMode: "headers"

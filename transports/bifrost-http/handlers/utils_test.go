@@ -12,6 +12,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -355,5 +356,72 @@ func TestSendBifrostError_NoTracerIsSafe(t *testing.T) {
 	SendBifrostError(ctx, &schemas.BifrostError{StatusCode: schemas.Ptr(500)})
 	if ctx.Response.StatusCode() != 500 {
 		t.Errorf("status = %d, want 500", ctx.Response.StatusCode())
+	}
+}
+
+// TestSendJSON_ExtraFieldsPlacement pins client.extra_fields_placement on the native send path:
+// body mode keeps extra_fields, headers mode drops it from the body and writes it as headers.
+func TestSendJSON_ExtraFieldsPlacement(t *testing.T) {
+	resp := &schemas.BifrostChatResponse{
+		ID:          "chatcmpl-1",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, Latency: 12},
+	}
+
+	bodyCtx := &fasthttp.RequestCtx{}
+	SendJSON(bodyCtx, resp)
+	if !strings.Contains(string(bodyCtx.Response.Body()), `"extra_fields"`) {
+		t.Fatalf("body mode must keep extra_fields, got %s", bodyCtx.Response.Body())
+	}
+
+	headersCtx := &fasthttp.RequestCtx{}
+	headersCtx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
+	lib.ApplyBifrostResponseHeaders(headersCtx, nil, resp.ExtraFields)
+	SendJSON(headersCtx, resp)
+	body := string(headersCtx.Response.Body())
+	if strings.Contains(body, `"extra_fields"`) {
+		t.Fatalf("headers mode must drop extra_fields from the body, got %s", body)
+	}
+	if !strings.Contains(body, `"id":"chatcmpl-1"`) {
+		t.Fatalf("headers mode must keep the rest of the body, got %s", body)
+	}
+	if got := string(headersCtx.Response.Header.Peek(lib.HeaderBifrostLatency)); got != "12" {
+		t.Fatalf("latency header got %q, want 12", got)
+	}
+}
+
+// TestSendBifrostError_ExtraFieldsPlacement pins the same contract on native error responses.
+func TestSendBifrostError_ExtraFieldsPlacement(t *testing.T) {
+	newErr := func() *schemas.BifrostError {
+		return &schemas.BifrostError{
+			StatusCode:  new(fasthttp.StatusTooManyRequests),
+			Error:       &schemas.ErrorField{Message: "slow down"},
+			ExtraFields: schemas.BifrostErrorExtraFields{Provider: schemas.OpenAI, RetryAfter: 2000},
+		}
+	}
+
+	bodyCtx := &fasthttp.RequestCtx{}
+	SendBifrostError(bodyCtx, newErr())
+	if !strings.Contains(string(bodyCtx.Response.Body()), `"extra_fields"`) {
+		t.Fatalf("body mode must keep extra_fields, got %s", bodyCtx.Response.Body())
+	}
+
+	headersCtx := &fasthttp.RequestCtx{}
+	headersCtx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
+	SendBifrostError(headersCtx, newErr())
+	body := string(headersCtx.Response.Body())
+	if strings.Contains(body, `"extra_fields"`) {
+		t.Fatalf("headers mode must drop extra_fields from the error body, got %s", body)
+	}
+	if !strings.Contains(body, `"slow down"`) {
+		t.Fatalf("headers mode must keep the error message, got %s", body)
+	}
+	if got := headersCtx.Response.StatusCode(); got != fasthttp.StatusTooManyRequests {
+		t.Fatalf("status got %d, want 429", got)
+	}
+	if got := string(headersCtx.Response.Header.Peek(lib.HeaderBifrostRetryAfterMs)); got != "2000" {
+		t.Fatalf("retry-after header got %q, want 2000", got)
+	}
+	if got := string(headersCtx.Response.Header.Peek(lib.HeaderBifrostProvider)); got != "openai" {
+		t.Fatalf("provider header got %q, want openai", got)
 	}
 }

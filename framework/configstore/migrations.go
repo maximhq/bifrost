@@ -573,6 +573,10 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_client_config_enforce_vk_object_ownership_column"}, run: migrationAddClientConfigEnforceVKObjectOwnershipColumn},
 	{IDs: []string{"add_mcp_client_openapi_spec_column"}, run: migrationAddMCPClientOpenAPISpecColumn},
 	{IDs: []string{"add_mcp_client_openapi_config_json_column"}, run: migrationAddMCPClientOpenAPIConfigJSONColumn},
+	{IDs: []string{"add_client_config_extra_fields_placement_column"}, run: migrationAddClientConfigExtraFieldsPlacementColumn},
+	{IDs: []string{"add_skills_external_client_url_column"}, run: migrationAddSkillsExternalClientURLColumn},
+	{IDs: []string{"backfill_skills_external_client_url"}, run: migrationBackfillSkillsExternalClientURL},
+	{IDs: []string{"add_virtual_key_metadata_column"}, run: migrationAddVirtualKeyMetadataColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -10335,6 +10339,54 @@ func migrationDropNonVKOauthUserRows(ctx context.Context, db *gorm.DB, logger sc
 	})
 }
 
+// migrationAddSkillsExternalClientURLColumn adds the public marketplace URL setting.
+// DDL runs separately from the backfill so its exclusive lock is released before updating rows.
+func migrationAddSkillsExternalClientURLColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "add_skills_external_client_url_column",
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "SkillsExternalClientURL")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_skills_external_client_url_column is non-rollbackable: dropping it would discard marketplace configuration")
+		},
+	})
+}
+
+// migrationBackfillSkillsExternalClientURL seeds the marketplace URL from the current MCP client URL.
+// Existing skills overrides win, and the MCP setting remains unchanged.
+func migrationBackfillSkillsExternalClientURL(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "backfill_skills_external_client_url",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if !tx.Migrator().HasColumn("config_client", "mcp_external_client_url") {
+				return nil
+			}
+			var rows []struct {
+				ID                   uint
+				MCPExternalClientURL string
+			}
+			if err := tx.Table("config_client").Select("id, mcp_external_client_url").Where("(skills_external_client_url IS NULL OR skills_external_client_url = '') AND mcp_external_client_url IS NOT NULL AND mcp_external_client_url != ''").Find(&rows).Error; err != nil {
+				return err
+			}
+			for _, row := range rows {
+				value := schemas.NewSecretVar(row.MCPExternalClientURL).GetValue()
+				if value == "" || ValidatePublicBaseURL(value) != nil {
+					continue
+				}
+				if err := tx.Table("config_client").Where("id = ?", row.ID).Update("skills_external_client_url", row.MCPExternalClientURL).Error; err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("backfill_skills_external_client_url is non-rollbackable: migrated marketplace configuration must be preserved")
+		},
+	})
+}
+
 // migrationDropMCPExternalServerURL drops the mcp_external_server_url column
 // from config_client. This URL was used to advertise Bifrost as an OAuth
 // authorization server (.well-known endpoints, WWW-Authenticate header on
@@ -12066,6 +12118,30 @@ func migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx context.Context,
 		Rollback: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "enforce_vk_object_ownership")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// migrationAddClientConfigExtraFieldsPlacementColumn adds extra_fields_placement to
+// config_client. It defaults to "body", so an upgrade keeps extra_fields in the JSON
+// body of inference responses, as it was before the setting existed.
+func migrationAddClientConfigExtraFieldsPlacementColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_client_config_extra_fields_placement_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableClientConfig{}, "extra_fields_placement")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableClientConfig{}, "extra_fields_placement")
 		},
 	}})
 	if err := m.Migrate(); err != nil {
@@ -16029,4 +16105,53 @@ func migrationAddA2ARawCaptureSetting(ctx context.Context, db *gorm.DB, logger s
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "A2AStoreRawRequestResponse")
 		},
 	})
+}
+
+// migrationAddVirtualKeyMetadataColumn adds the nullable metadata column to
+// governance_virtual_keys. Existing keys keep NULL (no metadata), and
+// GenerateVirtualKeyHash only hashes metadata when the key has some, so no
+// config_hash backfill is needed.
+func migrationAddVirtualKeyMetadataColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_virtual_key_metadata_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := setMigrationLockTimeout(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &tables.TableVirtualKey{}, "metadata"); err != nil {
+				return fmt.Errorf("failed to add metadata column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return fmt.Errorf("add_virtual_key_metadata_column is non-rollbackable: dropping metadata would permanently delete every virtual key's metadata; the column is additive and older binaries safely ignore it")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running db migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationLockTimeout bounds how long a column migration waits for its table lock on postgres.
+const migrationLockTimeout = "5s"
+
+// setMigrationLockTimeout bounds the table-lock wait of the schema changes that follow in tx on
+// postgres. ALTER TABLE needs an ACCESS EXCLUSIVE lock even to add a nullable column, and while it
+// waits behind a long-running transaction every later query on the table queues behind it. With
+// the bound the migration fails fast instead (lock_not_available), the transaction rolls back, and
+// the next startup retries. SET LOCAL scopes it to the migration's transaction (migrator runs each
+// migration in one by default). Other dialects have no table-lock wait to bound.
+func setMigrationLockTimeout(tx *gorm.DB) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
+	}
+	if err := tx.Exec("SET LOCAL lock_timeout = '" + migrationLockTimeout + "'").Error; err != nil {
+		return fmt.Errorf("set migration lock_timeout: %w", err)
+	}
+	return nil
 }

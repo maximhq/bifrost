@@ -1116,11 +1116,27 @@ export default function AppSidebar() {
 							hasAccess: hasPromptRepositoryAccess,
 						},
 						{
-							title: "Skills Repository",
+							title: "Skills",
 							url: "/workspace/skills-repo",
 							icon: BookOpenText,
-							description: "Skills repository",
-							hasAccess: hasSkillsRepositoryAccess,
+							description: "Manage skills and marketplace settings",
+							hasAccess: hasSkillsRepositoryAccess || hasSettingsAccess,
+							subItems: [
+								{
+									title: "Skills Repository",
+									url: "/workspace/skills-repo",
+									icon: BookOpenText,
+									description: "Skills repository",
+									hasAccess: hasSkillsRepositoryAccess,
+								},
+								{
+									title: "Skills Settings",
+									url: "/workspace/config/skills",
+									icon: Settings,
+									description: "Skills marketplace configuration",
+									hasAccess: hasSettingsAccess,
+								},
+							],
 						},
 					]
 				: []),
@@ -1454,7 +1470,7 @@ export default function AppSidebar() {
 		});
 	};
 
-	const configExceptions = ["/workspace/config/logging"];
+	const configExceptions = ["/workspace/config/logging", "/workspace/config/skills"];
 
 	const isActiveRoute = (url: string) => {
 		if (url === "/" && pathname === "/") return true;

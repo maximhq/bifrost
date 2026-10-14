@@ -266160,6 +266160,2202 @@
           }
         }
       ]
+    },
+    {
+      "name": "233. Agent and skills endpoints require an explicit public url [SERIAL]",
+      "description": "Uses the unchanged tests/integrations/python/config.json profile: a2a_external_client_url and skills_external_client_url must be unset, enforce_auth_on_inference must be false, Git must be installed, and management requests require the configured setup token. These checks make no configuration mutations and no provider calls. They pin fail-closed serving for cards, JSON-RPC, REST, push ingress, and Claude/Codex catalogs and Git endpoints, while agent management remains available. Set URLs in a separate configured run to test enabled serving; Go regressions cover that behavior and spoofed headers.",
+      "item": [
+        {
+          "name": "233.1 explicit public url GET /agents/a2a/url-gate-fixture/.well-known/agent-card.json [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('a2a_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/agents/a2a/url-gate-fixture/.well-known/agent-card.json"
+          }
+        },
+        {
+          "name": "233.2 explicit public url POST /agents/a2a/url-gate-fixture/json-rpc [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('a2a_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/agents/a2a/url-gate-fixture/json-rpc"
+          }
+        },
+        {
+          "name": "233.3 explicit public url GET /agents/a2a/url-gate-fixture/rest/tasks/fixture [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('a2a_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/agents/a2a/url-gate-fixture/rest/tasks/fixture"
+          }
+        },
+        {
+          "name": "233.4 explicit public url POST /agents/a2a/url-gate-fixture/push/callback [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('a2a_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/agents/a2a/url-gate-fixture/push/callback"
+          }
+        },
+        {
+          "name": "233.5 explicit public url GET /api/skills/serve/claude-code/.claude-plugin/marketplace.json [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/claude-code/.claude-plugin/marketplace.json"
+          }
+        },
+        {
+          "name": "233.6 explicit public url GET /api/skills/serve/codex/.agents/plugins/marketplace.json [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/codex/.agents/plugins/marketplace.json"
+          }
+        },
+        {
+          "name": "233.7 explicit public url GET /api/skills/serve/claude-code.git/info/refs?service=git-upload-pack [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/claude-code.git/info/refs?service=git-upload-pack"
+          }
+        },
+        {
+          "name": "233.8 explicit public url POST /api/skills/serve/claude-code.git/git-upload-pack [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/claude-code.git/git-upload-pack"
+          }
+        },
+        {
+          "name": "233.9 explicit public url GET /api/skills/serve/codex/info/refs?service=git-upload-pack [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/codex/info/refs?service=git-upload-pack"
+          }
+        },
+        {
+          "name": "233.10 explicit public url POST /api/skills/serve/codex/git-upload-pack [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/codex/git-upload-pack"
+          }
+        },
+        {
+          "name": "233.11 explicit public url GET /api/skills/serve/codex/plugins/bifrost-fixture/info/refs?service=git-upload-pack [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/codex/plugins/bifrost-fixture/info/refs?service=git-upload-pack"
+          }
+        },
+        {
+          "name": "233.12 explicit public url POST /api/skills/serve/claude-code/plugins/bifrost-fixture/git-upload-pack [EXPECT-503]",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Missing public URL disables this endpoint', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(503);",
+                  "  pm.expect(pm.response.text()).to.include('skills_external_client_url');",
+                  "  pm.expect(pm.response.text()).not.to.include('attacker.example');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/skills/serve/claude-code/plugins/bifrost-fixture/git-upload-pack"
+          }
+        },
+        {
+          "name": "233.13 explicit public url GET /api/agents",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Agent management remains available without the public URL', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().agents).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Forwarded-Host",
+                "value": "attacker.example"
+              },
+              {
+                "key": "X-Forwarded-Proto",
+                "value": "https"
+              }
+            ],
+            "url": "{{baseUrl}}/api/agents"
+          }
+        }
+      ]
+    },
+    {
+      "name": "234. Extra fields as response headers (extra-fields-in-headers) [SERIAL]",
+      "description": "Pins client.extra_fields_placement = \"headers\": inference responses drop the extra_fields object from the body (and from every SSE chunk) and carry its scalar fields as x-bifrost-* response headers instead. [SERIAL]: this changes client config every other row depends on (most rows read extra_fields from the body), so the harness runs the folder alone after the parallel sweep. It reads the stored client config, sends it back with extra_fields_placement = \"headers\", runs native /v1/chat/completions (unary and stream), /v1/responses, the /openai integration and an error, then restores the original placement, checks that body mode carries extra_fields again, and verifies the stored value. Red before the change: the setting does not exist, so extra_fields stays in the body. Run with FEATURE=\"extra-fields-in-headers\".",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai extra-fields-in-headers read current config",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-fields-in-headers: read the stored client config', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config;",
+                  "  pm.expect(cc, pm.response.text()).to.be.an('object');",
+                  "  // A fresh install reads back log_retention_days 0, which PUT /api/config refuses (must be >= 1).",
+                  "  if (!cc.log_retention_days || cc.log_retention_days < 1) { cc.log_retention_days = 30; }",
+                  "  pm.collectionVariables.set('efhClientConfig', JSON.stringify(cc));",
+                  "  pm.collectionVariables.set('efhOriginal', cc.extra_fields_placement || 'body');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai extra-fields-in-headers switch placement to headers",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('efhClientConfig') || '{}');",
+                  "cc.extra_fields_placement = 'headers';",
+                  "pm.variables.set('efhBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-fields-in-headers: placement switched to headers', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{efhBody}}"
+            }
+          }
+        },
+        {
+          "name": "openai extra-fields-in-headers /v1/chat/completions unary - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat completion succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('the completion itself is intact', function () {",
+                  "  pm.expect(pm.response.json().choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('body carries no extra_fields', function () {",
+                  "  pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"');",
+                  "});",
+                  "pm.test('routed identity rides on x-bifrost-* headers', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('openai');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('chat_completion');",
+                  "});",
+                  "pm.test('latency moves to x-bifrost-latency-ms', function () {",
+                  "  var latency = pm.response.headers.get('x-bifrost-latency-ms');",
+                  "  pm.expect(latency, 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^[0-9]+$/);",
+                  "});",
+                  "pm.test('a browser origin can read the x-bifrost-* headers', function () {",
+                  "  var exposed = (pm.response.headers.get('access-control-expose-headers') || '').split(', ');",
+                  "  pm.expect(exposed, 'access-control-expose-headers: ' + exposed.join(', ')).to.include.members(['x-bifrost-provider', 'x-bifrost-request-type', 'x-bifrost-latency-ms']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Origin",
+                "value": "http://localhost:3000"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "openai extra-fields-in-headers /v1/chat/completions stream - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streamed chat completion succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('the stream delivered content chunks', function () {",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('data: ');",
+                  "  pm.expect(pm.response.text(), pm.response.text()).to.include('\"choices\"');",
+                  "});",
+                  "pm.test('no SSE chunk carries extra_fields', function () {",
+                  "  pm.expect(pm.response.text(), 'stream: ' + pm.response.text()).to.not.include('\"extra_fields\"');",
+                  "});",
+                  "pm.test('stream headers carry the routed identity', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('openai');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-routing-info-model'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.include('gpt-4o-mini');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true\n}"
+            }
+          }
+        },
+        {
+          "name": "openai extra-fields-in-headers /v1/responses unary - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('responses request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('the response output is intact', function () {",
+                  "  pm.expect(pm.response.json().output, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('body carries no extra_fields', function () {",
+                  "  pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"');",
+                  "});",
+                  "pm.test('routed identity rides on x-bifrost-* headers', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('openai');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('responses');",
+                  "});",
+                  "pm.test('latency moves to x-bifrost-latency-ms', function () {",
+                  "  var latency = pm.response.headers.get('x-bifrost-latency-ms');",
+                  "  pm.expect(latency, 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^[0-9]+$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"input\": \"Say ok.\",\n  \"max_output_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "openai extra-fields-in-headers /openai/v1/chat/completions integration - gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('integration chat completion succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('the completion itself is intact', function () {",
+                  "  pm.expect(pm.response.json().choices, pm.response.text()).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('body carries no extra_fields', function () {",
+                  "  pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"');",
+                  "});",
+                  "pm.test('routed identity rides on x-bifrost-* headers', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('openai');",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-request-type'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('chat_completion');",
+                  "});",
+                  "pm.test('latency moves to x-bifrost-latency-ms', function () {",
+                  "  var latency = pm.response.headers.get('x-bifrost-latency-ms');",
+                  "  pm.expect(latency, 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.match(/^[0-9]+$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] openai extra-fields-in-headers error drops extra_fields - openai/gpt-harness-missing-model",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the provider rejects the unknown model with 404', function () {",
+                  "  pm.expect(pm.response.code, 'status: ' + pm.response.text()).to.eql(404);",
+                  "  pm.expect(pm.response.json().error, pm.response.text()).to.be.an('object');",
+                  "});",
+                  "pm.test('body carries no extra_fields', function () {",
+                  "  pm.expect(pm.response.text(), 'body: ' + pm.response.text()).to.not.include('\"extra_fields\"');",
+                  "});",
+                  "pm.test('the error still names the provider in a header', function () {",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'headers: ' + JSON.stringify(pm.response.headers.toObject())).to.eql('openai');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-harness-missing-model\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply OK.\"\n    }\n  ],\n  \"max_tokens\": 3\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai extra-fields-in-headers restore original placement",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var cc = JSON.parse(pm.collectionVariables.get('efhClientConfig') || '{}');",
+                  "cc.extra_fields_placement = pm.collectionVariables.get('efhOriginal') || 'body';",
+                  "pm.variables.set('efhBody', JSON.stringify({ client_config: cc }));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-fields-in-headers: original placement restored', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{efhBody}}"
+            }
+          }
+        },
+        {
+          "name": "openai extra-fields-in-headers body mode keeps extra_fields - openai/gpt-4o-mini",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('chat completion succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "pm.test('the restored placement decides where extra_fields goes', function () {",
+                  "  var restored = pm.collectionVariables.get('efhOriginal') || 'body';",
+                  "  var ef = pm.response.json().extra_fields;",
+                  "  if (restored === 'body') {",
+                  "    pm.expect(ef, pm.response.text()).to.be.an('object');",
+                  "    pm.expect((ef.routing_info || {}).provider, pm.response.text()).to.eql('openai');",
+                  "    pm.expect(pm.response.headers.get('x-bifrost-latency-ms'), 'body mode adds no new headers').to.be.oneOf([undefined, null]);",
+                  "  } else {",
+                  "    pm.expect(ef, pm.response.text()).to.be.oneOf([undefined, null]);",
+                  "  }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai extra-fields-in-headers original config restored",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('extra-fields-in-headers: extra_fields_placement is back to what it was', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
+                  "  var cc = pm.response.json().client_config || {};",
+                  "  pm.expect(cc.extra_fields_placement || 'body', pm.response.text()).to.eql(pm.collectionVariables.get('efhOriginal') || 'body');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/config?from_db=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "from_db",
+                  "value": "true"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "235. Keyless custom provider with a leftover disabled key (keyless residual key)",
+      "description": "A custom provider created keyed, whose only key was disabled before it was switched to is_key_less, keeps that disabled key. Model discovery used to count enabled keys before asking whether the provider needs keys at all, so it logged 'no enabled keys configured' and never ran: the provider stayed at 0 models with no discovery status. Key DELETE was also refused on keyless providers, so the leftover key could never be removed. Red before the fix: 235.1 sees no provider-level discovery status after a refresh, and 235.2 gets 400 'Cannot delete keys on a keyless provider'. Green after: keyless discovery runs whatever keys are stored (the provider has no base_url, so the unauthenticated default OpenAI upstream answers 401 and the status is list_models_failed, which proves discovery ran without spending anything), and the leftover key deletes with 200. Every call is a management call or an unauthenticated list-models: no paid inference.",
+      "item": [
+        {
+          "name": "235.1 openai custom provider switched to keyless with a leftover disabled key still runs model discovery - keyless residual key",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-keyless-residual-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "// Providers left by an aborted earlier run carry their run timestamp in their names. Only ones older",
+                  "// than ten minutes are swept, so a parallel shard's live provider is never touched.",
+                  "function isStale(name) {",
+                  "  var m = String(name || '').indexOf(PREFIX) === 0 && String(name).match(/run-(\\d+)/);",
+                  "  return !!(m && (Date.now() - Number(m[1])) > 10 * 60 * 1000);",
+                  "}",
+                  "function sweepStale(done) {",
+                  "  call('GET', '/api/providers', null, function (res, j) {",
+                  "    var stale = ((j && j.providers) || []).filter(function (p) { return isStale(p.name); });",
+                  "    var i = 0; (function next() { if (i >= stale.length) { return done(); } call('DELETE', '/api/providers/' + encodeURIComponent(stale[i++].name), null, function () { next(); }); })();",
+                  "  });",
+                  "}",
+                  "var provider = PREFIX + 'run-' + Date.now();",
+                  "var P = '/api/providers/' + encodeURIComponent(provider);",
+                  "pm.collectionVariables.set('keylessResidualProvider', provider);",
+                  "pm.collectionVariables.unset('keylessResidualKeyId');",
+                  "// The reporter's sequence: a keyed OpenAI-backed provider, one key, that key disabled, then the",
+                  "// provider switched to keyless. The key value is a placeholder: nothing here needs a real credential.",
+                  "sweepStale(function () {",
+                  "  call('POST', '/api/providers', { provider: provider, custom_provider_config: { base_provider_type: 'openai', is_key_less: false } }, function (res) {",
+                  "    if (!expectOk('setup: created the run-scoped keyed OpenAI-backed provider', res)) { return; }",
+                  "    call('POST', P + '/keys', { name: provider + '-key', value: 'sk-harness-keyless-residual-placeholder', models: ['*'], weight: 1 }, function (res, k) {",
+                  "      if (!expectOk('setup: added a key while the provider was keyed', res)) { return; }",
+                  "      pm.collectionVariables.set('keylessResidualKeyId', k.id);",
+                  "      call('PUT', P + '/keys/' + encodeURIComponent(k.id), { name: k.name, enabled: false }, function (res) {",
+                  "        if (!expectOk('setup: disabled the only key', res)) { return; }",
+                  "        call('GET', P, null, function (res, cur) {",
+                  "          if (!expectOk('setup: read the provider back before switching it', res)) { return; }",
+                  "          // The UI save shape: the full stored config sent back with only is_key_less flipped.",
+                  "          var cpc = cur.custom_provider_config || {};",
+                  "          var body = {",
+                  "            network_config: cur.network_config,",
+                  "            concurrency_and_buffer_size: cur.concurrency_and_buffer_size,",
+                  "            custom_provider_config: { base_provider_type: cpc.base_provider_type, is_key_less: true, allowed_requests: cpc.allowed_requests }",
+                  "          };",
+                  "          call('PUT', P, body, function (res) { expectOk('setup: switched the provider to keyless with the disabled key still stored', res); });",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-keyless-residual-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('235.1 refresh-models succeeded', function () { pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200); });",
+                  "var provider = pm.collectionVariables.get('keylessResidualProvider');",
+                  "pm.test('235.1 the leftover disabled key is still stored (the state under test)', function () {",
+                  "  var keys = ((pm.response.json() || {}).keys) || [];",
+                  "  pm.expect(keys.length, txt.slice(0, 400)).to.eql(1);",
+                  "  pm.expect(keys[0].enabled, txt.slice(0, 400)).to.eql(false);",
+                  "});",
+                  "call('GET', '/api/providers/' + encodeURIComponent(provider), null, function (res, p) {",
+                  "  if (!expectOk('235.1 read the provider back', res)) { return; }",
+                  "  pm.test('235.1 keyless discovery ran and recorded a provider-level status', function () {",
+                  "    pm.expect(['list_models_failed', 'success'], 'no discovery status: discovery was skipped for the leftover disabled key (status=' + JSON.stringify(p.status) + ', description=' + JSON.stringify(p.description) + ')').to.include(p.status);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{keylessResidualProvider}}/refresh-models",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{keylessResidualProvider}}",
+                "refresh-models"
+              ]
+            }
+          }
+        },
+        {
+          "name": "235.2 openai custom provider switched to keyless deletes its leftover key - keyless residual key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var PREFIX = 'harness-keyless-residual-';",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var json = null; try { json = res.json(); } catch (e) { json = null; }",
+                  "    cb(res, json);",
+                  "  });",
+                  "}",
+                  "function expectOk(label, res) {",
+                  "  pm.test(label, function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  return !!(res && res.code === 200);",
+                  "}",
+                  "var txt = pm.response.text() || '';",
+                  "var provider = pm.collectionVariables.get('keylessResidualProvider');",
+                  "var P = '/api/providers/' + encodeURIComponent(provider);",
+                  "pm.test('235.2 leftover key deletes on a keyless provider', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + txt).to.equal(200);",
+                  "  pm.expect(txt, 'the keyless guard still refuses the delete').to.not.include('Cannot delete keys on a keyless provider');",
+                  "});",
+                  "call('GET', P + '/keys', null, function (res, j) {",
+                  "  if (expectOk('235.2 listed the provider keys after the delete', res)) {",
+                  "    pm.test('235.2 no key is left on the keyless provider', function () { pm.expect(((j || {}).keys) || [], res.text()).to.have.lengthOf(0); });",
+                  "  }",
+                  "  call('DELETE', P, null, function (res) { expectOk('cleanup: deleted the run-scoped provider', res); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{keylessResidualProvider}}/keys/{{keylessResidualKeyId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{keylessResidualProvider}}",
+                "keys",
+                "{{keylessResidualKeyId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "236. MCP client served at its derived endpoint slug (mcp-client-slug)",
+      "description": "Regression for #7763. A config.json MCP client declared without endpoint_slug gets one derived from its name (sse_mcp -> sse-mcp) and is served at /mcp/<slug>. The bug: a later boot that re-synced the file entry (a config.json edit in default mode, or every boot under source_of_truth=config.json) replaced the in-memory client with the slug-less file copy, so every /mcp/<slug> answered 403 access_denied while the DB and UI still showed the slug. A single live run boots once, so it pins slug serving end to end rather than reproducing the reload; the Go test TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug is the red/green pin.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai mcp-client-slug initialize at /mcp/sse-mcp serves the config.json client - #7763",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/mcp/sse-mcp"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line).result;",
+                  "}",
+                  "",
+                  "pm.test('the derived slug of a config.json client is served', function () {",
+                  "  pm.expect(pm.response.code, 'slug endpoint refused - the client lost its endpoint_slug in memory: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result, 'no JSON-RPC result: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.serverInfo && result.serverInfo.name, 'serverInfo missing: ' + pm.response.text()).to.equal('bifrost');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-client-slug tools/list at /mcp/sse-mcp is narrowed to sse_mcp - #7763",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/mcp/sse-mcp"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line).result;",
+                  "}",
+                  "",
+                  "pm.test('the slug endpoint lists only its own client\\'s tools', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result && result.tools, 'no tools array: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(result.tools.length, 'slug endpoint served no tools: ' + pm.response.text()).to.be.above(0);",
+                  "  result.tools.forEach(function (t) {",
+                  "    pm.expect(t.name.indexOf('sse_mcp-'), 'tool from another client leaked onto /mcp/sse-mcp: ' + t.name).to.equal(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-403] openai mcp-client-slug unknown slug is refused - #7763",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/mcp/no-such-mcp-slug"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unknown slug is refused with access_denied', function () {",
+                  "  pm.expect(pm.response.code, 'unknown slug was not refused: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'refusal body changed: ' + pm.response.text()).to.include('access_denied');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "237. Virtual key metadata on the management API (PR #7935) (vk-metadata-api)",
+      "description": "Virtual keys carry free-form metadata (cost center, owner, environment, ...). PR #7935 exposes it on the management API: POST and PUT /api/governance/virtual-keys accept a metadata object (PUT replaces it as a whole, omitting it leaves it unchanged, {} clears it), the key's JSON returns it, GET /api/governance/virtual-keys filters on metadata_<key>=<value> query parameters (several pairs AND together, the same shape the logs endpoints accept), and invalid metadata or an invalid filter key is a 400 instead of being dropped. The seed creates one key whose cost_center value carries the run id, so the filter reads can expect exactly that key on a shared gateway; every later row depends on the seed through {{vkMetadataApiRun}} / {{vkMetadataApiVkId}}, which keeps the folder in one newman process. Red before the change: the create drops metadata (the seed's echo check fails), the list ignores metadata_* and returns every key, and the reserved key and bad filter key come back 200. The folder only ever deletes keys it created in this run (the cleanup row and the reserved-key row); nothing sweeps by age, so a parallel run's key is never touched. A key left by an aborted run is named harness-vk-metadata-api-run-<ms>-<rand> for manual cleanup. Management calls only, no provider traffic; attributed to the openai fork by name.",
+      "item": [
+        {
+          "name": "openai vk-metadata-api seed: create a virtual key with metadata",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh run id per seed: collection variables outlive a run in Postman, and the filter",
+                  "// reads must only ever see this run's key.",
+                  "// The random suffix keeps two runs started in the same millisecond apart. Only keys this",
+                  "// run creates are ever deleted (by the cleanup row), never another run's.",
+                  "pm.collectionVariables.set('vkMetadataApiRun', 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-metadata-api seed: create succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var vk = (pm.response.json() || {}).virtual_key || {};",
+                  "if (vk.id) { pm.collectionVariables.set('vkMetadataApiVkId', vk.id); } else { pm.collectionVariables.unset('vkMetadataApiVkId'); }",
+                  "pm.test('vk-metadata-api seed: the created key echoes its metadata', function () {",
+                  "  pm.expect(vk.metadata, 'virtual_key: ' + pm.response.text()).to.eql({ cost_center: 'cc-' + pm.collectionVariables.get('vkMetadataApiRun'), owner: 'harness@example.com' });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness-vk-metadata-api-{{vkMetadataApiRun}}\",\"metadata\":{\"cost_center\":\"cc-{{vkMetadataApiRun}}\",\"owner\":\"harness@example.com\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "openai vk-metadata-api: metadata_<key> filter lists only the matching key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-metadata-api filter: list responds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var run = pm.collectionVariables.get('vkMetadataApiRun');",
+                  "var vks = (pm.response.json() || {}).virtual_keys || [];",
+                  "pm.test('vk-metadata-api filter: exactly the seeded key matches, with its metadata', function () {",
+                  "  pm.expect(vks.map(function (v) { return v.id; }), 'keys: ' + pm.response.text()).to.eql([pm.collectionVariables.get('vkMetadataApiVkId')]);",
+                  "  pm.expect(vks[0].metadata, 'metadata: ' + pm.response.text()).to.eql({ cost_center: 'cc-' + run, owner: 'harness@example.com' });",
+                  "});",
+                  "// Pairs AND together: the same cost center with an owner the key does not have matches nothing.",
+                  "pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys?metadata_cost_center=cc-' + run + '&metadata_owner=nobody%40example.com&limit=10', method: 'GET' }, function (err, res) {",
+                  "  pm.test('vk-metadata-api filter: pairs AND together', function () {",
+                  "    pm.expect(err, 'list error').to.equal(null);",
+                  "    pm.expect(res.code, 'failed: ' + res.text()).to.equal(200);",
+                  "    pm.expect((res.json().virtual_keys || []).length, 'keys: ' + res.text()).to.equal(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys?metadata_cost_center=cc-{{vkMetadataApiRun}}&limit=10"
+          }
+        },
+        {
+          "name": "openai vk-metadata-api: update replaces metadata, omitting it leaves it, {} clears it",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var base = pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + pm.collectionVariables.get('vkMetadataApiVkId');",
+                  "var run = pm.collectionVariables.get('vkMetadataApiRun');",
+                  "var replaced = { cost_center: 'cc-' + run, env: 'harness' };",
+                  "pm.test('vk-metadata-api update: replacing metadata succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(((pm.response.json() || {}).virtual_key || {}).metadata, 'virtual_key: ' + pm.response.text()).to.eql(replaced);",
+                  "});",
+                  "function put(raw, cb) {",
+                  "  pm.sendRequest({ url: base, method: 'PUT', header: { 'Content-Type': 'application/json' }, body: { mode: 'raw', raw: raw } }, function (err, res) {",
+                  "    if (err) { pm.test('vk-metadata-api update: PUT reached the gateway', function () { pm.expect.fail(String(err)); }); return; }",
+                  "    var parsed = {};",
+                  "    try { parsed = res.json() || {}; } catch (e) { parsed = {}; }",
+                  "    cb(res, parsed.virtual_key || {});",
+                  "  });",
+                  "}",
+                  "put('{\"description\":\"harness vk-metadata-api\"}', function (res, vk) {",
+                  "  pm.test('vk-metadata-api update: an update without metadata leaves it unchanged', function () {",
+                  "    pm.expect(res.code, 'failed: ' + res.text()).to.equal(200);",
+                  "    pm.expect(vk.metadata, 'virtual_key: ' + res.text()).to.eql(replaced);",
+                  "  });",
+                  "  put('{\"metadata\":{}}', function (res2, vk2) {",
+                  "    pm.test('vk-metadata-api update: {} clears metadata', function () {",
+                  "      pm.expect(res2.code, 'failed: ' + res2.text()).to.equal(200);",
+                  "      pm.expect(vk2.metadata, 'virtual_key: ' + res2.text()).to.equal(undefined);",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"metadata\":{\"cost_center\":\"cc-{{vkMetadataApiRun}}\",\"env\":\"harness\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{vkMetadataApiVkId}}"
+          }
+        },
+        {
+          "name": "openai vk-metadata-api [EXPECT-400]: a reserved metadata key is refused on create",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-metadata-api reserved key: create is refused with 400', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error should name the reserved key').to.include('bifrost_alb_');",
+                  "});",
+                  "// A gateway without the validation creates the key; delete it so the run leaves nothing behind.",
+                  "var made = ((pm.response.code === 200 && pm.response.json()) || {}).virtual_key;",
+                  "if (made && made.id) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/governance/virtual-keys/' + made.id, method: 'DELETE' }, function () {});",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness-vk-metadata-api-reserved-{{vkMetadataApiRun}}\",\"metadata\":{\"bifrost_alb_provider\":\"openai\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "openai vk-metadata-api [EXPECT-400]: an invalid metadata filter key is refused",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-metadata-api bad filter key: list is refused with 400, not unfiltered', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error should name the filter').to.include('invalid metadata filter key');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys?metadata_bad%20key=x&limit=10"
+          }
+        },
+        {
+          "name": "openai vk-metadata-api cleanup: delete the seeded virtual key",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vk-metadata-api cleanup: delete succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.collectionVariables.unset('vkMetadataApiVkId');",
+                  "pm.collectionVariables.unset('vkMetadataApiRun');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{vkMetadataApiVkId}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "238. Virtual key metadata snapshotted onto logs (PR #7936) (vk-metadata-logs)",
+      "description": "PR #7936 stamps the resolved virtual key's metadata on the request context (governance) and merges it into the log row's metadata (logging), after every request-supplied source, so spend is filterable by the key's attribution with the existing /api/logs?metadata_<key>=<value> filter and a caller cannot override it: on a key collision the virtual key's value beats an x-bf-lh-* header and an x-bf-dim-* dimension of the same name, while unrelated caller labels are kept. One self-contained row, like the session-affinity management cases: the pre-request script creates a key with openai access whose cost_center carries the run id; the chat request goes through it carrying x-bf-lh-cost_center and x-bf-dim-owner spoofs plus an unrelated x-bf-lh-tenant label; the test script filters the logs on the key's cost_center (polling, since the log writer batches), expects exactly that request, reads the row and checks cost_center and owner come from the key and tenant from the header, then deletes the key and the log row. One row is deliberate: the recipe forks newman per provider and modality class, so setup in a separate management row would be pulled into the chat shard as a producer and run twice. Red before the change: the row carries the spoofed cost_center, so the filter on the key's value finds nothing. The row only ever deletes the key it created in this run; nothing sweeps by age, so a parallel shard's key is never touched. A key left by an aborted run is named harness-vk-metadata-logs-run-<ms>-<rand> for manual cleanup. The pure merge rules, the MCP and passthrough stamping paths and the realtime handlers are covered by Go tests (TestMergeVirtualKeyMetadata, TestPostLLMHookSnapshotsVirtualKeyMetadata, TestPreMCPConnectionHook_StampsVirtualKeyMetadata, TestRealtimeContextsCarryVirtualKeyMetadata).",
+      "item": [
+        {
+          "name": "openai gpt-4o-mini vk-metadata-logs: the key's metadata lands on the log row and beats x-bf-lh-* / x-bf-dim-* spoofs",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// ---- in-script management calls (see the folder description) ----",
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "// A fresh run id per request: collection variables outlive a run in Postman, and the logs",
+                  "// filter must only ever see this run's request.",
+                  "// The random suffix keeps two shards started in the same millisecond apart.",
+                  "var run = 'run-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);",
+                  "pm.collectionVariables.set('vkMetadataLogsRun', run);",
+                  "pm.collectionVariables.unset('vkMetadataLogsVkId');",
+                  "pm.collectionVariables.unset('vkMetadataLogsVkValue');",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var j = null; try { j = res.json(); } catch (e) { j = null; }",
+                  "    cb(res, j);",
+                  "  });",
+                  "}",
+                  "call('POST', '/api/governance/virtual-keys', {",
+                  "  name: 'harness-vk-metadata-logs-' + run,",
+                  "  metadata: { cost_center: 'cc-' + run, owner: 'harness-vk-owner@example.com' },",
+                  "  provider_configs: [{ provider: 'openai', weight: 1, allowed_models: ['*'], key_ids: ['*'] }]",
+                  "}, function (res, j) {",
+                  "  var vk = (j || {}).virtual_key || {};",
+                  "  var value = (vk.value && typeof vk.value === 'object') ? vk.value.value : vk.value;",
+                  "  pm.test('setup: virtual key with metadata created', function () {",
+                  "    pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200);",
+                  "    pm.expect(value, res ? res.text() : 'no response').to.be.a('string').and.not.empty;",
+                  "    pm.expect(vk.metadata, res ? res.text() : 'no response').to.eql({ cost_center: 'cc-' + run, owner: 'harness-vk-owner@example.com' });",
+                  "  });",
+                  "  pm.collectionVariables.set('vkMetadataLogsVkId', vk.id || '');",
+                  "  pm.collectionVariables.set('vkMetadataLogsVkValue', value || '');",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var BASE = pm.variables.get('baseUrl');",
+                  "var run = pm.collectionVariables.get('vkMetadataLogsRun');",
+                  "var vkId = pm.collectionVariables.get('vkMetadataLogsVkId');",
+                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "pm.test('vk-metadata-logs: chat through the key succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "pm.test('vk-metadata-logs: x-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "function call(method, path, body, cb) {",
+                  "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
+                  "  if (body !== null && body !== undefined) { req.body = { mode: 'raw', raw: JSON.stringify(body) }; }",
+                  "  pm.sendRequest(req, function (err, res) {",
+                  "    if (err) { pm.test(method + ' ' + path + ' reached the gateway', function () { pm.expect.fail(String(err)); }); return cb(null, null); }",
+                  "    var j = null; try { j = res.json(); } catch (e) { j = null; }",
+                  "    cb(res, j);",
+                  "  });",
+                  "}",
+                  "// Persistent log stores and reused gateways would otherwise keep the key and the row.",
+                  "function deleteRow() {",
+                  "  if (!reqId) { return; }",
+                  "  call('DELETE', '/api/logs', { ids: [reqId] }, function (res) {",
+                  "    pm.test('cleanup: log row deleted', function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "  });",
+                  "}",
+                  "function cleanup() {",
+                  "  // No key id means setup already failed loudly; there is no key to delete.",
+                  "  if (!vkId) { return deleteRow(); }",
+                  "  call('DELETE', '/api/governance/virtual-keys/' + vkId, null, function (res) {",
+                  "    pm.test('cleanup: virtual key deleted', function () { pm.expect(res && res.code, 'unexpected status: ' + (res ? res.text() : 'no response')).to.eql(200); });",
+                  "    deleteRow();",
+                  "  });",
+                  "}",
+                  "if (pm.response.code !== 200 || !reqId) { cleanup(); return; }",
+                  "// The log row is written by the batching writer, so poll the filtered list for it instead of",
+                  "// asserting on the first read. Bounded: ten reads a second and a half apart.",
+                  "function findRow(attempt) {",
+                  "  call('GET', '/api/logs?metadata_cost_center=cc-' + encodeURIComponent(run) + '&limit=10', null, function (res, j) {",
+                  "    var logs = (j && j.logs) || [];",
+                  "    if ((!res || res.code !== 200 || logs.length < 1) && attempt < 10) { setTimeout(function () { findRow(attempt + 1); }, 1500); return; }",
+                  "    pm.test(\"vk-metadata-logs: the key's cost_center finds exactly this request, despite the header spoof\", function () {",
+                  "      pm.expect(res && res.code, 'logs list: ' + (res ? res.text() : 'no response')).to.eql(200);",
+                  "      pm.expect(logs.map(function (l) { return l.id; }), 'rows: ' + (res ? res.text() : '')).to.eql([reqId]);",
+                  "    });",
+                  "    call('GET', '/api/logs/' + encodeURIComponent(reqId), null, function (res2, row) {",
+                  "      var md = (row && row.metadata) || {};",
+                  "      pm.test(\"vk-metadata-logs: the row takes the key's values over x-bf-lh-* and x-bf-dim-*, and keeps other labels\", function () {",
+                  "        pm.expect(res2 && res2.code, 'log read: ' + (res2 ? res2.text() : 'no response')).to.eql(200);",
+                  "        pm.expect(md.cost_center, 'metadata: ' + JSON.stringify(md)).to.equal('cc-' + run);",
+                  "        pm.expect(md.owner, 'metadata: ' + JSON.stringify(md)).to.equal('harness-vk-owner@example.com');",
+                  "        pm.expect(md.tenant, 'metadata: ' + JSON.stringify(md)).to.equal('acme-' + run);",
+                  "      });",
+                  "      cleanup();",
+                  "    });",
+                  "  });",
+                  "}",
+                  "findRow(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-vk",
+                "value": "{{vkMetadataLogsVkValue}}"
+              },
+              {
+                "key": "x-bf-lh-cost_center",
+                "value": "spoofed-by-header"
+              },
+              {
+                "key": "x-bf-lh-tenant",
+                "value": "acme-{{vkMetadataLogsRun}}"
+              },
+              {
+                "key": "x-bf-dim-owner",
+                "value": "spoofed-by-dimension"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"Reply with OK.\"}],\"max_tokens\":5}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/v1/chat/completions"
+          }
+        }
+      ]
+    },
+    {
+      "name": "239. Deferred tools get a tool search on gpt-5.4+ (deferred tool search)",
+      "description": "Issue #8361: an Anthropic Messages request (Claude Code with ENABLE_TOOL_SEARCH) sends tools with defer_loading and its own tool_search function, and replays search turns as tool_result blocks holding tool_reference. OpenAI gpt-5.4+ rejects deferred functions unless the request carries a tool_search tool (\"Deferred tools require tools.tool_search\"), and Bifrost kept defer_loading without adding one. Bifrost now provisions the search: the client search function becomes a client-executed tool_search and its history replays as tool_search_call / tool_search_output; with no search tool at all it adds OpenAI's hosted tool_search. Cases pin the issue payload on the messages route (non-streaming via raw_request, streaming to message_stop), the hosted provisioning on the messages route, and the same provisioning on /v1/responses.",
+      "item": [
+        {
+          "name": "openai/gpt-6-sol messages route: client tool_search function becomes a client-executed tool_search - #8361",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"tool_search\",\n      \"description\": \"Load deferred tool definitions by name.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\",\n            \"description\": \"IATA city code\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_01\",\n          \"name\": \"tool_search\",\n          \"input\": {\n            \"query\": \"select:fetch_weather_report\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_01\",\n          \"content\": [\n            {\n              \"type\": \"tool_reference\",\n              \"tool_name\": \"fetch_weather_report\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "// Before the fix the deferred tool reached OpenAI with defer_loading and no tool_search:",
+                  "// 400 \"Deferred tools require tools.tool_search\".",
+                  "pm.test('deferred tool search client: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('deferred tool search client: the search function goes out as a client tool_search', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  var search = tools.filter(function (x) { return x.type === 'tool_search'; });",
+                  "  pm.expect(search.length, 'exactly one tool_search expected: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  pm.expect(search[0].execution, 'the client search function must map to execution client: ' + JSON.stringify(search[0])).to.eql('client');",
+                  "  pm.expect(tools.filter(function (x) { return x.type === 'function' && x.name === 'tool_search'; }).length, 'tool_search must not also go out as a plain function: ' + wire.slice(0, 800)).to.eql(0);",
+                  "  var fn = tools.filter(function (x) { return x.name === 'fetch_weather_report'; })[0];",
+                  "  pm.expect(fn, 'fetch_weather_report missing from outbound tools: ' + wire.slice(0, 800)).to.be.an('object');",
+                  "  pm.expect(fn.defer_loading, 'fetch_weather_report must stay deferred: ' + JSON.stringify(fn)).to.eql(true);",
+                  "});",
+                  "pm.test('deferred tool search client: the search turn replays as tool_search_call + tool_search_output', function () {",
+                  "  var input = (rr && rr.input) || [];",
+                  "  var calls = input.filter(function (x) { return x.type === 'tool_search_call'; });",
+                  "  var outs = input.filter(function (x) { return x.type === 'tool_search_output'; });",
+                  "  pm.expect(calls.length, 'want one tool_search_call: ' + wire.slice(0, 1200)).to.eql(1);",
+                  "  pm.expect(calls[0].call_id, 'tool_search_call keeps the tool_use id').to.eql('toolu_01');",
+                  "  pm.expect(calls[0].arguments, 'tool_search_call arguments must be an object').to.be.an('object');",
+                  "  pm.expect(outs.length, 'want one tool_search_output: ' + wire.slice(0, 1200)).to.eql(1);",
+                  "  var loaded = (outs[0].tools || []).map(function (x) { return x.name; });",
+                  "  pm.expect(loaded, 'the tool_reference must load fetch_weather_report').to.include('fetch_weather_report');",
+                  "  pm.expect(input.filter(function (x) { return x.type === 'function_call' && x.name === 'tool_search'; }).length, 'search call must not replay as a function_call').to.eql(0);",
+                  "});",
+                  "pm.test('deferred tool search client: Anthropic-shaped reply', function () {",
+                  "  pm.expect(body.type, 'want an Anthropic message: ' + txt.slice(0, 400)).to.eql('message');",
+                  "  pm.expect(body.content, 'want content blocks').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-6-sol messages route stream: client tool_search function streams to message_stop - #8361",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"max_tokens\": 256,\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"name\": \"tool_search\",\n      \"description\": \"Load deferred tool definitions by name.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"query\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"query\"\n        ]\n      }\n    },\n    {\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\",\n            \"description\": \"IATA city code\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_01\",\n          \"name\": \"tool_search\",\n          \"input\": {\n            \"query\": \"select:fetch_weather_report\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_01\",\n          \"content\": [\n            {\n              \"type\": \"tool_reference\",\n              \"tool_name\": \"fetch_weather_report\"\n            }\n          ]\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('deferred tool search client stream: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('deferred tool search client stream: completes without an error event', function () {",
+                  "  pm.expect(txt, 'stream must not carry an error event: ' + txt.slice(0, 600)).to.not.include('event: error');",
+                  "  pm.expect(txt, 'stream must not carry the deferred-tools rejection').to.not.include('Deferred tools require');",
+                  "  pm.expect(txt, 'stream must reach message_stop: ' + txt.slice(-600)).to.include('message_stop');",
+                  "});",
+                  "pm.test('deferred tool search client stream: every content_block_start carries a block', function () {",
+                  "  var lines = txt.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; });",
+                  "  lines.forEach(function (l) {",
+                  "    var ev; try { ev = JSON.parse(l.slice(6)); } catch (e) { return; }",
+                  "    if (ev.type === 'content_block_start') {",
+                  "      pm.expect(ev.content_block, 'content_block_start without a block: ' + l).to.be.an('object');",
+                  "      pm.expect(ev.content_block.type, 'content_block_start without a type: ' + l).to.be.a('string');",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-6-sol messages route: deferred tools with no search tool get the hosted tool_search - #8361",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"lookup_city_code\",\n      \"description\": \"Look up the IATA code for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"name\": \"fetch_weather_report\",\n      \"description\": \"Get weather for an IATA city code.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"zq_city_code_v7\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"zq_city_code_v7\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Tokyo (city code TYO)?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('deferred tool search hosted: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('deferred tool search hosted: OpenAI hosted tool_search added, defer_loading kept', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  var search = tools.filter(function (x) { return x.type === 'tool_search'; });",
+                  "  pm.expect(search.length, 'exactly one tool_search expected: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  pm.expect(search[0].execution, 'hosted tool_search carries no client execution: ' + JSON.stringify(search[0])).to.not.eql('client');",
+                  "  var fn = tools.filter(function (x) { return x.name === 'fetch_weather_report'; })[0];",
+                  "  pm.expect(fn && fn.defer_loading, 'fetch_weather_report must stay deferred: ' + wire.slice(0, 800)).to.eql(true);",
+                  "});",
+                  "pm.test('deferred tool search hosted: any hosted search comes back as a paired server_tool_use + tool_search_tool_result', function () {",
+                  "  var content = body.content || [];",
+                  "  var uses = content.filter(function (b) { return b.type === 'server_tool_use'; });",
+                  "  var results = content.filter(function (b) { return b.type === 'tool_search_tool_result'; });",
+                  "  pm.expect(results.length, 'each server_tool_use needs its tool_search_tool_result: ' + JSON.stringify(content).slice(0, 800)).to.eql(uses.length);",
+                  "  results.forEach(function (r) {",
+                  "    pm.expect(uses.map(function (u) { return u.id; }), 'tool_search_tool_result must reference its server_tool_use').to.include(r.tool_use_id);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-6-sol /v1/responses deferred function with no tool_search gets the hosted tool_search - #8361",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ],\n        \"additionalProperties\": false\n      }\n    }\n  ],\n  \"max_output_tokens\": 256\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('deferred tool search responses: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('deferred tool search responses: hosted tool_search added, defer_loading kept', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var tools = rr.tools || [];",
+                  "  pm.expect(tools.filter(function (x) { return x.type === 'tool_search'; }).length, 'want the hosted tool_search: ' + wire.slice(0, 800)).to.eql(1);",
+                  "  var fn = tools.filter(function (x) { return x.name === 'get_weather'; })[0];",
+                  "  pm.expect(fn && fn.defer_loading, 'get_weather must stay deferred: ' + wire.slice(0, 800)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "240. Deferred tools on models without tool search use the gateway search (gateway tool search)",
+      "description": "A request that defers tools (defer_loading) on a model with no tool search of its own (Gemini, older GPT, Bedrock non-Claude, ...) used to get every tool loaded up front. Bifrost now holds the deferred tools back and offers the model a bifrost_tool_search function; when the model calls it, Bifrost searches the deferred tools in the gateway, loads the matches and calls the model again, and the caller sees one response without the search call. Cases pin the upstream wire (raw_request carries bifrost_tool_search and no defer_loading) and that the search call never reaches the caller, on /v1/responses and the Anthropic messages route.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash /v1/responses deferred function loads through the gateway tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"input\": [\n    {\n      \"type\": \"message\",\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What is the weather in Paris? Use a weather tool.\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"lookup_city_code\",\n      \"description\": \"Look up the IATA code for a city.\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"max_output_tokens\": 512\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "var wire = typeof rr === 'string' ? rr : JSON.stringify(rr || null);",
+                  "pm.test('gateway tool search responses: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search responses: the upstream gets bifrost_tool_search, not defer_loading', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
+                  "  pm.expect(wire, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  pm.expect(wire, 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
+                  "});",
+                  "pm.test('gateway tool search responses: the search call never reaches the caller', function () {",
+                  "  var output = body.output || [];",
+                  "  pm.expect(output.filter(function (x) { return x.type === 'function_call' && x.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(output).slice(0, 800)).to.eql(0);",
+                  "  output.filter(function (x) { return x.type === 'function_call'; }).forEach(function (call) {",
+                  "    pm.expect(['lookup_city_code', 'get_weather'], 'calls only declared tools').to.include(call.name);",
+                  "  });",
+                  "});",
+                  "pm.test('gateway tool search responses: the deferred get_weather was loaded and called', function () {",
+                  "  var calls = (body.output || []).filter(function (x) { return x.type === 'function_call' && x.name === 'get_weather'; });",
+                  "  pm.expect(calls.length, 'want a get_weather call - a text-only reply never exercises deferred loading: ' + JSON.stringify(body.output || []).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-2.5-flash messages route: deferred tool loads through the gateway tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 512,\n  \"tools\": [\n    {\n      \"name\": \"lookup_city_code\",\n      \"description\": \"Look up the IATA code for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use a weather tool.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "var wire = typeof rr === 'string' ? rr : JSON.stringify(rr || null);",
+                  "pm.test('gateway tool search messages: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "pm.test('gateway tool search messages: the upstream gets bifrost_tool_search, not defer_loading', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.ok;",
+                  "  pm.expect(wire, 'the gateway search function must reach the upstream: ' + wire.slice(0, 800)).to.include('bifrost_tool_search');",
+                  "  pm.expect(wire, 'defer_loading must not reach a model without tool search').to.not.include('defer_loading');",
+                  "});",
+                  "pm.test('gateway tool search messages: the search call never reaches the caller', function () {",
+                  "  var content = body.content || [];",
+                  "  pm.expect(content.filter(function (b) { return b.type === 'tool_use' && b.name === 'bifrost_tool_search'; }).length, 'bifrost_tool_search leaked: ' + JSON.stringify(content).slice(0, 800)).to.eql(0);",
+                  "  content.filter(function (b) { return b.type === 'tool_use'; }).forEach(function (b) {",
+                  "    pm.expect(['lookup_city_code', 'get_weather'], 'calls only declared tools').to.include(b.name);",
+                  "  });",
+                  "});",
+                  "pm.test('gateway tool search messages: the deferred get_weather was loaded and called', function () {",
+                  "  var uses = (body.content || []).filter(function (b) { return b.type === 'tool_use' && b.name === 'get_weather'; });",
+                  "  pm.expect(uses.length, 'want a get_weather tool_use - a text-only reply never exercises deferred loading: ' + JSON.stringify(body.content || []).slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-2.5-flash messages route stream: deferred tool loads through the gateway tool search",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-2.5-flash\",\n  \"max_tokens\": 512,\n  \"stream\": true,\n  \"tools\": [\n    {\n      \"name\": \"lookup_city_code\",\n      \"description\": \"Look up the IATA code for a city.\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    },\n    {\n      \"name\": \"get_weather\",\n      \"description\": \"Get the current weather for a city.\",\n      \"defer_loading\": true,\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris? Use a weather tool.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('gateway tool search messages stream: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 400)).to.eql(200);",
+                  "});",
+                  "var events = txt.split('\\n').filter(function (l) { return l.indexOf('data: ') === 0; }).map(function (l) {",
+                  "  try { return JSON.parse(l.slice(6)); } catch (e) { return null; }",
+                  "}).filter(function (e) { return e; });",
+                  "pm.test('gateway tool search messages stream: one message, ending in message_stop, no error', function () {",
+                  "  pm.expect(txt, 'stream must not carry an error event: ' + txt.slice(0, 600)).to.not.include('event: error');",
+                  "  pm.expect(events.filter(function (e) { return e.type === 'message_start'; }).length, 'the search turns must splice into one message').to.eql(1);",
+                  "  pm.expect(events.filter(function (e) { return e.type === 'message_stop'; }).length, 'want exactly one message_stop: ' + txt.slice(-600)).to.eql(1);",
+                  "});",
+                  "pm.test('gateway tool search messages stream: the search call never reaches the caller', function () {",
+                  "  var uses = events.filter(function (e) { return e.type === 'content_block_start' && e.content_block && e.content_block.type === 'tool_use'; });",
+                  "  uses.forEach(function (e) {",
+                  "    pm.expect(e.content_block.name, 'bifrost_tool_search leaked into the stream').to.not.eql('bifrost_tool_search');",
+                  "    pm.expect(['lookup_city_code', 'get_weather'], 'calls only declared tools').to.include(e.content_block.name);",
+                  "  });",
+                  "});",
+                  "pm.test('gateway tool search messages stream: the deferred get_weather was loaded and called', function () {",
+                  "  var weather = events.filter(function (e) { return e.type === 'content_block_start' && e.content_block && e.content_block.type === 'tool_use' && e.content_block.name === 'get_weather'; });",
+                  "  pm.expect(weather.length, 'want a get_weather tool_use - a text-only stream never exercises deferred loading: ' + txt.slice(0, 800)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

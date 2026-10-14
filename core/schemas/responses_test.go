@@ -820,6 +820,75 @@ func TestResponsesMessagePreservesToolSearchExecution(t *testing.T) {
 	}
 }
 
+// A verbatim tool_search item surfaces its id, call_id and status, so converters can
+// pair a call with its output and give rebuilt blocks a stable id, while the bytes
+// still round-trip unchanged.
+func TestResponsesMessageSurfacesToolSearchIdentity(t *testing.T) {
+	raw := `{"id":"tsc_1","type":"tool_search_call","status":"completed","arguments":{"query":"loki"},"call_id":"call_1","execution":"client"}`
+	var msg ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(raw), &msg))
+	require.NotNil(t, msg.ID)
+	assert.Equal(t, "tsc_1", *msg.ID)
+	require.NotNil(t, msg.Status)
+	assert.Equal(t, "completed", *msg.Status)
+	require.NotNil(t, msg.ResponsesToolMessage)
+	require.NotNil(t, msg.CallID)
+	assert.Equal(t, "call_1", *msg.CallID)
+	require.NotNil(t, msg.Arguments)
+	assert.True(t, msg.IsVerbatimItem())
+	assert.True(t, msg.IsClientToolSearchItem())
+	encoded, err := MarshalSorted(msg)
+	require.NoError(t, err)
+	assert.Equal(t, raw, string(encoded))
+
+	// Hosted search sends call_id null: no CallID, no client execution.
+	var hosted ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(`{"id":"tsc_2","type":"tool_search_call","execution":"server","call_id":null,"arguments":{}}`), &hosted))
+	assert.Equal(t, "tsc_2", *hosted.ID)
+	assert.Nil(t, hosted.CallID)
+	assert.False(t, hosted.IsClientToolSearchItem())
+}
+
+func TestResponsesMessageToolSearchOutputToolNames(t *testing.T) {
+	var msg ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(`{"type":"tool_search_output","tools":[{"type":"function","name":"get_weather"},{"type":"namespace","name":"crm","tools":[{"type":"function","name":"list_orders"},{"type":"function","name":"get_order"}]}]}`), &msg))
+	assert.Equal(t, []string{"get_weather", "list_orders", "get_order"}, msg.ToolSearchOutputToolNames())
+	assert.Nil(t, (&ResponsesMessage{}).ToolSearchOutputToolNames())
+}
+
+func TestClientToolSearchFunctionName(t *testing.T) {
+	function := func(name string, deferred bool) ResponsesTool {
+		tool := ResponsesTool{Type: ResponsesToolTypeFunction, Name: Ptr(name), ResponsesToolFunction: &ResponsesToolFunction{}}
+		if deferred {
+			tool.DeferLoading = Ptr(true)
+		}
+		return tool
+	}
+	referenceHistory := []ResponsesMessage{
+		{Type: Ptr(ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr("c1"), Name: Ptr("find_tools")}},
+		{Type: Ptr(ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr("c1"), Output: &ResponsesToolMessageOutputStruct{
+			ResponsesFunctionToolCallOutputBlocks: []ResponsesMessageContentBlock{{Type: ResponsesInputMessageContentBlockTypeToolReference, ToolName: Ptr("get_weather")}},
+		}}},
+	}
+	for _, tc := range []struct {
+		name  string
+		tools []ResponsesTool
+		input []ResponsesMessage
+		want  string
+	}{
+		{"claude code name", []ResponsesTool{function("ToolSearch", false), function("get_weather", true)}, nil, "ToolSearch"},
+		{"docs name", []ResponsesTool{function("tool_search", false), function("get_weather", true)}, nil, "tool_search"},
+		{"history signal", []ResponsesTool{function("find_tools", false), function("get_weather", true)}, referenceHistory, "find_tools"},
+		{"nothing deferred", []ResponsesTool{function("tool_search", false), function("get_weather", false)}, nil, ""},
+		{"deferred search name is not the search", []ResponsesTool{function("tool_search", true)}, nil, ""},
+		{"no search function", []ResponsesTool{function("lookup", false), function("get_weather", true)}, nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ClientToolSearchFunctionName(tc.tools, tc.input))
+		})
+	}
+}
+
 func TestResponsesMessageRoundTripsToolSearchOutputTools(t *testing.T) {
 	raw := []byte(`{"id":"tso_1","type":"tool_search_output","call_id":"call_1","tools":[{"type":"namespace","name":"telemetry","tools":[{"type":"function","name":"query_loki_logs","description":"query loki","parameters":{"type":"object","properties":{"run_id":{"type":"string"}}}}]}]}`)
 

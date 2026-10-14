@@ -17,6 +17,7 @@ import (
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -152,7 +153,7 @@ func TestAgentGatewayPushIngressRoute(t *testing.T) {
 	_, err = manager.Create(context.Background(), agent.CreateRequest{Name: "push-fixture", AgentCardURL: upstream.URL + a2asrv.WellKnownAgentCardPath})
 	require.NoError(t, err)
 
-	h := NewAgentGatewayHandler(manager, nil, &lib.Config{}, nil)
+	h := NewAgentGatewayHandler(manager, nil, &lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway")}}, nil)
 	r := router.New()
 	// Registered without the Agent Gateway authentication middleware, exactly
 	// as the server wires it: the per-config token is the only credential.

@@ -93,6 +93,8 @@ type HandlerStore interface {
 	ShouldAllowPerRequestRawOverride() bool
 	// ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header
 	ShouldAllowDirectKeys() bool
+	// ShouldSendExtraFieldsInHeaders returns whether inference responses carry extra_fields as headers instead of in the body
+	ShouldSendExtraFieldsInHeaders() bool
 	// IsProviderConfigured reports whether provider has a configuration on this gateway
 	IsProviderConfigured(provider schemas.ModelProvider) bool
 	// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
@@ -1535,7 +1537,7 @@ func ApplyMCPOAuthPrivateAllowlist(entries []string) error {
 	return nil
 }
 
-// sanitizeMCPExternalOAuthURLs validates the MCP external OAuth URL overrides
+// sanitizeMCPExternalOAuthURLs validates the MCP, Agent Gateway, and skills public URL overrides
 // on a ClientConfig and clears any invalid override so it cannot leak into
 // OAuth URL generation. The warning intentionally omits the offending value:
 // these fields support env-var references (`env.MY_VAR`), and echoing the
@@ -1545,12 +1547,16 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 	if client == nil {
 		return
 	}
-	if err := ValidateBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
+	if err := configstore.ValidatePublicBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
 		logger.Warn("mcp_external_client_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
 		client.MCPExternalClientURL = nil
 	}
-	if err := ValidateBaseURL(client.A2AExternalClientURL.GetValue()); err != nil {
-		logger.Warn("a2a_external_client_url %v; override will be ignored and agent card and push callback URLs will fall back to the request Host header", err)
+	if err := configstore.ValidatePublicBaseURL(client.SkillsExternalClientURL.GetValue()); err != nil {
+		logger.Warn("skills_external_client_url %v; marketplace serving will be disabled", err)
+		client.SkillsExternalClientURL = nil
+	}
+	if err := configstore.ValidatePublicBaseURL(client.A2AExternalClientURL.GetValue()); err != nil {
+		logger.Warn("a2a_external_client_url %v; Agent Gateway protocol endpoints will be disabled", err)
 		client.A2AExternalClientURL = nil
 	}
 }
@@ -2390,6 +2396,11 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 	}
 	fileClient.StdioConfig = existing.StdioConfig
 
+	if fileClient.EndpointSlug != "" && configstore.Slugify(fileClient.EndpointSlug) != existing.EndpointSlug {
+		changed = append(changed, "endpoint_slug")
+	}
+	fileClient.EndpointSlug = existing.EndpointSlug
+
 	// oauth_config drift is not pinned here: it is fully handled by
 	// rotateMCPOauthConfigFromFile at the call sites below, which applies any
 	// declared change (client_id/client_secret/authorize_url/token_url/
@@ -2657,6 +2668,7 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.ConnectionType = string(clientConfig.ConnectionType)
 	row.ConnectionString = clientConfig.ConnectionString
 	row.StdioConfig = clientConfig.StdioConfig
+	row.EndpointSlug = clientConfig.EndpointSlug
 	row.PerUserHeaderKeys = mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys)
 	row.TokenExchange = clientConfig.TokenExchange
 	row.OauthConfigID = clientConfig.OauthConfigID
@@ -2882,6 +2894,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 	return configstoreTables.TableMCPClient{
 		ClientID:                  clientConfig.ID,
 		Name:                      clientConfig.Name,
+		EndpointSlug:              clientConfig.EndpointSlug,
 		IsCodeModeClient:          clientConfig.IsCodeModeClient,
 		ConnectionType:            string(clientConfig.ConnectionType),
 		ConnectionString:          clientConfig.ConnectionString,
@@ -3829,6 +3842,12 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					// Resolve MCP client names to IDs for config file mcp_configs
 					configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
 						ctx, config.ConfigStore, configData.Governance.VirtualKeys[i].MCPConfigs, newVirtualKey.ID)
+					// An entry without a metadata field keeps the metadata already stored (set
+					// through the API); only an explicit {} clears it. The store's UpdateVirtualKey
+					// keeps it too, and carrying it here keeps the in-memory copy in step.
+					if configData.Governance.VirtualKeys[i].Metadata == nil {
+						configData.Governance.VirtualKeys[i].Metadata = existingVirtualKey.Metadata
+					}
 					virtualKeysToUpdate = append(virtualKeysToUpdate, configData.Governance.VirtualKeys[i])
 					governanceConfig.VirtualKeys[j] = configData.Governance.VirtualKeys[i]
 				} else {
@@ -7575,6 +7594,14 @@ func (c *Config) ShouldEnforceVKObjectOwnership() bool {
 	return c.ClientConfig == nil || c.ClientConfig.EnforceVKObjectOwnership
 }
 
+// ShouldSendExtraFieldsInHeaders reports client.extra_fields_placement == "headers". It reads under
+// Mu, the lock config saves and reloads hold while they copy the client config in; unset means body.
+func (c *Config) ShouldSendExtraFieldsInHeaders() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig != nil && c.ClientConfig.ExtraFieldsPlacement == configstoreTables.ExtraFieldsPlacementHeaders
+}
+
 // ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.
 func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
@@ -7592,17 +7619,32 @@ func (c *Config) IsProviderConfigured(provider schemas.ModelProvider) bool {
 // redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 // if not configured. Resolves env var references automatically.
 func (c *Config) GetMCPExternalClientURL() string {
-	return c.ClientConfig.MCPExternalClientURL.GetValue()
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return ""
+	}
+	value := c.ClientConfig.MCPExternalClientURL.GetValue()
+	if configstore.ValidatePublicBaseURL(value) != nil {
+		return ""
+	}
+	return value
 }
 
 // GetA2AExternalClientURL returns the configured external base URL used for Agent Gateway
 // push-notification callback URLs and served agent card URLs, or empty string if not
 // configured. Resolves env var references automatically.
 func (c *Config) GetA2AExternalClientURL() string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
 	if c.ClientConfig == nil || c.ClientConfig.A2AExternalClientURL == nil {
 		return ""
 	}
-	return c.ClientConfig.A2AExternalClientURL.GetValue()
+	value := c.ClientConfig.A2AExternalClientURL.GetValue()
+	if configstore.ValidatePublicBaseURL(value) != nil {
+		return ""
+	}
+	return value
 }
 
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.
@@ -10609,4 +10651,18 @@ func (c *Config) GetMCPClientOpenAPISpec(id string) (spec string, isOpenAPI bool
 		}
 	}
 	return "", false, false
+}
+
+// GetSkillsExternalClientURL returns the configured public marketplace URL without request-header fallbacks.
+func (c *Config) GetSkillsExternalClientURL() string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return ""
+	}
+	value := c.ClientConfig.SkillsExternalClientURL.GetValue()
+	if err := configstore.ValidatePublicBaseURL(value); err != nil {
+		return ""
+	}
+	return strings.TrimRight(value, "/")
 }

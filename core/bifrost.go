@@ -8278,7 +8278,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				// Disable GenAI raw-body passthrough when this attempt's provider isn't Google's.
 				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider, req.RequestType, resolvedModel)
-				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType)
+				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, &req.BifrostRequest, baseProvider, resolvedModel)
 				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
 				applyProviderProxySignal(req.Context, config)
@@ -8405,7 +8405,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				clearAnthropicPassthroughForUnsupportedStructuredOutput(req.Context, baseProvider, &req.BifrostRequest)
 				// Disable GenAI raw-body passthrough when this attempt's provider isn't Google's.
 				clearGenAIPassthroughForNonGoogleProvider(req.Context, baseProvider, req.RequestType, resolvedModel)
-				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, req.RequestType)
+				injectedTools := bifrost.injectedToolsForAttempt(req.Context, config, &req.BifrostRequest, baseProvider, resolvedModel)
 				injectedTools = clearAnthropicPassthroughForInjectedTools(req.Context, injectedTools, &req.BifrostRequest)
 				applyRawCaptureSignals(req.Context, config)
 				applyProviderProxySignal(req.Context, config)

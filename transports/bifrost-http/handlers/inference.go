@@ -2365,6 +2365,8 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// Routed-identity headers from the context snapshot — routing is final once
 	// the stream channel is returned, before any chunk arrives.
 	lib.ApplyBifrostStreamResponseHeaders(ctx, bifrostCtx, requestType)
+	// Read once on the handler goroutine: in headers mode every chunk drops extra_fields.
+	stripExtraFields := lib.ExtraFieldsInHeaders(ctx)
 
 	// Signal to tracing middleware that trace completion should be deferred
 	// The streaming callback will complete the trace after the stream ends
@@ -2531,6 +2533,9 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 							}
 							return
 						}
+						if stripExtraFields {
+							errorJSON = lib.StripExtraFields(errorJSON)
+						}
 						// Return error event and stop streaming
 						reader.SendError(errorJSON)
 						cancel()
@@ -2550,6 +2555,9 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// Convert response to JSON (transport-goroutine CPU).
 			cpuStart := time.Now()
 			chunkJSON, err := sonic.Marshal(chunk)
+			if err == nil && stripExtraFields {
+				chunkJSON = lib.StripExtraFields(chunkJSON)
+			}
 			streamTransportCPUNs += time.Since(cpuStart).Nanoseconds()
 			if err != nil {
 				logger.Warn("Failed to marshal streaming response: %v", err)

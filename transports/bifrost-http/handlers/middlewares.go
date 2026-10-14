@@ -367,6 +367,8 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 			ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
 		}
 		ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
+		// Lets browser clients read the x-bifrost-* headers, which carry extra_fields in headers mode.
+		ctx.Response.Header.Set("Access-Control-Expose-Headers", lib.ExposedResponseHeaders)
 		// Vary: Origin tells caches that the response varies based on the Origin
 		// request header, preventing incorrect CORS headers from being served.
 		ctx.Response.Header.Set("Vary", "Origin")
