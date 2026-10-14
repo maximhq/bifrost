@@ -2378,6 +2378,11 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 	}
 	fileClient.StdioConfig = existing.StdioConfig
 
+	if fileClient.EndpointSlug != "" && configstore.Slugify(fileClient.EndpointSlug) != existing.EndpointSlug {
+		changed = append(changed, "endpoint_slug")
+	}
+	fileClient.EndpointSlug = existing.EndpointSlug
+
 	// oauth_config drift is not pinned here: it is fully handled by
 	// rotateMCPOauthConfigFromFile at the call sites below, which applies any
 	// declared change (client_id/client_secret/authorize_url/token_url/
@@ -2645,6 +2650,7 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.ConnectionType = string(clientConfig.ConnectionType)
 	row.ConnectionString = clientConfig.ConnectionString
 	row.StdioConfig = clientConfig.StdioConfig
+	row.EndpointSlug = clientConfig.EndpointSlug
 	row.PerUserHeaderKeys = mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys)
 	row.TokenExchange = clientConfig.TokenExchange
 	row.OauthConfigID = clientConfig.OauthConfigID
@@ -2870,6 +2876,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 	return configstoreTables.TableMCPClient{
 		ClientID:                  clientConfig.ID,
 		Name:                      clientConfig.Name,
+		EndpointSlug:              clientConfig.EndpointSlug,
 		IsCodeModeClient:          clientConfig.IsCodeModeClient,
 		ConnectionType:            string(clientConfig.ConnectionType),
 		ConnectionString:          clientConfig.ConnectionString,
