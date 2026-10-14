@@ -267302,6 +267302,188 @@
           }
         }
       ]
+    },
+    {
+      "name": "236. MCP client served at its derived endpoint slug (mcp-client-slug)",
+      "description": "Regression for #7763. A config.json MCP client declared without endpoint_slug gets one derived from its name (sse_mcp -> sse-mcp) and is served at /mcp/<slug>. The bug: a later boot that re-synced the file entry (a config.json edit in default mode, or every boot under source_of_truth=config.json) replaced the in-memory client with the slug-less file copy, so every /mcp/<slug> answered 403 access_denied while the DB and UI still showed the slug. A single live run boots once, so it pins slug serving end to end rather than reproducing the reload; the Go test TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug is the red/green pin.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai mcp-client-slug initialize at /mcp/sse-mcp serves the config.json client - #7763",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/mcp/sse-mcp"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line).result;",
+                  "}",
+                  "",
+                  "pm.test('the derived slug of a config.json client is served', function () {",
+                  "  pm.expect(pm.response.code, 'slug endpoint refused - the client lost its endpoint_slug in memory: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result, 'no JSON-RPC result: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(result.serverInfo && result.serverInfo.name, 'serverInfo missing: ' + pm.response.text()).to.equal('bifrost');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-200] openai mcp-client-slug tools/list at /mcp/sse-mcp is narrowed to sse_mcp - #7763",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/mcp/sse-mcp"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  return JSON.parse(line).result;",
+                  "}",
+                  "",
+                  "pm.test('the slug endpoint lists only its own client\\'s tools', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result && result.tools, 'no tools array: ' + pm.response.text()).to.be.an('array');",
+                  "  pm.expect(result.tools.length, 'slug endpoint served no tools: ' + pm.response.text()).to.be.above(0);",
+                  "  result.tools.forEach(function (t) {",
+                  "    pm.expect(t.name.indexOf('sse_mcp-'), 'tool from another client leaked onto /mcp/sse-mcp: ' + t.name).to.equal(0);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-403] openai mcp-client-slug unknown slug is refused - #7763",
+          "protocolProfileBehavior": {
+            "followRedirects": false,
+            "disableCookies": true
+          },
+          "request": {
+            "auth": {
+              "type": "noauth"
+            },
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"harness\",\"version\":\"1\"}}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": "{{baseUrl}}/mcp/no-such-mcp-slug"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an unknown slug is refused with access_denied', function () {",
+                  "  pm.expect(pm.response.code, 'unknown slug was not refused: ' + pm.response.text()).to.equal(403);",
+                  "  pm.expect(pm.response.text(), 'refusal body changed: ' + pm.response.text()).to.include('access_denied');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
