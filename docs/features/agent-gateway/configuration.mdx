@@ -29,7 +29,13 @@ Set **External Client URL** before configuring push notifications. Bifrost uses 
 
 This URL also sets the public address advertised in served agent cards, including when Bifrost runs behind a proxy.
 
-![Agent Gateway settings with the public URL and raw capture controls](/media/agent-gateway/ui-settings.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-settings.png"
+    alt="Agent Gateway settings with the public URL and raw capture controls"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 <Tabs group="config-method">
 <Tab title="Web UI">
@@ -61,7 +67,17 @@ Without this setting, served HTTP agent cards use the incoming request host.
 
 When you register a callback through Bifrost, the agent sends updates to Bifrost, which delivers them to your application's callback.
 
-<img src="/media/agent-gateway/push-flow.svg" alt="The client registers its callback through Bifrost. The agent sends task updates to Bifrost, which delivers them to the client callback." />
+```mermaid
+sequenceDiagram
+    participant App as Your application
+    participant BF as Bifrost
+    participant Agent as A2A agent
+    App->>BF: Register task callback and authentication
+    BF->>Agent: Register Bifrost callback and separate token
+    Agent->>BF: Push notification with task update
+    BF->>App: Deliver update to original callback
+    App-->>BF: HTTP 2xx acknowledges delivery
+```
 
 Bifrost constructs the agent's callback URL as `<base-url>/agents/a2a/<agent-name>/push/callback`. Allow the upstream agent to reach this route through your proxy or ingress.
 

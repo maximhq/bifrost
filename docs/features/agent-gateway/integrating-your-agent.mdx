@@ -10,9 +10,9 @@ Your agent must supply two pieces of information: who is making the call, and wh
 
 ## Reuse the caller's credential
 
-Enable [**Forward Bifrost authentication**](/features/agent-gateway/authentication#forward-the-caller%E2%80%99s-bifrost-authentication) on the registration. In your agent server, read the accepted credential that Bifrost forwards and reuse it on requests to Bifrost's LLM and MCP endpoints.
+Enable [**Forward Bifrost authentication**](/features/agent-gateway/authentication#forward-bifrost-authentication) on the registration. In your agent server, read the accepted credential that Bifrost forwards and reuse it on requests to Bifrost's LLM and MCP endpoints.
 
-For a client authenticated with `x-bf-vk`, this means forwarding that same header value. If you use a supported enterprise identity credential, preserve its accepted header and value. See [authentication](./authentication#forward-the-caller%E2%80%99s-bifrost-authentication) for header collisions and server configuration.
+For a client authenticated with `x-bf-vk`, this means forwarding that same header value. If you use a supported enterprise identity credential, preserve its accepted header and value. See [authentication](./authentication#forward-bifrost-authentication) for header collisions and server configuration.
 
 The caller also needs permission to use the requested model and MCP tools. Permission to call the agent is a separate grant.
 
@@ -28,7 +28,14 @@ On every LLM and MCP request made for an A2A task, send `x-bf-session-id` with t
 | `x-bf-agent-correlation-id` | Task ID | The model and tool calls for this task. |
 | `x-bf-vk`, or the accepted identity header | Forwarded caller credential | Access checks and caller attribution. |
 
-![The A2A context and task IDs become correlation headers on model and tool calls](/media/agent-gateway/correlation-flow.svg)
+```mermaid
+flowchart TD
+    Context["A2A context ID"] --> Session["x-bf-session-id"]
+    Task["A2A task ID"] --> Correlation["x-bf-agent-correlation-id"]
+    Session --> Calls["Agent sends both headers on<br/>Bifrost LLM and MCP requests"]
+    Correlation --> Calls
+    Calls --> Logs["Agent Logs links the session and task<br/>to LLM Logs and MCP Logs"]
+```
 
 Use the task and context IDs assigned by your A2A server. For a new task, read them from the server's execution context before making its first model call. Do not substitute the JSON-RPC request ID, message ID, or an unrelated tracing UUID.
 

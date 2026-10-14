@@ -31,7 +31,13 @@ Before selecting **Fetch**, expand **Card fetch options** and enter the credenti
 
 The preview shows the agent's skills, interfaces, capabilities, and advertised authentication. Check that this is the agent you intended to register.
 
-![New agent registration with separate card fetch and request authentication controls](/media/agent-gateway/ui-registration.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-registration.png"
+    alt="New agent registration with separate card fetch and request authentication controls"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 </Step>
 <Step title="Check request authentication">
 The card's requirements select the request authentication fields. Fill in the credentials your agent expects.
@@ -43,7 +49,13 @@ The card's requirements select the request authentication fields. Fill in the cr
 
 The [authentication guide](./authentication) explains auto-selection, overrides, and what happens when two credentials use the same header.
 
-![Card-selected Authorization header authentication with TLS and credential forwarding controls](/media/agent-gateway/ui-registration-auth.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-registration-auth.png"
+    alt="Card-selected Authorization header authentication with TLS and credential forwarding controls"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 </Step>
 <Step title="Grant access and create">
 Select the virtual keys allowed to call the agent. Leave **Allow any virtual key** off for a restricted agent, or turn it on to allow identified callers without an explicit agent grant.
@@ -63,7 +75,13 @@ Agent grants restrict authenticated callers. Enable inference authentication enf
 
 Your agent appears in **Agent Catalog** after registration. Reopen it to review its access and copy the gateway endpoints.
 
-![A registered research agent in the Agent Catalog with one virtual-key grant](/media/agent-gateway/ui-catalog.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-catalog.png"
+    alt="A registered research agent in the Agent Catalog with one virtual-key grant"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 Open the agent's action menu and select **Edit**. Under **Gateway endpoints**, use the copy button beside **Agent card**, **JSON-RPC**, **REST**, or **gRPC**. Give your client the gateway's agent card URL for discovery, or the endpoint for its chosen transport.
 
@@ -71,7 +89,13 @@ Open the agent's action menu and select **Edit**. Under **Gateway endpoints**, u
 Each request to the gateway's agent card URL fetches the current card from your agent server, using the configured card-fetch authentication. Bifrost rewrites its endpoints and authentication requirements for gateway access before returning it. It does not return a cached registration-time card. If your server cannot provide the card, the request fails.
 </Note>
 
-![The edit form's Gateway endpoints section with copy buttons for the agent card and each transport](/media/agent-gateway/ui-gateway-endpoints.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-gateway-endpoints.png"
+    alt="The edit form&#x27;s Gateway endpoints section with copy buttons for the agent card and each transport"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 ## Register from deployment configuration
 

@@ -51,7 +51,13 @@ Open **Agent Gateway → Push Configurations** to find registrations by agent, t
 
 Configurations are not automatically removed when a task finishes. Your application should call the A2A delete-task-push-configuration operation through Bifrost when it no longer needs updates. This removes the registration from both the agent server and Bifrost.
 
-![A saved trip-updates callback in Push Configurations, with agent and identifier filters](/media/agent-gateway/ui-push-configs.png)
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-push-configs.png"
+    alt="A saved trip-updates callback in Push Configurations, with agent and identifier filters"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
 
 | Action | What it removes |
 | --- | --- |
@@ -94,6 +100,8 @@ A `202 Accepted` response to the upstream agent means Bifrost queued the notific
     }
   }
   ```
+
+  `read_buffer_size` is required by the server configuration schema and controls the HTTP header read buffer. It is unrelated to private callback delivery; keep your existing value when updating this configuration.
 
   The equivalent Helm value is:
 
