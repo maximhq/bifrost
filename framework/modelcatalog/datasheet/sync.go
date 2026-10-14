@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -59,20 +61,10 @@ func (s *Store) SyncFromURL(ctx context.Context) error {
 	}
 
 	if s.configStore != nil {
-		// Dedup by (model, provider, mode) before the write: the batched upsert
+		// One row per (model, provider, mode) before the write: the batched upsert
 		// below issues multi-row ON CONFLICT statements, and PostgreSQL rejects a
 		// statement whose VALUES list hits the same conflict target twice.
-		records := make([]configstoreTables.TableModelPricing, 0, len(pricingData))
-		seen := make(map[string]struct{}, len(pricingData))
-		for modelKey, entry := range pricingData {
-			pricing := convertEntryToTablePricing(modelKey, entry)
-			key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			records = append(records, pricing)
-		}
+		records := s.resolvePricingRows(pricingData)
 		if err := s.configStore.UpsertModelPricesBatch(ctx, records); err != nil {
 			return fmt.Errorf("failed to sync pricing data to database: %w", err)
 		}
@@ -89,6 +81,96 @@ func (s *Store) SyncFromURL(ctx context.Context) error {
 		s.logger.Debug("successfully synced %d pricing records", len(pricingData))
 	}
 	return nil
+}
+
+// pricingCandidate is one datasheet row competing for a stored key. Only the datasheet key is
+// kept: the full row is converted once, for the winner, so a sync does not copy every large row.
+type pricingCandidate struct {
+	modelKey string
+	exact    bool // the row's own provider is already the stored provider, nothing was folded
+}
+
+// beats reports whether c should replace other as the stored row for their shared key. The answer
+// depends only on the two rows, never on the order they are visited in.
+func (c pricingCandidate) beats(other pricingCandidate) bool {
+	if c.exact != other.exact {
+		return c.exact
+	}
+	return c.modelKey < other.modelKey
+}
+
+func sameListPrice(a, b Entry) bool {
+	return equalCost(a.InputCostPerToken, b.InputCostPerToken) && equalCost(a.OutputCostPerToken, b.OutputCostPerToken)
+}
+
+func equalCost(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// resolvePricingRows turns the parsed datasheet into one stored row per (model, provider, mode).
+// Several datasheet rows can fold onto one key: extractModelName drops the "bedrock_mantle/" prefix
+// and normalizeProvider maps both providers to "bedrock". The survivor is chosen by rule so every
+// sync of the same datasheet stores the same price: a row whose own provider already is the stored
+// provider beats a folded-in one, then the smaller datasheet key wins. Rows come back in key order,
+// and a fold between rows with different prices is logged.
+func (s *Store) resolvePricingRows(pricingData map[string]Entry) []configstoreTables.TableModelPricing {
+	winners := make(map[string]pricingCandidate, len(pricingData))
+	var losers map[string][]string // stored key -> datasheet keys that lost it; empty unless rows fold
+	for modelKey, entry := range pricingData {
+		// Same identity convertEntryToTablePricing stores the row under.
+		provider := normalizeProvider(entry.Provider)
+		key := makeKey(extractModelName(modelKey), provider, entry.Mode)
+		cand := pricingCandidate{modelKey: modelKey, exact: entry.Provider == provider}
+		cur, taken := winners[key]
+		lost := cand.modelKey
+		switch {
+		case !taken:
+			winners[key] = cand
+			continue
+		case cand.beats(cur):
+			winners[key] = cand
+			lost = cur.modelKey
+		}
+		if losers == nil {
+			losers = make(map[string][]string)
+		}
+		losers[key] = append(losers[key], lost)
+	}
+
+	keys := make([]string, 0, len(winners))
+	for key := range winners {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	records := make([]configstoreTables.TableModelPricing, 0, len(keys))
+	var conflicts []string
+	for _, key := range keys {
+		win := winners[key]
+		records = append(records, convertEntryToTablePricing(win.modelKey, pricingData[win.modelKey]))
+		var dropped []string
+		for _, lost := range losers[key] {
+			if !sameListPrice(pricingData[win.modelKey], pricingData[lost]) {
+				dropped = append(dropped, lost)
+			}
+		}
+		if len(dropped) > 0 {
+			sort.Strings(dropped)
+			conflicts = append(conflicts, fmt.Sprintf("%s kept over %s", win.modelKey, strings.Join(dropped, ", ")))
+		}
+	}
+	if len(conflicts) > 0 && s.logger != nil {
+		const shown = 5
+		examples := conflicts
+		if len(examples) > shown {
+			examples = examples[:shown]
+		}
+		s.logger.Warn("pricing datasheet has %d stored keys with rows at different prices that fold onto one key; kept the row whose provider matches, else the smaller datasheet key (e.g. %s)", len(conflicts), strings.Join(examples, "; "))
+	}
+	return records
 }
 
 // LoadFromDB reloads the in-memory pricing cache + datasheet view from the
@@ -135,12 +217,11 @@ func (s *Store) LoadFromURLIntoMemory(ctx context.Context) error {
 // from a freshly-parsed URL payload. Used by the LoadFromURLIntoMemory
 // path and the no-configstore SyncFromURL fallback.
 func (s *Store) applyPricingData(pricingData map[string]Entry) {
+	records := s.resolvePricingRows(pricingData)
 	s.mu.Lock()
-	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(pricingData))
-	for modelKey, entry := range pricingData {
-		pricing := convertEntryToTablePricing(modelKey, entry)
-		key := makeKey(pricing.Model, pricing.Provider, pricing.Mode)
-		s.pricingData[key] = pricing
+	s.pricingData = make(map[string]configstoreTables.TableModelPricing, len(records))
+	for _, pricing := range records {
+		s.pricingData[makeKey(pricing.Model, pricing.Provider, pricing.Mode)] = pricing
 	}
 	s.rebuildDatasheetViewUnsafe()
 	s.mu.Unlock()
