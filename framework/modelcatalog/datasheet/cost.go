@@ -252,6 +252,8 @@ func (s *Store) computeCostFromInput(input costInput, routingInfo schemas.Routin
 		return computeEmbeddingCost(pricing, input.usage, input.tier)
 	case schemas.RerankRequest:
 		return computeRerankCost(pricing, input.usage, input.tier)
+	case schemas.DecisionRequest:
+		return computeDecisionCost(pricing, input.usage, input.tier)
 	case schemas.SpeechRequest:
 		return computeSpeechCost(pricing, input.usage, input.audioSeconds, input.audioTextInputChars, input.tier)
 	case schemas.TranscriptionRequest:
@@ -303,6 +305,9 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 
 	case result.RerankResponse != nil && result.RerankResponse.Usage != nil:
 		input.usage = result.RerankResponse.Usage
+
+	case result.DecisionResponse != nil && result.DecisionResponse.Usage != nil:
+		input.usage = result.DecisionResponse.Usage
 
 	case result.SpeechResponse != nil && result.SpeechResponse.Usage != nil:
 		input.usage = speechUsageToBifrostUsage(result.SpeechResponse.Usage)
@@ -1563,4 +1568,18 @@ func passthroughUsageToCostInput(su *schemas.BifrostPassthroughUsage) costInput 
 		input.containerIdentifierString = su.ContainerIdentifier
 	}
 	return input
+}
+
+// computeDecisionCost prices a decision request on token usage. Typesafe bills
+// input tokens only, so the output rate is normally zero, but both sides are
+// honored from the datasheet so a provider that later charges output stays
+// correct without a code change.
+func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) float64 {
+	if usage == nil {
+		return 0
+	}
+	tierTokens := usage.PromptTokens
+	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
+	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
+	return inputCost + outputCost
 }

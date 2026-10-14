@@ -605,6 +605,9 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 			},
 		}, []schemas.ResponsesMessage{}
 	}
+	if request.DecisionRequest != nil {
+		return decisionInputLog(request.DecisionRequest.Input), []schemas.ResponsesMessage{}
+	}
 	if request.RerankRequest != nil {
 		query := request.RerankRequest.Query
 		return []schemas.ChatMessage{
@@ -625,6 +628,59 @@ func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]s
 	return []schemas.ChatMessage{}, []schemas.ResponsesMessage{}
 }
 
+// decisionInputLog renders a decision input as chat messages for the log.
+// Text and a structured input (as JSON, the way a state was always logged)
+// are one user message; messages are logged the way chat requests are, so the
+// logs UI shows their text and inline images the same way. A part of a type
+// the schema does not model is kept as its type name, and a message without a
+// role is the user's.
+func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
+	if input.Messages == nil {
+		var text string
+		if input.Text != nil {
+			text = *input.Text
+		} else if raw, err := schemas.Marshal(input.Structured); err == nil {
+			text = string(raw)
+		}
+		return []schemas.ChatMessage{{
+			Role:    schemas.ChatMessageRoleUser,
+			Content: &schemas.ChatMessageContent{ContentStr: &text},
+		}}
+	}
+	messages := make([]schemas.ChatMessage, 0, len(input.Messages))
+	for _, message := range input.Messages {
+		role := schemas.ChatMessageRole(message.Role)
+		if role == "" {
+			role = schemas.ChatMessageRoleUser
+		}
+		if message.Content.Text != nil {
+			messages = append(messages, schemas.ChatMessage{
+				Role:    role,
+				Content: &schemas.ChatMessageContent{ContentStr: message.Content.Text},
+			})
+			continue
+		}
+		blocks := make([]schemas.ChatContentBlock, 0, len(message.Content.Parts))
+		for _, part := range message.Content.Parts {
+			switch {
+			case part.Type == schemas.DecisionInputPartTypeText && part.Text != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: part.Text})
+			case part.Type == schemas.DecisionInputPartTypeImage && part.ImageURL != nil:
+				blocks = append(blocks, schemas.ChatContentBlock{
+					Type:           schemas.ChatContentBlockTypeImage,
+					ImageURLStruct: &schemas.ChatInputImage{URL: *part.ImageURL, Detail: part.Detail},
+				})
+			default:
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("[" + part.Type + "]")})
+			}
+		}
+		messages = append(messages, schemas.ChatMessage{
+			Role:    role,
+			Content: &schemas.ChatMessageContent{ContentBlocks: blocks},
+		})
+	}
+	return messages
+}
 func extractRealtimeInputHistory(input []schemas.ResponsesMessage) []schemas.ChatMessage {
 	messages := make([]schemas.ChatMessage, 0, len(input))
 	for _, item := range input {
