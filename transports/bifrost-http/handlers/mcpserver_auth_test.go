@@ -37,6 +37,15 @@ func (f *fakeAdmitter) AdmitMCPGatewayRequest(ctx *schemas.BifrostContext) (sche
 	return f.access, f.refusal
 }
 
+// fakeAdmitter resolves no slugs; these tests only exercise the plain /mcp route.
+func (f *fakeAdmitter) VirtualMCPToolAccess(*schemas.BifrostContext, string, schemas.Access) ([]string, bool) {
+	return nil, false
+}
+
+func (f *fakeAdmitter) MCPClientToolAccess(*schemas.BifrostContext, string, schemas.Access) ([]string, bool) {
+	return nil, false
+}
+
 // newRequestCtx returns the pair a request is handled with: the fasthttp request, and a
 // BifrostContext standing in for what ConvertToBifrostContext would have produced from it.
 func newRequestCtx() (*fasthttp.RequestCtx, *schemas.BifrostContext) {
