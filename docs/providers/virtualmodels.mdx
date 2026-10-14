@@ -107,6 +107,8 @@ Virtual names appear in `/v1/models` and `/api/models`. Listings do not probe re
 
 Discovery filters virtual names by the caller's resolved access: the provider and **every candidate** must be permitted before the entry and its residency are published. A caller granted no providers sees nothing, and a provider prefix that does not match the owning provider is rejected.
 
+On the dashboard listing they take the same `?keys=` filter the concrete models take. A virtual model is listed only when the selected keys reach **every** candidate, since any one of them may be the one that serves, and the keys that do reach all of them are reported in `accessible_by_keys` exactly as a concrete model reports them.
+
 When nothing has been resolved the two cases behind that word are not the same, and they do not share a default. A caller who presented **no** credential gets the unfiltered listing, the same reading the concrete model listing gives: no governance deployed, or a management route that carries no grant. Authentication stays with the existing auth layer and this feature adds no second gate beside it.
 
 A caller who **did** present a virtual key and resolved to nothing was refused by governance, and is treated as refused: virtual names are omitted from listings, `GET /v1/models/{name}` answers 403, and no residency probe is spent on a credential with no right to that backend. "Presented" is read from the request headers using the same parser the auth middleware uses, because those two routes run outside that middleware.

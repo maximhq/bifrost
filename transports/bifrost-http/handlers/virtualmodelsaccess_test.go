@@ -234,3 +234,90 @@ func TestVirtualListedModelsTakeTheSearchFilter(t *testing.T) {
 		t.Fatalf("unmatched query = %+v, want nothing", got)
 	}
 }
+
+// The management listing filters concrete models by the keys selected with ?keys= and records which
+// keys reach each one in AccessibleByKeys. Virtual names must go through the same filter: a virtual
+// model is served by whichever candidate is resident, so a key reaches it only when it reaches every
+// candidate, and the keys that do are reported the way concrete entries report them. Before this,
+// ?keys= answered with virtual names none of the selected keys could serve, and left the field empty,
+// which downstream reads as unrestricted.
+func TestVirtualManagementListingAppliesKeysFilter(t *testing.T) {
+	cfg := testVirtualConfig(t)
+	all := schemas.Key{ID: "key-all", Models: schemas.WhiteList{"*"}}
+	flashOnly := schemas.Key{ID: "key-flash", Models: schemas.WhiteList{"flash"}}
+	cfg.Providers["omlx"] = configstore.ProviderConfig{
+		NetworkConfig: &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", AllowPrivateNetwork: true},
+		Keys:          []schemas.Key{all, flashOnly},
+	}
+	h := &ProviderHandler{inMemoryStore: cfg}
+
+	virtual := virtualListedModels(cfg, []schemas.ModelProvider{"omlx"}, nil, false, "")
+	if len(virtual) != 1 {
+		t.Fatalf("control failed: expected the omlx virtual name, got %+v", virtual)
+	}
+
+	// No keys selected: nothing to apply, entry kept with the field empty.
+	unfiltered := h.virtualModelsForListing(nil, virtual, modelListQuery{})
+	if len(unfiltered) != 1 || len(unfiltered[0].AccessibleByKeys) != 0 {
+		t.Fatalf("no keys selected = %+v, want the entry kept with no keys attached", unfiltered)
+	}
+
+	// A key that misses one candidate cannot serve the model at all.
+	partial := h.virtualModelsForListing(nil, virtual, modelListQuery{KeyIDs: []string{"key-flash"}})
+	if len(partial) != 0 {
+		t.Fatalf("key permitting one of two candidates = %+v, want it dropped", partial)
+	}
+
+	kept := h.virtualModelsForListing(nil, virtual, modelListQuery{KeyIDs: []string{"key-all"}})
+	if len(kept) != 1 || len(kept[0].AccessibleByKeys) != 1 || kept[0].AccessibleByKeys[0] != "key-all" {
+		t.Fatalf("key permitting every candidate = %+v, want it kept and attributed to key-all", kept)
+	}
+
+	// Both selected: only the key reaching both candidates is reported.
+	both := h.virtualModelsForListing(nil, virtual, modelListQuery{KeyIDs: []string{"key-all", "key-flash"}})
+	if len(both) != 1 || len(both[0].AccessibleByKeys) != 1 || both[0].AccessibleByKeys[0] != "key-all" {
+		t.Fatalf("two selected keys = %+v, want AccessibleByKeys to hold only key-all", both)
+	}
+
+	// An unknown key selects nothing, so the model cannot be shown as reachable through it.
+	unknown := h.virtualModelsForListing(nil, virtual, modelListQuery{KeyIDs: []string{"key-does-not-exist"}})
+	if len(unknown) != 0 {
+		t.Fatalf("unknown selected key = %+v, want the entry dropped", unknown)
+	}
+
+	// Unfiltered is an explicit opt-out of the key filter.
+	opted := h.virtualModelsForListing(nil, virtual, modelListQuery{KeyIDs: []string{"key-flash"}, Unfiltered: true})
+	if len(opted) != 1 {
+		t.Fatalf("unfiltered request = %+v, want the entry kept", opted)
+	}
+}
+
+// A provider that lists a concrete model under a virtual model's name must not get a second row for
+// it: the duplicate inflates total and takes a pagination slot. The concrete entry is the one kept.
+// The same name on a different provider is a different model and survives.
+func TestVirtualManagementListingDoesNotDuplicateConcreteNames(t *testing.T) {
+	cfg := testVirtualConfig(t)
+	h := &ProviderHandler{inMemoryStore: cfg}
+
+	virtual := virtualListedModels(cfg, []schemas.ModelProvider{"omlx", "ollama"}, nil, false, "")
+	if len(virtual) != 2 {
+		t.Fatalf("control failed: expected both virtual names, got %+v", virtual)
+	}
+
+	existing := []listedModel{
+		{Name: "qwen38", Provider: "omlx"},
+		{Name: "QWEN38", Provider: "ollama"}, // different provider: not a duplicate
+	}
+	kept := h.virtualModelsForListing(existing, virtual, modelListQuery{})
+	if len(kept) != 1 || kept[0].Name != "small" || kept[0].Provider != "ollama" {
+		t.Fatalf("kept = %+v, want only the ollama virtual name and qwen38@omlx deduplicated", kept)
+	}
+
+	// Case-insensitive on the matching side too: the collision is by identity, not spelling.
+	cased := h.virtualModelsForListing([]listedModel{{Name: "SMALL", Provider: "ollama"}}, virtual, modelListQuery{})
+	for _, row := range cased {
+		if row.Provider == "ollama" && row.Name == "small" {
+			t.Fatalf("case-insensitive dedupe missed %v", row)
+		}
+	}
+}
