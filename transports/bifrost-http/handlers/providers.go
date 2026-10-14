@@ -1138,13 +1138,15 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // on a custom provider whose allowed requests exclude decisions, every model
 // of a Typesafe-based provider (Typesafe, or a custom provider on its base
 // serving Laya, Nimble, or Clef), and otherwise a model the datasheet marks
-// supports_decisions, or without a row the provider's name-based fallback (a
-// TypeSafe System One model on OpenRouter, a Clef model on Cloudflare, a decider
-// model on Perplexity, a System One model on Ollama, the gpt-6-luna family
-// elsewhere). OpenRouter serves
-// gpt-6-luna's decisions under its own id (openai/gpt-6-luna-decisions, marked by
-// its datasheet row), so the gpt-6-luna name rule would list its chat models. A
-// key alias is checked as the model it points at, as the request path checks it.
+// supports_decisions, or without a row the provider's name-based fallback (the
+// gpt-6-luna family on OpenAI or a custom provider on its base, a TypeSafe
+// System One model on OpenRouter, a Clef model on Cloudflare, a decider model on
+// Perplexity, a System One model on Ollama, a Microsoft decision model on Azure).
+// Any other provider hosting gpt-6-luna serves it as a chat model (OpenRouter
+// serves its decisions under its own id, openai/gpt-6-luna-decisions, marked by
+// its datasheet row). A key alias is checked as the model it points at, as the
+// request path checks it; on Azure the alias is the model name and its target a
+// deployment name of the user's choosing, so the alias name is checked too.
 func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, model string) bool {
 	custom := h.customProviderConfig(provider)
 	if !custom.IsOperationAllowed(schemas.DecisionRequest) {
@@ -1153,16 +1155,21 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 	if provider == schemas.Typesafe || (custom != nil && custom.BaseProviderType == schemas.Typesafe) {
 		return true
 	}
+	listed := model
 	model = h.aliasTarget(provider, model)
-	fallback := schemas.DefaultSupportsDecisions(model)
-	switch provider {
-	case schemas.OpenRouter:
+	var fallback bool
+	switch {
+	case provider == schemas.OpenAI || (custom != nil && custom.BaseProviderType == schemas.OpenAI):
+		fallback = schemas.DefaultSupportsDecisions(model)
+	case provider == schemas.Azure:
+		fallback = schemas.IsMicrosoftDecisionModel(listed) || schemas.IsMicrosoftDecisionModel(model)
+	case provider == schemas.OpenRouter:
 		fallback = schemas.IsTypesafeModel(model)
-	case schemas.Cloudflare:
+	case provider == schemas.Cloudflare:
 		fallback = schemas.IsClefModel(model)
-	case schemas.Perplexity:
+	case provider == schemas.Perplexity:
 		fallback = schemas.IsPerplexityDeciderModel(model)
-	case schemas.Ollama:
+	case provider == schemas.Ollama:
 		fallback = schemas.IsOllamaDecisionModel(model)
 	}
 	return schemas.ResolveModelCaps(provider, model).SupportsDecisions(fallback)

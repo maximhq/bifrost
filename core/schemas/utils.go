@@ -2447,6 +2447,15 @@ func IsOllamaDecisionModel(model string) bool {
 	return false
 }
 
+// IsMicrosoftDecisionModel checks if the model is one of Microsoft's decision models
+// on Azure ("Microsoft-Decision-1"), served on the resource's systemone endpoint rather
+// than chat. The match is on the model name, so a deployment named otherwise is
+// recognized only when its key's deployments map it from that name. Later versions
+// share the prefix.
+func IsMicrosoftDecisionModel(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "microsoft-decision")
+}
+
 // BedrockModelSupportsCachePoints reports whether the Bedrock model supports
 // explicit prompt-caching cache points in the Converse API request.
 func BedrockModelSupportsCachePoints(model string) bool {
