@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -49,10 +48,7 @@ func NewPerplexityProvider(config *schemas.ProviderConfig, logger schemas.Logger
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://api.perplexity.ai"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://api.perplexity.ai")
 
 	return &PerplexityProvider{
 		logger:              logger,
@@ -137,7 +133,7 @@ func (provider *PerplexityProvider) ListModels(ctx *schemas.BifrostContext, keys
 		ctx,
 		provider.client,
 		request,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/models"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/models"),
 		keys,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
@@ -171,7 +167,7 @@ func (provider *PerplexityProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 		return nil, err
 	}
 
-	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonBody, provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/chat/completions"), key.Value.GetValue(), request.Model)
+	responseBody, latency, providerResponseHeaders, err := provider.completeRequest(ctx, jsonBody, provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/chat/completions"), key.Value.GetValue(), request.Model)
 	if err != nil {
 		return nil, providerUtils.EnrichError(ctx, err, jsonBody, nil, provider.sendBackRawRequest, provider.sendBackRawResponse, latency)
 	}
@@ -218,7 +214,7 @@ func (provider *PerplexityProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/chat/completions",
+		provider.networkConfig.BaseURL.GetValue()+"/chat/completions",
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -253,7 +249,7 @@ func (provider *PerplexityProvider) Responses(ctx *schemas.BifrostContext, key s
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -285,7 +281,7 @@ func (provider *PerplexityProvider) ResponsesStream(ctx *schemas.BifrostContext,
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -330,7 +326,7 @@ func (provider *PerplexityProvider) Decision(ctx *schemas.BifrostContext, key sc
 	bifrostResponse, bifrostErr := typesafe.HandleTypesafeDecisionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, perplexityDecisionPath),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, perplexityDecisionPath),
 		request,
 		ToPerplexityDecisionRequest,
 		authHeaders,

@@ -752,7 +752,9 @@ var baseProviderDefaultEndpoints = map[schemas.ModelProvider]string{
 func providerEndpoint(name schemas.ModelProvider, configured map[schemas.ModelProvider]configstore.ProviderConfig) string {
 	var url string
 	if config, ok := configured[name]; ok && config.NetworkConfig != nil {
-		url = config.NetworkConfig.BaseURL
+		// Compare what the provider actually sends to, so a literal and an
+		// env./vault. reference resolving to the same endpoint compare equal.
+		url = config.NetworkConfig.BaseURL.GetValue()
 	}
 	if strings.TrimSpace(url) == "" {
 		url = baseProviderDefaultEndpoints[baseProviderOf(name, configured)]

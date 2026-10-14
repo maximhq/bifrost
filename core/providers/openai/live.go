@@ -16,7 +16,7 @@ func (provider *OpenAIProvider) LiveWebSocketURL(_ schemas.Key, kind schemas.Liv
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.LiveRequest); err != nil {
 		return "", err
 	}
-	base := provider.networkConfig.BaseURL
+	base := provider.networkConfig.BaseURL.GetValue()
 	base = strings.Replace(base, "https://", "wss://", 1)
 	base = strings.Replace(base, "http://", "ws://", 1)
 	base += "/v1/live/sessions"

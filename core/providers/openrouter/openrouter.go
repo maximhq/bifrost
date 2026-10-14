@@ -48,10 +48,7 @@ func NewOpenRouterProvider(config *schemas.ProviderConfig, logger schemas.Logger
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = "https://openrouter.ai/api"
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, "https://openrouter.ai/api")
 
 	return &OpenRouterProvider{
 		logger:              logger,
@@ -82,7 +79,7 @@ func (provider *OpenRouterProvider) validateKey(ctx *schemas.BifrostContext, key
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + "/v1/auth/key")
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + "/v1/auth/key")
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", keyValue))
 
@@ -125,7 +122,7 @@ func (provider *OpenRouterProvider) fetchSupplementalModels(ctx *schemas.Bifrost
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + path)
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + path)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	if keyValue := key.Value.GetValue(); keyValue != "" {
@@ -169,7 +166,7 @@ func (provider *OpenRouterProvider) listModelsByKey(ctx *schemas.BifrostContext,
 	// Set any extra headers from network config
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/v1/models"))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, "/v1/models"))
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
 	keyValue := key.Value.GetValue()
@@ -320,7 +317,7 @@ func (provider *OpenRouterProvider) TextCompletion(ctx *schemas.BifrostContext, 
 	return openai.HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -340,7 +337,7 @@ func (provider *OpenRouterProvider) TextCompletionStream(ctx *schemas.BifrostCon
 	return openai.HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+"/v1/completions",
+		provider.networkConfig.BaseURL.GetValue()+"/v1/completions",
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -362,7 +359,7 @@ func (provider *OpenRouterProvider) ChatCompletion(ctx *schemas.BifrostContext, 
 	return openai.HandleOpenAIChatCompletionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -384,7 +381,7 @@ func (provider *OpenRouterProvider) ChatCompletionStream(ctx *schemas.BifrostCon
 	return openai.HandleOpenAIChatCompletionStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/chat/completions"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -409,7 +406,7 @@ func (provider *OpenRouterProvider) Responses(ctx *schemas.BifrostContext, key s
 	return openai.HandleOpenAIResponsesRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -428,7 +425,7 @@ func (provider *OpenRouterProvider) ResponsesStream(ctx *schemas.BifrostContext,
 	return openai.HandleOpenAIResponsesStreaming(
 		ctx,
 		provider.streamingClient,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/responses"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -452,7 +449,7 @@ func (provider *OpenRouterProvider) Embedding(ctx *schemas.BifrostContext, key s
 	return openai.HandleOpenAIEmbeddingRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/embeddings"),
 		request,
 		openai.BearerAuthHeader(key),
 		provider.networkConfig.ExtraHeaders,
@@ -470,7 +467,7 @@ func (provider *OpenRouterProvider) Speech(ctx *schemas.BifrostContext, key sche
 	return openai.HandleOpenAISpeechRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/audio/speech"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/audio/speech"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,
@@ -513,7 +510,7 @@ func (provider *OpenRouterProvider) Decision(ctx *schemas.BifrostContext, key sc
 	defer fasthttp.ReleaseResponse(resp)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, openRouterDecisionPath))
+	req.SetRequestURI(provider.networkConfig.BaseURL.GetValue() + providerUtils.GetPathFromContext(ctx, openRouterDecisionPath))
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
 	if key.Value.GetValue() != "" {
@@ -586,7 +583,7 @@ func (provider *OpenRouterProvider) Transcription(ctx *schemas.BifrostContext, k
 	return openai.HandleOpenAITranscriptionRequest(
 		ctx,
 		provider.client,
-		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"),
+		provider.networkConfig.BaseURL.GetValue()+providerUtils.GetPathFromContext(ctx, "/v1/audio/transcriptions"),
 		request,
 		key,
 		provider.networkConfig.ExtraHeaders,

@@ -514,7 +514,7 @@ func (a speechTestAccount) GetConfigForProvider(p schemas.ModelProvider) (*schem
 	}
 	nc := schemas.DefaultNetworkConfig
 	if p == schemas.OpenAI {
-		nc.BaseURL = a.baseURL
+		nc.BaseURL = schemas.NewSecretVar(a.baseURL)
 	}
 	return &schemas.ProviderConfig{
 		NetworkConfig:            nc,

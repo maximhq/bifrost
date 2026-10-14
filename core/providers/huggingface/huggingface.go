@@ -91,10 +91,7 @@ func NewHuggingFaceProvider(config *schemas.ProviderConfig, logger schemas.Logge
 	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
-	if config.NetworkConfig.BaseURL == "" {
-		config.NetworkConfig.BaseURL = defaultInferenceBaseURL
-	}
-	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
+	providerUtils.NormalizeBaseURL(&config.NetworkConfig, defaultInferenceBaseURL)
 
 	return &HuggingFaceProvider{
 		logger:                    logger,
@@ -119,7 +116,7 @@ func (provider *HuggingFaceProvider) buildRequestURL(ctx *schemas.BifrostContext
 	if isCompleteURL {
 		return path
 	}
-	return provider.networkConfig.BaseURL + path
+	return provider.networkConfig.BaseURL.GetValue() + path
 }
 
 // completeRequestWithModelAliasCache performs a request and retries once on 404 by clearing the cache and refetching model info

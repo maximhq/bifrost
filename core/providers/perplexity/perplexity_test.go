@@ -717,7 +717,7 @@ func TestToPerplexityDecisionRequest_RejectsImageWithoutURL(t *testing.T) {
 func newTestProvider(t *testing.T, baseURL string) *perplexity.PerplexityProvider {
 	t.Helper()
 	provider, err := perplexity.NewPerplexityProvider(&schemas.ProviderConfig{
-		NetworkConfig: schemas.NetworkConfig{BaseURL: baseURL},
+		NetworkConfig: schemas.NetworkConfig{BaseURL: schemas.NewSecretVar(baseURL)},
 	}, bifrost.NewDefaultLogger(schemas.LogLevelError))
 	if err != nil {
 		t.Fatalf("NewPerplexityProvider: %v", err)
