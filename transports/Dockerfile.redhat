@@ -22,7 +22,7 @@ WORKDIR /app
 
 # Install dependencies including gcc for CGO and sqlite (with latest security patches)
 RUN apk upgrade --no-cache && \
-  apk add --no-cache gcc musl-dev sqlite-dev binutils binutils-gold git
+  apk add --no-cache gcc musl-dev sqlite-dev binutils binutils-gold
 
 # Set environment for CGO-enabled build (required for go-sqlite3)
 ENV CGO_ENABLED=1 GOOS=linux
@@ -67,7 +67,8 @@ WORKDIR /app
 
 # The binary is fully static, so no C runtime libraries are needed.
 # Only ca-certificates (HTTPS to LLM providers) and curl (health check) are required.
-RUN microdnf install -y ca-certificates && \
+# git is required for register as marketplace in skills marketplace
+RUN microdnf install -y ca-certificates git && \
     microdnf clean all
 
 # Required for Red Hat certification: license file must live under /licenses
