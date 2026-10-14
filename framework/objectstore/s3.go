@@ -119,6 +119,9 @@ func (s *S3ObjectStore) Put(ctx context.Context, key string, data []byte, tags m
 // internally and must stay readable by parquet tooling).
 func (s *S3ObjectStore) PutWithOptions(ctx context.Context, key string, data []byte, tags map[string]string, opts PutOptions) error {
 	input, err := buildPutObjectInput(s.bucket, key, data, tags, s.gzipBody(opts), opts.ContentType)
+	if err == nil {
+		applyObjectLock(input, opts.Retention)
+	}
 	if err != nil {
 		return err
 	}
@@ -161,6 +164,34 @@ func buildPutObjectInput(bucket, key string, data []byte, tags map[string]string
 		input.Tagging = aws.String(encodeTags(tags))
 	}
 	return input, nil
+}
+
+// applyObjectLock sets S3 Object Lock retention on a put. Object Lock requires
+// an integrity checksum on the request, so one is requested too.
+func applyObjectLock(input *s3.PutObjectInput, retention *Retention) {
+	if retention == nil {
+		return
+	}
+	mode := types.ObjectLockModeGovernance
+	if retention.Mode == ObjectLockCompliance {
+		mode = types.ObjectLockModeCompliance
+	}
+	input.ObjectLockMode = mode
+	input.ObjectLockRetainUntilDate = aws.Time(retention.RetainUntil.UTC())
+	input.ChecksumAlgorithm = types.ChecksumAlgorithmSha256
+}
+
+// VerifyObjectLock confirms the bucket was created with Object Lock enabled,
+// which S3 requires before any object can carry retention.
+func (s *S3ObjectStore) VerifyObjectLock(ctx context.Context) error {
+	out, err := s.client.GetObjectLockConfiguration(ctx, &s3.GetObjectLockConfigurationInput{Bucket: aws.String(s.bucket)})
+	if err != nil {
+		return fmt.Errorf("objectstore: bucket %s has no object lock configuration: %w", s.bucket, err)
+	}
+	if out.ObjectLockConfiguration == nil || out.ObjectLockConfiguration.ObjectLockEnabled != types.ObjectLockEnabledEnabled {
+		return fmt.Errorf("objectstore: bucket %s does not have object lock enabled", s.bucket)
+	}
+	return nil
 }
 
 // Get retrieves and decompresses an object by key.

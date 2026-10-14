@@ -102,6 +102,13 @@ func (g *GCSObjectStore) PutWithOptions(ctx context.Context, key string, data []
 	if len(tags) > 0 {
 		w.Metadata = tags
 	}
+	if opts.Retention != nil {
+		mode := "Unlocked"
+		if opts.Retention.Mode == ObjectLockCompliance {
+			mode = "Locked"
+		}
+		w.Retention = &storage.ObjectRetention{Mode: mode, RetainUntil: opts.Retention.RetainUntil.UTC()}
+	}
 
 	if _, err := io.Copy(w, bytes.NewReader(body)); err != nil {
 		_ = w.Close()
@@ -194,4 +201,17 @@ func (g *GCSObjectStore) Ping(ctx context.Context) error {
 // Close releases the GCS client resources.
 func (g *GCSObjectStore) Close() error {
 	return g.client.Close()
+}
+
+// VerifyObjectLock confirms the bucket has object retention enabled, which GCS
+// requires before any object can carry a retention policy.
+func (g *GCSObjectStore) VerifyObjectLock(ctx context.Context) error {
+	attrs, err := g.client.Bucket(g.bucket).Attrs(ctx)
+	if err != nil {
+		return fmt.Errorf("objectstore: read bucket %s attributes: %w", g.bucket, err)
+	}
+	if attrs.ObjectRetentionMode != "Enabled" {
+		return fmt.Errorf("objectstore: bucket %s does not have object retention enabled", g.bucket)
+	}
+	return nil
 }
