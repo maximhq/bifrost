@@ -4360,6 +4360,9 @@ func (req *AnthropicMessageRequest) ToBifrostResponsesRequest(ctx *schemas.Bifro
 		if bifrostToolChoice != nil {
 			bifrostReq.Params.ToolChoice = bifrostToolChoice
 		}
+		if req.ToolChoice.DisableParallelToolUse != nil {
+			bifrostReq.Params.ParallelToolCalls = new(!*req.ToolChoice.DisableParallelToolUse)
+		}
 	}
 
 	// Set the converted messages
@@ -4817,6 +4820,15 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 			if anthropicToolChoice != nil {
 				anthropicReq.ToolChoice = anthropicToolChoice
 			}
+		}
+
+		// Anthropic carries parallel_tool_calls on tool_choice only; "auto" is its default.
+		if anthropicReq.ToolChoice != nil {
+			applyParallelToolUse(anthropicReq.ToolChoice, bifrostReq.Params.ParallelToolCalls)
+		} else if len(anthropicReq.Tools) > 0 &&
+			bifrostReq.Params.ParallelToolCalls != nil && !*bifrostReq.Params.ParallelToolCalls {
+			anthropicReq.ToolChoice = &AnthropicToolChoice{Type: "auto"}
+			applyParallelToolUse(anthropicReq.ToolChoice, bifrostReq.Params.ParallelToolCalls)
 		}
 
 		// DeepSeek rejects a forced tool_choice while thinking is on. Force thinking
