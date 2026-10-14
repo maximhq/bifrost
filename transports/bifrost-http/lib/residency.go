@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/maximhq/bifrost/core"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
@@ -112,7 +112,7 @@ func NewVirtualModelService(factory *network.HTTPClientFactory, logger schemas.L
 // Validation is all-or-nothing and returns on the first problem. A half-installed
 // set would route some virtual names to a backend nobody checked, which is worse
 // than the operator's typo and a clear error.
-func (s *VirtualModelService) Install(virtualModels map[string]schemas.VirtualModel, providers map[string]configstore.ProviderConfig) error {
+func (s *VirtualModelService) Install(virtualModels map[string]schemas.VirtualModel, providers map[schemas.ModelProvider]configstore.ProviderConfig) error {
 	if len(virtualModels) == 0 {
 		s.registry.store(nil)
 		return nil
@@ -132,7 +132,7 @@ func (s *VirtualModelService) Install(virtualModels map[string]schemas.VirtualMo
 		if err := vm.Validate(); err != nil {
 			return err
 		}
-		providerCfg, ok := providers[string(vm.Provider)]
+		providerCfg, ok := providers[vm.Provider]
 		if !ok {
 			return fmt.Errorf("virtual model %q references provider %q which is not configured", vm.Name, vm.Provider)
 		}
@@ -147,6 +147,21 @@ func (s *VirtualModelService) Install(virtualModels map[string]schemas.VirtualMo
 	if s.logger != nil {
 		s.logger.Info("virtual models installed: %d", len(registry.entries))
 	}
+	return nil
+}
+
+// installVirtualModels builds the resolver and installs the configured set. When
+// nothing is configured the config keeps a nil resolver, which is the fast path: core
+// then does one atomic load per request and no map lookup at all.
+func installVirtualModels(config *Config, virtualModels map[string]schemas.VirtualModel, logger schemas.Logger) error {
+	service := NewVirtualModelService(config.HTTPClientFactory, logger)
+	if err := service.Install(virtualModels, config.Providers); err != nil {
+		return err
+	}
+	if len(virtualModels) == 0 {
+		return nil
+	}
+	config.VirtualModels = service
 	return nil
 }
 
@@ -397,7 +412,7 @@ type residencyProbe struct {
 	// enumerates every model the backend knows about, resident or not, so a candidate
 	// missing from it is unknown, not free.
 	membership bool
-	parse      func(body map[string]any, snapshot *schemas.ResidencySnapshot) error
+	parse      func(body map[string]any, target *residencyTarget, snapshot *schemas.ResidencySnapshot) error
 }
 
 // residencyProbes is the auto-detect order. oMLX first because its endpoint answers
@@ -431,22 +446,20 @@ var residencyProbes = []residencyProbe{
 // stored on the slot and every later probe goes straight to it.
 func probeResidency(ctx context.Context, target *residencyTarget, known schemas.ResidencyAdapter, client *http.Client) (*schemas.ResidencySnapshot, schemas.ResidencyAdapter, error) {
 	candidates := residencyProbes
-	if known != "" && known != schemas.ResidencyAdapterAuto {
-		candidates = nil
+	if target.adapter == schemas.ResidencyAdapterCustom {
+		candidates = []residencyProbe{{adapter: schemas.ResidencyAdapterCustom, path: target.path, parse: parseCustom}}
+	} else if known != "" && known != schemas.ResidencyAdapterAuto {
+		// A slot that already answered goes straight back to that reader; auto-detect
+		// is a per-endpoint once, not a per-request retry.
 		for _, probe := range residencyProbes {
 			if probe.adapter == known {
-				candidates = append(candidates, probe)
+				candidates = []residencyProbe{probe}
 				break
 			}
 		}
-		if target.adapter == schemas.ResidencyAdapterCustom {
-			candidates = []residencyProbe{{adapter: schemas.ResidencyAdapterCustom, path: target.path, parse: parseCustom}}
-		}
-		if len(candidates) == 0 {
+		if len(candidates) != 1 || candidates[0].adapter != known {
 			return nil, "", fmt.Errorf("no residency reader for adapter %q", known)
 		}
-	} else if target.adapter == schemas.ResidencyAdapterCustom {
-		candidates = []residencyProbe{{adapter: schemas.ResidencyAdapterCustom, path: target.path, parse: parseCustom}}
 	}
 
 	var lastErr error
@@ -457,7 +470,7 @@ func probeResidency(ctx context.Context, target *residencyTarget, known schemas.
 			continue
 		}
 		snapshot := &schemas.ResidencySnapshot{Provider: target.provider, ObservedAt: time.Now(), States: map[string]schemas.ResidencyState{}}
-		if err := probe.parse(body, snapshot); err != nil {
+		if err := probe.parse(body, target, snapshot); err != nil {
 			lastErr = fmt.Errorf("%s: %w", probe.adapter, err)
 			continue
 		}
@@ -503,7 +516,7 @@ func fetchResidencyJSON(ctx context.Context, target *residencyTarget, client *ht
 
 // parseStatusList reads an endpoint that carries an explicit residency field per
 // entry — oMLX's loaded and is_loading, llama.cpp's status.value.
-func parseStatusList(body map[string]any, snapshot *schemas.ResidencySnapshot) error {
+func parseStatusList(body map[string]any, _ *residencyTarget, snapshot *schemas.ResidencySnapshot) error {
 	entries := findEntryArray(body, "models", "data")
 	if entries == nil {
 		return fmt.Errorf("no models array in the response")
@@ -544,7 +557,7 @@ func parseStatusList(body map[string]any, snapshot *schemas.ResidencySnapshot) e
 // parseOllamaProcesses reads ollama's native /api/ps, the only place ollama reports
 // residency. Its OpenAI-compatible /v1/models carries no residency field at all,
 // which is why this feature reaches outside the OpenAI surface for ollama.
-func parseOllamaProcesses(body map[string]any, snapshot *schemas.ResidencySnapshot) error {
+func parseOllamaProcesses(body map[string]any, _ *residencyTarget, snapshot *schemas.ResidencySnapshot) error {
 	entries, ok := body["models"].([]any)
 	if !ok {
 		return fmt.Errorf("no models array in the response")
@@ -567,13 +580,64 @@ func parseOllamaProcesses(body map[string]any, snapshot *schemas.ResidencySnapsh
 	return nil
 }
 
-// parseCustom reads an arbitrary engine's JSON using the operator's field mapping.
-func parseCustom(body map[string]any, snapshot *schemas.ResidencySnapshot) error {
-	// fields is carried on the snapshot's provider-independent shape by way of the
-	// closure-free signature: the mapping travels on target, so custom parsing is
-	// invoked through probeCustomWithFields instead. This path is unreachable and is
-	// kept only to satisfy the probe table's shape.
-	return fmt.Errorf("custom residency needs its field mapping")
+// parseCustom reads an arbitrary engine's JSON through the operator's field mapping.
+// Two shapes are covered and the mapping states which applies: with fields.loaded
+// and/or fields.loading it is a status endpoint; with only fields.items and fields.id
+// the list itself means resident, which is how an endpoint that lists only its loaded
+// models has to be read. Nothing is guessed beyond what the operator wrote.
+func parseCustom(body map[string]any, target *residencyTarget, snapshot *schemas.ResidencySnapshot) error {
+	fields := target.fields
+	if fields == nil {
+		return fmt.Errorf("no field mapping for the custom adapter")
+	}
+	entries := walkPath(body, fields.Items)
+	if entries == nil {
+		return fmt.Errorf("no array at %q in the response", fields.Items)
+	}
+	for _, raw := range entries {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := stringField(entry, fields.ID)
+		if name == "" {
+			continue
+		}
+		state := schemas.ResidencyReady
+		if fields.Loaded != "" || fields.Loading != "" {
+			state = schemas.ResidencyUnloaded
+			if fields.Loaded != "" && boolField(entry, fields.Loaded) {
+				state = schemas.ResidencyReady
+			}
+			if fields.Loading != "" && boolField(entry, fields.Loading) {
+				state = schemas.ResidencyLoading
+			}
+		}
+		snapshot.States[strings.ToLower(name)] = state
+	}
+	snapshot.Authoritative = true
+	return nil
+}
+
+// walkPath resolves a dot path to a JSON array, so both {"models":[...]} and
+// {"data":{"models":[...]}} are reachable without shipping an adapter per backend.
+func walkPath(body map[string]any, path string) []any {
+	if path == "" {
+		return nil
+	}
+	var current any = body
+	for _, part := range strings.Split(path, ".") {
+		obj, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		current, ok = obj[part]
+		if !ok {
+			return nil
+		}
+	}
+	arr, _ := current.([]any)
+	return arr
 }
 
 // findEntryArray returns the first value that is a JSON array under any of the given
