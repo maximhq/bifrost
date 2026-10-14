@@ -394,6 +394,7 @@ func (h *WarpHandler) startJob(ctx *fasthttp.RequestCtx, spec warpJobSpec) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to start Warp "+spec.noun)
 		return
 	}
+	lib.RecordAuditChange(ctx, "warp_backfill.started", "warp_backfill", id, id, nil, map[string]any{"job_id": id, "start_time": request.StartTime, "end_time": request.EndTime, "restart": request.Restart})
 	ctx.SetStatusCode(fasthttp.StatusAccepted)
 	if job, err := h.backfillStore.GetSidekiqJob(ctx, id); err == nil && job != nil {
 		SendJSON(ctx, warpBackfillStatusFromRow(job))
@@ -520,6 +521,9 @@ func (h *WarpHandler) cancelJob(ctx *fasthttp.RequestCtx, spec warpJobSpec) {
 		// With a failed re-read and nothing cancelled, the row we already hold is
 		// the most honest thing available.
 		status.Status = tables.SidekiqStatusCancelled
+	}
+	if cancelled {
+		lib.RecordAuditChange(ctx, "warp_backfill.cancelled", "warp_backfill", job.ID, job.ID, map[string]any{"job_id": job.ID, "status": job.Status}, map[string]any{"job_id": job.ID, "status": status.Status})
 	}
 	SendJSON(ctx, status)
 }
@@ -697,6 +701,10 @@ func (h *WarpHandler) putConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
+	var before any
+	if previous, viewErr := h.service.ConfigView(ctx); viewErr == nil && previous.Configured {
+		before = previous
+	}
 	view, err := h.service.SaveConfig(ctx, &input)
 	switch {
 	case errors.Is(err, warp.ErrUnavailable):
@@ -721,5 +729,6 @@ func (h *WarpHandler) putConfig(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusInternalServerError, "Failed to save warp configuration")
 		return
 	}
+	lib.RecordAuditChange(ctx, "warp_config.updated", "warp_config", "warp_config", "Warp", before, view)
 	SendJSON(ctx, view)
 }
