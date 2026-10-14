@@ -32,6 +32,8 @@ func (s *Store) LoadModelParamsFromDB(ctx context.Context) (int, error) {
 	if s.configStore == nil {
 		return 0, nil
 	}
+	s.modelParamsSyncMu.Lock()
+	defer s.modelParamsSyncMu.Unlock()
 	rows, err := s.configStore.GetModelParameters(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("failed to load model parameters from database: %w", err)
@@ -55,7 +57,8 @@ func (s *Store) LoadModelParamsFromDB(ctx context.Context) (int, error) {
 
 // SyncModelParamsFromURL fetches model parameters from the configured URL,
 // persists to DB (when configStore != nil), and refreshes the in-memory
-// indexes. On URL failure it falls back to DB records when any exist.
+// indexes from all stored rows. On URL failure it falls back to DB records
+// when any exist.
 func (s *Store) SyncModelParamsFromURL(ctx context.Context) error {
 	if s.logger != nil {
 		s.logger.Debug("starting model parameters synchronization")
@@ -83,20 +86,61 @@ func (s *Store) SyncModelParamsFromURL(ctx context.Context) error {
 		return fmt.Errorf("failed to load model parameters from URL and no existing data in database: %w", err)
 	}
 
+	// Validate the feed itself before writing: unrelated DB-only rows must not
+	// let an unusable feed overwrite good records and invalidate their cache.
+	usable := false
+	for _, data := range paramsData {
+		var caps schemas.ModelCapabilities
+		if json.Unmarshal(data, &caps) == nil && !IsEmptyModelCapabilities(&caps) {
+			usable = true
+			break
+		}
+	}
+	if !usable {
+		if s.logger != nil {
+			s.logger.Warn("model-parameters-sync: no usable records in URL feed, keeping existing model parameters and capabilities")
+		}
+		return nil
+	}
+
+	s.modelParamsSyncMu.Lock()
+	defer s.modelParamsSyncMu.Unlock()
 	if s.configStore != nil {
 		records := make([]configstoreTables.TableModelParameters, 0, len(paramsData))
 		for model, data := range paramsData {
+			// A usable sibling must not let this row erase stored capabilities.
+			var caps schemas.ModelCapabilities
+			if json.Unmarshal(data, &caps) != nil || IsEmptyModelCapabilities(&caps) {
+				continue
+			}
 			records = append(records, configstoreTables.TableModelParameters{
 				Model: model,
 				Data:  string(data),
 			})
 		}
+		// Read the full snapshot before committing. A failed read must not leave
+		// new DB rows behind an old capability cache. Merge only usable feed rows
+		// so DB-only and rejected feed rows keep their stored capabilities.
+		rows, err := s.configStore.GetModelParameters(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to load model parameters before sync: %w", err)
+		}
+		merged := make(map[string]json.RawMessage, len(rows)+len(records))
+		for _, row := range rows {
+			merged[row.Model] = json.RawMessage(row.Data)
+		}
+		for _, record := range records {
+			merged[record.Model] = json.RawMessage(record.Data)
+		}
 		if err := s.configStore.UpsertModelParametersBatch(ctx, records); err != nil {
 			return fmt.Errorf("failed to sync model parameters to database: %w", err)
 		}
+		// No fallible DB I/O between commit and publishing indexes/cache flush.
+		s.applyModelParameters(merged)
+	} else {
+		s.applyModelParameters(paramsData)
 	}
 
-	s.applyModelParameters(paramsData)
 	if s.logger != nil {
 		s.logger.Info("successfully synced %d model parameters records", len(paramsData))
 	}
@@ -112,6 +156,8 @@ func (s *Store) LoadModelParamsFromURLIntoMemory(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to load model parameters from URL: %w", err)
 	}
+	s.modelParamsSyncMu.Lock()
+	defer s.modelParamsSyncMu.Unlock()
 	s.applyModelParameters(paramsData)
 	return nil
 }
