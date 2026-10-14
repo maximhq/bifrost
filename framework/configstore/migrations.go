@@ -16079,12 +16079,20 @@ func migrationWidenBatchJobFileIDColumns(ctx context.Context, db *gorm.DB, logge
 				return fmt.Errorf("failed to bound the batch_jobs lock wait: %w", err)
 			}
 
-			for _, column := range []string{"input_file_id", "output_file_id", "error_file_id"} {
-				if !tx.Migrator().HasColumn(&tables.TableProviderJob{}, column) {
+			columns := []struct {
+				name string
+				ddl  string
+			}{
+				{"input_file_id", "ALTER TABLE batch_jobs ALTER COLUMN input_file_id TYPE TEXT"},
+				{"output_file_id", "ALTER TABLE batch_jobs ALTER COLUMN output_file_id TYPE TEXT"},
+				{"error_file_id", "ALTER TABLE batch_jobs ALTER COLUMN error_file_id TYPE TEXT"},
+			}
+			for _, column := range columns {
+				if !tx.Migrator().HasColumn(&tables.TableProviderJob{}, column.name) {
 					continue
 				}
-				if err := tx.Exec("ALTER TABLE batch_jobs ALTER COLUMN " + column + " TYPE TEXT").Error; err != nil {
-					return fmt.Errorf("failed to widen batch_jobs.%s: %w", column, err)
+				if err := tx.Exec(column.ddl).Error; err != nil {
+					return fmt.Errorf("failed to widen batch_jobs.%s: %w", column.name, err)
 				}
 			}
 			return nil
