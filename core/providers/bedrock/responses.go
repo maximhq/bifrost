@@ -2435,6 +2435,17 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 				bifrostReq.Params.Store = &storeBool
 			}
 		}
+
+		// The Converse spelling of parallel_tool_calls for Claude; egress re-synthesizes it per target.
+		if choice, ok := request.AdditionalModelRequestFields.Get("tool_choice"); ok {
+			if om, ok := choice.(*schemas.OrderedMap); ok && om.Len() == 1 {
+				if disable, ok := om.Get("disable_parallel_tool_use"); ok {
+					if disableBool, ok := disable.(bool); ok {
+						bifrostReq.Params.ParallelToolCalls = new(!disableBool)
+					}
+				}
+			}
+		}
 	}
 
 	if include, ok := extraParamStringSlice(request.ExtraParams["include"]); ok {
@@ -2492,11 +2503,16 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		// egress; forwarding them verbatim too puts two copies on the wire and Bedrock
 		// rejects the collision (e.g. reasoning_config expands to thinking, clashing
 		// with the emitted thinking). output_config is left in place — egress deep-merges it.
-		if bifrostReq.Params.Reasoning != nil {
+		if bifrostReq.Params.Reasoning != nil || bifrostReq.Params.ParallelToolCalls != nil {
 			fieldsToForward = request.AdditionalModelRequestFields.Clone()
-			fieldsToForward.Delete("thinking")
-			fieldsToForward.Delete("reasoning_config")
-			fieldsToForward.Delete("reasoningConfig")
+			if bifrostReq.Params.Reasoning != nil {
+				fieldsToForward.Delete("thinking")
+				fieldsToForward.Delete("reasoning_config")
+				fieldsToForward.Delete("reasoningConfig")
+			}
+			if bifrostReq.Params.ParallelToolCalls != nil {
+				fieldsToForward.Delete("tool_choice")
+			}
 		}
 		if fieldsToForward.Len() > 0 {
 			if bifrostReq.Params.ExtraParams == nil {
@@ -2569,6 +2585,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 		bedrockReq.Messages = messages
 		if len(systemMessages) > 0 {
+			// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
+			if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil && *bifrostReq.Params.Instructions != "" {
+				systemMessages = append([]BedrockSystemMessage{{Text: bifrostReq.Params.Instructions}}, systemMessages...)
+			}
 			bedrockReq.System = systemMessages
 		} else {
 			if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil {
@@ -2859,8 +2879,15 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			if tool.ResponsesToolFunction != nil {
 				// Create the complete schema object that Bedrock expects
 				var schemaObject interface{}
-				if tool.ResponsesToolFunction.Parameters != nil {
-					schemaObject = tool.ResponsesToolFunction.Parameters
+				if parameters := tool.ResponsesToolFunction.Parameters; parameters != nil {
+					// Claude rejects oneOf/anyOf/allOf at the input_schema root.
+					if (len(parameters.OneOf) > 0 || len(parameters.AnyOf) > 0 || len(parameters.AllOf) > 0) && schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+						var err error
+						if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
+							return nil, err
+						}
+					}
+					schemaObject = parameters
 				} else {
 					// Fallback to empty object schema if no parameters
 					schemaObject = map[string]interface{}{
@@ -3007,6 +3034,17 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	// Ensure tool config is present when tool content exists (similar to Chat Completions)
 	ensureResponsesToolConfigForConversation(ctx, bifrostReq, bedrockReq)
+
+	// After the history rebuild, so the flag also covers tools rebuilt from it.
+	if bifrostReq.Params != nil && bifrostReq.Params.ParallelToolCalls != nil && !*bifrostReq.Params.ParallelToolCalls &&
+		schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+		tc := bifrostReq.Params.ToolChoice
+		none := tc != nil && ((tc.ResponsesToolChoiceStr != nil && *tc.ResponsesToolChoiceStr == string(schemas.ResponsesToolChoiceTypeNone)) ||
+			(tc.ResponsesToolChoiceStruct != nil && tc.ResponsesToolChoiceStruct.Type == schemas.ResponsesToolChoiceTypeNone))
+		if !none {
+			applyBedrockParallelToolUse(bedrockReq)
+		}
+	}
 
 	if !caps.SupportsConverseToolResultImages(schemas.BedrockModelSupportsToolResultImages(capModel)) {
 		hoistToolResultImages(bedrockReq)

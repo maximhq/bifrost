@@ -620,7 +620,7 @@
           ]
         },
         {
-          "name": "A target host that does not resolve is rejected",
+          "name": "A target host that does not resolve is refused without a setup token",
           "request": {
             "method": "POST",
             "header": [
@@ -648,6 +648,18 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// While dashboard auth is off, the OSS setup lock refuses every /api call that carries no",
+                  "// credential, so a credential-less dangerous change stops there. This case sends none: drop the",
+                  "// setup token the runner adds collection-wide (collection prerequests run first).",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -655,14 +667,11 @@
                   "var txt = pm.response.text() || '';",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
-                  "pm.test('unresolvable MCP target: responds 403', function () {",
-                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "pm.test('unresolvable MCP target without a setup token: refused by the setup lock (401)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(401);",
                   "});",
-                  "pm.test('unresolvable MCP target: message mentions \"nope.invalid\"', function () {",
-                  "  pm.expect(msg, 'body: ' + txt).to.include(\"nope.invalid\");",
-                  "});",
-                  "pm.test('unresolvable MCP target: message mentions \"public address\"', function () {",
-                  "  pm.expect(msg, 'body: ' + txt).to.include(\"public address\");",
+                  "pm.test('unresolvable MCP target without a setup token: message names the setup token', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include('setup token');",
                   "});"
                 ]
               }
@@ -670,7 +679,7 @@
           ]
         },
         {
-          "name": "A loopback target is rejected",
+          "name": "A loopback target is refused without a setup token",
           "request": {
             "method": "POST",
             "header": [
@@ -698,6 +707,18 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// While dashboard auth is off, the OSS setup lock refuses every /api call that carries no",
+                  "// credential, so a credential-less dangerous change stops there. This case sends none: drop the",
+                  "// setup token the runner adds collection-wide (collection prerequests run first).",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -705,11 +726,11 @@
                   "var txt = pm.response.text() || '';",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
-                  "pm.test('loopback MCP target: responds 403', function () {",
-                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "pm.test('loopback MCP target without a setup token: refused by the setup lock (401)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(401);",
                   "});",
-                  "pm.test('loopback MCP target: message mentions \"loopback\"', function () {",
-                  "  pm.expect(msg, 'body: ' + txt).to.include(\"loopback\");",
+                  "pm.test('loopback MCP target without a setup token: message names the setup token', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include('setup token');",
                   "});"
                 ]
               }
@@ -981,7 +1002,7 @@
           ]
         },
         {
-          "name": "Changing the proxy URL is rejected",
+          "name": "Changing the proxy URL is refused without a setup token",
           "request": {
             "method": "PUT",
             "header": [
@@ -1007,6 +1028,18 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// While dashboard auth is off, the OSS setup lock refuses every /api call that carries no",
+                  "// credential, so a credential-less dangerous change stops there. This case sends none: drop the",
+                  "// setup token the runner adds collection-wide (collection prerequests run first).",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -1014,14 +1047,11 @@
                   "var txt = pm.response.text() || '';",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
-                  "pm.test('new proxy URL: responds 403', function () {",
-                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "pm.test('new proxy URL without a setup token: refused by the setup lock (401)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(401);",
                   "});",
-                  "pm.test('new proxy URL: message mentions \"requires an authenticated admin session\"', function () {",
-                  "  pm.expect(msg, 'body: ' + txt).to.include(\"requires an authenticated admin session\");",
-                  "});",
-                  "pm.test('new proxy URL: message mentions \"url\"', function () {",
-                  "  pm.expect(msg, 'body: ' + txt).to.include(\"url\");",
+                  "pm.test('new proxy URL without a setup token: message names the setup token', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include('setup token');",
                   "});"
                 ]
               }
@@ -1060,14 +1090,16 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// The setup token makes this an admin request; a link-local proxy URL is still refused, by",
+                  "// validation rather than by the auth gate, and nothing is stored.",
                   "var txt = pm.response.text() || '';",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
-                  "pm.test('link-local proxy URL: responds 403', function () {",
-                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "pm.test('link-local proxy URL: responds 400', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
                   "});",
-                  "pm.test('link-local proxy URL: message mentions \"requires an authenticated admin session\"', function () {",
-                  "  pm.expect(msg, 'body: ' + txt).to.include(\"requires an authenticated admin session\");",
+                  "pm.test('link-local proxy URL: message mentions \"link-local\"', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include('link-local');",
                   "});"
                 ]
               }
@@ -1190,7 +1222,7 @@
           }
         },
         {
-          "name": "A custom provider with a base URL is rejected",
+          "name": "A custom provider with a base URL is refused without a setup token",
           "request": {
             "method": "POST",
             "header": [
@@ -1221,7 +1253,11 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.collectionVariables.set('rg_custom_provider', 'rg-custom-' + Date.now());",
-                  "pm.collectionVariables.set('rg_custom_provider_leaked', '');"
+                  "pm.collectionVariables.set('rg_custom_provider_leaked', '');",
+                  "// While dashboard auth is off, the OSS setup lock refuses every /api call that carries no",
+                  "// credential, so a credential-less dangerous change stops there. This case sends none: drop the",
+                  "// setup token the runner adds collection-wide (collection prerequests run first).",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
                 ]
               }
             },
@@ -1233,14 +1269,11 @@
                   "var txt = pm.response.text() || '';",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
-                  "pm.test('custom provider with base_url: responds 403', function () {",
-                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "pm.test('custom provider with base_url without a setup token: refused by the setup lock (401)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(401);",
                   "});",
-                  "pm.test('custom provider with base_url: message mentions \"base URL\"', function () {",
-                  "  pm.expect(msg, 'body: ' + txt).to.include(\"base URL\");",
-                  "});",
-                  "pm.test('custom provider with base_url: message mentions \"requires an authenticated admin session\"', function () {",
-                  "  pm.expect(msg, 'body: ' + txt).to.include(\"requires an authenticated admin session\");",
+                  "pm.test('custom provider with base_url without a setup token: message names the setup token', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include('setup token');",
                   "});"
                 ]
               }
@@ -1376,7 +1409,7 @@
           ]
         },
         {
-          "name": "A provider key carrying an endpoint is rejected",
+          "name": "A provider key carrying an endpoint is refused without a setup token",
           "request": {
             "method": "POST",
             "header": [
@@ -1410,7 +1443,11 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.collectionVariables.set('rg_azure_key_name', 'rg-azure-key-' + Date.now());",
-                  "pm.collectionVariables.set('rg_azure_key_leaked_id', '');"
+                  "pm.collectionVariables.set('rg_azure_key_leaked_id', '');",
+                  "// While dashboard auth is off, the OSS setup lock refuses every /api call that carries no",
+                  "// credential, so a credential-less dangerous change stops there. This case sends none: drop the",
+                  "// setup token the runner adds collection-wide (collection prerequests run first).",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
                 ]
               }
             },
@@ -1422,16 +1459,12 @@
                   "var txt = pm.response.text() || '';",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
-                  "var configured = pm.collectionVariables.get('rg_azure_exists') === '1';",
-                  "if (configured) {",
-                  "  pm.test('key with azure_key_config.endpoint: responds 403', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(403); });",
-                  "  pm.test('key with azure_key_config.endpoint: message names the endpoint field', function () {",
-                  "    pm.expect(msg, 'body: ' + txt).to.include('azure_key_config.endpoint');",
-                  "    pm.expect(msg, 'body: ' + txt).to.include(\"requires an authenticated admin session\");",
-                  "  });",
-                  "} else {",
-                  "  pm.test('key with azure_key_config.endpoint (azure not configured): responds 404', function () { pm.expect(pm.response.code, 'body: ' + txt).to.eql(404); });",
-                  "}"
+                  "pm.test('key with azure_key_config.endpoint without a setup token: refused by the setup lock (401)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(401);",
+                  "});",
+                  "pm.test('key with azure_key_config.endpoint without a setup token: message names the setup token', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include('setup token');",
+                  "});"
                 ]
               }
             }
@@ -1933,7 +1966,10 @@
                   "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(400);",
                   "});",
                   "pm.test('passthrough path with //: answered by the gateway, not an upstream', function () {",
-                  "  pm.expect(msg, 'body: ' + txt).to.match(/invalid passthrough path|failed to get config for provider/);",
+                  "  // sgl is not this route's provider and is not configured, so every gateway-side refusal is",
+                  "  // acceptable: the path check, the route's provider check (#7959) or the config lookup. What",
+                  "  // must never happen is a dispatch to an upstream.",
+                  "  pm.expect(msg, 'body: ' + txt).to.match(/invalid passthrough path|provider does not match the passthrough route|failed to get config for provider/);",
                   "});"
                 ]
               }
@@ -2171,7 +2207,7 @@
           ]
         },
         {
-          "name": "A test delivery is rejected without an admin session",
+          "name": "A test delivery is refused without a setup token",
           "request": {
             "method": "POST",
             "header": [
@@ -2199,6 +2235,18 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// While dashboard auth is off, the OSS setup lock refuses every /api call that carries no",
+                  "// credential, so a credential-less dangerous change stops there. This case sends none: drop the",
+                  "// setup token the runner adds collection-wide (collection prerequests run first).",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -2206,11 +2254,11 @@
                   "var txt = pm.response.text() || '';",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
-                  "pm.test('webhook test delivery: responds 403', function () {",
-                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "pm.test('webhook test delivery without a setup token: refused by the setup lock (401)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(401);",
                   "});",
-                  "pm.test('webhook test delivery: message mentions \"private-network\"', function () {",
-                  "  pm.expect(msg, 'body: ' + txt).to.include(\"private-network\");",
+                  "pm.test('webhook test delivery without a setup token: message names the setup token', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include('setup token');",
                   "});"
                 ]
               }
@@ -2359,7 +2407,7 @@
           ]
         },
         {
-          "name": "Re-enabling auth without proof of the stored password is rejected",
+          "name": "Re-enabling auth without a setup token is refused",
           "request": {
             "method": "PUT",
             "header": [
@@ -2407,7 +2455,11 @@
                   "var ccRaw = pm.collectionVariables.get('rg_client_config_raw');",
                   "var fwRaw = pm.collectionVariables.get('rg_framework_config_raw');",
                   "var authConfig = {is_enabled: true, admin_username: pm.variables.get('admin_username'), admin_password: pm.variables.get('admin_password')};",
-                  "pm.request.body.raw = '{\"client_config\":' + ccRaw + ',\"framework_config\":' + fwRaw + ',\"auth_config\":' + JSON.stringify(authConfig) + '}';"
+                  "pm.request.body.raw = '{\"client_config\":' + ccRaw + ',\"framework_config\":' + fwRaw + ',\"auth_config\":' + JSON.stringify(authConfig) + '}';",
+                  "// While dashboard auth is off, the OSS setup lock refuses every /api call that carries no",
+                  "// credential, so a credential-less dangerous change stops there. This case sends none: drop the",
+                  "// setup token the runner adds collection-wide (collection prerequests run first).",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
                 ]
               }
             },
@@ -2419,11 +2471,11 @@
                   "var txt = pm.response.text() || '';",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
-                  "pm.test('re-enable auth without proof: responds 403', function () {",
-                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "pm.test('re-enable auth without a setup token: refused by the setup lock (401)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(401);",
                   "});",
-                  "pm.test('re-enable auth without proof: message mentions \"current_password\"', function () {",
-                  "  pm.expect(msg, 'body: ' + txt).to.include(\"current_password\");",
+                  "pm.test('re-enable auth without a setup token: message names the setup token', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include('setup token');",
                   "});"
                 ]
               }
@@ -2431,7 +2483,7 @@
           ]
         },
         {
-          "name": "Re-enabling auth with a wrong current_password is rejected",
+          "name": "Re-enabling auth with a wrong current_password and no setup token is refused",
           "request": {
             "method": "PUT",
             "header": [
@@ -2479,7 +2531,11 @@
                   "var ccRaw = pm.collectionVariables.get('rg_client_config_raw');",
                   "var fwRaw = pm.collectionVariables.get('rg_framework_config_raw');",
                   "var authConfig = {is_enabled: true, admin_username: pm.variables.get('admin_username'), admin_password: pm.variables.get('admin_password'), current_password: 'not-the-stored-password-' + Date.now()};",
-                  "pm.request.body.raw = '{\"client_config\":' + ccRaw + ',\"framework_config\":' + fwRaw + ',\"auth_config\":' + JSON.stringify(authConfig) + '}';"
+                  "pm.request.body.raw = '{\"client_config\":' + ccRaw + ',\"framework_config\":' + fwRaw + ',\"auth_config\":' + JSON.stringify(authConfig) + '}';",
+                  "// While dashboard auth is off, the OSS setup lock refuses every /api call that carries no",
+                  "// credential, so a credential-less dangerous change stops there. This case sends none: drop the",
+                  "// setup token the runner adds collection-wide (collection prerequests run first).",
+                  "pm.request.headers.remove('X-Bifrost-Setup-Token');"
                 ]
               }
             },
@@ -2491,11 +2547,11 @@
                   "var txt = pm.response.text() || '';",
                   "var msg = '';",
                   "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
-                  "pm.test('re-enable auth with wrong current_password: responds 403', function () {",
-                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(403);",
+                  "pm.test('re-enable auth with wrong current_password without a setup token: refused by the setup lock (401)', function () {",
+                  "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(401);",
                   "});",
-                  "pm.test('re-enable auth with wrong current_password: message mentions \"current_password\"', function () {",
-                  "  pm.expect(msg, 'body: ' + txt).to.include(\"current_password\");",
+                  "pm.test('re-enable auth with wrong current_password without a setup token: message names the setup token', function () {",
+                  "  pm.expect(msg, 'body: ' + txt).to.include('setup token');",
                   "});"
                 ]
               }
@@ -2503,7 +2559,7 @@
           ]
         },
         {
-          "name": "Re-enabling auth with the stored admin password succeeds",
+          "name": "Re-enabling auth with the setup token succeeds",
           "request": {
             "method": "PUT",
             "header": [
@@ -2560,10 +2616,10 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "// The setup token proves control of the instance just as current_password does",
+                  "// (verifyStoredAdminCredential accepts either), so it may switch auth back on.",
                   "var txt = pm.response.text() || '';",
-                  "var msg = '';",
-                  "try { msg = (pm.response.json().error || {}).message || ''; } catch (e) { msg = ''; }",
-                  "pm.test('re-enable auth with the stored password: responds 200', function () {",
+                  "pm.test('re-enable auth with the setup token: responds 200', function () {",
                   "  pm.expect(pm.response.code, 'body: ' + txt).to.eql(200);",
                   "});"
                 ]

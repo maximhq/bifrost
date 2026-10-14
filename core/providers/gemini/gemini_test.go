@@ -1845,6 +1845,79 @@ func TestStructuredOutputWithToolsConflict(t *testing.T) {
 	}
 }
 
+// TestResponsesStructuredOutputWithToolsConflict is the Responses-path twin of
+// TestStructuredOutputWithToolsConflict: /v1/responses (and the /genai and Vertex
+// routes that reuse ToGeminiResponsesRequest) must not send responseMimeType
+// "application/json" next to function tools to a pre-Gemini-3 model, which Google
+// rejects with "Function calling with a response mime type: 'application/json' is
+// unsupported".
+func TestResponsesStructuredOutputWithToolsConflict(t *testing.T) {
+	functionTool := func() []schemas.ResponsesTool {
+		return []schemas.ResponsesTool{{
+			Type: schemas.ResponsesToolTypeFunction,
+			Name: schemas.Ptr("get_weather"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{
+				Parameters: &schemas.ToolFunctionParameters{Type: "object"},
+			},
+		}}
+	}
+	jsonSchemaText := func() *schemas.ResponsesTextConfig {
+		return &schemas.ResponsesTextConfig{
+			Format: &schemas.ResponsesTextConfigFormat{
+				Type: "json_schema",
+				JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{
+					Name:       schemas.Ptr("Result"),
+					Type:       schemas.Ptr("object"),
+					Properties: schemas.NewOrderedMapFromPairs(schemas.KV("answer", map[string]interface{}{"type": "string"})),
+				},
+			},
+		}
+	}
+	jsonObjectText := func() *schemas.ResponsesTextConfig {
+		return &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{Type: "json_object"}}
+	}
+	input := []schemas.ResponsesMessage{{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("What's the weather?")},
+	}}
+
+	tests := []struct {
+		name         string
+		model        string
+		tools        []schemas.ResponsesTool
+		text         *schemas.ResponsesTextConfig
+		wantMIMEType string
+		wantSchema   bool
+	}{
+		{name: "Gemini2.5_ToolsWithJSONSchema_DropsResponseMimeType", model: "gemini-2.5-flash", tools: functionTool(), text: jsonSchemaText()},
+		{name: "Gemini2.5_ToolsWithJSONObject_DropsResponseMimeType", model: "gemini-2.5-flash", tools: functionTool(), text: jsonObjectText()},
+		{name: "Gemini3_ToolsWithJSONSchema_KeepsResponseFormat", model: "gemini-3.5-flash", tools: functionTool(), text: jsonSchemaText(), wantMIMEType: "application/json", wantSchema: true},
+		{name: "Gemini2.5_JSONSchemaWithoutTools_KeepsResponseFormat", model: "gemini-2.5-flash", text: jsonSchemaText(), wantMIMEType: "application/json", wantSchema: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := gemini.ToGeminiResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+				Provider: schemas.Gemini,
+				Model:    tt.model,
+				Input:    input,
+				Params:   &schemas.ResponsesParameters{Tools: tt.tools, Text: tt.text},
+			})
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, tt.wantMIMEType, result.GenerationConfig.ResponseMIMEType)
+			if tt.wantSchema {
+				assert.NotNil(t, result.GenerationConfig.ResponseJSONSchema)
+			} else {
+				assert.Nil(t, result.GenerationConfig.ResponseJSONSchema)
+			}
+			if len(tt.tools) > 0 {
+				assert.NotEmpty(t, result.Tools, "function tools must be retained")
+			}
+		})
+	}
+}
+
 // TestResponsesStructuredOutputConversion tests that Responses API text config with union types is properly handled
 
 // asPlainMap normalizes schema objects that may be either plain maps or
@@ -4527,6 +4600,82 @@ func TestGenAISafetyRatingsAvgLogprobsResponseID_PersistThroughBifrostRoundTrip(
 	assert.Equal(t, "LOW", out.Candidates[0].SafetyRatings[1].Probability)
 }
 
+// Regression: a /genai generateContent call with candidateCount=2 and responseLogprobs
+// must come back with both candidates and the logprobsResult. The Responses schema has
+// one output and no logprobsResult field, so the extra candidates and the first
+// candidate's logprobsResult ride on ProviderExtraFields and are restored verbatim on the
+// GenAI egress, instead of the second candidate's text being merged into the first.
+func TestGenAIMultipleCandidatesAndLogprobsResult_PersistThroughBifrostRoundTrip(t *testing.T) {
+	logprobs := &gemini.LogprobsResult{
+		ChosenCandidates: []*gemini.LogprobsResultCandidate{{Token: "Red", LogProbability: -0.5}},
+	}
+	geminiResp := &gemini.GenerateContentResponse{
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{
+			{
+				Index:          0,
+				FinishReason:   gemini.FinishReasonStop,
+				LogprobsResult: logprobs,
+				Content:        &gemini.Content{Role: "model", Parts: []*gemini.Part{{Text: "Red"}}},
+			},
+			{
+				Index:        1,
+				FinishReason: gemini.FinishReasonStop,
+				Content:      &gemini.Content{Role: "model", Parts: []*gemini.Part{{Text: "Blue"}}},
+			},
+		},
+	}
+
+	bifrostResp := geminiResp.ToResponsesBifrostResponsesResponse()
+	require.NotNil(t, bifrostResp)
+	// The neutral output describes the first candidate only.
+	require.Len(t, bifrostResp.Output, 1)
+
+	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	require.NotNil(t, out)
+	require.Len(t, out.Candidates, 2, "both candidates must reach the GenAI client")
+	require.Len(t, out.Candidates[0].Content.Parts, 1)
+	assert.Equal(t, "Red", out.Candidates[0].Content.Parts[0].Text)
+	assert.Equal(t, int32(0), out.Candidates[0].Index)
+	require.NotNil(t, out.Candidates[0].LogprobsResult)
+	assert.Equal(t, "Red", out.Candidates[0].LogprobsResult.ChosenCandidates[0].Token)
+	require.Len(t, out.Candidates[1].Content.Parts, 1)
+	assert.Equal(t, "Blue", out.Candidates[1].Content.Parts[0].Text)
+	assert.Equal(t, int32(1), out.Candidates[1].Index)
+}
+
+// Regression: when the first candidate stops on an error finish reason (SAFETY) the
+// Responses conversion fails the response early, and the further candidates must still
+// ride along so the GenAI egress returns them; a blocked first candidate does not mean
+// the others were blocked.
+func TestGenAIAdditionalCandidatesSurviveFailedFirstCandidate(t *testing.T) {
+	geminiResp := &gemini.GenerateContentResponse{
+		ModelVersion: "gemini-2.5-flash",
+		Candidates: []*gemini.Candidate{
+			{Index: 0, FinishReason: gemini.FinishReasonSafety},
+			{
+				Index:        1,
+				FinishReason: gemini.FinishReasonStop,
+				Content:      &gemini.Content{Role: "model", Parts: []*gemini.Part{{Text: "Blue"}}},
+			},
+		},
+	}
+
+	bifrostResp := geminiResp.ToResponsesBifrostResponsesResponse()
+	require.NotNil(t, bifrostResp)
+	require.NotNil(t, bifrostResp.Status)
+	assert.Equal(t, "failed", *bifrostResp.Status)
+
+	out := gemini.ToGeminiResponsesResponse(bifrostResp)
+	require.NotNil(t, out)
+	require.Len(t, out.Candidates, 2, "the candidate after a SAFETY-blocked first candidate must reach the GenAI client")
+	assert.Equal(t, gemini.FinishReasonSafety, out.Candidates[0].FinishReason)
+	require.NotNil(t, out.Candidates[1].Content)
+	require.Len(t, out.Candidates[1].Content.Parts, 1)
+	assert.Equal(t, "Blue", out.Candidates[1].Content.Parts[0].Text)
+	assert.Equal(t, int32(1), out.Candidates[1].Index)
+}
+
 // Regression: GenAI usageMetadata modality details must include tokenCount even when zero.
 // Some clients (e.g. @ai-sdk/google) validate tokenCount as required and reject missing fields.
 func TestGenAIUsageMetadata_IncludesZeroTokenCountInModalityDetails(t *testing.T) {
@@ -4631,13 +4780,15 @@ func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
 			},
 		},
 		{
-			name:  "StripsGenerationConfigCompatFields",
+			// Logprobs reach Google as sent, as they do on the typed path: Google validates the
+			// range and answers with logprobsResult, so stripping them hid both the 400 and the result.
+			name:  "KeepsLogprobsAndStripsPenalties",
 			input: `{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"temperature":0.7,"responseLogprobs":true,"logprobs":5,"presencePenalty":0.5,"frequencyPenalty":0.3}}`,
 			validate: func(t *testing.T, m map[string]interface{}) {
 				gc := genConfig(m)
 				require.NotNil(t, gc)
-				assert.NotContains(t, gc, "responseLogprobs")
-				assert.NotContains(t, gc, "logprobs")
+				assert.Equal(t, true, gc["responseLogprobs"], "responseLogprobs must reach Google")
+				assert.Equal(t, float64(5), gc["logprobs"], "logprobs must reach Google unclamped")
 				assert.NotContains(t, gc, "presencePenalty")
 				assert.NotContains(t, gc, "frequencyPenalty")
 				assert.Contains(t, gc, "temperature", "valid fields must be preserved")

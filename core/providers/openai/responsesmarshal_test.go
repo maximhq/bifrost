@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
@@ -771,6 +772,73 @@ func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputPreservesNonT
 	}
 }
 
+// tool_reference is Anthropic-only (tool search); OpenAI has no such block, so
+// it is dropped before flattening and an output left empty becomes "".
+func TestOpenAIResponsesRequestInput_MarshalJSON_FunctionCallOutputDropsToolReferenceBlocks(t *testing.T) {
+	toolRef := schemas.ResponsesMessageContentBlock{
+		Type:     schemas.ResponsesInputMessageContentBlockTypeToolReference,
+		ToolName: schemas.Ptr("get_weather"),
+	}
+	imageURL := "https://example.com/screenshot.png"
+	image := schemas.ResponsesMessageContentBlock{
+		Type: schemas.ResponsesInputMessageContentBlockTypeImage,
+		ResponsesInputMessageContentBlockImage: &schemas.ResponsesInputMessageContentBlockImage{
+			ImageURL: &imageURL,
+		},
+	}
+	tests := []struct {
+		name       string
+		blocks     []schemas.ResponsesMessageContentBlock
+		wantString *string
+		wantBlocks int
+	}{
+		{name: "only tool_reference", blocks: []schemas.ResponsesMessageContentBlock{toolRef}, wantString: schemas.Ptr("")},
+		{
+			name:       "text and tool_reference",
+			blocks:     []schemas.ResponsesMessageContentBlock{{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("found it")}, toolRef},
+			wantString: schemas.Ptr("found it"),
+		},
+		{name: "image and tool_reference", blocks: []schemas.ResponsesMessageContentBlock{image, toolRef}, wantBlocks: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input := &OpenAIResponsesRequestInput{
+				OpenAIResponsesRequestInputArray: []schemas.ResponsesMessage{
+					{
+						Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{
+							CallID: schemas.Ptr("toolu_search"),
+							Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: tt.blocks},
+						},
+					},
+				},
+			}
+			jsonBytes, err := input.MarshalJSON()
+			if err != nil {
+				t.Fatalf("Failed to marshal: %v", err)
+			}
+			var messages []map[string]interface{}
+			if err := sonic.Unmarshal(jsonBytes, &messages); err != nil {
+				t.Fatalf("Failed to unmarshal: %v\nraw=%s", err, string(jsonBytes))
+			}
+			if tt.wantString != nil {
+				got, ok := messages[0]["output"].(string)
+				if !ok || got != *tt.wantString {
+					t.Fatalf("output: want %q, got %v; raw=%s", *tt.wantString, messages[0]["output"], string(jsonBytes))
+				}
+				return
+			}
+			blocks, ok := messages[0]["output"].([]interface{})
+			if !ok || len(blocks) != tt.wantBlocks {
+				t.Fatalf("output: want %d blocks, got %v; raw=%s", tt.wantBlocks, messages[0]["output"], string(jsonBytes))
+			}
+			if strings.Contains(string(jsonBytes), "tool_reference") {
+				t.Fatalf("tool_reference must not reach OpenAI; raw=%s", string(jsonBytes))
+			}
+		})
+	}
+}
+
 // TestOpenAIResponsesRequest_MarshalJSON_StripsAnthropicToolFlags ensures the
 // Responses serializer drops the Anthropic-native tool flags (defer_loading,
 // input_examples, eager_input_streaming) along with CacheControl before
@@ -926,6 +994,414 @@ func TestToOpenAIResponsesRequest_KeepsDeferLoadingForToolSearchModels(t *testin
 				t.Errorf("defer_loading on wire = %v, want %v; raw=%s", got, tt.keep, raw)
 			}
 		})
+	}
+}
+
+// toolSearchWire marshals the OpenAI request for a tool search test and returns
+// the parsed tools and input arrays.
+func toolSearchWire(t *testing.T, provider schemas.ModelProvider, model string, tools []schemas.ResponsesTool, input []schemas.ResponsesMessage) (string, []gjson.Result, []gjson.Result) {
+	t.Helper()
+	req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+		Provider: provider,
+		Model:    model,
+		Input:    input,
+		Params:   &schemas.ResponsesParameters{Tools: tools},
+	})
+	if req == nil {
+		t.Fatal("ToOpenAIResponsesRequest returned nil")
+	}
+	body, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	return string(body), gjson.GetBytes(body, "tools").Array(), gjson.GetBytes(body, "input").Array()
+}
+
+func toolSearchUserTurn() schemas.ResponsesMessage {
+	return schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("what is the weather in Tokyo")},
+	}
+}
+
+func deferredWeatherTool() schemas.ResponsesTool {
+	return schemas.ResponsesTool{
+		Type:         schemas.ResponsesToolTypeFunction,
+		Name:         schemas.Ptr("get_weather"),
+		Description:  schemas.Ptr("Get the weather"),
+		DeferLoading: schemas.Ptr(true),
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{
+			Type:       "object",
+			Properties: schemas.NewOrderedMapFromPairs(schemas.KV("city", map[string]any{"type": "string"})),
+		}},
+	}
+}
+
+func wireItemsOfType(items []gjson.Result, itemType string) []gjson.Result {
+	var out []gjson.Result
+	for _, item := range items {
+		if item.Get("type").String() == itemType {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+// Issue #8361: Claude Code runs its own tool search (a ToolSearch function whose
+// results carry tool_reference blocks). On gpt-5.4+ that maps onto OpenAI's
+// client-executed tool_search, so the deferred tools stay deferred and the request
+// carries the tool_search OpenAI requires for them.
+func TestToOpenAIResponsesRequest_MapsClientToolSearchFunction(t *testing.T) {
+	tools := []schemas.ResponsesTool{
+		{
+			Type:        schemas.ResponsesToolTypeFunction,
+			Name:        schemas.Ptr("ToolSearch"),
+			Description: schemas.Ptr("Load deferred tools by name."),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{
+				Type:       "object",
+				Properties: schemas.NewOrderedMapFromPairs(schemas.KV("query", map[string]any{"type": "string"})),
+				Required:   []string{"query"},
+			}},
+		},
+		deferredWeatherTool(),
+	}
+	input := []schemas.ResponsesMessage{
+		toolSearchUserTurn(),
+		{
+			ID:   schemas.Ptr("toolu_search_1"),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("toolu_search_1"), Name: schemas.Ptr("ToolSearch"), Arguments: schemas.Ptr(`{"query":"select:get_weather"}`),
+			},
+		},
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: schemas.Ptr("toolu_search_1"),
+				Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesFunctionToolCallOutputBlocks: []schemas.ResponsesMessageContentBlock{
+					{Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Loaded 1 tool")},
+					{Type: schemas.ResponsesInputMessageContentBlockTypeToolReference, ToolName: schemas.Ptr("get_weather")},
+				}},
+			},
+		},
+	}
+
+	raw, wireTools, wireInput := toolSearchWire(t, schemas.OpenAI, "gpt-6-sol", tools, input)
+
+	if len(wireTools) != 2 {
+		t.Fatalf("want 2 tools, got %d: %s", len(wireTools), raw)
+	}
+	search := wireTools[0]
+	if search.Get("type").String() != "tool_search" || search.Get("execution").String() != "client" {
+		t.Fatalf("client search function not mapped to client tool_search: %s", search.Raw)
+	}
+	if search.Get("name").Exists() {
+		t.Errorf("tool_search must not carry a name: %s", search.Raw)
+	}
+	if search.Get("description").String() != "Load deferred tools by name." || search.Get("parameters.properties.query.type").String() != "string" {
+		t.Errorf("tool_search lost the function's description or parameters: %s", search.Raw)
+	}
+	if !wireTools[1].Get("defer_loading").Bool() {
+		t.Errorf("deferred tool must stay deferred: %s", wireTools[1].Raw)
+	}
+
+	if calls := wireItemsOfType(wireInput, "function_call"); len(calls) != 0 {
+		t.Errorf("search call must not replay as a function_call: %s", raw)
+	}
+	if outs := wireItemsOfType(wireInput, "function_call_output"); len(outs) != 0 {
+		t.Errorf("search result must not replay as a function_call_output: %s", raw)
+	}
+	calls := wireItemsOfType(wireInput, "tool_search_call")
+	if len(calls) != 1 {
+		t.Fatalf("want one tool_search_call, got %s", raw)
+	}
+	call := calls[0]
+	if call.Get("call_id").String() != "toolu_search_1" || call.Get("execution").String() != "client" ||
+		!call.Get("arguments").IsObject() || call.Get("arguments.query").String() != "select:get_weather" {
+		t.Errorf("tool_search_call shape wrong: %s", call.Raw)
+	}
+	if call.Get("name").Exists() {
+		t.Errorf("tool_search_call must not carry a name: %s", call.Raw)
+	}
+	outs := wireItemsOfType(wireInput, "tool_search_output")
+	if len(outs) != 1 {
+		t.Fatalf("want one tool_search_output, got %s", raw)
+	}
+	out := outs[0]
+	if out.Get("call_id").String() != "toolu_search_1" || out.Get("execution").String() != "client" {
+		t.Errorf("tool_search_output shape wrong: %s", out.Raw)
+	}
+	loaded := out.Get("tools").Array()
+	if len(loaded) != 1 || loaded[0].Get("name").String() != "get_weather" || loaded[0].Get("type").String() != "function" ||
+		loaded[0].Get("parameters.properties.city.type").String() != "string" || !loaded[0].Get("defer_loading").Bool() {
+		t.Errorf("tool_search_output must carry the loaded definition: %s", out.Raw)
+	}
+}
+
+// A tool_choice that pins the client's search function by name must keep naming a
+// declared tool. The function then stays a function, and the deferred tools get the
+// hosted tool_search instead.
+func TestToOpenAIResponsesRequest_ToolChoicePinningClientSearchKeepsFunction(t *testing.T) {
+	searchFn := schemas.ResponsesTool{
+		Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("ToolSearch"),
+		ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+	}
+	for _, tt := range []struct {
+		name   string
+		choice *schemas.ResponsesToolChoice
+	}{
+		{"forced function", &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+			Type: schemas.ResponsesToolChoiceTypeFunction, Name: schemas.Ptr("ToolSearch"),
+		}}},
+		{"allowed_tools", &schemas.ResponsesToolChoice{ResponsesToolChoiceStruct: &schemas.ResponsesToolChoiceStruct{
+			Type: schemas.ResponsesToolChoiceTypeAllowedTools, Mode: schemas.Ptr("required"),
+			Tools: []schemas.ResponsesToolChoiceAllowedToolDef{{Type: "function", Name: schemas.Ptr("ToolSearch")}},
+		}}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := ToOpenAIResponsesRequest(nil, &schemas.BifrostResponsesRequest{
+				Provider: schemas.OpenAI,
+				Model:    "gpt-6-sol",
+				Input:    []schemas.ResponsesMessage{toolSearchUserTurn()},
+				Params: &schemas.ResponsesParameters{
+					Tools:      []schemas.ResponsesTool{searchFn, deferredWeatherTool()},
+					ToolChoice: tt.choice,
+				},
+			})
+			body, err := req.MarshalJSON()
+			if err != nil {
+				t.Fatalf("marshal failed: %v", err)
+			}
+			raw := string(body)
+			declared := false
+			hosted := false
+			for _, tool := range gjson.GetBytes(body, "tools").Array() {
+				if tool.Get("type").String() == "function" && tool.Get("name").String() == "ToolSearch" {
+					declared = true
+				}
+				if tool.Raw == `{"type":"tool_search"}` {
+					hosted = true
+				}
+			}
+			if !declared {
+				t.Errorf("tool_choice names ToolSearch, so it must stay a declared function: %s", raw)
+			}
+			if !hosted || !strings.Contains(raw, `"defer_loading":true`) {
+				t.Errorf("the deferred tool still needs the hosted tool_search: %s", raw)
+			}
+		})
+	}
+}
+
+// Deferred tools with no search tool of any kind get OpenAI's hosted tool_search
+// on models that support it; older models get the tools eagerly instead.
+func TestToOpenAIResponsesRequest_AddsHostedToolSearch(t *testing.T) {
+	tools := []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("lookup"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		deferredWeatherTool(),
+	}
+	for _, tt := range []struct {
+		name, model string
+		provider    schemas.ModelProvider
+		want        bool
+	}{
+		{"openai gpt-6-sol", "gpt-6-sol", schemas.OpenAI, true},
+		{"azure gpt-6-sol", "gpt-6-sol-2026-09-22", schemas.Azure, true},
+		{"openai gpt-4o", "gpt-4o", schemas.OpenAI, false},
+		{"groq", "openai/gpt-oss-120b", schemas.Groq, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, wireTools, _ := toolSearchWire(t, tt.provider, tt.model, tools, []schemas.ResponsesMessage{toolSearchUserTurn()})
+			hosted := slices.ContainsFunc(wireTools, func(tool gjson.Result) bool {
+				return tool.Raw == `{"type":"tool_search"}`
+			})
+			if hosted != tt.want {
+				t.Errorf("hosted tool_search present = %v, want %v: %s", hosted, tt.want, raw)
+			}
+			if got := strings.Contains(raw, `"defer_loading":true`); got != tt.want {
+				t.Errorf("defer_loading on wire = %v, want %v: %s", got, tt.want, raw)
+			}
+		})
+	}
+}
+
+// A hosted search replayed by an Anthropic client arrives as the typed
+// tool_search_call Anthropic ingress builds from server_tool_use plus
+// tool_search_tool_result. OpenAI needs it back as its own call/output pair.
+func TestToOpenAIResponsesRequest_ReplaysHostedToolSearchHistory(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		toolSearchUserTurn(),
+		{
+			ID:   schemas.Ptr("tsc_1"),
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:                  schemas.Ptr("tsc_1"),
+				Name:                    schemas.Ptr("tool_search_tool_bm25"),
+				Arguments:               schemas.Ptr(`{"paths":["weather"]}`),
+				ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{"get_weather"}},
+			},
+		},
+	}
+	raw, _, wireInput := toolSearchWire(t, schemas.OpenAI, "gpt-6-sol", []schemas.ResponsesTool{deferredWeatherTool()}, input)
+
+	calls := wireItemsOfType(wireInput, "tool_search_call")
+	if len(calls) != 1 {
+		t.Fatalf("want one tool_search_call, got %s", raw)
+	}
+	for _, field := range []string{"name", "tool_references", "id", "call_id"} {
+		if calls[0].Get(field).Exists() {
+			t.Errorf("hosted tool_search_call must not carry %q: %s", field, calls[0].Raw)
+		}
+	}
+	if calls[0].Get("execution").String() != "server" || calls[0].Get("arguments.paths.0").String() != "weather" {
+		t.Errorf("hosted tool_search_call shape wrong: %s", calls[0].Raw)
+	}
+	outs := wireItemsOfType(wireInput, "tool_search_output")
+	if len(outs) != 1 || outs[0].Get("execution").String() != "server" ||
+		outs[0].Get("tools.0.name").String() != "get_weather" {
+		t.Fatalf("want a hosted tool_search_output loading get_weather, got %s", raw)
+	}
+}
+
+// A neutral history can carry the hosted search's output as its own typed item after
+// the typed call. Replay regenerates the output from the call's references, so the
+// supplied one is consumed rather than sent as a second output for the same call.
+func TestToOpenAIResponsesRequest_ReplaysTypedToolSearchPairOnce(t *testing.T) {
+	input := []schemas.ResponsesMessage{
+		toolSearchUserTurn(),
+		{
+			Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:                  schemas.Ptr("tsc_1"),
+				Arguments:               schemas.Ptr(`{"paths":["weather"]}`),
+				ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{"get_weather"}},
+			},
+		},
+		{
+			Type:                  schemas.Ptr(schemas.ResponsesMessageTypeToolSearchOutput),
+			ToolSearchOutputTools: json.RawMessage(`[{"type":"function","name":"get_weather"}]`),
+			ResponsesToolMessage:  &schemas.ResponsesToolMessage{CallID: schemas.Ptr("tsc_1")},
+		},
+		{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("and in Paris?")},
+		},
+	}
+	raw, _, wireInput := toolSearchWire(t, schemas.OpenAI, "gpt-6-sol", []schemas.ResponsesTool{deferredWeatherTool()}, input)
+
+	if calls := wireItemsOfType(wireInput, "tool_search_call"); len(calls) != 1 {
+		t.Fatalf("want one tool_search_call, got %s", raw)
+	}
+	outs := wireItemsOfType(wireInput, "tool_search_output")
+	if len(outs) != 1 {
+		t.Fatalf("want one tool_search_output for the one search call, got %d: %s", len(outs), raw)
+	}
+	if outs[0].Get("tools.0.parameters.properties.city.type").String() != "string" {
+		t.Errorf("the output must be the regenerated one, carrying the declared definition: %s", outs[0].Raw)
+	}
+	if len(wireInput) != 4 {
+		t.Errorf("want user, call, output, user; got %d items: %s", len(wireInput), raw)
+	}
+}
+
+// Typed tool search history means nothing to OpenAI when the request carries no
+// tool_search (no tools at all, only eager tools, or a model without tool search), so it is dropped
+// rather than sent in its Anthropic shape.
+func TestToOpenAIResponsesRequest_DropsTypedToolSearchHistoryWithoutSearch(t *testing.T) {
+	eagerWeather := deferredWeatherTool()
+	eagerWeather.DeferLoading = nil
+	typedCall := schemas.ResponsesMessage{
+		ID:   schemas.Ptr("srvtoolu_1"),
+		Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+		ResponsesToolMessage: &schemas.ResponsesToolMessage{
+			CallID:                  schemas.Ptr("srvtoolu_1"),
+			Name:                    schemas.Ptr("tool_search_tool_bm25"),
+			Arguments:               schemas.Ptr(`{"query":"weather"}`),
+			ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{"get_weather"}},
+		},
+	}
+	for _, tt := range []struct {
+		name, model string
+		tools       []schemas.ResponsesTool
+	}{
+		{"no tools", "gpt-6-sol", nil},
+		{"eager tools only", "gpt-6-sol", []schemas.ResponsesTool{eagerWeather}},
+		{"model without tool search", "gpt-4o", []schemas.ResponsesTool{deferredWeatherTool()}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, _, wireInput := toolSearchWire(t, schemas.OpenAI, tt.model, tt.tools,
+				[]schemas.ResponsesMessage{toolSearchUserTurn(), typedCall})
+			if n := len(wireItemsOfType(wireInput, "tool_search_call")) + len(wireItemsOfType(wireInput, "tool_search_output")); n != 0 {
+				t.Errorf("want typed tool search history dropped, got %d items: %s", n, raw)
+			}
+			if len(wireInput) != 1 {
+				t.Errorf("want only the user turn, got %s", raw)
+			}
+		})
+	}
+}
+
+// An Anthropic tool search server tool reaches OpenAI as tool_search, but its
+// Anthropic variant name is not an OpenAI field.
+func TestToOpenAIResponsesRequest_ClearsAnthropicToolSearchName(t *testing.T) {
+	tools := []schemas.ResponsesTool{
+		{Type: schemas.ResponsesToolTypeToolSearch, Name: schemas.Ptr("tool_search_tool_regex")},
+		deferredWeatherTool(),
+	}
+	raw, wireTools, _ := toolSearchWire(t, schemas.OpenAI, "gpt-6-sol", tools, []schemas.ResponsesMessage{toolSearchUserTurn()})
+	if len(wireTools) != 2 || wireTools[0].Raw != `{"type":"tool_search"}` {
+		t.Fatalf("want a bare hosted tool_search and no duplicate, got %s", raw)
+	}
+}
+
+// The #8361 request through Anthropic ingress: a client tool_search function, a
+// deferred tool, and a search turn whose tool_result is a tool_reference. On
+// gpt-6-sol it previously went out with defer_loading and no tool_search (a 400).
+func TestToOpenAIResponsesRequest_AnthropicIngressClientToolSearch(t *testing.T) {
+	var anthropicReq anthropic.AnthropicMessageRequest
+	if err := sonic.Unmarshal([]byte(`{
+		"model": "openai/gpt-6-sol",
+		"max_tokens": 400,
+		"tools": [
+			{"name": "tool_search", "description": "Load deferred tool definitions by name.",
+			 "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
+			{"name": "fetch_weather_report", "description": "Get weather.", "defer_loading": true,
+			 "input_schema": {"type": "object", "properties": {"zq_city_code_v7": {"type": "string"}}, "required": ["zq_city_code_v7"]}}
+		],
+		"messages": [
+			{"role": "user", "content": "Use fetch_weather_report for Tokyo. Load it first via tool_search. Then call it."},
+			{"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "tool_search", "input": {"query": "select:fetch_weather_report"}}]},
+			{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": [{"type": "tool_reference", "tool_name": "fetch_weather_report"}]}]}
+		]
+	}`), &anthropicReq); err != nil {
+		t.Fatalf("decode anthropic request: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq := anthropicReq.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Provider, bifrostReq.Model = schemas.OpenAI, "gpt-6-sol"
+
+	req := ToOpenAIResponsesRequest(ctx, bifrostReq)
+	body, err := req.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	raw := string(body)
+	tools := gjson.GetBytes(body, "tools").Array()
+	if len(tools) != 2 || tools[0].Get("type").String() != "tool_search" || tools[0].Get("execution").String() != "client" {
+		t.Fatalf("want client tool_search plus the deferred tool, got %s", raw)
+	}
+	if !tools[1].Get("defer_loading").Bool() {
+		t.Errorf("fetch_weather_report must stay deferred: %s", raw)
+	}
+	input := gjson.GetBytes(body, "input").Array()
+	calls, outs := wireItemsOfType(input, "tool_search_call"), wireItemsOfType(input, "tool_search_output")
+	if len(calls) != 1 || calls[0].Get("call_id").String() != "toolu_01" {
+		t.Fatalf("want the search turn replayed as tool_search_call, got %s", raw)
+	}
+	if len(outs) != 1 || outs[0].Get("call_id").String() != "toolu_01" ||
+		outs[0].Get("tools.0.name").String() != "fetch_weather_report" ||
+		outs[0].Get("tools.0.parameters.properties.zq_city_code_v7.type").String() != "string" {
+		t.Fatalf("want the tool_reference replayed as a tool_search_output loading fetch_weather_report, got %s", raw)
 	}
 }
 
@@ -1511,7 +1987,14 @@ func openRouterCacheReq(texts ...string) *schemas.BifrostResponsesRequest {
 // input[0].content, using "" for a block that carries no breakpoint.
 func breakpointModes(t *testing.T, bifrostReq *schemas.BifrostResponsesRequest) ([]string, string) {
 	t.Helper()
-	request := ToOpenAIResponsesRequest(nil, bifrostReq)
+	return breakpointModesCtx(t, nil, bifrostReq)
+}
+
+// breakpointModesCtx is breakpointModes with a caller-supplied context, for cases
+// that depend on context flags such as extra-params passthrough.
+func breakpointModesCtx(t *testing.T, ctx *schemas.BifrostContext, bifrostReq *schemas.BifrostResponsesRequest) ([]string, string) {
+	t.Helper()
+	request := ToOpenAIResponsesRequest(ctx, bifrostReq)
 	if request == nil {
 		t.Fatal("expected non-nil request")
 	}
@@ -1772,10 +2255,10 @@ func firstBlock(t *testing.T, m map[string]any, idx int, raw string) map[string]
 
 // TestToOpenAIResponsesRequest_GPT56CacheBreakpoint extends the #6290 OpenRouter
 // translation to the gpt-5.6 family (#6180). These models define
-// prompt_cache_breakpoint natively but default to IMPLICIT caching, which anchors the
-// breakpoint on the latest message - so an agent loop rewrites the whole growing
-// prompt every turn at the cache-write rate. Translating the marker is only half the
-// fix; prompt_cache_options.mode=explicit is what actually pins the prefix.
+// prompt_cache_breakpoint natively, so a cache_control marker becomes one. The request
+// stays in the default implicit mode, which honours explicit breakpoints and also looks
+// back over earlier message endings; explicit-only mode would drop that lookback
+// (https://developers.openai.com/api/docs/guides/prompt-caching).
 func TestToOpenAIResponsesRequest_GPT56CacheBreakpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -1804,12 +2287,8 @@ func TestToOpenAIResponsesRequest_GPT56CacheBreakpoint(t *testing.T) {
 				t.Errorf("cache_control must not be forwarded to an OpenAI-shaped endpoint; raw=%s", raw)
 			}
 
-			opts, ok := m["prompt_cache_options"].(map[string]any)
-			if !ok {
-				t.Fatalf("gpt-5.6 needs prompt_cache_options.mode=explicit; the block marker alone leaves implicit caching on. raw=%s", raw)
-			}
-			if mode, _ := opts["mode"].(string); mode != "explicit" {
-				t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+			if _, present := m["prompt_cache_options"]; present {
+				t.Errorf("a translated marker must not switch the request to explicit-only caching; raw=%s", raw)
 			}
 
 			unmarked := firstBlock(t, m, 1, raw)
@@ -1863,8 +2342,8 @@ func TestToOpenAIResponsesRequest_CacheBreakpointGateReadsDatasheet(t *testing.T
 		if _, present := firstBlock(t, m, 0, raw)["prompt_cache_breakpoint"]; !present {
 			t.Errorf("datasheet true must enable the breakpoint; raw=%s", raw)
 		}
-		if _, present := m["prompt_cache_options"]; !present {
-			t.Errorf("datasheet true must enable prompt_cache_options; raw=%s", raw)
+		if _, present := m["prompt_cache_options"]; present {
+			t.Errorf("an enabled breakpoint must not switch the request to explicit-only caching; raw=%s", raw)
 		}
 	})
 }
@@ -1894,6 +2373,88 @@ func TestToOpenAIResponsesRequest_GPT56RespectsCallerCacheOptions(t *testing.T) 
 	}
 }
 
+// TestToOpenAIResponsesRequest_GPT56ClampLeavesImplicitSlot pins the marker budget on
+// the OpenAI family. A request can create up to four cache writes, and in implicit mode
+// the implicit breakpoint takes one of them, leaving three for explicit markers. A
+// caller that sets explicit mode itself has no implicit breakpoint and keeps all four.
+// OpenRouter is unaffected and keeps four (TestToOpenAIResponsesRequest_OpenRouterClampsCacheBreakpoints).
+func TestToOpenAIResponsesRequest_GPT56ClampLeavesImplicitSlot(t *testing.T) {
+	overMarked := func() *schemas.BifrostResponsesRequest {
+		req := openRouterCacheReq("p1", "p2", "p3", "p4", "p5")
+		req.Provider = schemas.Bedrock
+		req.Model = "openai.gpt-5.6-sol"
+		return req
+	}
+
+	t.Run("implicit mode keeps the latest three", func(t *testing.T) {
+		modes, raw := breakpointModes(t, overMarked())
+		want := []string{"", "", "explicit", "explicit", "explicit"}
+		if !slices.Equal(modes, want) {
+			t.Errorf("breakpoint modes = %q, want %q; raw=%s", modes, want, raw)
+		}
+	})
+
+	t.Run("caller explicit mode keeps the latest four", func(t *testing.T) {
+		req := overMarked()
+		req.Params = &schemas.ResponsesParameters{
+			PromptCacheOptions: &schemas.PromptCacheOptions{Mode: schemas.Ptr("explicit")},
+		}
+		modes, raw := breakpointModes(t, req)
+		want := []string{"", "explicit", "explicit", "explicit", "explicit"}
+		if !slices.Equal(modes, want) {
+			t.Errorf("breakpoint modes = %q, want %q; raw=%s", modes, want, raw)
+		}
+	})
+
+	// Only mode "explicit" frees the implicit slot. Options that set just a ttl leave
+	// the request in the default implicit mode, so the clamp stays at three.
+	t.Run("caller options without a mode keep the latest three", func(t *testing.T) {
+		req := overMarked()
+		req.Params = &schemas.ResponsesParameters{
+			PromptCacheOptions: &schemas.PromptCacheOptions{TTL: schemas.Ptr("30m")},
+		}
+		modes, raw := breakpointModes(t, req)
+		want := []string{"", "", "explicit", "explicit", "explicit"}
+		if !slices.Equal(modes, want) {
+			t.Errorf("breakpoint modes = %q, want %q; raw=%s", modes, want, raw)
+		}
+	})
+
+	// With passthrough on, prompt_cache_options in ExtraParams is merged into the wire
+	// body after serialization (the Anthropic ingress puts it there), so it decides
+	// the mode the provider sees and has to decide the ceiling too.
+	t.Run("passthrough explicit mode keeps the latest four", func(t *testing.T) {
+		req := overMarked()
+		req.Params = &schemas.ResponsesParameters{
+			ExtraParams: map[string]interface{}{
+				"prompt_cache_options": map[string]interface{}{"mode": "explicit"},
+			},
+		}
+		ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+		defer cancel()
+		ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+		modes, raw := breakpointModesCtx(t, ctx, req)
+		want := []string{"", "explicit", "explicit", "explicit", "explicit"}
+		if !slices.Equal(modes, want) {
+			t.Errorf("breakpoint modes = %q, want %q; raw=%s", modes, want, raw)
+		}
+	})
+
+	t.Run("extra params without passthrough do not change the ceiling", func(t *testing.T) {
+		req := overMarked()
+		req.Params = &schemas.ResponsesParameters{
+			ExtraParams: map[string]interface{}{
+				"prompt_cache_options": map[string]interface{}{"mode": "explicit"},
+			},
+		}
+		modes, raw := breakpointModes(t, req)
+		want := []string{"", "", "explicit", "explicit", "explicit"}
+		if !slices.Equal(modes, want) {
+			t.Errorf("breakpoint modes = %q, want %q; raw=%s", modes, want, raw)
+		}
+	})
+}
+
 // TestToOpenAIResponsesRequest_GPT56NoBreakpointNoExplicitMode guards a footgun:
 // switching a request to explicit mode with no breakpoint anywhere opts it out of
 // caching entirely, which is strictly worse than the implicit default it replaced.
@@ -1919,8 +2480,6 @@ func TestToOpenAIResponsesRequest_GPT56NoBreakpointNoExplicitMode(t *testing.T) 
 // (https://platform.claude.com/docs/en/build-with-claude/prompt-caching). So "30m"
 // never arrives and would be inert if it did, and forwarding the "1h" that does arrive
 // would send a value OpenAI rejects, turning a working request into a 400.
-//
-// The mode must still be set: that is what pins the prefix, and it is unrelated to TTL.
 func TestToOpenAIResponsesRequest_GPT56MarkerTTLIsNotCarried(t *testing.T) {
 	req := gpt56CacheReq(schemas.OpenAI, "gpt-5.6-sol")
 	req.Input[0].Content.ContentBlocks[0].CacheControl = &schemas.CacheControl{
@@ -1930,16 +2489,9 @@ func TestToOpenAIResponsesRequest_GPT56MarkerTTLIsNotCarried(t *testing.T) {
 
 	m, raw := marshalResponses(t, req)
 
-	opts, ok := m["prompt_cache_options"].(map[string]any)
-	if !ok {
-		t.Fatalf("the explicit-mode option must still be set; raw=%s", raw)
-	}
-	if mode, _ := opts["mode"].(string); mode != "explicit" {
-		t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
-	}
-	if ttl, present := opts["ttl"]; present {
-		t.Errorf("a marker TTL must not become prompt_cache_options.ttl (got %v); OpenAI accepts "+
-			"only \"30m\" there and rejects \"1h\"; raw=%s", ttl, raw)
+	if opts, present := m["prompt_cache_options"]; present {
+		t.Errorf("a marker TTL must not become prompt_cache_options (got %v); OpenAI accepts "+
+			"only \"30m\" as ttl and rejects \"1h\"; raw=%s", opts, raw)
 	}
 	if strings.Contains(raw, "\"ttl\"") {
 		t.Errorf("no ttl may reach an OpenAI-shaped endpoint from a cache_control marker; raw=%s", raw)
@@ -2040,14 +2592,8 @@ func TestToOpenAIResponsesRequest_CustomProviderResolvesBaseForCacheBreakpoints(
 		if mode, _ := bp["mode"].(string); mode != "explicit" {
 			t.Errorf("prompt_cache_breakpoint.mode = %q, want \"explicit\"; raw=%s", mode, raw)
 		}
-		// The block marker alone does not switch gpt-5.6 off implicit caching; without
-		// request-level explicit mode the breakpoint is inert and the win is lost.
-		opts, ok := jsonMap["prompt_cache_options"].(map[string]any)
-		if !ok {
-			t.Fatalf("gpt-5.6 needs request-level prompt_cache_options to honour the breakpoint; raw=%s", raw)
-		}
-		if mode, _ := opts["mode"].(string); mode != "explicit" {
-			t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+		if _, present := jsonMap["prompt_cache_options"]; present {
+			t.Errorf("a translated marker must not switch the request to explicit-only caching; raw=%s", raw)
 		}
 	}
 
@@ -2433,12 +2979,10 @@ func TestToOpenAIResponsesRequest_FunctionCallOutputCacheBreakpoint(t *testing.T
 				if _, present := last["cache_control"]; present {
 					t.Errorf("cache_control must not reach an OpenAI-shaped endpoint; raw=%s", raw)
 				}
-				opts, ok := m["prompt_cache_options"].(map[string]any)
-				if !ok {
-					t.Fatalf("a breakpoint on a function_call_output must also switch the request to explicit mode; raw=%s", raw)
-				}
-				if mode, _ := opts["mode"].(string); mode != "explicit" {
-					t.Errorf("prompt_cache_options.mode = %q, want \"explicit\"; raw=%s", mode, raw)
+				// The rolling tool_result marker moves every turn; only implicit mode's
+				// lookback finds the previous turn's entry.
+				if _, present := m["prompt_cache_options"]; present {
+					t.Errorf("a function_call_output breakpoint must not switch the request to explicit-only caching; raw=%s", raw)
 				}
 				// The caller's request must not be rewritten: fallbacks replay it.
 				if req.Input[2].ResponsesToolMessage.Output.ResponsesToolCallOutputStr == nil {
@@ -2472,8 +3016,8 @@ func TestToOpenAIResponsesRequest_FunctionCallOutputCacheBreakpoint(t *testing.T
 		if _, present := last["cache_control"]; present {
 			t.Errorf("cache_control must be stripped; raw=%s", raw)
 		}
-		if opts, ok := m["prompt_cache_options"].(map[string]any); !ok || opts["mode"] != "explicit" {
-			t.Errorf("request must be in explicit mode; raw=%s", raw)
+		if _, present := m["prompt_cache_options"]; present {
+			t.Errorf("request must stay in implicit mode; raw=%s", raw)
 		}
 	})
 
@@ -2490,7 +3034,7 @@ func TestToOpenAIResponsesRequest_FunctionCallOutputCacheBreakpoint(t *testing.T
 			t.Errorf("unmarked text-only output must still flatten to \"hello\"; got %v; raw=%s", item["output"], raw)
 		}
 		if _, present := m["prompt_cache_options"]; present {
-			t.Errorf("no marker anywhere must not switch on explicit mode; raw=%s", raw)
+			t.Errorf("no marker anywhere must not add prompt_cache_options; raw=%s", raw)
 		}
 	})
 
@@ -2554,8 +3098,8 @@ func TestToOpenAIResponsesRequest_ImageAndFileCacheBreakpoints(t *testing.T) {
 		if _, present := firstBlock(t, m, 2, raw)["prompt_cache_breakpoint"]; present {
 			t.Errorf("unmarked text block must not receive a breakpoint; raw=%s", raw)
 		}
-		if opts, ok := m["prompt_cache_options"].(map[string]any); !ok || opts["mode"] != "explicit" {
-			t.Errorf("request must be in explicit mode; raw=%s", raw)
+		if _, present := m["prompt_cache_options"]; present {
+			t.Errorf("request must stay in implicit mode; raw=%s", raw)
 		}
 	})
 
@@ -2645,8 +3189,8 @@ func TestToOpenAIResponsesRequest_InjectedToolOutputMarkerReachesWire(t *testing
 	if bp, ok := last["prompt_cache_breakpoint"].(map[string]any); !ok || bp["mode"] != "explicit" {
 		t.Errorf("injected marker must reach the wire as prompt_cache_breakpoint; got %v; raw=%s", last, raw)
 	}
-	if opts, ok := m["prompt_cache_options"].(map[string]any); !ok || opts["mode"] != "explicit" {
-		t.Errorf("request must be in explicit mode; raw=%s", raw)
+	if _, present := m["prompt_cache_options"]; present {
+		t.Errorf("request must stay in implicit mode; raw=%s", raw)
 	}
 }
 

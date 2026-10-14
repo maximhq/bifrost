@@ -2405,6 +2405,52 @@ func TestToBedrockResponsesRequest_GuardrailConfig(t *testing.T) {
 	assert.Nil(t, bedrockReq.ExtraParams)
 }
 
+// TestToBedrockResponsesRequest_InstructionsLeadSystemInput: top-level instructions and
+// system/developer input both reach system, instructions first (OpenAI places instructions
+// ahead of input). Previously instructions were dropped whenever the input carried system content.
+func TestToBedrockResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
+	user := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+	developer := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("DEVELOPER_MUST_SURVIVE")},
+	}
+
+	tests := []struct {
+		name         string
+		instructions *string
+		input        []schemas.ResponsesMessage
+		want         []string
+	}{
+		{"instructions and developer input both reach system, instructions first", schemas.Ptr("BASE_MUST_SURVIVE"), []schemas.ResponsesMessage{developer, user}, []string{"BASE_MUST_SURVIVE", "DEVELOPER_MUST_SURVIVE"}},
+		{"instructions alone", schemas.Ptr("BASE_MUST_SURVIVE"), []schemas.ResponsesMessage{user}, []string{"BASE_MUST_SURVIVE"}},
+		{"developer input alone", nil, []schemas.ResponsesMessage{developer, user}, []string{"DEVELOPER_MUST_SURVIVE"}},
+		{"empty instructions add nothing", schemas.Ptr(""), []schemas.ResponsesMessage{developer, user}, []string{"DEVELOPER_MUST_SURVIVE"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+				Model:  "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+				Input:  tc.input,
+				Params: &schemas.ResponsesParameters{Instructions: tc.instructions},
+			})
+			require.NoError(t, err)
+
+			var got []string
+			for _, sys := range bedrockReq.System {
+				require.NotNil(t, sys.Text, "unexpected non-text system block: %+v", sys)
+				got = append(got, *sys.Text)
+			}
+			assert.Equal(t, tc.want, got)
+			require.Len(t, bedrockReq.Messages, 1)
+			assert.Equal(t, bedrock.BedrockMessageRoleUser, bedrockReq.Messages[0].Role)
+		})
+	}
+}
+
 // TestBedrockToBifrostResponse_TraceStoredInProviderExtraFields verifies that
 // ToBifrostResponsesResponse carries guardrail trace in ProviderExtraFields.
 func TestBedrockToBifrostResponse_TraceStoredInProviderExtraFields(t *testing.T) {

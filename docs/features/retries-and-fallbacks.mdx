@@ -43,6 +43,8 @@ Every failed attempt gets a `failure_class`, recorded on the `attempt_trail` (se
 | `transient` | Network error, or `500`/`502`/`503`/`504`/`529` | Yes | No, same key |
 | `caller_fault` | The request itself was refused: `400`/`409`/`413`/`415`/`422` with a provider error body and no rate-limit wording, or a `404` naming a request field (a file, a previous response). A `403` refused by a guardrail or moderation stays `credential`, since guardrails can be set per key or workspace and another key may serve the request | No | No |
 | `unknown` | A `4xx` with no signal Bifrost recognises, such as a bodyless or HTML `404` from a proxy or a wrong base URL | No | No |
+| `timeout` | The attempt ran out of time: the provider did not answer within the request timeout, a stream produced no first token within its TTFT limit, or the request's own deadline passed. Recorded with status `504` and `fail_reason` `request_timed_out` (a stream cut by a TTFT limit keeps `ttft_timeout`). Fallbacks run after a provider or TTFT timeout; an expired request deadline ends the request, so no fallback runs | No | No |
+| `cancelled` | The caller cancelled the request or disconnected while the attempt was in flight. Recorded with status `499` and no `fail_reason`, since nothing was refused. Fallbacks do not run | No | No |
 
 ### Azure streaming errors before output
 

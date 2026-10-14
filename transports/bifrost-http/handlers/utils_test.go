@@ -1,14 +1,18 @@
 package handlers
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -208,5 +212,216 @@ func TestCheckURLAccessibility_DoesNotFollowRedirects(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("expected a redirecting URL to be reported as not accessible, got nil")
+	}
+}
+
+// TestRequestWorkContext_DetachesFromServerShutdown pins the invariant that makes
+// RequestWorkContext safe: the context it returns must not inherit the RequestCtx's
+// Done(), which is the server-wide fasthttp.Server.done. Deriving from it directly leaves a
+// watcher goroutine that panics with "missing cancel error" once Shutdown resets the field.
+// Request values must still read through for the handler's lifetime.
+func TestRequestWorkContext_DetachesFromServerShutdown(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	type result struct {
+		workCtx context.Context
+		value   any
+		parent  <-chan struct{}
+	}
+	got := make(chan result, 1)
+	served := make(chan struct{})
+
+	srv := &fasthttp.Server{
+		CloseOnShutdown: true,
+		Handler: func(ctx *fasthttp.RequestCtx) {
+			ctx.SetUserValue("tenant", "acme")
+			workCtx, cancel := RequestWorkContext(ctx, RequestWorkTimeout)
+			t.Cleanup(cancel)
+			got <- result{workCtx: workCtx, value: workCtx.Value("tenant"), parent: ctx.Done()}
+			close(served)
+		},
+	}
+	go func() { _ = srv.Serve(ln) }()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	if _, err := conn.Write([]byte("GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	<-served
+	r := <-got
+	_ = conn.Close()
+
+	if r.value != "acme" {
+		t.Fatalf("request value not readable through work context: got %v, want acme", r.value)
+	}
+	if r.parent == nil {
+		t.Fatal("precondition failed: RequestCtx.Done() was nil, so this test proves nothing")
+	}
+	if r.workCtx.Done() == r.parent {
+		t.Fatal("work context shares the server-wide done channel; it must be detached")
+	}
+
+	if err := srv.Shutdown(); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	// The server channel has now been closed and reset. A context still parented to the
+	// RequestCtx would be cancelled by that; a detached one must survive it.
+	if err := r.workCtx.Err(); err != nil {
+		t.Fatalf("work context was cancelled by server shutdown: %v", err)
+	}
+}
+
+// A burst of "no keys found for provider" 400s never reaches a provider, so no
+// llm.call span opens and the trace carried only "HTTP 400".
+func TestSendBifrostError_StampsRootSpanForPreDispatchFailure(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := tracing.NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID := tracer.CreateTrace("")
+	spanCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, rootHandle := tracer.StartSpan(spanCtx, "/v1/chat/completions", schemas.SpanKindHTTPRequest)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyTracer, schemas.Tracer(tracer))
+	ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
+
+	bifrostErr := &schemas.BifrostError{
+		StatusCode: schemas.Ptr(400),
+		Error: &schemas.ErrorField{
+			Message: "no keys found for provider: vertex and model: claude-opus-5-5",
+			Type:    schemas.Ptr(schemas.NoKeySupportsModel),
+		},
+	}
+	bifrostErr.ExtraFields.Provider = schemas.Vertex
+	bifrostErr.ExtraFields.RequestType = schemas.ChatCompletionRequest
+	bifrostErr.ExtraFields.OriginalModelRequested = "claude-opus-5-5"
+	bifrostErr.ExtraFields.ErrorType = schemas.ErrorTypeCallerModelNotAvailable
+
+	SendBifrostError(ctx, bifrostErr)
+
+	root := tracer.SpanFromHandle(rootHandle)
+	for key, want := range map[string]any{
+		schemas.AttrError:               "no keys found for provider: vertex and model: claude-opus-5-5",
+		schemas.AttrErrorTypeSpec:       schemas.NoKeySupportsModel,
+		schemas.AttrBifrostErrorType:    string(schemas.ErrorTypeCallerModelNotAvailable),
+		schemas.AttrRequestModel:        "claude-opus-5-5",
+		schemas.AttrBifrostProviderName: string(schemas.Vertex),
+	} {
+		if got, _ := root.GetAttribute(key); got != want {
+			t.Errorf("root span %s = %v, want %v", key, got, want)
+		}
+	}
+	if got, _ := root.GetAttribute(schemas.AttrProviderName); got != schemas.OTelProviderName(schemas.Vertex) {
+		t.Errorf("root span %s = %v, want %v", schemas.AttrProviderName, got, schemas.OTelProviderName(schemas.Vertex))
+	}
+}
+
+// A request that did reach a provider already had its resolved model propagated to
+// the root span; the originally requested one must not overwrite it.
+func TestSendBifrostError_DoesNotOverwriteResolvedIdentity(t *testing.T) {
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := tracing.NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID := tracer.CreateTrace("")
+	spanCtx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, rootHandle := tracer.StartSpan(spanCtx, "/v1/chat/completions", schemas.SpanKindHTTPRequest)
+	tracer.SpanFromHandle(rootHandle).SetAttribute(schemas.AttrRequestModel, "resolved-model")
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue(schemas.BifrostContextKeyTracer, schemas.Tracer(tracer))
+	ctx.SetUserValue(schemas.BifrostContextKeyTraceID, traceID)
+
+	bifrostErr := &schemas.BifrostError{StatusCode: schemas.Ptr(500)}
+	bifrostErr.ExtraFields.OriginalModelRequested = "alias-the-caller-asked-for"
+	SendBifrostError(ctx, bifrostErr)
+
+	if got, _ := tracer.SpanFromHandle(rootHandle).GetAttribute(schemas.AttrRequestModel); got != "resolved-model" {
+		t.Errorf("root span %s = %v, want the already-propagated resolved model", schemas.AttrRequestModel, got)
+	}
+}
+
+// No trace active (plain API routes, tracing disabled) must not panic.
+func TestSendBifrostError_NoTracerIsSafe(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	SendBifrostError(ctx, &schemas.BifrostError{StatusCode: schemas.Ptr(500)})
+	if ctx.Response.StatusCode() != 500 {
+		t.Errorf("status = %d, want 500", ctx.Response.StatusCode())
+	}
+}
+
+// TestSendJSON_ExtraFieldsPlacement pins client.extra_fields_placement on the native send path:
+// body mode keeps extra_fields, headers mode drops it from the body and writes it as headers.
+func TestSendJSON_ExtraFieldsPlacement(t *testing.T) {
+	resp := &schemas.BifrostChatResponse{
+		ID:          "chatcmpl-1",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionRequest, Provider: schemas.OpenAI, Latency: 12},
+	}
+
+	bodyCtx := &fasthttp.RequestCtx{}
+	SendJSON(bodyCtx, resp)
+	if !strings.Contains(string(bodyCtx.Response.Body()), `"extra_fields"`) {
+		t.Fatalf("body mode must keep extra_fields, got %s", bodyCtx.Response.Body())
+	}
+
+	headersCtx := &fasthttp.RequestCtx{}
+	headersCtx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
+	lib.ApplyBifrostResponseHeaders(headersCtx, nil, resp.ExtraFields)
+	SendJSON(headersCtx, resp)
+	body := string(headersCtx.Response.Body())
+	if strings.Contains(body, `"extra_fields"`) {
+		t.Fatalf("headers mode must drop extra_fields from the body, got %s", body)
+	}
+	if !strings.Contains(body, `"id":"chatcmpl-1"`) {
+		t.Fatalf("headers mode must keep the rest of the body, got %s", body)
+	}
+	if got := string(headersCtx.Response.Header.Peek(lib.HeaderBifrostLatency)); got != "12" {
+		t.Fatalf("latency header got %q, want 12", got)
+	}
+}
+
+// TestSendBifrostError_ExtraFieldsPlacement pins the same contract on native error responses.
+func TestSendBifrostError_ExtraFieldsPlacement(t *testing.T) {
+	newErr := func() *schemas.BifrostError {
+		return &schemas.BifrostError{
+			StatusCode:  new(fasthttp.StatusTooManyRequests),
+			Error:       &schemas.ErrorField{Message: "slow down"},
+			ExtraFields: schemas.BifrostErrorExtraFields{Provider: schemas.OpenAI, RetryAfter: 2000},
+		}
+	}
+
+	bodyCtx := &fasthttp.RequestCtx{}
+	SendBifrostError(bodyCtx, newErr())
+	if !strings.Contains(string(bodyCtx.Response.Body()), `"extra_fields"`) {
+		t.Fatalf("body mode must keep extra_fields, got %s", bodyCtx.Response.Body())
+	}
+
+	headersCtx := &fasthttp.RequestCtx{}
+	headersCtx.SetUserValue(lib.FastHTTPUserValueExtraFieldsInHeaders, true)
+	SendBifrostError(headersCtx, newErr())
+	body := string(headersCtx.Response.Body())
+	if strings.Contains(body, `"extra_fields"`) {
+		t.Fatalf("headers mode must drop extra_fields from the error body, got %s", body)
+	}
+	if !strings.Contains(body, `"slow down"`) {
+		t.Fatalf("headers mode must keep the error message, got %s", body)
+	}
+	if got := headersCtx.Response.StatusCode(); got != fasthttp.StatusTooManyRequests {
+		t.Fatalf("status got %d, want 429", got)
+	}
+	if got := string(headersCtx.Response.Header.Peek(lib.HeaderBifrostRetryAfterMs)); got != "2000" {
+		t.Fatalf("retry-after header got %q, want 2000", got)
+	}
+	if got := string(headersCtx.Response.Header.Peek(lib.HeaderBifrostProvider)); got != "openai" {
+		t.Fatalf("provider header got %q, want openai", got)
 	}
 }

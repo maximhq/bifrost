@@ -179,6 +179,11 @@ That second half is governed by the same setting as tools: with
 carries no instructions either. A block describing tools the model was never given would cost
 tokens and invite calls it cannot make.
 
+For the same reason, servers in [code mode](/mcp/code-mode) are left out of this aggregate. Their
+tools are not sent to the caller — the code mode tools stand in for them — so their guidance
+travels with the server instead, in the stub file the model reads just before calling it. Nothing
+is lost, and it is charged once per server opened rather than on every request.
+
 Each upstream's text is wrapped in a tagged block naming the server it came from:
 
 ```

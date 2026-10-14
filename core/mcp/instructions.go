@@ -32,6 +32,9 @@ const (
 // this caller cannot reach at all, so its instructions are withheld too — this is what keeps
 // a narrowed caller (x-bf-mcp-include-clients, or a /mcp/<slug> Virtual MCP) from reading
 // the guidance of a server it was never granted.
+//
+// Code mode clients are excluded: their tools are never sent, so their guidance rides in the
+// stub instead. See InstructionsCommentBlock.
 func (m *MCPManager) GetServerInstructions(ctx context.Context) []schemas.MCPServerInstructions {
 	visible := m.GetToolPerClient(ctx)
 
@@ -41,6 +44,9 @@ func (m *MCPManager) GetServerInstructions(ctx context.Context) []schemas.MCPSer
 	instructionsByName := make(map[string]string, len(m.clientMap))
 	maxLengthByName := make(map[string]int, len(m.clientMap))
 	for _, client := range m.clientMap {
+		if client.ExecutionConfig.IsCodeModeClient {
+			continue
+		}
 		if client.ServerInstructions != "" {
 			instructionsByName[client.ExecutionConfig.Name] = client.ServerInstructions
 			maxLengthByName[client.ExecutionConfig.Name] = client.ExecutionConfig.MaxInstructionsLength
@@ -196,6 +202,48 @@ func truncateInstructions(s string, limit int) (string, int) {
 		cut--
 	}
 	return s[:cut], len(s) - cut
+}
+
+// InstructionsCommentBlock renders one upstream's instructions for the code mode stub files. The
+// "#" prefix is also the sanitization: commented text cannot forge a def line for the model to call.
+//
+// maxLength is the client's override, zero taking DefaultMaxInstructionsPerClient. The total cap
+// does not apply — a stub carries one server, not the set.
+func InstructionsCommentBlock(instructions string, maxLength int) string {
+	if instructions == "" {
+		return ""
+	}
+	limit := maxLength
+	if limit <= 0 {
+		limit = schemas.DefaultMaxInstructionsPerClient
+	}
+	// CR normalized to LF before the cut, so a bare \r cannot carry text past the "#" on a
+	// reader that treats it as a line break — the whole point of commenting the block.
+	normalized := strings.ReplaceAll(strings.ReplaceAll(instructions, "\r\n", "\n"), "\r", "\n")
+	text, omitted := truncateInstructions(normalized, limit)
+
+	var b strings.Builder
+	b.WriteString("# ---- server instructions (from the upstream handshake) ----\n")
+	for _, line := range strings.Split(text, "\n") {
+		if line == "" {
+			b.WriteString("#\n")
+			continue
+		}
+		b.WriteString("# ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	if omitted > 0 {
+		b.WriteString(fmt.Sprintf("# [truncated: %d bytes omitted]\n", omitted))
+	}
+	b.WriteString("# ---- end server instructions ----\n")
+	return b.String()
+}
+
+// InstructionCaps returns the configured caps as-is, so a caller that only needs the per-client
+// bound is not also clamped by the aggregate total.
+func (m *MCPManager) InstructionCaps() InstructionCaps {
+	return m.toolsManager.instructionCaps()
 }
 
 // GetAggregatedServerInstructions renders the instructions of every client visible to ctx

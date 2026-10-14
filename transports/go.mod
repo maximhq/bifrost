@@ -1,4 +1,4 @@
-module github.com/maximhq/bifrost/transports
+module github.com/maximhq/bifrost/transports/v2
 
 go 1.27.0
 
@@ -16,19 +16,22 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.0
 	github.com/mark3labs/mcp-go v0.43.2
-	github.com/maximhq/bifrost/core v1.11.2
-	github.com/maximhq/bifrost/framework v1.8.1
-	github.com/maximhq/bifrost/plugins/compat v0.3.6
-	github.com/maximhq/bifrost/plugins/governance v1.8.6
-	github.com/maximhq/bifrost/plugins/logging v1.8.6
-	github.com/maximhq/bifrost/plugins/maxim v1.7.9
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.9
-	github.com/maximhq/bifrost/plugins/otel v1.5.9
-	github.com/maximhq/bifrost/plugins/prompts v1.1.9
-	github.com/maximhq/bifrost/plugins/routing v1.1.6
-	github.com/maximhq/bifrost/plugins/semanticcache v1.6.9
-	github.com/maximhq/bifrost/plugins/telemetry v1.8.5
+	github.com/maximhq/bifrost/core v1.12.0
+	github.com/maximhq/bifrost/framework v1.9.0
+	github.com/maximhq/bifrost/plugins/compat v0.4.0
+	github.com/maximhq/bifrost/plugins/governance v1.9.0
+	github.com/maximhq/bifrost/plugins/logging v1.9.0
+	github.com/maximhq/bifrost/plugins/maxim v1.7.10
+	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.10
+	github.com/maximhq/bifrost/plugins/otel v1.6.0
+	github.com/maximhq/bifrost/plugins/prompts v1.1.10
+	github.com/maximhq/bifrost/plugins/routing v1.2.0
+	github.com/maximhq/bifrost/plugins/semanticcache v1.7.0
+	github.com/maximhq/bifrost/plugins/telemetry v1.9.0
+	github.com/pion/ice/v4 v4.4.4
+	github.com/pion/logging v0.2.4
 	github.com/pion/rtcp v1.2.18
+	github.com/pion/transport/v5 v5.1.1
 	github.com/pion/webrtc/v4 v4.2.22
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
@@ -93,6 +96,7 @@ require (
 	github.com/buger/jsonparser v1.2.0 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic/loader v0.5.2 // indirect
+	github.com/canonical/starlark v0.0.0-20260428155828-9a81051fac39 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudflare/circl v1.6.3 // indirect
@@ -156,7 +160,7 @@ require (
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.6.9 // indirect
+	github.com/maximhq/bifrost/plugins/mocker v1.6.10 // indirect
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
@@ -169,9 +173,7 @@ require (
 	github.com/pinecone-io/go-pinecone/v5 v5.3.0 // indirect
 	github.com/pion/datachannel v1.6.3 // indirect
 	github.com/pion/dtls/v3 v3.1.9 // indirect
-	github.com/pion/ice/v4 v4.4.4 // indirect
 	github.com/pion/interceptor v0.1.49 // indirect
-	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/mdns/v2 v2.2.1 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtp v1.10.5 // indirect
@@ -179,7 +181,6 @@ require (
 	github.com/pion/sdp/v3 v3.0.20 // indirect
 	github.com/pion/srtp/v3 v3.1.0 // indirect
 	github.com/pion/stun/v4 v4.0.1 // indirect
-	github.com/pion/transport/v5 v5.1.1 // indirect
 	github.com/pion/turn/v5 v5.1.2 // indirect
 	github.com/pjbgf/sha1cd v0.6.0 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
@@ -221,7 +222,6 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
-	go.starlark.net v0.0.0-20260102030733-3fee463870c9 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/arch v0.23.0 // indirect

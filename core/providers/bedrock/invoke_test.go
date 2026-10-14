@@ -2656,6 +2656,52 @@ func TestInvokeChatGuardTagging_RendersMarkersAsInlineTags(t *testing.T) {
 	assert.Nil(t, none)
 }
 
+// TestInvokeChatGuardTagging_PreservesCacheControlAndCitations tests that prompt caching and
+// citation settings on document blocks survive request deep-copying during Bedrock guardrail tagging.
+func TestInvokeChatGuardTagging_PreservesCacheControlAndCitations(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	ttl := "1h"
+	enabled := true
+	request := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.anthropic.claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+			{
+				Type:         schemas.ChatContentBlockTypeFile,
+				File:         &schemas.ChatInputFile{FileID: schemas.Ptr("file_test123"), Filename: schemas.Ptr("doc.txt")},
+				CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: &ttl},
+				Citations:    &schemas.Citations{Enabled: &enabled},
+			},
+			{
+				Type:         schemas.ChatContentBlockTypeText,
+				Text:         schemas.Ptr("Guarded question"),
+				GuardContent: &schemas.GuardContent{Qualifiers: []string{"query"}},
+			},
+		}}}},
+		Params: &schemas.ChatParameters{ExtraParams: map[string]any{"guardrailConfig": map[string]any{
+			"guardrailIdentifier": "test-guardrail-id", "guardrailVersion": "DRAFT", "tagSuffix": "xyz",
+		}}},
+	}
+
+	tagged, guardrailBody, err := invokeChatGuardTagging(request)
+	require.NoError(t, err)
+	require.NotSame(t, request, tagged)
+
+	block0 := tagged.Input[0].Content.ContentBlocks[0]
+	require.NotNil(t, block0.CacheControl, "CacheControl must survive deep copy during guard tagging")
+	assert.Equal(t, "1h", *block0.CacheControl.TTL)
+	require.NotNil(t, block0.Citations, "Citations must survive deep copy during guard tagging")
+	assert.True(t, *block0.Citations.Enabled)
+
+	provider := &BedrockProvider{}
+	body, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, tagged, provider.invokeBuildConfig(tagged.Model, false, false, guardrailBody))
+	require.Nil(t, bifrostErr)
+	assert.Equal(t, "document", gjson.GetBytes(body, "messages.0.content.0.type").String())
+	assert.Equal(t, "ephemeral", gjson.GetBytes(body, "messages.0.content.0.cache_control.type").String())
+	assert.True(t, gjson.GetBytes(body, "messages.0.content.0.citations.enabled").Bool())
+	assert.Contains(t, gjson.GetBytes(body, "messages.0.content.1.text").String(), "amazon-bedrock-guardrails-query_xyz")
+}
+
 // TestGuardTagSuffixValidation_InvokePath: a caller-supplied tagSuffix outside AWS's 1-20
 // alphanumeric constraint is rejected before it is spliced into a tag name, on both the
 // Responses and Chat InvokeModel paths; the boundary-valid values pass.
@@ -2949,6 +2995,36 @@ func TestInvokeIngressCarriesEagerInputStreaming(t *testing.T) {
 			}
 			wantBeta := tc.wantEager != nil && *tc.wantEager
 			assert.Equal(t, wantBeta, slices.Contains(betas, anthropic.AnthropicEagerInputStreamingBetaHeader), "anthropic_beta = %v", betas)
+		})
+	}
+}
+
+// An InvokeModel body is where AWS documents disable_parallel_tool_use for Claude; converting
+// it to Converse must keep the instruction instead of dropping it with the rest of tool_choice.
+func TestToBedrockConverseRequest_InvokeDisableParallelToolUse(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		choice map[string]interface{}
+		want   *bool
+	}{
+		{"disable true", map[string]interface{}{"type": "auto", "disable_parallel_tool_use": true}, schemas.Ptr(false)},
+		{"disable false", map[string]interface{}{"type": "any", "disable_parallel_tool_use": false}, schemas.Ptr(true)},
+		{"absent", map[string]interface{}{"type": "auto"}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &BedrockInvokeRequest{
+				ModelID: "global.anthropic.claude-sonnet-4-6",
+				Messages: []BedrockMessage{
+					{Role: BedrockMessageRoleUser, Content: []BedrockContentBlock{{Text: schemas.Ptr("Weather in Tokyo, Paris and Lima?")}}},
+				},
+				Tools:      []interface{}{anthropicToolMap("get_weather", nil)},
+				ToolChoice: tc.choice,
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bifrostReq, err := req.ToBedrockConverseRequest().ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, bifrostReq.Params.ParallelToolCalls)
 		})
 	}
 }

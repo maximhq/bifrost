@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1589,6 +1590,17 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	if t := gjson.GetBytes(data, "type").String(); isRawPreservedItem(t) {
 		mt := ResponsesMessageType(t)
 		m.Type = &mt
+		// Surface the identity fields too, so converters can pair a tool_search_call with
+		// its output and give the Anthropic blocks they rebuild a stable id.
+		if id := gjson.GetBytes(data, "id"); id.Type == gjson.String && id.String() != "" {
+			m.ID = Ptr(id.String())
+		}
+		if status := gjson.GetBytes(data, "status"); status.Type == gjson.String && status.String() != "" {
+			m.Status = Ptr(status.String())
+		}
+		if callID := gjson.GetBytes(data, "call_id"); callID.Type == gjson.String && callID.String() != "" {
+			m.ResponsesToolMessage = &ResponsesToolMessage{CallID: Ptr(callID.String())}
+		}
 		// Also surface `arguments` (a JSON object for tool_search_call) so downstream
 		// consumers that read Arguments keep working; MarshalJSON still re-emits the
 		// preserved bytes verbatim, so this is additive and does not affect round-trip.
@@ -1896,11 +1908,12 @@ func (rc *ResponsesMessageContent) UnmarshalJSON(data []byte) error {
 type ResponsesMessageContentBlockType string
 
 const (
-	ResponsesInputMessageContentBlockTypeText      ResponsesMessageContentBlockType = "input_text"
-	ResponsesInputMessageContentBlockTypeImage     ResponsesMessageContentBlockType = "input_image"
-	ResponsesInputMessageContentBlockTypeFile      ResponsesMessageContentBlockType = "input_file"
-	ResponsesInputMessageContentBlockTypeAudio     ResponsesMessageContentBlockType = "input_audio"
-	ResponsesInputMessageContentBlockTypeContainer ResponsesMessageContentBlockType = "input_container" // Anthropic-only: file staged into the code-execution container input dir
+	ResponsesInputMessageContentBlockTypeText          ResponsesMessageContentBlockType = "input_text"
+	ResponsesInputMessageContentBlockTypeImage         ResponsesMessageContentBlockType = "input_image"
+	ResponsesInputMessageContentBlockTypeFile          ResponsesMessageContentBlockType = "input_file"
+	ResponsesInputMessageContentBlockTypeAudio         ResponsesMessageContentBlockType = "input_audio"
+	ResponsesInputMessageContentBlockTypeContainer     ResponsesMessageContentBlockType = "input_container" // Anthropic-only: file staged into the code-execution container input dir
+	ResponsesInputMessageContentBlockTypeToolReference ResponsesMessageContentBlockType = "tool_reference"  // Anthropic-only: deferred tool loaded by a client tool_result (custom tool search)
 
 	ResponsesOutputMessageContentTypeText      ResponsesMessageContentBlockType = "output_text"
 	ResponsesOutputMessageContentTypeRefusal   ResponsesMessageContentBlockType = "refusal"
@@ -1918,6 +1931,32 @@ const (
 	// ResponsesOutputMessageContentTypeFallback marks a server-side fallback handoff
 	// boundary in the output (Anthropic server-side-fallback-2026-06-01).
 	ResponsesOutputMessageContentTypeFallback ResponsesMessageContentBlockType = "fallback"
+
+	// Mid-conversation tool changes (Anthropic beta mid-conversation-tool-changes /
+	// inline-tools): blocks on a role:"system" input item that add or withdraw one tool
+	// from that point onward without touching the tools array. The block's ToolChange
+	// names or defines the tool.
+	ResponsesInputMessageContentBlockTypeToolAddition ResponsesMessageContentBlockType = "tool_addition"
+	ResponsesInputMessageContentBlockTypeToolRemoval  ResponsesMessageContentBlockType = "tool_removal"
+)
+
+// ResponsesToolChangeTarget is the `tool` of a tool_addition / tool_removal block: a
+// discriminated union on Type. tool_reference names a tools[] entry (Name);
+// mcp_tool_reference names one MCP tool (ServerName, Name); mcp_toolset_reference names a
+// whole MCP server (ServerName); tool_definition carries the tool itself (Definition), the
+// same object a tools[] entry holds. A tool_removal is always a reference.
+type ResponsesToolChangeTarget struct {
+	Type       string         `json:"type"`
+	Name       *string        `json:"name,omitempty"`
+	ServerName *string        `json:"server_name,omitempty"`
+	Definition *ResponsesTool `json:"definition,omitempty"`
+}
+
+const (
+	ResponsesToolChangeTargetTypeToolReference       = "tool_reference"
+	ResponsesToolChangeTargetTypeMCPToolReference    = "mcp_tool_reference"
+	ResponsesToolChangeTargetTypeMCPToolsetReference = "mcp_toolset_reference"
+	ResponsesToolChangeTargetTypeToolDefinition      = "tool_definition"
 )
 
 // ResponsesMessageContentBlock represents different types of content (text, image, file, audio)
@@ -1927,6 +1966,7 @@ type ResponsesMessageContentBlock struct {
 	FileID    *string                          `json:"file_id,omitempty"` // Reference to uploaded file
 	Text      *string                          `json:"text,omitempty"`
 	Signature *string                          `json:"signature,omitempty"` // Signature of the content (for reasoning)
+	ToolName  *string                          `json:"tool_name,omitempty"` // Deferred tool named by a tool_reference block
 	// EncryptedContent is required on reasoning content blocks during history replay.
 	// OpenAI returns it alongside summary_text blocks; it must be echoed back verbatim.
 	EncryptedContent *string `json:"encrypted_content,omitempty"`
@@ -1940,6 +1980,8 @@ type ResponsesMessageContentBlock struct {
 	*ResponsesOutputMessageContentRenderedContent // Rendered content from search entry point
 	*ResponsesOutputMessageContentCompaction      // Compaction content from the model
 	*ResponsesOutputMessageContentFallback        // Server-side fallback handoff boundary (from/to model)
+
+	ToolChange *ResponsesToolChangeTarget `json:"tool,omitempty"` // tool_addition / tool_removal: the tool named or defined
 
 	// Not in OpenAI's schemas, but sent by a few providers (Anthropic, Bedrock are some of them)
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
@@ -1971,6 +2013,9 @@ type GuardContent struct {
 
 type ResponsesOutputMessageContentCompaction struct {
 	Summary string `json:"summary,omitempty"` // The compaction summary text
+	// ToolChanges is the server-recorded net tool set of the compacted range: tool_addition /
+	// tool_removal blocks (type + tool), replayed unchanged. Absent when the server did not compute it.
+	ToolChanges []ResponsesMessageContentBlock `json:"tool_changes,omitempty"`
 }
 
 // ResponsesOutputMessageContentFallback carries the model boundary of a server-side
@@ -2076,15 +2121,15 @@ type ResponsesToolMessage struct {
 	ToolsetName *string `json:"toolset_name,omitempty"`
 	// ItemCaller and CreatedBy are shared by the shell and apply_patch items; they sit
 	// here because duplicate json keys across embedded structs are silently dropped.
-	ItemCaller *ResponsesShellCaller `json:"caller,omitempty"`
-	CreatedBy  *string               `json:"created_by,omitempty"`
+	ItemCaller  *ResponsesShellCaller `json:"caller,omitempty"`
+	CreatedBy   *string               `json:"created_by,omitempty"`
+	ServerLabel *string               `json:"server_label,omitempty"` // shared by the mcp_* items; hoisted for the same reason
 
 	// Tool calls and outputs
 	*ResponsesFileSearchToolCall
 	*ResponsesComputerToolCall
 	*ResponsesComputerToolCallOutput
 	*ResponsesCodeInterpreterToolCall
-	*ResponsesMCPToolCall
 	*ResponsesCustomToolCall
 	*ResponsesImageGenerationCall
 
@@ -2129,6 +2174,88 @@ type ResponsesAdvisorCall struct {
 // tool_references); the model then emits a normal tool_use to call one of them.
 type ResponsesToolSearchCall struct {
 	ToolReferences []string `json:"tool_references,omitempty"` // names of discovered (deferred) tools
+}
+
+// ToolSearchExecutionClient marks a tool_search tool or item the caller runs itself.
+const ToolSearchExecutionClient = "client"
+
+// IsVerbatimItem reports whether m was decoded from an item Bifrost round-trips byte
+// for byte (an OpenAI tool_search_call, tool_search_output or additional_tools item).
+func (m *ResponsesMessage) IsVerbatimItem() bool {
+	return len(m.rawPreserved) > 0
+}
+
+// IsClientToolSearchItem reports whether m is a tool_search_call or tool_search_output
+// the caller executes itself (execution "client").
+func (m *ResponsesMessage) IsClientToolSearchItem() bool {
+	return m.ResponsesToolMessage != nil && m.Execution != nil && *m.Execution == ToolSearchExecutionClient
+}
+
+// ToolSearchOutputToolNames returns the names of the tools a tool_search_output
+// loaded, flattening namespaces into their member tools.
+func (m *ResponsesMessage) ToolSearchOutputToolNames() []string {
+	if len(m.ToolSearchOutputTools) == 0 {
+		return nil
+	}
+	var names []string
+	for _, tool := range gjson.ParseBytes(m.ToolSearchOutputTools).Array() {
+		if tool.Get("type").String() == string(ResponsesToolTypeNamespace) {
+			for _, member := range tool.Get("tools").Array() {
+				if name := member.Get("name").String(); name != "" {
+					names = append(names, name)
+				}
+			}
+			continue
+		}
+		if name := tool.Get("name").String(); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// clientToolSearchNames are the function names clients give their own tool search
+// (Claude Code registers ToolSearch; the Anthropic docs example uses tool_search).
+var clientToolSearchNames = []string{"tool_search", "ToolSearch"}
+
+// ClientToolSearchFunctionName returns the name of the function tool the caller runs
+// as its own tool search, or "" when there is none. It only looks when some tool is
+// deferred. A non-deferred function named tool_search or ToolSearch qualifies, as
+// does a function whose earlier result in input carried tool_reference blocks.
+func ClientToolSearchFunctionName(tools []ResponsesTool, input []ResponsesMessage) string {
+	if !slices.ContainsFunc(tools, func(t ResponsesTool) bool { return t.DeferLoading != nil && *t.DeferLoading }) {
+		return ""
+	}
+	isEagerFunction := func(name string) bool {
+		return slices.ContainsFunc(tools, func(t ResponsesTool) bool {
+			return t.Type == ResponsesToolTypeFunction && t.Name != nil && *t.Name == name &&
+				(t.DeferLoading == nil || !*t.DeferLoading)
+		})
+	}
+	for _, name := range clientToolSearchNames {
+		if isEagerFunction(name) {
+			return name
+		}
+	}
+	for i := range input {
+		output := &input[i]
+		if output.Type == nil || *output.Type != ResponsesMessageTypeFunctionCallOutput ||
+			output.ResponsesToolMessage == nil || output.CallID == nil || output.Output == nil ||
+			!slices.ContainsFunc(output.Output.ResponsesFunctionToolCallOutputBlocks, func(b ResponsesMessageContentBlock) bool {
+				return b.Type == ResponsesInputMessageContentBlockTypeToolReference
+			}) {
+			continue
+		}
+		for j := range input[:i] {
+			call := &input[j]
+			if call.Type != nil && *call.Type == ResponsesMessageTypeFunctionCall &&
+				call.ResponsesToolMessage != nil && call.CallID != nil && *call.CallID == *output.CallID &&
+				call.Name != nil && isEagerFunction(*call.Name) {
+				return *call.Name
+			}
+		}
+	}
+	return ""
 }
 
 // ResponsesWebFetchCall carries the Anthropic web_fetch_tool_result payload
@@ -2935,9 +3062,9 @@ func isShellCallOutputArray(data []byte) bool {
 // -----------------------------------------------------------------------------
 
 // ResponsesMCPListTools represents a list of MCP tools
+// (its server_label lives on ResponsesToolMessage.ServerLabel).
 type ResponsesMCPListTools struct {
-	ServerLabel string             `json:"server_label"`
-	Tools       []ResponsesMCPTool `json:"tools"`
+	Tools []ResponsesMCPTool `json:"tools"`
 }
 
 // ResponsesMCPTool represents an MCP tool
@@ -2962,11 +3089,6 @@ type ResponsesMCPApprovalResponse struct {
 	ApprovalRequestID string  `json:"approval_request_id"`
 	Approve           bool    `json:"approve"`
 	Reason            *string `json:"reason,omitempty"`
-}
-
-// ResponsesMCPToolCall represents a MCP tool call
-type ResponsesMCPToolCall struct {
-	ServerLabel string `json:"server_label"` // The label of the MCP server running the tool
 }
 
 // -----------------------------------------------------------------------------
@@ -3272,6 +3394,7 @@ type ResponsesTool struct {
 	AllowedCallers      []string               `json:"allowed_callers,omitempty"`       // Which callers can invoke this tool; see ResponsesToolCaller* for the two vendor vocabularies
 	InputExamples       []ChatToolInputExample `json:"input_examples,omitempty"`        // Anthropic tool-examples-2025-10-29: example inputs for the tool
 	EagerInputStreaming *bool                  `json:"eager_input_streaming,omitempty"` // Anthropic fine-grained-tool-streaming-2025-05-14
+	MaxCharacters       *int                   `json:"max_characters,omitempty"`        // Anthropic text_editor_20250728+: view size limit
 
 	*ResponsesToolFunction
 	*ResponsesToolFileSearch
@@ -3369,6 +3492,11 @@ func (t ResponsesTool) MarshalJSON() ([]byte, error) {
 	}
 	if t.EagerInputStreaming != nil {
 		if data, err = sjson.SetBytes(data, "eager_input_streaming", *t.EagerInputStreaming); err != nil {
+			return nil, err
+		}
+	}
+	if t.MaxCharacters != nil {
+		if data, err = sjson.SetBytes(data, "max_characters", *t.MaxCharacters); err != nil {
 			return nil, err
 		}
 	}
@@ -3481,6 +3609,7 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 		"eager_input_streaming", // 7
 		"function",              // 8 — Chat Completions wrapper, lifted below
 		"async",                 // 9
+		"max_characters",        // 10
 	)
 
 	// Extract type field
@@ -3531,6 +3660,9 @@ func (t *ResponsesTool) UnmarshalJSON(data []byte) error {
 	}
 	if v := fields[7]; v.IsBool() {
 		t.EagerInputStreaming = new(v.Bool())
+	}
+	if v := fields[10]; v.Type == gjson.Number {
+		t.MaxCharacters = new(int(v.Int()))
 	}
 
 	// Anthropic's tool-search meta-tool identifies its variant (regex vs bm25)
@@ -3963,6 +4095,17 @@ type ResponsesToolMCP struct {
 	ServerDescription *string                                      `json:"server_description,omitempty"` // Optional server description
 	ServerURL         *string                                      `json:"server_url,omitempty"`         // The URL for the MCP server
 	TunnelID          *string                                      `json:"tunnel_id,omitempty"`          // Secure MCP Tunnel ID used instead of server_url
+
+	// Anthropic mcp_toolset configuration carried verbatim (default_config / configs). Not an OpenAI field.
+	DefaultConfig *ResponsesToolMCPToolConfig            `json:"default_config,omitempty"`
+	ToolConfigs   map[string]*ResponsesToolMCPToolConfig `json:"tool_configs,omitempty"`
+}
+
+// ResponsesToolMCPToolConfig is one Anthropic mcp_toolset tool config: the default for every
+// tool on the server, or the override for one named tool.
+type ResponsesToolMCPToolConfig struct {
+	Enabled      *bool `json:"enabled,omitempty"`
+	DeferLoading *bool `json:"defer_loading,omitempty"`
 }
 
 // ResponsesToolMCPAllowedTools - List of allowed tool names or a filter object
@@ -4539,6 +4682,7 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 	result.Message = resp.Message
 	result.Param = resp.Param
 	result.LogProbs = resp.LogProbs
+	result.ExtraFields = resp.ExtraFields
 
 	// Apply event-specific defaults
 	switch resp.Type {

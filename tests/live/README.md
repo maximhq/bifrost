@@ -29,6 +29,8 @@ make test-live PATTERN=/webrtc          # the WebRTC half of every scenario
 
 The suite creates its own virtual keys and pricing overrides through the API and removes the keys when each test ends. Prices are pinned so assertions are exact: a voice second costs $0.001, backend tokens $1 and $2 per million.
 
+`TestBilling_WebRTCFilteredEvents` checks restricted `session.client.data_channel.allowed_server_events` on both create routes, including an empty list and nested Responses selectors. The fake enforces the upstream filter, while sidebands receive all events. Bifrost requests the events its session controller needs upstream, accounts for them, then applies the browser's original filter before sending or queueing events downstream. The tests verify voice and backend costs, budget debits, transcripts and delegations with zero or two sidebands, and assert that no unrequested event or expanded permission list reaches the browser. Browser command permissions stay unchanged. Omission and `"all"` retain the default behavior documented in [OpenAI's Live create reference](https://developers.openai.com/api/reference/resources/live/methods/create).
+
 ### Real mode
 
 Start the gateway with a real OpenAI key in scope (the Python integration profile works), then:
@@ -72,6 +74,8 @@ cd tests/live/python && uv run pytest -q          # by hand, with BIFROST_BASE_U
 | `LIVE_UPSTREAM` | `fake` | `fake` or `real` |
 | `LIVE_FAKE_ADDR` | `127.0.0.1:9411` | where the fake listens; must match `config.json` |
 | `BIFROST_VK` | | credential for real mode when the gateway enforces auth |
+| `BIFROST_SETUP_TOKEN` | `bifrost-live-setup-token` | the `setup_token` in `config.json`, sent on `/api` calls while dashboard auth is off |
+| `BIFROST_ADMIN_AUTH` | | the `Authorization` header value for `/api` calls on a gateway with dashboard auth: `Basic <base64 user:password>` with the admin login, or `Bearer <session token>` |
 
 Every test skips when the gateway does not answer `/health`.
 
@@ -80,7 +84,7 @@ Every test skips when the gateway does not answer `/health`.
 | File | Covers |
 |---|---|
 | `admission_test.go` | refusals before and after the upgrade or create, model allowlists, wire rewriting, WebRTC create validation (both transports) |
-| `billing_test.go` | voice windows, the per-transport minimum, once-per-response, backend switches, budget exhaustion, upstream drop, client leaving (both transports) |
+| `billing_test.go` | voice windows, the per-transport minimum, once-per-response, backend switches, budget exhaustion, upstream drop, client leaving (both transports); restricted WebRTC event permissions and sideband fan-out |
 | `delegation_test.go` | web search assembly, function-call round trip grouped into one delegation, transcript turns, client delegation (the app runs the backend and speaks the result back) (both transports) |
 | `attach_test.go` | sideband refusals, steering a WebRTC session, sideband policy checks, a sideband ending with its session |
 | `content_test.go` | recording relay and refusals, and the `live_content` row each download logs (both transports) |

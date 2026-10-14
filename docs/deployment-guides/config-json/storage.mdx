@@ -429,7 +429,9 @@ The IAM user or role needs the following permissions on your bucket:
 |-------|-------------|
 | `bucket` | S3 bucket name (supports `env.` prefix) |
 | `prefix` | Key prefix for stored objects (default: `"bifrost"`) |
-| `compress` | Enable gzip compression (default: `false`) |
+| `compress` | Legacy gzip switch, same as `"compression": "gzip"` (default: `false`) |
+| `format` | Payload object format: `json` (default) or `parquet` (S3 only). See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) |
+| `compression` | `none`, `gzip`, `snappy` or `zstd`. JSON allows `none` or `gzip` (whole object); Parquet uses it as the page codec (default `snappy`) |
 | `region` | AWS region |
 | `access_key_id` | AWS access key ID (omit for default credential chain) |
 | `secret_access_key` | AWS secret access key |

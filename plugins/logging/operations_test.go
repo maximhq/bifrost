@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -279,6 +280,29 @@ func TestUserAgentFromContextFallsBackToUserAgentKey(t *testing.T) {
 
 	if got := userAgentFromContext(ctx); got != "cursor/0.47" {
 		t.Fatalf("expected fallback user agent, got %q", got)
+	}
+}
+
+// TestAntigravityLogClassification preserves synthetic raw agents while giving logs distinct built-in labels and honoring custom mappings.
+func TestAntigravityLogClassification(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	for userAgent, expected := range map[string]string{"antigravity/2.23.0": "Antigravity Desktop", "antigravity-cli/1.0": "Antigravity CLI"} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"user-agent": userAgent})
+		ctx.SetValue(schemas.BifrostContextKeyUserAgent, "bifrost-edge/0.1.0")
+		actual := userAgentFromContext(ctx)
+		if actual != userAgent || plugin.detectAppFromUserAgent(actual) != expected {
+			t.Fatalf("user agent %q was not classified as %s", actual, expected)
+		}
+		entry := &logstore.Log{}
+		applyUserAgent(entry, actual)
+		if entry.App == nil || *entry.App != expected || entry.UserAgent == nil || *entry.UserAgent != userAgent {
+			t.Fatalf("log lost raw agent or classification: %+v", entry)
+		}
+	}
+	plugin.userAgentMappings.Store([]compiledUserAgentMapping{{Pattern: "antigravity/", MatchType: schemas.UserAgentMappingMatchTypeContains, App: "Custom Antigravity"}})
+	if actual := plugin.detectAppFromUserAgent("antigravity/2.23.0"); actual != "Custom Antigravity" {
+		t.Fatalf("custom mapping overridden: %s", actual)
 	}
 }
 
@@ -608,11 +632,15 @@ func TestEmitAggregateLogEmitsSettlementSpan(t *testing.T) {
 		TotalTokens:      150,
 		TeamID:           &teamID,
 		VirtualKeyID:     &vkID,
+		BatchDebugParsed: &schemas.BifrostBatchDebug{BatchID: "batch_abc123"},
 	}
 	plugin.EmitAggregateLog(context.Background(), entry)
 
 	select {
 	case attrs := <-capture.spans:
+		if got, _ := attrs[schemas.AttrBatchID].(string); got != "batch_abc123" {
+			t.Fatalf("span batch id = %v, want batch_abc123", attrs[schemas.AttrBatchID])
+		}
 		if got, _ := attrs[schemas.AttrUsageCost].(float64); got != cost {
 			t.Fatalf("span cost = %v, want %v", attrs[schemas.AttrUsageCost], cost)
 		}
@@ -4847,6 +4875,71 @@ func TestA2AHooksCaptureOnlyActualOperationNames(t *testing.T) {
 	for _, operation := range captured {
 		if strings.Contains(strings.ToLower(operation), "authorize") {
 			t.Fatalf("captured synthetic authorization operation %q", operation)
+		}
+	}
+}
+
+// TestRefusalLogOutcome reproduces a synthetic zero-output refusal without changing inference results.
+func TestRefusalLogOutcome(t *testing.T) {
+	for _, reason := range []string{"refusal", "content_filter", "safety", "stop", "length", "tool_calls", "future_stop"} {
+		for _, streamed := range []bool{false, true} {
+			for _, content := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/stream=%t/content=%t", reason, streamed, content), func(t *testing.T) {
+					p := &LoggerPlugin{}
+					entry := &logstore.Log{Status: logStatusSuccess}
+					result := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{StopReason: schemas.Ptr(reason)}}
+					if streamed {
+						p.applyStreamingOutputToEntry(entry, &streaming.ProcessedStreamResponse{Data: &streaming.AccumulatedData{FinishReason: schemas.Ptr(reason), Cost: schemas.Ptr(0.27)}}, false, content)
+						require.Equal(t, 0.27, *entry.Cost)
+					} else {
+						p.applyNonStreamingOutputToEntry(entry, result, false, content)
+					}
+					require.Equal(t, reason, *entry.StopReason)
+					require.Equal(t, reason, *result.ResponsesResponse.StopReason)
+					switch reason {
+					case "refusal", "content_filter", "safety":
+						require.Equal(t, logStatusError, entry.Status)
+						require.NotNil(t, entry.ErrorDetailsParsed)
+						require.Equal(t, "model_refusal", *entry.ErrorDetailsParsed.Error.Type)
+						require.Contains(t, entry.ErrorDetailsParsed.Error.Message, reason)
+						require.Nil(t, entry.ErrorDetailsParsed.StatusCode)
+						require.NoError(t, entry.SerializeFields())
+						require.Contains(t, entry.ErrorDetails, "model_refusal")
+					default:
+						require.Equal(t, logStatusSuccess, entry.Status)
+						require.Nil(t, entry.ErrorDetailsParsed)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestA2ARawCaptureContentPolicy verifies raw captures follow the same content policy as typed bodies.
+func TestA2ARawCaptureContentPolicy(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		plugin := policyTestPlugin(boolPtr(disabled), nil, false)
+		plugin.writeQueue = make(chan *writeQueueEntry, 1)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "raw-policy")
+		var captures schemas.A2ARawCaptureManager
+		ctx.SetValue(schemas.A2ARawCaptureContextKey, captures.Start("capture-test"))
+		capture := schemas.GetA2ARawCapture(ctx)
+		capture.Append([]byte("request"), true)
+		capture.Append([]byte("response"), false)
+		req := &schemas.BifrostA2ARequest{RequestType: schemas.A2ARequestTypeSendMessage, AgentName: "fixture"}
+		_, _, err := plugin.PreA2AHook(ctx, req)
+		require.NoError(t, err)
+		resp := &schemas.BifrostA2AResponse{ExtraFields: schemas.BifrostA2AResponseExtraFields{A2ARequestType: req.RequestType, AgentName: req.AgentName}}
+		_, _, err = plugin.PostA2AHook(ctx, resp, nil)
+		require.NoError(t, err)
+		entry := (<-plugin.writeQueue).agentLog
+		if disabled {
+			require.Nil(t, entry.RawRequest)
+			require.Nil(t, entry.RawResponse)
+		} else {
+			require.Equal(t, "cmVxdWVzdA==", *entry.RawRequest)
+			require.Equal(t, "cmVzcG9uc2U=", *entry.RawResponse)
 		}
 	}
 }

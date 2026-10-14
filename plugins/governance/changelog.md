@@ -1,0 +1,1 @@
+- [feat]: stamp the resolved virtual key's metadata on the request context for logging [@jimseiwert](https://github.com/jimseiwert)

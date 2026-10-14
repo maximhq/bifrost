@@ -374,6 +374,16 @@ VirtualKey:
       type: string
     description:
       type: string
+    metadata:
+      type: object
+      description: >-
+        Custom key/value metadata attached to the key (for example cost_center, project, owner, environment). Omitted when the key has none.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+      additionalProperties:
+        type: string
+        maxLength: 512
     is_active:
       type: boolean
     expires_at:
@@ -480,6 +490,20 @@ CreateVirtualKeyRequest:
       type: string
     description:
       type: string
+    metadata:
+      type: object
+      description: >-
+        Custom key/value metadata for cost attribution (for example cost_center, project, owner, environment). Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+        not:
+          anyOf:
+            - const: isAsyncRequest
+            - pattern: '^bifrost_alb_'
+      additionalProperties:
+        type: string
+        maxLength: 512
     provider_configs:
       type: array
       description: Provider configurations. When allow_all_providers is omitted or false, an empty list allows no providers (deny-by-default); when true, providers without a config are allowed with all models and keys.
@@ -589,6 +613,20 @@ UpdateVirtualKeyRequest:
       type: string
     description:
       type: string
+    metadata:
+      type: [object, 'null']
+      description: >-
+        Replaces the key's metadata as a whole. Omit (or send null) to leave it unchanged; send {} to clear it. Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+        not:
+          anyOf:
+            - const: isAsyncRequest
+            - pattern: '^bifrost_alb_'
+      additionalProperties:
+        type: string
+        maxLength: 512
     provider_configs:
       type: array
       items:
@@ -1937,6 +1975,14 @@ PricingPatch:
     output_cost_per_token_flex:
       type: number
       minimum: 0
+    input_cost_per_token_decisions:
+      type: number
+      minimum: 0
+      description: Input token cost for decision requests. A decision rate always wins over input_cost_per_token, whether it comes from the datasheet or an override; input_cost_per_token is only the fallback when no decision rate is set.
+    output_cost_per_token_decisions:
+      type: number
+      minimum: 0
+      description: Output token cost for decision requests. A decision rate always wins over output_cost_per_token, whether it comes from the datasheet or an override; output_cost_per_token is only the fallback when no decision rate is set.
     input_cost_per_token_fast:
       type: number
       minimum: 0
@@ -2670,10 +2716,10 @@ ComplexityDecisionConfig:
   properties:
     provider:
       type: string
-      description: Provider serving the decision model, e.g. `typesafe` or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble, Clef). Set together with `model`; leave both empty for `typesafe`/`jev-latest`.
+      description: Provider serving the decision model, e.g. `typesafe`, `cloudflare` (Clef), or a custom provider with `base_provider_type` `typesafe` (Laya, Nimble). Set together with `model`; leave both empty for `typesafe`/`jev-latest`.
     model:
       type: string
-      description: Decision model on that provider, e.g. `jev-latest`, `nimble-latest`, `english`, `clef`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`.
+      description: Decision model on that provider, e.g. `jev-latest`, `@cf/cloudflare/clef-flash`, `nimble-latest`, `english`. Set together with `provider`; leave both empty for `typesafe`/`jev-latest`.
     previous_message_count:
       type: integer
       minimum: 0

@@ -140,6 +140,10 @@ type Tracer interface {
 	// This should be called after the streaming request is complete.
 	CleanupStreamAccumulator(traceID string)
 
+	// ResetStreamAccumulator drops the chunks accumulated for the given trace ID so a
+	// retried stream attempt starts clean.
+	ResetStreamAccumulator(traceID string)
+
 	// ProcessStreamingChunk processes a streaming chunk and accumulates it.
 	// Returns the accumulated result. IsFinal will be true when the stream is complete.
 	// This method is used by plugins to access accumulated streaming data.
@@ -288,6 +292,9 @@ func (n *NoOpTracer) CreateStreamAccumulator(_ string, _ time.Time) {}
 
 // CleanupStreamAccumulator does nothing.
 func (n *NoOpTracer) CleanupStreamAccumulator(_ string) {}
+
+// ResetStreamAccumulator does nothing.
+func (n *NoOpTracer) ResetStreamAccumulator(_ string) {}
 
 // ProcessStreamingChunk returns nil.
 func (n *NoOpTracer) ProcessStreamingChunk(_ *BifrostContext, _ string, _ bool, _ *BifrostResponse, _ *BifrostError) *StreamAccumulatorResult {

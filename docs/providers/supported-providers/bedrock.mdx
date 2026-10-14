@@ -501,6 +501,7 @@ You can override these defaults per provider via the **Beta Headers** tab in pro
 | `response_format`       | → Structured output tool (see [Structured Output](#structured-output))            | Creates `bf_so_*` tool     |
 | `tools`                 | Schema restructured (see [Tool Conversion](#tool-conversion))                     |                            |
 | `tool_choice`           | Type mapped (see [Tool Conversion](#tool-conversion))                             |                            |
+| `parallel_tool_calls`   | `false` → `additionalModelRequestFields.tool_choice.disable_parallel_tool_use`    | Anthropic models only      |
 | `reasoning`             | Model-specific thinking config (see [Reasoning / Thinking](#reasoning--thinking)) |                            |
 | `user`                  | → `metadata.userID` (if provided)                                                 | Bedrock-specific metadata  |
 | `service_tier`          | → `serviceModelTier` (if provided)                                                | Performance tier selection |
@@ -508,7 +509,7 @@ You can override these defaults per provider via the **Beta Headers** tab in pro
 
 ### Dropped Parameters
 
-The following parameters are silently ignored: `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `seed`, `parallel_tool_calls`
+The following parameters are silently ignored: `frequency_penalty`, `presence_penalty`, `logit_bias`, `logprobs`, `top_logprobs`, `seed`
 
 ### Extra Parameters
 
@@ -1050,6 +1051,7 @@ The Responses API uses the same underlying `converse` endpoint but converts betw
 | `instructions`         | Becomes system message                                                                 |
 | `tools`                | Schema restructured (see [Chat Completions](#1-chat-completions))                      |
 | `tool_choice`          | Type mapped (see [Chat Completions](#1-chat-completions))                              |
+| `parallel_tool_calls`  | Same as [Chat Completions](#1-chat-completions) (Anthropic models only)                |
 | `reasoning`            | Mapped to thinking/reasoning config (see [Reasoning / Thinking](#reasoning--thinking)) |
 | `text`                 | Converted to `output_format` (Bedrock-specific)                                        |
 | `include`              | Via `extra_params` (Bedrock-specific)                                                  |

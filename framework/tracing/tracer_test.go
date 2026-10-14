@@ -988,6 +988,41 @@ func TestTracer_PopulateLLMResponseAttributesEmitsResponsesFinishReason(t *testi
 	require.Equal(t, "refusal", span.Attributes[schemas.AttrFinishReason])
 }
 
+// The same refusal on a span whose request side says Responses, as every real
+// /v1/responses call has. The test above leaves the request type empty, which
+// renders through the chat branch and so never saw the Responses branch drop
+// the finish reasons.
+func TestTracer_PopulateLLMResponseAttributesEmitsResponsesFinishReasonForResponsesRequest(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	traceID := tracer.CreateTrace("")
+	ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyTraceID, traceID)
+	_, handle := tracer.StartSpan(ctx, "llm.call", schemas.SpanKindLLMCall)
+
+	tracer.PopulateLLMRequestAttributes(handle, &schemas.BifrostRequest{
+		RequestType:      schemas.ResponsesRequest,
+		ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini"},
+	})
+	resp := &schemas.BifrostResponse{
+		ResponsesResponse: &schemas.BifrostResponsesResponse{
+			ID:         schemas.Ptr("resp_refusal"),
+			Model:      "gpt-4o-mini",
+			StopReason: schemas.Ptr("refusal"),
+		},
+	}
+
+	bctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	tracer.PopulateLLMResponseAttributes(bctx, handle, resp, nil)
+
+	span := store.GetTrace(traceID).RootSpan
+	require.Equal(t, []string{"refusal"}, span.Attributes[schemas.AttrFinishReasons])
+	require.Equal(t, "refusal", span.Attributes[schemas.AttrFinishReason])
+}
+
 // Before SetObservabilityPlugins runs, demand is unknown rather than absent. A
 // request in flight during boot must still get its attributes; declaring an
 // empty plugin set is what expresses "nothing is listening".
@@ -1247,4 +1282,177 @@ func TestProcessStreamingChunk_PricesAtRequestStartTime(t *testing.T) {
 	// (1000*0.000001 + 500*0.000002) * 0.5
 	require.NotNil(t, result.Cost)
 	require.InDelta(t, 0.001, *result.Cost, 1e-12)
+}
+
+// headerCapturingObservabilityPlugin opts into request-header capture with the given patterns.
+type headerCapturingObservabilityPlugin struct {
+	testRealtimeObservabilityPlugin
+	patterns []string
+}
+
+func (p *headerCapturingObservabilityPlugin) RequestHeaderPatterns() []string { return p.patterns }
+
+// TestTracer_SetTraceRequestHeadersRedactsVirtualKey pins the single capture point: under a
+// connector's "*" pattern the virtual key header is stored with its value redacted, so no
+// connector reading trace.RequestHeaders can export it, while neutral headers keep their value.
+func TestTracer_SetTraceRequestHeadersRedactsVirtualKey(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := NewTracer(store, nil, nil)
+	defer tracer.Stop()
+
+	plugin := &headerCapturingObservabilityPlugin{
+		testRealtimeObservabilityPlugin: testRealtimeObservabilityPlugin{injected: make(chan *schemas.Trace, 1)},
+		patterns:                        []string{"*"},
+	}
+	tracer.SetObservabilityPlugins([]schemas.ObservabilityPlugin{plugin}, nil)
+	if !tracer.ShouldCaptureRequestHeaders() {
+		t.Fatal("a '*' pattern must turn header capture on")
+	}
+
+	traceID := tracer.CreateTrace("")
+	tracer.SetTraceRequestHeaders(traceID, map[string]string{
+		"x-bf-vk":       "sk-bf-secret",
+		"authorization": "Bearer sk-bf-secret",
+		"x-app":         "cli",
+	})
+
+	trace := tracer.store.GetTrace(traceID)
+	if trace == nil {
+		t.Fatal("trace not found")
+	}
+	headers := trace.SnapshotForExport().RequestHeaders
+	if got := headers["x-bf-vk"]; got != schemas.RedactedAttrValue {
+		t.Errorf("x-bf-vk = %q, want %q", got, schemas.RedactedAttrValue)
+	}
+	if got := headers["authorization"]; got != schemas.RedactedAttrValue {
+		t.Errorf("authorization = %q, want %q", got, schemas.RedactedAttrValue)
+	}
+	if got := headers["x-app"]; got != "cli" {
+		t.Errorf("x-app = %q, want it preserved", got)
+	}
+}
+
+// A trace-level dashboard reads the root span, where a failure marked only on the
+// llm.call span leaves nothing but an HTTP status.
+func TestTracer_PopulateLLMResponseAttributesPropagatesErrorToRootSpan(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+
+	// The HTTP span is created first so it becomes the root, making the llm.call
+	// span below a distinct child: the shape the transport produces.
+	_, rootHandle := tracer.StartSpan(ctx, "/v1/chat/completions", schemas.SpanKindHTTPRequest)
+	_, llmHandle := tracer.StartSpan(ctx, "chat gpt-4o-mini", schemas.SpanKindLLMCall)
+	tracer.SpanFromHandle(llmHandle).SetAttribute(schemas.AttrLegacyRequestType, string(schemas.ChatCompletionRequest))
+
+	status := 503
+	tracer.PopulateLLMResponseAttributes(ctx, llmHandle, nil, &schemas.BifrostError{
+		StatusCode: &status,
+		Error: &schemas.ErrorField{
+			Message: "upstream connect error",
+			Type:    schemas.Ptr("connection_error"),
+			Code:    schemas.Ptr("502"),
+		},
+	})
+
+	root := tracer.SpanFromHandle(rootHandle)
+	if root.SpanID == tracer.SpanFromHandle(llmHandle).SpanID {
+		t.Fatal("root and llm.call resolved to the same span, so this would pass without any propagation")
+	}
+	for key, want := range map[string]any{
+		schemas.AttrError:         "upstream connect error",
+		schemas.AttrErrorTypeSpec: "connection_error",
+		schemas.AttrErrorCode:     "502",
+	} {
+		if got, _ := root.GetAttribute(key); got != want {
+			t.Errorf("root span %s = %v, want %v", key, got, want)
+		}
+	}
+	if got, _ := root.GetAttribute(schemas.AttrBifrostErrorType); got != string(schemas.ErrorTypeProviderOverloaded) {
+		t.Errorf("root span %s = %v, want %q", schemas.AttrBifrostErrorType, got, schemas.ErrorTypeProviderOverloaded)
+	}
+	// Same failure, same classification on both spans.
+	llmType, _ := tracer.SpanFromHandle(llmHandle).GetAttribute(schemas.AttrBifrostErrorType)
+	rootType, _ := root.GetAttribute(schemas.AttrBifrostErrorType)
+	if llmType != rootType {
+		t.Errorf("llm.call and root disagree on %s: %v vs %v", schemas.AttrBifrostErrorType, llmType, rootType)
+	}
+}
+
+// A successful response must not leave error attributes on the root span.
+func TestTracer_PopulateLLMResponseAttributesLeavesRootSpanCleanOnSuccess(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	_, rootHandle := tracer.StartSpan(ctx, "/v1/chat/completions", schemas.SpanKindHTTPRequest)
+	_, llmHandle := tracer.StartSpan(ctx, "chat gpt-4o-mini", schemas.SpanKindLLMCall)
+
+	tracer.PopulateLLMResponseAttributes(ctx, llmHandle, nil, nil)
+
+	root := tracer.SpanFromHandle(rootHandle)
+	for _, key := range []string{schemas.AttrError, schemas.AttrErrorTypeSpec, schemas.AttrBifrostErrorType} {
+		if got, ok := root.GetAttribute(key); ok {
+			t.Errorf("root span carries %s = %v on a successful response", key, got)
+		}
+	}
+}
+
+// The end-to-end TTFT must cover the whole client wait, not just the provider's
+// share, and must land on the root span where dashboards read it.
+func TestTracer_StampsTimeToFirstTokenFromRequestReceipt(t *testing.T) {
+	store := NewTraceStore(5*time.Minute, nil)
+	t.Cleanup(store.Stop)
+	tracer := NewTracer(store, nil, nil)
+	t.Cleanup(tracer.Stop)
+
+	traceID := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, traceID)
+	_, rootHandle := tracer.StartSpan(ctx, "/v1/chat/completions", schemas.SpanKindHTTPRequest)
+	_, llmHandle := tracer.StartSpan(ctx, "chat gpt-4o-mini", schemas.SpanKindLLMCall)
+
+	// Gateway work before stream setup, which time_to_first_chunk starts after.
+	gatewayWork := 25 * time.Millisecond
+	time.Sleep(gatewayWork)
+	tracer.StoreDeferredSpan(traceID, llmHandle)
+
+	tracer.AddStreamingChunk(traceID, &schemas.BifrostResponse{})
+
+	root := tracer.SpanFromHandle(rootHandle)
+	raw, ok := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs)
+	if !ok {
+		t.Fatalf("root span is missing %s", schemas.AttrBifrostTimeToFirstTokenMs)
+	}
+	ms, isFloat := raw.(float64)
+	if !isFloat {
+		t.Fatalf("%s = %T, want float64", schemas.AttrBifrostTimeToFirstTokenMs, raw)
+	}
+	// Must include the pre-dispatch wait, which is the whole point of the attribute.
+	if ms < float64(gatewayWork.Milliseconds()) {
+		t.Errorf("%s = %vms, want >= %vms: the gateway wait before stream setup was excluded",
+			schemas.AttrBifrostTimeToFirstTokenMs, ms, gatewayWork.Milliseconds())
+	}
+	// The llm.call span carries it too, next to time_to_first_chunk.
+	if _, ok := tracer.SpanFromHandle(llmHandle).GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs); !ok {
+		t.Errorf("llm.call span is missing %s", schemas.AttrBifrostTimeToFirstTokenMs)
+	}
+
+	// Later chunks must not restamp it: TTFT is the first chunk, not the last.
+	before, _ := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs)
+	time.Sleep(10 * time.Millisecond)
+	tracer.AddStreamingChunk(traceID, &schemas.BifrostResponse{})
+	if after, _ := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs); after != before {
+		t.Errorf("%s moved from %v to %v on a later chunk", schemas.AttrBifrostTimeToFirstTokenMs, before, after)
+	}
 }

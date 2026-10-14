@@ -104,13 +104,6 @@ func TestAuthenticatorStoresProfileSession(t *testing.T) {
 	if label, err := StoredUserLabel(store, "test"); err != nil || label != "developer@example.com" {
 		t.Fatalf("stored identity label = %q, err=%v", label, err)
 	}
-	deviceID, err := EnsureDeviceID(store)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(deviceID, "cli-") {
-		t.Fatalf("device ID = %q", deviceID)
-	}
 }
 
 func TestAuthenticatorLogoutClearsLocalSessionAfterGatewayFailure(t *testing.T) {

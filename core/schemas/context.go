@@ -41,6 +41,7 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyStreamAttemptAbort:      {},
 	BifrostContextKeyMCPHealthCheckRequest:   {},
 	BifrostContextKeyMCPUnattendedExecution:  {},
+	BifrostContextKeyInjectedToolsExecuted:   {},
 	BifrostContextKeyUpstreamLatency:         {},
 	BifrostContextKeyStreamOverhead:          {},
 	BifrostContextKeyRoutingInfo:             {},
@@ -48,6 +49,8 @@ var reservedKeys = map[BifrostContextKey]struct{}{
 	BifrostContextKeyRequestedModel:          {},
 	BifrostContextKeyProviderProxyConfig:     {},
 	BifrostContextKeyMCPInboundBearer:        {},
+	BifrostContextKeyMCPAgentServedRoute:     {},
+	BifrostContextKeyMCPInstructionsText:     {},
 }
 
 // isReservedKey reports whether key is a reserved context key whose writes are
@@ -89,6 +92,7 @@ type BifrostContext struct {
 	err                   error
 	errMu                 sync.RWMutex
 	userValues            map[any]any
+	trustedValues         map[any]any // read only by a holder of the key; see SetTrustedValue
 	valuesMu              sync.RWMutex
 	blockRestrictedWrites atomic.Bool
 	grant                 atomic.Pointer[Grant] // what the request has been granted; installed by the transport, root contexts only
@@ -253,6 +257,22 @@ func (bc *BifrostContext) Grant() Grant {
 // is not itself a *BifrostContext.
 type bifrostContextSelfKey struct{}
 
+// BifrostContextFromContext returns the nearest *BifrostContext reachable from ctx: ctx itself,
+// or the one a foreign wrapper (context.WithTimeout, mcp-go's per-request WithValue, ...) was
+// derived from. ok is false when no BifrostContext is in the chain. Callers that only need to
+// read request values (identity, extra headers) use this instead of wrapping ctx in a fresh
+// BifrostContext, which would start a cancellation watcher per call.
+func BifrostContextFromContext(ctx context.Context) (*BifrostContext, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	if bc, ok := ctx.(*BifrostContext); ok {
+		return bc, true
+	}
+	bc, ok := ctx.Value(bifrostContextSelfKey{}).(*BifrostContext)
+	return bc, ok && bc != nil
+}
+
 // inheritedGrant finds the grant of the nearest ancestor request context that has one. A
 // BifrostContext parent is walked directly; a foreign parent is asked for one via Value before
 // giving up, since a foreign context with nothing to offer still answers nil for that key the
@@ -383,8 +403,17 @@ func (bc *BifrostContext) Err() error {
 		return bc.valueDelegate.Err()
 	}
 	bc.errMu.RLock()
-	defer bc.errMu.RUnlock()
-	return bc.err
+	err := bc.err
+	bc.errMu.RUnlock()
+	// The watcher goroutine records a parent cancel asynchronously; read the parent
+	// directly so a cancel is visible on the next call, as with context.WithCancel.
+	if err == nil && bc.parent != nil && !isNonCancellingContext(bc.parent) {
+		if perr := bc.parent.Err(); perr != nil {
+			bc.cancel(perr)
+			return perr
+		}
+	}
+	return err
 }
 
 // Value returns the value associated with the key.
@@ -589,6 +618,42 @@ func (bc *BifrostContext) GetUserValues() map[any]any {
 	bc.valuesMu.RUnlock()
 
 	return result
+}
+
+// SetTrustedValue stores value under key in a store that Value, GetUserValues and
+// GetParentCtxWithUserValues never expose. Only a caller that already holds key can
+// read it back with TrustedValue, so a key of an unexported type is a capability: code
+// that cannot name the type can neither read nor write that slot, nor copy it out.
+// Scoped contexts write through to their root, as SetValue does.
+func (bc *BifrostContext) SetTrustedValue(key, value any) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.SetTrustedValue(key, value)
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	if bc.trustedValues == nil {
+		bc.trustedValues = make(map[any]any)
+	}
+	bc.trustedValues[key] = value
+}
+
+// TrustedValue returns the value SetTrustedValue stored under key on this context or a
+// BifrostContext ancestor, or nil. Plain context.Context parents cannot hold one.
+func (bc *BifrostContext) TrustedValue(key any) any {
+	if bc.valueDelegate != nil {
+		return bc.valueDelegate.TrustedValue(key)
+	}
+	bc.valuesMu.RLock()
+	val, ok := bc.trustedValues[key]
+	bc.valuesMu.RUnlock()
+	if ok {
+		return val
+	}
+	if parent, isBifrost := bc.parent.(*BifrostContext); isBifrost {
+		return parent.TrustedValue(key)
+	}
+	return nil
 }
 
 // GetParentCtxWithUserValues returns a copy of the parent context with all user-set values merged in.

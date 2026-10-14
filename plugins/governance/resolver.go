@@ -25,6 +25,9 @@ const (
 	DecisionModelBlocked    Decision = "model_blocked"
 	DecisionProviderBlocked Decision = "provider_blocked"
 	DecisionMCPToolBlocked  Decision = "mcp_tool_blocked"
+	// DecisionModelLimitsUnattributable refuses a passthrough body naming models whose own limits
+	// one request cannot be charged against (a mixed task array).
+	DecisionModelLimitsUnattributable Decision = "model_limits_unattributable"
 	// DecisionAccessUnresolved means nothing was resolved about what the request may reach, so
 	// there was nothing to evaluate it against. It is a wiring fault rather than a policy
 	// decision: evaluation is reached only after access has been resolved for the request.
@@ -42,6 +45,9 @@ type EvaluationRequest struct {
 	// OpaqueBatchInput marks a batch create whose work is an uploaded file or blob rather than
 	// inline requests, so the models it will run are not visible to governance.
 	OpaqueBatchInput bool `json:"opaque_batch_input,omitempty"`
+	// ModelUnseen marks a passthrough request that names no model anywhere governance can read:
+	// not on the request and not in its body.
+	ModelUnseen bool `json:"model_unseen,omitempty"`
 }
 
 // EvaluationResult is a governance verdict: whether the request may proceed, and why not when it
@@ -128,9 +134,10 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 	// (Gemini, Vertex, Bedrock), that model has to be present, and the allowlist below checks it;
 	// where the batch API ignores the request's model and runs whatever the rows name (OpenAI,
 	// Azure), no hint can stand in for the rows, so the access has to permit every model of the
-	// provider. Inline batches are not opaque: PreLLMHook evaluates each item's model first.
+	// provider. A custom provider is held to what its base provider binds. Inline batches are not
+	// opaque: PreLLMHook evaluates each item's model first.
 	if requestType == schemas.BatchCreateRequest && evaluationRequest.OpaqueBatchInput && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
-		if !batchModelBoundByProvider(provider) {
+		if !batchModelBoundByProvider(provider, r.governanceInMemoryStore) {
 			return &EvaluationResult{
 				Decision: DecisionModelBlocked,
 				Reason:   denialReason(fmt.Sprintf("File-based batch creation on provider '%s' requires an access that allows every model of the provider: its batch API runs the models named inside the uploaded input, not the model on the request", provider), access.DeniedPermitsForModel(string(provider), "")),
@@ -141,6 +148,17 @@ func (r *BudgetResolver) evaluateAccess(ctx *schemas.BifrostContext, evaluationR
 				Decision: DecisionModelBlocked,
 				Reason:   denialReason(fmt.Sprintf("Batch creation on provider '%s' requires a model: this access restricts models, and a file-based batch names none on the request", provider), access.DeniedPermitsForModel(string(provider), "")),
 			}
+		}
+	}
+	// A passthrough body is forwarded as the provider reads it. The models it names are evaluated
+	// one by one before this pass (PreLLMHook reads them from the body), so a request that names
+	// none anywhere leaves a model restriction with nothing to check. It is refused rather than
+	// skipped, since the provider will still run some model: its default, or one named in a shape
+	// governance does not read.
+	if (requestType == schemas.PassthroughRequest || requestType == schemas.PassthroughStreamRequest) && evaluationRequest.ModelUnseen && !skipModelCheck && !providerUnconfigured && !access.AllowsEveryModel(string(provider)) {
+		return &EvaluationResult{
+			Decision: DecisionModelBlocked,
+			Reason:   denialReason(fmt.Sprintf("Passthrough on provider '%s' requires a model: this access restricts models, and the request names none that can be checked", provider), access.DeniedPermitsForModel(string(provider), "")),
 		}
 	}
 	if !skipModelCheck && !providerUnconfigured && (IsModelRequiredForRequest(requestType) || (checkModelIfPresent && model != "")) && !access.IsModelAllowed(string(provider), model) {

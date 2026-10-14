@@ -20,8 +20,9 @@ import (
 )
 
 type testClientManager struct {
-	clients map[string]*schemas.MCPClientState
-	tools   map[string][]schemas.ChatTool
+	perClientCap int
+	clients      map[string]*schemas.MCPClientState
+	tools        map[string][]schemas.ChatTool
 }
 
 func (m *testClientManager) GetClientForTool(toolName string) *schemas.MCPClientState {
@@ -41,6 +42,10 @@ func (m *testClientManager) GetClientByName(clientName string) *schemas.MCPClien
 
 func (m *testClientManager) GetToolPerClient(ctx context.Context) map[string][]schemas.ChatTool {
 	return m.tools
+}
+
+func (m *testClientManager) InstructionCaps() codemcp.InstructionCaps {
+	return codemcp.InstructionCaps{PerClient: m.perClientCap}
 }
 
 func (m *testClientManager) GetServerInstructions(_ context.Context) []schemas.MCPServerInstructions {
@@ -1270,9 +1275,22 @@ func TestCodeModeResourceLink(t *testing.T) {
 }
 
 func TestCodeModeToolLogPreview(t *testing.T) {
-	preview := formatResultForLog(strings.Repeat("x", 100_000))
-	if len(preview) > 4096 || !strings.Contains(preview, "truncated") {
-		t.Fatalf("unbounded tool log preview: %d bytes", len(preview))
+	// The bound has to hold after encoding: escaping turns one control byte into six, and a
+	// non-string result never reaches the input truncation at all.
+	for _, tc := range []struct {
+		name   string
+		result interface{}
+	}{
+		{name: "long string", result: strings.Repeat("x", 100_000)},
+		{name: "control bytes expand when escaped", result: strings.Repeat("\x00", 2048)},
+		{name: "non-string result", result: map[string]any{"body": strings.Repeat("\x00", 2048)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preview := formatResultForLog(tc.result)
+			if len(preview) > codeModeDiagnosticBytes || !strings.Contains(preview, "truncated") {
+				t.Fatalf("unbounded tool log preview: %d bytes", len(preview))
+			}
+		})
 	}
 }
 
@@ -1513,5 +1531,195 @@ func BenchmarkCodeModeInProcess(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// Upstream server instructions on the code mode surface: the stub is what the workflow tells the
+// model to re-read before executeToolCode, so the server's rules ride with the server.
+
+const probeInstructions = "Always call list_items before mutating.\n\nNever retry a write."
+
+func newInstructionsCodeMode(level schemas.CodeModeBindingLevel) *StarlarkCodeMode {
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{
+		BindingLevel:         level,
+		ToolExecutionTimeout: time.Second,
+	}, nil)
+	mode.clientManager = &testClientManager{
+		clients: map[string]*schemas.MCPClientState{
+			"codey": {
+				Name:               "codey",
+				ExecutionConfig:    &schemas.MCPClientConfig{Name: "codey", IsCodeModeClient: true},
+				ServerInstructions: probeInstructions,
+			},
+			"plain": {
+				Name:            "plain",
+				ExecutionConfig: &schemas.MCPClientConfig{Name: "plain", IsCodeModeClient: true},
+			},
+		},
+		tools: map[string][]schemas.ChatTool{
+			"codey": {{Function: &schemas.ChatToolFunction{Name: "codey-add", Description: schemas.Ptr("Adds two numbers")}}},
+			"plain": {{Function: &schemas.ChatToolFunction{Name: "plain-echo"}}},
+		},
+	}
+	return mode
+}
+
+func instructionsToolResponse(t *testing.T, msg *schemas.ChatMessage, err error) string {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
+		t.Fatal("expected tool response content")
+	}
+	return *msg.Content.ContentStr
+}
+
+func TestReadToolFileCarriesServerInstructions(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+
+	msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/codey.pyi"}`},
+	})
+	content := instructionsToolResponse(t, msg, err)
+
+	if !strings.Contains(content, "# Always call list_items before mutating.") {
+		t.Fatalf("stub dropped the server's instructions, got:\n%s", content)
+	}
+	if !strings.Contains(content, "# ---- server instructions (from the upstream handshake) ----") {
+		t.Fatalf("stub carried the text without a delimiter, got:\n%s", content)
+	}
+	// The block has to sit above the signatures it constrains, not after them.
+	if strings.Index(content, "server instructions") > strings.Index(content, "def add(") {
+		t.Fatalf("instructions landed below the signatures, got:\n%s", content)
+	}
+}
+
+func TestReadToolFileOmitsBlockForServerWithNoInstructions(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+
+	msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/plain.pyi"}`},
+	})
+	content := instructionsToolResponse(t, msg, err)
+
+	if strings.Contains(content, "server instructions") {
+		t.Fatalf("expected no block at all for a server advertising none, got:\n%s", content)
+	}
+}
+
+// At tool binding level there is no servers/<name>.pyi, so the per-tool file is the only place
+// the server's rules can reach the model.
+func TestReadToolFileCarriesServerInstructionsAtToolBindingLevel(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelTool)
+
+	msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/codey/add.pyi"}`},
+	})
+	content := instructionsToolResponse(t, msg, err)
+
+	if !strings.Contains(content, "# Always call list_items before mutating.") {
+		t.Fatalf("tool-level stub dropped the server's instructions, got:\n%s", content)
+	}
+}
+
+// The listing is an index: it names which servers carry instructions, never the prose itself.
+func TestListToolFilesPointsAtServersWithInstructionsWithoutTheirText(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+
+	msg, err := mode.handleListToolFiles(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID: schemas.Ptr("tool-call-1"),
+	})
+	content := instructionsToolResponse(t, msg, err)
+
+	if !strings.Contains(content, "Servers with their own usage instructions: codey.") {
+		t.Fatalf("listing did not point at the server carrying instructions, got:\n%s", content)
+	}
+	if strings.Contains(content, "plain.") && strings.Contains(content, "instructions: codey, plain") {
+		t.Fatalf("listing named a server that advertises none, got:\n%s", content)
+	}
+	if strings.Contains(content, "Always call list_items") {
+		t.Fatalf("listing carried the instruction prose instead of a pointer, got:\n%s", content)
+	}
+}
+
+// A non-code-mode client is unreachable from the sandbox, so naming it would advertise tools this
+// surface cannot call.
+func TestListToolFilesOmitsNonCodeModeServersFromInstructionPointer(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["direct"] = &schemas.MCPClientState{
+		Name:               "direct",
+		ExecutionConfig:    &schemas.MCPClientConfig{Name: "direct", IsCodeModeClient: false},
+		ServerInstructions: "Direct-only rule.",
+	}
+	manager.tools["direct"] = []schemas.ChatTool{{Function: &schemas.ChatToolFunction{Name: "direct-ping"}}}
+
+	msg, err := mode.handleListToolFiles(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID: schemas.Ptr("tool-call-1"),
+	})
+	content := instructionsToolResponse(t, msg, err)
+
+	if strings.Contains(content, "direct") {
+		t.Fatalf("listing named a non-code-mode server, got:\n%s", content)
+	}
+}
+
+func TestGetToolDocsCarriesServerInstructions(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+
+	msg, err := mode.handleGetToolDocs(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"server":"codey","tool":"add"}`},
+	})
+	content := instructionsToolResponse(t, msg, err)
+
+	if !strings.Contains(content, "# Always call list_items before mutating.") {
+		t.Fatalf("getToolDocs dropped the server's instructions, got:\n%s", content)
+	}
+}
+
+// The stub's byte bound comes from the client override, else the configured global — never the
+// compile-time default, which would silently exceed a lowered global or cut short a raised one.
+
+func readGithubStub(t *testing.T, mode *StarlarkCodeMode) string {
+	t.Helper()
+	msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/codey.pyi"}`},
+	})
+	return instructionsToolResponse(t, msg, err)
+}
+
+func TestReadToolFileHonorsConfiguredGlobalInstructionCap(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+	mode.clientManager.(*testClientManager).perClientCap = 20
+
+	content := readGithubStub(t, mode)
+
+	if !strings.Contains(content, "[truncated:") {
+		t.Fatalf("a lowered global cap was ignored, got:\n%s", content)
+	}
+	if strings.Contains(content, "Never retry a write") {
+		t.Fatalf("text past the global cap reached the stub, got:\n%s", content)
+	}
+}
+
+func TestReadToolFileClientCapOverridesConfiguredGlobal(t *testing.T) {
+	mode := newInstructionsCodeMode(schemas.CodeModeBindingLevelServer)
+	manager := mode.clientManager.(*testClientManager)
+	manager.perClientCap = 20
+	manager.clients["codey"].ExecutionConfig.MaxInstructionsLength = 1000
+
+	content := readGithubStub(t, mode)
+
+	if strings.Contains(content, "[truncated:") {
+		t.Fatalf("the client's own larger cap was not honoured, got:\n%s", content)
+	}
+	if !strings.Contains(content, "Never retry a write") {
+		t.Fatalf("stub lost text the client's cap allows, got:\n%s", content)
 	}
 }

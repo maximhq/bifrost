@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -13,6 +14,12 @@ func (req *OpenAIChatRequest) ToBifrostChatRequest(ctx *schemas.BifrostContext) 
 	params := req.ChatParameters
 	if params.MaxCompletionTokens == nil && req.MaxTokens != nil {
 		params.MaxCompletionTokens = req.MaxTokens
+	}
+	// OpenAI chat has no reasoning.summary; on this integration it is only sent via passthrough extra_params.
+	if params.Reasoning != nil && params.Reasoning.Summary != nil {
+		reasoning := *params.Reasoning
+		reasoning.Summary = nil
+		params.Reasoning = &reasoning
 	}
 
 	return &schemas.BifrostChatRequest{
@@ -68,10 +75,21 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		}
 		openaiReq.ExtraParams = bifrostReq.Params.ExtraParams
 
+		// Models older than GPT-5 reject custom tools with "Invalid value: 'custom'",
+		// so each one is sent as a function tool. Chat has no custom tool call shape,
+		// so the model's call reaches the client as a function call.
+		customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
+		if customToolsAsFunctions {
+			openaiReq.ChatParameters.ToolChoice = chatCustomToolChoiceAsFunction(openaiReq.ChatParameters.ToolChoice)
+		}
+
 		// Normalize tool parameters for deterministic JSON serialization (improves prompt caching)
 		if len(openaiReq.ChatParameters.Tools) > 0 {
 			normalizedTools := make([]schemas.ChatTool, len(openaiReq.ChatParameters.Tools))
 			for i, tool := range openaiReq.ChatParameters.Tools {
+				if customToolsAsFunctions && tool.Type == schemas.ChatToolTypeCustom {
+					tool = chatCustomToolAsFunction(tool)
+				}
 				normalizedTools[i] = tool
 				if tool.Function != nil && tool.Function.Parameters != nil {
 					funcCopy := *tool.Function
@@ -92,13 +110,11 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	// strips. Same translation as the Responses path (applyResponsesCacheBreakpoints),
 	// resolved on the base provider so a custom provider built on OpenAI is not
 	// sent down the strip-only default.
+	// The request stays in the provider's default mode: see
+	// responsesIsOpenAIFamilyBreakpointTarget for why Bifrost never sets explicit mode.
 	if chatUsesPromptCacheBreakpoints(caps, schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel) {
-		openaiReq.Messages = applyChatCacheBreakpoints(openaiReq.Messages)
-		if openaiReq.ChatParameters.PromptCacheOptions == nil && chatHasPromptCacheBreakpoint(openaiReq.Messages) {
-			openaiReq.ChatParameters.PromptCacheOptions = &schemas.PromptCacheOptions{
-				Mode: schemas.Ptr(PromptCacheBreakpointModeExplicit),
-			}
-		}
+		ceiling := promptCacheBreakpointCeiling(ctx, true, openaiReq.ChatParameters.PromptCacheOptions, openaiReq.ExtraParams)
+		openaiReq.Messages = applyChatCacheBreakpoints(openaiReq.Messages, ceiling)
 	}
 
 	switch bifrostReq.Provider {
@@ -123,6 +139,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// without it. Stripping both forced thinking off for every tool-calling conversation
 		// — see issue #5887.
 		openaiReq.stripReasoningDetailsExceptToolCalls()
+		openaiReq.downgradeJSONSchemaToJSONObject()
 		return openaiReq
 	case schemas.Groq, schemas.Cerebras:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -189,6 +206,11 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	default:
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
+			// A custom provider reports its own name, so a DeepSeek-based one lands here
+			// and still needs the json_schema downgrade DeepSeek's endpoint requires.
+			if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.DeepSeek {
+				openaiReq.downgradeJSONSchemaToJSONObject()
+			}
 			return openaiReq
 		}
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -340,6 +362,78 @@ func (req *OpenAIChatRequest) stripReasoningDetailsExceptToolCalls() {
 	}
 }
 
+// downgradeJSONSchemaToJSONObject rewrites a json_schema response_format to
+// json_object and carries the schema to the model as a system instruction.
+//
+// DeepSeek's chat endpoint rejects json_schema with HTTP 400 ("This response_format
+// type is unavailable now") and accepts only json_object, which in turn requires the
+// word "json" somewhere in the prompt. This is a property of the DeepSeek API surface,
+// not of a model, so it is not gated on SupportsResponseSchema: the datasheet marks
+// the DeepSeek rows supports_response_schema=true because they do support JSON mode.
+//
+// Only requests that carry json_schema pay for this. The caller's response_format and
+// messages are never written: the format is replaced by pointer and the instruction is
+// inserted into a new slice (Messages is already a fresh conversion of the input).
+func (req *OpenAIChatRequest) downgradeJSONSchemaToJSONObject() {
+	if req.ResponseFormat == nil {
+		return
+	}
+	rf, ok := schemas.ParseChatResponseFormat(req.ResponseFormat)
+	if !ok || rf.Type != "json_schema" {
+		return
+	}
+
+	var jsonObject interface{} = json.RawMessage(`{"type":"json_object"}`)
+	req.ResponseFormat = &jsonObject
+
+	instruction := jsonSchemaInstruction(rf)
+	// The instruction goes after any leading system/developer messages so the
+	// client's own system prompt keeps its place at the top of the prompt.
+	insertAt := 0
+	for insertAt < len(req.Messages) &&
+		(req.Messages[insertAt].Role == schemas.ChatMessageRoleSystem || req.Messages[insertAt].Role == schemas.ChatMessageRoleDeveloper) {
+		insertAt++
+	}
+	messages := make([]OpenAIMessage, 0, len(req.Messages)+1)
+	messages = append(messages, req.Messages[:insertAt]...)
+	messages = append(messages, OpenAIMessage{
+		Role:    schemas.ChatMessageRoleSystem,
+		Content: &schemas.ChatMessageContent{ContentStr: &instruction},
+	})
+	messages = append(messages, req.Messages[insertAt:]...)
+	req.Messages = messages
+}
+
+// jsonSchemaInstruction renders a json_schema response_format as a prompt
+// instruction for providers that only offer JSON mode. It always contains the
+// lowercase word "json", which DeepSeek's JSON mode requires in the prompt.
+func jsonSchemaInstruction(rf *schemas.ChatResponseFormat) string {
+	const lead = "Respond with only a valid json object, with no surrounding text or code fences"
+	schema := rf.RawSchema()
+	if len(schema) == 0 {
+		return lead + "."
+	}
+	name, _ := rf.Name()
+	description, _ := rf.Description()
+	var sb strings.Builder
+	sb.Grow(len(lead) + len(name) + len(description) + len(schema) + 80)
+	sb.WriteString(lead)
+	sb.WriteString(", that conforms to the following JSON Schema")
+	if name != "" {
+		sb.WriteString(" (")
+		sb.WriteString(name)
+		sb.WriteString(")")
+	}
+	sb.WriteString(".")
+	if description != "" {
+		sb.WriteString(" ")
+		sb.WriteString(description)
+	}
+	sb.WriteString("\n\nJSON Schema:\n")
+	sb.Write(schema)
+	return sb.String()
+}
+
 // renameAssistantReasoningToAlias moves replayed assistant reasoning from
 // reasoning_content to the "reasoning" key, for providers that only accept the latter.
 func (req *OpenAIChatRequest) renameAssistantReasoningToAlias() {
@@ -387,7 +481,7 @@ func (req *OpenAIChatRequest) applyXAICompatibility(caps schemas.ModelCaps) {
 }
 
 // chatUsesPromptCacheBreakpoints is the Chat Completions half of the gate behind
-// responsesUsesPromptCacheOptions: the OpenAI family on gpt-5.6 and later. OpenRouter
+// responsesIsOpenAIFamilyBreakpointTarget: the OpenAI family on gpt-5.6 and later. OpenRouter
 // is deliberately absent, since it accepts cache_control verbatim on this path.
 func chatUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schemas.ModelProvider, model string) bool {
 	switch provider {
@@ -398,32 +492,17 @@ func chatUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schemas.Mod
 	}
 }
 
-// chatHasPromptCacheBreakpoint reports whether any content part carries a breakpoint,
-// so explicit mode is only switched on when there is a boundary for it to honour.
-func chatHasPromptCacheBreakpoint(messages []OpenAIMessage) bool {
-	for i := range messages {
-		if messages[i].Content == nil {
-			continue
-		}
-		for j := range messages[i].Content.ContentBlocks {
-			if messages[i].Content.ContentBlocks[j].PromptCacheBreakpoint != nil {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // applyChatCacheBreakpoints rewrites ephemeral cache_control markers on text parts
 // into prompt_cache_breakpoint, for every role including tool messages, which is where
 // an agent loop's per-turn marker lands after a tool call. Only text parts are
 // marked: that is the one Chat Completions part type with a verified breakpoint
 // field, and a rejected field costs more than the miss it would fix. The same
-// four-breakpoint ceiling and keep-the-latest rule as the Responses path apply.
+// ceiling (promptCacheBreakpointCeiling) and keep-the-latest rule as the Responses
+// path apply.
 //
 // Messages, their Content pointers and the part arrays alias bifrostReq.Input, which
 // plugins and the fallback chain reuse, so everything touched is copied first.
-func applyChatCacheBreakpoints(messages []OpenAIMessage) []OpenAIMessage {
+func applyChatCacheBreakpoints(messages []OpenAIMessage, ceiling int) []OpenAIMessage {
 	type blockRef struct{ msg, block int }
 	var refs []blockRef
 	existing := 0
@@ -446,7 +525,7 @@ func applyChatCacheBreakpoints(messages []OpenAIMessage) []OpenAIMessage {
 	if len(refs) == 0 {
 		return messages
 	}
-	budget := maxResponsesCacheBreakpoints - existing
+	budget := ceiling - existing
 	if budget <= 0 {
 		return messages
 	}

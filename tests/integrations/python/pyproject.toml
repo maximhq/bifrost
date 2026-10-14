@@ -27,13 +27,15 @@ dependencies = [
     "litellm==1.88.6",
     "langchain-openai==1.1.14",
     "langchain-core>=1.3.3",
-    "langchain-anthropic==1.5.4",
+    "langchain-anthropic==1.7.1",
     "langchain-google-genai==4.1.1",
     "langchain-mistralai==1.1.1",
     "langgraph>=0.1.0",
     "mistralai>=0.4.0",
     "google-genai>=1.50.0",
-    "pydantic-ai>=0.1.0",
+    # pydantic-ai-slim (not the pydantic-ai meta package): the meta package forces the
+    # openai>=3 SDK, which litellm cannot use. The slim core pins no provider SDKs.
+    "pydantic-ai-slim==2.53.0",
     "boto3>=1.34.0",
     "cohere>=5.21.1",
     # Testing utilities
@@ -152,5 +154,5 @@ package = false
 # Preserve the existing cutoff for unrelated dependencies.
 exclude-newer = "2026-09-09T00:00:00Z"
 # Admit security fixes and the already-pinned typesafe-sdk release without lifting the global cutoff.
-exclude-newer-package = { pyjwt = "2026-10-02T00:00:00Z", urllib3 = "2026-10-02T00:00:00Z", typesafe-sdk = "2026-09-23T00:00:00Z", langgraph-sdk = "2026-10-07T00:00:00Z", multidict = "2026-10-07T00:00:00Z" }
-constraint-dependencies = ["pyjwt==2.15.0", "urllib3==2.8.0", "langgraph-sdk==0.4.4", "multidict==6.9.1"]
+exclude-newer-package = { pyjwt = "2026-10-02T00:00:00Z", urllib3 = "2026-10-02T00:00:00Z", typesafe-sdk = "2026-09-23T00:00:00Z", langgraph-sdk = "2026-10-07T00:00:00Z", multidict = "2026-10-07T00:00:00Z", pydantic-ai = "2026-10-03T00:00:00Z", pydantic-ai-slim = "2026-10-03T00:00:00Z", pydantic-graph = "2026-10-03T00:00:00Z", pydantic-evals = "2026-10-03T00:00:00Z", genai-prices = "2026-10-03T00:00:00Z", anthropic = "2026-10-03T00:00:00Z" }
+constraint-dependencies = ["pyjwt==2.15.0", "urllib3==2.8.0", "langgraph-sdk==0.4.4", "multidict==6.9.1", "pydantic-ai-slim==2.53.0"]
