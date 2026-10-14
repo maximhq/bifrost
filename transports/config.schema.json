@@ -12070,9 +12070,39 @@
           "minimum": 0,
           "description": "Number of days to retain audit logs (0 means no retention limit)"
         },
+        "hmac_keys": {
+          "type": "array",
+          "description": "Named HMAC signing keys for rotation. active_key_id picks the key that signs new events; the others still verify older events. hmac_key, when also set, is the key named \"default\". Each key needs at least 32 bytes and supports the env. prefix.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{1,32}$",
+                "description": "Key ID recorded in each signature, e.g. \"2026-q4\""
+              },
+              "key": {
+                "type": "string",
+                "description": "HMAC secret (minimum 32 bytes). Can use env. prefix (e.g. 'env.AUDIT_HMAC_KEY_2026Q4')."
+              }
+            },
+            "required": ["id", "key"],
+            "additionalProperties": false
+          }
+        },
+        "active_key_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,32}$",
+          "description": "ID of the key that signs new audit events. Required when more than one key is configured."
+        },
         "omit_ip_addresses": {
           "type": "boolean",
           "description": "Stop recording client IP addresses in audit logs while keeping every other field. When true, new events are stored without request_ip or initiator host, and IPs from rows written before the setting was enabled are hidden from the API, filter data, search, exports and object storage archives. Existing database rows are not rewritten. Use this where employee privacy rules or works council agreements forbid tracking IPs. Default: false",
+          "default": false
+        },
+        "include_reads": {
+          "type": "boolean",
+          "description": "Audit every GET request. When false, reads are audited only when they disclose a secret or export data (virtual key reveal/copy, audit log export, downloads) or carry an explicit audit action such as an SSO login. Default: false",
           "default": false
         },
         "archive_interval": {
@@ -12086,6 +12116,24 @@
           "pattern": "^[0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h)([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))*$",
           "description": "How long to hold a window open past its end before archiving it, as a Go duration string. Absorbs clock skew and late inserts. Must be shorter than archive_interval, otherwise no window would ever close and archival would silently do nothing; the runtime substitutes a safe default if it is not. Only used when object_storage is set. Default: 15m",
           "default": "15m"
+        },
+        "archive_object_lock": {
+          "type": "object",
+          "description": "Write-lock every archived audit object (S3 Object Lock or GCS object retention) so it cannot be overwritten or deleted before the lock expires. The bucket must be created with object locking enabled; Bifrost checks this at startup and disables archival if it is not. Only used when object_storage is set.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["compliance", "governance"],
+              "description": "compliance: no one, including the account root, can remove the lock early. governance: a principal with bypass permission can."
+            },
+            "retention_days": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Days each archived object stays locked after it is written."
+            }
+          },
+          "required": ["mode", "retention_days"],
+          "additionalProperties": false
         },
         "archive_max_object_bytes": {
           "type": "integer",
