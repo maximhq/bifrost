@@ -231,6 +231,42 @@ func TestPassthroughLogParsingIsBestEffort(t *testing.T) {
 	})
 }
 
+// TestPassthroughLogParsesMediaRoutes pins that non-text passthrough routes fill the same dedicated
+// fields a typed request does, through the shared capture and output helpers.
+func TestPassthroughLogParsesMediaRoutes(t *testing.T) {
+	t.Run("openai embeddings", func(t *testing.T) {
+		row := runPassthroughCall(t, &Config{}, "req-pt-embed", passthroughCall{
+			provider: schemas.OpenAI, model: "text-embedding-3-small", path: "/v1/embeddings", status: 200,
+			requestBody:  `{"model":"text-embedding-3-small","input":"hello"}`,
+			responseBody: `{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":1,"total_tokens":1}}`,
+		}, nil, nil)
+		require.Len(t, row.EmbeddingInputParsed, 1)
+		require.Len(t, row.EmbeddingOutputParsed, 1)
+		require.Equal(t, string(schemas.EmbeddingRequest), passthroughParamsMap(t, row)["parsed_type"])
+	})
+	t.Run("openai speech input", func(t *testing.T) {
+		row := runPassthroughCall(t, &Config{}, "req-pt-speech", passthroughCall{
+			provider: schemas.OpenAI, model: "gpt-4o-mini-tts", path: "/v1/audio/speech", status: 200,
+			requestBody:  `{"model":"gpt-4o-mini-tts","input":"Hi there","voice":"alloy"}`,
+			responseBody: "\x00\xffID3 binary",
+		}, nil, nil)
+		require.NotNil(t, row.SpeechInputParsed)
+		require.Equal(t, "Hi there", row.SpeechInputParsed.Input)
+		require.Equal(t, string(schemas.SpeechRequest), passthroughParamsMap(t, row)["parsed_type"])
+	})
+	t.Run("openai image generation", func(t *testing.T) {
+		row := runPassthroughCall(t, &Config{}, "req-pt-image", passthroughCall{
+			provider: schemas.OpenAI, model: "gpt-image-1", path: "/v1/images/generations", status: 200,
+			requestBody:  `{"model":"gpt-image-1","prompt":"a red fox"}`,
+			responseBody: `{"created":1,"data":[{"b64_json":"aGk="}]}`,
+		}, nil, nil)
+		require.NotNil(t, row.ImageGenerationInputParsed)
+		require.Equal(t, "a red fox", row.ImageGenerationInputParsed.Prompt)
+		require.NotNil(t, row.ImageGenerationOutputParsed)
+		require.Len(t, row.ImageGenerationOutputParsed.Data, 1)
+	})
+}
+
 func TestMarkPassthroughForParsing(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 

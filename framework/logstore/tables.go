@@ -432,10 +432,11 @@ type Log struct {
 	SessionTotalCost   float64 `gorm:"-" json:"session_total_cost,omitempty"`
 	SessionTotalTokens int64   `gorm:"-" json:"session_total_tokens,omitempty"`
 
-	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
-	PassthroughParseFormat schemas.ModelProvider         `gorm:"-" json:"-"`                           // Transient: base provider whose wire format the log writer parses passthrough bodies with; empty skips parsing
-	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
-	RevealRedactionMapping *schemas.RedactionMapsByPhase `gorm:"-" json:"redaction_mapping,omitempty"` // Virtual field populated only on permitted log-detail reads
+	RedactionData            *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
+	PassthroughParseFormat   schemas.ModelProvider         `gorm:"-" json:"-"`                           // Transient: base provider whose wire format the log writer parses passthrough bodies with; empty skips parsing
+	PassthroughParseMaxBytes int64                         `gorm:"-" json:"-"`                           // Transient: large-payload request threshold applied to media parsed from passthrough bodies; 0 keeps everything
+	RedactionMapping         string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
+	RevealRedactionMapping   *schemas.RedactionMapsByPhase `gorm:"-" json:"redaction_mapping,omitempty"` // Virtual field populated only on permitted log-detail reads
 
 	// Cluster governance fields - attached by the logging plugin when running in a cluster
 	// so that leaders can recover disconnected node usage from the logs table.
