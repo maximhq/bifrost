@@ -1134,5 +1134,159 @@ test("routing-wiring: a trail check resolves run variables in the lines it expec
   assert.throws(() => new Function("pm", probe)(pm), /should not contain/, "an absent line naming {{run_id}} was not resolved before the check");
 });
 
+const providerHarness = JSON.parse(readFileSync(join(here, "provider-harness.json"), "utf8"));
+const orderingFolder = providerHarness.item.find((item) => item.name.startsWith("231. Builtin plugin ordering"));
+const orderingGate = orderingFolder.event?.find((event) => event.listen === "prerequest")?.script.exec.join("\n") || "";
+
+test("plugin ordering never runs against the shared harness by default", () => {
+  assert.strictEqual(run(orderingGate).state.skipped, true);
+  for (const item of orderingFolder.item) {
+    assert.ok(item.request.url.startsWith("{{builtinPluginOrderingBaseUrl}}/api/plugins"));
+    assert.notStrictEqual(item.request.method, "DELETE", "cleanup must discard the isolated store, not remove a running plugin");
+  }
+});
+
+test("plugin ordering requires a loopback fixture URL and its setup token", () => {
+  for (const variables of [
+    { builtinPluginOrderingFixture: "1" },
+    { builtinPluginOrderingFixture: "1", builtinPluginOrderingBaseUrl: "http://127.0.0.1:8087" },
+    { builtinPluginOrderingFixture: "1", builtinPluginOrderingBaseUrl: "https://shared.example.com", builtinPluginOrderingSetupToken: "test" },
+  ]) {
+    const ctx = sandbox({ variables });
+    const skipped = new Error("request skipped");
+    // Real skipRequest terminates the script; code after it cannot report failures.
+    ctx.pm.execution.skipRequest = () => { ctx.state.skipped = true; throw skipped; };
+    assert.throws(() => new Function("pm", orderingGate)(ctx.pm), (error) => error === skipped);
+    assert.strictEqual(ctx.state.skipped, true, "invalid fixture configuration cannot send a request");
+    assert.strictEqual(ctx.state.tests.length, 1, "report the configuration error before skipping");
+    assert.strictEqual(ctx.state.tests[0].passed, false);
+    assert.match(ctx.state.tests[0].err.message, /disposable/);
+  }
+  const ctx = sandbox({ variables: {
+    builtinPluginOrderingFixture: "1", builtinPluginOrderingBaseUrl: "http://127.0.0.1:8087", builtinPluginOrderingSetupToken: "unique-token",
+  } });
+  let header;
+  ctx.pm.request.headers = { upsert: (value) => { header = value; } };
+  new Function("pm", orderingGate)(ctx.pm);
+  assert.strictEqual(ctx.state.skipped, false);
+  assert.deepStrictEqual(header, { key: "X-Bifrost-Setup-Token", value: "unique-token" });
+});
+
+/** Use real equality and type assertions so incorrect ordering cannot pass a no-op mock. */
+function orderingSandbox(options) {
+  const ctx = sandbox(options);
+  ctx.pm.expect = (value) => {
+    const chain = { equal: (expected) => assert.strictEqual(value, expected), an: (type) => assert.strictEqual(Array.isArray(value) ? "array" : typeof value, type) };
+    chain.a = chain.an;
+    chain.to = chain.be = chain;
+    return chain;
+  };
+  return ctx;
+}
+
+test("plugin ordering requires the absent telemetry row on every fixture run", () => {
+  const script = orderingFolder.item[0].event.find((event) => event.listen === "test").script.exec.join("\n");
+  for (const enabled of [true, false, undefined]) {
+    const ctx = orderingSandbox({ responseBody: JSON.stringify({ plugins: enabled === undefined ? [] : [{ name: "telemetry", enabled }] }) });
+    new Function("pm", script)(ctx.pm);
+    assert.strictEqual(ctx.state.tests.every((result) => result.passed), enabled === undefined);
+    assert.strictEqual(ctx.vars.builtinPluginOriginalEnabled, enabled === undefined ? true : undefined);
+  }
+});
+
+test("plugin ordering requires absent resolver and custom rows before their cases", () => {
+  const script = orderingFolder.item[0].event.find((event) => event.listen === "test").script.exec.join("\n");
+  for (const name of ["model-catalog-resolver", "builtin-order-rejected-custom"]) {
+    const ctx = orderingSandbox({ responseBody: JSON.stringify({ plugins: [{ name }] }) });
+    new Function("pm", script)(ctx.pm);
+    assert.ok(ctx.state.tests.some((result) => !result.passed));
+    assert.strictEqual(ctx.vars.builtinPluginOriginalEnabled, undefined);
+    assert.strictEqual(ctx.vars.builtinPluginCustomAbsent, undefined);
+  }
+});
+
+test("resolver ordering cases send builtin placement through create and update", () => {
+  assert.strictEqual(orderingFolder.item.length, 9);
+  for (const [index, method] of [[4, "POST"], [5, "PUT"]]) {
+    const item = orderingFolder.item[index];
+    assert.strictEqual(item.request.method, method);
+    const body = JSON.parse(item.request.body.raw);
+    assert.strictEqual(body.placement, "builtin");
+    assert.strictEqual(body.order, 99);
+    assert.strictEqual(body.enabled, false, "do not dynamically load the internal resolver");
+    if (method === "POST") {
+      assert.strictEqual(body.name, "model-catalog-resolver");
+      assert.ok(item.name.includes("[EXPECT-201]"));
+    } else {
+      assert.ok(item.request.url.endsWith("/model-catalog-resolver"));
+    }
+  }
+});
+
+test("resolver ordering update requires its create case to have succeeded", () => {
+  const script = orderingFolder.item[5].event.find((event) => event.listen === "test").script.exec.join("\n");
+  const plugin = { name: "model-catalog-resolver", enabled: false, placement: "post_builtin", order: 9223372036854776000 };
+  const ctx = orderingSandbox({ responseBody: JSON.stringify({ plugin }) });
+  new Function("pm", script)(ctx.pm);
+  assert.ok(ctx.state.tests.some((result) => !result.passed));
+});
+
+for (const [index, item] of orderingFolder.item.entries()) {
+  const script = item.event.find((event) => event.listen === "test").script.exec.join("\n");
+  const expectedStatus = Number(item.name.match(/\[EXPECT-(\d+)\]/)?.[1] || 200);
+  for (const status of [400, 401, 403, 404, 409, 429, 500].filter((status) => status !== expectedStatus)) {
+    test(`plugin ordering request ${index + 1} rejects HTTP ${status}`, () => {
+      const ctx = orderingSandbox({ responseCode: status, responseBody: '{"error":"unexpected"}', variables: { builtinPluginOrderWrite: true, builtinPluginOriginalEnabled: true, builtinPluginResolverCreated: true, builtinPluginCustomAbsent: true, builtinPluginCustomRejected: true, builtinPluginCustomStillAbsent: true } });
+      new Function("pm", script)(ctx.pm);
+      assert.ok(ctx.state.tests.some((result) => !result.passed));
+      assert.equal(ctx.state.skipped, false, "never skip a received error status");
+    });
+  }
+  if (index === 0 || index >= 6) continue;
+  test(`plugin ordering request ${index + 1} accepts only canonical metadata`, () => {
+    const resolver = index >= 4;
+    const cases = resolver ? [["post_builtin", 9223372036854776000, true], ["post_builtin", 2147483647, true], ["builtin", 9223372036854776000, false], ["post_builtin", 99, false]] : [["builtin", 1, true], ["post_builtin", 1, false], ["builtin", 99, false]];
+    for (const [placement, order, pass] of cases) {
+      const plugin = { name: resolver ? "model-catalog-resolver" : "telemetry", enabled: !resolver, placement, order };
+      const ctx = orderingSandbox({ responseCode: index === 4 ? 201 : 200, responseBody: JSON.stringify(index === 2 ? plugin : { plugin }), variables: { builtinPluginOrderWrite: true, builtinPluginOriginalEnabled: true, builtinPluginResolverCreated: true } });
+      new Function("pm", script)(ctx.pm);
+      assert.equal(ctx.state.tests.every((result) => result.passed), pass);
+    }
+  });
+}
+
+test("custom plugin rejection checks the missing row and permits a later valid create", () => {
+  const custom = { name: "builtin-order-rejected-custom", enabled: false, placement: "post_builtin", order: 99 };
+  const cases = [
+    [6, "PUT", 400, { error: { message: "Invalid request body" } }, "builtinPluginCustomAbsent", "builtinPluginCustomRejected"],
+    [7, "GET", 404, { error: { message: "Plugin not found" } }, "builtinPluginCustomRejected", "builtinPluginCustomStillAbsent"],
+    [8, "POST", 201, { plugin: custom }, "builtinPluginCustomStillAbsent", null],
+  ];
+  const variables = {};
+  for (const [index, method, status, body, prerequisite, result] of cases) {
+    const item = orderingFolder.item[index];
+    assert.equal(item.request.method, method);
+    const script = item.event.find((event) => event.listen === "test").script.exec.join("\n");
+    const missing = orderingSandbox({ responseCode: status, responseBody: JSON.stringify(body) });
+    new Function("pm", script)(missing.pm);
+    assert.ok(missing.state.tests.some((entry) => !entry.passed), "a skipped prerequisite must fail the case");
+    if (result) assert.equal(missing.vars[result], undefined);
+
+    variables[prerequisite] = true;
+    const ctx = orderingSandbox({ responseCode: status, responseBody: JSON.stringify(body), variables });
+    new Function("pm", script)(ctx.pm);
+    assert.ok(ctx.state.tests.every((entry) => entry.passed));
+    if (result) assert.equal(ctx.vars[result], true);
+
+    const wrongBody = index === 8 ? { plugin: { ...custom, order: 1 } } : { error: { message: "wrong failure" } };
+    const wrong = orderingSandbox({ responseCode: status, responseBody: JSON.stringify(wrongBody), variables });
+    new Function("pm", script)(wrong.pm);
+    assert.ok(wrong.state.tests.some((entry) => !entry.passed), "the right status with the wrong response must fail");
+    if (result) assert.equal(wrong.vars[result], undefined);
+  }
+  assert.equal(JSON.parse(orderingFolder.item[6].request.body.raw).order, 1.5);
+  assert.deepEqual(JSON.parse(orderingFolder.item[8].request.body.raw), custom);
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

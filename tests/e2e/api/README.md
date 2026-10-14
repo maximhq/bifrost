@@ -278,6 +278,43 @@ The cases are skipped unless `bedrockEndpointFixture=1`.
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Builtin plugin ordering
+
+Folder 231 changes telemetry and resolver configuration, so it is **skipped in shared provider-harness
+runs**. Run it with the dedicated runner inside your Go/Node development container,
+using the checkout under test. Build and install Newman in that container first:
+
+```bash
+make build LOCAL=1
+make install-newman
+node tests/e2e/api/runners/run-builtin-plugin-ordering.mjs --binary ./tmp/bifrost-http
+```
+
+The runner does not accept an existing gateway or app directory. It creates a fresh
+temporary directory, SQLite config store, setup token and loopback gateway, then runs
+only these nine requests sequentially with `--bail`. Pricing/model metadata comes
+from local empty files; no provider credentials, LLM calls or backing services are
+needed. The first request requires that no telemetry or resolver row exists, so
+every run covers the absent-row upsert path and resolver create/update normalization.
+The custom-plugin cases reject fractional order on an absent row, verify it remains
+absent, and create the same name successfully with a valid order.
+The gateway is stopped before its directory is discarded
+on success, failure or SIGINT/SIGTERM. No DELETE is sent to a reused gateway.
+Both gateway and Newman receive only executable, dynamic-library and temporary-directory
+environment settings; provider credentials, proxy settings and shared gateway configuration
+are not inherited. The gateway receives its generated setup token, and Newman reads it from
+the runner's temporary environment file.
+
+Do not manually enable `builtinPluginOrderingFixture` against a shared gateway.
+The runner alone supplies it, `builtinPluginOrderingBaseUrl`, and
+`builtinPluginOrderingSetupToken`. To check the isolation and cleanup without running
+the harness, run these offline script tests in the same container:
+
+```bash
+node tests/e2e/api/collections/collection-scripts.test.mjs
+node tests/e2e/api/runners/run-builtin-plugin-ordering.test.mjs
+```
+
 ## Contents
 
 ### V1 Endpoint Tests
