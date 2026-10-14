@@ -1335,6 +1335,15 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 		})
 	}
 
+	// Virtual names join here: after the virtual-key provider filter above, so a caller
+	// granted nothing is shown nothing, and before pagination and the total, so a virtual
+	// model is neither confined to page two nor missing from the count. Skipped when the
+	// caller asked only for models that support decisions, which virtual models make no
+	// claim about.
+	if !query.Decisions {
+		models = append(models, virtualListedModels(h.inMemoryStore, providers)...)
+	}
+
 	total := len(models)
 	if query.Offset > 0 {
 		if query.Offset >= len(models) {
