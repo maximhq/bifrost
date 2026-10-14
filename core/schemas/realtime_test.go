@@ -2,6 +2,7 @@ package schemas
 
 import "testing"
 
+// TestIsRealtimeConversationItemEventType verifies realtime schema behavior.
 func TestIsRealtimeConversationItemEventType(t *testing.T) {
 	t.Parallel()
 
@@ -28,6 +29,7 @@ func TestIsRealtimeConversationItemEventType(t *testing.T) {
 	}
 }
 
+// TestRealtimeCanonicalEventClassifiers verifies realtime schema behavior.
 func TestRealtimeCanonicalEventClassifiers(t *testing.T) {
 	t.Parallel()
 
@@ -64,5 +66,24 @@ func TestRealtimeCanonicalEventClassifiers(t *testing.T) {
 	}
 	if IsRealtimeInputTranscriptEvent(&BifrostRealtimeEvent{Type: RTEventInputAudioTransDelta}) {
 		t.Fatal("did not expect input audio transcription delta to be classified as transcript event")
+	}
+}
+
+// TestParseRealtimeEventOwnsNativeBytes preserves field presence and precision independently of a reused receive buffer.
+func TestParseRealtimeEventOwnsNativeBytes(t *testing.T) {
+	const input = `{"type":"session.update","session":{"instructions":"","tools":[],"future":9007199254740993},"raw_data":{"type":"response.done"}}`
+	raw := []byte(input)
+	event, err := ParseRealtimeEvent(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range raw {
+		raw[i] = ' '
+	}
+	if string(event.RawData) != input {
+		t.Fatal("native event not independently preserved")
+	}
+	if event.Type != RTEventSessionUpdate {
+		t.Fatal("client raw_data changed canonical event type")
 	}
 }

@@ -57,12 +57,12 @@ func TestPayloadOrdering_GeminiGenerationRequest(t *testing.T) {
 }
 
 func TestNormalizeRawGenerateContentRequestForCompatibility(t *testing.T) {
-	t.Run("keeps valid audio and removes unsupported generation config fields", func(t *testing.T) {
+	t.Run("keeps valid audio and logprobs, removes penalties", func(t *testing.T) {
 		raw := []byte(`{"contents":[{"parts":[{"text":"Transcribe"},{"inlineData":{"mimeType":"audio/wav","data":"UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA="}}]}],"generationConfig":{"responseLogprobs":true,"logprobs":3,"presencePenalty":0.5,"frequencyPenalty":0.5,"temperature":0.2}}`)
 
 		got := NormalizeRawGenerateContentRequestForCompatibility(raw)
 
-		assert.Equal(t, `{"contents":[{"parts":[{"text":"Transcribe"},{"inlineData":{"mimeType":"audio/wav","data":"UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA="}}]}],"generationConfig":{"temperature":0.2}}`, string(got))
+		assert.Equal(t, `{"contents":[{"parts":[{"text":"Transcribe"},{"inlineData":{"mimeType":"audio/wav","data":"UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA="}}]}],"generationConfig":{"responseLogprobs":true,"logprobs":3,"temperature":0.2}}`, string(got))
 	})
 
 	t.Run("accepts url safe base64 audio", func(t *testing.T) {

@@ -1,35 +1,43 @@
-import { Locator, Page, expect } from '@playwright/test'
-import { BasePage } from '../../../core/pages/base.page'
-import { waitForNetworkIdle } from '../../../core/utils/test-helpers'
+import { Locator, Page, expect } from "@playwright/test";
+import { BasePage } from "../../../core/pages/base.page";
+import { waitForNetworkIdle } from "../../../core/utils/test-helpers";
 
 /**
  * Routing rule configuration
  * Note: CEL expression is auto-generated from the visual Rule Builder in the UI
  */
 export interface RoutingRuleConfig {
-  name: string
-  description?: string
-  provider?: string
-  model?: string
-  priority?: number
-  enabled?: boolean
-  scope?: 'global' | 'team' | 'customer' | 'virtual_key'
-  scopeId?: string
+  name: string;
+  description?: string;
+  provider?: string;
+  model?: string;
+  priority?: number;
+  enabled?: boolean;
+  scope?: "global" | "team" | "customer" | "virtual_key";
+  scopeId?: string;
   // Fallback providers, as "provider/model" strings or objects that pin a provider key.
   // The key is named, not identified: the key select renders key_id as the option value
   // and the key's name as its text, and pinFallbackKey locates the option by that text.
-  fallbacks?: Array<string | { provider: string; model?: string; key_name?: string }>
+  fallbacks?: Array<
+    string | { provider: string; model?: string; key_name?: string }
+  >;
   // Time-to-first-token cutoff in ms; null clears it on edit.
-  ttftTimeoutMs?: number | null
+  ttftTimeoutMs?: number | null;
 }
 
 /**
  * Filter conditions for the rule builder
  */
 export interface RuleFilterCondition {
-  field: 'model' | 'provider' | 'virtualKey' | 'customer' | 'metadata'
-  operator: 'equals' | 'notEquals' | 'contains' | 'startsWith' | 'endsWith' | 'regex'
-  value: string
+  field: "model" | "provider" | "virtualKey" | "customer" | "metadata";
+  operator:
+    | "equals"
+    | "notEquals"
+    | "contains"
+    | "startsWith"
+    | "endsWith"
+    | "regex";
+  value: string;
 }
 
 /**
@@ -37,149 +45,187 @@ export interface RuleFilterCondition {
  */
 export class RoutingRulesPage extends BasePage {
   // Main elements
-  readonly table: Locator
+  readonly table: Locator;
   /** View-level empty state (no table is rendered when there are 0 rules) */
-  readonly emptyState: Locator
-  readonly createBtn: Locator
+  readonly emptyState: Locator;
+  readonly createBtn: Locator;
 
   // Sheet elements
-  readonly sheet: Locator
-  readonly nameInput: Locator
-  readonly descriptionInput: Locator
-  readonly providerSelect: Locator
-  readonly modelSelect: Locator
-  readonly priorityInput: Locator
-  readonly enabledToggle: Locator
-  readonly scopeSelect: Locator
-  readonly ttftTimeoutInput: Locator
-  readonly saveBtn: Locator
-  readonly cancelBtn: Locator
+  readonly sheet: Locator;
+  readonly nameInput: Locator;
+  readonly descriptionInput: Locator;
+  readonly providerSelect: Locator;
+  readonly modelSelect: Locator;
+  readonly priorityInput: Locator;
+  readonly enabledToggle: Locator;
+  readonly scopeSelect: Locator;
+  readonly ttftTimeoutInput: Locator;
+  readonly saveBtn: Locator;
+  readonly cancelBtn: Locator;
 
   constructor(page: Page) {
-    super(page)
+    super(page);
 
     // Main elements: scope to the routing rules table (has Priority column); no data-testid in UI
-    this.table = page.locator('table').filter({
-      has: page.locator('th').filter({ hasText: /^Priority$/ })
-    }).first()
-    this.emptyState = page.getByTestId('routing-rules-empty-state')
+    this.table = page
+      .locator("table")
+      .filter({
+        has: page.locator("th").filter({ hasText: /^Priority$/ }),
+      })
+      .first();
+    this.emptyState = page.getByTestId("routing-rules-empty-state");
     // Use .first() to handle both "New Rule" and "Create First Rule" buttons
-    this.createBtn = page.locator('[data-testid="create-routing-rule-btn"]').or(
-      page.getByRole('button', { name: /New Rule|Create First Rule/i }).first()
-    )
+    this.createBtn = page
+      .locator('[data-testid="create-routing-rule-btn"]')
+      .or(
+        page
+          .getByRole("button", { name: /New Rule|Create First Rule/i })
+          .first(),
+      );
 
     // Sheet elements
-    this.sheet = page.locator('[role="dialog"]').or(page.locator('[data-testid="routing-rule-sheet"]'))
+    this.sheet = page
+      .locator('[role="dialog"]')
+      .or(page.locator('[data-testid="routing-rule-sheet"]'));
     // Scope inputs to the sheet to avoid matching other elements on page
-    this.nameInput = page.locator('[data-testid="rule-name-input"]').or(
-      page.locator('[role="dialog"]').getByLabel(/Rule Name/i)
-    )
-    this.descriptionInput = page.locator('[data-testid="rule-description-input"]').or(
-      page.locator('[role="dialog"]').getByLabel(/Description/i)
-    )
-    this.providerSelect = page.locator('[data-testid="rule-provider-select"]').or(
-      page.locator('button').filter({ hasText: /Provider/i })
-    )
-    this.modelSelect = page.locator('[data-testid="rule-model-select"]').or(
-      page.locator('button').filter({ hasText: /Model/i })
-    )
-    this.priorityInput = page.locator('[data-testid="rule-priority-input"]').or(
-      page.getByLabel(/Priority/i)
-    )
-    this.enabledToggle = page.locator('[data-testid="rule-enabled-toggle"]').or(
-      page.locator('[role="dialog"] button[role="switch"]').first()
-    )
+    this.nameInput = page
+      .locator('[data-testid="rule-name-input"]')
+      .or(page.locator('[role="dialog"]').getByLabel(/Rule Name/i));
+    this.descriptionInput = page
+      .locator('[data-testid="rule-description-input"]')
+      .or(page.locator('[role="dialog"]').getByLabel(/Description/i));
+    this.providerSelect = page
+      .locator('[data-testid="rule-provider-select"]')
+      .or(page.locator("button").filter({ hasText: /Provider/i }));
+    this.modelSelect = page
+      .locator('[data-testid="rule-model-select"]')
+      .or(page.locator("button").filter({ hasText: /Model/i }));
+    this.priorityInput = page
+      .locator('[data-testid="rule-priority-input"]')
+      .or(page.getByLabel(/Priority/i));
+    this.enabledToggle = page
+      .locator('[data-testid="rule-enabled-toggle"]')
+      .or(page.locator('[role="dialog"] button[role="switch"]').first());
     // Note: CEL expression is auto-generated from the visual Rule Builder - no direct input
-    this.scopeSelect = page.locator('[data-testid="rule-scope-select"]').or(
-      page.locator('button').filter({ hasText: /Scope/i })
-    )
-    this.ttftTimeoutInput = page.getByTestId('routing-rule-ttft-timeout-input')
+    this.scopeSelect = page
+      .locator('[data-testid="rule-scope-select"]')
+      .or(page.locator("button").filter({ hasText: /Scope/i }));
+    this.ttftTimeoutInput = page.getByTestId("routing-rule-ttft-timeout-input");
     // Use exact button names to avoid matching wrong buttons
     // Match both "Save Rule" (create) and "Update Rule" (edit)
-    this.saveBtn = page.locator('[data-testid="save-rule-btn"]').or(
-      page.locator('[role="dialog"]').getByRole('button', { name: /Save Rule|Update Rule/i })
-    )
+    this.saveBtn = page
+      .locator('[data-testid="save-rule-btn"]')
+      .or(
+        page
+          .locator('[role="dialog"]')
+          .getByRole("button", { name: /Save Rule|Update Rule/i }),
+      );
     // Cancel button specifically (not the Close/X button in header)
-    this.cancelBtn = page.locator('[data-testid="cancel-rule-btn"]').or(
-      page.locator('[role="dialog"]').getByRole('button', { name: 'Cancel', exact: true })
-    )
+    this.cancelBtn = page
+      .locator('[data-testid="cancel-rule-btn"]')
+      .or(
+        page
+          .locator('[role="dialog"]')
+          .getByRole("button", { name: "Cancel", exact: true }),
+      );
   }
 
   /**
    * Navigate to the routing rules page
    */
   async goto(): Promise<void> {
-    await this.page.goto('/workspace/routing-rules')
-    // Wait for page content (create button, empty state, or table); avoid networkidle (SPA often never idles)
-    await Promise.race([
-      this.createBtn.waitFor({ state: 'visible', timeout: 15000 }),
-      this.emptyState.waitFor({ state: 'visible', timeout: 15000 }),
-      this.table.waitFor({ state: 'visible', timeout: 15000 }),
-    ])
+    await this.page.goto("/workspace/routing-rules");
+    // Wait for the rules query to settle (empty state or table); the create button renders before data does.
+    await this.emptyState
+      .or(this.table)
+      .first()
+      .waitFor({ state: "visible", timeout: 15000 });
   }
 
   /**
    * Get routing rule row locator (tbody data row containing the rule name).
    */
   getRuleRow(name: string): Locator {
-    return this.table.locator('tbody tr').filter({ hasText: name }).first()
+    return this.table.locator("tbody tr").filter({ hasText: name }).first();
   }
 
   private async waitForToastAndAssertSuccess(action: string): Promise<void> {
-    const toast = this.page.locator('[data-sonner-toast]:not([data-removed="true"])').first()
-    await expect(toast).toBeVisible({ timeout: 10000 })
-    const toastText = await toast.textContent()
-    if (await toast.getAttribute('data-type') === 'error' || toastText?.toLowerCase().includes('error') || toastText?.toLowerCase().includes('failed')) {
-      throw new Error(`Failed to ${action}: ${toastText}`)
+    const toast = this.page
+      .locator(
+        '[data-sonner-toast]:not([data-removed="true"]):not([data-e2e-dismissed])',
+      )
+      .first();
+    await expect(toast).toBeVisible({ timeout: 10000 });
+    const toastText = await toast.textContent();
+    if (
+      (await toast.getAttribute("data-type")) === "error" ||
+      toastText?.toLowerCase().includes("error") ||
+      toastText?.toLowerCase().includes("failed")
+    ) {
+      throw new Error(`Failed to ${action}: ${toastText}`);
     }
-    await this.dismissToasts()
+    await this.dismissToasts();
   }
 
   /**
    * Check if routing rule exists
    */
   async ruleExists(name: string): Promise<boolean> {
-    const row = this.getRuleRow(name)
-    return await row.count() > 0
+    const row = this.getRuleRow(name);
+    return (await row.count()) > 0;
   }
 
   /**
    * Wait for a rule to appear in the table (e.g. after create)
    */
-  async waitForRuleToAppear(name: string, timeoutMs: number = 10000): Promise<void> {
-    await expect.poll(() => this.ruleExists(name), { timeout: timeoutMs }).toBe(true)
+  async waitForRuleToAppear(
+    name: string,
+    timeoutMs: number = 10000,
+  ): Promise<void> {
+    await expect
+      .poll(() => this.ruleExists(name), { timeout: timeoutMs })
+      .toBe(true);
   }
 
   /**
    * Create a new routing rule
    */
   async createRoutingRule(config: RoutingRuleConfig): Promise<void> {
-    await this.dismissToasts()
-    await this.createBtn.click()
-    await expect(this.sheet).toBeVisible({ timeout: 5000 })
-    await this.waitForSheetAnimation()
+    await this.dismissToasts();
+    await this.createBtn.click();
+    await expect(this.sheet).toBeVisible({ timeout: 5000 });
+    await this.waitForSheetAnimation();
 
     // Fill name (required) - scoped to sheet
-    await this.nameInput.waitFor({ state: 'visible' })
-    await this.nameInput.fill(config.name)
+    await this.nameInput.waitFor({ state: "visible" });
+    await this.nameInput.fill(config.name);
 
     // Fill description if provided
     if (config.description) {
-      await this.descriptionInput.waitFor({ state: 'visible' })
-      await this.descriptionInput.fill(config.description)
+      await this.descriptionInput.waitFor({ state: "visible" });
+      await this.descriptionInput.fill(config.description);
     }
 
     // Select provider if provided (in the Routing Target section)
     if (config.provider) {
-      const providerCombo = this.sheet.getByTestId('routing-target-0-provider-select')
+      const providerCombo = this.sheet.getByTestId(
+        "routing-target-0-provider-select",
+      );
       if (await providerCombo.isVisible().catch(() => false)) {
-        await providerCombo.click()
-        await this.page.waitForSelector('[role="listbox"]', { timeout: 5000 })
-        const option = this.page.getByRole('option', { name: new RegExp(config.provider, 'i') }).first()
-        await option.scrollIntoViewIfNeeded()
-        await option.click({ force: true })
+        await providerCombo.click();
+        await this.page.waitForSelector('[role="listbox"]', { timeout: 5000 });
+        const option = this.page
+          .getByRole("option", { name: new RegExp(config.provider, "i") })
+          .first();
+        await option.scrollIntoViewIfNeeded();
+        await option.click({ force: true });
         // Wait for dropdown to close
-        await this.page.waitForSelector('[role="listbox"]', { state: 'hidden', timeout: 5000 }).catch(() => {})
+        await this.page
+          .waitForSelector('[role="listbox"]', {
+            state: "hidden",
+            timeout: 5000,
+          })
+          .catch(() => {});
       }
     }
 
@@ -190,105 +236,128 @@ export class RoutingRulesPage extends BasePage {
 
     // Set priority if provided - clear first then fill
     if (config.priority !== undefined) {
-      await this.priorityInput.waitFor({ state: 'visible' })
-      await this.priorityInput.clear()
-      await this.priorityInput.fill(String(config.priority))
+      await this.priorityInput.waitFor({ state: "visible" });
+      await this.priorityInput.clear();
+      await this.priorityInput.fill(String(config.priority));
     }
 
     // Set enabled state if explicitly specified
     if (config.enabled !== undefined) {
-      const isChecked = await this.enabledToggle.getAttribute('data-state') === 'checked'
+      const isChecked =
+        (await this.enabledToggle.getAttribute("data-state")) === "checked";
       if (config.enabled && !isChecked) {
-        await this.enabledToggle.click()
+        await this.enabledToggle.click();
       } else if (!config.enabled && isChecked) {
-        await this.enabledToggle.click()
+        await this.enabledToggle.click();
       }
     }
 
     // Add fallbacks if provided
     for (const fallback of config.fallbacks ?? []) {
-      const spec = typeof fallback === 'string'
-        ? { provider: fallback.split('/')[0], model: fallback.split('/').slice(1).join('/') || undefined, key_name: undefined }
-        : fallback
-      const index = await this.addFallbackProvider(spec.provider, spec.model)
+      const spec =
+        typeof fallback === "string"
+          ? {
+              provider: fallback.split("/")[0],
+              model: fallback.split("/").slice(1).join("/") || undefined,
+              key_name: undefined,
+            }
+          : fallback;
+      const index = await this.addFallbackProvider(spec.provider, spec.model);
       if (spec.key_name) {
-        await this.pinFallbackKey(index, spec.key_name)
+        await this.pinFallbackKey(index, spec.key_name);
       }
     }
 
-    await this.fillTTFTTimeout(config.ttftTimeoutMs)
+    await this.fillTTFTTimeout(config.ttftTimeoutMs);
 
     // Save
-    await this.saveBtn.waitFor({ state: 'visible' })
-    await this.saveBtn.click()
+    await this.saveBtn.waitFor({ state: "visible" });
+    await this.saveBtn.click();
 
-    await this.waitForToastAndAssertSuccess('create routing rule')
-    await expect(this.sheet).not.toBeVisible({ timeout: 10000 })
-    await waitForNetworkIdle(this.page)
+    await this.waitForToastAndAssertSuccess("create routing rule");
+    await expect(this.sheet).not.toBeVisible({ timeout: 10000 });
+    await waitForNetworkIdle(this.page);
     // Wait for the new rule to appear in the table (list may refresh async)
-    await this.waitForRuleToAppear(config.name, 10000)
+    await this.waitForRuleToAppear(config.name, 10000);
   }
 
   /**
    * Open the edit sheet for a rule without making any changes or saving.
    */
   async openEditSheet(name: string): Promise<void> {
-    await this.dismissToasts()
-    const row = this.getRuleRow(name)
-    await row.scrollIntoViewIfNeeded()
+    await this.dismissToasts();
+    const row = this.getRuleRow(name);
+    await row.scrollIntoViewIfNeeded();
 
-    await row.getByRole('button', { name: `Actions for routing rule ${name}`, exact: true }).click()
-    await this.page.getByRole('menuitem', { name: 'Edit', exact: true }).click()
+    await row
+      .getByRole("button", {
+        name: `Actions for routing rule ${name}`,
+        exact: true,
+      })
+      .click();
+    await this.page
+      .getByRole("menuitem", { name: "Edit", exact: true })
+      .click();
 
-    await expect(this.sheet).toBeVisible({ timeout: 5000 })
-    await this.waitForSheetAnimation()
+    await expect(this.sheet).toBeVisible({ timeout: 5000 });
+    await this.waitForSheetAnimation();
   }
 
   /**
    * Edit an existing routing rule
    */
-  async editRoutingRule(name: string, updates: Partial<RoutingRuleConfig>): Promise<void> {
-    await this.dismissToasts()
-    const row = this.getRuleRow(name)
-    await row.scrollIntoViewIfNeeded()
+  async editRoutingRule(
+    name: string,
+    updates: Partial<RoutingRuleConfig>,
+  ): Promise<void> {
+    await this.dismissToasts();
+    const row = this.getRuleRow(name);
+    await row.scrollIntoViewIfNeeded();
 
     // Find edit button
-    await row.getByRole('button', { name: `Actions for routing rule ${name}`, exact: true }).click()
-    await this.page.getByRole('menuitem', { name: 'Edit', exact: true }).click()
+    await row
+      .getByRole("button", {
+        name: `Actions for routing rule ${name}`,
+        exact: true,
+      })
+      .click();
+    await this.page
+      .getByRole("menuitem", { name: "Edit", exact: true })
+      .click();
 
-    await expect(this.sheet).toBeVisible({ timeout: 5000 })
-    await this.waitForSheetAnimation()
+    await expect(this.sheet).toBeVisible({ timeout: 5000 });
+    await this.waitForSheetAnimation();
 
     // Update fields
     if (updates.name) {
-      await this.nameInput.waitFor({ state: 'visible' })
-      await this.nameInput.clear()
-      await this.nameInput.fill(updates.name)
+      await this.nameInput.waitFor({ state: "visible" });
+      await this.nameInput.clear();
+      await this.nameInput.fill(updates.name);
     }
 
     if (updates.description !== undefined) {
-      await this.descriptionInput.waitFor({ state: 'visible' })
-      await this.descriptionInput.clear()
+      await this.descriptionInput.waitFor({ state: "visible" });
+      await this.descriptionInput.clear();
       if (updates.description) {
-        await this.descriptionInput.fill(updates.description)
+        await this.descriptionInput.fill(updates.description);
       }
     }
 
     if (updates.priority !== undefined) {
-      await this.priorityInput.waitFor({ state: 'visible' })
-      await this.priorityInput.clear()
-      await this.priorityInput.fill(String(updates.priority))
+      await this.priorityInput.waitFor({ state: "visible" });
+      await this.priorityInput.clear();
+      await this.priorityInput.fill(String(updates.priority));
     }
 
-    await this.fillTTFTTimeout(updates.ttftTimeoutMs)
+    await this.fillTTFTTimeout(updates.ttftTimeoutMs);
 
     // Save
-    await this.saveBtn.waitFor({ state: 'visible' })
-    await this.saveBtn.click()
+    await this.saveBtn.waitFor({ state: "visible" });
+    await this.saveBtn.click();
 
-    await this.waitForToastAndAssertSuccess('edit routing rule')
-    await expect(this.sheet).not.toBeVisible({ timeout: 10000 })
-    await waitForNetworkIdle(this.page)
+    await this.waitForToastAndAssertSuccess("edit routing rule");
+    await expect(this.sheet).not.toBeVisible({ timeout: 10000 });
+    await waitForNetworkIdle(this.page);
   }
 
   /**
@@ -296,12 +365,12 @@ export class RoutingRulesPage extends BasePage {
    */
   async fillTTFTTimeout(ms: number | null | undefined): Promise<void> {
     if (ms === undefined) {
-      return
+      return;
     }
-    await this.ttftTimeoutInput.scrollIntoViewIfNeeded()
-    await this.ttftTimeoutInput.clear()
+    await this.ttftTimeoutInput.scrollIntoViewIfNeeded();
+    await this.ttftTimeoutInput.clear();
     if (ms !== null) {
-      await this.ttftTimeoutInput.fill(String(ms))
+      await this.ttftTimeoutInput.fill(String(ms));
     }
   }
 
@@ -309,42 +378,48 @@ export class RoutingRulesPage extends BasePage {
    * Delete a routing rule
    */
   async deleteRoutingRule(name: string): Promise<void> {
-    await this.dismissToasts()
-    const row = this.getRuleRow(name)
-    await row.scrollIntoViewIfNeeded()
+    await this.dismissToasts();
+    const row = this.getRuleRow(name);
+    await row.scrollIntoViewIfNeeded();
 
-    await row.getByRole('button', { name: `Actions for routing rule ${name}`, exact: true }).click()
-    await this.page.getByRole('menuitem', { name: 'Delete', exact: true }).click()
+    await row
+      .getByRole("button", {
+        name: `Actions for routing rule ${name}`,
+        exact: true,
+      })
+      .click();
+    await this.page
+      .getByRole("menuitem", { name: "Delete", exact: true })
+      .click();
 
     // Wait for confirmation dialog (AlertDialog uses role="alertdialog")
-    const alertDialog = this.page.locator('[role="alertdialog"]')
-    await alertDialog.waitFor({ state: 'visible', timeout: 5000 })
+    const alertDialog = this.page.locator('[role="alertdialog"]');
+    await alertDialog.waitFor({ state: "visible", timeout: 5000 });
 
     // Click confirm delete button inside the dialog
-    const confirmBtn = alertDialog.getByRole('button', { name: /Delete/i })
-    await confirmBtn.waitFor({ state: 'visible' })
-    await confirmBtn.click()
+    const confirmBtn = alertDialog.getByRole("button", { name: /Delete/i });
+    await confirmBtn.waitFor({ state: "visible" });
+    await confirmBtn.click();
 
-    await this.waitForSuccessToast('deleted')
-    await this.dismissToasts()
-    await waitForNetworkIdle(this.page)
+    await this.waitForSuccessToast("deleted");
+    await expect(row).toHaveCount(0);
   }
 
   /**
    * Toggle rule enabled state
    */
   async toggleRuleEnabled(name: string): Promise<void> {
-    await this.dismissToasts() // Dismiss any existing toasts
-    const row = this.getRuleRow(name)
-    await row.scrollIntoViewIfNeeded()
+    await this.dismissToasts(); // Dismiss any existing toasts
+    const row = this.getRuleRow(name);
+    await row.scrollIntoViewIfNeeded();
 
     // Find toggle switch in the row
-    const toggle = row.locator('button[role="switch"]')
-    if (await toggle.count() > 0) {
-      await toggle.waitFor({ state: 'visible' })
-      await toggle.click()
-      await this.waitForSuccessToast()
-      await this.dismissToasts() // Wait for toasts to disappear
+    const toggle = row.locator('button[role="switch"]');
+    if ((await toggle.count()) > 0) {
+      await toggle.waitFor({ state: "visible" });
+      await toggle.click();
+      await this.waitForSuccessToast();
+      await this.dismissToasts(); // Wait for toasts to disappear
     }
   }
 
@@ -353,8 +428,8 @@ export class RoutingRulesPage extends BasePage {
    */
   async cancelRule(): Promise<void> {
     if (await this.sheet.isVisible()) {
-      await this.cancelBtn.click()
-      await expect(this.sheet).not.toBeVisible({ timeout: 5000 })
+      await this.cancelBtn.click();
+      await expect(this.sheet).not.toBeVisible({ timeout: 5000 });
     }
   }
 
@@ -363,28 +438,37 @@ export class RoutingRulesPage extends BasePage {
    * When there are 0 rules, the view shows an empty state (no table in DOM).
    */
   async getRuleCount(): Promise<number> {
-    const emptyVisible = await this.emptyState.isVisible().catch(() => false)
+    // While loading, a skeleton table (same Priority header, 5 placeholder rows) is shown;
+    // the empty state and the search toolbar only render once the list has loaded.
+    await this.emptyState
+      .or(this.page.getByTestId("routing-rules-search-input"))
+      .first()
+      .waitFor({ state: "visible", timeout: 10000 });
+    const emptyVisible = await this.emptyState.isVisible().catch(() => false);
     if (emptyVisible) {
-      return 0
+      return 0;
     }
-    const tableVisible = await this.table.isVisible().catch(() => false)
+    const tableVisible = await this.table.isVisible().catch(() => false);
     if (!tableVisible) {
-      return 0
+      return 0;
     }
-    const rows = this.table.locator('tbody tr')
-    const count = await rows.count()
-    const firstRowText = await rows.first().textContent({ timeout: 5000 }).catch(() => '')
-    if (firstRowText?.includes('No routing rules')) {
-      return 0
+    const rows = this.table.locator("tbody tr");
+    const count = await rows.count();
+    const firstRowText = await rows
+      .first()
+      .textContent({ timeout: 5000 })
+      .catch(() => "");
+    if (firstRowText?.includes("No routing rules")) {
+      return 0;
     }
-    return count
+    return count;
   }
 
   /**
    * Get the rule builder container (the Query builder generic element)
    */
   getRuleBuilder(): Locator {
-    return this.sheet.locator('[aria-label="Query builder"]')
+    return this.sheet.locator('[aria-label="Query builder"]');
   }
 
   /**
@@ -392,80 +476,99 @@ export class RoutingRulesPage extends BasePage {
    */
   async waitForRuleBuilder(): Promise<void> {
     // Wait for the Add Rule button to be visible (indicates builder is loaded)
-    const addRuleBtn = this.sheet.getByRole('button', { name: 'Add Rule', exact: true })
-    await addRuleBtn.waitFor({ state: 'visible', timeout: 10000 })
-    // Give time for React to fully render
-    await this.page.waitForTimeout(500)
+    const addRuleBtn = this.sheet.getByRole("button", {
+      name: "Add Rule",
+      exact: true,
+    });
+    await addRuleBtn.waitFor({ state: "visible", timeout: 10000 });
   }
 
   /**
    * Click the "Add Rule" button in the rule builder
    */
   async clickAddRule(): Promise<void> {
-    await this.waitForRuleBuilder()
-    const addRuleBtn = this.sheet.getByRole('button', { name: 'Add Rule', exact: true })
-    await addRuleBtn.click()
-    await this.page.waitForTimeout(500) // Wait for new rule row to appear
+    await this.waitForRuleBuilder();
+    const addRuleBtn = this.sheet.getByRole("button", {
+      name: "Add Rule",
+      exact: true,
+    });
+    await addRuleBtn.click();
   }
 
   /**
    * Click the "Add Rule Group" button in the rule builder
    */
   async clickAddRuleGroup(): Promise<void> {
-    await this.waitForRuleBuilder()
-    const addGroupBtn = this.sheet.getByRole('button', { name: 'Add Rule Group', exact: true })
-    await addGroupBtn.click()
-    await this.page.waitForTimeout(500) // Wait for new group to appear
+    await this.waitForRuleBuilder();
+    const addGroupBtn = this.sheet.getByRole("button", {
+      name: "Add Rule Group",
+      exact: true,
+    });
+    await addGroupBtn.click();
   }
 
   /**
    * Get all comboboxes for a specific rule row
    * The rule builder has a specific structure where rule rows have remove buttons (⨯)
    */
-  async getRuleRowComboboxes(ruleIndex: number): Promise<{ field: Locator; operator: Locator; value: Locator }> {
-    const ruleBuilder = this.getRuleBuilder()
+  async getRuleRowComboboxes(
+    ruleIndex: number,
+  ): Promise<{ field: Locator; operator: Locator; value: Locator }> {
+    const ruleBuilder = this.getRuleBuilder();
     // Find all rows that have the remove button (⨯) - these are rule rows
-    const ruleRows = ruleBuilder.locator('> div').filter({
-      has: this.page.locator('button').filter({ hasText: '⨯' })
-    })
-    const ruleRow = ruleRows.nth(ruleIndex)
+    const ruleRows = ruleBuilder.locator("> div").filter({
+      has: this.page.locator("button").filter({ hasText: "⨯" }),
+    });
+    const ruleRow = ruleRows.nth(ruleIndex);
 
     // Within the rule row, comboboxes are in order: field, (hidden), operator, (hidden), then value area
     // Get all visible comboboxes in this row
-    const allComboboxes = ruleRow.locator('[role="combobox"]')
+    const allComboboxes = ruleRow.locator('[role="combobox"]');
 
     return {
       field: allComboboxes.first(),
       operator: allComboboxes.nth(2), // Skip the hidden one at index 1
-      value: ruleRow.locator('[role="combobox"]').last() // Value selector is in a nested structure
-    }
+      value: ruleRow.locator('[role="combobox"]').last(), // Value selector is in a nested structure
+    };
   }
 
   /**
    * Select field for a rule (by rule index, 0-based)
    */
   async selectRuleField(ruleIndex: number, fieldName: string): Promise<void> {
-    const { field: fieldSelector } = await this.getRuleRowComboboxes(ruleIndex)
-    await fieldSelector.waitFor({ state: 'visible', timeout: 5000 })
-    await fieldSelector.click()
-    await this.page.waitForTimeout(300)
-    await this.page.getByRole('option', { name: new RegExp(`^${fieldName}$`, 'i') }).first().click({ force: true })
-    await this.page.waitForTimeout(300)
+    const { field: fieldSelector } = await this.getRuleRowComboboxes(ruleIndex);
+    await fieldSelector.waitFor({ state: "visible", timeout: 5000 });
+    await fieldSelector.click();
+    const option = this.page
+      .getByRole("option", { name: new RegExp(`^${fieldName}$`, "i") })
+      .first();
+    await option.waitFor();
+    await option.click({ force: true });
+    await expect(this.page.getByRole("listbox")).toHaveCount(0);
   }
 
   /**
    * Select operator for a rule (by rule index, 0-based)
    * Operator symbols: =, !=, >, <, >=, <=, contains, starts with, ends with, matches regex
    */
-  async selectRuleOperator(ruleIndex: number, operatorName: string): Promise<void> {
-    const { operator: operatorSelector } = await this.getRuleRowComboboxes(ruleIndex)
-    await operatorSelector.waitFor({ state: 'visible', timeout: 5000 })
-    await operatorSelector.click()
-    await this.page.waitForTimeout(300)
+  async selectRuleOperator(
+    ruleIndex: number,
+    operatorName: string,
+  ): Promise<void> {
+    const { operator: operatorSelector } =
+      await this.getRuleRowComboboxes(ruleIndex);
+    await operatorSelector.waitFor({ state: "visible", timeout: 5000 });
+    await operatorSelector.click();
     // Match operator by exact symbol or text
-    const option = this.page.getByRole('option').filter({ hasText: new RegExp(`^${operatorName}$|^${operatorName} `, 'i') }).first()
-    await option.click({ force: true })
-    await this.page.waitForTimeout(300)
+    const option = this.page
+      .getByRole("option")
+      .filter({
+        hasText: new RegExp(`^${operatorName}$|^${operatorName} `, "i"),
+      })
+      .first();
+    await option.waitFor();
+    await option.click({ force: true });
+    await expect(this.page.getByRole("listbox")).toHaveCount(0);
   }
 
   /**
@@ -473,62 +576,78 @@ export class RoutingRulesPage extends BasePage {
    * For Model/Provider fields, this is a searchable dropdown
    */
   async setRuleValue(ruleIndex: number, value: string): Promise<void> {
-    const ruleBuilder = this.getRuleBuilder()
-    const ruleRows = ruleBuilder.locator('> div').filter({
-      has: this.page.locator('button').filter({ hasText: '⨯' })
-    })
-    const ruleRow = ruleRows.nth(ruleIndex)
+    const ruleBuilder = this.getRuleBuilder();
+    const ruleRows = ruleBuilder.locator("> div").filter({
+      has: this.page.locator("button").filter({ hasText: "⨯" }),
+    });
+    const ruleRow = ruleRows.nth(ruleIndex);
 
     // Value input can be either a text input or a searchable combobox
     // Try text input first
-    const textInput = ruleRow.locator('input[type="text"]').first()
+    const textInput = ruleRow.locator('input[type="text"]').first();
     if (await textInput.isVisible().catch(() => false)) {
-      await textInput.fill(value)
-      await this.page.waitForTimeout(200)
-      return
+      await textInput.fill(value);
+      return;
     }
 
     // Otherwise use the value combobox (for Model/Provider fields)
     // It's in a nested structure, look for "Select a model..." or similar text
-    const valueArea = ruleRow.locator('div').filter({ hasText: /Select a/ }).last()
-    const valueSelector = valueArea.locator('[role="combobox"]').first()
+    const valueArea = ruleRow
+      .locator("div")
+      .filter({ hasText: /Select a/ })
+      .last();
+    const valueSelector = valueArea.locator('[role="combobox"]').first();
 
     if (await valueSelector.isVisible().catch(() => false)) {
-      await valueSelector.click()
-      await this.page.waitForTimeout(300)
+      await valueSelector.click();
 
       // Type in the search input
-      const searchInput = this.page.locator('[cmdk-input]').or(
-        this.page.locator('input[placeholder*="Search"]')
-      ).or(
-        this.page.locator('[role="listbox"] input')
-      )
+      const searchInput = this.page
+        .locator("[cmdk-input]")
+        .or(this.page.locator('input[placeholder*="Search"]'))
+        .or(this.page.locator('[role="listbox"] input'));
 
-      if (await searchInput.isVisible().catch(() => false)) {
-        await searchInput.fill(value)
-        await this.page.waitForTimeout(500)
+      if (
+        await searchInput
+          .first()
+          .waitFor({ timeout: 2000 })
+          .then(
+            () => true,
+            () => false,
+          )
+      ) {
+        await searchInput.first().fill(value);
       }
 
       // Try to select matching option
-      const option = this.page.getByRole('option', { name: new RegExp(value, 'i') }).first()
-      if (await option.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await option.click({ force: true })
+      const option = this.page
+        .getByRole("option", { name: new RegExp(value, "i") })
+        .first();
+      if (
+        await option.waitFor({ timeout: 5000 }).then(
+          () => true,
+          () => false,
+        )
+      ) {
+        await option.click({ force: true });
       } else {
         // Press escape and type directly in input if no option found
-        await this.page.keyboard.press('Escape')
+        await this.page.keyboard.press("Escape");
       }
-      await this.page.waitForTimeout(300)
+      await expect(this.page.getByRole("listbox")).toHaveCount(0);
     }
   }
 
   /**
    * Change the combinator (AND/OR) for a rule group
    */
-  async setCombinator(combinator: 'and' | 'or'): Promise<void> {
+  async setCombinator(combinator: "and" | "or"): Promise<void> {
     // AND/OR are toggle buttons - click the one we want to activate
-    const targetBtn = this.sheet.getByRole('button', { name: combinator.toUpperCase(), exact: true })
-    await targetBtn.click()
-    await this.page.waitForTimeout(300)
+    const targetBtn = this.sheet.getByRole("button", {
+      name: combinator.toUpperCase(),
+      exact: true,
+    });
+    await targetBtn.click();
   }
 
   /**
@@ -536,88 +655,91 @@ export class RoutingRulesPage extends BasePage {
    */
   async getCelExpression(): Promise<string> {
     // The CEL preview is in a readonly textarea with label "CEL Expression Preview"
-    const celPreview = this.sheet.locator('textarea').last()
-    await celPreview.waitFor({ state: 'visible', timeout: 5000 })
-    return await celPreview.inputValue()
+    const celPreview = this.sheet.locator("textarea").last();
+    await celPreview.waitFor({ state: "visible", timeout: 5000 });
+    return await celPreview.inputValue();
   }
 
   /**
    * Switch the Conditions editor to raw-CEL mode.
    */
   async switchToCelMode(): Promise<void> {
-    const celTab = this.sheet.getByTestId('cel-builder-mode-cel')
-    await celTab.waitFor({ state: 'visible', timeout: 5000 })
-    await celTab.click()
-    await this.celTextarea.waitFor({ state: 'visible', timeout: 5000 })
+    const celTab = this.sheet.getByTestId("cel-builder-mode-cel");
+    await celTab.waitFor({ state: "visible", timeout: 5000 });
+    await celTab.click();
+    await this.celTextarea.waitFor({ state: "visible", timeout: 5000 });
   }
 
   /**
    * The editable CEL textarea, only present in CEL mode.
    */
   get celTextarea(): Locator {
-    return this.sheet.getByTestId('cel-builder-cel-textarea')
+    return this.sheet.getByTestId("cel-builder-cel-textarea");
   }
 
   /**
    * The inline validation error shown beneath the CEL textarea (e.g. a server-side compile error).
    */
   get celError(): Locator {
-    return this.sheet.getByTestId('cel-builder-cel-error')
+    return this.sheet.getByTestId("cel-builder-cel-error");
   }
 
   /**
    * Whether the Conditions editor is currently in raw-CEL mode.
    */
   async isCelMode(): Promise<boolean> {
-    return await this.celTextarea.isVisible().catch(() => false)
+    return await this.celTextarea.isVisible().catch(() => false);
   }
 
   /**
    * Type a raw CEL expression into the CEL-mode textarea.
    */
   async fillCelExpression(expression: string): Promise<void> {
-    await this.celTextarea.waitFor({ state: 'visible', timeout: 5000 })
-    await this.celTextarea.fill(expression)
+    await this.celTextarea.waitFor({ state: "visible", timeout: 5000 });
+    await this.celTextarea.fill(expression);
   }
 
   /**
    * Read the current CEL-mode textarea value.
    */
   async getCelTextareaValue(): Promise<string> {
-    await this.celTextarea.waitFor({ state: 'visible', timeout: 5000 })
-    return await this.celTextarea.inputValue()
+    await this.celTextarea.waitFor({ state: "visible", timeout: 5000 });
+    return await this.celTextarea.inputValue();
   }
 
   /**
    * Add a complete rule condition (field + operator + value)
    */
   async addRuleCondition(condition: RuleFilterCondition): Promise<void> {
-    await this.clickAddRule()
+    await this.clickAddRule();
 
     // Get the index of the new rule (last one)
-    const ruleBuilder = this.getRuleBuilder()
-    const ruleRows = ruleBuilder.locator('> div').filter({
-      has: this.page.locator('button').filter({ hasText: '⨯' })
-    })
-    const ruleCount = await ruleRows.count()
-    const newRuleIndex = ruleCount - 1
+    const ruleBuilder = this.getRuleBuilder();
+    const ruleRows = ruleBuilder.locator("> div").filter({
+      has: this.page.locator("button").filter({ hasText: "⨯" }),
+    });
+    const ruleCount = await ruleRows.count();
+    const newRuleIndex = ruleCount - 1;
 
     // Select field
-    await this.selectRuleField(newRuleIndex, condition.field)
+    await this.selectRuleField(newRuleIndex, condition.field);
 
     // Select operator (map our operator names to UI labels)
     const operatorMap: Record<string, string> = {
-      'equals': '=',
-      'notEquals': '!=',
-      'contains': 'contains',
-      'startsWith': 'starts with',
-      'endsWith': 'ends with',
-      'regex': 'matches regex'
-    }
-    await this.selectRuleOperator(newRuleIndex, operatorMap[condition.operator] || condition.operator)
+      equals: "=",
+      notEquals: "!=",
+      contains: "contains",
+      startsWith: "starts with",
+      endsWith: "ends with",
+      regex: "matches regex",
+    };
+    await this.selectRuleOperator(
+      newRuleIndex,
+      operatorMap[condition.operator] || condition.operator,
+    );
 
     // Set value
-    await this.setRuleValue(newRuleIndex, condition.value)
+    await this.setRuleValue(newRuleIndex, condition.value);
   }
 
   /**
@@ -625,39 +747,57 @@ export class RoutingRulesPage extends BasePage {
    * Returns the index of the row that was added.
    */
   async addFallbackProvider(provider: string, model?: string): Promise<number> {
-    const existing = await this.sheet.locator('[data-testid^="routing-fallback-"][data-testid$="-provider-select"]').count()
-    const index = existing
+    const existing = await this.sheet
+      .locator(
+        '[data-testid^="routing-fallback-"][data-testid$="-provider-select"]',
+      )
+      .count();
+    const index = existing;
 
-    await this.sheet.getByRole('button', { name: /Add Fallback/i }).click()
+    await this.sheet.getByRole("button", { name: /Add Fallback/i }).click();
 
-    const providerCombo = this.sheet.getByTestId(`routing-fallback-${index}-provider-select`)
-    await providerCombo.waitFor({ state: 'visible', timeout: 5000 })
-    await providerCombo.click()
-    await this.page.waitForSelector('[role="listbox"]', { timeout: 5000 })
-    const option = this.page.getByRole('option', { name: new RegExp(provider, 'i') }).first()
-    await option.scrollIntoViewIfNeeded()
-    await option.click({ force: true })
-    await this.page.waitForSelector('[role="listbox"]', { state: 'hidden', timeout: 5000 }).catch(() => {})
+    const providerCombo = this.sheet.getByTestId(
+      `routing-fallback-${index}-provider-select`,
+    );
+    await providerCombo.waitFor({ state: "visible", timeout: 5000 });
+    await providerCombo.click();
+    await this.page.waitForSelector('[role="listbox"]', { timeout: 5000 });
+    const option = this.page
+      .getByRole("option", { name: new RegExp(provider, "i") })
+      .first();
+    await option.scrollIntoViewIfNeeded();
+    await option.click({ force: true });
+    await this.page
+      .waitForSelector('[role="listbox"]', { state: "hidden", timeout: 5000 })
+      .catch(() => {});
 
     if (model) {
-      const modelSelect = this.sheet.getByTestId(`routing-fallback-${index}-model-select`)
-      await modelSelect.click()
-      await modelSelect.getByRole('combobox').or(modelSelect.locator('input')).first().fill(model)
-      await this.page.keyboard.press('Enter')
+      const modelSelect = this.sheet.getByTestId(
+        `routing-fallback-${index}-model-select`,
+      );
+      await modelSelect.click();
+      await modelSelect
+        .getByRole("combobox")
+        .or(modelSelect.locator("input"))
+        .first()
+        .fill(model);
+      await this.page.keyboard.press("Enter");
     }
 
-    return index
+    return index;
   }
 
   /**
    * The provider currently selected on a fallback row.
    */
   async getFallbackProvider(index: number): Promise<string | null> {
-    const combo = this.sheet.getByTestId(`routing-fallback-${index}-provider-select`)
+    const combo = this.sheet.getByTestId(
+      `routing-fallback-${index}-provider-select`,
+    );
     if (!(await combo.isVisible().catch(() => false))) {
-      return null
+      return null;
     }
-    return (await combo.textContent())?.trim() ?? null
+    return (await combo.textContent())?.trim() ?? null;
   }
 
   /**
@@ -665,139 +805,159 @@ export class RoutingRulesPage extends BasePage {
    * which is what happens when the chosen provider has no keys configured in this environment.
    */
   async pinFallbackKey(index: number, keyName?: string): Promise<boolean> {
-    const keySelect = this.sheet.getByTestId(`routing-fallback-${index}-apikey-select`)
+    const keySelect = this.sheet.getByTestId(
+      `routing-fallback-${index}-apikey-select`,
+    );
     if (!(await keySelect.isVisible().catch(() => false))) {
-      return false
+      return false;
     }
 
-    await keySelect.click()
-    await this.page.waitForSelector('[role="listbox"]', { timeout: 5000 })
+    await keySelect.click();
+    await this.page.waitForSelector('[role="listbox"]', { timeout: 5000 });
     const option = keyName
-      ? this.page.getByRole('option', { name: new RegExp(keyName, 'i') }).first()
-      : this.page.getByRole('option').first()
-    await option.click({ force: true })
-    await this.page.waitForSelector('[role="listbox"]', { state: 'hidden', timeout: 5000 }).catch(() => {})
-    return true
+      ? this.page
+          .getByRole("option", { name: new RegExp(keyName, "i") })
+          .first()
+      : this.page.getByRole("option").first();
+    await option.click({ force: true });
+    await this.page
+      .waitForSelector('[role="listbox"]', { state: "hidden", timeout: 5000 })
+      .catch(() => {});
+    return true;
   }
 
   /**
    * The key currently pinned on a fallback row, or null when the row has no key select.
    */
   async getPinnedFallbackKey(index: number): Promise<string | null> {
-    const keySelect = this.sheet.getByTestId(`routing-fallback-${index}-apikey-select`)
+    const keySelect = this.sheet.getByTestId(
+      `routing-fallback-${index}-apikey-select`,
+    );
     if (!(await keySelect.isVisible().catch(() => false))) {
-      return null
+      return null;
     }
-    return (await keySelect.textContent())?.trim() ?? null
+    return (await keySelect.textContent())?.trim() ?? null;
   }
 
   /**
    * Clear the pinned key on a fallback row, returning it to load-balanced selection.
    */
   async clearFallbackKey(index: number): Promise<void> {
-    await this.sheet.getByTestId(`routing-fallback-${index}-apikey-clear`).click()
+    await this.sheet
+      .getByTestId(`routing-fallback-${index}-apikey-clear`)
+      .click();
   }
 
   /**
    * Duplicate an existing rule
    */
   async duplicateRule(name: string): Promise<string | null> {
-    await this.dismissToasts()
-    const row = this.getRuleRow(name)
-    await row.scrollIntoViewIfNeeded()
+    await this.dismissToasts();
+    const row = this.getRuleRow(name);
+    await row.scrollIntoViewIfNeeded();
 
     // Find duplicate button
-    const duplicateBtn = row.locator('button').filter({
-      has: this.page.locator('svg.lucide-copy')
-    }).or(
-      row.getByRole('button', { name: /Duplicate/i })
-    )
+    const duplicateBtn = row
+      .locator("button")
+      .filter({
+        has: this.page.locator("svg.lucide-copy"),
+      })
+      .or(row.getByRole("button", { name: /Duplicate/i }));
 
-    const isVisible = await duplicateBtn.isVisible().catch(() => false)
+    const isVisible = await duplicateBtn.isVisible().catch(() => false);
     if (!isVisible) {
-      return null
+      return null;
     }
 
-    await duplicateBtn.click()
-    await this.waitForSuccessToast()
+    await duplicateBtn.click();
+    await this.waitForSuccessToast();
 
     // NOTE: Assumes UI appends " (copy)" to duplicated rule names.
     // If this convention changes, update this return value.
-    return `${name} (copy)`
+    return `${name} (copy)`;
   }
 
   /**
    * Reorder rules by drag and drop (if supported)
    * Note: Many UIs use priority field instead of drag-drop
    */
-  async reorderRuleByPriority(name: string, newPriority: number): Promise<void> {
+  async reorderRuleByPriority(
+    name: string,
+    newPriority: number,
+  ): Promise<void> {
     // Edit the rule and change its priority
-    await this.editRoutingRule(name, { priority: newPriority })
+    await this.editRoutingRule(name, { priority: newPriority });
   }
 
   /**
    * Get rule's description from the table (first column contains name + description)
    */
   async getRuleDescription(name: string): Promise<string> {
-    const row = this.getRuleRow(name)
-    const descEl = row.getByTestId('routing-rule-description')
-    const count = await descEl.count()
-    if (count === 0) return ''
-    return (await descEl.textContent()) ?? ''
+    const row = this.getRuleRow(name);
+    const descEl = row.getByTestId("routing-rule-description");
+    const count = await descEl.count();
+    if (count === 0) return "";
+    return (await descEl.textContent()) ?? "";
   }
 
   /**
    * Get rule's current priority
    */
   async getRulePriority(name: string): Promise<number | null> {
-    const row = this.getRuleRow(name)
+    const row = this.getRuleRow(name);
+    // Locate the Priority column by its header so column changes don't shift it.
+    const headers = await this.page.locator("table thead th").allTextContents();
+    const index = headers.findIndex((h) => h.trim() === "Priority");
+    if (index < 0) return null;
 
-    // Table columns: Name(0), Provider(1), Model(2), Scope(3), Priority(4), Expression(5), Status(6), Actions(7)
-    const cells = row.locator('td')
-    const count = await cells.count()
-
-    // Priority is in the 5th column (index 4)
-    if (count > 4) {
-      const text = await cells.nth(4).textContent()
-      const num = parseInt(text || '', 10)
-      if (!isNaN(num) && num > 0) {
-        return num
-      }
-    }
-
-    return null
+    const text = await row.locator("td").nth(index).textContent();
+    const num = parseInt(text || "", 10);
+    return !isNaN(num) && num > 0 ? num : null;
   }
 
   /**
    * Set scope for a rule in the form
    */
-  async setRuleScope(scope: 'global' | 'team' | 'customer' | 'virtual_key', scopeId?: string): Promise<void> {
+  async setRuleScope(
+    scope: "global" | "team" | "customer" | "virtual_key",
+    scopeId?: string,
+  ): Promise<void> {
     // Find scope select
-    const scopeSelect = this.sheet.locator('[role="combobox"]').filter({ hasText: /Scope|Global/i }).first()
+    const scopeSelect = this.sheet
+      .locator('[role="combobox"]')
+      .filter({ hasText: /Scope|Global/i })
+      .first();
 
     if (await scopeSelect.isVisible().catch(() => false)) {
-      await scopeSelect.click()
+      await scopeSelect.click();
 
       // Map scope values to display labels
       const labels: Record<string, string> = {
-        'global': 'Global',
-        'team': 'Team',
-        'customer': 'Customer',
-        'virtual_key': 'Virtual Key'
-      }
+        global: "Global",
+        team: "Team",
+        customer: "Customer",
+        virtual_key: "Virtual Key",
+      };
 
-      await this.page.getByRole('option', { name: labels[scope] }).click({ force: true })
+      await this.page
+        .getByRole("option", { name: labels[scope] })
+        .click({ force: true });
 
       // If not global, fill in the scope ID
-      if (scope !== 'global' && scopeId) {
+      if (scope !== "global" && scopeId) {
         // Wait for scope ID select/input to appear
-        const scopeIdInput = this.sheet.locator('[role="combobox"]').filter({ hasText: /Select/i }).last().or(
-          this.sheet.locator('input[placeholder*="Select" i]').last()
-        )
+        const scopeIdInput = this.sheet
+          .locator('[role="combobox"]')
+          .filter({ hasText: /Select/i })
+          .last()
+          .or(this.sheet.locator('input[placeholder*="Select" i]').last());
 
         if (await scopeIdInput.isVisible().catch(() => false)) {
-          await scopeIdInput.click()
-          await this.page.getByRole('option', { name: new RegExp(scopeId, 'i') }).first().click({ force: true })
+          await scopeIdInput.click();
+          await this.page
+            .getByRole("option", { name: new RegExp(scopeId, "i") })
+            .first()
+            .click({ force: true });
         }
       }
     }
@@ -807,18 +967,18 @@ export class RoutingRulesPage extends BasePage {
    * Get all rule names from the table
    */
   async getAllRuleNames(): Promise<string[]> {
-    const rows = this.table.locator('tbody tr')
-    const count = await rows.count()
-    const names: string[] = []
+    const rows = this.table.locator("tbody tr");
+    const count = await rows.count();
+    const names: string[] = [];
 
     for (let i = 0; i < count; i++) {
-      const firstCell = rows.nth(i).locator('td').first()
-      const name = await firstCell.textContent()
-      if (name && !name.includes('No routing rules')) {
-        names.push(name.trim())
+      const firstCell = rows.nth(i).locator("td").first();
+      const name = await firstCell.textContent();
+      if (name && !name.includes("No routing rules")) {
+        names.push(name.trim());
       }
     }
 
-    return names
+    return names;
   }
 }

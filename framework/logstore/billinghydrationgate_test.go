@@ -40,7 +40,7 @@ func newCountingHybrid(t *testing.T, excludeFields []string) (*HybridLogStore, L
 	)
 	require.NoError(t, err)
 	objStore := &countingObjectStore{InMemoryObjectStore: objectstore.NewInMemoryObjectStore()}
-	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, excludeFields)
+	hybrid := newHybridLogStore(inner, objStore, "test", hybridTestLogger{}, excludeFields, nil)
 	return hybrid, inner, objStore
 }
 

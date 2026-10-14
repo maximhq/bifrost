@@ -204,13 +204,13 @@ func (s *Store) CalculateCostBreakdownForUsage(usage *schemas.BifrostLLMUsage, p
 	}
 
 	// If the provider already computed cost, trust it (matches calculateBaseCost).
-	if usage.Cost != nil && usage.Cost.TotalCost > 0 {
+	if s.providerCostUsable(usage.Cost, provider) {
 		return usage.Cost
 	}
 
 	// Apply the served tier (fast mode / data residency) carried on the usage so
 	// cancelled/failed fast or US-residency streams keep their multiplier.
-	input := costInput{usage: usage}
+	input := costInput{usage: usage, audioSeconds: usage.AudioSeconds}
 	input.tier = tierFromResponse(nil, usage.Speed, usage.InferenceGeo)
 
 	return s.computeCostFromInput(
@@ -327,7 +327,7 @@ func (s *Store) CalculateBatchCostDetailsForUsage(usage *schemas.BifrostLLMUsage
 	// non-nil but zero cost (e.g. a partial cost object on the wire) must fall
 	// through to the catalog rates rather than price the row at zero — matching
 	// CalculateCostForUsage and calculateBaseCost.
-	if usage.Cost != nil && usage.Cost.TotalCost > 0 {
+	if s.providerCostUsable(usage.Cost, provider) {
 		return BatchCostDetails{
 			Cost:             usage.Cost.TotalCost,
 			Priced:           true,
@@ -535,12 +535,12 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		return nil
 	}
 
-	// If provider already computed cost, use it
-	if input.usage != nil && input.usage.Cost != nil && input.usage.Cost.TotalCost > 0 {
+	// If provider already computed cost, use it unless the provider is configured to ignore it
+	if input.usage != nil && s.providerCostUsable(input.usage.Cost, routingInfo.Provider) {
 		return input.usage.Cost
 	}
 	// Image responses carry usage on imageUsage, never on input.usage.
-	if input.imageUsage != nil && input.imageUsage.Cost != nil && input.imageUsage.Cost.TotalCost > 0 {
+	if input.imageUsage != nil && s.providerCostUsable(input.imageUsage.Cost, routingInfo.Provider) {
 		return input.imageUsage.Cost
 	}
 
@@ -789,18 +789,19 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 			// the provider-cost short-circuit in computeCost uses it verbatim; covers task types (3D,
 			// etc.) that have no datasheet rate.
 			input.usage = &schemas.BifrostLLMUsage{Cost: video.Usage.Cost}
-		} else {
-			if video.Seconds != nil {
-				if seconds, err := strconv.Atoi(*video.Seconds); err == nil {
-					input.videoSeconds = &seconds
-				}
-			}
-			// Size and clip count drive the output rate and its multiplier. Neither can
-			// bypass the no-usage guard below on its own: without seconds there is still
-			// nothing to price.
-			input.videoSize = video.Size
-			input.videoCount = len(video.Videos)
 		}
+		// Dimensions are kept even when a provider cost is present, so catalog pricing still
+		// works when that provider's reported cost is ignored.
+		if video.Seconds != nil {
+			if seconds, err := strconv.Atoi(*video.Seconds); err == nil {
+				input.videoSeconds = &seconds
+			}
+		}
+		// Size and clip count drive the output rate and its multiplier. Neither can
+		// bypass the no-usage guard below on its own: without seconds there is still
+		// nothing to price.
+		input.videoSize = video.Size
+		input.videoCount = len(video.Videos)
 
 	case result.OCRResponse != nil:
 		pages := len(result.OCRResponse.Pages)
@@ -1103,6 +1104,8 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 				inputRate = *pricing.InputCostPerTokenAbove200kTokens * batchRatio
 			case promptTokens > TokenTierAbove128K && pricing.InputCostPerTokenAbove128kTokens != nil:
 				inputRate = *pricing.InputCostPerTokenAbove128kTokens * batchRatio
+			case promptTokens > TokenTierAbove100K && pricing.InputCostPerTokenAbove100kTokens != nil:
+				inputRate = *pricing.InputCostPerTokenAbove100kTokens * batchRatio
 			}
 
 			if pricing.CacheReadInputTokenCost != nil {
@@ -1112,6 +1115,8 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 				cacheReadRate = *pricing.CacheReadInputTokenCostAbove272kTokens * batchRatio
 			} else if promptTokens > TokenTierAbove200K && pricing.CacheReadInputTokenCostAbove200kTokens != nil {
 				cacheReadRate = *pricing.CacheReadInputTokenCostAbove200kTokens * batchRatio
+			} else if promptTokens > TokenTierAbove100K && pricing.CacheReadInputTokenCostAbove100kTokens != nil {
+				cacheReadRate = *pricing.CacheReadInputTokenCostAbove100kTokens * batchRatio
 			}
 
 			if pricing.CacheCreationInputTokenCost != nil {
@@ -1121,10 +1126,14 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove272kTokens * batchRatio
 			} else if promptTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
 				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove200kTokens * batchRatio
+			} else if promptTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove100kTokens != nil {
+				cacheWriteRate = *pricing.CacheCreationInputTokenCostAbove100kTokens * batchRatio
 			}
 
 			if promptTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens != nil {
 				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens * batchRatio
+			} else if promptTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens != nil {
+				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens * batchRatio
 			} else if pricing.CacheCreationInputTokenCostAbove1hr != nil {
 				cacheWriteAbove1hrRate = *pricing.CacheCreationInputTokenCostAbove1hr * batchRatio
 			} else {
@@ -1155,6 +1164,8 @@ func computeBatchTextCost(pricing *configstoreTables.TableModelPricing, usage *s
 				outputRate = *pricing.OutputCostPerTokenAbove200kTokens * outputBatchRatio
 			case promptTokens > TokenTierAbove128K && pricing.OutputCostPerTokenAbove128kTokens != nil:
 				outputRate = *pricing.OutputCostPerTokenAbove128kTokens * outputBatchRatio
+			case promptTokens > TokenTierAbove100K && pricing.OutputCostPerTokenAbove100kTokens != nil:
+				outputRate = *pricing.OutputCostPerTokenAbove100kTokens * outputBatchRatio
 			}
 		}
 		outputCost = float64(usage.CompletionTokens) * outputRate
@@ -1243,13 +1254,35 @@ func computeRerankCost(pricing *configstoreTables.TableModelPricing, usage *sche
 // input tokens only, so the output rate is normally zero, but both sides are
 // honored from the datasheet so a provider that later charges output stays
 // correct without a code change.
+//
+// A model served natively on a decisions endpoint carries its own rates on its
+// chat row (input_cost_per_token_decisions / output_cost_per_token_decisions).
+// Each side uses its decision rate when the row has one, flat across the context
+// window, wherever it came from (the datasheet or an override), and the row's
+// normal rate otherwise, which is also what a decision answered through a chat
+// model costs.
+//
+// A negative rate is the datasheet's marker for a model with no fixed price
+// (e.g. openrouter/typesafe/jev-router at -1), so it is left unpriced rather
+// than billed as a negative cost.
 func computeDecisionCost(pricing *configstoreTables.TableModelPricing, usage *schemas.BifrostLLMUsage, tier serviceTier) *schemas.BifrostCost {
 	if usage == nil {
 		return nil
 	}
 	tierTokens := usage.PromptTokens
-	inputCost := float64(usage.PromptTokens) * tieredInputRate(pricing, tierTokens, tier)
-	outputCost := float64(usage.CompletionTokens) * tieredOutputRate(pricing, tierTokens, tier)
+	inputRate := tieredInputRate(pricing, tierTokens, tier)
+	if pricing.InputCostPerTokenDecisions != nil {
+		inputRate = *pricing.InputCostPerTokenDecisions
+	}
+	outputRate := tieredOutputRate(pricing, tierTokens, tier)
+	if pricing.OutputCostPerTokenDecisions != nil {
+		outputRate = *pricing.OutputCostPerTokenDecisions
+	}
+	if inputRate < 0 || outputRate < 0 {
+		return nil
+	}
+	inputCost := float64(usage.PromptTokens) * inputRate
+	outputCost := float64(usage.CompletionTokens) * outputRate
 	return newInputOutputCost(inputCost, outputCost)
 }
 
@@ -1829,6 +1862,9 @@ func tieredInputRate(pricing *configstoreTables.TableModelPricing, totalTokens i
 	if totalTokens > TokenTierAbove128K && pricing.InputCostPerTokenAbove128kTokens != nil {
 		return *pricing.InputCostPerTokenAbove128kTokens
 	}
+	if totalTokens > TokenTierAbove100K && pricing.InputCostPerTokenAbove100kTokens != nil {
+		return *pricing.InputCostPerTokenAbove100kTokens
+	}
 	if tier.isPriority && pricing.InputCostPerTokenPriority != nil {
 		return *pricing.InputCostPerTokenPriority
 	}
@@ -1880,6 +1916,9 @@ func tieredOutputRate(pricing *configstoreTables.TableModelPricing, totalTokens 
 	}
 	if totalTokens > TokenTierAbove128K && pricing.OutputCostPerTokenAbove128kTokens != nil {
 		return *pricing.OutputCostPerTokenAbove128kTokens
+	}
+	if totalTokens > TokenTierAbove100K && pricing.OutputCostPerTokenAbove100kTokens != nil {
+		return *pricing.OutputCostPerTokenAbove100kTokens
 	}
 
 	if tier.isPriority && pricing.OutputCostPerTokenPriority != nil {
@@ -1995,6 +2034,9 @@ func tieredCacheReadInputTokenRate(pricing *configstoreTables.TableModelPricing,
 			return *pricing.CacheReadInputTokenCostAbove200kTokens
 		}
 	}
+	if totalTokens > TokenTierAbove100K && pricing.CacheReadInputTokenCostAbove100kTokens != nil {
+		return *pricing.CacheReadInputTokenCostAbove100kTokens
+	}
 	if tier.isPriority && pricing.CacheReadInputTokenCostPriority != nil {
 		return *pricing.CacheReadInputTokenCostPriority
 	}
@@ -2045,6 +2087,9 @@ func tieredCacheCreationInputTokenRate(pricing *configstoreTables.TableModelPric
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove200kTokens
 	}
+	if totalTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove100kTokens != nil {
+		return *pricing.CacheCreationInputTokenCostAbove100kTokens
+	}
 	if pricing.CacheCreationInputTokenCost != nil {
 		return *pricing.CacheCreationInputTokenCost
 	}
@@ -2059,6 +2104,9 @@ func tieredCacheCreationInputAbove1hrTokenRate(pricing *configstoreTables.TableM
 	}
 	if totalTokens > TokenTierAbove200K && pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens != nil {
 		return *pricing.CacheCreationInputTokenCostAbove1hrAbove200kTokens
+	}
+	if totalTokens > TokenTierAbove100K && pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens != nil {
+		return *pricing.CacheCreationInputTokenCostAbove1hrAbove100kTokens
 	}
 	if pricing.CacheCreationInputTokenCostAbove1hr != nil {
 		return *pricing.CacheCreationInputTokenCostAbove1hr
@@ -2236,8 +2284,9 @@ func (s *Store) resolvePricing(routingInfo schemas.RoutingInfo, requestType sche
 //   - Bedrock: prepends the vendor namespace ("anthropic.", "openai.", "google.", "xai.") inferred from the model family, then falls back to the counterpart chat/responses mode.
 //   - Bedrock Mantle: folded onto the "bedrock" provider up front (datasheet rows for all Bedrock variants are stored there), so it shares every Bedrock fallback.
 //   - All providers: chat and responses requests retry in each other's mode, since a model served over both APIs often has a datasheet row under only one of them.
+//   - All providers: decision requests retry in chat mode, since a decision served natively or by emulation is priced from the model's chat row.
 //   - All providers: for ImageEdit/ImageVariation requests, retries the lookup in image-generation mode.
-//   - All providers: live requests retry in "realtime" mode, where the datasheet feed files GPT Live models.
+//   - All providers: realtime requests prefer "realtime" rows before the responses/chat lookups; live requests retry in "realtime" mode.
 //
 // The method acquires a read lock for the duration of the lookup.
 //
@@ -2263,9 +2312,28 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 		provider = string(schemas.Bedrock)
 	}
 
+	// Realtime voice rates take precedence over responses/chat rates for the
+	// same model. Retain those existing lookups when no realtime row exists.
+	if requestType == schemas.RealtimeRequest {
+		for _, candidate := range []string{model, strings.ToLower(model)} {
+			if pricing, ok := s.pricingData[makeKey(candidate, provider, "realtime")]; ok {
+				return &pricing, true
+			}
+		}
+	}
+
 	pricing, ok := s.pricingData[makeKey(model, provider, mode)]
 	if ok {
 		return &pricing, true
+	}
+
+	// Deployment names are case-sensitive on the wire but the feed does not always
+	// carry every casing, so retry with the lowercase name in the same mode.
+	if lower := strings.ToLower(model); lower != model {
+		pricing, ok = s.pricingData[makeKey(lower, provider, mode)]
+		if ok {
+			return &pricing, true
+		}
 	}
 
 	// Lookup in vertex if gemini not found
@@ -2352,7 +2420,7 @@ func (s *Store) getBasePricing(model, provider string, requestType schemas.Reque
 
 	// The feed files GPT Live models under the Realtime API's mode.
 	if requestType == schemas.LiveRequest {
-		s.logger.Debug("primary lookup failed, trying realtime mode for the same live model")
+		s.logger.Debug("primary lookup failed, trying realtime mode for the same voice model")
 		pricing, ok = s.pricingData[makeKey(model, provider, "realtime")]
 		if ok {
 			return &pricing, true

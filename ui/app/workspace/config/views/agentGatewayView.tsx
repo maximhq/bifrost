@@ -1,6 +1,7 @@
 import FullPageLoader from "@/components/fullPageLoader";
 import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
@@ -29,18 +30,24 @@ export default function AgentGatewayView() {
 
 	const hasChanges = useMemo(() => {
 		if (!config) return false;
-		return !secretVarEquals(localConfig.a2a_external_client_url, config.a2a_external_client_url);
+		return (
+			!secretVarEquals(localConfig.a2a_external_client_url, config.a2a_external_client_url) ||
+			Boolean(localConfig.a2a_store_raw_request_response) !== Boolean(config.a2a_store_raw_request_response)
+		);
 	}, [config, localConfig]);
 
 	const handleExternalURLChange = useCallback(
 		(value: SecretVar) => {
 			draftRevision.current += 1;
-			if (secretVarEquals(value, config?.a2a_external_client_url)) {
+			if (
+				secretVarEquals(value, config?.a2a_external_client_url) &&
+				Boolean(localConfig.a2a_store_raw_request_response) === Boolean(config?.a2a_store_raw_request_response)
+			) {
 				syncedRevision.current = draftRevision.current;
 			}
 			setLocalConfig((prev) => ({ ...prev, a2a_external_client_url: value }));
 		},
-		[config?.a2a_external_client_url],
+		[config?.a2a_external_client_url, config?.a2a_store_raw_request_response, localConfig.a2a_store_raw_request_response],
 	);
 
 	const handleSave = useCallback(async () => {
@@ -55,6 +62,7 @@ export default function AgentGatewayView() {
 				client_config: {
 					...bifrostConfig.client_config,
 					a2a_external_client_url: localConfig.a2a_external_client_url,
+					a2a_store_raw_request_response: Boolean(localConfig.a2a_store_raw_request_response),
 				},
 			}).unwrap();
 			syncedRevision.current = savedRevision;
@@ -94,9 +102,9 @@ export default function AgentGatewayView() {
 						External Client URL
 					</label>
 					<p className="text-muted-foreground text-sm">
-						Bifrost&apos;s public base URL, used for served agent cards and push-notification callback URLs. If left blank, agent cards fall
-						back to the incoming <code className="text-xs">Host</code> header and <b>push notifications are disabled</b>. Supports env var
-						syntax (e.g. <code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
+						Bifrost&apos;s public base URL, used for served agent cards and push-notification callback URLs. If left blank, all agent
+						protocol endpoints are disabled. Agent management remains available. Supports env var syntax (e.g.{" "}
+						<code className="text-xs">env.BIFROST_EXTERNAL_URL</code>).
 					</p>
 					<SecretVarInput
 						id="a2a-external-client-url"
@@ -107,6 +115,33 @@ export default function AgentGatewayView() {
 						disabled={!config || !hasSettingsUpdateAccess}
 					/>
 				</div>
+			</div>
+			<div className="flex items-center justify-between gap-4 rounded-sm border p-4">
+				<div className="space-y-1">
+					<label htmlFor="a2a-raw-capture" className="text-sm font-medium">
+						Capture Raw Request and Response
+					</label>
+					<p className="text-muted-foreground text-sm">
+						Persist raw request and response payloads in log records. Raw capture is disabled for gRPC because it uses binary protobuf
+						messages; a size-limited capture can cut through a message and cannot be reliably decoded or inspected.
+					</p>
+				</div>
+				<Switch
+					id="a2a-raw-capture"
+					data-testid="a2a-raw-capture-switch"
+					checked={Boolean(localConfig.a2a_store_raw_request_response)}
+					disabled={!config || !hasSettingsUpdateAccess}
+					onCheckedChange={(checked) => {
+						draftRevision.current += 1;
+						if (
+							checked === Boolean(config?.a2a_store_raw_request_response) &&
+							secretVarEquals(localConfig.a2a_external_client_url, config?.a2a_external_client_url)
+						) {
+							syncedRevision.current = draftRevision.current;
+						}
+						setLocalConfig((prev) => ({ ...prev, a2a_store_raw_request_response: checked }));
+					}}
+				/>
 			</div>
 			<div className="flex justify-end pt-2">
 				<Button

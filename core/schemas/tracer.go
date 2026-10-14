@@ -49,8 +49,12 @@ type Tracer interface {
 
 	// EndTrace completes a trace and returns the trace data for observation/export.
 	// After this call, the trace is removed from active tracking and returned for cleanup.
+	// The caller must pass a non-nil returned trace to ReleaseTrace after use.
 	// Returns nil if trace not found.
 	EndTrace(traceID string) *Trace
+
+	// ReleaseTrace returns a completed trace and its spans to their pools.
+	ReleaseTrace(trace *Trace)
 
 	// StartSpan creates a new span as a child of the current span in context.
 	// Returns updated context with new span and a handle for the span.
@@ -136,6 +140,10 @@ type Tracer interface {
 	// This should be called after the streaming request is complete.
 	CleanupStreamAccumulator(traceID string)
 
+	// ResetStreamAccumulator drops the chunks accumulated for the given trace ID so a
+	// retried stream attempt starts clean.
+	ResetStreamAccumulator(traceID string)
+
 	// ProcessStreamingChunk processes a streaming chunk and accumulates it.
 	// Returns the accumulated result. IsFinal will be true when the stream is complete.
 	// This method is used by plugins to access accumulated streaming data.
@@ -218,6 +226,9 @@ func (n *NoOpTracer) CreateTrace(_ string, _ ...string) string { return "" }
 // EndTrace returns nil (no trace to end).
 func (n *NoOpTracer) EndTrace(_ string) *Trace { return nil }
 
+// ReleaseTrace does nothing because NoOpTracer never creates traces.
+func (n *NoOpTracer) ReleaseTrace(_ *Trace) {}
+
 // StartSpan returns the context unchanged and a nil handle.
 func (n *NoOpTracer) StartSpan(ctx context.Context, _ string, _ SpanKind) (context.Context, SpanHandle) {
 	return ctx, nil
@@ -281,6 +292,9 @@ func (n *NoOpTracer) CreateStreamAccumulator(_ string, _ time.Time) {}
 
 // CleanupStreamAccumulator does nothing.
 func (n *NoOpTracer) CleanupStreamAccumulator(_ string) {}
+
+// ResetStreamAccumulator does nothing.
+func (n *NoOpTracer) ResetStreamAccumulator(_ string) {}
 
 // ProcessStreamingChunk returns nil.
 func (n *NoOpTracer) ProcessStreamingChunk(_ *BifrostContext, _ string, _ bool, _ *BifrostResponse, _ *BifrostError) *StreamAccumulatorResult {

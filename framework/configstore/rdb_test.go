@@ -528,6 +528,93 @@ func TestLatestCreatedSkillVersionUsesCreationOrder(t *testing.T) {
 	assert.Equal(t, "1.0.2-1", skill.HighestVersion)
 }
 
+func setupSkillTestStore(t *testing.T) *RDBConfigStore {
+	store := setupRDBTestStore(t)
+	err := store.DB().AutoMigrate(
+		&tables.TableSkill{},
+		&tables.TableSkillVersion{},
+		&tables.TableSkillFile{},
+		&tables.TableSkillFileBlob{},
+	)
+	require.NoError(t, err)
+	return store
+}
+
+func skillURLFile(path string) tables.TableSkillFile {
+	sourceURL := "https://example.com/" + path
+	return tables.TableSkillFile{Path: path, SourceType: tables.SkillSourceTypeURL, SourceURL: &sourceURL}
+}
+
+// The config-driven skills registry passes a freshly built skill whose
+// LatestVersion is empty, so serving the new version must not depend on it.
+func TestUpdateSkillServesNewVersionWhenLatestVersionIsUnset(t *testing.T) {
+	store := setupSkillTestStore(t)
+	ctx := context.Background()
+
+	created := &tables.TableSkill{
+		Name:        "config-update",
+		Description: "first",
+		SkillMDBody: "body 1",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v1.md")},
+	}
+	require.NoError(t, store.CreateSkill(ctx, created, "1.0.0", nil))
+
+	updated := &tables.TableSkill{
+		ID:          created.ID,
+		Name:        created.Name,
+		Description: "second",
+		SkillMDBody: "body 2",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v2.md")},
+	}
+	require.NoError(t, store.UpdateSkill(ctx, updated, "1.1.0", true, nil))
+
+	assert.Equal(t, "1.1.0", updated.LatestVersion)
+	require.Len(t, updated.Files, 1)
+	assert.Equal(t, "references/v2.md", updated.Files[0].Path)
+
+	skill, err := store.GetSkill(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "1.1.0", skill.LatestVersion)
+	assert.Equal(t, "body 2", skill.SkillMDBody)
+	require.Len(t, skill.Files, 1)
+	assert.Equal(t, "references/v2.md", skill.Files[0].Path)
+}
+
+func TestUpdateSkillWithoutServeKeepsServingVersion(t *testing.T) {
+	store := setupSkillTestStore(t)
+	ctx := context.Background()
+
+	created := &tables.TableSkill{
+		Name:        "config-draft",
+		Description: "first",
+		SkillMDBody: "body 1",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v1.md")},
+	}
+	require.NoError(t, store.CreateSkill(ctx, created, "1.0.0", nil))
+
+	updated := &tables.TableSkill{
+		ID:          created.ID,
+		Name:        created.Name,
+		Description: "second",
+		SkillMDBody: "body 2",
+		Files:       []tables.TableSkillFile{skillURLFile("references/v2.md")},
+	}
+	require.NoError(t, store.UpdateSkill(ctx, updated, "1.1.0", false, nil))
+
+	assert.Equal(t, "1.0.0", updated.LatestVersion)
+	require.Len(t, updated.Files, 1)
+	assert.Equal(t, "references/v1.md", updated.Files[0].Path)
+
+	skill, err := store.GetSkill(ctx, created.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "1.0.0", skill.LatestVersion)
+	assert.Equal(t, "body 1", skill.SkillMDBody)
+
+	version, err := store.GetSkillVersion(ctx, created.ID, "1.1.0")
+	require.NoError(t, err)
+	assert.Equal(t, "body 2", version.SkillMDBody)
+}
+
 // =============================================================================
 // Provider and Key Tests
 // =============================================================================
@@ -2547,6 +2634,70 @@ func TestUpdateClientConfig_VKRotationCooldownRoundTrip(t *testing.T) {
 	assert.Equal(t, 5*time.Minute, result.VKRotationCooldown.D())
 }
 
+func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// config.json without the field enforces ownership.
+	var fromJSON ClientConfig
+	require.NoError(t, json.Unmarshal([]byte(`{"initial_pool_size":100}`), &fromJSON))
+	assert.True(t, fromJSON.EnforceVKObjectOwnership, "an omitted field keeps ownership enforced")
+	require.NoError(t, json.Unmarshal([]byte(`{"enforce_vk_object_ownership":false}`), &fromJSON))
+	assert.False(t, fromJSON.EnforceVKObjectOwnership, "an explicit false turns it off")
+
+	on := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &on))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.EnforceVKObjectOwnership)
+
+	// The column defaults to true, so the write must force an explicit false through.
+	off := on
+	off.EnforceVKObjectOwnership = false
+	require.NoError(t, store.UpdateClientConfig(ctx, &off))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.EnforceVKObjectOwnership, "an explicit false survives the delete-and-create write")
+
+	// Only the opt-out is hashed, so configs written before the field existed keep their hash.
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash)
+}
+
+func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	// Unset reads back as the column default, so existing installs keep extra_fields in the body.
+	base := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &base))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, tables.ExtraFieldsPlacementBody, result.ExtraFieldsPlacement)
+
+	headers := base
+	headers.ExtraFieldsPlacement = tables.ExtraFieldsPlacementHeaders
+	require.NoError(t, store.UpdateClientConfig(ctx, &headers))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, tables.ExtraFieldsPlacementHeaders, result.ExtraFieldsPlacement)
+
+	// Only the non-default value is hashed, so configs written before the field existed keep their hash.
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+	body := base
+	body.ExtraFieldsPlacement = tables.ExtraFieldsPlacementBody
+	bodyHash, err := body.GenerateClientConfigHash()
+	require.NoError(t, err)
+	headersHash, err := headers.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.Equal(t, baseHash, bodyHash)
+	assert.NotEqual(t, baseHash, headersHash)
+}
+
 func TestUpdateClientConfig_MCPCodeModeLimitsRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
@@ -2598,6 +2749,34 @@ func TestGenerateClientConfigHash_MCPCodeModeLimits(t *testing.T) {
 	withLimits, err := cc.GenerateClientConfigHashWithToolManager(&schemas.MCPToolManagerConfig{MaxAgentDepth: 10, CodeModeLimits: &schemas.MCPCodeModeLimits{MaxToolCalls: 5}})
 	require.NoError(t, err)
 	assert.NotEqual(t, withoutLimits, withLimits, "tool_manager_config.code_mode_limits must take part in the file hash")
+}
+
+func TestGenerateClientConfigHash_OAuth2ServerConfigPolicyFields(t *testing.T) {
+	hash := func(oc *tables.OAuth2ServerConfig) string {
+		h, err := (&ClientConfig{InitialPoolSize: 100, MCPServerAuthMode: tables.MCPServerAuthModeBoth, OAuth2ServerConfig: oc}).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	base := func() *tables.OAuth2ServerConfig {
+		return &tables.OAuth2ServerConfig{IssuerURL: schemas.NewSecretVar("https://issuer.example.com"), AuthCodeTTL: 300, AccessTokenTTL: 600}
+	}
+	baseHash := hash(base())
+
+	empty := base()
+	empty.AllowedRedirectURIs = []string{}
+	assert.Equal(t, baseHash, hash(empty), "an empty redirect list must not change existing hashes")
+
+	withRedirect := base()
+	withRedirect.AllowedRedirectURIs = []string{"https://www.cursor.com/agents/mcp/oauth/callback"}
+	assert.NotEqual(t, baseHash, hash(withRedirect), "adding allowed_redirect_uris must change the hash")
+
+	otherRedirect := base()
+	otherRedirect.AllowedRedirectURIs = []string{"https://app.example.com/callback"}
+	assert.NotEqual(t, hash(withRedirect), hash(otherRedirect), "changing allowed_redirect_uris must change the hash")
+
+	disabledVK := base()
+	disabledVK.DisableVKIdentity = true
+	assert.NotEqual(t, baseHash, hash(disabledVK), "setting disable_vk_identity must change the hash")
 }
 
 func TestUpdateClientConfig_CompatAzureDeepseekRoundTrip(t *testing.T) {
@@ -2684,12 +2863,12 @@ func TestGenerateClientConfigHash_A2AExternalClientURL(t *testing.T) {
 	baseHash, err := base.GenerateClientConfigHash()
 	require.NoError(t, err)
 
-	// An unset A2A external client URL must not change the hash: existing
-	// deployments see no config drift after upgrade.
+	// Explicit clearing must change the hash so file reconciliation disables
+	// an A2A URL previously configured through the dashboard.
 	unset := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, A2AExternalClientURL: schemas.NewSecretVar("")}
 	unsetHash, err := unset.GenerateClientConfigHash()
 	require.NoError(t, err)
-	assert.Equal(t, baseHash, unsetHash)
+	assert.NotEqual(t, baseHash, unsetHash)
 
 	// A configured URL is a meaningful config change.
 	withURL := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, A2AExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com")}
@@ -3732,6 +3911,43 @@ func TestUpsertModelPricesBatch_TimeOfDayColumns_SurviveResync(t *testing.T) {
 	assert.Equal(t, []int{1, 2, 3, 4, 5}, row.PeakHours.Windows[0].Days)
 	assert.Equal(t, "02:00", row.PeakHours.Windows[0].Start)
 	assert.Equal(t, "05:00", row.PeakHours.Windows[0].End)
+}
+
+// TestUpsertModelPricesBatch_DecisionRateColumns_SurviveResync is the same
+// pricingSyncUpdateColumns regression for the decision rate columns: both
+// values change on the second upsert so a column missing from the list fails
+// here instead of keeping its first value.
+func TestUpsertModelPricesBatch_DecisionRateColumns_SurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	cost := func(f float64) *float64 { return &f }
+
+	pricing := []tables.TableModelPricing{{
+		Model:                       "gpt-6-luna",
+		Provider:                    "openai",
+		Mode:                        "chat",
+		InputCostPerToken:           cost(0.000002),
+		OutputCostPerToken:          cost(0.000008),
+		InputCostPerTokenDecisions:  cost(0.0000001),
+		OutputCostPerTokenDecisions: cost(0.0000003),
+	}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	pricing[0].InputCostPerTokenDecisions = cost(0.0000002)
+	pricing[0].OutputCostPerTokenDecisions = cost(0.0000004)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+
+	row := got[0]
+	require.NotNil(t, row.InputCostPerTokenDecisions, "input_cost_per_token_decisions missing from pricingSyncUpdateColumns")
+	require.NotNil(t, row.OutputCostPerTokenDecisions, "output_cost_per_token_decisions missing from pricingSyncUpdateColumns")
+	assert.InDelta(t, 0.0000002, *row.InputCostPerTokenDecisions, 1e-12)
+	assert.InDelta(t, 0.0000004, *row.OutputCostPerTokenDecisions, 1e-12)
 }
 
 func TestUpsertModelParametersBatch_SQLite(t *testing.T) {
@@ -4785,6 +5001,45 @@ func TestRDBConfigStore_RoutingRuleCreatedAtSurvivesUpdate(t *testing.T) {
 	})
 }
 
+// TestRDBConfigStore_RoutingRuleDuplicatePriority pins the conflict two rules sharing a priority in
+// one scope raise on create and update: it is ErrAlreadyExists, so the API answers 409 rather than
+// 500, and its message names the scope ID rather than the address of the pointer that holds it.
+func TestRDBConfigStore_RoutingRuleDuplicatePriority(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+	scoped := func(id string, priority int, scopeID string) *tables.TableRoutingRule {
+		rule := routingRuleFixture(id, priority, "openai")
+		rule.Scope = "virtual_key"
+		rule.ScopeID = &scopeID
+		return rule
+	}
+
+	require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("global-a", 5, "openai")))
+	err := store.CreateRoutingRule(ctx, routingRuleFixture("global-b", 5, "openai"))
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	require.ErrorIs(t, err, ErrRoutingRulePriorityTaken, "a priority conflict is told apart from other conflicts")
+	require.Contains(t, err.Error(), "priority 5")
+	require.Contains(t, err.Error(), "scope 'global'")
+
+	require.NoError(t, store.CreateRoutingRule(ctx, scoped("vk-a", 7, "vk-1")))
+	err = store.CreateRoutingRule(ctx, scoped("vk-b", 7, "vk-1"))
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	require.Contains(t, err.Error(), "'vk-1'")
+	require.NotContains(t, err.Error(), "0x", "the scope ID must be printed, not its pointer")
+
+	// The same priority in another scope, or under another scope ID, is no conflict.
+	require.NoError(t, store.CreateRoutingRule(ctx, scoped("vk-c", 5, "vk-1")))
+	require.NoError(t, store.CreateRoutingRule(ctx, scoped("vk-d", 7, "vk-2")))
+
+	require.NoError(t, store.CreateRoutingRule(ctx, routingRuleFixture("global-c", 8, "openai")))
+	err = store.UpdateRoutingRule(ctx, routingRuleFixture("global-c", 5, "openai"))
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	err = store.UpdateRoutingRule(ctx, scoped("vk-d", 7, "vk-1"))
+	require.ErrorIs(t, err, ErrAlreadyExists)
+	require.Contains(t, err.Error(), "'vk-1'")
+	require.NotContains(t, err.Error(), "0x", "the scope ID must be printed, not its pointer")
+}
+
 // TestRDBConfigStore_RoutingTargetTTFTTimeoutRoundTrip pins a target's
 // ttft_timeout_ms through create, read, update and clearing it back to nil.
 func TestRDBConfigStore_RoutingTargetTTFTTimeoutRoundTrip(t *testing.T) {
@@ -5196,4 +5451,205 @@ func TestUpsertModelPricesBatch_PriorityAbove272kCacheCreation_SurvivesResync(t 
 	require.Len(t, got, 1)
 	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove272kTokensPriority)
 	assert.InDelta(t, 0.00006, *got[0].CacheCreationInputTokenCostAbove272kTokensPriority, 1e-12)
+}
+
+// TestUpsertModelPricesBatch_Above100kColumns_SurviveResync guards the
+// pricingSyncUpdateColumns entries for the >100k tier columns.
+func TestUpsertModelPricesBatch_Above100kColumns_SurviveResync(t *testing.T) {
+	s := setupRDBTestStore(t)
+	require.NoError(t, s.DB().AutoMigrate(&tables.TableModelPricing{}))
+
+	ctx := context.Background()
+	pricing := []tables.TableModelPricing{{
+		Model: "claude-haiku-5-5", Provider: "anthropic", Mode: "chat",
+		InputCostPerToken:                                  new(1e-07),
+		InputCostPerTokenAbove100kTokens:                   new(4e-07),
+		OutputCostPerTokenAbove100kTokens:                  new(2e-06),
+		CacheCreationInputTokenCostAbove100kTokens:         new(5e-07),
+		CacheReadInputTokenCostAbove100kTokens:             new(4e-08),
+		CacheCreationInputTokenCostAbove1hrAbove100kTokens: new(8e-07),
+	}}
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	pricing[0].InputCostPerTokenAbove100kTokens = new(5e-07)
+	pricing[0].OutputCostPerTokenAbove100kTokens = new(2.5e-06)
+	pricing[0].CacheCreationInputTokenCostAbove100kTokens = new(6.25e-07)
+	pricing[0].CacheReadInputTokenCostAbove100kTokens = new(5e-08)
+	pricing[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens = new(1e-06)
+	require.NoError(t, s.UpsertModelPricesBatch(ctx, pricing))
+
+	got, err := s.GetModelPrices(ctx)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NotNil(t, got[0].InputCostPerTokenAbove100kTokens)
+	assert.InDelta(t, 5e-07, *got[0].InputCostPerTokenAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].OutputCostPerTokenAbove100kTokens)
+	assert.InDelta(t, 2.5e-06, *got[0].OutputCostPerTokenAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove100kTokens)
+	assert.InDelta(t, 6.25e-07, *got[0].CacheCreationInputTokenCostAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheReadInputTokenCostAbove100kTokens)
+	assert.InDelta(t, 5e-08, *got[0].CacheReadInputTokenCostAbove100kTokens, 1e-15)
+	require.NotNil(t, got[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens)
+	assert.InDelta(t, 1e-06, *got[0].CacheCreationInputTokenCostAbove1hrAbove100kTokens, 1e-15)
+}
+
+// TestProviderInjectedToolsRoundTrip pins injected_tools through every provider write
+// path (bulk upsert, add, update) and both read paths, including clearing it.
+func TestProviderInjectedToolsRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	webSearch := []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
+		{Name: "read_page", MCPClientName: "fetcher", ToolName: "fetch"},
+	}
+
+	require.NoError(t, store.UpdateProvidersConfig(ctx, map[schemas.ModelProvider]ProviderConfig{
+		schemas.OpenAI: {InjectedTools: webSearch},
+	}))
+	all, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, webSearch, all[schemas.OpenAI].InjectedTools)
+
+	require.NoError(t, store.AddProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: webSearch}))
+	got, err := store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Equal(t, webSearch, got.InjectedTools)
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Nil(t, got.InjectedTools, "updating with a nil block must clear the stored column")
+
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: webSearch}))
+	require.NoError(t, store.UpdateProvider(ctx, schemas.Anthropic, ProviderConfig{InjectedTools: []schemas.InjectedTool{}}))
+	got, err = store.GetProviderConfig(ctx, schemas.Anthropic)
+	require.NoError(t, err)
+	assert.Empty(t, got.InjectedTools, "an empty list clears the stored column too")
+}
+
+func TestUpdateClientConfig_CompatConvertDecisionToResponsesRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	base := func(enabled bool) *ClientConfig {
+		return &ClientConfig{
+			EnableLogging:        new(true),
+			InitialPoolSize:      100,
+			LogRetentionDays:     30,
+			MaxRequestBodySizeMB: 50,
+			Compat:               CompatConfig{ConvertDecisionToResponses: enabled},
+		}
+	}
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(true)))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.Compat.ConvertDecisionToResponses, "enabling the toggle must persist")
+
+	require.NoError(t, store.UpdateClientConfig(ctx, base(false)))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.Compat.ConvertDecisionToResponses, "disabling the toggle must persist")
+}
+
+func TestGenerateClientConfigHash_CompatConvertDecisionToResponses(t *testing.T) {
+	on := &ClientConfig{InitialPoolSize: 100, Compat: CompatConfig{ConvertDecisionToResponses: true}}
+	off := &ClientConfig{InitialPoolSize: 100}
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, onHash, offHash, "toggling convert_decision_to_responses must change the hash")
+}
+
+// TestClientConfigUnmarshal_CompatConvertDecisionToResponsesDefaultsOff pins that,
+// unlike the other compat toggles, decision emulation stays off when config.json
+// omits it - both when compat is absent and when it is present without the field.
+func TestClientConfigUnmarshal_CompatConvertDecisionToResponsesDefaultsOff(t *testing.T) {
+	for name, raw := range map[string]string{
+		"compat absent":      `{}`,
+		"field absent":       `{"compat": {"convert_text_to_chat": true}}`,
+		"explicitly enabled": `{"compat": {"convert_decision_to_responses": true}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var c ClientConfig
+			require.NoError(t, json.Unmarshal([]byte(raw), &c))
+			assert.Equal(t, name == "explicitly enabled", c.Compat.ConvertDecisionToResponses)
+		})
+	}
+}
+
+// TestA2ARawCaptureConfigRoundTrip verifies persistence and hash parity for raw capture.
+func TestA2ARawCaptureConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	config := &ClientConfig{}
+	require.NoError(t, store.UpdateClientConfig(ctx, config))
+	config, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	config.A2AStoreRawRequestResponse = true
+	require.NoError(t, store.UpdateClientConfig(ctx, config))
+	found, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.True(t, found.A2AStoreRawRequestResponse)
+	want, err := config.GenerateClientConfigHash()
+	require.NoError(t, err)
+	got, err := found.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.Equal(t, want, got)
+	config.A2AStoreRawRequestResponse = false
+	other, err := config.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.NotEqual(t, want, other)
+}
+
+// TestGenerateClientConfigHash_SkillsExternalClientURL keeps unset hashes stable and distinguishes configured URLs.
+func TestGenerateClientConfigHash_SkillsExternalClientURL(t *testing.T) {
+	base := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30}
+	baseHash, err := base.GenerateClientConfigHash()
+	require.NoError(t, err)
+
+	// An explicit empty URL must differ from omission so file reconciliation
+	// can disable a URL previously configured through the dashboard or migration.
+	unset := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, SkillsExternalClientURL: schemas.NewSecretVar("")}
+	unsetHash, err := unset.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, unsetHash)
+
+	// A configured URL is a meaningful config change.
+	withURL := &ClientConfig{InitialPoolSize: 100, LogRetentionDays: 30, SkillsExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com")}
+	urlHash, err := withURL.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, baseHash, urlHash)
+	t.Setenv("BIFROST_SKILLS_URL_TEST", "https://skills.example")
+	store := setupRDBTestStore(t)
+	require.NoError(t, store.UpdateClientConfig(context.Background(), base))
+	withEnv, err := store.GetClientConfig(context.Background())
+	require.NoError(t, err)
+	withEnv.SkillsExternalClientURL = schemas.NewSecretVar("env.BIFROST_SKILLS_URL_TEST")
+	require.NoError(t, store.UpdateClientConfig(context.Background(), withEnv))
+	stored, err := store.GetClientConfig(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "env.BIFROST_SKILLS_URL_TEST", stored.SkillsExternalClientURL.GetRawRef())
+	require.Equal(t, "https://skills.example", stored.SkillsExternalClientURL.GetValue())
+	wantHash, err := withEnv.GenerateClientConfigHash()
+	require.NoError(t, err)
+	gotHash, err := stored.GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.Equal(t, wantHash, gotHash)
+	redacted := stored.Redacted()
+	require.NotEqual(t, "https://skills.example", redacted.SkillsExternalClientURL.GetValue())
+	require.Equal(t, "env.BIFROST_SKILLS_URL_TEST", redacted.SkillsExternalClientURL.GetRawRef())
+}
+
+// TestValidatePublicBaseURL permits public base paths and rejects credential-bearing components without echoing input.
+func TestValidatePublicBaseURL(t *testing.T) {
+	for _, value := range []string{"", "https://skills.example/path", "http://localhost:8080", "https://example.com/path%23section", "http://[::1]:8080"} {
+		require.NoError(t, ValidatePublicBaseURL(value))
+	}
+	for _, value := range []string{"https://user:password@example.com", "https://example.com?token=private", "https://example.com?", "https://example.com#private", "ftp://example.com", "not a URL", "https://:8080", "https://example.com#"} {
+		err := ValidatePublicBaseURL(value)
+		require.Error(t, err, value)
+		require.NotContains(t, err.Error(), value)
+	}
 }

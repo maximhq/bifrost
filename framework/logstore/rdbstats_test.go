@@ -276,8 +276,8 @@ func TestAgentLogLatencyBreakdownRoundTrip(t *testing.T) {
 	now := time.Now().UTC()
 	upstream, overheadTotal, latency := 10.0, 5.0, 15.0
 	breakdown := []OverheadBucket{
-		{Name: "plugin.logging", Kind: "plugin", DurationUs: 2000},
-		{Name: "scheduling", Kind: "scheduling", DurationUs: 3000},
+		{Name: "plugin.logging", DurationUs: 2000},
+		{Name: "scheduling", DurationUs: 3000},
 	}
 	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{{
 		ID: "latency-row", Timestamp: now, RecordKind: "request", Operation: "message/send", Status: "success",
@@ -490,10 +490,19 @@ func TestA2AAttributionFiltersApplyToRowsStatsAndHistogram(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&AgentLog{}))
 	store := &RDBLogStore{db: db, logger: bifrost.NewDefaultLogger(schemas.LogLevelInfo)}
+	assertA2AAttributionFilters(t, store, store.BatchCreateAgentLogsIfNotExists)
+}
+
+// assertA2AAttributionFilters pins every attribution filter on agent logs,
+// including ids held only in the team, customer and business-unit arrays.
+// create is the store's own writer, since ClickHouse writes agent logs its own
+// way.
+func assertA2AAttributionFilters(t *testing.T, store *RDBLogStore, create func(context.Context, []*AgentLog) ([]string, error)) {
+	t.Helper()
 	ctx := context.Background()
-	now := time.Now().UTC()
+	now := time.Now().UTC().Truncate(time.Millisecond)
 	a, b := "a", "b"
-	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{
+	require.NoError(t, agentLogsCreateError(create(ctx, []*AgentLog{
 		{
 			ID: "a", Timestamp: now, RecordKind: "request", Operation: "message/send", Status: "success", AgentName: "fixture", RequestID: "request-a",
 			UserID: &a, VirtualKeyID: &a, TeamID: &a, CustomerID: &a, BusinessUnitID: &a, ProjectID: &a,
@@ -515,6 +524,11 @@ func TestA2AAttributionFiltersApplyToRowsStatsAndHistogram(t *testing.T) {
 		{CustomerID: []string{"customer-shared"}},
 		{BusinessUnitID: []string{a}},
 		{BusinessUnitID: []string{"bu-shared"}},
+		// Two ids, one matching: ClickHouse bound a list inside hasAny's
+		// brackets as one tuple, so these failed there.
+		{TeamID: []string{"team-shared", "team-none"}},
+		{CustomerID: []string{"customer-shared", "customer-none"}},
+		{BusinessUnitID: []string{"bu-shared", "bu-none"}},
 		{ProjectID: []string{a}},
 	}
 	for _, filter := range filters {

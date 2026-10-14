@@ -82,7 +82,8 @@ _clean_build_dir:
 
 build: _clean_build_dir ## Build the plugin (supports: make build GOOS=linux GOARCH=amd64)
 	@mkdir -p $(OUTPUT_DIR)
-	@TARGET_OS="$(GOOS)"; \
+	@set -e; \
+	TARGET_OS="$(GOOS)"; \
 	TARGET_ARCH="$(GOARCH)"; \
 	ACTUAL_OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
 	ACTUAL_ARCH=$$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/arm64/arm64/'); \

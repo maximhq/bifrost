@@ -24,13 +24,13 @@ export function AttributionCell({ names, name, ids, id }: { names?: string[]; na
 	const remaining = values.length - visible.length;
 
 	return (
-		<div className="flex max-w-[180px] flex-col gap-0.5 font-mono text-xs leading-tight" title={values.join("\n")}>
+		<div className="flex max-w-[180px] flex-col font-mono text-xs leading-tight" title={values.join("\n")}>
 			{visible.map((value, index) => (
 				<span key={index} className="truncate">
 					{value}
 				</span>
 			))}
-			{remaining > 0 && <span className="text-muted-foreground">+{remaining} more</span>}
+			{remaining > 0 && <span className="text-muted-foreground font-sans text-[10.5px]">+{remaining} more</span>}
 		</div>
 	);
 }

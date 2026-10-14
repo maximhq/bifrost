@@ -15,7 +15,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/oauth2"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -305,6 +305,8 @@ type OAuthInitiationRequest struct {
 	Scopes          []string           `json:"scopes"`
 	ServerURL       string             `json:"server_url"` // For OAuth discovery
 	Resource        string             `json:"resource"`   // OAuth resource indicator (RFC 8707)
+
+	RequirePublicTarget bool `json:"-"` // Server-set from the MCP client: OAuth requests may reach only public addresses
 }
 
 // InitiateOAuthFlow initiates an OAuth flow and returns the authorization URL
@@ -325,6 +327,8 @@ func (h *OAuthHandler) InitiateOAuthFlow(ctx context.Context, req OAuthInitiatio
 		Scopes:          req.Scopes,
 		ServerURL:       req.ServerURL,
 		Resource:        req.Resource,
+
+		RequirePublicTarget: req.RequirePublicTarget,
 	}
 
 	return h.oauthProvider.InitiateOAuthFlow(ctx, config)

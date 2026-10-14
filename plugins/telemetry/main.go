@@ -314,6 +314,11 @@ var defaultBifrostLabelNames = schemas.MetricSafeEnrichmentDimNames()
 // defaultMCPLabelNames is the label set for bifrost_mcp_* metrics: the MCP semconv
 // dimensions available in the hook plus the governance identity. No network_transport
 // (core stamps it on the span, not context) and no provider/model.
+// perMetricLabelNames are the labels that individual bifrost_* metrics add on top of
+// the default set. A custom label repeating one of these makes Prometheus reject the
+// descriptor, so Init drops them like any other reserved name.
+var perMetricLabelNames = []string{"is_success", "status_code", "error_type", "cache_type"}
+
 var defaultMCPLabelNames = []string{
 	"mcp_client",
 	"mcp_tool_name",
@@ -344,7 +349,13 @@ const (
 	routingEmbeddingPhaseWarmup  = "warmup"
 )
 
-func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (*PrometheusPlugin, error) {
+func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger schemas.Logger) (promPlugin *PrometheusPlugin, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			promPlugin, err = nil, fmt.Errorf("metric registration failed: %v", r)
+		}
+	}()
+
 	if config == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -384,7 +395,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 	var filteredCustomLabels []string
 	if len(config.CustomLabels) > 0 {
 		for _, label := range config.CustomLabels {
-			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) && !containsLabel(defaultMCPLabelNames, label) {
+			if !containsLabel(defaultBifrostLabels, label) && !containsLabel(defaultHTTPLabels, label) && !containsLabel(defaultMCPLabelNames, label) && !containsLabel(perMetricLabelNames, label) {
 				filteredCustomLabels = append(filteredCustomLabels, label)
 			} else {
 				logger.Info("custom label %s is already a default label, it will be ignored", label)
@@ -1292,9 +1303,24 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 			}
 		}
 
+		// A failed/cancelled request has no result but may carry usage the provider already billed.
+		var billedUsage *schemas.BifrostLLMUsage
+		if result == nil && bifrostErr != nil {
+			billedUsage = bifrostErr.ExtraFields.BilledUsage
+		}
+
 		cost := 0.0
-		if p.pricingManager != nil && result != nil {
-			cost = p.pricingManager.CalculateCost(result, pricingScopes)
+		if p.pricingManager != nil {
+			if result != nil {
+				cost = p.pricingManager.CalculateCost(result, pricingScopes)
+			} else if billedUsage != nil {
+				// Price the wire model like logging does; the requested one may be an alias or a fallback's primary.
+				pricingModel := resolvedModel
+				if pricingModel == "" {
+					pricingModel = originalModel
+				}
+				cost = p.pricingManager.CalculateCostForUsage(billedUsage, provider, pricingModel, requestType, pricingScopes)
+			}
 		}
 
 		// Emit one rotation counter increment per attempt that actually caused a key swap on the
@@ -1472,6 +1498,25 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 				cacheHitLabelValues := spliceLabelValues(promLabelValues, len(p.defaultBifrostLabels), cacheType)
 
 				p.CacheHitsTotal.WithLabelValues(cacheHitLabelValues...).Inc()
+			}
+		} else if billedUsage != nil {
+			p.InputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(billedUsage.PromptTokens))
+			p.OutputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(billedUsage.CompletionTokens))
+			if d := billedUsage.PromptTokensDetails; d != nil {
+				if d.CachedReadTokens > 0 {
+					p.CacheReadInputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(d.CachedReadTokens))
+				}
+				if d.CachedWriteTokens > 0 {
+					p.CacheWriteInputTokensTotal.WithLabelValues(promLabelValues...).Add(float64(d.CachedWriteTokens))
+				}
+				if w := d.CachedWriteTokenDetails; w != nil {
+					if w.CachedWriteTokens5m > 0 {
+						p.CacheWriteInputTokens5mTotal.WithLabelValues(promLabelValues...).Add(float64(w.CachedWriteTokens5m))
+					}
+					if w.CachedWriteTokens1h > 0 {
+						p.CacheWriteInputTokens1hTotal.WithLabelValues(promLabelValues...).Add(float64(w.CachedWriteTokens1h))
+					}
+				}
 			}
 		}
 	}()

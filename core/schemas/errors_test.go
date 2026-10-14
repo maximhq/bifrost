@@ -468,6 +468,7 @@ var modelAddressingByRequestType = map[string]bool{
 	"RealtimeRequest":           false,
 	"LiveRequest":               false,
 	"LiveContentRequest":        false,
+	"LiveSidebandRequest":       false,
 }
 
 // Parses the RequestType constants out of bifrost.go, so the guard reflects what the
@@ -616,5 +617,48 @@ func TestStatusOnlyErrorStillCarriesStatus(t *testing.T) {
 	// Absent, not empty.
 	if _, ok := attrs[AttrError]; ok {
 		t.Errorf("%s should be absent when Error is nil", AttrError)
+	}
+}
+
+// Both spans render failures through this helper, so one classification reaches both.
+func TestRootSpanErrorAttributes(t *testing.T) {
+	if got := RootSpanErrorAttributes(nil, ErrorTypeOther); got != nil {
+		t.Errorf("nil error returned %v, want nil", got)
+	}
+
+	err := &BifrostError{
+		StatusCode: Ptr(400),
+		Error: &ErrorField{
+			Message: "no keys found for provider: vertex and model: claude-opus-5-5",
+			Type:    Ptr(NoKeySupportsModel),
+			Code:    Ptr("bad_request"),
+		},
+	}
+	attrs := RootSpanErrorAttributes(err, ErrorTypeCallerModelNotAvailable)
+	for key, want := range map[string]any{
+		AttrError:                  "no keys found for provider: vertex and model: claude-opus-5-5",
+		AttrErrorTypeSpec:          NoKeySupportsModel,
+		AttrErrorCode:              "bad_request",
+		AttrBifrostErrorType:       string(ErrorTypeCallerModelNotAvailable),
+		AttrHTTPResponseStatusCode: 400,
+	} {
+		if got := attrs[key]; got != want {
+			t.Errorf("%s = %v, want %v", key, got, want)
+		}
+	}
+
+	// Status-only errors still classify; a missing Error must not drop the status.
+	bare := RootSpanErrorAttributes(&BifrostError{StatusCode: Ptr(429)}, ErrorTypeProviderRateLimited)
+	if got := bare[AttrHTTPResponseStatusCode]; got != 429 {
+		t.Errorf("%s = %v, want 429", AttrHTTPResponseStatusCode, got)
+	}
+	if _, ok := bare[AttrError]; ok {
+		t.Errorf("%s present for an error with no detail", AttrError)
+	}
+
+	// An unclassified failure must not stamp an empty category, which would read as
+	// a real label meaning "we did not look".
+	if _, ok := RootSpanErrorAttributes(err, "")[AttrBifrostErrorType]; ok {
+		t.Errorf("%s present when the error type is empty", AttrBifrostErrorType)
 	}
 }

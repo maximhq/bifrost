@@ -126,6 +126,75 @@ func TestProviderConfig_Redacted_NestedSecretVars(t *testing.T) {
 // TestProviderConfig_Redacted_AutoMasksEnvBackedFields verifies that env-backed
 // values in provider config fields are redacted in the JSON output of a Redacted()
 // ProviderConfig, including fields like Azure Endpoint.
+func TestProviderConfig_Redacted_OAuthKeyConfig(t *testing.T) {
+	cfg := &ProviderConfig{
+		Keys: []schemas.Key{{
+			ID:   "k1",
+			Name: "oauth",
+			OAuthKeyConfig: &schemas.OAuthKeyConfig{
+				GrantType:    schemas.OAuthGrantClientCredentials,
+				TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+				ClientID:     schemas.NewSecretVar("client-id-value"),
+				ClientSecret: schemas.NewSecretVar("client-secret-value"),
+				PrivateKey:   schemas.NewSecretVar("-----BEGIN RSA PRIVATE KEY-----"),
+				Scopes:       []string{"inference"},
+				Audience:     "api://acme",
+				ExtraParams:  map[string]string{"resource": "api://acme", "client_assertion": "assertion-secret-value"},
+			},
+		}},
+	}
+
+	redacted := cfg.Redacted()
+	require.Len(t, redacted.Keys, 1)
+	got := redacted.Keys[0].OAuthKeyConfig
+	require.NotNil(t, got)
+	assert.Equal(t, "https://idp.example/oauth2/token", got.TokenURL.GetValue(), "the token URL is an address and stays readable")
+	assert.NotEqual(t, "client-id-value", got.ClientID.GetValue())
+	assert.NotEqual(t, "client-secret-value", got.ClientSecret.GetValue())
+	assert.NotEqual(t, "-----BEGIN RSA PRIVATE KEY-----", got.PrivateKey.GetValue())
+	assert.Equal(t, []string{"inference"}, got.Scopes)
+	assert.Equal(t, "api://acme", got.Audience)
+	// extra_params is a free-form form-parameter map, so a caller may have put a credential in
+	// it; every value is masked on the way out and the keys stay visible.
+	require.Len(t, got.ExtraParams, 2)
+	assert.NotEqual(t, "assertion-secret-value", got.ExtraParams["client_assertion"])
+	assert.NotEqual(t, "api://acme", got.ExtraParams["resource"])
+	// The original is untouched.
+	assert.Equal(t, "client-secret-value", cfg.Keys[0].OAuthKeyConfig.ClientSecret.GetValue())
+	assert.Equal(t, "assertion-secret-value", cfg.Keys[0].OAuthKeyConfig.ExtraParams["client_assertion"])
+}
+
+// TestProviderConfig_Redacted_OAuthExtraParamsMaskTheLiteralString pins that extra_params
+// values are masked as the strings they are. They are sent to the token endpoint verbatim, so
+// a value that merely looks like a secret reference ("env.production") must not be resolved
+// on the way out: an unset variable would mask to "", which an update then saves as "".
+func TestProviderConfig_Redacted_OAuthExtraParamsMaskTheLiteralString(t *testing.T) {
+	cfg := &ProviderConfig{
+		Keys: []schemas.Key{{
+			ID:   "k1",
+			Name: "oauth",
+			OAuthKeyConfig: &schemas.OAuthKeyConfig{
+				GrantType:    schemas.OAuthGrantClientCredentials,
+				TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+				ClientID:     schemas.NewSecretVar("client-id-value"),
+				ClientSecret: schemas.NewSecretVar("client-secret-value"),
+				ExtraParams:  map[string]string{"resource": "env.production", "tenant": "vault.tenants/acme", "short": "abc"},
+			},
+		}},
+	}
+
+	got := cfg.Redacted().Keys[0].OAuthKeyConfig.ExtraParams
+	require.Len(t, got, 3)
+	for name, original := range cfg.Keys[0].OAuthKeyConfig.ExtraParams {
+		masked := got[name]
+		assert.NotEmpty(t, masked, "%s: a non-empty parameter must mask to a non-empty placeholder", name)
+		assert.NotEqual(t, original, masked, "%s: the value must be masked", name)
+		assert.True(t, (&schemas.SecretVar{Val: masked}).IsMaskedPlaceholder(),
+			"%s: the mask %q must be recognised as a placeholder so an update restores the stored value", name, masked)
+	}
+	assert.Equal(t, "env."+strings.Repeat("*", 24)+"tion", got["resource"], "the literal string is masked, not the variable it names")
+}
+
 func TestProviderConfig_Redacted_AutoMasksEnvBackedFields(t *testing.T) {
 	t.Setenv("MY_AZURE_ENDPOINT_SECRET", "https://secret-resource.openai.azure.com")
 
@@ -374,6 +443,9 @@ func TestProviderConfig_Redacted_SurfacesLiteralIdentifiers(t *testing.T) {
 			SGLKeyConfig: &schemas.SGLKeyConfig{
 				URL: *schemas.NewSecretVar("http://sgl.internal.example.com:30000"),
 			},
+			CloudflareKeyConfig: &schemas.CloudflareKeyConfig{
+				AccountID: *schemas.NewSecretVar("0123456789abcdef0123456789abcdef"),
+			},
 		}},
 	}
 
@@ -388,6 +460,7 @@ func TestProviderConfig_Redacted_SurfacesLiteralIdentifiers(t *testing.T) {
 	assert.Equal(t, "http://vllm.internal.example.com:8000", key.VLLMKeyConfig.URL.GetValue())
 	assert.Equal(t, "http://ollama.internal.example.com:11434", key.OllamaKeyConfig.URL.GetValue())
 	assert.Equal(t, "http://sgl.internal.example.com:30000", key.SGLKeyConfig.URL.GetValue())
+	assert.Equal(t, "0123456789abcdef0123456789abcdef", key.CloudflareKeyConfig.AccountID.GetValue())
 
 	// The redacted copy must not alias the live config: these are pointer
 	// fields, and an API response handing out the live SecretVar would let a
@@ -434,4 +507,34 @@ func TestProviderConfig_Redacted_MasksSecretBackedIdentifiers(t *testing.T) {
 		assert.Contains(t, jsonStr, ref,
 			"env var reference %q missing from redacted JSON output", ref)
 	}
+}
+
+// TestProviderConfig_InjectedToolsSurvivesRedactionAndHash covers the two copies of
+// ProviderConfig that are built field by field: Redacted (GET responses) and
+// GenerateConfigHash (config.json vs DB drift detection).
+func TestProviderConfig_InjectedToolsSurvivesRedactionAndHash(t *testing.T) {
+	cfg := ProviderConfig{InjectedTools: []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
+	}}
+	assert.Equal(t, cfg.InjectedTools, cfg.Redacted().InjectedTools)
+
+	withTool, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	without, err := (&ProviderConfig{}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, without, withTool)
+
+	cfg.InjectedTools[0].ToolName = "web_search"
+	changed, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, withTool, changed)
+
+	cfg.InjectedTools[0].Name = "search"
+	renamed, err := cfg.GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.NotEqual(t, changed, renamed, "the model-facing name is part of the config")
+
+	empty, err := (&ProviderConfig{InjectedTools: []schemas.InjectedTool{}}).GenerateConfigHash("openai")
+	require.NoError(t, err)
+	assert.Equal(t, without, empty, "an empty list is the same config as none")
 }

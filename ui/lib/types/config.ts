@@ -247,6 +247,16 @@ export const DefaultSGLKeyConfig: SGLKeyConfig = {
 	url: { value: "", ref: "" },
 } as const satisfies Required<SGLKeyConfig>;
 
+// CloudflareKeyConfig matching Go's schemas.CloudflareKeyConfig
+export interface CloudflareKeyConfig {
+	account_id: SecretVar;
+}
+
+// Default CloudflareKeyConfig
+export const DefaultCloudflareKeyConfig: CloudflareKeyConfig = {
+	account_id: { value: "", ref: "" },
+} as const satisfies Required<CloudflareKeyConfig>;
+
 // DatabricksKeyConfig matching Go's schemas.DatabricksKeyConfig
 export interface DatabricksKeyConfig {
 	workspace_url: SecretVar;
@@ -286,6 +296,61 @@ export const DefaultGithubCopilotKeyConfig: GithubCopilotKeyConfig = {
 	github_domain: { value: "", ref: "" },
 } as const satisfies Required<GithubCopilotKeyConfig>;
 
+// OAuthKeyConfig matching Go's schemas.OAuthKeyConfig. Honoured by openai and by custom
+// providers whose base_provider_type is openai: with an empty key value, Bifrost mints the
+// bearer from the token endpoint and refreshes it before expiry.
+export type OAuthGrantType = "client_credentials" | "jwt_bearer";
+export type OAuthAuthStyle = "header" | "body";
+export type OAuthSigningAlgorithm = "RS256" | "RS384" | "RS512" | "PS256" | "PS384" | "PS512" | "ES256" | "ES384" | "ES512";
+export const OAuthSigningAlgorithms: OAuthSigningAlgorithm[] = [
+	"RS256",
+	"RS384",
+	"RS512",
+	"PS256",
+	"PS384",
+	"PS512",
+	"ES256",
+	"ES384",
+	"ES512",
+];
+export interface OAuthKeyConfig {
+	grant_type: OAuthGrantType;
+	token_url: SecretVar;
+	client_id?: SecretVar;
+	client_secret?: SecretVar;
+	private_key?: SecretVar;
+	scopes?: string[];
+	audience?: string;
+	issuer?: string;
+	subject?: string;
+	key_id?: string;
+	signing_algorithm?: OAuthSigningAlgorithm;
+	auth_style?: OAuthAuthStyle;
+	extra_params?: Record<string, string>;
+	assertion_lifetime_seconds?: number;
+	// UI-only discriminator; not sent to the API.
+	_auth_type?: "api_key" | "oauth";
+}
+
+// Default OAuthKeyConfig
+export const DefaultOAuthKeyConfig: OAuthKeyConfig = {
+	grant_type: "client_credentials",
+	token_url: { value: "", ref: "" },
+	client_id: { value: "", ref: "" },
+	client_secret: { value: "", ref: "" },
+	private_key: { value: "", ref: "" },
+	scopes: [],
+	audience: "",
+	issuer: "",
+	subject: "",
+	key_id: "",
+	signing_algorithm: "RS256",
+	auth_style: "header",
+	extra_params: {},
+	assertion_lifetime_seconds: 300,
+	_auth_type: "api_key",
+} as const satisfies Required<OAuthKeyConfig>;
+
 // Key structure matching Go's schemas.Key
 export interface ModelProviderKey {
 	id: string;
@@ -309,6 +374,8 @@ export interface ModelProviderKey {
 	sgl_key_config?: SGLKeyConfig;
 	databricks_key_config?: DatabricksKeyConfig;
 	github_copilot_key_config?: GithubCopilotKeyConfig;
+	cloudflare_key_config?: CloudflareKeyConfig;
+	oauth_key_config?: OAuthKeyConfig;
 	config_hash?: string; // Present when config is synced from config.json
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
@@ -501,6 +568,16 @@ export interface PromptCacheConfig {
 	cache_control_injection_points?: CacheControlInjectionPoint[];
 }
 
+// InjectedTool is one MCP tool Bifrost adds to every chat and responses request for the
+// provider and executes server side when the model calls it. name is what the model
+// sees: it replaces a client tool of the same name, and web_search also replaces native
+// web search.
+export interface InjectedTool {
+	name: string;
+	mcp_client_name: string;
+	tool_name: string;
+}
+
 // ProviderConfig matching Go's lib.ProviderConfig
 export interface ModelProviderConfig {
 	network_config?: NetworkConfig;
@@ -509,9 +586,11 @@ export interface ModelProviderConfig {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	injected_tools?: InjectedTool[] | null;
 	status?: "unknown" | "success" | "list_models_failed";
 	description?: string;
 }
@@ -538,9 +617,11 @@ export interface AddProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	injected_tools?: InjectedTool[] | null;
 }
 
 // UpdateProviderRequest matching Go's UpdateProviderRequest
@@ -551,9 +632,11 @@ export interface UpdateProviderRequest {
 	send_back_raw_request?: boolean;
 	send_back_raw_response?: boolean;
 	store_raw_request_response?: boolean;
+	ignore_provider_cost?: boolean;
 	custom_provider_config?: CustomProviderConfig;
 	openai_config?: OpenAIConfig;
 	prompt_cache?: PromptCacheConfig;
+	injected_tools?: InjectedTool[] | null;
 }
 
 export interface CreateProviderKeyRequest extends ModelProviderKey {}
@@ -691,6 +774,7 @@ export interface BifrostConfig {
 	is_logs_connected: boolean;
 	is_object_storage_connected?: boolean;
 	is_git_available: boolean;
+	skills_marketplace_base_url?: string;
 	auth_token?: string;
 	metadata?: Record<string, unknown>;
 	env_label?: string;
@@ -707,6 +791,7 @@ export interface CompatConfig {
 	should_convert_params: boolean;
 	azure_deepseek: boolean;
 	force_reasoning_only_models_to_responses: boolean;
+	convert_decision_to_responses: boolean;
 }
 
 // Per-execution code mode limits; an omitted or 0 field uses the server default.
@@ -742,6 +827,7 @@ export interface CoreConfig {
 	log_retention_days: number;
 	enforce_auth_on_inference: boolean;
 	dual_credential_conflict_behavior?: "error" | "prefer_vk" | "prefer_idp";
+	extra_fields_placement?: "body" | "headers";
 	allowed_origins: string[];
 	allowed_headers: string[];
 	max_request_body_size_mb: number;
@@ -755,6 +841,7 @@ export interface CoreConfig {
 	mcp_max_instructions_total: number;
 	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
+	mcp_oauth_private_allowlist?: string[];
 	async_job_result_ttl: number;
 	required_headers: string[];
 	logging_headers: string[];
@@ -763,12 +850,17 @@ export interface CoreConfig {
 	// Default for virtual keys without an explicit delete_after_expire: the daily
 	// cleanup job deletes them once expired.
 	delete_expired_virtual_keys: boolean;
+	// Restrict provider objects (files, batches, containers, live sessions, ...) to the
+	// virtual key that created them.
+	enforce_vk_object_ownership: boolean;
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
 	routing_chain_max_depth: number;
 	header_filter_config?: GlobalHeaderFilterConfig;
 	mcp_external_client_url?: SecretVar;
+	skills_external_client_url?: SecretVar;
 	a2a_external_client_url?: SecretVar;
+	a2a_store_raw_request_response?: boolean;
 	mcp_server_auth_mode?: "headers" | "both" | "oauth";
 	oauth2_server_config?: {
 		issuer_url?: SecretVar;
@@ -795,6 +887,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	log_retention_days: 365,
 	enforce_auth_on_inference: true,
 	dual_credential_conflict_behavior: "prefer_idp",
+	extra_fields_placement: "body",
 	allowed_origins: [],
 	max_request_body_size_mb: 100,
 	compat: {
@@ -804,6 +897,7 @@ export const DefaultCoreConfig: CoreConfig = {
 		should_convert_params: false,
 		azure_deepseek: false,
 		force_reasoning_only_models_to_responses: true,
+		convert_decision_to_responses: false,
 	},
 	mcp_agent_depth: 10,
 	mcp_tool_execution_timeout: 30,
@@ -820,6 +914,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	whitelisted_routes: [],
 	hide_deleted_virtual_keys_in_filters: false,
 	delete_expired_virtual_keys: false,
+	enforce_vk_object_ownership: true,
 	hidden_request_types: [],
 	routing_chain_max_depth: 10,
 };
@@ -832,6 +927,7 @@ interface BaseCacheConfig {
 	exclude_system_prompt?: boolean;
 	cache_by_model: boolean;
 	cache_by_provider: boolean;
+	disable_identity_scoping?: boolean;
 	vector_store_namespace?: string;
 	default_cache_key?: string;
 	created_at?: string;
@@ -840,8 +936,8 @@ interface BaseCacheConfig {
 
 export interface DirectCacheConfig extends BaseCacheConfig {
 	dimension: 1;
-	provider?: undefined;
-	embedding_model?: undefined;
+	provider?: "";
+	embedding_model?: "";
 }
 
 export interface ProviderBackedCacheConfig extends BaseCacheConfig {

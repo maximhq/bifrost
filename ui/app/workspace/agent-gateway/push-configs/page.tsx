@@ -327,10 +327,11 @@ export default function PushConfigsPage() {
 						{error ? <div className="text-destructive mb-3 text-sm">{getErrorMessage(error)}</div> : null}
 						<div className="flex grow flex-col overflow-hidden">
 							<div className="mb-2 grow overflow-hidden rounded-sm border">
-								<Table containerClassName="h-full overflow-auto" className="w-full min-w-[1000px] table-fixed">
+								<Table containerClassName="h-full overflow-auto" className="w-full min-w-[1140px] table-fixed">
 									<TableHeader className="bg-muted sticky top-0 z-20">
 										<TableRow>
 											<TableHead className="w-[180px] font-semibold">Agent</TableHead>
+											<TableHead className="w-[140px] font-semibold">Tenant</TableHead>
 											<TableHead className="w-[220px] font-semibold">Task ID</TableHead>
 											<TableHead className="w-[220px] font-semibold">Config ID</TableHead>
 											<TableHead className="w-[320px] font-semibold">Callback URL</TableHead>
@@ -341,7 +342,7 @@ export default function PushConfigsPage() {
 									<TableBody>
 										{configs.length === 0 ? (
 											<TableRow>
-												<TableCell colSpan={hasDeleteAccess ? 6 : 5} className="text-muted-foreground h-24 text-center text-sm">
+												<TableCell colSpan={hasDeleteAccess ? 7 : 6} className="text-muted-foreground h-24 text-center text-sm">
 													{hasFilters ? "No push configurations match these filters." : "No push configurations stored."}
 												</TableCell>
 											</TableRow>
@@ -358,6 +359,9 @@ export default function PushConfigsPage() {
 															onFilter={() => updateFilters({ ...filters, agentNames: [config.agent_name] })}
 															className="font-medium"
 														/>
+													</TableCell>
+													<TableCell className="font-mono text-xs" data-testid="push-config-tenant">
+														{config.tenant ? config.tenant : <span className="text-muted-foreground">—</span>}
 													</TableCell>
 													<TableCell>
 														<InteractiveValue

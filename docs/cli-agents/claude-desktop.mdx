@@ -105,6 +105,70 @@ Instead of a static virtual key, you can set the gateway auth scheme to **Intera
 
 This will allow users to log in directly onto their Bifrost through the configured IdP.
 
+<Tip>
+This is Anthropic's [Claude Desktop on 3P](https://claude.com/docs/third-party/claude-desktop/overview) with a gateway provider. For Anthropic's own walkthrough, see [Deploy Claude Desktop on 3P with an LLM gateway](https://claude.com/docs/third-party/claude-desktop/gateway), and in particular its [single sign-on section](https://claude.com/docs/third-party/claude-desktop/gateway#single-sign-on-with-your-identity-provider). The steps below cover what's specific to Bifrost.
+</Tip>
+
+With **Interactive sign-in**, Claude Desktop opens the browser to your identity provider's sign-in page, then sends the user's token to Bifrost as `Authorization: Bearer <token>` on every request, refreshing it in the background. Bifrost checks the token's signature and issuer against your SSO configuration, and its audience where that configuration defines one. It then attributes the request to the user and applies the user's access profile, budgets, and rate limits.
+
+**Before you start**
+
+- Bifrost Enterprise, with [SSO configured](/enterprise/user-provisioning). The token must come from the same identity provider.
+- [`enforce_auth_on_inference`](/deployment-guides/config-json/client) is on. With it on, a user Bifrost hasn't seen before is provisioned on their first request, the same way a dashboard login provisions them, and a user whose claims map to no role is refused. With it off, first-time users aren't provisioned, and a request whose token fails validation is let through without an identity.
+
+**1. Register Claude Desktop with your IdP**
+
+Claude Desktop signs in as a **public client** with PKCE. It sends no client secret, and it receives the sign-in callback on a loopback address.
+
+<AccordionGroup>
+<Accordion title="Microsoft Entra ID">
+
+Use the app registration Bifrost already uses for SSO, so the token's audience is Bifrost's own client ID:
+
+1. In the [Microsoft Entra admin center](https://entra.microsoft.com), open **App registrations** and select the app Bifrost uses for SSO.
+2. Under **Authentication**, select **Add a platform → Mobile and desktop applications**, and add the custom redirect URI `http://127.0.0.1/callback`. Use `127.0.0.1` (not `localhost`) and include `/callback`. This platform allows any local port, which Claude Desktop needs because it picks a free port at sign-in.
+3. In Claude Desktop, set **Client ID** to the app's **Application (client) ID** and **Issuer URL** to `https://login.microsoftonline.com/<tenant-id>/v2.0`. Leave **Redirect port** empty.
+
+To use a separate app registration for Claude Desktop instead, set its client ID as the **Audience** in Bifrost's Entra configuration, because Bifrost always checks the audience on Entra ID tokens.
+
+</Accordion>
+<Accordion title="Okta">
+
+Okta doesn't allow one app to be both a Web app and a Native app, so create a separate **Native** application for Claude Desktop:
+
+1. In the Okta Admin Console, create an **OIDC - OpenID Connect** app of type **Native Application**, with the **Authorization Code** and **Refresh Token** grant types.
+2. Pick a fixed port, for example `53180`, and add the sign-in redirect URI `http://127.0.0.1:53180/callback`. Okta matches redirect URIs exactly, including the port.
+3. Assign the app to the same users and groups as your Bifrost SSO app, and add the same groups claim, so role and team mapping resolve the same way.
+4. In Claude Desktop, set **Client ID** to the Native app's client ID, **Issuer URL** to your Okta issuer (for example `https://<your-org>.okta.com`, not the `/.well-known/openid-configuration` URL), and **Redirect port** to `53180`.
+
+Bifrost checks the audience only if you set an **Audience** in its Okta configuration. Either leave it unset, or set it to the Native app's client ID.
+
+</Accordion>
+<Accordion title="Other OIDC providers">
+
+Register a public (native) client with the authorization code grant and PKCE, and the redirect URI `http://127.0.0.1:<port>/callback` (set the same port as **Redirect port** if your provider needs an exact match). Use the issuer of the IdP configured in Bifrost. If your Bifrost SSO configuration sets an audience, the token's audience must match it; by default, the ID token's audience is the client ID you register here.
+
+</Accordion>
+</AccordionGroup>
+
+**2. Configure Claude Desktop**
+
+In **Developer → Configure Third-Party Inference…**, in the **Connection** section:
+
+| Field | Value |
+|-------|-------|
+| **Inference provider** | **Gateway** |
+| **Gateway base URL** | `https://<your-bifrost-host>/anthropic` |
+| **Credential kind** | **Interactive sign-in** |
+| **Gateway SSO IdP (OIDC) → Client ID** | From step 1 |
+| **Gateway SSO IdP (OIDC) → Issuer URL** | From step 1 |
+| **Gateway SSO IdP (OIDC) → Scopes** | Leave empty for the default (`openid profile email offline_access`) |
+| **Gateway SSO IdP (OIDC) → Redirect port** | Empty for Entra ID; your fixed port for Okta |
+
+Click **Apply Changes**, then **Save & Restart**. Users then see **Sign in to your organization**, sign in through the browser, and return to the app. If the session expires or is revoked under your IdP's policy, the app prompts them to sign in again.
+
+See Anthropic's [single sign-on guide](https://claude.com/docs/third-party/claude-desktop/gateway#single-sign-on-with-your-identity-provider) for the full reference.
+
 ### Why You Only See Anthropic Models
 
 When you list models through the gateway, you'll notice that only Claude-family models show up in Claude Desktop — even though Bifrost is configured with models from many providers.

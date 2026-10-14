@@ -273,7 +273,9 @@ async function runCase(spec, defaults, state) {
     };
   }
   const videoId = submitRes.body && (submitRes.body.id || submitRes.body.video_id);
-  const parentRequestID = (submitRes.headers && submitRes.headers.get("x-request-id")) || requestId;
+  // x-bifrost-request-id is the log row id; the x-request-id response header is the provider's
+  // own when it sends one (OpenAI does).
+  const parentRequestID = (submitRes.headers && submitRes.headers.get("x-bifrost-request-id")) || requestId;
   const submission = { videoId, requestId: parentRequestID };
   if (!videoId) {
     setState("fail", "no video id");

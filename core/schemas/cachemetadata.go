@@ -40,6 +40,31 @@ func SetCacheMetadataOnContext(ctx *BifrostContext, metadata *BifrostCacheMetada
 	return true
 }
 
+// CacheLookupFromContext returns the outcome of the semantic cache lookup for this request: hit
+// or miss, the entry's id, and on a semantic search its similarity and embedding usage. It is known
+// before the response starts, so a stream can report it in its headers, which are sent before any
+// chunk carries cache metadata. False when no lookup ran.
+func CacheLookupFromContext(ctx *BifrostContext) (*BifrostCacheMetadata, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	metadata, ok := ctx.Value(BifrostContextKeyCacheLookup).(*BifrostCacheMetadata)
+	if !ok || metadata == nil {
+		return nil, false
+	}
+	return metadata.Clone(), true
+}
+
+// SetCacheLookupOnContext records the outcome of the semantic cache lookup on ctx, replacing any
+// earlier attempt's. Reports false when there is nothing to record.
+func SetCacheLookupOnContext(ctx *BifrostContext, metadata *BifrostCacheMetadata) bool {
+	if ctx == nil || metadata == nil {
+		return false
+	}
+	ctx.SetValue(BifrostContextKeyCacheLookup, metadata.Clone())
+	return true
+}
+
 // Deprecated: use CacheMetadataFromContext.
 func CacheDebugFromContext(ctx *BifrostContext) (*BifrostCacheMetadata, bool) {
 	return CacheMetadataFromContext(ctx)

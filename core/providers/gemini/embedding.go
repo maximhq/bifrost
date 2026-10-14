@@ -134,7 +134,23 @@ func EmbeddingContentToGeminiContent(content schemas.EmbeddingContent, allowedUR
 // individual requests[] entry of :batchEmbedContents. applyGeminiEmbeddingParams lifts
 // them onto the entry, and ToGeminiEmbeddingRequest strips them from the batch-level
 // extra params so they are never merged at the top level, where Gemini rejects them.
-var geminiPerEntryEmbeddingExtraKeys = []string{"taskType", "title", "documentOcr", "audioTrackExtraction"}
+var geminiPerEntryEmbeddingExtraKeys = []string{"taskType", "title", "embedContentConfig"}
+
+// ReadEmbedContentConfig returns the documentOcr / audioTrackExtraction a caller nested under
+// embedContentConfig, the only place Gemini and Vertex accept them.
+func ReadEmbedContentConfig(extra map[string]interface{}) *GeminiEmbedContentConfig {
+	nested, ok := extra["embedContentConfig"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	cfg := &GeminiEmbedContentConfig{}
+	cfg.DocumentOCR, _ = schemas.SafeExtractBoolPointer(nested["documentOcr"])
+	cfg.AudioTrackExtraction, _ = schemas.SafeExtractBoolPointer(nested["audioTrackExtraction"])
+	if cfg.DocumentOCR == nil && cfg.AudioTrackExtraction == nil {
+		return nil
+	}
+	return cfg
+}
 
 // applyGeminiEmbeddingParams copies the embedding parameters onto one requests[] entry.
 // The first-class task_type/title fields win; the Gemini-native "taskType"/"title"
@@ -162,14 +178,7 @@ func applyGeminiEmbeddingParams(req *GeminiEmbeddingRequest, params *schemas.Emb
 				req.Title = title
 			}
 		}
-		if documentOCR, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["documentOcr"]); ok {
-			delete(req.ExtraParams, "documentOcr")
-			req.DocumentOCR = documentOCR
-		}
-		if audioTrackExtraction, ok := schemas.SafeExtractBoolPointer(params.ExtraParams["audioTrackExtraction"]); ok {
-			delete(req.ExtraParams, "audioTrackExtraction")
-			req.AudioTrackExtraction = audioTrackExtraction
-		}
+		req.EmbedContentConfig = ReadEmbedContentConfig(req.ExtraParams)
 	}
 }
 
@@ -425,18 +434,18 @@ func applyBifrostEmbeddingParams(params *schemas.EmbeddingParameters, req Gemini
 		params.Title = req.Title
 		changed = true
 	}
-	if req.DocumentOCR != nil {
+	if cfg := req.EmbedContentConfig; cfg != nil && (cfg.DocumentOCR != nil || cfg.AudioTrackExtraction != nil) {
+		nested := map[string]interface{}{}
+		if cfg.DocumentOCR != nil {
+			nested["documentOcr"] = *cfg.DocumentOCR
+		}
+		if cfg.AudioTrackExtraction != nil {
+			nested["audioTrackExtraction"] = *cfg.AudioTrackExtraction
+		}
 		if params.ExtraParams == nil {
 			params.ExtraParams = map[string]interface{}{}
 		}
-		params.ExtraParams["documentOcr"] = req.DocumentOCR
-		changed = true
-	}
-	if req.AudioTrackExtraction != nil {
-		if params.ExtraParams == nil {
-			params.ExtraParams = map[string]interface{}{}
-		}
-		params.ExtraParams["audioTrackExtraction"] = req.AudioTrackExtraction
+		params.ExtraParams["embedContentConfig"] = nested
 		changed = true
 	}
 	if !changed {
@@ -445,9 +454,71 @@ func applyBifrostEmbeddingParams(params *schemas.EmbeddingParameters, req Gemini
 	return params
 }
 
+// sameGeminiEmbeddingParams reports whether two requests[] entries carry identical params.
+func sameGeminiEmbeddingParams(a, b GeminiEmbeddingRequest) bool {
+	cfgA, cfgB := a.EmbedContentConfig, b.EmbedContentConfig
+	if cfgA == nil {
+		cfgA = &GeminiEmbedContentConfig{}
+	}
+	if cfgB == nil {
+		cfgB = &GeminiEmbedContentConfig{}
+	}
+	return ptrEqual(a.TaskType, b.TaskType) &&
+		ptrEqual(a.Title, b.Title) &&
+		ptrEqual(a.OutputDimensionality, b.OutputDimensionality) &&
+		ptrEqual(cfgA.DocumentOCR, cfgB.DocumentOCR) &&
+		ptrEqual(cfgA.AudioTrackExtraction, cfgB.AudioTrackExtraction)
+}
+
+// geminiEmbeddingEntriesToBifrost converts requests[] entries to input items. Params shared by
+// every entry go request-level so any provider accepts them; differing ones stay on each item.
+func geminiEmbeddingEntriesToBifrost(entries []GeminiEmbeddingRequest) ([]schemas.EmbeddingInputItem, *schemas.EmbeddingParameters, error) {
+	perItem := false
+	for _, entry := range entries[1:] {
+		if !sameGeminiEmbeddingParams(entries[0], entry) {
+			perItem = true
+			break
+		}
+	}
+	items := make([]schemas.EmbeddingInputItem, 0, len(entries))
+	for _, entry := range entries {
+		content, err := geminiContentToEmbeddingContent(entry.Content)
+		if err != nil {
+			return nil, nil, err
+		}
+		item := schemas.EmbeddingInputItem{Content: content}
+		if perItem {
+			item.Params = applyBifrostEmbeddingParams(nil, entry)
+		}
+		items = append(items, item)
+	}
+	if perItem {
+		return items, nil, nil
+	}
+	return items, applyBifrostEmbeddingParams(nil, entries[0]), nil
+}
+
+// ToBifrostEmbeddingRequest converts a single :embedContent request; its params are request-level.
+func (r *GeminiEmbeddingRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostContext) (*schemas.BifrostEmbeddingRequest, error) {
+	if r == nil {
+		return nil, providerUtils.InvalidRequestErrorf("embedding request is empty")
+	}
+	content, err := geminiContentToEmbeddingContent(r.Content)
+	if err != nil {
+		return nil, fmt.Errorf("error converting embedding content: %w", err)
+	}
+	provider, model := schemas.ParseModelString(r.Model, "")
+	return &schemas.BifrostEmbeddingRequest{
+		Provider:  provider,
+		Model:     model,
+		Fallbacks: schemas.ParseFallbacks(r.Fallbacks),
+		Input:     []schemas.EmbeddingInputItem{{Content: content}},
+		Params:    applyBifrostEmbeddingParams(nil, *r),
+	}, nil
+}
+
 // ToBifrostEmbeddingRequest converts a GeminiBatchEmbeddingRequest (the :batchEmbedContents
-// wire format) to a Bifrost embedding request. Each entry's own taskType/title/dimensions
-// are kept as that input item's Params.
+// wire format) to a Bifrost embedding request.
 func (r *GeminiBatchEmbeddingRequest) ToBifrostEmbeddingRequest(ctx *schemas.BifrostContext) (*schemas.BifrostEmbeddingRequest, error) {
 	if r == nil || len(r.Requests) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("batch embedding request is empty")
@@ -455,25 +526,18 @@ func (r *GeminiBatchEmbeddingRequest) ToBifrostEmbeddingRequest(ctx *schemas.Bif
 
 	provider, model := schemas.ParseModelString(r.Model, "")
 
-	bifrostReq := &schemas.BifrostEmbeddingRequest{
+	items, params, err := geminiEmbeddingEntriesToBifrost(r.Requests)
+	if err != nil {
+		return nil, fmt.Errorf("error converting embedding content: %w", err)
+	}
+
+	return &schemas.BifrostEmbeddingRequest{
 		Provider:  provider,
 		Model:     model,
 		Fallbacks: schemas.ParseFallbacks(nil),
-		Input:     make([]schemas.EmbeddingInputItem, 0, len(r.Requests)),
-	}
-
-	for _, req := range r.Requests {
-		content, err := geminiContentToEmbeddingContent(req.Content)
-		if err != nil {
-			return nil, fmt.Errorf("error converting embedding content: %w", err)
-		}
-		bifrostReq.Input = append(bifrostReq.Input, schemas.EmbeddingInputItem{
-			Content: content,
-			Params:  applyBifrostEmbeddingParams(nil, req),
-		})
-	}
-
-	return bifrostReq, nil
+		Input:     items,
+		Params:    params,
+	}, nil
 }
 
 // ToBifrostEmbeddingRequest converts a GeminiGenerationRequest to BifrostEmbeddingRequest format.
@@ -494,18 +558,12 @@ func (request *GeminiGenerationRequest) ToBifrostEmbeddingRequest(ctx *schemas.B
 	}
 
 	if len(request.Requests) > 0 {
-		items := make([]schemas.EmbeddingInputItem, 0, len(request.Requests))
-		for _, req := range request.Requests {
-			content, err := geminiContentToEmbeddingContent(req.Content)
-			if err != nil {
-				return nil
-			}
-			items = append(items, schemas.EmbeddingInputItem{
-				Content: content,
-				Params:  applyBifrostEmbeddingParams(nil, req),
-			})
+		items, params, err := geminiEmbeddingEntriesToBifrost(request.Requests)
+		if err != nil {
+			return nil
 		}
 		bifrostReq.Input = items
+		bifrostReq.Params = params
 		return bifrostReq
 	}
 

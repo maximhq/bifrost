@@ -1,6 +1,7 @@
 import { registerReservedMetadataPrefix } from "@/lib/registries/logs";
 import { describe, expect, it } from "vitest";
 import {
+	decisionQuestions,
 	extractProviderErrorMessage,
 	findLastPendingClientCallIndex,
 	hasNoToolArguments,
@@ -323,5 +324,25 @@ describe("isShownMetadataKey", () => {
 			expect(isShownMetadataKey(key, false)).toBe(false);
 		}
 		expect(isShownMetadataKey("extra", false)).toBe(true);
+	});
+});
+describe("decisionQuestions", () => {
+	const named = { urgency: { kind: "score", instructions: "How urgent?", criteria: ["low", "high"] } };
+	const ordered = [{ type: "predicate", name: "frustrated", instructions: "Is the customer frustrated?" }];
+
+	it("returns the questions of an older log keyed by name", () => {
+		expect(decisionQuestions("decisions", named)).toEqual({ value: named, count: 1 });
+	});
+
+	it("returns the questions in request order", () => {
+		expect(decisionQuestions("decisions", ordered)).toEqual({ value: ordered, count: 1 });
+	});
+
+	it("returns null for other request types and for empty or missing params", () => {
+		expect(decisionQuestions("chat.completion", named)).toBeNull();
+		expect(decisionQuestions("decisions", {})).toBeNull();
+		expect(decisionQuestions("decisions", [])).toBeNull();
+		expect(decisionQuestions("decisions", undefined)).toBeNull();
+		expect(decisionQuestions("decisions", "x")).toBeNull();
 	});
 });
