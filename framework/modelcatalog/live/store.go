@@ -184,6 +184,14 @@ func (s *Store) RetainKeys(provider schemas.ModelProvider, keep map[string]struc
 	s.mu.Unlock()
 }
 
+// Has reports whether a list-models result is cached for (provider, keyID, unfiltered).
+func (s *Store) Has(provider schemas.ModelProvider, keyID string, unfiltered bool) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.entries[Key{Provider: provider, KeyID: keyID, Unfiltered: unfiltered}]
+	return ok
+}
+
 // ModelsForProvider returns the union of filtered entries for the provider,
 // sorted. Filtered entries are pre-gated so this is the effective allowed set
 // across the provider's keys.
