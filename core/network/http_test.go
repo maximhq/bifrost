@@ -1291,3 +1291,69 @@ func TestDefaultHTTPClientFactoryGetter(t *testing.T) {
 		t.Fatal("want the registered factory")
 	}
 }
+
+// TestLiveFasthttpClientHonorsDisablePathNormalizing pins that a copy of the live
+// client with DisablePathNormalizing set still sends an escaped path segment (%2F)
+// as written, while a client that did not ask for it keeps fasthttp's default
+// normalization. The live client forwards to an inner client, and fasthttp applies
+// the inner client's setting right before writing the request.
+func TestLiveFasthttpClientHonorsDisablePathNormalizing(t *testing.T) {
+	const escaped = "/guardrail/arn:aws:bedrock:us-east-1:123456789012:guardrail%2Ftest/version/1/apply"
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	received := make(chan string, 4)
+	go func() {
+		_ = fasthttp.Serve(ln, func(ctx *fasthttp.RequestCtx) {
+			received <- string(ctx.RequestURI())
+		})
+	}()
+	t.Cleanup(func() { _ = ln.Close() })
+
+	factory := NewHTTPClientFactory(nil, noopTestLogger{})
+	send := func(client *fasthttp.Client) string {
+		t.Helper()
+		req := fasthttp.AcquireRequest()
+		defer fasthttp.ReleaseRequest(req)
+		resp := fasthttp.AcquireResponse()
+		defer fasthttp.ReleaseResponse(resp)
+		req.SetRequestURI("http://" + ln.Addr().String() + escaped)
+		if err := client.DoTimeout(req, resp, 5*time.Second); err != nil {
+			t.Fatal(err)
+		}
+		return <-received
+	}
+
+	live := factory.GetFasthttpClient(ClientPurposeAPI)
+	raw := &fasthttp.Client{Transport: live.Transport, DisablePathNormalizing: true}
+
+	if got := send(raw); got != escaped {
+		t.Errorf("client with DisablePathNormalizing sent %q, want %q", got, escaped)
+	}
+	if got := send(live); got == escaped {
+		t.Errorf("default client sent %q unchanged, want fasthttp's normalized path", got)
+	}
+}
+
+// TestRawPathInnerClientFollowsProxyUpdates pins that UpdateProxyConfig drops the
+// raw-path inner client along with the default one, so a request that keeps escaped
+// path segments never reuses a client built for the previous proxy config.
+func TestRawPathInnerClientFollowsProxyUpdates(t *testing.T) {
+	factory := NewHTTPClientFactory(nil, noopTestLogger{})
+	key := fasthttpClientKey{purpose: ClientPurposeAPI, rawPath: true}
+
+	first := factory.currentFasthttpClientFor(key)
+	if !first.DisablePathNormalizing {
+		t.Fatal("raw-path inner client must have DisablePathNormalizing set")
+	}
+	if factory.currentFasthttpClient(ClientPurposeAPI).DisablePathNormalizing {
+		t.Fatal("default inner client must keep fasthttp's path normalization")
+	}
+
+	factory.UpdateProxyConfig(&GlobalProxyConfig{})
+	if second := factory.currentFasthttpClientFor(key); second == first {
+		t.Error("raw-path inner client survived UpdateProxyConfig")
+	}
+}

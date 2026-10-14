@@ -583,6 +583,14 @@ func (r *BedrockInvokeRequest) ToBedrockConverseRequest() *BedrockConverseReques
 		hasAdditional = true
 	}
 
+	// Anthropic disable_parallel_tool_use has no typed Converse slot; this is the spelling Converse takes.
+	if choice, ok := r.ToolChoice.(map[string]interface{}); ok && converseReq.ToolConfig != nil && choice["type"] != "none" {
+		if disable, ok := choice["disable_parallel_tool_use"].(bool); ok {
+			additionalFields.Set("tool_choice", schemas.NewOrderedMapFromPairs(schemas.Pair{Key: "disable_parallel_tool_use", Value: disable}))
+			hasAdditional = true
+		}
+	}
+
 	// AI21-specific fields
 	if r.N != nil {
 		additionalFields.Set("n", *r.N)

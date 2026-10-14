@@ -63,7 +63,7 @@ export class LogsPage extends BasePage {
     )
 
     // Table elements - exclude the "Listening for logs" row which is not a data row
-    this.tableRows = this.logsTable.locator('tbody tr').filter({ hasNot: page.locator('text=Listening for logs') }).filter({ hasNot: page.locator('text=Live updates paused') }).filter({ hasNot: page.locator('text=Not connected') }).filter({ hasNot: page.locator('text=No results found') })
+    this.tableRows = this.logsTable.locator('tbody tr').filter({ hasNot: page.getByTestId('logs-table-status-row') }).filter({ hasNot: page.locator('text=Listening for logs') }).filter({ hasNot: page.locator('text=Live updates paused') }).filter({ hasNot: page.locator('text=Not connected') }).filter({ hasNot: page.locator('text=No results found') })
     // LLM logs pagination (data-testid added to logsTable.tsx)
     this.paginationControls = page.getByTestId('pagination')
     this.nextPageBtn = page.getByTestId('next-page')
@@ -179,21 +179,12 @@ export class LogsPage extends BasePage {
     await waitForNetworkIdle(this.page)
   }
 
-  async filterByStatus(status: 'success' | 'error' | 'pending'): Promise<void> {
+  async filterByStatus(status: 'success' | 'error' | 'processing'): Promise<void> {
     await this.dismissToasts()
-    await this.filtersButton.first().waitFor({ state: 'visible' })
-    await this.filtersButton.first().click()
-    await this.page.waitForSelector('[role="listbox"], [data-slot="command-list"]', { timeout: 5000 }).catch(() => {})
-
-    const option = this.page.getByRole('option', { name: new RegExp(status, 'i') })
-    if (await option.count() > 0) {
-      await option.first().click()
-    } else {
-      await this.page.keyboard.press('Escape')
-    }
-
-    await this.page.waitForSelector('[role="listbox"]', { state: 'hidden', timeout: 5000 }).catch(() => {})
-    await waitForNetworkIdle(this.page)
+    // Status is a checkbox group in the filter sidebar.
+    const checkbox = this.page.getByTestId(`status-filter-checkbox-${status}`)
+    await checkbox.click()
+    await expect(this.page).toHaveURL(new RegExp(`status=${status}`))
   }
 
   /**

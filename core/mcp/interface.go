@@ -59,6 +59,13 @@ type MCPManagerInterface interface {
 	ExecuteChatTool(ctx *schemas.BifrostContext, toolCall *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError)
 	ExecuteResponsesTool(ctx *schemas.BifrostContext, toolCall *schemas.ResponsesToolMessage) (*schemas.ResponsesMessage, *schemas.BifrostError)
 
+	// GetInjectedTool resolves a provider-injected tool (ProviderConfig.InjectedTools)
+	// by client name and unprefixed tool name, bypassing tool filters.
+	GetInjectedTool(clientName, toolName string) (schemas.ChatTool, error)
+
+	// GetMaxAgentDepth returns the configured cap on model turns in a tool loop.
+	GetMaxAgentDepth() int
+
 	// Client Management
 	// GetClients returns all MCP clients
 	GetClients() []schemas.MCPClientState
@@ -81,6 +88,11 @@ type MCPManagerInterface interface {
 	// access; this is the seam the transport layer persists through. Pass
 	// nil to clear a previously registered callback.
 	SetToolsChangeCallback(cb func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, instructions string))
+
+	// SetInProcessServerFactory replaces the factory that synthesizes
+	// in-process servers for openapi clients (see
+	// schemas.MCPConfig.InProcessServerFactory). Applies on the next connect.
+	SetInProcessServerFactory(factory schemas.InProcessServerFactory)
 
 	// AddClient adds a new MCP client with the given configuration
 	AddClient(ctx context.Context, config *schemas.MCPClientConfig) error

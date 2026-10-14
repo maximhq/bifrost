@@ -22,7 +22,7 @@ import (
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
@@ -1516,10 +1516,23 @@ func (h *LoggingHandler) getLogsDimensionLatencyHistogram(ctx *fasthttp.RequestC
 	SendJSON(ctx, result)
 }
 
+// maintenanceDropReporter is the optional LogManager extension that splits out
+// drops incurred while the log writer was paused for a logstore migration. It is
+// asserted rather than added to LogManager so other implementations keep compiling.
+type maintenanceDropReporter interface {
+	GetDroppedDuringMaintenance(ctx context.Context) int64
+}
+
 // getDroppedRequests handles GET /api/logs/dropped - Get the number of dropped requests
 func (h *LoggingHandler) getDroppedRequests(ctx *fasthttp.RequestCtx) {
-	droppedRequests := h.logManager.GetDroppedRequests(ctx)
-	SendJSON(ctx, map[string]int64{"dropped_requests": droppedRequests})
+	// Read the maintenance subset before the total: a drop counted between the
+	// two reads then lands only in the total, so the subset never exceeds it.
+	response := map[string]int64{}
+	if reporter, ok := h.logManager.(maintenanceDropReporter); ok {
+		response["dropped_during_maintenance"] = reporter.GetDroppedDuringMaintenance(ctx)
+	}
+	response["dropped_requests"] = h.logManager.GetDroppedRequests(ctx)
+	SendJSON(ctx, response)
 }
 
 // ParseRankingLimit reads the row-cap query parameters shared by the ranking

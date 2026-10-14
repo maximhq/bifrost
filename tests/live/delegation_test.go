@@ -1,6 +1,7 @@
 package live
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -212,4 +213,105 @@ func stringsOf(list gjson.Result) []string {
 		out = append(out, item.Str)
 	}
 	return out
+}
+
+// delegationRefusedFrame is OpenAI's answer when the backend configuration cannot run: an error
+// frame naming session.delegation, with no delegation ever created.
+const delegationRefusedFrame = `{"type":"error","event_id":"evt_err_1","error":{"type":"invalid_request_error","code":"responses_validation_failed","message":"Responses configuration validation failed: The model gpt-6-does-not-exist does not exist or you do not have access to it.","param":"session.delegation.responses","client_event_id":"evt_start"}}`
+
+func TestDelegation_BackendFailureIsOnTheRow(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		vk := createVirtualKey(t, virtualKeySpec{})
+		c, s := openFakeSession(t, tr, vk, backendModel, nil)
+
+		s.Emit(delegationRefusedFrame)
+		assert.Contains(t, errorMessage(c.WaitFor("error")), "does not exist", "the provider's error still reaches the client")
+		// The voice session goes on: a later delegation runs and bills as usual.
+		s.Play(delegation{ID: "item_later", ResponseID: "resp_later", Model: backendModel, Created: true, Input: 300, Output: 40,
+			Items: []string{messageItem("msg_1", "Still here.")}})
+		c.WaitFor("response.event")
+		settle()
+		s.EmitUsage(12)
+		c.WaitFor("session.usage.updated")
+		c.CloseSession()
+
+		row := findLiveLog(t, s.ID())
+		assert.Equal(t, "success", row.Get("status").Str, "the session itself succeeded")
+		assert.Greater(t, row.Get("token_usage.audio_seconds").Float(), 0.0, "voice is still billed")
+		delegations := row.Get("live_session.delegations").Array()
+		require.Len(t, delegations, 2, "the refused delegation and the one that ran")
+		failed := delegations[0]
+		assert.Equal(t, backendModel, failed.Get("model").Str)
+		assert.Contains(t, failed.Get("error").Str, "does not exist")
+		assert.False(t, failed.Get("usage").Exists(), "nothing ran, nothing to bill")
+		assert.Equal(t, "item_later", delegations[1].Get("delegation_id").Str)
+		assert.Equal(t, 340.0, delegations[1].Get("usage.total_tokens").Float())
+	})
+}
+
+func TestDelegation_TerminalFailurePreservesErrorAndUsage(t *testing.T) {
+	requireFake(t)
+	t.Parallel()
+	forEachTransport(t, func(t *testing.T, tr transport) {
+		for _, withUsage := range []bool{true, false} {
+			name := "without usage"
+			if withUsage {
+				name = "with usage"
+			}
+			t.Run(name, func(t *testing.T) {
+				budget := 1.0
+				vk := createVirtualKey(t, virtualKeySpec{budgetUSD: &budget})
+				c, s := openFakeSession(t, tr, vk, backendModel, nil)
+				usage := "null"
+				failedTokens := 0.0
+				failedCost := 0.0
+				if withUsage {
+					usage = `{"input_tokens":8,"output_tokens":2,"total_tokens":10}`
+					failedTokens = 10
+					failedCost = 8*fakeInputCostPerToken + 2*fakeOutputCostPerToken
+				}
+				s.Emit(`{"type":"session.delegation.created","delegation":{"id":"item_failed","target":"responses","response_id":"resp_failed"}}`)
+				// Partial output arrives before the terminal event, independently of its usage.
+				s.Emit(`{"type":"response.event","delegation_id":"item_failed","event":{"type":"response.output_item.done","output_index":0,"item":` + messageItem("msg_partial", "Partial answer.") + `}}`)
+				c.WaitFor("response.event")
+				failure := fmt.Sprintf(`{"type":"response.event","delegation_id":"item_failed","event":{"type":"response.failed","response":{"id":"resp_failed","object":"response","model":%q,"status":"failed","error":{"code":"server_error","message":"backend execution failed"},"output":[],"usage":%s}}}`, backendModel, usage)
+				for i := 0; i < 2; i++ {
+					s.Emit(failure)
+					frame := c.WaitFor("response.event")
+					assert.Equal(t, "response.failed", frame.Get("event.type").Str)
+					assert.Equal(t, "backend execution failed", frame.Get("event.response.error.message").Str)
+				}
+				// Recovery uses the next billing unit, without inheriting the earlier failure.
+				s.Play(delegation{ID: "item_later", ResponseID: "resp_later", Model: backendModel, Created: true, Input: 3, Output: 2, Items: []string{messageItem("msg_later", "Still here.")}})
+				c.WaitFor("response.event")
+				c.WaitFor("response.event")
+				s.EmitUsage(20)
+				c.WaitFor("session.usage.updated")
+				c.CloseSession()
+				row := findLiveLog(t, s.ID())
+				assert.Equal(t, "success", row.Get("status").Str)
+				delegations := row.Get("live_session.delegations").Array()
+				require.Len(t, delegations, 2, "a replayed terminal event does not add another delegation")
+				failed := delegations[0]
+				assert.Equal(t, "item_failed", failed.Get("delegation_id").Str)
+				assert.Equal(t, []string{"resp_failed"}, stringsOf(failed.Get("response_ids")))
+				assert.Equal(t, "backend execution failed", failed.Get("error").Str)
+				assert.Equal(t, failedTokens, failed.Get("usage.total_tokens").Float())
+				assert.InDelta(t, failedCost, failed.Get("cost").Float(), 1e-9)
+				require.Len(t, failed.Get("output").Array(), 1)
+				assert.Equal(t, "Partial answer.", failed.Get("output.0.content.0.text").Str)
+				if !withUsage {
+					assert.False(t, failed.Get("usage").Exists())
+				}
+				assert.Equal(t, "item_later", delegations[1].Get("delegation_id").Str)
+				assert.Empty(t, delegations[1].Get("error").Str)
+				assert.Equal(t, failedTokens+5, row.Get("token_usage.total_tokens").Float())
+				backendCost := failedCost + 3*fakeInputCostPerToken + 2*fakeOutputCostPerToken
+				assert.InDelta(t, backendCost, row.Get("live_session.backend_cost").Float(), 1e-9)
+				waitBudgetUsage(t, vk.BudgetID, 20*fakeVoiceCostPerSecond+backendCost)
+			})
+		}
+	})
 }

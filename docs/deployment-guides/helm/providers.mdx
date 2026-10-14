@@ -112,6 +112,17 @@ bifrost:
         max_conns_per_host: 5000
 ```
 
+**Optional - price from Bifrost's catalog instead of the provider-reported cost**
+
+```yaml
+bifrost:
+  providers:
+    openai:
+      ignore_provider_cost: true   # ignore usage.cost; use model pricing and pricing overrides
+```
+
+`ignore_provider_cost` is accepted on every provider block (and on `bifrost.governance.providers[]`), and renders into `providers.<name>.ignore_provider_cost`.
+
 </Tab>
 
 <Tab title="Anthropic">

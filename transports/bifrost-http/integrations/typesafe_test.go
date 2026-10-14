@@ -39,8 +39,8 @@ func TestSDKFidelityTypesafeSystemOneRouteNullStateAndExtensions(t *testing.T) {
 	if converted == nil || converted.DecisionRequest == nil {
 		t.Fatal("decision request not produced")
 	}
-	if converted.DecisionRequest.State != nil {
-		t.Errorf("null state must stay null, got %#v", converted.DecisionRequest.State)
+	if !converted.DecisionRequest.Input.IsEmpty() {
+		t.Errorf("null state must stay null, got %#v", converted.DecisionRequest.Input)
 	}
 	if passthrough, _ := ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams).(bool); !passthrough {
 		t.Error("native extensions present but passthrough not requested; images would be dropped on the wire")
@@ -66,7 +66,7 @@ func TestSDKFidelityTypesafeSystemOneRouteRelaysNativeBodies(t *testing.T) {
 	native := `{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.25,"rationale":"extra"}},"usage":{"input_tokens":3,"output_tokens":0,"billed":true}}`
 	resp := &schemas.BifrostDecisionResponse{
 		Model:          "jev-1.13.0",
-		Answers:        map[string]schemas.DecisionAnswer{"q": {Kind: schemas.DecisionKindNoul, Value: 0.25}},
+		Answers:        []schemas.DecisionAnswer{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Probability: schemas.Ptr(0.25)}},
 		NativeResponse: json.RawMessage(native),
 	}
 	resp.ExtraFields.Provider = schemas.Typesafe

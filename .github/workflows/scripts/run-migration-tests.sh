@@ -1125,6 +1125,7 @@ append_v220_fixtures() {
     fi
   done <<'V220_COLUMNS'
 config_keys|use_openai_endpoints|false|name = 'migration-test-key-anthropic'
+config_keys|cloudflare_account_id|NULL|name = 'migration-test-key-anthropic'
 governance_model_pricing|off_peak_cost_multiplier|NULL|id = 1
 governance_model_pricing|peak_hours|NULL|id = 1
 mcp_tool_logs|user_name|'Migration Test User'|id = 'mcp-log-migration-001'
@@ -2477,6 +2478,11 @@ append_dynamic_columns_postgres() {
   # config_client.dual_credential_conflict_behavior (added via add_dual_credential_conflict_behavior_column)
   if column_exists_postgres "config_client" "dual_credential_conflict_behavior"; then
     echo "UPDATE config_client SET dual_credential_conflict_behavior = 'prefer_idp' WHERE id = 1;" >> "$output_file"
+  fi
+
+  # config_client.extra_fields_placement (added via add_client_config_extra_fields_placement_column)
+  if column_exists_postgres "config_client" "extra_fields_placement"; then
+    echo "UPDATE config_client SET extra_fields_placement = 'headers' WHERE id = 1;" >> "$output_file"
   fi
 
   # config_client.webhook_config_json (added via add_webhook_config_client_column)
@@ -3928,6 +3934,11 @@ append_dynamic_columns_sqlite() {
     # config_client.dual_credential_conflict_behavior (added via add_dual_credential_conflict_behavior_column)
     if column_exists_sqlite "$config_db" "config_client" "dual_credential_conflict_behavior"; then
       echo "UPDATE config_client SET dual_credential_conflict_behavior = 'prefer_idp' WHERE id = 1;" >> "$output_file"
+    fi
+
+    # config_client.extra_fields_placement (added via add_client_config_extra_fields_placement_column)
+    if column_exists_sqlite "$config_db" "config_client" "extra_fields_placement"; then
+      echo "UPDATE config_client SET extra_fields_placement = 'headers' WHERE id = 1;" >> "$output_file"
     fi
 
     # config_client.webhook_config_json (added via add_webhook_config_client_column)

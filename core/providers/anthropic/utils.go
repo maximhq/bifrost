@@ -2001,6 +2001,14 @@ type anthropicMessageBetaSignals struct {
 	scopedCacheControl bool
 	// fileSource: some content block has a source of type "file" (Files API).
 	fileSource bool
+	// midConversationToolChanges: some block is a tool_addition / tool_removal (mid-conversation tool changes).
+	midConversationToolChanges bool
+	// inlineToolDefinition: some tool_addition (or compaction tool_changes entry) defines its tool by value.
+	inlineToolDefinition bool
+	// inlineMCPToolset: some by-value definition is an mcp_toolset (needs the MCP client beta).
+	inlineMCPToolset bool
+	// inlineDefinitions: every tool defined by value, so it gets the same per-tool betas as tools[].
+	inlineDefinitions []*AnthropicTool
 
 	// --- derived from messages[] themselves ---
 
@@ -2008,42 +2016,102 @@ type anthropicMessageBetaSignals struct {
 	midConversationOutputConfig bool
 }
 
-// complete reports whether every signal is already set, so a scan can stop early.
-func (s anthropicMessageBetaSignals) complete() bool {
-	return s.blocksDone() && s.midConversationOutputConfig
+// The scans never stop early: every tool defined by value has to be collected, because each
+// one may need beta headers of its own (a strict tool, a deferred tool, an mcp_toolset).
+
+// noteToolChangeBlock records the tool-change signals a decoded block carries: a
+// tool_addition / tool_removal block itself (or a compaction tool_changes entry, which has
+// the same shape and the same beta needs on replay), and every tool defined by value.
+func (s *anthropicMessageBetaSignals) noteToolChangeBlock(block *AnthropicContentBlock) {
+	if isToolChangeBlock(block.Type) {
+		s.midConversationToolChanges = true
+		if block.Tool != nil {
+			s.noteToolChangeTarget(block.Tool)
+		}
+	}
+	for i := range block.ToolChanges {
+		change := &block.ToolChanges[i]
+		if isToolChangeBlock(change.Type) {
+			s.midConversationToolChanges = true
+		}
+		if change.Tool != nil {
+			s.noteToolChangeTarget(change.Tool)
+		}
+	}
 }
 
-// blocksDone reports whether both block-level signals are set, so content blocks need no
-// further scanning even while the message-level effort signal is still being looked for.
-func (s anthropicMessageBetaSignals) blocksDone() bool {
-	return s.scopedCacheControl && s.fileSource
+// noteToolChangeTarget records a by-value definition on one tool_addition target.
+func (s *anthropicMessageBetaSignals) noteToolChangeTarget(target *AnthropicToolChangeTarget) {
+	if target.Type != AnthropicToolChangeTargetTypeToolDefinition {
+		return
+	}
+	s.inlineToolDefinition = true
+	if target.Definition == nil {
+		return
+	}
+	if target.Definition.MCPToolset != nil {
+		s.inlineMCPToolset = true
+	}
+	s.inlineDefinitions = append(s.inlineDefinitions, target.Definition)
+}
+
+// noteRawToolChangeBlock is noteToolChangeBlock over the raw JSON block.
+func (s *anthropicMessageBetaSignals) noteRawToolChangeBlock(block gjson.Result) {
+	if isToolChangeBlock(AnthropicContentBlockType(block.Get("type").String())) {
+		s.midConversationToolChanges = true
+		s.noteRawToolChangeTarget(block.Get("tool"))
+	}
+	if changes := block.Get("tool_changes"); changes.IsArray() {
+		changes.ForEach(func(_, change gjson.Result) bool {
+			if isToolChangeBlock(AnthropicContentBlockType(change.Get("type").String())) {
+				s.midConversationToolChanges = true
+			}
+			s.noteRawToolChangeTarget(change.Get("tool"))
+			return true
+		})
+	}
+}
+
+// noteRawToolChangeTarget is noteToolChangeTarget over the raw `tool` object. The definition
+// is the one sub-object worth decoding: it is a single tools[] entry, not conversation bulk.
+func (s *anthropicMessageBetaSignals) noteRawToolChangeTarget(target gjson.Result) {
+	if target.Get("type").String() != AnthropicToolChangeTargetTypeToolDefinition {
+		return
+	}
+	s.inlineToolDefinition = true
+	definition := target.Get("definition")
+	if !definition.IsObject() {
+		return
+	}
+	var tool AnthropicTool
+	if err := schemas.Unmarshal([]byte(definition.Raw), &tool); err != nil {
+		return
+	}
+	if tool.MCPToolset != nil {
+		s.inlineMCPToolset = true
+	}
+	s.inlineDefinitions = append(s.inlineDefinitions, &tool)
 }
 
 // scanMessagesForBetaSignals derives the signals from decoded messages.
 func scanMessagesForBetaSignals(messages []AnthropicMessage) anthropicMessageBetaSignals {
 	var signals anthropicMessageBetaSignals
 	for _, message := range messages {
-		if signals.complete() {
-			return signals
-		}
 		if message.OutputConfig != nil && message.OutputConfig.Effort != nil {
 			signals.midConversationOutputConfig = true
 		}
-		// Block scanning stops once both block-level signals are known; only the
-		// message-level effort check keeps walking the (potentially huge) array.
-		if signals.blocksDone() || message.Content.ContentBlocks == nil {
+		if message.Content.ContentBlocks == nil {
 			continue
 		}
-		for _, block := range message.Content.ContentBlocks {
+		for i := range message.Content.ContentBlocks {
+			block := &message.Content.ContentBlocks[i]
 			if block.CacheControl != nil && block.CacheControl.Scope != nil {
 				signals.scopedCacheControl = true
 			}
 			if block.Source != nil && block.Source.SourceObj != nil && block.Source.SourceObj.Type == "file" {
 				signals.fileSource = true
 			}
-			if signals.blocksDone() {
-				break
-			}
+			signals.noteToolChangeBlock(block)
 		}
 	}
 	return signals
@@ -2060,18 +2128,12 @@ func scanRawMessagesForBetaSignals(jsonBody []byte) anthropicMessageBetaSignals 
 	}
 	// ForEach walks the array in place; Array() would materialise every element first.
 	messages.ForEach(func(_, message gjson.Result) bool {
-		if signals.complete() {
-			return false
-		}
 		// A message-level sibling of content, so it is read before the content gate below:
 		// the effort-only form carries an empty content array and a string-content system
 		// message may carry it too. Type-checked for the same present-but-null reason as
 		// cache_control.scope.
 		if effort := message.Get("output_config.effort"); effort.Type == gjson.String {
 			signals.midConversationOutputConfig = true
-		}
-		if signals.blocksDone() {
-			return true
 		}
 		content := message.Get("content")
 		if !content.Exists() || !content.IsArray() {
@@ -2088,7 +2150,8 @@ func scanRawMessagesForBetaSignals(jsonBody []byte) anthropicMessageBetaSignals 
 			if block.Get("source.type").String() == "file" {
 				signals.fileSource = true
 			}
-			return !signals.blocksDone()
+			signals.noteRawToolChangeBlock(block)
+			return true
 		})
 		return true
 	})
@@ -2184,6 +2247,89 @@ func AddMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 	return addMissingBetaHeadersToContext(ctx, req, provider, scanMessagesForBetaSignals(req.Messages))
 }
 
+// appendAnthropicToolBetaHeaders adds the beta headers one tool definition requires: dated
+// tool types, strict, defer_loading, input_examples, allowed_callers, eager_input_streaming
+// and a scoped cache_control. It runs over every tools[] entry and over every tool defined
+// by value inside a tool_addition block or a compaction tool_changes entry, so an inline
+// definition gets exactly the headers its tools[] twin would.
+func appendAnthropicToolBetaHeaders(headers []string, tool *AnthropicTool, caps schemas.ModelCaps, features ProviderFeatureSupport, hasProvider bool, hasCachingScope *bool) []string {
+	if tool == nil {
+		return headers
+	}
+	// Check for version-specific beta headers based on tool type
+	if tool.Type != nil {
+		switch *tool.Type {
+		case AnthropicToolTypeComputer20251124:
+			if !hasProvider || features.ComputerUse {
+				headers = appendUniqueHeader(headers, AnthropicComputerUseBetaHeader20251124)
+			}
+		case AnthropicToolTypeComputer20250124:
+			if !hasProvider || features.ComputerUse {
+				headers = appendUniqueHeader(headers, AnthropicComputerUseBetaHeader20250124)
+			}
+		case AnthropicToolTypeAdvisor20260301:
+			if !hasProvider || caps.SupportsAdvisorTool(features.AdvisorTool) {
+				headers = appendUniqueHeader(headers, AnthropicAdvisorBetaHeader)
+			}
+		}
+	}
+	// Check for strict (structured-outputs)
+	if tool.Strict != nil && *tool.Strict {
+		if !hasProvider || features.StructuredOutputs {
+			headers = appendUniqueHeader(headers, AnthropicStructuredOutputsBetaHeader)
+		}
+	}
+	// defer_loading has its own beta (tool-search-tool-2025-10-19) as of
+	// current docs — it's no longer part of the AdvancedToolUse bundle.
+	// allowed_callers is still bundle-only.
+	if tool.DeferLoading != nil && *tool.DeferLoading {
+		if !hasProvider || caps.SupportsToolSearch(features.ToolSearch) {
+			headers = appendUniqueHeader(headers, AnthropicToolSearchBetaHeader)
+		}
+	}
+	if len(tool.InputExamples) > 0 {
+		if !hasProvider || caps.SupportsAdvancedToolUse(features.AdvancedToolUse) {
+			// Bundle header covers input_examples transitively.
+			headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+		} else if caps.SupportsInputExamples(features.InputExamples) {
+			// Narrow standalone header (e.g. Bedrock).
+			headers = appendUniqueHeader(headers, AnthropicToolExamplesBetaHeader)
+		}
+	}
+	if len(tool.AllowedCallers) > 0 {
+		if !hasProvider || caps.SupportsAdvancedToolUse(features.AdvancedToolUse) {
+			headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+		}
+	}
+	// input_examples has both bundle coverage AND a standalone header.
+	// Prefer the bundle header when the provider accepts the bundle
+	// (covers input_examples transitively); fall back to the narrow
+	// standalone header (Bedrock) when only InputExamples is set.
+	if len(tool.InputExamples) > 0 {
+		if !hasProvider || caps.SupportsAdvancedToolUse(features.AdvancedToolUse) {
+			headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
+		} else if caps.SupportsInputExamples(features.InputExamples) {
+			headers = appendUniqueHeader(headers, AnthropicToolExamplesBetaHeader)
+		}
+	}
+	// Check for fine-grained tool streaming (eager_input_streaming).
+	// Beta fine-grained-tool-streaming-2025-05-14 — required for
+	// input_json_delta streaming on custom tools.
+	if tool.EagerInputStreaming != nil && *tool.EagerInputStreaming {
+		if !hasProvider || caps.SupportsEagerInputStreaming(features.EagerInputStreaming) {
+			headers = appendUniqueHeader(headers, AnthropicEagerInputStreamingBetaHeader)
+		}
+	}
+	// Check for cache control with scope
+	if !*hasCachingScope && tool.CacheControl != nil && tool.CacheControl.Scope != nil {
+		if !hasProvider || features.PromptCachingScope {
+			headers = appendUniqueHeader(headers, AnthropicPromptCachingScopeBetaHeader)
+			*hasCachingScope = true
+		}
+	}
+	return headers
+}
+
 // addMissingBetaHeadersToContext holds the gating itself. It never touches req.Messages —
 // the caller supplies those signals — so the typed and raw-body entry points above stay
 // in lockstep by construction.
@@ -2195,80 +2341,13 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 		headers = appendUniqueHeader(headers, AnthropicDangerousToolUseBetaHeader)
 	}
 	hasCachingScope := false
-	if req.Tools != nil {
-		for _, tool := range req.Tools {
-			// Check for version-specific beta headers based on tool type
-			if tool.Type != nil {
-				switch *tool.Type {
-				case AnthropicToolTypeComputer20251124:
-					if !hasProvider || features.ComputerUse {
-						headers = appendUniqueHeader(headers, AnthropicComputerUseBetaHeader20251124)
-					}
-				case AnthropicToolTypeComputer20250124:
-					if !hasProvider || features.ComputerUse {
-						headers = appendUniqueHeader(headers, AnthropicComputerUseBetaHeader20250124)
-					}
-				case AnthropicToolTypeAdvisor20260301:
-					if !hasProvider || caps.SupportsAdvisorTool(features.AdvisorTool) {
-						headers = appendUniqueHeader(headers, AnthropicAdvisorBetaHeader)
-					}
-				}
-			}
-			// Check for strict (structured-outputs)
-			if tool.Strict != nil && *tool.Strict {
-				if !hasProvider || features.StructuredOutputs {
-					headers = appendUniqueHeader(headers, AnthropicStructuredOutputsBetaHeader)
-				}
-			}
-			// defer_loading has its own beta (tool-search-tool-2025-10-19) as of
-			// current docs — it's no longer part of the AdvancedToolUse bundle.
-			// allowed_callers is still bundle-only.
-			if tool.DeferLoading != nil && *tool.DeferLoading {
-				if !hasProvider || caps.SupportsToolSearch(features.ToolSearch) {
-					headers = appendUniqueHeader(headers, AnthropicToolSearchBetaHeader)
-				}
-			}
-			if len(tool.InputExamples) > 0 {
-				if !hasProvider || caps.SupportsAdvancedToolUse(features.AdvancedToolUse) {
-					// Bundle header covers input_examples transitively.
-					headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
-				} else if caps.SupportsInputExamples(features.InputExamples) {
-					// Narrow standalone header (e.g. Bedrock).
-					headers = appendUniqueHeader(headers, AnthropicToolExamplesBetaHeader)
-				}
-			}
-			if len(tool.AllowedCallers) > 0 {
-				if !hasProvider || caps.SupportsAdvancedToolUse(features.AdvancedToolUse) {
-					headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
-				}
-			}
-			// input_examples has both bundle coverage AND a standalone header.
-			// Prefer the bundle header when the provider accepts the bundle
-			// (covers input_examples transitively); fall back to the narrow
-			// standalone header (Bedrock) when only InputExamples is set.
-			if len(tool.InputExamples) > 0 {
-				if !hasProvider || caps.SupportsAdvancedToolUse(features.AdvancedToolUse) {
-					headers = appendUniqueHeader(headers, AnthropicAdvancedToolUseBetaHeader)
-				} else if caps.SupportsInputExamples(features.InputExamples) {
-					headers = appendUniqueHeader(headers, AnthropicToolExamplesBetaHeader)
-				}
-			}
-			// Check for fine-grained tool streaming (eager_input_streaming).
-			// Beta fine-grained-tool-streaming-2025-05-14 — required for
-			// input_json_delta streaming on custom tools.
-			if tool.EagerInputStreaming != nil && *tool.EagerInputStreaming {
-				if !hasProvider || caps.SupportsEagerInputStreaming(features.EagerInputStreaming) {
-					headers = appendUniqueHeader(headers, AnthropicEagerInputStreamingBetaHeader)
-				}
-			}
-			// Check for cache control with scope
-			if !hasCachingScope && tool.CacheControl != nil && tool.CacheControl.Scope != nil {
-				if !hasProvider || features.PromptCachingScope {
-					headers = appendUniqueHeader(headers, AnthropicPromptCachingScopeBetaHeader)
-					hasCachingScope = true
-				}
-			}
-		}
+	for i := range req.Tools {
+		headers = appendAnthropicToolBetaHeaders(headers, &req.Tools[i], caps, features, hasProvider, &hasCachingScope)
+	}
+	// Tools defined by value inside messages (tool_addition blocks, compaction tool_changes)
+	// arrive through the signals, never through req.Messages, which the raw path drops.
+	for _, tool := range signals.inlineDefinitions {
+		headers = appendAnthropicToolBetaHeaders(headers, tool, caps, features, hasProvider, &hasCachingScope)
 	}
 	// Check for cache control with scope at the top level of the request
 	// (mirrors the tool/system/message checks below).
@@ -2293,10 +2372,16 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			}
 		}
 	}
-	// Check for MCP servers
-	if len(req.MCPServers) > 0 {
+	// Check for MCP servers. One mcp-client-* date only: an mcp_toolset defined by value
+	// needs the inline-tools-era date, which also covers mcp_servers, so it replaces the
+	// regular one instead of being sent alongside it.
+	if len(req.MCPServers) > 0 || signals.inlineMCPToolset {
 		if !hasProvider || caps.SupportsMCP(features.MCP) {
-			headers = appendUniqueHeader(headers, AnthropicMCPClientBetaHeader)
+			mcpBeta := AnthropicMCPClientBetaHeader
+			if signals.inlineMCPToolset {
+				mcpBeta = AnthropicMCPClientInlineToolsBetaHeader
+			}
+			headers = appendUniqueHeader(headers, mcpBeta)
 		}
 	}
 	// Check for interleaved thinking (required for older Claude 4 models with thinking enabled)
@@ -2402,6 +2487,20 @@ func addMissingBetaHeadersToContext(ctx *schemas.BifrostContext, req *AnthropicM
 			headers = appendUniqueHeader(headers, AnthropicMidConversationOutputConfigBetaHeader)
 		}
 	}
+	// Mid-conversation tool changes: tool_addition / tool_removal blocks on a role:"system"
+	// message need the beta, and a by-value tool_definition additionally needs inline-tools
+	// (which also covers the by-reference blocks). Both gate on the same provider feature;
+	// the model gate is enforced upstream (unsupported models 400 on the block itself).
+	if signals.midConversationToolChanges {
+		if !hasProvider || features.MidConvToolChanges {
+			headers = appendUniqueHeader(headers, AnthropicMidConversationToolChangesBetaHeader)
+		}
+	}
+	if signals.inlineToolDefinition {
+		if !hasProvider || features.MidConvToolChanges {
+			headers = appendUniqueHeader(headers, AnthropicInlineToolsBetaHeader)
+		}
+	}
 	if len(headers) == 0 {
 		return nil
 	}
@@ -2465,6 +2564,7 @@ var betaHeaderPrefixKnown = []string{
 	AnthropicFallbackCreditBetaHeaderPrefix,
 	AnthropicMidConversationToolChangesBetaHeaderPrefix,
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix,
+	AnthropicInlineToolsBetaHeaderPrefix,
 }
 
 // betaHeaderProviderVersion rewrites a beta header's version date on providers
@@ -3083,6 +3183,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 	// Long key kept in its own group so gofmt doesn't realign the block above.
 	AnthropicMidConversationToolChangesBetaHeaderPrefix:  func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix: func(f ProviderFeatureSupport) bool { return f.MidConvOutputConfig },
+	AnthropicInlineToolsBetaHeaderPrefix:                 func(f ProviderFeatureSupport) bool { return f.MidConvToolChanges },
 }
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and

@@ -140,7 +140,9 @@ func (p *RoutingPlugin) classifyComplexityTextViaLLM(ctx context.Context, llm *c
 	// behaves like a fresh external /v1/chat/completions call.
 	bifrost.PrepareContextForInternalRequest(chatCtx)
 
-	temperature := 0.0
+	// No temperature is sent: reasoning models (for example OpenAI models on
+	// Bedrock) reject the field outright, and a three-way JSON tier choice
+	// does not need sampling control.
 	maxCompletionTokens := llmClassifierMaxCompletionTokens
 	req := &schemas.BifrostChatRequest{
 		Provider: llm.Provider,
@@ -156,7 +158,6 @@ func (p *RoutingPlugin) classifyComplexityTextViaLLM(ctx context.Context, llm *c
 			},
 		},
 		Params: &schemas.ChatParameters{
-			Temperature:         &temperature,
 			MaxCompletionTokens: &maxCompletionTokens,
 		},
 	}
@@ -200,7 +201,7 @@ func (p *RoutingPlugin) classifyComplexityTextViaLLM(ctx context.Context, llm *c
 // runClassifierCompletion runs the classification request on chat completions,
 // falling back to the Responses API when the provider rejects the chat request
 // in a way the Responses retry fixes — a judge model that requires
-// /v1/responses, or one that refuses the temperature=0 the chat request sets
+// /v1/responses, or one that still rejects a temperature field
 // (see llmClassifierShouldRetryWithResponses). This mirrors the prompt-guardrail
 // judge's two-endpoint strategy: some reasoning models only accept a request
 // shape like this one on /v1/responses, and a classifier pinned to such a model
@@ -250,10 +251,9 @@ func (p *RoutingPlugin) runClassifierCompletion(
 //   - an explicit instruction to switch endpoints, which reasoning models give
 //     when they cannot serve this request shape on /v1/chat/completions (the
 //     same heuristic the prompt guardrail uses); and
-//   - a rejection of temperature=0, which reasoning models require to be the
-//     default. The classifier keeps temperature=0 on chat for deterministic
-//     routing on models that accept it; a model that refuses it is a reasoning
-//     model, and the Responses retry drops the parameter entirely.
+//   - a rejection of the temperature field, which reasoning models require to
+//     be the default. The classifier sends no temperature itself, so this only
+//     fires if a provider or proxy adds one.
 func llmClassifierShouldRetryWithResponses(bifrostErr *schemas.BifrostError) bool {
 	if bifrostErr == nil {
 		return false

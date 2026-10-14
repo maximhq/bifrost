@@ -7,14 +7,14 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdownMenu";
 import { matchWarpCommands, resolveWarpCommand, type WarpCommand } from "@/components/warp/warpCommands";
-import { cn } from "@/lib/utils";
 import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
 import type { WarpModel } from "@/lib/types/warp";
-import { hasProviderIcon, warpModelKey, warpModelLabel } from "./warpComposer.utils";
+import { cn } from "@/lib/utils";
 import { Link } from "@tanstack/react-router";
 import { ArrowUp, ChevronDown, Settings2, Square } from "lucide-react";
 import { useState } from "react";
 import TextareaAutosize from "react-textarea-autosize";
+import { hasProviderIcon, warpModelKey, warpModelLabel } from "./warpComposer.utils";
 
 interface WarpComposerProps {
 	onCommand?: (command: WarpCommand) => void;

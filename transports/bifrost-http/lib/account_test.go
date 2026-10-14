@@ -1,6 +1,7 @@
 package lib
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/network"
@@ -259,5 +260,28 @@ func TestGetConfigForProvider_ProxySourceMatrix(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// TestGetConfigForProvider_CarriesInjectedTools pins the field-by-field bridge from the
+// stored provider config into core: a field missing here saves fine but never reaches
+// the request path.
+func TestGetConfigForProvider_CarriesInjectedTools(t *testing.T) {
+	injected := []schemas.InjectedTool{
+		{Name: "web_search", MCPClientName: "tavily", ToolName: "search"},
+		{Name: "read_page", MCPClientName: "fetcher", ToolName: "fetch"},
+	}
+	store := &Config{
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			schemas.OpenAI: {InjectedTools: injected},
+		},
+	}
+
+	config, err := NewBaseAccount(store).GetConfigForProvider(schemas.OpenAI)
+	if err != nil {
+		t.Fatalf("GetConfigForProvider: %v", err)
+	}
+	if !reflect.DeepEqual(config.InjectedTools, injected) {
+		t.Errorf("injected_tools must reach core; got %+v", config.InjectedTools)
 	}
 }

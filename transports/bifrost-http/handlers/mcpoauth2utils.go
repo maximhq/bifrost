@@ -6,12 +6,15 @@ import (
 	"strings"
 
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
 // oauth2RedirectAllowed applies the current operator policy on every flow step,
-// including clients and pending flows created before a policy change.
+// including clients and pending flows created before a policy change. An
+// AllowAnyRedirectURI entry approves any https callback that passes the shape
+// checks; private-use scheme callbacks (RFC 8252 §7.1) need an exact entry,
+// since any app on a device can claim the same scheme.
 func oauth2RedirectAllowed(store *lib.Config, candidate string) bool {
 	if !isAllowedRedirectScheme(candidate) {
 		return false
@@ -26,7 +29,8 @@ func oauth2RedirectAllowed(store *lib.Config, candidate string) bool {
 	store.Mu.RLock()
 	defer store.Mu.RUnlock()
 	cfg := store.ClientConfig.OAuth2ServerConfig
-	return cfg != nil && slices.Contains(cfg.AllowedRedirectURIs, candidate)
+	return cfg != nil && (slices.Contains(cfg.AllowedRedirectURIs, candidate) ||
+		(u.Scheme == "https" && slices.Contains(cfg.AllowedRedirectURIs, configtables.AllowAnyRedirectURI)))
 }
 
 // oauth2IssuerURL resolves the effective AS issuer URL for a request. It is

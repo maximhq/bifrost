@@ -145,6 +145,64 @@ func TestListAllModelsUnreachableProviderDoesNotBlockAggregate(t *testing.T) {
 	}
 }
 
+// A direct key is the caller's own credential for one provider. Listing every provider would send it
+// to each of them, so the aggregate refuses a request carrying one before any provider is asked,
+// while a listing that names its provider still uses the key there, and only there.
+func TestListAllModelsRefusesADirectKey(t *testing.T) {
+	const directKey = "sk-caller-direct-key"
+	var openAIAuth, groqAuth []string
+	recording := func(seen *[]string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			*seen = append(*seen, r.Header.Get("Authorization"))
+			openAIStyleModelsHandler("model-a")(w, r)
+		}
+	}
+	openAISrv := httptest.NewServer(recording(&openAIAuth))
+	t.Cleanup(openAISrv.Close)
+	groqSrv := httptest.NewServer(recording(&groqAuth))
+	t.Cleanup(groqSrv.Close)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 10, openAISrv.URL)
+	account.AddProviderWithBaseURL(schemas.Groq, 1, 10, groqSrv.URL)
+	account.SetKeysForProvider(schemas.OpenAI, wildcardKey(schemas.OpenAI))
+	account.SetKeysForProvider(schemas.Groq, wildcardKey(schemas.Groq))
+	tuneProviderForTest(t, account, schemas.OpenAI)
+	tuneProviderForTest(t, account, schemas.Groq)
+	client := newListModelsTestClient(t, account, nil)
+
+	withDirectKey := func() *schemas.BifrostContext {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyDirectKey, schemas.Key{ID: "header-provided", Name: "header-provided", Value: *schemas.NewSecretVar(directKey), Weight: 1})
+		return ctx
+	}
+
+	ctx := withDirectKey()
+	defer ctx.Cancel()
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bfErr == nil {
+		t.Fatalf("ListAllModels with a direct key returned %v; want a refusal naming the provider requirement (openai saw %v, groq saw %v)", modelIDs(resp), openAIAuth, groqAuth)
+	}
+	if bfErr.StatusCode == nil || *bfErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %v, want 400: %s", bfErr.StatusCode, bfErr.GetErrorString())
+	}
+	if len(openAIAuth) != 0 || len(groqAuth) != 0 {
+		t.Fatalf("the direct key was sent to providers the caller never named: openai=%v groq=%v", openAIAuth, groqAuth)
+	}
+
+	named := withDirectKey()
+	defer named.Cancel()
+	if _, bfErr := client.ListModelsRequest(named, &schemas.BifrostListModelsRequest{Provider: schemas.OpenAI}); bfErr != nil {
+		t.Fatalf("listing a named provider with a direct key failed: %s", bfErr.GetErrorString())
+	}
+	if len(openAIAuth) != 1 || openAIAuth[0] != "Bearer "+directKey {
+		t.Fatalf("openai saw %v; want the direct key once", openAIAuth)
+	}
+	if len(groqAuth) != 0 {
+		t.Fatalf("groq saw %v; a named listing must not reach another provider", groqAuth)
+	}
+}
+
 // staticListerCatalog is a schemas.ModelInfoProvider that also implements the
 // optional per-provider model listing the aggregate falls back on, mimicking
 // the framework's ModelCatalog.
@@ -224,5 +282,95 @@ func TestListAllModelsAllPollsFailWithoutCatalogReturnsError(t *testing.T) {
 	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
 	if bfErr == nil {
 		t.Fatalf("expected an error when every provider poll fails with no catalog fallback; got %v", modelIDs(resp))
+	}
+}
+
+// modelDenyPlugin drops every listed model whose bare name is in deny, in
+// PostLLMHook, the way the governance plugin narrows a listing to what a
+// virtual key may see.
+type modelDenyPlugin struct {
+	deny map[string]bool
+}
+
+func (p *modelDenyPlugin) GetName() string { return "model-deny" }
+func (p *modelDenyPlugin) Cleanup() error  { return nil }
+func (p *modelDenyPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *modelDenyPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *modelDenyPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if resp == nil || resp.ListModelsResponse == nil {
+		return resp, bifrostErr, nil
+	}
+	kept := make([]schemas.Model, 0, len(resp.ListModelsResponse.Data))
+	for _, m := range resp.ListModelsResponse.Data {
+		if _, name := schemas.ParseModelString(m.ID, ""); !p.deny[name] {
+			kept = append(kept, m)
+		}
+	}
+	resp.ListModelsResponse.Data = kept
+	return resp, bifrostErr, nil
+}
+
+// The last-known models served for a failed poll must pass through the plugin
+// post-hooks like a live listing does; otherwise a virtual key's model
+// allow/block lists are skipped whenever its provider is unreachable.
+func TestListAllModelsLastKnownModelsPassThroughPostHooks(t *testing.T) {
+	account := NewMockAccount()
+	// Nothing listens here: the poll fails fast with connection refused.
+	account.AddProviderWithBaseURL(schemas.Groq, 1, 10, "http://127.0.0.1:1")
+	account.SetKeysForProvider(schemas.Groq, wildcardKey(schemas.Groq))
+	tuneProviderForTest(t, account, schemas.Groq)
+
+	catalog := &staticListerCatalog{modelsByProvider: map[schemas.ModelProvider][]string{
+		schemas.Groq: {"llama-3.3-70b-versatile", "llama-guard-4"},
+	}}
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{
+		Account:      account,
+		Logger:       NewNoOpLogger(),
+		ModelCatalog: catalog,
+		LLMPlugins:   []schemas.LLMPlugin{&modelDenyPlugin{deny: map[string]bool{"llama-guard-4": true}}},
+	})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bfErr != nil {
+		t.Fatalf("ListAllModels returned error: %s", bfErr.GetErrorString())
+	}
+	if !containsModelID(resp, "groq/llama-3.3-70b-versatile") {
+		t.Fatalf("last-known model the plugin allows is missing; got %v", modelIDs(resp))
+	}
+	if containsModelID(resp, "groq/llama-guard-4") {
+		t.Fatalf("last-known model the plugin's PostLLMHook drops leaked into the aggregate; got %v", modelIDs(resp))
+	}
+}
+
+// A single-provider list call keeps returning the poll error: the last-known
+// fallback belongs to the aggregate only.
+func TestListModelsRequestDoesNotServeLastKnownModels(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Groq, 1, 10, "http://127.0.0.1:1")
+	account.SetKeysForProvider(schemas.Groq, wildcardKey(schemas.Groq))
+	tuneProviderForTest(t, account, schemas.Groq)
+
+	catalog := &staticListerCatalog{modelsByProvider: map[schemas.ModelProvider][]string{
+		schemas.Groq: {"llama-3.3-70b-versatile"},
+	}}
+	client := newListModelsTestClient(t, account, catalog)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ListModelsRequest(ctx, &schemas.BifrostListModelsRequest{Provider: schemas.Groq})
+	if bfErr == nil {
+		t.Fatalf("expected the poll error from a single-provider list call; got %v", modelIDs(resp))
 	}
 }

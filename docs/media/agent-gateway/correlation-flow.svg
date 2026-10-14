@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="440" viewBox="0 0 1120 440" role="img" aria-labelledby="title desc">
+<title id="title">Follow the work across agent, model, and tools</title><desc id="desc">Your agent attaches these IDs to every Bifrost LLM and MCP request.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C3B43"/></marker></defs>
+<rect width="1120" height="440" rx="20" fill="#F5FAF8"/>
+<g font-family="Inter, system-ui, -apple-system, sans-serif">
+<text x="36" y="45" font-size="23" font-weight="700" fill="#0C3B43">Follow the work across agent, model, and tools</text>
+<text x="36" y="73" font-size="15" fill="#53696C">Your agent attaches these IDs to every Bifrost LLM and MCP request.</text>
+<rect x="40" y="130" width="330" height="145" rx="12" fill="#FFFFFF" stroke="#C4D8D3"/>
+<text x="60" y="164" font-size="19" font-weight="650" fill="#0C3B43">A2A execution context</text>
+<text x="60" y="192" font-size="14" fill="#0C3B43" opacity="0.85">context ID = conversation</text>
+<text x="60" y="216" font-size="14" fill="#0C3B43" opacity="0.85">task ID = current work</text>
+<text x="60" y="240" font-size="14" fill="#0C3B43" opacity="0.85">caller credential = identity</text>
+<rect x="535" y="130" width="545" height="145" rx="12" fill="#0C3B43" stroke="#0C3B43"/>
+<text x="555" y="164" font-size="19" font-weight="650" fill="#FFFFFF">Outgoing Bifrost requests</text>
+<text x="555" y="192" font-size="14" fill="#FFFFFF" opacity="0.85">x-bf-session-id: context ID</text>
+<text x="555" y="216" font-size="14" fill="#FFFFFF" opacity="0.85">x-bf-agent-correlation-id: task ID</text>
+<text x="555" y="240" font-size="14" fill="#FFFFFF" opacity="0.85">accepted caller authentication header</text>
+<rect x="535" y="320" width="545" height="80" rx="12" fill="#FFFFFF" stroke="#C4D8D3"/>
+<text x="555" y="354" font-size="19" font-weight="650" fill="#0C3B43">Agent Logs</text>
+<text x="555" y="382" font-size="14" fill="#0C3B43" opacity="0.85">Session view → task → LLM Logs and MCP Logs</text>
+<path d="M 370 205 H 530" fill="none" stroke="#0C3B43" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="452" y="182" font-size="13" text-anchor="middle" fill="#53696C">copy values</text>
+<path d="M 805 275 V 315" fill="none" stroke="#0C3B43" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="913" y="298" font-size="13" text-anchor="middle" fill="#53696C">match IDs</text>
+</g></svg>

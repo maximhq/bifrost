@@ -467,6 +467,8 @@ func MarshalPayload(payload map[string]string) ([]byte, error) {
 }
 
 type a2aPayloadV1 struct {
+	RawRequest    *string `json:"raw_request,omitempty"`
+	RawResponse   *string `json:"raw_response,omitempty"`
 	SchemaVersion int     `json:"schema_version"`
 	RequestBody   *string `json:"request_body,omitempty"`
 	ResponseBody  *string `json:"response_body,omitempty"`
@@ -476,9 +478,10 @@ type a2aPayloadV1 struct {
 func MarshalAgentLogPayload(l *AgentLog) ([]byte, error) {
 	return sonic.Marshal(a2aPayloadV1{
 		SchemaVersion: a2aObjectSchemaVersion,
-		RequestBody:   l.RequestBody,
-		ResponseBody:  l.ResponseBody,
-		EventBody:     l.EventBody,
+		RawRequest:    l.RawRequest, RawResponse: l.RawResponse,
+		RequestBody:  l.RequestBody,
+		ResponseBody: l.ResponseBody,
+		EventBody:    l.EventBody,
 	})
 }
 
@@ -490,6 +493,7 @@ func MergeAgentLogPayloadFromJSON(l *AgentLog, data []byte) error {
 	if payload.SchemaVersion != a2aObjectSchemaVersion {
 		return fmt.Errorf("logstore: unsupported A2A object schema version %d", payload.SchemaVersion)
 	}
+	l.RawRequest, l.RawResponse = payload.RawRequest, payload.RawResponse
 	l.RequestBody = payload.RequestBody
 	l.ResponseBody = payload.ResponseBody
 	l.EventBody = payload.EventBody
@@ -497,6 +501,7 @@ func MergeAgentLogPayloadFromJSON(l *AgentLog, data []byte) error {
 }
 
 func PrepareAgentLogDBEntry(l *AgentLog, objectKey string) {
+	l.RawRequest, l.RawResponse = nil, nil
 	if l.ContentHidden {
 		l.RequestBody = nil
 		l.ResponseBody = nil
@@ -518,7 +523,7 @@ func truncateStringPointer(value *string, maxRunes int) *string {
 }
 
 func AgentLogHasPayload(l *AgentLog) bool {
-	return l != nil && (l.RequestBody != nil || l.ResponseBody != nil || l.EventBody != nil)
+	return l != nil && (l.RequestBody != nil || l.ResponseBody != nil || l.EventBody != nil || l.RawRequest != nil || l.RawResponse != nil)
 }
 
 // MarshalMCPToolLogPayload serializes a full MCP tool log for object storage.
@@ -867,33 +872,36 @@ func BuildAgentLogTags(l *AgentLog) map[string]string {
 	return tags
 }
 
-// ObjectKey constructs the S3 object key for a log entry.
+// Object key suffixes. The suffix records how the object is encoded, so a
+// bucket can hold objects written before and after a format change.
+const (
+	jsonObjectExt    = ".json.gz"
+	parquetObjectExt = ".parquet"
+)
+
+// objectKey builds {prefix}/{dir}/YYYY/MM/DD/HH/{id}{ext}.
+func objectKey(prefix, dir string, timestamp time.Time, logID, ext string) string {
+	ts := timestamp.UTC()
+	return fmt.Sprintf("%s/%s/%04d/%02d/%02d/%02d/%s%s",
+		prefix, dir,
+		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
+		logID, ext,
+	)
+}
+
+// ObjectKey constructs the S3 object key for a JSON log entry.
 func ObjectKey(prefix string, timestamp time.Time, logID string) string {
-	ts := timestamp.UTC()
-	return fmt.Sprintf("%s/logs/%04d/%02d/%02d/%02d/%s.json.gz",
-		prefix,
-		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
-		logID,
-	)
+	return objectKey(prefix, "logs", timestamp, logID, jsonObjectExt)
 }
 
-// MCPToolObjectKey constructs the S3 object key for an MCP tool log entry.
+// MCPToolObjectKey constructs the S3 object key for a JSON MCP tool log entry.
 func MCPToolObjectKey(prefix string, timestamp time.Time, logID string) string {
-	ts := timestamp.UTC()
-	return fmt.Sprintf("%s/mcp-logs/%04d/%02d/%02d/%02d/%s.json.gz",
-		prefix,
-		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
-		logID,
-	)
+	return objectKey(prefix, "mcp-logs", timestamp, logID, jsonObjectExt)
 }
 
+// AgentLogObjectKey constructs the S3 object key for a JSON A2A log entry.
 func AgentLogObjectKey(prefix string, timestamp time.Time, logID string) string {
-	ts := timestamp.UTC()
-	return fmt.Sprintf("%s/agent-logs/%04d/%02d/%02d/%02d/%s.json.gz",
-		prefix,
-		ts.Year(), ts.Month(), ts.Day(), ts.Hour(),
-		logID,
-	)
+	return objectKey(prefix, "agent-logs", timestamp, logID, jsonObjectExt)
 }
 
 // PayloadFieldNames returns the list of DB column names that are payload fields.

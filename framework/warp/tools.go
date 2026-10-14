@@ -788,6 +788,29 @@ func stringArg(args map[string]any, key string) (string, error) {
 	return text, nil
 }
 
+// stringSliceArg reads a required list of strings. A non-string element is an
+// error rather than dropped, so a malformed call is never answered as a
+// narrower one.
+func stringSliceArg(args map[string]any, key string) ([]string, error) {
+	value, present := args[key]
+	if !present || value == nil {
+		return nil, fmt.Errorf("%s is required", key)
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array of strings, got %T", key, value)
+	}
+	result := make([]string, 0, len(items))
+	for index, item := range items {
+		text, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s[%d] must be a string, got %T", key, index, item)
+		}
+		result = append(result, text)
+	}
+	return result, nil
+}
+
 // boolArg reads an optional boolean flag.
 //
 // A present non-boolean used to read as false, so a malformed include_content

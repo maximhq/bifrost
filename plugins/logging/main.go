@@ -312,6 +312,7 @@ func (p *LoggerPlugin) applyErrorBillingFromBilledUsage(ctx *schemas.BifrostCont
 	}
 	if entry.TokenUsageParsed == nil {
 		entry.TokenUsageParsed = billed.DeepCopy()
+		p.dropIgnoredProviderCost(entry)
 		entry.PromptTokens = billed.PromptTokens
 		entry.CompletionTokens = billed.CompletionTokens
 		entry.TotalTokens = billed.TotalTokens
@@ -428,10 +429,21 @@ const (
 	// deferredUsageRetries / deferredUsageBackoff control how long we wait for the
 	// batch writer to land the row before giving up. Backoff doubles per attempt:
 	// 250ms, 500ms, 1s.
-	deferredUsageRetries   = 3
-	deferredUsageBackoff   = 250 * time.Millisecond
-	deferredUsageDBTimeout = 10 * time.Second
+	deferredUsageRetries = 3
+	deferredUsageBackoff = 250 * time.Millisecond
 )
+
+// deferredUsageDBTimeout is the single budget covering a deferred usage update's
+// wait for the migration window, the presence lookups and the UPDATE. A var so
+// tests can shrink it.
+var deferredUsageDBTimeout = 10 * time.Second
+
+// evictedPartialProbeTimeout bounds the IsLogEntryPresent probe PostLLMHook
+// runs synchronously on the terminal no-pending path when no in-memory
+// eviction marker exists. A store that stops answering must not hold the
+// response; past the bound the hook falls through to the ordinary no-pending
+// handling. A var so tests can shrink it.
+var evictedPartialProbeTimeout = 2 * time.Second
 
 // sleepCtx sleeps for d, returning false if the plugin context is cancelled first.
 // Cleanup waits on p.wg, so an uncancellable sleep here delays shutdown.
@@ -678,6 +690,9 @@ func (p *LoggerPlugin) emitSettlementSpan(ctx context.Context, entry *logstore.L
 	setStr(schemas.AttrRequestModel, entry.Model)
 	setStr(schemas.AttrResponseModel, entry.Model)
 	setStr(schemas.AttrLegacyRequestType, entry.Object)
+	if entry.BatchDebugParsed != nil {
+		setStr(schemas.AttrBatchID, entry.BatchDebugParsed.BatchID)
+	}
 
 	// Enrichment dims from the log row (no request context at settlement time), so
 	// settled cost filters like live traffic.
@@ -1033,6 +1048,21 @@ func (p *LoggerPlugin) scheduleDeferredUsageUpdate(ctx *schemas.BifrostContext, 
 		// store hold a slot for ~30s and drop everything arriving in that window.
 		retryCtx, cancelRetry := context.WithTimeout(p.ctx, deferredUsageDBTimeout)
 		defer cancelRetry()
+		// Wait out another node's logstore migration inside the same budget: the
+		// lookup and UPDATE below would otherwise queue behind its ALTER TABLE.
+		// Then also wait for our own batch writer to leave its pause: it polls the
+		// same lock on its own cadence, so it can notice the release up to a poll
+		// interval after this goroutine does, and the row looked up below is still
+		// in its held batch until then. If either outlives the budget the update
+		// is dropped and counted as today.
+		for p.migrationInProgress(retryCtx) || p.writerPaused.Load() {
+			budgetLeft := retryCtx.Err() == nil && p.sleepCtx(maintenancePollInterval) && retryCtx.Err() == nil
+			if !budgetLeft {
+				p.droppedDeferredUsage.Add(1)
+				p.logger.Warn("deferred usage update dropped for request %s: logstore migration pause outlived the whole %s budget", requestID, deferredUsageDBTimeout)
+				return
+			}
+		}
 		var found bool
 		for attempt := range deferredUsageRetries {
 			presentResult, findErr := p.store.IsLogEntryPresent(retryCtx, requestID)
@@ -1221,30 +1251,35 @@ type LoggerPlugin struct {
 	settlementTracer             schemas.Tracer     // tracer for settled batch/video cost spans; nil disables the bridge
 	mcpToolLogCallback           MCPToolLogCallback // Callback for MCP tool log entries
 	droppedRequests              atomic.Int64
-	cleanupTicker                *time.Ticker          // Ticker for cleaning up old processing logs
-	logMsgPool                   sync.Pool             // Pool for reusing LogMessage structs
-	updateDataPool               sync.Pool             // Pool for reusing UpdateLogData structs
-	pendingLogsEntries           sync.Map              // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
-	pendingLogsToInject          sync.Map              // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
-	pendingMCPLogsToInject       sync.Map              // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
-	provisionalMCPArguments      sync.Map              // Maps mcpLogID -> tool arguments captured before governance stamped the presented key; attached in PostMCPHook only if content ends up visible
-	pendingAgentLogs             sync.Map              // Maps request/operation key -> *logstore.AgentLog awaiting PostA2AHook
-	pendingAgentLogsToInject     sync.Map              // Maps traceID -> *pendingAgentInjectEntries (A2A request rows awaiting Inject latency backfill)
-	writerConfig                 logstore.WriterConfig // Resolved async writer queue and batch settings
-	writeQueue                   chan *writeQueueEntry // Buffered channel for batch write queue
-	closed                       atomic.Bool           // Set during cleanup to prevent sends on closed writeQueue
-	deferredUsageSem             chan struct{}         // Limits concurrent deferred usage DB updates
-	deferredUsageWatchSem        chan struct{}         // Caps goroutines parked on a deferred-usage channel (see scheduleDeferredUsageUpdate)
-	droppedDeferredUsage         atomic.Int64          // Deferred usage updates dropped because a semaphore was full
-	clusterNodeID                atomic.Value          // Cluster node ID (string) for log attribution in clustered deployments
-	batchCtx                     context.Context       // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
-	batchCancel                  context.CancelFunc    // Cancels batchCtx
-	batchSweeperCancel           context.CancelFunc    // Cancels the batch accounting sweeper, when enabled
-	videoSweeperCancel           context.CancelFunc    // Cancels the video accounting sweeper, when enabled
-	batchWriterDone              chan struct{}         // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
-	recoveredBatch               []*writeQueueEntry    // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
-	userAgentMappings            atomic.Value          // []compiledUserAgentMapping, read from request hot paths
-	userAgentMappingMu           sync.Mutex            // serializes user-agent mapping write+reload sequences to keep the cache consistent
+	droppedDuringMaintenance     atomic.Int64                   // Subset of droppedRequests dropped while the writer was paused for a logstore migration
+	writerPaused                 atomic.Bool                    // Set by batchWriter while it waits out another node's logstore migration
+	maintenanceCapSpent          atomic.Bool                    // batchWriter already paused maintenanceMaxPause for the current migration window
+	cleanupTicker                *time.Ticker                   // Ticker for cleaning up old processing logs
+	logMsgPool                   sync.Pool                      // Pool for reusing LogMessage structs
+	updateDataPool               sync.Pool                      // Pool for reusing UpdateLogData structs
+	pendingLogsEntries           sync.Map                       // Maps requestID -> *PendingLogData (PreLLMHook input data awaiting PostLLMHook)
+	evictedPartials              sync.Map                       // Maps requestID -> time.Time: partial rows persisted at eviction, awaiting reconcile in PostLLMHook
+	pendingClaimLocks            [pendingClaimShards]sync.Mutex // Striped by requestID; serializes eviction vs terminal PostLLMHook claiming a pending entry
+	pendingLogsToInject          sync.Map                       // Maps traceID -> *pendingInjectEntries (log entries to inject, supports multiple per trace)
+	pendingMCPLogsToInject       sync.Map                       // Maps mcpLogID -> *logstore.MCPToolLog (PreMCPHook input data awaiting PostMCPHook)
+	provisionalMCPArguments      sync.Map                       // Maps mcpLogID -> tool arguments captured before governance stamped the presented key; attached in PostMCPHook only if content ends up visible
+	pendingAgentLogs             sync.Map                       // Maps request/operation key -> *logstore.AgentLog awaiting PostA2AHook
+	pendingAgentLogsToInject     sync.Map                       // Maps traceID -> *pendingAgentInjectEntries (A2A request rows awaiting Inject latency backfill)
+	writerConfig                 logstore.WriterConfig          // Resolved async writer queue and batch settings
+	writeQueue                   chan *writeQueueEntry          // Buffered channel for batch write queue
+	closed                       atomic.Bool                    // Set during cleanup to prevent sends on closed writeQueue
+	deferredUsageSem             chan struct{}                  // Limits concurrent deferred usage DB updates
+	deferredUsageWatchSem        chan struct{}                  // Caps goroutines parked on a deferred-usage channel (see scheduleDeferredUsageUpdate)
+	droppedDeferredUsage         atomic.Int64                   // Deferred usage updates dropped because a semaphore was full
+	clusterNodeID                atomic.Value                   // Cluster node ID (string) for log attribution in clustered deployments
+	batchCtx                     context.Context                // Cancelled by Cleanup to stop the batchWriter goroutine before any further DB work
+	batchCancel                  context.CancelFunc             // Cancels batchCtx
+	batchSweeperCancel           context.CancelFunc             // Cancels the batch accounting sweeper, when enabled
+	videoSweeperCancel           context.CancelFunc             // Cancels the video accounting sweeper, when enabled
+	batchWriterDone              chan struct{}                  // Closed by batchWriter on exit; receiving from it transfers writeQueue ownership to Cleanup
+	recoveredBatch               []*writeQueueEntry             // batchWriter parks its in-memory batch here before exiting; safe to read after batchWriterDone closes (happens-before)
+	userAgentMappings            atomic.Value                   // []compiledUserAgentMapping, read from request hot paths
+	userAgentMappingMu           sync.Mutex                     // serializes user-agent mapping write+reload sequences to keep the cache consistent
 }
 
 // Init creates new logger plugin with given log store. batchStore is the
@@ -1406,6 +1441,23 @@ func (p *LoggerPlugin) cleanupWorker() {
 // cleanupOldProcessingLogs removes processing logs older than 30 minutes
 // and stale pending log entries from the in-memory map
 func (p *LoggerPlugin) cleanupOldProcessingLogs() {
+	// The DB deletes are skipped while another node runs a logstore migration:
+	// a DELETE queued ahead of its pending ALTER TABLE stalls the migration, and
+	// the rows are already 30 minutes stale, so the next tick losing a minute is
+	// harmless. The in-memory sweep below never touches the DB and always runs.
+	if p.migrationInProgress(p.ctx) {
+		p.logger.Debug("skipping processing-log cleanup tick: logstore migration lock is held by another node")
+	} else {
+		p.flushStaleProcessingLogs()
+	}
+
+	// Clean up stale pending log entries (requests where a post-hook never fired)
+	p.cleanupStalePendingLogs()
+}
+
+// flushStaleProcessingLogs deletes LLM, MCP and A2A rows still marked
+// processing after 30 minutes.
+func (p *LoggerPlugin) flushStaleProcessingLogs() {
 	// Calculate timestamp for 30 minutes ago in UTC to match log entry timestamps
 	thirtyMinutesAgo := time.Now().UTC().Add(-1 * 30 * time.Minute)
 
@@ -1423,9 +1475,6 @@ func (p *LoggerPlugin) cleanupOldProcessingLogs() {
 	if err := p.store.FlushAgentLogs(p.ctx, thirtyMinutesAgo); err != nil {
 		p.logger.Warn("failed to cleanup old processing A2A logs: %v", err)
 	}
-
-	// Clean up stale pending log entries (requests where a post-hook never fired)
-	p.cleanupStalePendingLogs()
 }
 
 // SetLogCallback sets a callback function that will be called for each log entry
@@ -1788,7 +1837,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	// PostLLMHook applies the final policy and drops whatever it does not allow, and the processing
 	// notification below never carries input captured this way.
 	captureProvisional := virtualKeyStampPending(ctx)
-	if p.contentLoggingEnabled(ctx) || captureProvisional {
+	requestContentPolicy := p.resolveContentPolicy(ctx)
+	if requestContentPolicy.storeContent || captureProvisional {
 		inputHistory, responsesInputHistory := p.extractInputHistory(req)
 		initialData.InputHistory = inputHistory
 		initialData.ResponsesInputHistory = responsesInputHistory
@@ -2002,6 +2052,8 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		InitialData:        initialData,
 		CreatedAt:          time.Now(),
 		Status:             logStatusProcessing,
+		ProvisionalInput:   captureProvisional,
+		ContentPolicy:      &requestContentPolicy,
 	}
 	if liveUnit != "" {
 		pending.Live = &liveSessionState{}
@@ -2051,7 +2103,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	if ok && fallbackRequestID != "" {
 		requestID = fallbackRequestID
 	}
-	requestType, _, originalModelRequested, resolvedModelUsed := bifrost.GetResponseFields(result, bifrostErr)
+	requestType, provider, originalModelRequested, resolvedModelUsed := bifrost.GetResponseFields(result, bifrostErr)
 	resolvedKeyAlias := bifrost.GetResponseRoutingInfo(result, bifrostErr).ResolvedKeyAlias
 	shouldStoreRaw, _ := ctx.Value(schemas.BifrostContextKeyShouldStoreRawInLogs).(bool)
 	contentLoggingEnabled := p.contentLoggingEnabled(ctx)
@@ -2068,16 +2120,76 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 
 	p.logger.Debug("PostLLMHook: request %s type=%q isFinalChunk=%v hasError=%v", requestID, requestType, isFinalChunk, bifrostErr != nil)
 
-	// Retrieve pending input data from PreLLMHook
+	// Retrieve pending input data from PreLLMHook. A terminal call takes the entry
+	// under the request's claim lock together with the eviction marker, so the
+	// stale sweep can never interleave between the two (see persistEvictedPartial).
 	var pendingVal any
-	var hasPending bool
-	if !bifrost.IsStreamRequestType(requestType) || isFinalChunk || bifrostErr != nil {
+	var hasPending, evicted bool
+	isTerminal := !bifrost.IsStreamRequestType(requestType) || isFinalChunk || bifrostErr != nil
+	if isTerminal {
+		lock := p.pendingClaimLock(requestID)
+		lock.Lock()
 		pendingVal, hasPending = p.pendingLogsEntries.LoadAndDelete(requestID)
+		if !hasPending {
+			_, evicted = p.evictedPartials.LoadAndDelete(requestID)
+		}
+		lock.Unlock()
 	} else {
 		pendingVal, hasPending = p.pendingLogsEntries.Load(requestID)
 	}
 
 	p.logger.Debug("PostLLMHook: pending data lookup for request %s: found=%v", requestID, hasPending)
+
+	// A stream that resumes after its pending entry was evicted keeps feeding the
+	// accumulator from its non-final chunks, so the terminal reconcile below
+	// carries the resumed output too. Decided by the in-memory marker only; no
+	// chunk ever probes the DB.
+	if !hasPending && !isTerminal && result != nil && requestType != schemas.RealtimeRequest {
+		if _, marked := p.evictedPartials.Load(requestID); marked {
+			if tracer, traceID, err := bifrost.GetTracerFromContext(ctx); err == nil && tracer != nil && traceID != "" {
+				tracer.ProcessStreamingChunk(ctx, traceID, false, result, nil)
+			}
+			return result, bifrostErr, nil
+		}
+	}
+
+	// Evicted-pending recovery: a request idle past pendingLogTTL had its pending
+	// entry dropped, but cleanupStalePendingLogs persisted a partial "processing"
+	// row first. On a terminal call, run the normal completion flow on a stub
+	// pending with no input and reconcile the result onto that row with an UPDATE
+	// (see persistCompletedEntry) instead of losing the log. Presence is decided
+	// by the in-memory marker first (set at eviction only once the partial insert
+	// was queued, so it is reliable even while that insert is still in flight);
+	// only a miss, e.g. a row persisted by a previous process, falls back to a
+	// bounded DB probe on p.ctx, since the request ctx may already be cancelled on
+	// timeout.
+	if !hasPending && isTerminal {
+		present := evicted
+		if !present {
+			probeCtx, cancelProbe := context.WithTimeout(p.ctx, evictedPartialProbeTimeout)
+			ok, perr := p.store.IsLogEntryPresent(probeCtx, requestID)
+			cancelProbe()
+			if perr == nil && ok {
+				present = true
+			}
+		}
+		if present {
+			p.logger.Warn("no pending log data found for request %s, reconciling output onto persisted partial row", requestID)
+			// Object/Provider/Model are rewritten with the values the row already
+			// has; every other input column stays zero, so the UPDATE leaves the
+			// partial row's input and metadata intact.
+			pendingVal, hasPending = &PendingLogData{
+				RequestID:      requestID,
+				CreatedAt:      time.Now(),
+				EvictedPartial: true,
+				InitialData: &InitialLogData{
+					Object:   string(requestType),
+					Provider: string(provider),
+					Model:    originalModelRequested,
+				},
+			}, true
+		}
+	}
 
 	if !hasPending {
 		// If we have an error (e.g., cancellation/timeout), still write a minimal error entry
@@ -2320,6 +2432,11 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	// Merged again here, not only in PreLLMHook: on the passthrough path governance stamps the key
 	// after our PreLLMHook has run.
 	entry.MetadataParsed = mergeVirtualKeyMetadata(entry.MetadataParsed, ctx)
+	if pending.EvictedPartial {
+		// The stub carries no request metadata; the merges above can still produce
+		// a small map, which would replace the partial row's metadata column.
+		entry.MetadataParsed = nil
+	}
 	entry.RoutingEngineLogs = routingEngineLogs
 
 	// Path A: Error with nil result
@@ -2366,7 +2483,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		p.applyErrorBillingFromBilledUsage(ctx, entry, bifrostErr.ExtraFields.BilledUsage, requestType)
 		p.applyInternalCallCosts(ctx, entry, guardrailMetadata)
 		applyLargePayloadPreviewsToEntry(ctx, entry, contentLoggingEnabled)
-		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+		p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
 	}
@@ -2470,7 +2587,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// Attach the per-category cost split to the accumulated stream usage so
 		// log detail views can surface input / output / cache costs.
 		p.attachCostBreakdown(ctx, entry, result)
-		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+		p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)
 		p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 		return result, bifrostErr, nil
 	}
@@ -2574,9 +2691,60 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 			Name: *entry.RoutingRuleName,
 		}
 	}
-	p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+	p.persistCompletedEntry(ctx, entry, pending.EvictedPartial)
 	p.scheduleDeferredUsageUpdate(ctx, requestID, entry.TokenUsageParsed != nil)
 	return result, bifrostErr, nil
+}
+
+// persistCompletedEntry writes a completed log entry. The normal path inserts it
+// through storeOrEnqueueEntry. An entry built on an evicted-partial stub instead
+// reconciles onto the row persisted at eviction via the write queue's UPDATE
+// lane: storeOrEnqueueEntry must be bypassed because it parks entries for
+// Inject, which re-enqueues them as conflict-safe inserts that would no-op
+// against the existing row and lose the output. The content policy is applied
+// here since storeOrEnqueueEntry is skipped; Inject's plugin-log and overhead
+// backfill is not available on this path.
+func (p *LoggerPlugin) persistCompletedEntry(ctx *schemas.BifrostContext, entry *logstore.Log, reconcileFromPartial bool) {
+	if !reconcileFromPartial {
+		p.storeOrEnqueueEntry(ctx, entry, p.makePostWriteCallback(nil))
+		return
+	}
+	policy := p.resolveContentPolicy(ctx)
+	entry.ContentHidden = !policy.visible()
+	attachLogRedactionData(ctx, entry, policy.visible())
+	p.enqueueLogUpdate(entry, p.makeReconcileCallback())
+}
+
+// makeReconcileCallback returns the post-write callback for a reconciling
+// update. The queued entry carries output fields only, so subscribers (the
+// websocket broadcast, indexers) are handed the full row re-read from the
+// store with the entry's own payload laid over it: on an object-storage-backed
+// store the re-read hydrates from the stored object, whose merge upload may not
+// have landed yet, so the output must come from the entry that was just
+// written or the notification would be missing the answer. The sparse entry is
+// the fallback when the read fails.
+func (p *LoggerPlugin) makeReconcileCallback() func(entry *logstore.Log) {
+	return func(entry *logstore.Log) {
+		if entry == nil {
+			return
+		}
+		full, err := p.store.FindByID(p.ctx, entry.ID)
+		if err != nil || full == nil {
+			p.logger.Debug("reconcile callback: re-read of log %s failed, notifying with partial entry: %v", entry.ID, err)
+			p.notifyLogCallbacks(p.ctx, entry)
+			return
+		}
+		if err := entry.SerializeFields(); err == nil {
+			if written, err := sonic.Marshal(logstore.ExtractPayload(entry)); err == nil {
+				if err := logstore.MergePayloadFromJSON(full, written); err == nil {
+					if err := full.DeserializeFields(); err != nil {
+						p.logger.Debug("reconcile callback: re-parse of log %s failed: %v", entry.ID, err)
+					}
+				}
+			}
+		}
+		p.notifyLogCallbacks(p.ctx, full)
+	}
 }
 
 // Cleanup is called when the plugin is being shut down. It stops the
@@ -3009,6 +3177,8 @@ func applyA2AContentPolicy(entry *logstore.AgentLog, policy contentPolicy) {
 	entry.RequestBody = nil
 	entry.ResponseBody = nil
 	entry.EventBody = nil
+	entry.RawRequest = nil
+	entry.RawResponse = nil
 }
 
 // PreA2AHook records protocol-neutral correlation fields and the payload values
@@ -3099,6 +3269,9 @@ func (p *LoggerPlugin) PostA2AHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 		entry.ErrorDetailsParsed = sanitizeErrorForLogging(bifrostErr, policy.visible(), shouldStoreRaw)
 	} else {
 		entry.Status = "success"
+	}
+	if capture := schemas.GetA2ARawCapture(ctx); capture != nil {
+		entry.RawRequest, entry.RawResponse = capture.Snapshot()
 	}
 	applyA2AContentPolicy(entry, policy)
 	entry.PluginLogs = serializePluginLogsBounded(ctx.GetPluginLogs(), maxA2APluginLogsLen)
