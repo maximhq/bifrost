@@ -40,6 +40,10 @@ type BifrostConfig struct {
 	KVStore            KVStore         // shared KV store for clustering/session stickiness; nil = disabled
 	SessionAffinity    SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
 	ModelCatalog       ModelInfoProvider
+	// VirtualModels resolves user-defined virtual model names to the candidate the
+	// backend currently has resident. Nil disables the feature entirely: the request
+	// path then costs one atomic load and nothing else.
+	VirtualModels VirtualModelResolver
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -665,6 +669,10 @@ const (
 	RoutingEngineRoutingRule    = "routing-rule"
 	RoutingEngineLoadbalancing  = "loadbalancing"
 	RoutingEngineModelCatalog   = "model-catalog"
+	// RoutingEngineVirtualModel marks resident-aware resolution: the client named a
+	// virtual model and this engine picked which of its candidates actually handled
+	// the request, based on what the backend reported holding in memory.
+	RoutingEngineVirtualModel   = "virtual-model"
 	RoutingEngineCircuitBreaker = "circuit-breaker"
 	// RoutingEngineSessionAffinity marks decisions a session made for the request:
 	// staying on the provider or key that served it before, ahead of what the

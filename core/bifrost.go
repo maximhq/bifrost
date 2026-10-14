@@ -152,6 +152,11 @@ type Bifrost struct {
 	keyPoolFilter             schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
 	kvStore                   schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
 	sessionAffinity           schemas.SessionAffinity             // decides which key a session stays on; never nil after Init
+	// virtualModels resolves a virtual model name to the candidate the backend has
+	// resident. nil when the feature is off, and the request path pays one atomic
+	// load and nothing else. Held in an atomic pointer because the transport swaps
+	// the whole set on a config change without restarting.
+	virtualModels atomic.Pointer[schemas.VirtualModelResolver]
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -324,6 +329,9 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	bifrost.providers.Store(&[]schemas.Provider{})
 
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	if config.VirtualModels != nil {
+		bifrost.virtualModels.Store(&config.VirtualModels)
+	}
 
 	if bifrost.keySelector == nil {
 		bifrost.keySelector = keyselectors.WeightedRandom
@@ -494,6 +502,62 @@ func (bifrost *Bifrost) setModelCatalogOnContext(ctx *schemas.BifrostContext) {
 // We will keep on adding other aspects as required
 func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	return nil
+}
+
+// virtualResolver returns the installed resolver, or nil when virtual models are off.
+func (bifrost *Bifrost) virtualResolver() schemas.VirtualModelResolver {
+	if ptr := bifrost.virtualModels.Load(); ptr != nil {
+		return *ptr
+	}
+	return nil
+}
+
+// resolveVirtualModel rewrites a virtual model name into the candidate the backend
+// reports as resident, so a request never evicts a loaded model by naming one that
+// is not in memory.
+//
+// Placement is the whole design: it runs after the routing plugins, so governance
+// and routing rules keep first refusal on the name the client actually sent, and
+// before session routing and key selection, which both act on the concrete model -
+// keys are filtered by key.Models against the request's model string. It returns an
+// error to the caller instead of logging one, which is precisely why it lives here
+// and not in a PreRequestHook: RunPreRequestHooks records hook errors and carries on
+// regardless.
+//
+// A no-op when there is no resolver, or when the model names no virtual model -
+// which is every ordinary request.
+func (bifrost *Bifrost) resolveVirtualModel(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostError {
+	resolver := bifrost.virtualResolver()
+	if resolver == nil || req == nil {
+		return nil
+	}
+	provider, model, _ := req.GetRequestFields()
+	virtual, ok := resolver.Lookup(model)
+	if !ok {
+		return nil
+	}
+	// Naming provider and virtual model together ("omlx/qwen38") is fine. Naming a
+	// *different* provider is not: residency was measured on the virtual model's
+	// provider, so honouring the other one would dispatch a name whose residency
+	// nobody checked.
+	if provider != "" && provider != virtual.Provider {
+		return schemas.NewVirtualModelError(400, fmt.Sprintf(
+			"virtual model %q belongs to provider %q, not %q", virtual.Name, virtual.Provider, provider))
+	}
+
+	resolution, bifrostErr := resolver.Resolve(ctx, virtual)
+	if bifrostErr != nil {
+		return bifrostErr
+	}
+
+	req.SetProvider(resolution.Provider)
+	req.SetModel(resolution.Model)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualModel, virtual.Name)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualModelResolution, resolution)
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineVirtualModel, schemas.LogLevelInfo, fmt.Sprintf(
+		"Virtual model %s resolved to %s/%s: %s", virtual.Name, resolution.Provider, resolution.Model, resolution.Reason))
+	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineVirtualModel)
 	return nil
 }
 
@@ -5867,6 +5931,13 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	if virtualErr := bifrost.resolveVirtualModel(ctx, req); virtualErr != nil {
+		// Returning before tryRequest skips the downstream log drain.
+		flushPluginLogs(ctx)
+		provider, model, _ := req.GetRequestFields()
+		virtualErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, virtualErr
+	}
 	// The session has the last word on the chain the hooks produced.
 	bifrost.resolveSessionRoute(ctx, requested, req)
 	bifrost.endCoreSpan(setupSpan)
@@ -6080,6 +6151,13 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	if virtualErr := bifrost.resolveVirtualModel(ctx, req); virtualErr != nil {
+		// Returning before tryStreamRequest skips the downstream log drain.
+		flushPluginLogs(ctx)
+		provider, model, _ := req.GetRequestFields()
+		virtualErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, virtualErr
+	}
 	// The session has the last word on the chain the hooks produced.
 	bifrost.resolveSessionRoute(ctx, requested, req)
 	// "miscellaneous" phase: pre-dispatch glue (field re-read + validation) on no other
