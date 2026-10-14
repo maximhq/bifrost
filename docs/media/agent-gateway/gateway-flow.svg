@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="430" viewBox="0 0 1120 430" role="img" aria-labelledby="title desc">
+<title id="title">One gateway for the agent journey</title><desc id="desc">Your agent owns the work. Bifrost routes calls, controls access, and records activity.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0C3B43"/></marker></defs>
+<rect width="1120" height="430" rx="20" fill="#F5FAF8"/>
+<g font-family="Inter, system-ui, -apple-system, sans-serif">
+<text x="36" y="45" font-size="23" font-weight="700" fill="#0C3B43">One gateway for the agent journey</text>
+<text x="36" y="73" font-size="15" fill="#53696C">Your agent owns the work. Bifrost routes calls, controls access, and records activity.</text>
+<rect x="40" y="135" width="240" height="112" rx="12" fill="#FFFFFF" stroke="#C4D8D3"/>
+<text x="60" y="169" font-size="19" font-weight="650" fill="#0C3B43">Your application</text>
+<text x="60" y="197" font-size="14" fill="#0C3B43" opacity="0.85">Asks a question</text>
+<text x="60" y="221" font-size="14" fill="#0C3B43" opacity="0.85">Uses the Bifrost endpoint</text>
+<rect x="420" y="135" width="265" height="112" rx="12" fill="#0C3B43" stroke="#0C3B43"/>
+<text x="440" y="169" font-size="19" font-weight="650" fill="#FFFFFF">Bifrost Agent Gateway</text>
+<text x="440" y="197" font-size="14" fill="#FFFFFF" opacity="0.85">Checks agent access</text>
+<text x="440" y="221" font-size="14" fill="#FFFFFF" opacity="0.85">Routes A2A and records logs</text>
+<rect x="825" y="135" width="255" height="112" rx="12" fill="#FFFFFF" stroke="#C4D8D3"/>
+<text x="845" y="169" font-size="19" font-weight="650" fill="#0C3B43">Your agent</text>
+<text x="845" y="197" font-size="14" fill="#0C3B43" opacity="0.85">Owns tasks and artifacts</text>
+<text x="845" y="221" font-size="14" fill="#0C3B43" opacity="0.85">Runs your workflow</text>
+<rect x="420" y="310" width="390" height="70" rx="12" fill="#0C3B43" stroke="#0C3B43"/>
+<text x="440" y="344" font-size="19" font-weight="650" fill="#FFFFFF">Bifrost LLM and MCP</text>
+<text x="440" y="372" font-size="14" fill="#FFFFFF" opacity="0.85">Model and tool calls with caller attribution</text>
+<path d="M 280 190 H 415" fill="none" stroke="#0C3B43" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="348" y="171" font-size="13" text-anchor="middle" fill="#53696C">A2A</text>
+<path d="M 685 190 H 820" fill="none" stroke="#0C3B43" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="752" y="171" font-size="13" text-anchor="middle" fill="#53696C">A2A</text>
+<path d="M 950 247 V 345 H 815" fill="none" stroke="#0C3B43" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="949" y="288" font-size="13" text-anchor="middle" fill="#53696C">Calls back through Bifrost</text>
+</g></svg>

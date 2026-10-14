@@ -248,6 +248,15 @@ func TestIsPerplexityDeciderModel(t *testing.T) {
 	}
 }
 
+func TestIsMicrosoftDecisionModel(t *testing.T) {
+	for _, model := range []string{"Microsoft-Decision-1", "microsoft-decision-1", "Microsoft-Decision-2"} {
+		assert.True(t, IsMicrosoftDecisionModel(model), model)
+	}
+	for _, model := range []string{"Decision-1", "azure/Microsoft-Decision-1", "gpt-6-luna", "decision", ""} {
+		assert.False(t, IsMicrosoftDecisionModel(model), model)
+	}
+}
+
 func TestIsOllamaDecisionModel(t *testing.T) {
 	for _, model := range []string{"nimble", "nimble:latest", "nimble-2", "tev1:0.8b", "tev1-mini", "clef", "clef-flash", "clef-omni", "Clef-Flash:9b", "laya", "laya-multilingual"} {
 		assert.True(t, IsOllamaDecisionModel(model), model)

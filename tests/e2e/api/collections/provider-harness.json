@@ -262894,7 +262894,379 @@
       ]
     },
     {
-      "name": "231. Skill marketplace URLs keep a non-default forwarded port (#7762 / PR #8281) [SERIAL]",
+      "name": "230. Azure Microsoft-Decision-1 decisions (azure-decisions)",
+      "description": "The azure provider serves Microsoft-Decision-1 natively on POST {endpoint}/providers/microsoft/v1/systemone, in Typesafe's systemone shape, with no api-version. The request model is the deployment name: the harness key aliases Microsoft-Decision-1 to the deployment Decision-1. Azure is not gated by model name, so any model is posted and a deployment that does not serve decisions comes back as Azure's own error. The model is text-only and reads an image part as JSON text with a 200, so an image is a local 400. Top-level fields are strict: an extra one forwarded with passthrough is Azure's 400. With convert_decision_to_responses on, Microsoft-Decision-1 on Azure is still served natively. Each route that reaches Azure's Decision is covered: /v1/decisions, /openai/v1/decisions and /typesafe/v1/systemone.",
+      "item": [
+        {
+          "name": "/v1/decisions - mixed kinds return typed answers - azure/Microsoft-Decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Microsoft-Decision-1 answers every kind natively', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  var a = body.answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(a.map(function (x) { return x.type; })).to.eql(['predicate', 'choice', 'score']);",
+                  "  pm.expect(a[0].probability).to.be.within(0, 1);",
+                  "  pm.expect(['billing', 'bug', 'other']).to.include(a[1].choice);",
+                  "  pm.expect(a[2].score).to.be.within(0, 2);",
+                  "  pm.expect(body.usage.prompt_tokens, 'usage: ' + pm.response.text()).to.be.above(0);",
+                  "  pm.expect(body.extra_fields.provider).to.eql('azure');",
+                  "  pm.expect(body.extra_fields).to.not.have.property('converted_request_type');",
+                  "});",
+                  "pm.test('the deployment name is sent as the model, on the systemone body', function () {",
+                  "  var rr = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr, 'raw_request: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(rr.model).to.eql('Decision-1');",
+                  "  pm.expect(rr.questions.is_frustrated.type).to.eql('noul');",
+                  "  pm.expect(rr.questions.urgency.criteria).to.be.an('array').with.lengthOf(3);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/Microsoft-Decision-1\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges, refunds, invoices\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\",\n          \"description\": \"anything else\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"Rate how urgently this ticket needs a human reply\",\n      \"levels\": [\n        {\n          \"label\": \"0\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"1\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"2\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - structured object input - azure/Microsoft-Decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a JSON object input is sent as the state', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(a[0].probability, 'a third request is a repeat contact: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/Microsoft-Decision-1\",\n  \"input\": {\n    \"message\": \"Checkout is down again. This is my third request.\",\n    \"customer_contact_count\": 3\n  },\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"repeat_contact\",\n      \"instructions\": \"Has the customer contacted support before?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - stays native with decision emulation on - azure/Microsoft-Decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Microsoft-Decision-1 on Azure is not emulated through Responses', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.extra_fields, 'body: ' + pm.response.text()).to.not.have.property('converted_request_type');",
+                  "  pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_decision_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/Microsoft-Decision-1\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - input_image rejected locally - azure/Microsoft-Decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('an image never reaches the text-only model', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('input_image');",
+                  "  pm.expect(pm.response.text()).to.include('this provider cannot read');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/Microsoft-Decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": \"Here is the screenshot.\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"image_url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAFWEXHbQSACj/P8Fu7N9hAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_red\",\n      \"instructions\": \"Is the image mostly red?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - extra top-level field rejected by Azure - azure/Microsoft-Decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a passthrough field reaches Azure, which rejects it', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('Unrecognized request argument supplied: foo');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-passthrough-extra-params",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/Microsoft-Decision-1\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ],\n  \"foo\": \"bar\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-404] /v1/decisions - unknown deployment comes back as Azure's error - azure/no-such-deployment",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Azure is not gated by model name; its DeploymentNotFound passes through', function () {",
+                  "  pm.expect(pm.response.code, 'expected 404, got: ' + pm.response.text()).to.eql(404);",
+                  "  pm.expect(pm.response.text()).to.include('no-such-deployment');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/no-such-deployment\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/decisions - OpenAI shape - azure/Microsoft-Decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Microsoft-Decision-1 answers in the OpenAI shape', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(3);",
+                  "  pm.expect(body.answers.map(function (x) { return x.name; })).to.eql(['is_frustrated', 'category', 'urgency']);",
+                  "  pm.expect(body.usage.input_tokens, 'usage: ' + JSON.stringify(body.usage)).to.be.above(0);",
+                  "  pm.expect(body.extra_fields.provider).to.eql('azure');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/Microsoft-Decision-1\",\n  \"input\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    {\n      \"type\": \"choice\",\n      \"name\": \"category\",\n      \"instructions\": \"Pick the ticket category\",\n      \"choices\": [\n        {\n          \"value\": \"billing\",\n          \"description\": \"charges, refunds, invoices\"\n        },\n        {\n          \"value\": \"bug\",\n          \"description\": \"product defects\"\n        },\n        {\n          \"value\": \"other\",\n          \"description\": \"anything else\"\n        }\n      ]\n    },\n    {\n      \"type\": \"score\",\n      \"name\": \"urgency\",\n      \"instructions\": \"Rate how urgently this ticket needs a human reply\",\n      \"levels\": [\n        {\n          \"label\": \"0\",\n          \"description\": \"can wait a week\"\n        },\n        {\n          \"label\": \"1\",\n          \"description\": \"should be answered soon\"\n        },\n        {\n          \"label\": \"2\",\n          \"description\": \"needs a reply today\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/typesafe/v1/systemone - native questions round trip - azure/Microsoft-Decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('native systemone through Azure succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('all three native answer types come back', function () {",
+                  "  pm.expect(body.answers.is_frustrated.type).to.eql('noul');",
+                  "  pm.expect(body.answers.is_frustrated.noul).to.be.within(0, 1);",
+                  "  pm.expect(body.answers.category.type).to.eql('choice');",
+                  "  pm.expect(['billing', 'bug', 'other']).to.include(body.answers.category.choice);",
+                  "  pm.expect(body.answers.urgency.type).to.eql('score');",
+                  "  pm.expect(body.answers.urgency.score).to.be.within(0, 2);",
+                  "  pm.expect(body.usage.input_tokens).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"state\": \"Customer: I was double charged last month and nobody answered my two emails. Refund me today or I cancel.\",\n  \"model\": \"azure/Microsoft-Decision-1\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"category\": {\n      \"type\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges and refunds\",\n        \"bug\": \"product defects\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"urgency\": {\n      \"type\": \"score\",\n      \"instructions\": \"Rate how urgently this needs a human reply\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered soon\",\n        \"needs a reply today\"\n      ]\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "232. Skill marketplace URLs keep a non-default forwarded port (#7762 / PR #8281) [SERIAL]",
       "description": "Issue #7762: the skills marketplace builds plugin URLs from X-Forwarded-Proto and X-Forwarded-Host but ignored X-Forwarded-Port, so a gateway published behind a proxy on a port other than 80 or 443 handed Claude Code and Codex plugin URLs on the scheme default port, which do not resolve. After the fix a forwarded port from 1 to 65535 is appended unless the host already has one or it is the scheme default, and a malformed value is ignored. The cases run in order: create a throwaway skill (the marketplace lists plugins only when a skill exists), read the Claude Code and Codex marketplaces with X-Forwarded-Port 8443 (red before the fix), check that the default 443 and a malformed '8443@evil.example' stay off the URL, then delete the skill. [SERIAL] because the skill is visible gateway-wide while it exists. The marketplace routes need a git binary on the gateway host.",
       "item": [
         {
@@ -262905,7 +263277,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.collectionVariables.set('h231SkillName', 'harness-forwarded-port-' + Date.now());"
+                  "pm.collectionVariables.set('h232SkillName', 'harness-forwarded-port-' + Date.now());"
                 ]
               }
             },
@@ -262924,7 +263296,7 @@
                   "pm.test('skills-forwarded-port: created skill has an id', function () {",
                   "  pm.expect(id, 'no skill id in the response: ' + txt.slice(0, 400)).to.be.a('string');",
                   "});",
-                  "pm.collectionVariables.set('h231SkillId', id || '');"
+                  "pm.collectionVariables.set('h232SkillId', id || '');"
                 ]
               }
             }
@@ -262939,7 +263311,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"{{h231SkillName}}\",\n  \"description\": \"Harness fixture for the forwarded port check.\",\n  \"skill_md_body\": \"Harness fixture. Safe to delete.\",\n  \"version\": \"1.0.0\"\n}"
+              "raw": "{\n  \"name\": \"{{h232SkillName}}\",\n  \"description\": \"Harness fixture for the forwarded port check.\",\n  \"skill_md_body\": \"Harness fixture. Safe to delete.\",\n  \"version\": \"1.0.0\"\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/api/skills",
@@ -262967,7 +263339,7 @@
                   "});",
                   "var body = {};",
                   "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "var name = 'bifrost-' + pm.collectionVariables.get('h231SkillName');",
+                  "var name = 'bifrost-' + pm.collectionVariables.get('h232SkillName');",
                   "var plugin = (body.plugins || []).filter(function (p) { return p && p.name === name; })[0];",
                   "var got = plugin && plugin.source && plugin.source.url;",
                   "pm.test('skills-forwarded-port claude-code 8443: plugin URL is https://gateway.example.com:8443', function () {",
@@ -263024,7 +263396,7 @@
                   "});",
                   "var body = {};",
                   "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "var name = 'bifrost-' + pm.collectionVariables.get('h231SkillName');",
+                  "var name = 'bifrost-' + pm.collectionVariables.get('h232SkillName');",
                   "var plugin = (body.plugins || []).filter(function (p) { return p && p.name === name; })[0];",
                   "var got = plugin && plugin.source && plugin.source.url;",
                   "pm.test('skills-forwarded-port codex 8443: plugin URL is https://gateway.example.com:8443', function () {",
@@ -263082,7 +263454,7 @@
                   "});",
                   "var body = {};",
                   "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "var name = 'bifrost-' + pm.collectionVariables.get('h231SkillName');",
+                  "var name = 'bifrost-' + pm.collectionVariables.get('h232SkillName');",
                   "var plugin = (body.plugins || []).filter(function (p) { return p && p.name === name; })[0];",
                   "var got = plugin && plugin.source && plugin.source.url;",
                   "pm.test('skills-forwarded-port claude-code 443: plugin URL is https://gateway.example.com', function () {",
@@ -263139,7 +263511,7 @@
                   "});",
                   "var body = {};",
                   "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
-                  "var name = 'bifrost-' + pm.collectionVariables.get('h231SkillName');",
+                  "var name = 'bifrost-' + pm.collectionVariables.get('h232SkillName');",
                   "var plugin = (body.plugins || []).filter(function (p) { return p && p.name === name; })[0];",
                   "var got = plugin && plugin.source && plugin.source.url;",
                   "pm.test('skills-forwarded-port claude-code malformed port: plugin URL is https://gateway.example.com', function () {",
@@ -263201,14 +263573,14 @@
             "method": "DELETE",
             "header": [],
             "url": {
-              "raw": "{{baseUrl}}/api/skills/{{h231SkillId}}",
+              "raw": "{{baseUrl}}/api/skills/{{h232SkillId}}",
               "host": [
                 "{{baseUrl}}"
               ],
               "path": [
                 "api",
                 "skills",
-                "{{h231SkillId}}"
+                "{{h232SkillId}}"
               ]
             }
           }
