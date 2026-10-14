@@ -1,5 +1,5 @@
 import { isReservedMetadataKey } from "@/lib/registries/logs";
-import type { ResponsesMessage } from "@/lib/types/logs";
+import type { LogEntry, PassthroughLogParams, ResponsesMessage } from "@/lib/types/logs";
 import { isLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 
 /**
@@ -230,4 +230,27 @@ export function decisionQuestions(object: string | undefined, params: unknown): 
 	if (object !== "decisions" || params === null || typeof params !== "object") return null;
 	const count = Array.isArray(params) ? params.length : Object.keys(params).length;
 	return count > 0 ? { value: params, count } : null;
+}
+
+export const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
+
+// The fields the passthrough helpers read; a LogEntry satisfies it.
+type PassthroughLogShape = { object: string; params?: object } & Partial<
+	Pick<LogEntry, "input_history" | "responses_input_history" | "output_message" | "responses_output">
+>;
+
+/** The params of a passthrough row, or null for any other row. */
+export function passthroughLogParams(log: PassthroughLogShape): PassthroughLogParams | null {
+	return isPassthroughOperation(log.object) ? ((log.params as PassthroughLogParams | undefined) ?? {}) : null;
+}
+
+/**
+ * Whether a passthrough row's raw bodies were parsed into conversation fields, so it renders like a
+ * typed request. Parsing is best-effort: a row whose bodies did not decode, or whose route has no
+ * typed equivalent, keeps the raw-body view.
+ */
+export function isParsedPassthroughLog(log: PassthroughLogShape): boolean {
+	const params = passthroughLogParams(log);
+	if (!params?.parsed_type) return false;
+	return Boolean(log.input_history?.length || log.responses_input_history?.length || log.output_message || log.responses_output?.length);
 }
