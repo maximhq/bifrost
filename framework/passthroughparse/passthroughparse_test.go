@@ -314,12 +314,47 @@ func TestParseKeepsTheSideThatDecoded(t *testing.T) {
 	require.Nil(t, r)
 }
 
-func TestParseStreamLeavesResponseForReassembly(t *testing.T) {
-	r, err := Parse(Input{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/chat/completions", StatusCode: 200, Stream: true, RequestBody: []byte(openAIChatRequest), ResponseBody: []byte("data: {}\n\n")})
-	require.NoError(t, err)
-	require.NotNil(t, r)
-	require.NotNil(t, r.Request)
-	require.Nil(t, r.Response)
+// TestParseIsBestEffort pins that parsing never fails loudly: every known route, fed bodies that are
+// truncated, of the wrong shape, binary or empty, returns without panicking.
+func TestParseIsBestEffort(t *testing.T) {
+	routes := []Input{
+		{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/chat/completions"},
+		{Provider: schemas.OpenAI, Model: "gpt-5", Method: "POST", Path: "/v1/responses"},
+		{Provider: schemas.OpenAI, Model: "gpt-3.5-turbo-instruct", Method: "POST", Path: "/v1/completions"},
+		{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5", Method: "POST", Path: "/v1/messages"},
+		{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5", Method: "POST", Path: "/v1/messages/count_tokens"},
+		{Provider: schemas.Anthropic, Model: "claude-2.1", Method: "POST", Path: "/v1/complete"},
+		{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Method: "POST", Path: "/models/gemini-2.5-flash:generateContent"},
+		{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Method: "POST", Path: "/models/gemini-2.5-flash:countTokens"},
+		{Provider: schemas.Vertex, Model: "claude-sonnet-4-5", Method: "POST", Path: "/projects/p/locations/l/publishers/anthropic/models/claude-sonnet-4-5:rawPredict"},
+	}
+	bodies := []string{
+		"", "{", "[]", "null", `"str"`, "42", `{"messages":"nope"}`, `{"contents":{}}`, `{"content":[{"type":"tool_use","input":"x"}]}`,
+		`{"choices":[{"message":null}]}`, `{"candidates":[null]}`, "\x00\xff\xfe", "data: {\n\n", "event: x\ndata: [1,2\n\n",
+		anthropicStream[:len(anthropicStream)/2], openAIChatStream[:len(openAIChatStream)/3], openAIResponsesStream, geminiStreamChunk1,
+	}
+	for _, route := range routes {
+		for _, stream := range []bool{false, true} {
+			for _, body := range bodies {
+				in := route
+				in.StatusCode = 200
+				in.Stream = stream
+				in.RequestBody = []byte(body)
+				in.ResponseBody = []byte(body)
+				require.NotPanics(t, func() { _, _ = Parse(in) }, "route %s stream=%v body=%q", route.Path, stream, body)
+			}
+		}
+	}
+}
+
+func TestSafeParseRecoversConverterPanic(t *testing.T) {
+	out, err := safeParse(func() (*schemas.BifrostResponse, error) {
+		var resp *schemas.BifrostChatResponse
+		_ = resp.Choices // nil dereference, as a converter hitting an unexpected shape would
+		return nil, nil
+	})
+	require.Nil(t, out)
+	require.ErrorContains(t, err, "converter panicked")
 }
 
 // BenchmarkParse records the per-row cost the logging writer pays for a typical parsed call. It
@@ -332,6 +367,8 @@ func BenchmarkParse(b *testing.B) {
 		{"openai_chat", Input{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/chat/completions", StatusCode: 200, RequestBody: []byte(openAIChatRequest), ResponseBody: []byte(openAIChatResponse)}},
 		{"anthropic_messages", Input{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5", Method: "POST", Path: "/v1/messages", StatusCode: 200, RequestBody: []byte(anthropicMessagesRequest), ResponseBody: []byte(anthropicMessagesResponse)}},
 		{"gemini_generate", Input{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Method: "POST", Path: "/models/gemini-2.5-flash:generateContent", StatusCode: 200, RequestBody: []byte(geminiRequest), ResponseBody: []byte(geminiResponse)}},
+		{"openai_chat_stream", Input{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/chat/completions", StatusCode: 200, Stream: true, RequestBody: []byte(openAIChatRequest), ResponseBody: []byte(openAIChatStream)}},
+		{"anthropic_messages_stream", Input{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5", Method: "POST", Path: "/v1/messages", StatusCode: 200, Stream: true, RequestBody: []byte(anthropicMessagesRequest), ResponseBody: []byte(anthropicStream)}},
 		{"unknown_route", Input{Provider: schemas.OpenAI, Method: "GET", Path: "/v1/models", StatusCode: 200, ResponseBody: []byte(`{"data":[]}`)}},
 	}
 	for _, c := range cases {
@@ -382,4 +419,268 @@ func TestParseMethods(t *testing.T) {
 			})
 		}
 	}
+}
+
+const openAIChatStream = "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"},\"finish_reason\":null}]}\n\n" +
+	"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n" +
+	"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":null}]}\n\n" +
+	"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\"\"}}]},\"finish_reason\":null}]}\n\n" +
+	"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\":\\\"Paris\\\"}\"}}]},\"finish_reason\":null}]}\n\n" +
+	"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+	"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":7,\"total_tokens\":27}}\n\n" +
+	"data: [DONE]\n\n"
+
+const openAITextStream = "data: {\"id\":\"cmpl-1\",\"object\":\"text_completion\",\"created\":1,\"model\":\"gpt-3.5-turbo-instruct\",\"choices\":[{\"index\":0,\"text\":\" ti\",\"finish_reason\":null}]}\n\n" +
+	"data: {\"id\":\"cmpl-1\",\"object\":\"text_completion\",\"created\":1,\"model\":\"gpt-3.5-turbo-instruct\",\"choices\":[{\"index\":0,\"text\":\"me\",\"finish_reason\":\"stop\"}]}\n\n" +
+	"data: [DONE]\n\n"
+
+const openAIResponsesStream = "event: response.created\ndata: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"gpt-5\",\"output\":[]}}\n\n" +
+	"event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"sequence_number\":1,\"output_index\":0,\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"in_progress\",\"role\":\"assistant\",\"content\":[]}}\n\n" +
+	"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":2,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"h\"}\n\n" +
+	"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":3,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"i\"}\n\n" +
+	"event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":4,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-5\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\",\"annotations\":[]}]}],\"usage\":{\"input_tokens\":5,\"output_tokens\":1,\"total_tokens\":6}}}\n\n"
+
+const anthropicStream = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-5\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":30,\"output_tokens\":1}}}\n\n" +
+	"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+	"event: ping\ndata: {\"type\":\"ping\"}\n\n" +
+	"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Check\"}}\n\n" +
+	"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ing.\"}}\n\n" +
+	"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+	"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"get_weather\",\"input\":{}}}\n\n" +
+	"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\"}}\n\n" +
+	"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"Paris\\\"}\"}}\n\n" +
+	"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n" +
+	"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":12}}\n\n" +
+	"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+
+const geminiStreamChunk1 = `{"candidates":[{"content":{"role":"model","parts":[{"text":"Sun"}]},"index":0}],"modelVersion":"gemini-2.5-flash"}`
+const geminiStreamChunk2 = `{"candidates":[{"content":{"role":"model","parts":[{"text":"ny."}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"totalTokenCount":12},"modelVersion":"gemini-2.5-flash"}`
+
+func TestParseStream(t *testing.T) {
+	anthropicCheck := func(t *testing.T, resp *schemas.BifrostResponse) {
+		t.Helper()
+		require.NotNil(t, resp.ResponsesResponse)
+		text, calls := responsesTextAndCalls(resp.ResponsesResponse.Output)
+		require.Equal(t, "Checking.", text)
+		require.Len(t, calls, 1)
+		require.Equal(t, "get_weather", *calls[0].Name)
+		require.NotNil(t, calls[0].Arguments)
+		require.JSONEq(t, `{"city":"Paris"}`, *calls[0].Arguments)
+		require.Equal(t, "tool_calls", *resp.ResponsesResponse.StopReason)
+	}
+	geminiCheck := func(t *testing.T, resp *schemas.BifrostResponse) {
+		t.Helper()
+		require.NotNil(t, resp.ResponsesResponse)
+		text, _ := responsesTextAndCalls(resp.ResponsesResponse.Output)
+		require.Equal(t, "Sunny.", text)
+		require.Equal(t, "stop", *resp.ResponsesResponse.StopReason)
+	}
+
+	tests := []struct {
+		name  string
+		in    Input
+		check func(t *testing.T, resp *schemas.BifrostResponse)
+	}{
+		{
+			name: "openai chat completions stream",
+			in:   Input{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/chat/completions", StatusCode: 200, Stream: true, RequestBody: []byte(openAIChatRequest), ResponseBody: []byte(openAIChatStream)},
+			check: func(t *testing.T, resp *schemas.BifrostResponse) {
+				require.NotNil(t, resp.ChatResponse)
+				require.Len(t, resp.ChatResponse.Choices, 1)
+				choice := resp.ChatResponse.Choices[0]
+				require.Equal(t, "tool_calls", *choice.FinishReason)
+				msg := choice.ChatNonStreamResponseChoice.Message
+				require.Equal(t, "Hello", *msg.Content.ContentStr)
+				require.Len(t, msg.ChatAssistantMessage.ToolCalls, 1)
+				require.Equal(t, "get_weather", *msg.ChatAssistantMessage.ToolCalls[0].Function.Name)
+				require.JSONEq(t, `{"city":"Paris"}`, msg.ChatAssistantMessage.ToolCalls[0].Function.Arguments)
+				require.NotNil(t, resp.ChatResponse.Usage)
+				require.Equal(t, 27, resp.ChatResponse.Usage.TotalTokens)
+			},
+		},
+		{
+			name: "openai legacy completions stream",
+			in:   Input{Provider: schemas.OpenAI, Model: "gpt-3.5-turbo-instruct", Method: "POST", Path: "/v1/completions", StatusCode: 200, Stream: true, RequestBody: []byte(openAITextRequest), ResponseBody: []byte(openAITextStream)},
+			check: func(t *testing.T, resp *schemas.BifrostResponse) {
+				require.NotNil(t, resp.TextCompletionResponse)
+				choice := resp.TextCompletionResponse.Choices[0]
+				require.Equal(t, " time", *choice.TextCompletionResponseChoice.Text)
+				require.Equal(t, "stop", *choice.FinishReason)
+			},
+		},
+		{
+			name: "openai responses stream",
+			in:   Input{Provider: schemas.OpenAI, Model: "gpt-5", Method: "POST", Path: "/v1/responses", StatusCode: 200, Stream: true, RequestBody: []byte(openAIResponsesRequest), ResponseBody: []byte(openAIResponsesStream)},
+			check: func(t *testing.T, resp *schemas.BifrostResponse) {
+				require.NotNil(t, resp.ResponsesResponse)
+				text, _ := responsesTextAndCalls(resp.ResponsesResponse.Output)
+				require.Equal(t, "hi", text)
+				require.Equal(t, "completed", *resp.ResponsesResponse.Status)
+				require.NotNil(t, resp.ResponsesResponse.Usage)
+			},
+		},
+		{
+			name: "chatgpt codex responses stream",
+			in:   Input{Provider: schemas.OpenAI, Model: "gpt-5", Method: "POST", Path: "/backend-api/codex/responses", StatusCode: 200, Stream: true, RequestBody: []byte(openAIResponsesRequest), ResponseBody: []byte(openAIResponsesStream)},
+			check: func(t *testing.T, resp *schemas.BifrostResponse) {
+				text, _ := responsesTextAndCalls(resp.ResponsesResponse.Output)
+				require.Equal(t, "hi", text)
+			},
+		},
+		{
+			name:  "anthropic messages stream",
+			in:    Input{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5", Method: "POST", Path: "/v1/messages", StatusCode: 200, Stream: true, RequestBody: []byte(anthropicMessagesRequest), ResponseBody: []byte(anthropicStream)},
+			check: anthropicCheck,
+		},
+		{
+			name:  "vertex claude streamRawPredict",
+			in:    Input{Provider: schemas.Vertex, Model: "claude-sonnet-4-5", Method: "POST", Path: "/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5:streamRawPredict", StatusCode: 200, Stream: true, RequestBody: []byte(anthropicMessagesRequest), ResponseBody: []byte(anthropicStream)},
+			check: anthropicCheck,
+		},
+		{
+			name:  "gemini streamGenerateContent alt=sse",
+			in:    Input{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Method: "POST", Path: "/models/gemini-2.5-flash:streamGenerateContent?alt=sse", StatusCode: 200, Stream: true, RequestBody: []byte(geminiRequest), ResponseBody: []byte("data: " + geminiStreamChunk1 + "\r\n\r\ndata: " + geminiStreamChunk2 + "\r\n\r\n")},
+			check: geminiCheck,
+		},
+		{
+			name:  "gemini streamGenerateContent json array",
+			in:    Input{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Method: "POST", Path: "/models/gemini-2.5-flash:streamGenerateContent", StatusCode: 200, Stream: true, RequestBody: []byte(geminiRequest), ResponseBody: []byte("[" + geminiStreamChunk1 + ",\n" + geminiStreamChunk2 + "]")},
+			check: geminiCheck,
+		},
+		{
+			name:  "vertex gemini streamGenerateContent",
+			in:    Input{Provider: schemas.Vertex, Model: "gemini-2.5-flash", Method: "POST", Path: "/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse", StatusCode: 200, Stream: true, RequestBody: []byte(geminiRequest), ResponseBody: []byte("data: " + geminiStreamChunk1 + "\n\ndata: " + geminiStreamChunk2 + "\n\n")},
+			check: geminiCheck,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := Parse(tt.in)
+			require.NoError(t, err)
+			require.NotNil(t, r)
+			require.NotNil(t, r.Request)
+			require.NotNil(t, r.Response)
+			tt.check(t, r.Response)
+		})
+	}
+}
+
+// TestParseStreamTruncated pins that a stream cut off mid-way still yields what arrived, alongside
+// an error describing the bad frame.
+func TestParseStreamTruncated(t *testing.T) {
+	body := openAIChatStream[:strings.Index(openAIChatStream, "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\"")] + "data: {\"id\":\"chatcmpl-1\",\"choi\n\n"
+	r, err := Parse(Input{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/chat/completions", StatusCode: 200, Stream: true, ResponseBody: []byte(body)})
+	require.Error(t, err)
+	require.NotNil(t, r)
+	require.NotNil(t, r.Response)
+	require.Equal(t, "Hello", *r.Response.ChatResponse.Choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr)
+}
+
+func responsesTextAndCalls(output []schemas.ResponsesMessage) (string, []*schemas.ResponsesToolMessage) {
+	var text strings.Builder
+	var calls []*schemas.ResponsesToolMessage
+	for _, item := range output {
+		if item.Type == nil {
+			continue
+		}
+		switch *item.Type {
+		case schemas.ResponsesMessageTypeMessage:
+			if item.Content == nil {
+				continue
+			}
+			if item.Content.ContentStr != nil {
+				text.WriteString(*item.Content.ContentStr)
+			}
+			for _, block := range item.Content.ContentBlocks {
+				if block.Text != nil {
+					text.WriteString(*block.Text)
+				}
+			}
+		case schemas.ResponsesMessageTypeFunctionCall:
+			calls = append(calls, item.ResponsesToolMessage)
+		}
+	}
+	return text.String(), calls
+}
+
+// TestParseStreamMultipleChoices pins n>1 streams: OpenAI interleaves events for different choice
+// indexes, and each choice must assemble from its own deltas and keep its own finish reason.
+func TestParseStreamMultipleChoices(t *testing.T) {
+	chat := "data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"A\"}}]}\n\n" +
+		"data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":1,\"delta\":{\"role\":\"assistant\",\"content\":\"B\"}}]}\n\n" +
+		"data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"0\"}},{\"index\":1,\"delta\":{\"content\":\"1\"}}]}\n\n" +
+		"data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":1,\"delta\":{},\"finish_reason\":\"length\"}]}\n\n" +
+		"data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"
+	r, err := Parse(Input{Provider: schemas.OpenAI, Model: "gpt-4o", Method: "POST", Path: "/v1/chat/completions", StatusCode: 200, Stream: true, ResponseBody: []byte(chat)})
+	require.NoError(t, err)
+	choices := r.Response.ChatResponse.Choices
+	require.Len(t, choices, 2)
+	require.Equal(t, 0, choices[0].Index)
+	require.Equal(t, "A0", *choices[0].ChatNonStreamResponseChoice.Message.Content.ContentStr)
+	require.Equal(t, "stop", *choices[0].FinishReason)
+	require.Equal(t, 1, choices[1].Index)
+	require.Equal(t, "B1", *choices[1].ChatNonStreamResponseChoice.Message.Content.ContentStr)
+	require.Equal(t, "length", *choices[1].FinishReason)
+
+	text := "data: {\"id\":\"t\",\"object\":\"text_completion\",\"choices\":[{\"index\":1,\"text\":\"B\"}]}\n\n" +
+		"data: {\"id\":\"t\",\"object\":\"text_completion\",\"choices\":[{\"index\":0,\"text\":\"A\"}]}\n\n" +
+		"data: {\"id\":\"t\",\"object\":\"text_completion\",\"choices\":[{\"index\":0,\"text\":\"0\",\"finish_reason\":\"stop\"},{\"index\":1,\"text\":\"1\",\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n"
+	r, err = Parse(Input{Provider: schemas.OpenAI, Model: "gpt-3.5-turbo-instruct", Method: "POST", Path: "/v1/completions", StatusCode: 200, Stream: true, ResponseBody: []byte(text)})
+	require.NoError(t, err)
+	tc := r.Response.TextCompletionResponse.Choices
+	require.Len(t, tc, 2)
+	require.Equal(t, 0, tc[0].Index)
+	require.Equal(t, "A0", *tc[0].TextCompletionResponseChoice.Text)
+	require.Equal(t, "stop", *tc[0].FinishReason)
+	require.Equal(t, 1, tc[1].Index)
+	require.Equal(t, "B1", *tc[1].TextCompletionResponseChoice.Text)
+	require.Equal(t, "length", *tc[1].FinishReason)
+}
+
+// TestParseStreamCutKeepsWhatArrived pins two truncated streams: an Anthropic stream cut after the
+// tool input deltas but before content_block_stop keeps the arguments (the converter emits one
+// argument delta per input_json_delta, nothing is held back), and a Gemini stream cut before its
+// finishReason chunk keeps its text without inventing a terminal status the upstream never sent.
+func TestParseStreamCutKeepsWhatArrived(t *testing.T) {
+	cut := anthropicStream[:strings.Index(anthropicStream, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}")]
+	r, err := Parse(Input{Provider: schemas.Anthropic, Model: "claude-sonnet-4-5", Method: "POST", Path: "/v1/messages", StatusCode: 200, Stream: true, ResponseBody: []byte(cut)})
+	require.NoError(t, err)
+	_, calls := responsesTextAndCalls(r.Response.ResponsesResponse.Output)
+	require.Len(t, calls, 1)
+	require.NotNil(t, calls[0].Arguments)
+	require.JSONEq(t, `{"city":"Paris"}`, *calls[0].Arguments)
+
+	r, err = Parse(Input{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Method: "POST", Path: "/models/gemini-2.5-flash:streamGenerateContent?alt=sse", StatusCode: 200, Stream: true, ResponseBody: []byte("data: " + geminiStreamChunk1 + "\n\n")})
+	require.NoError(t, err)
+	text, _ := responsesTextAndCalls(r.Response.ResponsesResponse.Output)
+	require.Equal(t, "Sun", text)
+	require.Nil(t, r.Response.ResponsesResponse.Status, "a cut stream is not reported as completed")
+	require.Nil(t, r.Response.ResponsesResponse.StopReason)
+}
+
+// TestParseGeminiJSONArrayStreamCut pins that a Gemini alt=json stream (one JSON array of chunks)
+// cut part-way, or followed by trailing data, keeps every chunk that arrived whole, alongside an
+// error naming the bad part, just like the SSE path.
+func TestParseGeminiJSONArrayStreamCut(t *testing.T) {
+	in := Input{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Method: "POST", Path: "/models/gemini-2.5-flash:streamGenerateContent", StatusCode: 200, Stream: true}
+
+	in.ResponseBody = []byte("[" + geminiStreamChunk1 + ",\n" + geminiStreamChunk2[:40])
+	r, err := Parse(in)
+	require.Error(t, err)
+	require.NotNil(t, r)
+	require.NotNil(t, r.Response)
+	text, _ := responsesTextAndCalls(r.Response.ResponsesResponse.Output)
+	require.Equal(t, "Sun", text)
+
+	in.ResponseBody = []byte("[" + geminiStreamChunk1 + "," + geminiStreamChunk2 + "] trailing")
+	r, err = Parse(in)
+	require.Error(t, err)
+	require.NotNil(t, r)
+	text, _ = responsesTextAndCalls(r.Response.ResponsesResponse.Output)
+	require.Equal(t, "Sunny.", text)
+
+	in.ResponseBody = []byte("[{\"candidates\": [")
+	r, err = Parse(in)
+	require.Error(t, err)
+	require.Nil(t, r, "nothing decoded, nothing to keep")
 }
