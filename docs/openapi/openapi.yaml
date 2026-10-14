@@ -1143,6 +1143,14 @@ paths:
   /api/circuit-breaker/state:
     $ref: "./paths/management/circuitbreaker.yaml#/circuit-breaker-state"
 
+  # Adaptive Routing (Enterprise)
+  /api/adaptive-routing/config:
+    $ref: "./paths/management/adaptiverouting.yaml#/adaptive-routing-config"
+
+  # Adaptive Routing - deprecated path, kept so existing clients keep working
+  /api/load-balancer-config:
+    $ref: "./paths/management/adaptiverouting.yaml#/adaptive-routing-config-legacy"
+
   # Routing
   /api/routing/rules:
     $ref: "./paths/management/routing.yaml#/rules"
