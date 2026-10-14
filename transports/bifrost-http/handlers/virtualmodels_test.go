@@ -34,7 +34,7 @@ func TestAppendVirtualModels(t *testing.T) {
 	cfg := testVirtualConfig(t)
 
 	all := &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "gpt-4o"}}}
-	appendVirtualModels(all, cfg, "")
+	appendVirtualModels(all, cfg, "", nil)
 	if len(all.Data) != 3 {
 		t.Fatalf("got %d entries, want the concrete model plus both virtual names", len(all.Data))
 	}
@@ -49,14 +49,14 @@ func TestAppendVirtualModels(t *testing.T) {
 	}
 
 	scoped := &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "gpt-4o"}}}
-	appendVirtualModels(scoped, cfg, "omlx")
+	appendVirtualModels(scoped, cfg, "omlx", nil)
 	if len(scoped.Data) != 2 || scoped.Data[1].ID != "qwen38" {
 		t.Fatalf("provider-scoped listing = %+v, want only the omlx virtual name", scoped.Data)
 	}
 
 	// A backend that really serves that string keeps its own richer entry.
 	dup := &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "qwen38", ContextLength: ptrInt(262144)}}}
-	appendVirtualModels(dup, cfg, "")
+	appendVirtualModels(dup, cfg, "", nil)
 	if len(dup.Data) != 2 {
 		t.Fatalf("got %d entries, want the real qwen38 and small with no synthetic duplicate", len(dup.Data))
 	}
@@ -68,24 +68,24 @@ func TestAppendVirtualModels(t *testing.T) {
 // A gateway with no virtual models must be untouched, not merely empty-looking.
 func TestAppendVirtualModelsDisabled(t *testing.T) {
 	resp := &schemas.BifrostListModelsResponse{Data: []schemas.Model{{ID: "gpt-4o"}}}
-	appendVirtualModels(resp, &lib.Config{}, "")
+	appendVirtualModels(resp, &lib.Config{}, "", nil)
 	if len(resp.Data) != 1 {
 		t.Fatalf("got %d entries, want the listing untouched", len(resp.Data))
 	}
-	appendVirtualModels(nil, testVirtualConfig(t), "")
+	appendVirtualModels(nil, testVirtualConfig(t), "", nil)
 }
 
 func TestVirtualListedModelsHonoursGrantedProviders(t *testing.T) {
 	cfg := testVirtualConfig(t)
 
-	granted := virtualListedModels(cfg, []schemas.ModelProvider{"omlx"})
+	granted := virtualListedModels(cfg, []schemas.ModelProvider{"omlx"}, nil)
 	if len(granted) != 1 || granted[0].Name != "qwen38" {
 		t.Fatalf("granted listing = %+v, want only qwen38", granted)
 	}
 
-	none := virtualListedModels(cfg, []schemas.ModelProvider{})
-	if len(none) != 2 {
-		t.Fatalf("unfiltered listing = %+v, want both virtual names", none)
+	none := virtualListedModels(cfg, []schemas.ModelProvider{}, nil)
+	if len(none) != 0 {
+		t.Fatalf("denied listing = %+v, want no virtual names", none)
 	}
 }
 
@@ -97,7 +97,7 @@ func TestVirtualModelRetrieve(t *testing.T) {
 
 	// The port is closed, so the probe fails and residency is simply absent - which must
 	// not stop the metadata from answering.
-	resp, ok := virtualModelRetrieve(ctx, cfg, "qwen38")
+	resp, ok := virtualModelRetrieve(ctx, cfg, "qwen38", nil)
 	if !ok {
 		t.Fatal("a virtual name was not recognised")
 	}
@@ -112,14 +112,14 @@ func TestVirtualModelRetrieve(t *testing.T) {
 	}
 
 	// The provider-prefixed form addresses the same model.
-	if _, ok := virtualModelRetrieve(ctx, cfg, "omlx%2Fqwen38"); !ok {
+	if _, ok := virtualModelRetrieve(ctx, cfg, "omlx%2Fqwen38", nil); !ok {
 		t.Fatal("provider/model form was not recognised")
 	}
 
-	if _, ok := virtualModelRetrieve(ctx, cfg, "gpt-4o"); ok {
+	if _, ok := virtualModelRetrieve(ctx, cfg, "gpt-4o", nil); ok {
 		t.Fatal("a concrete model name must fall through to the upstream path")
 	}
-	if _, ok := virtualModelRetrieve(ctx, &lib.Config{}, "qwen38"); ok {
+	if _, ok := virtualModelRetrieve(ctx, &lib.Config{}, "qwen38", nil); ok {
 		t.Fatal("a gateway without virtual models must fall through")
 	}
 }

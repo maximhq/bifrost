@@ -8365,25 +8365,6 @@ func (c *Config) GetPluginStatusByName(name string) (schemas.PluginStatus, bool)
 // This is the single entry point for all plugin additions/updates
 // If a plugin with the same name exists, it will be replaced (atomic find-and-replace)
 // If no plugin exists with that name, it will be added
-// InstallVirtualModels re-validates and swaps the virtual model set at runtime, for
-// the config API after it persists an edit. The swap is atomic, so a request in flight
-// either sees the old definition set or the new one, never a partial edit.
-func (c *Config) InstallVirtualModels(virtualModels map[string]schemas.VirtualModel) error {
-	if c.VirtualModels == nil {
-		c.VirtualModels = NewVirtualModelService(c.HTTPClientFactory, bifrost.NewDefaultLogger(schemas.LogLevelInfo))
-	}
-	if err := c.VirtualModels.Install(virtualModels, c.Providers); err != nil {
-		if len(virtualModels) == 0 {
-			c.VirtualModels = nil
-		}
-		return err
-	}
-	if len(virtualModels) == 0 {
-		c.VirtualModels = nil
-	}
-	return nil
-}
-
 func (c *Config) ReloadPlugin(plugin schemas.BasePlugin) error {
 	c.pluginsMu.Lock()
 	defer c.pluginsMu.Unlock()
