@@ -331,6 +331,62 @@ func (mc *ModelCatalog) IsModelAllowedForProvider(provider schemas.ModelProvider
 		return false
 	}
 
+	if mc.explicitListAllows(provider, model, allowedModels) {
+		return true
+	}
+
+	// A key alias is a client-facing name for a provider model, resolved only after governance has
+	// decided, so a request for "claude-sonnet" reaches this check under the alias, not under the
+	// model it stands for. An allowlist that names the model should permit it.
+	return providerConfig != nil && mc.aliasesResolveToAllowed(provider, model, providerConfig.Keys, allowedModels)
+}
+
+// aliasesResolveToAllowed reports whether model is a key alias that resolves to an allowed model
+// on every key that could serve it. Key selection runs after this check and may pick any enabled
+// key, and a key without the alias sends the name to the provider as written, so one key mapping
+// the name to an allowed model is not enough: each enabled key must map it, and to an allowed
+// model. The match is one way: an allowlist naming only the alias does not open the model's own id.
+func (mc *ModelCatalog) aliasesResolveToAllowed(provider schemas.ModelProvider, model string, keys []schemas.Key, allowedModels schemas.WhiteList) bool {
+	matched := false
+	for i := range keys {
+		if keys[i].Enabled != nil && !*keys[i].Enabled {
+			continue
+		}
+		// Same resolution as schemas.KeyAliases.ResolveConfig (exact name, then case-insensitive),
+		// without the pointer it returns, which would allocate on this per-request path. When names
+		// differing only in case map to different models, every one must be allowed.
+		found := false
+		if ac, ok := keys[i].Aliases[model]; ok {
+			if !mc.aliasTargetAllowed(provider, model, ac.ModelID, allowedModels) {
+				return false
+			}
+			found = true
+		} else {
+			for name, ac := range keys[i].Aliases {
+				if !strings.EqualFold(name, model) {
+					continue
+				}
+				if !mc.aliasTargetAllowed(provider, model, ac.ModelID, allowedModels) {
+					return false
+				}
+				found = true
+			}
+		}
+		if !found {
+			return false
+		}
+		matched = true
+	}
+	return matched
+}
+
+func (mc *ModelCatalog) aliasTargetAllowed(provider schemas.ModelProvider, model, target string, allowedModels schemas.WhiteList) bool {
+	return target != "" && target != model && mc.explicitListAllows(provider, target, allowedModels)
+}
+
+// explicitListAllows matches one model name against an explicit (non-empty, non-wildcard)
+// allowlist: by name or regex: entry, then by provider-prefixed entry through the provider catalog.
+func (mc *ModelCatalog) explicitListAllows(provider schemas.ModelProvider, model string, allowedModels schemas.WhiteList) bool {
 	// Bare-name match (exact or regex:) needs no catalog access and covers most allowlists.
 	if allowedModels.Contains(model) {
 		return true

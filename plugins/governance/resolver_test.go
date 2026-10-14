@@ -1244,6 +1244,50 @@ func TestChatRequestNeverCopiesTheProviderMap(t *testing.T) {
 	assert.Zero(t, store.wholeMap, "a chat request never copies the whole provider map")
 }
 
+// A request that names a model by a key alias is admitted when the virtual key's allowed-models
+// list names the model the alias resolves to (#6620), through the whole hook chain: the provider's
+// keys, with their aliases, reach the model check from the configured provider. A name that is
+// neither allowed nor an alias of an allowed model is still refused.
+func TestAllowedModelsMatchKeyAliasesThroughTheHookChain(t *testing.T) {
+	store := &providerLookupCountingStore{mockInMemoryStore: mockInMemoryStore{configuredProviders: map[schemas.ModelProvider]configstore.ProviderConfig{
+		schemas.OpenAI: {Keys: []schemas.Key{{ID: "k1", Aliases: schemas.KeyAliases{"best-gpt": {ModelID: "gpt-4o"}}}}},
+	}}}
+	vk := buildVirtualKeyWithProviders("vk-alias", mcpTestVKValue, "alias-vk", []configstoreTables.TableVirtualKeyProviderConfig{
+		buildProviderConfig("openai", []string{"gpt-4o"}),
+	})
+	logger := NewMockLogger()
+	local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	}, nil, store)
+	require.NoError(t, err)
+	plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, modelcatalog.NewTestCatalog(nil), nil, store)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+	for _, tc := range []struct {
+		model   string
+		blocked bool
+	}{
+		{"best-gpt", false}, // an alias of the allowed model
+		{"gpt-4o", false},   // the allowed model itself
+		{"gpt-4o-mini", true},
+		{"not-an-alias", true},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			ctx := presentCtx(mcpTestVKValue)
+			req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: tc.model}}
+			require.NoError(t, plugin.PreRequestHook(ctx, req))
+			_, shortCircuit, err := plugin.PreLLMHook(ctx, req)
+			require.NoError(t, err)
+			if tc.blocked {
+				require.NotNil(t, shortCircuit, "%q is neither allowed nor an alias of an allowed model", tc.model)
+				return
+			}
+			require.Nil(t, shortCircuit, "%q should be admitted", tc.model)
+		})
+	}
+}
+
 func BenchmarkPreLLMHookBatchCreate(b *testing.B) {
 	plugin := newAccessTestPlugin(b, buildVKForMCPStamping(nil), nil)
 	model := "gpt-4o"
