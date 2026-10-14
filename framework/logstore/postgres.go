@@ -228,6 +228,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		return nil, err
 	}
 	logger.Info("logstore: runtime connection pool ready")
+	registerPGTextSafetyCallbacks(db)
 	refreshInterval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
 	d := &RDBLogStore{db: db, logger: logger, matViewMaintenanceDisabled: refreshInterval <= 0}
 

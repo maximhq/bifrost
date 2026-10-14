@@ -11,7 +11,7 @@ import {
 } from "@/lib/types/config";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { SecretVar } from "@/lib/types/schemas";
-import { toSecretVarFormValue } from "@/lib/utils/secretVarForm";
+import { isSecretVarSet, toSecretVarFormValue } from "@/lib/utils/secretVarForm";
 import { isRedacted } from "@/lib/utils/validation";
 
 /**
@@ -124,7 +124,7 @@ export const maskSecret = (secret: SecretVar | undefined): string => {
 	return `${value.slice(0, 4)}****${value.slice(-4)}`;
 };
 
-export const isSecretVarSet = (secret: SecretVar | undefined): boolean => Boolean(secret?.value?.trim() || secret?.ref?.trim());
+export { isSecretVarSet };
 
 /** True when a secret came back from the API as a masked placeholder and cannot be re-sent. */
 const isMaskedLiteral = (secret: SecretVar | undefined): boolean => {
@@ -248,6 +248,7 @@ const buildProviderSettings = (source: ModelProvider, warnings: string[]): Updat
 	if (source.send_back_raw_request !== undefined) settings.send_back_raw_request = source.send_back_raw_request;
 	if (source.send_back_raw_response !== undefined) settings.send_back_raw_response = source.send_back_raw_response;
 	if (source.store_raw_request_response !== undefined) settings.store_raw_request_response = source.store_raw_request_response;
+	if (source.ignore_provider_cost !== undefined) settings.ignore_provider_cost = source.ignore_provider_cost;
 	return settings;
 };
 
@@ -611,6 +612,7 @@ export const runDatabricksMigration = async (
 				send_back_raw_request: provider.send_back_raw_request,
 				send_back_raw_response: provider.send_back_raw_response,
 				store_raw_request_response: provider.store_raw_request_response,
+				ignore_provider_cost: provider.ignore_provider_cost,
 				custom_provider_config: provider.custom_provider_config,
 			}),
 		);

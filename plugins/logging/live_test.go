@@ -2,11 +2,15 @@ package logging
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/modelcatalog"
+	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -227,6 +231,44 @@ func TestLiveSessionEndingOnARefusalKeepsItsRow(t *testing.T) {
 	assert.Empty(t, root.LiveSessionParsed.Delegations)
 }
 
+func TestLiveSessionRowStaysSuccessfulWhenADelegationFails(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-5", "unit-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+	require.NoError(t, err)
+	refused := &schemas.BifrostError{
+		StatusCode: new(400),
+		Error:      &schemas.ErrorField{Message: "The model gpt-6-does-not-exist does not exist"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.LiveRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-6-does-not-exist",
+		},
+	}
+	// The provider refused to run the delegation: its backend unit closes with the error while
+	// the session goes on and ends normally.
+	failedCtx := liveUnitCtx("bfsess-5", "unit-2", "backend", false, false)
+	failedCtx.SetValue(schemas.BifrostContextKeyLiveDelegationFailed, true)
+	_, _, err = plugin.PostLLMHook(failedCtx, nil, refused)
+	require.NoError(t, err)
+	_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-5", "unit-1", "voice", false, true), liveVoiceResponse(20, nil), nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	root, err := store.FindByID(context.Background(), "bfsess-5")
+	require.NoError(t, err)
+	assert.Equal(t, logStatusSuccess, root.Status)
+	assert.Nil(t, root.ErrorDetailsParsed)
+	require.NotNil(t, root.LiveSessionParsed)
+	assert.Equal(t, 20.0, root.LiveSessionParsed.VoiceSeconds)
+	require.Len(t, root.LiveSessionParsed.Delegations, 1)
+	assert.Equal(t, "gpt-6-does-not-exist", root.LiveSessionParsed.Delegations[0].Model)
+	assert.Equal(t, "The model gpt-6-does-not-exist does not exist", root.LiveSessionParsed.Delegations[0].Error)
+	assert.Nil(t, root.LiveSessionParsed.Delegations[0].Usage)
+}
+
 func TestLiveSessionPendingEntryOutlivesIdleEviction(t *testing.T) {
 	store := newTestStore(t)
 	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
@@ -364,4 +406,136 @@ func TestLiveSessionAbortedRowKeepsItsSessionFacts(t *testing.T) {
 	require.NotNil(t, row.LiveSessionParsed)
 	assert.Equal(t, "webrtc", row.LiveSessionParsed.Transport, "the transport the meter recorded")
 	assert.Equal(t, "live_aborted", row.LiveSessionParsed.ProviderSessionID, "the provider session id the meter recorded")
+}
+
+func TestLiveSessionSetupFailureKeepsBilledUsage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pricing.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"gpt-live-1":{"provider":"openai","mode":"live","input_cost_per_second":0.001}}`), 0o600))
+	ds := datasheet.New(nil, testLogger{}, datasheet.Config{URL: "file://" + path})
+	require.NoError(t, ds.LoadFromURLIntoMemory(context.Background()))
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, modelcatalog.NewTestCatalogWithDatasheet(ds), nil)
+	require.NoError(t, err)
+
+	_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-billed-abort", "voice-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+	require.NoError(t, err)
+	closing := liveUnitCtx("bfsess-billed-abort", "voice-1", "voice", false, true)
+	closing.SetValue(schemas.BifrostContextKeyRealtimeTransport, "webrtc")
+	closing.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, "live_created")
+	failure := &schemas.BifrostError{
+		StatusCode: new(502),
+		Error:      &schemas.ErrorField{Message: "upstream WebRTC connection failed"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType: schemas.LiveRequest, Provider: schemas.OpenAI, OriginalModelRequested: "gpt-live-1",
+			BilledUsage: &schemas.BifrostLLMUsage{AudioSeconds: new(15.0)},
+		},
+	}
+	result, returnedError, err := plugin.PostLLMHook(closing, nil, failure)
+	require.NoError(t, err)
+	assert.Nil(t, result)
+	assert.Same(t, failure, returnedError)
+	require.NoError(t, plugin.Cleanup())
+
+	row, err := store.FindByID(context.Background(), "bfsess-billed-abort")
+	require.NoError(t, err)
+	assert.Equal(t, logStatusError, row.Status)
+	require.NotNil(t, row.ErrorDetailsParsed)
+	assert.Equal(t, failure.Error.Message, row.ErrorDetailsParsed.Error.Message)
+	require.NotNil(t, row.LiveSessionParsed)
+	assert.Equal(t, "webrtc", row.LiveSessionParsed.Transport)
+	assert.Equal(t, "live_created", row.LiveSessionParsed.ProviderSessionID)
+	assert.Equal(t, 15.0, row.LiveSessionParsed.VoiceSeconds)
+	require.NotNil(t, row.LiveSessionParsed.VoiceCost)
+	assert.InDelta(t, 0.015, *row.LiveSessionParsed.VoiceCost, 1e-9)
+	require.NotNil(t, row.Cost)
+	assert.InDelta(t, 0.015, *row.Cost, 1e-9)
+	assert.Empty(t, row.LiveSessionParsed.Delegations)
+	require.NotNil(t, row.TokenUsageParsed)
+	require.NotNil(t, row.TokenUsageParsed.AudioSeconds)
+	assert.Equal(t, 15.0, *row.TokenUsageParsed.AudioSeconds)
+}
+
+func TestLiveSessionTerminalBackendFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		usage     *schemas.ResponsesResponseUsage
+		failure   *schemas.ResponsesResponseError
+		wantError string
+	}{
+		{name: "with usage", usage: &schemas.ResponsesResponseUsage{InputTokens: 8, OutputTokens: 2, TotalTokens: 10}, failure: &schemas.ResponsesResponseError{Code: "server_error", Message: "backend execution failed"}, wantError: "backend execution failed"},
+		{name: "without usage", failure: &schemas.ResponsesResponseError{Code: "server_error", Message: "backend execution failed"}, wantError: "backend execution failed"},
+		{name: "without error details", wantError: "backend response failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			require.NoError(t, err)
+			_, _, err = plugin.PreLLMHook(liveUnitCtx("bfsess-failed", "voice-1", "voice", true, false), liveStartRequest("gpt-live-1"))
+			require.NoError(t, err)
+			response := liveBackendResponse("resp_failed", nil, tc.usage)
+			response.ResponsesResponse.Status = new(schemas.ResponsesResponseStatusFailed)
+			response.ResponsesResponse.Error = tc.failure
+			_, _, err = plugin.PostLLMHook(liveDelegationCtx("bfsess-failed", "backend-1", "delegation_failed", 100), response, nil)
+			require.NoError(t, err)
+			_, _, err = plugin.PostLLMHook(liveDelegationCtx("bfsess-failed", "backend-2", "delegation_recovered", 200), liveBackendResponse("resp_recovered", nil, &schemas.ResponsesResponseUsage{InputTokens: 3, OutputTokens: 2, TotalTokens: 5}), nil)
+			require.NoError(t, err)
+			_, _, err = plugin.PostLLMHook(liveUnitCtx("bfsess-failed", "voice-2", "voice", false, true), liveVoiceResponse(3, nil), nil)
+			require.NoError(t, err)
+			require.NoError(t, plugin.Cleanup())
+			row, err := store.FindByID(context.Background(), "bfsess-failed")
+			require.NoError(t, err)
+			assert.Equal(t, logStatusSuccess, row.Status, "the voice session recovered from the backend failure")
+			assert.Nil(t, row.ErrorDetailsParsed)
+			require.NotNil(t, row.LiveSessionParsed)
+			require.Len(t, row.LiveSessionParsed.Delegations, 2)
+			failed := row.LiveSessionParsed.Delegations[0]
+			assert.Equal(t, tc.wantError, failed.Error)
+			assert.Equal(t, []string{"resp_failed"}, failed.ResponseIDs)
+			assert.Equal(t, "delegation_failed", failed.DelegationID)
+			if tc.usage == nil {
+				assert.Nil(t, failed.Usage, "no tokens are invented for a failed response")
+			} else {
+				require.NotNil(t, failed.Usage)
+				assert.Equal(t, tc.usage.TotalTokens, failed.Usage.TotalTokens)
+			}
+			assert.Empty(t, row.LiveSessionParsed.Delegations[1].Error)
+		})
+	}
+}
+
+// A sideband is logged as a request of its own, like a download: it names the provider session it
+// joined and the keys it attached with, carries how long it stayed, and never folds into the
+// session's row.
+func TestLiveSidebandIsLoggedAsItsOwnRow(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "sb-1")
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+	ctx.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, "live_abc")
+	req := &schemas.BifrostRequest{RequestType: schemas.LiveSidebandRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI}}
+	_, _, err = plugin.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Object:      "live.sideband",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.LiveSidebandRequest, Provider: schemas.OpenAI, Latency: 1234},
+	}}
+	_, _, err = plugin.PostLLMHook(ctx, resp, nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	row, err := store.FindByID(context.Background(), "sb-1")
+	require.NoError(t, err)
+	assert.Equal(t, string(schemas.LiveSidebandRequest), row.Object)
+	assert.Equal(t, logStatusSuccess, row.Status)
+	assert.Equal(t, "openai", row.Provider)
+	assert.Equal(t, "key-1", row.SelectedKeyID)
+	require.NotNil(t, row.VirtualKeyID)
+	assert.Equal(t, "vk-1", *row.VirtualKeyID)
+	assert.Equal(t, "live_abc", row.MetadataParsed["provider_session_id"])
+	require.NotNil(t, row.Latency)
+	assert.EqualValues(t, 1234, *row.Latency)
+	assert.Nil(t, row.LiveSessionParsed, "a sideband is not a session")
 }

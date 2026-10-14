@@ -278,3 +278,49 @@ func TestRecordErrorRequestCarriesStatusAndErrorType(t *testing.T) {
 		}
 	}
 }
+
+// The replica id is emitted twice on purpose, under DIFFERENT names: service.instance.id
+// on the resource, for backends that read it natively, and bifrost_instance_id as a
+// datapoint label, for per-replica breakdown. They must never share a name: a collector
+// with resource_to_telemetry_conversion renders the resource attribute as
+// service_instance_id, and a datapoint label of that name would duplicate it and make
+// the Prometheus exporter drop the whole metric.
+func TestReplicaIDLabelCannotCollideWithTheConvertedResourceAttribute(t *testing.T) {
+	attrs := BuildBifrostAttributes("openai", "gpt-4o", "chat", "", "", "", "", 0, "", "", "", "", "", "", "", "")
+
+	var replicaLabel string
+	for _, kv := range attrs {
+		if kv.Key == "service_instance_id" {
+			t.Error("datapoint label is named service_instance_id, which is exactly what resource_to_telemetry_conversion produces from service.instance.id; the duplicate drops the metric")
+		}
+		if kv.Key == "bifrost_instance_id" {
+			replicaLabel = kv.Value.Emit()
+		}
+	}
+	if replicaLabel == "" {
+		t.Error("bifrost_instance_id missing from the datapoint attributes; per-replica breakdown needs it on every exporter")
+	}
+
+	res, err := newMetricsResource("bifrost-test")
+	if err != nil {
+		t.Fatalf("newMetricsResource: %v", err)
+	}
+	var sawInstance, sawServiceName bool
+	for _, kv := range res.Attributes() {
+		switch kv.Key {
+		case "service.instance.id":
+			sawInstance = true
+			if kv.Value.Emit() != replicaLabel {
+				t.Errorf("resource %q = %q but label = %q; both must identify the same replica", kv.Key, kv.Value.Emit(), replicaLabel)
+			}
+		case "service.name":
+			sawServiceName = true
+		}
+	}
+	if !sawInstance {
+		t.Error("service.instance.id missing from the resource; OTLP-native backends read instance identity from there")
+	}
+	if !sawServiceName {
+		t.Error("service.name missing from the resource")
+	}
+}

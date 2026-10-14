@@ -542,6 +542,8 @@ func (ar *AllowedRequests) IsOperationAllowed(operation RequestType) bool {
 		return ar.Live
 	case LiveContentRequest:
 		return ar.Live
+	case LiveSidebandRequest:
+		return ar.Live
 	case CachedContentCreateRequest:
 		return ar.CachedContentCreate
 	case CachedContentListRequest:
@@ -588,9 +590,11 @@ type ProviderConfig struct {
 	SendBackRawRequest      bool                  `json:"send_back_raw_request"`      // Send raw request back in the bifrost response (default: false)
 	SendBackRawResponse     bool                  `json:"send_back_raw_response"`     // Send raw response back in the bifrost response (default: false)
 	StoreRawRequestResponse bool                  `json:"store_raw_request_response"` // Capture raw request/response for internal logging only; strip from API responses returned to clients (default: false)
+	IgnoreProviderCost      bool                  `json:"ignore_provider_cost"`       // Ignore provider-reported usage.cost and price the request from Bifrost's catalog and overrides (default: false)
 	CustomProviderConfig    *CustomProviderConfig `json:"custom_provider_config,omitempty"`
 	OpenAIConfig            *OpenAIConfig         `json:"openai_config,omitempty"`
 	PromptCache             *PromptCacheConfig    `json:"prompt_cache,omitempty"`
+	InjectedTools           []InjectedTool        `json:"injected_tools,omitempty"`
 }
 
 // PromptCacheConfig opts a provider into synthesizing prompt-cache breakpoints for
@@ -637,6 +641,23 @@ type CacheControlInjectionPoint struct {
 
 // CacheControlInjectionLocationMessage is the only Location value currently honoured.
 const CacheControlInjectionLocationMessage = "message"
+
+// InjectedTool is one MCP tool that Bifrost adds to every chat and responses request
+// served by a provider and executes server side when the model calls it.
+//
+// Name is the tool name the model sees; Bifrost maps a call to it back to the MCP
+// tool. The name also decides whether the tool is added or replaces one: it replaces
+// any client tool of the same name, and the name InjectedToolNameWebSearch also
+// replaces native web search (hosted web_search tools, web_search_options), so one
+// search backend serves every model on the provider.
+type InjectedTool struct {
+	Name          string `json:"name"`            // tool name exposed to the model
+	MCPClientName string `json:"mcp_client_name"` // configured MCP client that provides the tool
+	ToolName      string `json:"tool_name"`       // tool name on the MCP server, without the "<client>-" prefix
+}
+
+// InjectedToolNameWebSearch is the injected tool name that replaces native web search.
+const InjectedToolNameWebSearch = "web_search"
 
 // OpenAIConfig holds OpenAI-specific provider configuration.
 type OpenAIConfig struct {

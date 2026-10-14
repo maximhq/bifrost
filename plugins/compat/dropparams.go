@@ -105,6 +105,13 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 			params.Reasoning = &schemas.ChatReasoning{Effort: new("none")}
 			dropped = append(dropped, "reasoning")
 		}
+		if params.Reasoning != nil && params.Reasoning.Summary != nil {
+			var droppedSummary bool
+			params.Reasoning.Summary, droppedSummary = fitReasoningSummary(ctx, params.Reasoning.Summary, isSupported)
+			if droppedSummary {
+				dropped = append(dropped, "reasoning.summary")
+			}
+		}
 		if params.ResponseFormat != nil && !isSupported["response_format"] {
 			params.ResponseFormat = nil
 			dropped = append(dropped, "response_format")
@@ -187,11 +194,13 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 				// Azure's Responses endpoint rejects reasoning.effort for DeepSeek.
 				params.Reasoning = nil
 				dropped = append(dropped, "reasoning")
-			} else if params.Reasoning.Summary != nil && *params.Reasoning.Summary != "auto" &&
-				schemas.IsAzureModelRouter(req.ResponsesRequest.Model) {
-				// model-router only supports "auto" summary
-				params.Reasoning.Summary = nil
-				dropped = append(dropped, "reasoning.summary")
+			} else {
+				var droppedSummary, droppedGenerate bool
+				params.Reasoning.Summary, droppedSummary = fitReasoningSummary(ctx, params.Reasoning.Summary, isSupported)
+				params.Reasoning.GenerateSummary, droppedGenerate = fitReasoningSummary(ctx, params.Reasoning.GenerateSummary, isSupported)
+				if droppedSummary || droppedGenerate {
+					dropped = append(dropped, "reasoning.summary")
+				}
 			}
 		}
 		if params.ServiceTier != nil && !isSupported["service_tier"] {
@@ -282,6 +291,31 @@ func dropUnsupportedParams(ctx *schemas.BifrostContext, req *schemas.BifrostRequ
 	ctx.SetValue(schemas.BifrostContextKeySupportsAssistantPrefill, isSupported["assistant_prefill"])
 
 	return dropped
+}
+
+// fitReasoningSummary fits a reasoning.summary to the summary values the model
+// accepts: an unsupported "detailed"/"concise" becomes "auto" when the model accepts
+// "auto", and is dropped otherwise. Reports whether the summary was dropped.
+func fitReasoningSummary(ctx *schemas.BifrostContext, summary *string, isSupported map[string]bool) (*string, bool) {
+	if summary == nil {
+		return nil, false
+	}
+	switch *summary {
+	case "auto":
+		if !isSupported["reasoning_summary_auto"] {
+			return nil, true
+		}
+	case "detailed", "concise":
+		if isSupported["reasoning_summary_"+*summary] {
+			return summary, false
+		}
+		if !isSupported["reasoning_summary_auto"] {
+			return nil, true
+		}
+		ctx.Log(schemas.LogLevelWarn, fmt.Sprintf("converted reasoning.summary %q to \"auto\" - the model does not accept %q", *summary, *summary))
+		return schemas.Ptr("auto"), false
+	}
+	return summary, false
 }
 
 // dropWebsearchToolCalls drops web search tool calls from the request

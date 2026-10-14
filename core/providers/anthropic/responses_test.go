@@ -3,11 +3,14 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -2524,6 +2527,1031 @@ func TestAnthropicToolsRoundTrip_ServerToolCacheControl(t *testing.T) {
 			}
 			if !strings.Contains(string(data), cc) {
 				t.Fatalf("cache_control dropped on egress: %s", data)
+			}
+		})
+	}
+}
+
+// --- maximhq/bifrost#8207: tool_addition / tool_removal blocks and compaction tool_changes ---
+//
+// Mid-conversation tool changes (beta mid-conversation-tool-changes-2026-07-01, by-value
+// definitions under inline-tools-2026-09-15) ride on role:"system" messages as
+// tool_addition / tool_removal blocks whose `tool` field names or defines the tool.
+// Pre-fix AnthropicContentBlock had no `tool` slot and the Responses converters had no
+// case for either block type, so the block vanished on ingress: the request still
+// reached Anthropic with a 200, but the model never saw the added tool. A compaction
+// block's `tool_changes` (the net tool set of the summarized range) was lost the same way.
+// https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
+
+// toolAdditionInlineDefinitionBody is the issue's reproduction: one tool in tools[], a
+// second added by value through a tool_addition block on a trailing system message.
+const toolAdditionInlineDefinitionBody = `{
+  "model": "claude-sonnet-5-5",
+  "max_tokens": 512,
+  "tools": [
+    {"name": "echo", "description": "Echo text back.",
+     "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}
+  ],
+  "messages": [
+    {"role": "user", "content": "What's the weather in Paris? Use the weather tool."},
+    {"role": "system", "content": [
+      {"type": "tool_addition", "tool": {"type": "tool_definition", "definition": {
+        "name": "get_weather", "description": "Get the current weather for a city.",
+        "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}}
+    ]}
+  ]
+}`
+
+// toolRemovalReferenceBody withdraws a tools[] entry by reference and mixes the block with
+// a text block, the documented "tool set updated" shape.
+const toolRemovalReferenceBody = `{
+  "model": "claude-sonnet-5-5",
+  "max_tokens": 256,
+  "tools": [
+    {"name": "echo", "description": "Echo text back.",
+     "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
+    {"name": "get_weather", "description": "Get the current weather for a city.",
+     "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}
+  ],
+  "messages": [
+    {"role": "user", "content": "What's the weather in Paris?"},
+    {"role": "system", "content": [
+      {"type": "tool_removal", "tool": {"type": "tool_reference", "name": "get_weather"}},
+      {"type": "text", "text": "Weather lookups are disabled for phase 2."}
+    ]}
+  ]
+}`
+
+// compactionToolChangesBody replays a server-written compaction block whose tool_changes
+// records a tool added inside the summarized range. The block must go back unchanged.
+const compactionToolChangesBody = `{
+  "model": "claude-sonnet-5-5",
+  "max_tokens": 256,
+  "tools": [
+    {"name": "echo", "description": "Echo text back.",
+     "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}
+  ],
+  "messages": [
+    {"role": "assistant", "content": [
+      {"type": "compaction",
+       "content": "Summary: the user asked about the weather in Paris and a weather tool was added.",
+       "tool_changes": [
+         {"type": "tool_addition", "tool": {"type": "tool_definition", "definition": {
+           "name": "get_weather", "description": "Get the current weather for a city.",
+           "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}}
+       ]}
+    ]},
+    {"role": "user", "content": "And in Berlin?"}
+  ]
+}`
+
+// wireContentBlocks returns msg.content as an array of objects, failing when the content
+// is a string or missing: every case here sends block-array content.
+func wireContentBlocks(t *testing.T, msg map[string]any, wire string) []map[string]any {
+	t.Helper()
+	raw, ok := msg["content"].([]any)
+	if !ok {
+		t.Fatalf("content = %v, want a block array: %s", msg["content"], wire)
+	}
+	blocks := make([]map[string]any, 0, len(raw))
+	for i, b := range raw {
+		obj, ok := b.(map[string]any)
+		if !ok {
+			t.Fatalf("content[%d] = %v, want an object: %s", i, b, wire)
+		}
+		blocks = append(blocks, obj)
+	}
+	return blocks
+}
+
+// wireToolTarget returns block.tool as an object, the discriminated `tool` field every
+// tool_addition / tool_removal block (and compaction tool_changes entry) carries.
+func wireToolTarget(t *testing.T, block map[string]any, wire string) map[string]any {
+	t.Helper()
+	tool, ok := block["tool"].(map[string]any)
+	if !ok {
+		t.Fatalf("block.tool = %v, want an object (the tool object was dropped): %s", block["tool"], wire)
+	}
+	return tool
+}
+
+// toolChangeIngress runs an Anthropic Messages body through ingress and resolves the
+// provider the way core does before egress (Pi sends an unprefixed model).
+func toolChangeIngress(t *testing.T, body string) (*schemas.BifrostContext, *schemas.BifrostResponsesRequest) {
+	t.Helper()
+	ctx := effortTestCtx(t)
+	bifrostReq := decodeAnthropicMessagesBody(t, body).ToBifrostResponsesRequest(ctx)
+	if bifrostReq == nil {
+		t.Fatal("nil neutral request")
+	}
+	bifrostReq.Provider = schemas.Anthropic
+	return ctx, bifrostReq
+}
+
+// TestAnthropicIngress_ToolAdditionBlockReachesNeutralRequest: the system message that
+// carries only a tool_addition block must survive Anthropic -> Bifrost as a system input
+// item whose block still holds the tool object, instead of being discarded as empty.
+func TestAnthropicIngress_ToolAdditionBlockReachesNeutralRequest(t *testing.T) {
+	t.Parallel()
+
+	_, bifrostReq := toolChangeIngress(t, toolAdditionInlineDefinitionBody)
+	input, wire := jsonArrayOfObjects(t, bifrostReq.Input)
+	if len(input) != 2 {
+		t.Fatalf("neutral input has %d items, want 2 (the tool_addition system message was dropped on ingress): %s", len(input), wire)
+	}
+	if input[1]["role"] != "system" {
+		t.Errorf("input[1].role = %v, want system: %s", input[1]["role"], wire)
+	}
+	blocks := wireContentBlocks(t, input[1], wire)
+	if len(blocks) != 1 || blocks[0]["type"] != "tool_addition" {
+		t.Fatalf("input[1].content = %v, want exactly one tool_addition block: %s", blocks, wire)
+	}
+	tool := wireToolTarget(t, blocks[0], wire)
+	if tool["type"] != "tool_definition" {
+		t.Errorf("tool.type = %v, want tool_definition: %s", tool["type"], wire)
+	}
+	def, _ := tool["definition"].(map[string]any)
+	if def == nil || def["name"] != "get_weather" {
+		t.Errorf("tool.definition = %v, want the get_weather definition: %s", tool["definition"], wire)
+	}
+}
+
+// TestAnthropicRoundTrip_ToolAdditionDefinitionForwarded is the direct regression for the
+// report: the inline definition must leave the gateway on the system message, byte-level
+// equivalent to what the client sent, and must NOT be hoisted into tools[] (that would
+// re-send the tools array and defeat the cache-preserving purpose of the block).
+func TestAnthropicRoundTrip_ToolAdditionDefinitionForwarded(t *testing.T) {
+	t.Parallel()
+
+	ctx, bifrostReq := toolChangeIngress(t, toolAdditionInlineDefinitionBody)
+	out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+	}
+	if len(out.Tools) != 1 || out.Tools[0].Name != "echo" {
+		t.Errorf("tools[] = %+v, want exactly [echo] (the added tool must stay on the system message, not be hoisted into tools)", out.Tools)
+	}
+	msgs, wire := jsonArrayOfObjects(t, out.Messages)
+	if len(msgs) != 2 {
+		t.Fatalf("forwarded messages = %d, want 2 (the tool_addition system message was dropped, the model never sees get_weather): %s", len(msgs), wire)
+	}
+	if msgs[1]["role"] != "system" {
+		t.Errorf("messages[1].role = %v, want system: %s", msgs[1]["role"], wire)
+	}
+	blocks := wireContentBlocks(t, msgs[1], wire)
+	if len(blocks) != 1 || blocks[0]["type"] != "tool_addition" {
+		t.Fatalf("messages[1].content = %v, want exactly one tool_addition block: %s", blocks, wire)
+	}
+	tool := wireToolTarget(t, blocks[0], wire)
+	if tool["type"] != "tool_definition" {
+		t.Errorf("tool.type = %v, want tool_definition: %s", tool["type"], wire)
+	}
+	def, _ := tool["definition"].(map[string]any)
+	if def == nil {
+		t.Fatalf("tool.definition missing: %s", wire)
+	}
+	if def["name"] != "get_weather" {
+		t.Errorf("definition.name = %v, want get_weather: %s", def["name"], wire)
+	}
+	if def["description"] != "Get the current weather for a city." {
+		t.Errorf("definition.description = %v, want the client's description: %s", def["description"], wire)
+	}
+	schema, _ := def["input_schema"].(map[string]any)
+	props, _ := schema["properties"].(map[string]any)
+	if props == nil || props["city"] == nil {
+		t.Errorf("definition.input_schema = %v, want the object schema with a city property: %s", def["input_schema"], wire)
+	}
+}
+
+// TestAnthropicRoundTrip_ToolRemovalReferenceKeepsOrder: a by-reference removal mixed with
+// a text block keeps both blocks, in content order (Anthropic processes them in order).
+func TestAnthropicRoundTrip_ToolRemovalReferenceKeepsOrder(t *testing.T) {
+	t.Parallel()
+
+	ctx, bifrostReq := toolChangeIngress(t, toolRemovalReferenceBody)
+	out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+	}
+	msgs, wire := jsonArrayOfObjects(t, out.Messages)
+	if len(msgs) != 2 || msgs[1]["role"] != "system" {
+		t.Fatalf("forwarded messages = %v, want [user, system]: %s", msgs, wire)
+	}
+	blocks := wireContentBlocks(t, msgs[1], wire)
+	if len(blocks) != 2 {
+		t.Fatalf("messages[1].content has %d blocks, want 2 (tool_removal was dropped, only the text survived): %s", len(blocks), wire)
+	}
+	if blocks[0]["type"] != "tool_removal" {
+		t.Errorf("content[0].type = %v, want tool_removal (order must be preserved): %s", blocks[0]["type"], wire)
+	}
+	tool := wireToolTarget(t, blocks[0], wire)
+	if tool["type"] != "tool_reference" || tool["name"] != "get_weather" {
+		t.Errorf("content[0].tool = %v, want {type: tool_reference, name: get_weather}: %s", tool, wire)
+	}
+	if blocks[1]["type"] != "text" || blocks[1]["text"] != "Weather lookups are disabled for phase 2." {
+		t.Errorf("content[1] = %v, want the text block: %s", blocks[1], wire)
+	}
+}
+
+// TestAnthropicRoundTrip_CompactionToolChangesForwarded: a replayed compaction block keeps
+// its tool_changes, otherwise the tool set the server recorded for the summarized range is
+// lost and the model forgets the tools added before compaction.
+func TestAnthropicRoundTrip_CompactionToolChangesForwarded(t *testing.T) {
+	t.Parallel()
+
+	ctx, bifrostReq := toolChangeIngress(t, compactionToolChangesBody)
+	out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+	}
+	msgs, wire := jsonArrayOfObjects(t, out.Messages)
+	if len(msgs) != 2 || msgs[0]["role"] != "assistant" {
+		t.Fatalf("forwarded messages = %v, want [assistant(compaction), user]: %s", msgs, wire)
+	}
+	blocks := wireContentBlocks(t, msgs[0], wire)
+	if len(blocks) != 1 || blocks[0]["type"] != "compaction" {
+		t.Fatalf("messages[0].content = %v, want exactly one compaction block: %s", blocks, wire)
+	}
+	if blocks[0]["content"] != "Summary: the user asked about the weather in Paris and a weather tool was added." {
+		t.Errorf("compaction.content = %v, want the summary unchanged: %s", blocks[0]["content"], wire)
+	}
+	changes, ok := blocks[0]["tool_changes"].([]any)
+	if !ok || len(changes) != 1 {
+		t.Fatalf("compaction.tool_changes = %v, want one tool_addition entry (tool_changes was dropped): %s", blocks[0]["tool_changes"], wire)
+	}
+	change, _ := changes[0].(map[string]any)
+	if change["type"] != "tool_addition" {
+		t.Errorf("tool_changes[0].type = %v, want tool_addition: %s", change["type"], wire)
+	}
+	tool := wireToolTarget(t, change, wire)
+	def, _ := tool["definition"].(map[string]any)
+	if tool["type"] != "tool_definition" || def == nil || def["name"] != "get_weather" {
+		t.Errorf("tool_changes[0].tool = %v, want the get_weather tool_definition: %s", tool, wire)
+	}
+}
+
+// TestNeutralRoute_ToolAdditionDefinitionForwardedToAnthropic covers the second inbound
+// route for #8207: an OpenAI-shaped /v1/responses request (or the Go SDK) carrying a
+// tool_addition block with a Responses-shaped function definition. The block must reach
+// the Anthropic wire on the system message in Anthropic shape (parameters become
+// input_schema), tools[] must stay untouched, and both betas must be derived from the body
+// because a client on this route cannot set anthropic-beta itself.
+func TestNeutralRoute_ToolAdditionDefinitionForwardedToAnthropic(t *testing.T) {
+	t.Parallel()
+
+	const body = `{
+  "model": "anthropic/claude-sonnet-5-5",
+  "max_output_tokens": 512,
+  "tools": [
+    {"type": "function", "name": "echo", "description": "Echo text back.",
+     "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}
+  ],
+  "input": [
+    {"role": "user", "content": "What's the weather in Paris? Use the weather tool."},
+    {"role": "system", "content": [
+      {"type": "tool_addition", "tool": {"type": "tool_definition", "definition": {
+        "type": "function", "name": "get_weather", "description": "Get the current weather for a city.",
+        "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}}}}
+    ]}
+  ]
+}`
+	var openAIReq openai.OpenAIResponsesRequest
+	if err := schemas.Unmarshal([]byte(body), &openAIReq); err != nil {
+		t.Fatalf("decode /v1/responses body: %v", err)
+	}
+	ctx := effortTestCtx(t)
+	bifrostReq := openAIReq.ToBifrostResponsesRequest(ctx)
+	if bifrostReq == nil {
+		t.Fatal("nil neutral request")
+	}
+	bifrostReq.Provider = schemas.Anthropic
+	bifrostReq.Model = "claude-sonnet-5-5"
+
+	out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+	}
+	if len(out.Tools) != 1 || out.Tools[0].Name != "echo" {
+		t.Errorf("tools[] = %+v, want exactly [echo] (the added tool must stay on the system message)", out.Tools)
+	}
+	msgs, wire := jsonArrayOfObjects(t, out.Messages)
+	if len(msgs) != 2 {
+		t.Fatalf("forwarded messages = %d, want 2 (the tool_addition system message was dropped on the neutral route): %s", len(msgs), wire)
+	}
+	if msgs[1]["role"] != "system" {
+		t.Errorf("messages[1].role = %v, want system: %s", msgs[1]["role"], wire)
+	}
+	blocks := wireContentBlocks(t, msgs[1], wire)
+	if len(blocks) != 1 || blocks[0]["type"] != "tool_addition" {
+		t.Fatalf("messages[1].content = %v, want exactly one tool_addition block: %s", blocks, wire)
+	}
+	tool := wireToolTarget(t, blocks[0], wire)
+	if tool["type"] != "tool_definition" {
+		t.Errorf("tool.type = %v, want tool_definition: %s", tool["type"], wire)
+	}
+	def, _ := tool["definition"].(map[string]any)
+	if def == nil {
+		t.Fatalf("tool.definition missing: %s", wire)
+	}
+	if def["name"] != "get_weather" || def["description"] != "Get the current weather for a city." {
+		t.Errorf("definition name/description = %v/%v, want get_weather with the client's description: %s", def["name"], def["description"], wire)
+	}
+	schema, _ := def["input_schema"].(map[string]any)
+	props, _ := schema["properties"].(map[string]any)
+	if props == nil || props["city"] == nil {
+		t.Errorf("definition.input_schema = %v, want the Responses parameters converted to input_schema: %s", def["input_schema"], wire)
+	}
+	if _, leaked := def["parameters"]; leaked {
+		t.Errorf("definition.parameters leaked onto the Anthropic wire: %s", wire)
+	}
+
+	// No anthropic-beta header can arrive on this route: both betas must come from the body.
+	betaCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	if err := AddMissingBetaHeadersToContext(betaCtx, out, schemas.Anthropic); err != nil {
+		t.Fatalf("AddMissingBetaHeadersToContext: %v", err)
+	}
+	merged := FilterBetaHeadersForProvider(MergeBetaHeaders(betaCtx, nil), schemas.Anthropic)
+	for _, want := range []string{AnthropicMidConversationToolChangesBetaHeader, AnthropicInlineToolsBetaHeader} {
+		if !slices.Contains(merged, want) {
+			t.Errorf("beta %s not derived from the body on the neutral route; got %v", want, merged)
+		}
+	}
+}
+
+// toolAdditionInlineFlagsBody defines get_weather by value with every Anthropic tool flag that
+// a tools[] entry would carry. PR #8278 review: the inline path skipped the flag helpers.
+const toolAdditionInlineFlagsBody = `{
+  "model": "claude-sonnet-5-5",
+  "max_tokens": 128,
+  "tools": [{"name": "echo", "description": "Echo text back.", "input_schema": {"type": "object", "properties": {"text": {"type": "string"}}}}],
+  "messages": [
+    {"role": "user", "content": "What's the weather in Paris?"},
+    {"role": "system", "content": [{"type": "tool_addition", "tool": {"type": "tool_definition", "definition": {
+      "name": "get_weather", "description": "Get the current weather for a city.",
+      "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+      "strict": true,
+      "defer_loading": true,
+      "allowed_callers": ["code_execution_20260120"],
+      "input_examples": [{"city": "Paris"}],
+      "eager_input_streaming": true
+    }}}]}
+  ]
+}`
+
+// inlineDefinitionOnWire runs body through ingress and egress and returns the wire form of
+// the first tool_addition definition on the single mid-conversation system message.
+func inlineDefinitionOnWire(t *testing.T, body string) (map[string]any, string) {
+	t.Helper()
+	ctx, bifrostReq := toolChangeIngress(t, body)
+	out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+	}
+	msgs, wire := jsonArrayOfObjects(t, out.Messages)
+	var sys map[string]any
+	for _, m := range msgs {
+		if m["role"] == "system" {
+			sys = m
+		}
+	}
+	if sys == nil {
+		t.Fatalf("no role:system message reached the wire: %s", wire)
+	}
+	blocks := wireContentBlocks(t, sys, wire)
+	if len(blocks) == 0 || blocks[0]["type"] != "tool_addition" {
+		t.Fatalf("system content = %v, want a tool_addition block first: %s", blocks, wire)
+	}
+	def, _ := wireToolTarget(t, blocks[0], wire)["definition"].(map[string]any)
+	if def == nil {
+		t.Fatalf("tool_addition.tool.definition missing: %s", wire)
+	}
+	return def, wire
+}
+
+// TestAnthropicRoundTrip_InlineDefinitionKeepsToolFlags: an inline definition must leave with
+// the same flags a tools[] entry keeps (strict, defer_loading, allowed_callers,
+// input_examples, eager_input_streaming). Dropping allowed_callers changes how Claude may call
+// the tool; dropping defer_loading makes a deferred tool immediately available.
+func TestAnthropicRoundTrip_InlineDefinitionKeepsToolFlags(t *testing.T) {
+	t.Parallel()
+	def, wire := inlineDefinitionOnWire(t, toolAdditionInlineFlagsBody)
+	if def["strict"] != true {
+		t.Errorf("definition.strict = %v, want true: %s", def["strict"], wire)
+	}
+	if def["defer_loading"] != true {
+		t.Errorf("definition.defer_loading = %v, want true: %s", def["defer_loading"], wire)
+	}
+	callers, _ := def["allowed_callers"].([]any)
+	if len(callers) != 1 || callers[0] != "code_execution_20260120" {
+		t.Errorf("definition.allowed_callers = %v, want [code_execution_20260120]: %s", def["allowed_callers"], wire)
+	}
+	examples, _ := def["input_examples"].([]any)
+	if len(examples) != 1 {
+		t.Errorf("definition.input_examples = %v, want the one example: %s", def["input_examples"], wire)
+	}
+	if def["eager_input_streaming"] != true {
+		t.Errorf("definition.eager_input_streaming = %v, want true: %s", def["eager_input_streaming"], wire)
+	}
+}
+
+// toolAdditionInlineMCPToolsetBody adds an MCP toolset by value: the documented inline form
+// under inline-tools-2026-09-15 + mcp-client-2026-09-15.
+const toolAdditionInlineMCPToolsetBody = `{
+  "model": "claude-sonnet-5-5",
+  "max_tokens": 128,
+  "mcp_servers": [{"type": "url", "url": "https://mcp.example.com/calendar", "name": "calendar"}],
+  "messages": [
+    {"role": "user", "content": "What's on my calendar today?"},
+    {"role": "system", "content": [{"type": "tool_addition", "tool": {"type": "tool_definition", "definition": {
+      "type": "mcp_toolset", "mcp_server_name": "calendar",
+      "default_config": {"enabled": false},
+      "configs": {"list_events": {"enabled": true}}
+    }}}]}
+  ]
+}`
+
+// TestAnthropicRoundTrip_InlineMCPToolsetDefinitionForwarded: an inline mcp_toolset must reach
+// the wire as an mcp_toolset definition (server name + per-tool configs), not as a
+// tool_definition with no definition.
+func TestAnthropicRoundTrip_InlineMCPToolsetDefinitionForwarded(t *testing.T) {
+	t.Parallel()
+	def, wire := inlineDefinitionOnWire(t, toolAdditionInlineMCPToolsetBody)
+	if def["type"] != "mcp_toolset" {
+		t.Fatalf("definition.type = %v, want mcp_toolset: %s", def["type"], wire)
+	}
+	if def["mcp_server_name"] != "calendar" {
+		t.Errorf("definition.mcp_server_name = %v, want calendar: %s", def["mcp_server_name"], wire)
+	}
+	configs, _ := def["configs"].(map[string]any)
+	if configs["list_events"] == nil {
+		t.Errorf("definition.configs.list_events missing (allowlist lost): %s", wire)
+	}
+}
+
+// TestAnthropicRoundTrip_ToolChangeAfterServerToolResultKeepsNativePlacement: Anthropic accepts
+// a mid-conversation system message after an assistant turn that ends in a server tool result.
+// The placement gate must recognise that, because the inline fallback has nowhere to carry a
+// tool_removal and would silently leave the withdrawn tool available.
+func TestAnthropicRoundTrip_ToolChangeAfterServerToolResultKeepsNativePlacement(t *testing.T) {
+	t.Parallel()
+	const body = `{
+  "model": "claude-sonnet-5-5",
+  "max_tokens": 128,
+  "tools": [
+    {"type": "web_search_20260209", "name": "web_search"},
+    {"name": "get_weather", "description": "Get the current weather for a city.", "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}}
+  ],
+  "messages": [
+    {"role": "user", "content": "Search for today's weather in Paris."},
+    {"role": "assistant", "content": [
+      {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {"query": "weather Paris"}},
+      {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01", "content": [{"type": "web_search_result", "url": "https://example.com/paris", "title": "Paris weather", "encrypted_content": "abc", "page_age": "1 hour ago"}]}
+    ]},
+    {"role": "system", "content": [{"type": "tool_removal", "tool": {"type": "tool_reference", "name": "get_weather"}}]}
+  ]
+}`
+	ctx, bifrostReq := toolChangeIngress(t, body)
+	out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+	}
+	msgs, wire := jsonArrayOfObjects(t, out.Messages)
+	last := msgs[len(msgs)-1]
+	if last["role"] != "system" {
+		t.Fatalf("last message role = %v, want system (tool_removal after a server-tool turn was inlined and dropped): %s", last["role"], wire)
+	}
+	blocks := wireContentBlocks(t, last, wire)
+	if len(blocks) != 1 || blocks[0]["type"] != "tool_removal" {
+		t.Fatalf("system content = %v, want exactly the tool_removal block: %s", blocks, wire)
+	}
+	if got := wireToolTarget(t, blocks[0], wire)["name"]; got != "get_weather" {
+		t.Errorf("tool_removal.tool.name = %v, want get_weather: %s", got, wire)
+	}
+}
+
+// TestAnthropicRoundTrip_InlineMCPToolsetKeepsFullConfig: an inline mcp_toolset must leave
+// with its configuration intact, not just the allowlist shape the tools[] merge derives: a
+// denylist (default enabled, one tool disabled), per-tool and default defer_loading, and a
+// deny-all default_config with no configs at all.
+func TestAnthropicRoundTrip_InlineMCPToolsetKeepsFullConfig(t *testing.T) {
+	t.Parallel()
+	t.Run("denylist and defer_loading", func(t *testing.T) {
+		t.Parallel()
+		const body = `{
+  "model": "claude-sonnet-5-5", "max_tokens": 128,
+  "mcp_servers": [{"type": "url", "url": "https://mcp.example.com/calendar", "name": "calendar"}],
+  "messages": [
+    {"role": "user", "content": "What's on my calendar today?"},
+    {"role": "system", "content": [{"type": "tool_addition", "tool": {"type": "tool_definition", "definition": {
+      "type": "mcp_toolset", "mcp_server_name": "calendar",
+      "default_config": {"enabled": true, "defer_loading": true},
+      "configs": {"delete_event": {"enabled": false}, "list_events": {"defer_loading": false}}
+    }}}]}
+  ]
+}`
+		def, wire := inlineDefinitionOnWire(t, body)
+		dc, _ := def["default_config"].(map[string]any)
+		if dc == nil || dc["enabled"] != true || dc["defer_loading"] != true {
+			t.Errorf("default_config = %v, want enabled+defer_loading true: %s", def["default_config"], wire)
+		}
+		configs, _ := def["configs"].(map[string]any)
+		del, _ := configs["delete_event"].(map[string]any)
+		if del == nil || del["enabled"] != false {
+			t.Errorf("configs.delete_event = %v, want enabled false (denylist lost): %s", configs["delete_event"], wire)
+		}
+		list, _ := configs["list_events"].(map[string]any)
+		if list == nil || list["defer_loading"] != false {
+			t.Errorf("configs.list_events = %v, want defer_loading false: %s", configs["list_events"], wire)
+		}
+	})
+	t.Run("deny-all without configs", func(t *testing.T) {
+		t.Parallel()
+		const body = `{
+  "model": "claude-sonnet-5-5", "max_tokens": 128,
+  "mcp_servers": [{"type": "url", "url": "https://mcp.example.com/calendar", "name": "calendar"}],
+  "messages": [
+    {"role": "user", "content": "hi"},
+    {"role": "system", "content": [{"type": "tool_addition", "tool": {"type": "tool_definition", "definition": {
+      "type": "mcp_toolset", "mcp_server_name": "calendar", "default_config": {"enabled": false}
+    }}}]}
+  ]
+}`
+		def, wire := inlineDefinitionOnWire(t, body)
+		dc, _ := def["default_config"].(map[string]any)
+		if dc == nil || dc["enabled"] != false {
+			t.Errorf("default_config = %v, want enabled false (deny-all lost): %s", def["default_config"], wire)
+		}
+	})
+}
+
+// inlineFunctionRequest builds a neutral /v1/responses-shaped request whose system message
+// adds a function by value with the given parameters.
+func inlineFunctionRequest(params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-5-5",
+		Input: []schemas.ResponsesMessage{
+			{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hello")}},
+			{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem), Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type: schemas.ResponsesInputMessageContentBlockTypeToolAddition,
+				ToolChange: &schemas.ResponsesToolChangeTarget{
+					Type: schemas.ResponsesToolChangeTargetTypeToolDefinition,
+					Definition: &schemas.ResponsesTool{
+						Type:                  schemas.ResponsesToolTypeFunction,
+						Name:                  schemas.Ptr("automation_update"),
+						ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params},
+					},
+				},
+			}}}},
+		},
+		Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(64)},
+	}
+}
+
+// TestAnthropicRoundTrip_InlineFunctionNormalizesInputSchema: a function added by value gets
+// the same root-composition normalization as a tools[] entry, and the same complexity error.
+func TestAnthropicRoundTrip_InlineFunctionNormalizesInputSchema(t *testing.T) {
+	t.Parallel()
+	t.Run("root oneOf is rewritten", func(t *testing.T) {
+		t.Parallel()
+		out, err := ToAnthropicResponsesRequest(effortTestCtx(t), inlineFunctionRequest(codexUnionToolSchema(t)))
+		if err != nil {
+			t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+		}
+		var def *AnthropicTool
+		for _, m := range out.Messages {
+			for _, b := range m.Content.ContentBlocks {
+				if b.Type == AnthropicContentBlockTypeToolAddition && b.Tool != nil {
+					def = b.Tool.Definition
+				}
+			}
+		}
+		if def == nil || def.InputSchema == nil {
+			t.Fatalf("inline definition missing on the wire: %+v", out.Messages)
+		}
+		assertAnthropicRootCompositionRemoved(t, def.InputSchema)
+	})
+	t.Run("excessive complexity is a request error", func(t *testing.T) {
+		t.Parallel()
+		_, err := ToAnthropicResponsesRequest(effortTestCtx(t), inlineFunctionRequest(explosiveAnthropicToolSchema(t)))
+		if err == nil {
+			t.Fatal("expected the normalizer's complexity error, got nil (inline definitions skip normalization)")
+		}
+	})
+}
+
+// inlineProgrammaticRequest adds a function by value whose callers are the neutral
+// "programmatic" value, alongside a declared code execution version in tools[].
+func inlineProgrammaticRequest(codeExecVersion string) *schemas.BifrostResponsesRequest {
+	req := inlineFunctionRequest(&schemas.ToolFunctionParameters{Type: "object"})
+	req.Input[1].Content.ContentBlocks[0].ToolChange.Definition.AllowedCallers = []string{schemas.ResponsesToolCallerProgrammatic}
+	req.Params.Tools = []schemas.ResponsesTool{{
+		Type:                         schemas.ResponsesToolTypeCodeInterpreter,
+		ResponsesToolCodeInterpreter: &schemas.ResponsesToolCodeInterpreter{Version: schemas.Ptr(codeExecVersion)},
+	}}
+	return req
+}
+
+// TestAnthropicRoundTrip_InlineFunctionResolvesProgrammaticCaller: a neutral "programmatic"
+// caller on an inline definition resolves against the request's code execution version the
+// way a tools[] entry does, and errors the same way when that version cannot express it.
+// Dropping it would silently widen the tool to any caller.
+func TestAnthropicRoundTrip_InlineFunctionResolvesProgrammaticCaller(t *testing.T) {
+	t.Parallel()
+	t.Run("resolved against the declared version", func(t *testing.T) {
+		t.Parallel()
+		out, err := ToAnthropicResponsesRequest(effortTestCtx(t), inlineProgrammaticRequest(string(AnthropicToolTypeCodeExecution20260120)))
+		if err != nil {
+			t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+		}
+		var def *AnthropicTool
+		for _, m := range out.Messages {
+			for _, b := range m.Content.ContentBlocks {
+				if b.Type == AnthropicContentBlockTypeToolAddition && b.Tool != nil {
+					def = b.Tool.Definition
+				}
+			}
+		}
+		if def == nil {
+			t.Fatalf("inline definition missing on the wire: %+v", out.Messages)
+		}
+		if len(def.AllowedCallers) != 1 || def.AllowedCallers[0] != string(AnthropicToolTypeCodeExecution20260120) {
+			t.Errorf("allowed_callers = %v, want [%s] (programmatic caller dropped, tool widened to any caller)", def.AllowedCallers, AnthropicToolTypeCodeExecution20260120)
+		}
+	})
+	t.Run("inexpressible restriction is a request error", func(t *testing.T) {
+		t.Parallel()
+		_, err := ToAnthropicResponsesRequest(effortTestCtx(t), inlineProgrammaticRequest(string(AnthropicToolTypeCodeExecution20250522)))
+		if err == nil {
+			t.Fatal("expected an error: code_execution_20250522 has no allowed_callers value, so the restriction cannot be expressed")
+		}
+	})
+}
+
+// TestAnthropicRoundTrip_TextEditorKeepsMaxCharacters: text_editor_20250728's max_characters
+// must survive the Responses round trip, both as a tools[] entry and as an inline definition
+// (the inline path reuses the tools[] converters, so both are pinned here).
+func TestAnthropicRoundTrip_TextEditorKeepsMaxCharacters(t *testing.T) {
+	t.Parallel()
+	t.Run("tools[] entry", func(t *testing.T) {
+		t.Parallel()
+		const body = `{
+  "model": "claude-sonnet-5-5", "max_tokens": 128,
+  "tools": [{"type": "text_editor_20250728", "name": "str_replace_based_edit_tool", "max_characters": 10000}],
+  "messages": [{"role": "user", "content": "Open main.go"}]
+}`
+		ctx, bifrostReq := toolChangeIngress(t, body)
+		out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+		if err != nil {
+			t.Fatalf("ToAnthropicResponsesRequest: %v", err)
+		}
+		if len(out.Tools) != 1 || out.Tools[0].MaxCharacters == nil || *out.Tools[0].MaxCharacters != 10000 {
+			wire, _ := sonic.Marshal(out.Tools)
+			t.Errorf("tools[0].max_characters lost on the Responses round trip: %s", wire)
+		}
+	})
+	t.Run("inline definition", func(t *testing.T) {
+		t.Parallel()
+		const body = `{
+  "model": "claude-sonnet-5-5", "max_tokens": 128,
+  "messages": [
+    {"role": "user", "content": "Open main.go"},
+    {"role": "system", "content": [{"type": "tool_addition", "tool": {"type": "tool_definition", "definition": {
+      "type": "text_editor_20250728", "name": "str_replace_based_edit_tool", "max_characters": 10000
+    }}}]}
+  ]
+}`
+		def, wire := inlineDefinitionOnWire(t, body)
+		if def["type"] != "text_editor_20250728" {
+			t.Fatalf("definition.type = %v, want text_editor_20250728: %s", def["type"], wire)
+		}
+		if def["max_characters"] != float64(10000) {
+			t.Errorf("definition.max_characters = %v, want 10000 (view limit lost): %s", def["max_characters"], wire)
+		}
+	})
+}
+
+// claudeCodeCachingTurn is the request shape Claude Code sends on every agent turn:
+// two system blocks marked for caching, then the conversation, with a single rolling
+// marker on the newest tool_result.
+const claudeCodeCachingTurn = `{
+	"model": "%s",
+	"max_tokens": 1024,
+	"system": [
+		{"type": "text", "text": "You are Claude Code.", "cache_control": {"type": "ephemeral"}},
+		{"type": "text", "text": "Project instructions.", "cache_control": {"type": "ephemeral"}}
+	],
+	"tools": [{"name": "Read", "description": "Read a file", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}}],
+	"messages": [
+		{"role": "user", "content": [{"type": "text", "text": "Read main.go"}]},
+		{"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"path": "main.go"}}]},
+		{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "package main", "cache_control": {"type": "ephemeral"}}]}
+	]
+}`
+
+// TestClaudeCodeCacheMarkersOnGPTKeepImplicitMode pins the request Claude Code sends
+// through /anthropic/v1/messages to a gpt-5.6+ model. Its markers must translate to
+// prompt_cache_breakpoint, and the request must NOT be switched to
+// prompt_cache_options.mode=explicit.
+//
+// Explicit-only mode looks up only the breakpoints in the current request
+// (https://developers.openai.com/api/docs/guides/prompt-caching). Claude Code's
+// tool_result marker moves forward every turn, so the previous turn's cache entry is
+// never a lookup candidate: the whole conversation is rewritten at the 1.25x write rate
+// every turn. The default implicit mode honours the same explicit breakpoints and also
+// looks back over up to 20 earlier message endings, which is the reuse Claude Code
+// relies on.
+func TestClaudeCodeCacheMarkersOnGPTKeepImplicitMode(t *testing.T) {
+	for _, tc := range []struct {
+		name, model string
+	}{
+		{"bedrock gpt-5.6", "bedrock/openai.gpt-5.6-sol"},
+		{"bedrock gpt-6", "bedrock/openai.gpt-6-astra"},
+		{"bedrock mantle gpt-5.6", "bedrock_mantle/openai.gpt-5.6-terra"},
+		{"openai gpt-5.6", "openai/gpt-5.6-sol"},
+		{"azure gpt-5.6", "azure/gpt-5.6-sol"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var req AnthropicMessageRequest
+			body := strings.Replace(claudeCodeCachingTurn, "%s", tc.model, 1)
+			if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			openaiReq := openai.ToOpenAIResponsesRequest(ctx, bifrostReq)
+			if openaiReq == nil {
+				t.Fatal("ToOpenAIResponsesRequest returned nil")
+			}
+			wire, err := openaiReq.MarshalJSON()
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			raw := string(wire)
+
+			if got := strings.Count(raw, `"prompt_cache_breakpoint"`); got != 3 {
+				t.Errorf("want 3 prompt_cache_breakpoint (2 system + tool_result), got %d; raw=%s", got, raw)
+			}
+			if strings.Contains(raw, `"cache_control"`) {
+				t.Errorf("cache_control must not reach an OpenAI-shaped endpoint; raw=%s", raw)
+			}
+			if strings.Contains(raw, `"prompt_cache_options"`) {
+				t.Errorf("Bifrost must not switch a Claude Code request to explicit-only caching; "+
+					"it disables the implicit lookback the rolling tool_result marker relies on; raw=%s", raw)
+			}
+		})
+	}
+}
+
+// TestClaudeCodeCacheMarkersOnGPTCallerExplicitModeWins checks the opt-in: a caller
+// that sets prompt_cache_options itself gets it forwarded unchanged.
+func TestClaudeCodeCacheMarkersOnGPTCallerExplicitModeWins(t *testing.T) {
+	var req AnthropicMessageRequest
+	body := strings.Replace(claudeCodeCachingTurn, "%s", "bedrock/openai.gpt-5.6-sol", 1)
+	if err := sonic.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	bifrostReq := req.ToBifrostResponsesRequest(ctx)
+	bifrostReq.Params.PromptCacheOptions = &schemas.PromptCacheOptions{Mode: schemas.Ptr("explicit")}
+	wire, err := openai.ToOpenAIResponsesRequest(ctx, bifrostReq).MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	raw := string(wire)
+	if !strings.Contains(raw, `"prompt_cache_options":{"mode":"explicit"}`) {
+		t.Errorf("caller's explicit mode must be forwarded; raw=%s", raw)
+	}
+	if got := strings.Count(raw, `"prompt_cache_breakpoint"`); got != 3 {
+		t.Errorf("want 3 prompt_cache_breakpoint, got %d; raw=%s", got, raw)
+	}
+}
+
+// parallelToolsResponsesReq builds a two-tool Responses request for the parallel_tool_calls tests.
+func parallelToolsResponsesReq(choice *schemas.ResponsesToolChoice, parallel *bool) *schemas.BifrostResponsesRequest {
+	tool := func(name string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{
+			Type:                  schemas.ResponsesToolTypeFunction,
+			Name:                  schemas.Ptr(name),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+		}
+	}
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-5",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Tokyo, Paris and Lima?")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools:             []schemas.ResponsesTool{tool("get_weather"), tool("get_time")},
+			ToolChoice:        choice,
+			ParallelToolCalls: parallel,
+		},
+	}
+}
+
+// parallel_tool_calls: false on /v1/responses must reach Anthropic as
+// tool_choice.disable_parallel_tool_use, as it already does on the chat path.
+func TestToAnthropicResponsesRequest_ParallelToolCalls(t *testing.T) {
+	auto := string(schemas.ResponsesToolChoiceTypeAuto)
+	required := string(schemas.ResponsesToolChoiceTypeRequired)
+	none := string(schemas.ResponsesToolChoiceTypeNone)
+
+	tests := []struct {
+		name        string
+		choice      *schemas.ResponsesToolChoice
+		parallel    *bool
+		wantType    string // "" means no tool_choice is sent
+		wantDisable bool
+	}{
+		{"false with no tool choice synthesizes auto", nil, schemas.Ptr(false), "auto", true},
+		{"false with auto", &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &auto}, schemas.Ptr(false), "auto", true},
+		{"false with required", &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &required}, schemas.Ptr(false), "any", true},
+		{"false with none is not sent", &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &none}, schemas.Ptr(false), "none", false},
+		{"true sends nothing", nil, schemas.Ptr(true), "", false},
+		{"unset sends nothing", nil, nil, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			out, err := ToAnthropicResponsesRequest(ctx, parallelToolsResponsesReq(tt.choice, tt.parallel))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantType == "" {
+				if out.ToolChoice != nil {
+					t.Fatalf("expected no tool_choice, got %+v", out.ToolChoice)
+				}
+				return
+			}
+			if out.ToolChoice == nil {
+				t.Fatalf("expected tool_choice type %q, got nil", tt.wantType)
+			}
+			if out.ToolChoice.Type != tt.wantType {
+				t.Errorf("tool_choice.type = %q, want %q", out.ToolChoice.Type, tt.wantType)
+			}
+			gotDisable := out.ToolChoice.DisableParallelToolUse != nil && *out.ToolChoice.DisableParallelToolUse
+			if gotDisable != tt.wantDisable {
+				t.Errorf("disable_parallel_tool_use = %s, want %v", boolPtrString(out.ToolChoice.DisableParallelToolUse), tt.wantDisable)
+			}
+		})
+	}
+}
+
+// tool_choice.disable_parallel_tool_use on /anthropic/v1/messages must become
+// ParallelToolCalls so non-Anthropic targets (Bedrock Converse, OpenAI) honor it too.
+func TestAnthropicIngress_DisableParallelToolUseMapsToParallelToolCalls(t *testing.T) {
+	tests := []struct {
+		name    string
+		disable *bool
+		want    *bool
+	}{
+		{"disable true", schemas.Ptr(true), schemas.Ptr(false)},
+		{"disable false", schemas.Ptr(false), schemas.Ptr(true)},
+		{"absent", nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &AnthropicMessageRequest{
+				Model:      "claude-sonnet-5",
+				MaxTokens:  256,
+				Messages:   []AnthropicMessage{{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentStr: schemas.Ptr("Weather in Tokyo and Paris?")}}},
+				Tools:      []AnthropicTool{{Name: "get_weather", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}}},
+				ToolChoice: &AnthropicToolChoice{Type: "auto", DisableParallelToolUse: tt.disable},
+			}
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			got := bifrostReq.Params.ParallelToolCalls
+			if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
+				t.Fatalf("ParallelToolCalls = %s, want %s", boolPtrString(got), boolPtrString(tt.want))
+			}
+
+			// Round trip back to Anthropic keeps the instruction.
+			out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("egress error: %v", err)
+			}
+			if out.ToolChoice == nil || out.ToolChoice.Type != "auto" {
+				t.Fatalf("expected tool_choice auto after round trip, got %+v", out.ToolChoice)
+			}
+			gotDisable := out.ToolChoice.DisableParallelToolUse != nil && *out.ToolChoice.DisableParallelToolUse
+			wantDisable := tt.disable != nil && *tt.disable
+			if gotDisable != wantDisable {
+				t.Errorf("round-trip disable_parallel_tool_use = %s, want %v", boolPtrString(out.ToolChoice.DisableParallelToolUse), wantDisable)
+			}
+		})
+	}
+}
+
+func boolPtrString(b *bool) string {
+	if b == nil {
+		return "<nil>"
+	}
+	return fmt.Sprint(*b)
+}
+
+// BenchmarkToAnthropicResponsesRequestParallelToolCalls measures the Responses
+// conversion with parallel_tool_calls unset (the common case) and false.
+func BenchmarkToAnthropicResponsesRequestParallelToolCalls(b *testing.B) {
+	for _, bc := range []struct {
+		name     string
+		parallel *bool
+	}{
+		{"unset", nil},
+		{"false", schemas.Ptr(false)},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := ToAnthropicResponsesRequest(ctx, parallelToolsResponsesReq(nil, bc.parallel)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// TestToAnthropicResponsesRequest_InstructionsLeadSystemInput: top-level instructions and
+// system/developer input are complementary, so both reach system with instructions first
+// (OpenAI places instructions ahead of input). Previously instructions were dropped whenever
+// the input carried any system content.
+func TestToAnthropicResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
+	user := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+	developer := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("DEVELOPER_MUST_SURVIVE")},
+	}
+	cachedSystem := schemas.ResponsesMessage{
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+			Text:         schemas.Ptr("SYSTEM_MUST_SURVIVE"),
+			CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+		}}},
+	}
+
+	tests := []struct {
+		name         string
+		instructions *string
+		input        []schemas.ResponsesMessage
+		want         string
+	}{
+		{
+			name:         "instructions and developer input both reach system, instructions first",
+			instructions: schemas.Ptr("BASE_MUST_SURVIVE"),
+			input:        []schemas.ResponsesMessage{developer, user},
+			want:         `[{"type":"text","text":"BASE_MUST_SURVIVE"},{"type":"text","text":"DEVELOPER_MUST_SURVIVE"}]`,
+		},
+		{
+			name:         "cache_control on a system block survives behind instructions",
+			instructions: schemas.Ptr("BASE_MUST_SURVIVE"),
+			input:        []schemas.ResponsesMessage{cachedSystem, user},
+			want:         `[{"type":"text","text":"BASE_MUST_SURVIVE"},{"type":"text","text":"SYSTEM_MUST_SURVIVE","cache_control":{"type":"ephemeral"}}]`,
+		},
+		{
+			name:         "instructions alone keep the block form",
+			instructions: schemas.Ptr("BASE_MUST_SURVIVE"),
+			input:        []schemas.ResponsesMessage{user},
+			want:         `[{"type":"text","text":"BASE_MUST_SURVIVE"}]`,
+		},
+		{
+			name:  "developer input alone keeps the string form",
+			input: []schemas.ResponsesMessage{developer, user},
+			want:  `"DEVELOPER_MUST_SURVIVE"`,
+		},
+		{
+			name:         "empty instructions add nothing",
+			instructions: schemas.Ptr(""),
+			input:        []schemas.ResponsesMessage{developer, user},
+			want:         `"DEVELOPER_MUST_SURVIVE"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Anthropic,
+				Model:    "claude-opus-4-6",
+				Input:    tc.input,
+				Params:   &schemas.ResponsesParameters{Instructions: tc.instructions},
+			}
+			result, err := ToAnthropicResponsesRequest(schemas.NewBifrostContext(nil, time.Time{}), req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got, err := sonic.Marshal(result.System)
+			if err != nil {
+				t.Fatalf("marshal system: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("system mismatch\n got: %s\nwant: %s", got, tc.want)
+			}
+			if len(result.Messages) != 1 || result.Messages[0].Role != AnthropicMessageRoleUser {
+				t.Fatalf("expected only the user turn in messages, got %+v", result.Messages)
 			}
 		})
 	}

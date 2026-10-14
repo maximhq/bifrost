@@ -134,9 +134,19 @@ func TestCreateLiveWebRTCSession(t *testing.T) {
 		t.Fatalf("upstream error = %+v", bifrostErr)
 	}
 
+	// A 201 is a created, billable session even when its answer is unusable: the caller settles it.
 	status, reply = http.StatusCreated, `{"session":{"id":"live_123"}}`
+	created, bifrostErr = provider.CreateLiveWebRTCSession(newCtx(), key, body)
+	if bifrostErr != nil {
+		t.Fatalf("a created session without an SDP answer must be returned, got error %v", bifrostErr.Error)
+	}
+	if created.Session.ID != "live_123" || (created.Transport != nil && created.Transport.SDP != "") {
+		t.Fatalf("CreateLiveWebRTCSession() = %+v", created)
+	}
+
+	status, reply = http.StatusCreated, `{"transport":{"type":"webrtc","sdp":"v=0 answer"}}`
 	if _, bifrostErr = provider.CreateLiveWebRTCSession(newCtx(), key, body); bifrostErr == nil {
-		t.Fatal("a create response without an SDP answer must be an error")
+		t.Fatal("a create response without a session id must be an error")
 	}
 
 	blocked := &OpenAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: srv.URL},

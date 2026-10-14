@@ -13,6 +13,11 @@ export function titleCaseFromSnakeCase(value: string): string {
 		.join(" ");
 }
 
+// isSentinelValue reports whether value is an internal placeholder like "__none__" that must never reach the screen.
+export function isSentinelValue(value: string): boolean {
+	return /^__.+__$/.test(value);
+}
+
 export type TrimmableKeys<T> = { [K in keyof T]: T[K] extends string | string[] | undefined ? K : never }[keyof T];
 
 // trimFields trims whitespace from the named string (or string[]) fields of obj, in place.

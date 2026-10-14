@@ -125,3 +125,100 @@ func TestToGeminiEmbeddingRequestRequestLevelTaskTypeParamReachesEveryInput(t *t
 		require.Equal(t, title, *r.Title, "requests[%d].title", i)
 	}
 }
+
+// GenAI SDKs repeat taskType/outputDimensionality on every batchEmbedContents entry.
+// Identical params must land at request level so providers that reject per-item
+// params (openai, vertex, bedrock, cohere) still accept the request.
+func TestGeminiEmbeddingRequestsHoistUniformParamsToRequestLevel(t *testing.T) {
+	dims := 8
+	taskType := "RETRIEVAL_DOCUMENT"
+	entry := func(text string) GeminiEmbeddingRequest {
+		return GeminiEmbeddingRequest{
+			Content:              &Content{Parts: []*Part{{Text: text}}},
+			TaskType:             &taskType,
+			OutputDimensionality: &dims,
+		}
+	}
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+
+	batch, err := (&GeminiBatchEmbeddingRequest{
+		Model:    "openai/text-embedding-3-small",
+		Requests: []GeminiEmbeddingRequest{entry("one"), entry("two")},
+	}).ToBifrostEmbeddingRequest(ctx)
+	require.NoError(t, err)
+
+	embedContent := entry("one")
+	embedContent.Model = "vertex/text-embedding-005"
+	single, err := embedContent.ToBifrostEmbeddingRequest(ctx)
+	require.NoError(t, err)
+
+	for _, req := range []*schemas.BifrostEmbeddingRequest{batch, single} {
+		require.NoError(t, schemas.EmbeddingInput(req.Input).RejectPerItemParams())
+		require.NotNil(t, req.Params)
+		require.Equal(t, dims, *req.Params.Dimensions)
+		require.Equal(t, taskType, *req.Params.TaskType)
+	}
+}
+
+// Entries with genuinely different params stay per-item whatever the model string says: the
+// converter runs before routing, so a bare or non-Gemini model may still be served by Gemini.
+func TestGeminiBatchEmbeddingRequestKeepsDifferingParamsPerItem(t *testing.T) {
+	query := "RETRIEVAL_QUERY"
+	doc := "RETRIEVAL_DOCUMENT"
+	for _, model := range []string{"gemini/gemini-embedding-001", "gemini-embedding-001", "openai/text-embedding-3-small"} {
+		t.Run(model, func(t *testing.T) {
+			req, err := (&GeminiBatchEmbeddingRequest{
+				Model: model,
+				Requests: []GeminiEmbeddingRequest{
+					{Content: &Content{Parts: []*Part{{Text: "q"}}}, TaskType: &query},
+					{Content: &Content{Parts: []*Part{{Text: "d"}}}, TaskType: &doc},
+				},
+			}).ToBifrostEmbeddingRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline))
+			require.NoError(t, err)
+
+			require.Nil(t, req.Params)
+			require.Equal(t, query, *req.Input[0].Params.TaskType)
+			require.Equal(t, doc, *req.Input[1].Params.TaskType)
+		})
+	}
+}
+
+// documentOcr / audioTrackExtraction are only accepted inside embedContentConfig on each
+// requests[] entry; a nested config must land there, never at the batch top level.
+func TestToGeminiEmbeddingRequestPutsEmbedContentConfigOnEachEntry(t *testing.T) {
+	text := "alpha"
+	req, err := ToGeminiEmbeddingRequest(&schemas.BifrostEmbeddingRequest{
+		Model: "gemini-embedding-2",
+		Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}},
+		Params: &schemas.EmbeddingParameters{ExtraParams: map[string]interface{}{
+			"embedContentConfig": map[string]interface{}{"documentOcr": true, "audioTrackExtraction": true},
+		}},
+	})
+	require.NoError(t, err)
+	body, err := providerUtils.MarshalSorted(req)
+	require.NoError(t, err)
+	merged, err := providerUtils.MergeExtraParamsIntoJSON(body, req.ExtraParams)
+	require.NoError(t, err)
+
+	// Without passthrough only the struct is sent; with it the extras are merged on top.
+	for _, wire := range [][]byte{body, merged} {
+		require.True(t, gjson.GetBytes(wire, "requests.0.embedContentConfig.documentOcr").Bool(), string(wire))
+		require.True(t, gjson.GetBytes(wire, "requests.0.embedContentConfig.audioTrackExtraction").Bool(), string(wire))
+		require.False(t, gjson.GetBytes(wire, "embedContentConfig").Exists(), string(wire))
+	}
+}
+
+// The GenAI integration accepts embedContentConfig on each entry and forwards it in place.
+func TestGeminiBatchEmbeddingRequestReadsEmbedContentConfig(t *testing.T) {
+	var batch GeminiBatchEmbeddingRequest
+	require.NoError(t, schemas.Unmarshal([]byte(`{"requests":[{"content":{"parts":[{"text":"a"}]},"embedContentConfig":{"documentOcr":true}}]}`), &batch))
+	batch.Model = "gemini/gemini-embedding-2"
+	bifrostReq, err := batch.ToBifrostEmbeddingRequest(schemas.NewBifrostContext(nil, schemas.NoDeadline))
+	require.NoError(t, err)
+
+	out, err := ToGeminiEmbeddingRequest(bifrostReq)
+	require.NoError(t, err)
+	body, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	require.True(t, gjson.GetBytes(body, "requests.0.embedContentConfig.documentOcr").Bool(), string(body))
+}

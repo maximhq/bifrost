@@ -8,12 +8,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/maximhq/bifrost/core/providers/azure"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/kvstore"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/pion/webrtc/v4"
 	"github.com/valyala/fasthttp"
 )
@@ -44,6 +45,8 @@ func (s testHandlerStore) GetMCPHeaderCombinedAllowlist() schemas.WhiteList { re
 func (s testHandlerStore) ShouldAllowPerRequestStorageOverride() bool       { return false }
 func (s testHandlerStore) ShouldAllowPerRequestRawOverride() bool           { return false }
 func (s testHandlerStore) ShouldAllowDirectKeys() bool                      { return false }
+func (s testHandlerStore) ShouldSendExtraFieldsInHeaders() bool             { return false }
+func (s testHandlerStore) IsProviderConfigured(schemas.ModelProvider) bool  { return false }
 func (s testHandlerStore) GetMCPExternalServerURL() string                  { return "" }
 func (s testHandlerStore) GetMCPExternalClientURL() string                  { return "" }
 
@@ -539,6 +542,37 @@ func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenStaysAnonymous(t *testi
 	}
 	if got := bifrostCtx.Value(schemas.BifrostContextKeyAPIKeyName); got != nil {
 		t.Fatalf("api key name context = %#v, want nil", got)
+	}
+}
+
+// TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenOnAzureIsRefused pins the hand-off
+// between the handler and the Azure provider: the bare key an unmapped ephemeral token
+// resolves to carries no Azure config, and the provider answers that with a 400 instead of
+// failing inside the session.
+func TestResolveRealtimeWebRTCKeys_UnmappedEphemeralTokenOnAzureIsRefused(t *testing.T) {
+	t.Parallel()
+
+	store, err := kvstore.New(kvstore.Config{})
+	if err != nil {
+		t.Fatalf("kvstore.New() error = %v", err)
+	}
+	defer store.Close()
+
+	handler := &WebRTCRealtimeHandler{handlerStore: testHandlerStore{kv: store}}
+	bifrostCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	authKey, selectedKey, err := handler.resolveRealtimeWebRTCKeys(bifrostCtx, schemas.Azure, "gpt-realtime", "ek_bf_test_unmapped", realtimeEphemeralKeyMapping{}, false)
+	if err != nil || selectedKey != nil || authKey.AzureKeyConfig != nil {
+		t.Fatalf("resolveRealtimeWebRTCKeys() = (%#v, %#v, %v), want a bare key with no Azure config", authKey, selectedKey, err)
+	}
+
+	provider := &azure.AzureProvider{}
+	if _, urlErr := provider.RealtimeWebSocketURL(authKey, "gpt-realtime", ""); urlErr == nil || urlErr.StatusCode == nil || *urlErr.StatusCode != fasthttp.StatusBadRequest {
+		t.Fatalf("RealtimeWebSocketURL() error = %#v, want a 400", urlErr)
+	}
+	answer, sdpErr := provider.ExchangeRealtimeWebRTCSDP(bifrostCtx, authKey, "gpt-realtime", "v=0", nil)
+	if sdpErr == nil || sdpErr.StatusCode == nil || *sdpErr.StatusCode != fasthttp.StatusBadRequest || answer != "" {
+		t.Fatalf("ExchangeRealtimeWebRTCSDP() = %q, %#v, want a 400 and no answer", answer, sdpErr)
 	}
 }
 

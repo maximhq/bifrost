@@ -25,7 +25,7 @@ import { useDeleteAgentMutation, useUpdateAgentMutation } from "@/lib/store/apis
 import type { AgentRegistrationView } from "@/lib/types/agents";
 import AgentAccessSummary from "@enterprise/components/agent-gateway/agentAccessSummary";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
-import { formatDistanceToNow } from "date-fns";
+import { format, formatDistanceToNow } from "date-fns";
 import { Check, ChevronLeft, ChevronRight, Copy, Info, MoreHorizontal, PencilIcon, Plus, Search, Trash2 } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import AgentSheet from "./agentSheet";
@@ -258,7 +258,7 @@ export default function AgentsTable({
 	};
 
 	// Rendered on the empty branch too so the topbar keeps its title.
-	const pageTitle = <PageTitle title="Agent Gateway">Manage upstream A2A agents served through the gateway.</PageTitle>;
+	const pageTitle = <PageTitle title="Agent Catalog">Manage upstream A2A agents served through the gateway.</PageTitle>;
 
 	const sheet = sheetOpen && <AgentSheet agent={selectedAgent ?? undefined} onClose={() => setSheetOpen(false)} onSaved={handleSaved} />;
 
@@ -385,7 +385,12 @@ export default function AgentsTable({
 											<AgentAccessSummary agent={agent} fallback={formatAgentAccess(agent)} />
 										</TableCell>
 										<TableCell className="text-muted-foreground pr-6 text-sm">
-											{formatDistanceToNow(new Date(agent.updated_at), { addSuffix: true })}
+											<Tooltip>
+												<TooltipTrigger asChild>
+													<span>{formatDistanceToNow(new Date(agent.updated_at), { addSuffix: true })}</span>
+												</TooltipTrigger>
+												<TooltipContent>{format(new Date(agent.updated_at), "MMM dd, yyyy HH:mm:ss OOOO")}</TooltipContent>
+											</Tooltip>
 										</TableCell>
 										<TableCell data-testid={`agent-status-${agent.name}`} onClick={(e) => e.stopPropagation()}>
 											<Switch

@@ -7,6 +7,7 @@ import type {
 	AgentLogOperationResponse,
 	AgentLogStats,
 	AgentPagination,
+	AgentTopAgentsResponse,
 } from "@/lib/types/agentLogs";
 import { getRangeForPeriod } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
@@ -75,10 +76,14 @@ export interface AgentFilterData {
 export const agentLogsApi = baseApi.injectEndpoints({
 	endpoints: (builder) => ({
 		// List Agent history rows (metadata only) with filters and pagination.
-		getAgentLogs: builder.query<AgentLogHistoryResponse, { filters: AgentLogFilters; pagination: AgentPagination; selectedId?: string }>({
-			query: ({ filters, pagination, selectedId }) => {
+		getAgentLogs: builder.query<
+			AgentLogHistoryResponse,
+			{ filters: AgentLogFilters; pagination: AgentPagination; selectedId?: string; groupSessions?: boolean }
+		>({
+			query: ({ filters, pagination, selectedId, groupSessions }) => {
 				const query = new URLSearchParams(buildAgentHistoryQuery(filters, pagination));
 				if (selectedId) query.set("selected_id", selectedId);
+				if (groupSessions) query.set("group_sessions", "true");
 				return `/agents/history?${query}`;
 			},
 			providesTags: ["AgentLogs"],
@@ -114,6 +119,12 @@ export const agentLogsApi = baseApi.injectEndpoints({
 		// Time-bucketed volume for the collapsible chart.
 		getAgentHistogram: builder.query<AgentHistogramResponse, { filters: AgentLogFilters }>({
 			query: ({ filters }) => `/agents/history/histogram?${buildAgentHistoryQuery(filters)}`,
+			providesTags: ["AgentLogs"],
+		}),
+
+		// Agents ranked by operation count for the current filters.
+		getAgentTopAgents: builder.query<AgentTopAgentsResponse, { filters: AgentLogFilters }>({
+			query: ({ filters }) => `/agents/history/top-agents?${buildAgentHistoryQuery(filters)}`,
 			providesTags: ["AgentLogs"],
 		}),
 
@@ -155,6 +166,7 @@ export const {
 	useGetAgentLogOperationByIdQuery,
 	useGetAgentLogStatsQuery,
 	useGetAgentHistogramQuery,
+	useGetAgentTopAgentsQuery,
 	useGetAgentLogByIdQuery,
 	useLazyGetAgentLogByIdQuery,
 	useGetAgentFilterDataQuery,

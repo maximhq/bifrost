@@ -557,6 +557,99 @@ func TestValidateKeyGithubCopilot(t *testing.T) {
 	}
 }
 
+func TestValidateKeyOAuthKeyConfig(t *testing.T) {
+	cc := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantClientCredentials,
+			TokenURL:     *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			ClientID:     schemas.NewSecretVar("id"),
+			ClientSecret: schemas.NewSecretVar("secret"),
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+	jb := func(mutate func(*schemas.OAuthKeyConfig)) *schemas.OAuthKeyConfig {
+		c := &schemas.OAuthKeyConfig{
+			GrantType:  schemas.OAuthGrantJWTBearer,
+			TokenURL:   *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			PrivateKey: schemas.NewSecretVar("pem"),
+			Issuer:     "client",
+			Audience:   "https://idp.example/oauth2/token",
+		}
+		if mutate != nil {
+			mutate(c)
+		}
+		return c
+	}
+
+	tests := []struct {
+		name      string
+		key       schemas.Key
+		wantError string
+	}{
+		{name: "client_credentials is sufficient", key: schemas.Key{OAuthKeyConfig: cc(nil)}},
+		{name: "jwt_bearer is sufficient", key: schemas.Key{OAuthKeyConfig: jb(nil)}},
+		// Key selection runs this on every request. A static value always wins over the block, so
+		// an incomplete block must not take a usable key out of rotation; the management API
+		// still refuses to save one (handlers.validateProviderKey).
+		{name: "a value alongside an incomplete config keeps the key usable", key: schemas.Key{Value: *schemas.NewSecretVar("sk"), OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientSecret = nil })}},
+		{name: "missing grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "" })}, wantError: "grant_type is required"},
+		{name: "unknown grant", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.GrantType = "password" })}, wantError: "must be client_credentials or jwt_bearer"},
+		{name: "missing token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar(" ") })}, wantError: "token_url is required"},
+		{name: "relative token url", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("/token") })}, wantError: "must be https"},
+		{name: "plain http on a public host", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://idp.example/token") })}, wantError: "must be https"},
+		{name: "token url with userinfo", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://user:pass@idp.example/token")
+		})}, wantError: "must not carry userinfo, a query, or a fragment"},
+		{name: "token url with a query", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("https://idp.example/token?client_secret=x")
+		})}, wantError: "must not carry userinfo, a query, or a fragment"},
+		{name: "token url with a fragment", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("https://idp.example/token#frag") })}, wantError: "must not carry userinfo, a query, or a fragment"},
+		{name: "plain http on loopback is accepted", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.TokenURL = *schemas.NewSecretVar("http://127.0.0.1:9/token") })}},
+		{name: "jwt_bearer negative lifetime names the accepted range", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.AssertionLifetimeSeconds = -1 })}, wantError: "between 0 (default) and 3600"},
+		{name: "missing client id", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.ClientID = schemas.NewSecretVar(" ") })}, wantError: "client_id and oauth_key_config.client_secret are required"},
+		{name: "bad auth style", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) { c.AuthStyle = "query" })}, wantError: "auth_style must be header or body"},
+		{name: "jwt_bearer missing key", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.PrivateKey = nil })}, wantError: "private_key is required"},
+		{name: "jwt_bearer missing issuer", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.Issuer = "" })}, wantError: "issuer is required"},
+		{name: "jwt_bearer missing audience", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.Audience = "" })}, wantError: "audience is required"},
+		{name: "jwt_bearer symmetric algorithm", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.SigningAlgorithm = "HS256" })}, wantError: "signing_algorithm must be one of"},
+		{name: "jwt_bearer lifetime too long", key: schemas.Key{OAuthKeyConfig: jb(func(c *schemas.OAuthKeyConfig) { c.AssertionLifetimeSeconds = 7200 })}, wantError: "assertion_lifetime_seconds"},
+		{name: "env-backed references count as present", key: schemas.Key{OAuthKeyConfig: cc(func(c *schemas.OAuthKeyConfig) {
+			c.TokenURL = *schemas.NewSecretVar("env.IDP_TOKEN_URL_UNSET_IN_TEST")
+			c.ClientSecret = schemas.NewSecretVar("env.IDP_SECRET_UNSET_IN_TEST")
+		})}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := tt.key
+			err := validateKey(schemas.OpenAI, &key)
+			if tt.wantError == "" {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantError)
+		})
+	}
+
+	t.Run("a key with oauth_key_config may have no value on an openai-based provider", func(t *testing.T) {
+		assert.True(t, keyValueMayBeEmpty(schemas.OpenAI, &schemas.Key{OAuthKeyConfig: cc(nil)}))
+		assert.False(t, keyValueMayBeEmpty(schemas.OpenAI, &schemas.Key{}))
+		assert.False(t, keyValueMayBeEmpty(schemas.Anthropic, &schemas.Key{OAuthKeyConfig: cc(nil)}))
+		assert.True(t, keyValueMayBeEmpty(schemas.Databricks, &schemas.Key{}))
+	})
+
+	t.Run("oauth_key_config is refused on a provider that does not resolve it", func(t *testing.T) {
+		key := schemas.Key{OAuthKeyConfig: cc(nil)}
+		err := validateKey(schemas.Anthropic, &key)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "only supported on openai")
+	})
+}
+
 // A request cancelled at the same instant its backoff expires must still be
 // reported as cancelled: Go's select picks uniformly among ready cases, so a
 // timer-only check lets roughly half of such requests run one more attempt
@@ -638,6 +731,51 @@ func TestWrapConvertedStreamPostHookRunnerSendsAssistantRoleOnce(t *testing.T) {
 			for i, role := range roles[1:] {
 				assert.Nil(t, role, "chunk %d repeats the role", i+1)
 			}
+		})
+	}
+}
+
+// A converted stream chunk still carries the upstream API's raw bytes, so it must
+// say it was converted: integrations echo RawResponse only for unconverted chunks.
+func TestWrapConvertedStreamPostHookRunnerMarksConvertedChunks(t *testing.T) {
+	tests := []struct {
+		name       string
+		targetType schemas.RequestType
+		result     *schemas.BifrostResponse
+		extra      func(*schemas.BifrostResponse) *schemas.BifrostResponseExtraFields
+	}{
+		{
+			name:       "chat served through responses",
+			targetType: schemas.ResponsesRequest,
+			result: &schemas.BifrostResponse{ResponsesStreamResponse: &schemas.BifrostResponsesStreamResponse{
+				Type:        schemas.ResponsesStreamResponseTypeCreated,
+				ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: `{"type":"response.created"}`},
+			}},
+			extra: func(r *schemas.BifrostResponse) *schemas.BifrostResponseExtraFields {
+				return &r.ChatResponse.ExtraFields
+			},
+		},
+		{
+			name:       "text served through chat",
+			targetType: schemas.ChatCompletionRequest,
+			result: &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{
+				ExtraFields: schemas.BifrostResponseExtraFields{Provider: schemas.OpenAI, RawResponse: `{"object":"chat.completion.chunk"}`},
+			}},
+			extra: func(r *schemas.BifrostResponse) *schemas.BifrostResponseExtraFields {
+				return &r.TextCompletionResponse.ExtraFields
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got *schemas.BifrostResponse
+			runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				got = result
+				return result, bifrostErr
+			}, tt.targetType)
+			runner(schemas.NewBifrostContext(context.Background(), time.Time{}), tt.result, nil)
+			require.NotNil(t, got)
+			assert.Equal(t, tt.targetType, tt.extra(got).ConvertedRequestType)
 		})
 	}
 }

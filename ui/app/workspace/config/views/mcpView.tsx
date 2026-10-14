@@ -6,10 +6,12 @@ import { Input } from "@/components/ui/input";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { TagInput } from "@/components/ui/tagInput";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
 import { CoreConfig, DefaultCoreConfig, MCPCodeModeLimits } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
+import { isSecretVarSet } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
 import { AlertTriangle } from "lucide-react";
@@ -20,6 +22,8 @@ import { CodeModeLimitsSection } from "./codeModeLimitsSection";
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
+
+const stringListEquals = (a?: string[], b?: string[]) => (a ?? []).join("\n") === (b ?? []).join("\n");
 
 export default function MCPView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -87,12 +91,14 @@ export default function MCPView() {
 			!codeModeLimitsEqual(localConfig.mcp_code_mode_limits, config.mcp_code_mode_limits) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
+			!stringListEquals(localConfig.mcp_oauth_private_allowlist, config.mcp_oauth_private_allowlist) ||
 			clientURLChanged ||
 			(localConfig.mcp_server_auth_mode ?? "headers") !== (config.mcp_server_auth_mode ?? "headers") ||
 			issuerURLChanged ||
 			(localConfig.oauth2_server_config?.auth_code_ttl ?? 300) !== (config.oauth2_server_config?.auth_code_ttl ?? 300) ||
 			(localConfig.oauth2_server_config?.access_token_ttl ?? 600) !== (config.oauth2_server_config?.access_token_ttl ?? 600) ||
-			(localConfig.oauth2_server_config?.disable_vk_identity ?? false) !== (config.oauth2_server_config?.disable_vk_identity ?? false)
+			(localConfig.oauth2_server_config?.disable_vk_identity ?? false) !== (config.oauth2_server_config?.disable_vk_identity ?? false) ||
+			!stringListEquals(localConfig.oauth2_server_config?.allowed_redirect_uris, config.oauth2_server_config?.allowed_redirect_uris)
 		);
 	}, [config, localConfig]);
 
@@ -167,6 +173,10 @@ export default function MCPView() {
 		}));
 	}, []);
 
+	const handleOAuthPrivateAllowlistChange = useCallback((value: string[]) => {
+		setLocalConfig((prev) => ({ ...prev, mcp_oauth_private_allowlist: value }));
+	}, []);
+
 	const handleClientURLChange = useCallback((value: SecretVar) => {
 		setLocalConfig((prev) => ({ ...prev, mcp_external_client_url: value }));
 	}, []);
@@ -217,6 +227,13 @@ export default function MCPView() {
 		setLocalConfig((prev) => ({
 			...prev,
 			oauth2_server_config: { ...prev.oauth2_server_config, disable_vk_identity: checked },
+		}));
+	}, []);
+
+	const handleAllowedRedirectURIsChange = useCallback((value: string[]) => {
+		setLocalConfig((prev) => ({
+			...prev,
+			oauth2_server_config: { ...prev.oauth2_server_config, allowed_redirect_uris: value },
 		}));
 	}, []);
 
@@ -278,6 +295,11 @@ export default function MCPView() {
 
 			if (oauthModeActive && (isNaN(accessTokenTTL) || accessTokenTTL < 60)) {
 				toast.error("Access token TTL must be at least 60 seconds.");
+				return;
+			}
+
+			if (oauthModeActive && !isSecretVarSet(localConfig.oauth2_server_config?.issuer_url)) {
+				toast.error("Issuer URL is required when MCP auth mode is OAuth or Both.");
 				return;
 			}
 
@@ -414,6 +436,30 @@ export default function MCPView() {
 						onCheckedChange={handleTempTokenAuthChange}
 						disabled={!hasSettingsUpdateAccess}
 						data-testid="mcp-enable-temp-token-auth-switch"
+					/>
+				</div>
+
+				{/* OAuth Private Network Allowlist */}
+				<div className="space-y-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-oauth-private-allowlist" className="text-sm font-medium">
+							OAuth Private Network Allowlist
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Hosts, IP addresses, or CIDR ranges (no scheme or port) that OAuth discovery, client registration, and token requests for MCP
+							servers may reach when they resolve to a loopback or private address, e.g. <code className="text-xs">localhost</code>,{" "}
+							<code className="text-xs">127.0.0.1</code>, or <code className="text-xs">10.20.0.0/16</code>. Applies to MCP servers added
+							with dashboard authentication enabled; changing it requires dashboard authentication. Link-local and cloud metadata addresses
+							are always blocked.
+						</p>
+					</div>
+					<TagInput
+						id="mcp-oauth-private-allowlist"
+						data-testid="mcp-oauth-private-allowlist-input"
+						placeholder="Add host, IP, or CIDR (Enter or comma)"
+						value={localConfig.mcp_oauth_private_allowlist ?? []}
+						onValueChange={handleOAuthPrivateAllowlistChange}
+						readOnly={!hasSettingsUpdateAccess}
 					/>
 				</div>
 
@@ -624,12 +670,12 @@ export default function MCPView() {
 									{/* Issuer URL */}
 									<div className="space-y-1.5">
 										<label htmlFor="oauth2-issuer-url" className="text-sm font-medium">
-											Issuer URL
+											Issuer URL <span className="text-destructive">*</span>
 										</label>
 										<p className="text-muted-foreground text-sm">
 											Stable public URL advertised in discovery documents and embedded as the <code className="text-xs">iss</code> claim in
-											every JWT. Leave blank to derive it from the request <code className="text-xs">Host</code> header (sufficient for most
-											deployments). Multi-host or reverse-proxy deployments might need this. Supports env var syntax (e.g.{" "}
+											every JWT. Required in OAuth and Both modes: Bifrost never derives the issuer from the request{" "}
+											<code className="text-xs">Host</code> header, because that header is caller-controlled. Supports env var syntax (e.g.{" "}
 											<code className="text-xs">env.BIFROST_ISSUER_URL</code>).
 										</p>
 										<SecretVarInput
@@ -683,6 +729,39 @@ export default function MCPView() {
 												disabled={!hasSettingsUpdateAccess}
 											/>
 										</div>
+									</div>
+
+									{/* Allowed redirect URIs */}
+									<div className="space-y-1.5">
+										<label htmlFor="oauth2-allowed-redirect-uris" className="text-sm font-medium">
+											Allowed redirect URIs
+										</label>
+										<p className="text-muted-foreground text-sm">
+											Exact callback URIs remote MCP clients may use, e.g.{" "}
+											<code className="text-xs">https://www.cursor.com/agents/mcp/oauth/callback</code>. Add{" "}
+											<code className="text-xs">*</code> to allow any https callback; partial wildcards are not supported. Loopback
+											callbacks and <code className="text-xs">cursor://anysphere.cursor-mcp</code> are always allowed. Changing this list
+											requires dashboard authentication.
+										</p>
+										<TagInput
+											id="oauth2-allowed-redirect-uris"
+											data-testid="oauth2-allowed-redirect-uris-input"
+											placeholder="Add callback URI (Enter)"
+											submitOnComma={false}
+											value={localConfig.oauth2_server_config?.allowed_redirect_uris ?? []}
+											onValueChange={handleAllowedRedirectURIsChange}
+											readOnly={!hasSettingsUpdateAccess}
+										/>
+										{localConfig.oauth2_server_config?.allowed_redirect_uris?.includes("*") && (
+											<Alert variant="warning" data-testid="oauth2-allowed-redirect-uris-wildcard-warning">
+												<AlertTriangle className="size-4" />
+												<AlertTitle>Any callback is allowed</AlertTitle>
+												<AlertDescription>
+													Any MCP client can register with a callback on any host, so the consent page is the only check against a client
+													that sends authorization codes to an attacker. Prefer listing exact callback URIs.
+												</AlertDescription>
+											</Alert>
+										)}
 									</div>
 
 									{/* Require identity-provider login. Enterprise-only and only
