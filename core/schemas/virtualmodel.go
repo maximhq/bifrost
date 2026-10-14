@@ -187,6 +187,7 @@ type ResidencySnapshot struct {
 	Authoritative bool
 	ObservedAt    time.Time
 	States        map[string]ResidencyState // candidate name to state; write it with SetState
+	MissingState  ResidencyState            // unloaded for a complete list of resident models
 }
 
 // SetState records a candidate's state, normalizing the key so the lookup cannot miss
@@ -220,6 +221,9 @@ func (s *ResidencySnapshot) StateOf(model string) ResidencyState {
 		if strings.EqualFold(name, model) {
 			return state
 		}
+	}
+	if s.MissingState != "" {
+		return s.MissingState
 	}
 	return ResidencyUnknown
 }

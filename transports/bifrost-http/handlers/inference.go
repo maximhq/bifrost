@@ -1037,7 +1037,9 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	// Virtual names join the listing here, after enrichment so a backend's own entry for
 	// the same string keeps its richer metadata, and after pagination because a virtual
 	// model is configuration rather than a row to page over.
-	appendVirtualModels(resp, h.config, schemas.ModelProvider(provider))
+	if virtualModelsEnabled(h.config) {
+		appendVirtualModels(resp, h.config, schemas.ModelProvider(provider), h.virtualModelAccess(bifrostCtx))
+	}
 	if resp != nil {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
@@ -1063,7 +1065,15 @@ func (h *CompletionHandler) modelRetrieve(ctx *fasthttp.RequestCtx) {
 		if decoded, decodeErr := url.PathUnescape(raw); decodeErr == nil {
 			raw = decoded
 		}
-		if virtualResp, ok := virtualModelRetrieve(bifrostCtx, h.config, raw); ok {
+		var access schemas.Access
+		if virtualModelsEnabled(h.config) {
+			access = h.virtualModelAccess(bifrostCtx)
+		}
+		if virtualResp, ok := virtualModelRetrieve(bifrostCtx, h.config, raw, access); ok {
+			if virtualResp == nil {
+				SendError(ctx, fasthttp.StatusForbidden, "virtual model access denied")
+				return
+			}
 			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, virtualResp.ExtraFields)
 			SendJSON(ctx, virtualResp)
 			return

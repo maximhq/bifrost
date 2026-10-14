@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,7 +49,7 @@ func virtualModelDescriptor(vm *schemas.VirtualModel) schemas.Model {
 // And it appends after pagination rather than participating in it, because a virtual model
 // is not a row in any provider's list to page over - it is configuration, and dropping it
 // from page two onwards would make it look intermittent.
-func appendVirtualModels(resp *schemas.BifrostListModelsResponse, cfg *lib.Config, provider schemas.ModelProvider) {
+func appendVirtualModels(resp *schemas.BifrostListModelsResponse, cfg *lib.Config, provider schemas.ModelProvider, access schemas.Access) {
 	if resp == nil || !virtualModelsEnabled(cfg) {
 		return
 	}
@@ -58,6 +59,9 @@ func appendVirtualModels(resp *schemas.BifrostListModelsResponse, cfg *lib.Confi
 	}
 	for _, vm := range cfg.VirtualModels.List() {
 		if provider != "" && vm.Provider != provider {
+			continue
+		}
+		if !virtualModelAllowed(vm, access) {
 			continue
 		}
 		if seen[strings.ToLower(vm.Name)] {
@@ -75,7 +79,7 @@ func appendVirtualModels(resp *schemas.BifrostListModelsResponse, cfg *lib.Confi
 //
 // The name arrives as it did in the path, so it may still carry a provider prefix. Both
 // "qwen38" and "omlx/qwen38" address the same virtual model.
-func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName string) (*schemas.BifrostModelRetrieveResponse, bool) {
+func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName string, access schemas.Access) (*schemas.BifrostModelRetrieveResponse, bool) {
 	if !virtualModelsEnabled(cfg) {
 		return nil, false
 	}
@@ -85,14 +89,20 @@ func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName
 	}
 	vm, ok := cfg.VirtualModels.Lookup(name)
 	if !ok {
-		if _, after, split := strings.Cut(name, "/"); split {
+		if prefix, after, split := strings.Cut(name, "/"); split {
 			vm, ok = cfg.VirtualModels.Lookup(after)
+			if ok && prefix != string(vm.Provider) {
+				return nil, true
+			}
 		}
 	}
 	if !ok {
 		return nil, false
 	}
 
+	if !virtualModelAllowed(vm, access) {
+		return nil, true
+	}
 	descriptor := virtualModelDescriptor(vm)
 	if _, snapshot, err := cfg.VirtualModels.MemberStatus(ctx, vm.Name); err == nil && snapshot != nil {
 		descriptor.AdditionalAttributes["bifrost:residency-authoritative"] = fmt.Sprintf("%t", snapshot.Authoritative)
@@ -115,31 +125,67 @@ func virtualModelRetrieve(ctx *schemas.BifrostContext, cfg *lib.Config, pathName
 	return &schemas.BifrostModelRetrieveResponse{Model: descriptor}, true
 }
 
-// virtualListedModels is the dashboard shape for virtual models. It takes the already
-// RBAC-filtered provider list rather than consulting the whole config, so a virtual key
-// can never be shown a virtual model built on a provider it was not granted - the same
-// deny-by-default that governs the concrete models beside it.
-func virtualListedModels(cfg *lib.Config, allowed []schemas.ModelProvider) []listedModel {
+// virtualListedModels is the dashboard shape for virtual models. It takes the provider list the
+// caller has already been narrowed to, rather than consulting the whole config, so a virtual key
+// cannot be shown a model built on a provider it was not granted. An empty provider list shows
+// nothing: there is no provider in play for the name to belong to.
+func virtualListedModels(cfg *lib.Config, allowed []schemas.ModelProvider, access schemas.Access) []listedModel {
 	if !virtualModelsEnabled(cfg) {
 		return nil
 	}
 	out := make([]listedModel, 0)
 	for _, vm := range cfg.VirtualModels.List() {
-		if len(allowed) > 0 {
-			granted := false
-			for _, provider := range allowed {
-				if provider == vm.Provider {
-					granted = true
-					break
-				}
-			}
-			if !granted {
-				continue
-			}
+		if !slices.Contains(allowed, vm.Provider) || !virtualModelAllowed(vm, access) {
+			continue
 		}
 		out = append(out, listedModel{Name: vm.Name, Provider: vm.Provider})
 	}
 	return out
+}
+
+// virtualModelAccess returns what the request may reach, or nil when nothing has been settled
+// for it. Nil is the same reading the concrete models listing gives: no governance deployed, or no
+// grant on a route that does not carry one. Authentication is settled upstream by the auth layer;
+// this answers only what a settled caller may see, so a virtual name's candidates are never
+// published ahead of the grants that cover them.
+func (h *CompletionHandler) virtualModelAccess(ctx *schemas.BifrostContext) schemas.Access {
+	if h.modelsManager == nil {
+		return nil
+	}
+	access, err := h.modelsManager.ResolveAccess(ctx)
+	if err != nil {
+		return nil
+	}
+	return access
+}
+
+// resolveVirtualModelAccess is the same answer for the management listing, which reaches it
+// through its own manager rather than the inference handler's.
+func resolveVirtualModelAccess(ctx *schemas.BifrostContext, manager ModelsManager) schemas.Access {
+	if manager == nil {
+		return nil
+	}
+	access, err := manager.ResolveAccess(ctx)
+	if err != nil {
+		return nil
+	}
+	return access
+}
+
+// virtualModelAllowed requires grants for every candidate before exposing its metadata.
+func virtualModelAllowed(vm *schemas.VirtualModel, access schemas.Access) bool {
+	if access == nil {
+		return true
+	}
+	if !access.IsProviderAllowed(string(vm.Provider)) {
+		return false
+	}
+	for _, model := range vm.Models {
+		if !access.IsModelAllowed(string(vm.Provider), model) {
+			return false
+		}
+	}
+	return true
 }
 
 // virtualModelsEnabled guards every call site, so a gateway that does not use this feature

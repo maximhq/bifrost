@@ -122,41 +122,37 @@ func (m *ChannelMessage) abandonDelivery() bool {
 type Bifrost struct {
 	ctx                       *schemas.BifrostContext
 	cancel                    context.CancelFunc
-	account                   schemas.Account                     // account interface
-	llmPlugins                atomic.Pointer[[]schemas.LLMPlugin] // list of llm plugins
-	mcpPlugins                atomic.Pointer[[]schemas.MCPPlugin] // list of mcp plugins
-	a2aPlugins                atomic.Pointer[[]schemas.A2APlugin] // list of a2a (agent gateway) plugins
-	providers                 atomic.Pointer[[]schemas.Provider]  // list of providers
-	requestQueues             sync.Map                            // provider request queues (thread-safe), stores *ProviderQueue
-	waitGroups                sync.Map                            // wait groups for each provider (thread-safe)
-	oldWorkerCleanups         sync.WaitGroup                      // tracks async cleanup of old workers after provider updates
-	retiredWorkerWaits        sync.Map                            // provider old-worker cleanup wait groups (thread-safe), stores *sync.WaitGroup
-	providerLifecycleMu       sync.RWMutex                        // prevents provider updates from racing with shutdown cleanup waits
-	providerMutexes           sync.Map                            // mutexes for each provider to prevent concurrent updates (thread-safe)
-	channelMessagePool        sync.Pool                           // Pool for ChannelMessage objects, initial pool size is set in Init
-	responseChannelPool       sync.Pool                           // Pool for response channels, initial pool size is set in Init
-	errorChannelPool          sync.Pool                           // Pool for error channels, initial pool size is set in Init
-	responseStreamPool        sync.Pool                           // Pool for response stream channels, initial pool size is set in Init
-	pluginPipelinePool        sync.Pool                           // Pool for PluginPipeline objects
-	bifrostRequestPool        sync.Pool                           // Pool for BifrostRequest objects
-	logger                    schemas.Logger                      // logger instance, default logger is used if not provided
-	tracer                    atomic.Value                        // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
-	modelCatalog              schemas.ModelInfoProvider           // model pricing/capability catalog exposed to plugins via ctx.GetModelInfo (nil if not configured); set once from BifrostConfig at Init
-	MCPManager                mcp.MCPManagerInterface             // MCP integration manager (nil if MCP not configured)
-	mcpCredStore              schemas.MCPCredentialStore          // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
-	mcpInProcessServerFactory schemas.InProcessServerFactory      // Carried from MCPConfig so a lazily created manager still synthesizes openapi servers
-	mcpInitOnce               sync.Once                           // Ensures MCP manager is initialized only once
-	mcpFactoryMu              sync.Mutex                          // Orders factory registration against lazy MCP manager creation
-	dropExcessRequests        atomic.Bool                         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	keySelector               schemas.KeySelector                 // Custom key selector function
-	keyPoolFilter             schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
-	kvStore                   schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
-	sessionAffinity           schemas.SessionAffinity             // decides which key a session stays on; never nil after Init
-	// virtualModels resolves a virtual model name to the candidate the backend has
-	// resident. nil when the feature is off, and the request path pays one atomic
-	// load and nothing else. Held in an atomic pointer because the transport swaps
-	// the whole set on a config change without restarting.
-	virtualModels atomic.Pointer[schemas.VirtualModelResolver]
+	account                   schemas.Account                              // account interface
+	llmPlugins                atomic.Pointer[[]schemas.LLMPlugin]          // list of llm plugins
+	mcpPlugins                atomic.Pointer[[]schemas.MCPPlugin]          // list of mcp plugins
+	a2aPlugins                atomic.Pointer[[]schemas.A2APlugin]          // list of a2a (agent gateway) plugins
+	providers                 atomic.Pointer[[]schemas.Provider]           // list of providers
+	requestQueues             sync.Map                                     // provider request queues (thread-safe), stores *ProviderQueue
+	waitGroups                sync.Map                                     // wait groups for each provider (thread-safe)
+	oldWorkerCleanups         sync.WaitGroup                               // tracks async cleanup of old workers after provider updates
+	retiredWorkerWaits        sync.Map                                     // provider old-worker cleanup wait groups (thread-safe), stores *sync.WaitGroup
+	providerLifecycleMu       sync.RWMutex                                 // prevents provider updates from racing with shutdown cleanup waits
+	providerMutexes           sync.Map                                     // mutexes for each provider to prevent concurrent updates (thread-safe)
+	channelMessagePool        sync.Pool                                    // Pool for ChannelMessage objects, initial pool size is set in Init
+	responseChannelPool       sync.Pool                                    // Pool for response channels, initial pool size is set in Init
+	errorChannelPool          sync.Pool                                    // Pool for error channels, initial pool size is set in Init
+	responseStreamPool        sync.Pool                                    // Pool for response stream channels, initial pool size is set in Init
+	pluginPipelinePool        sync.Pool                                    // Pool for PluginPipeline objects
+	bifrostRequestPool        sync.Pool                                    // Pool for BifrostRequest objects
+	logger                    schemas.Logger                               // logger instance, default logger is used if not provided
+	tracer                    atomic.Value                                 // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
+	modelCatalog              schemas.ModelInfoProvider                    // model pricing/capability catalog exposed to plugins via ctx.GetModelInfo (nil if not configured); set once from BifrostConfig at Init
+	MCPManager                mcp.MCPManagerInterface                      // MCP integration manager (nil if MCP not configured)
+	mcpCredStore              schemas.MCPCredentialStore                   // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
+	mcpInProcessServerFactory schemas.InProcessServerFactory               // Carried from MCPConfig so a lazily created manager still synthesizes openapi servers
+	mcpInitOnce               sync.Once                                    // Ensures MCP manager is initialized only once
+	mcpFactoryMu              sync.Mutex                                   // Orders factory registration against lazy MCP manager creation
+	dropExcessRequests        atomic.Bool                                  // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	keySelector               schemas.KeySelector                          // Custom key selector function
+	keyPoolFilter             schemas.KeyPoolFilter                        // optional hook to veto keys before selection (nil = all eligible)
+	kvStore                   schemas.KVStore                              // optional KV store for session stickiness (nil = disabled)
+	sessionAffinity           schemas.SessionAffinity                      // decides which key a session stays on; never nil after Init
+	virtualModels             atomic.Pointer[schemas.VirtualModelResolver] // optional resident-aware resolver
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -513,9 +509,8 @@ func (bifrost *Bifrost) virtualResolver() schemas.VirtualModelResolver {
 	return nil
 }
 
-// resolveVirtualModel rewrites a virtual model name into the candidate the backend
-// reports as resident, so a request never evicts a loaded model by naming one that
-// is not in memory.
+// resolveVirtualModel rewrites a virtual name to a concrete candidate, preferring
+// resident models. With no resident candidate it can trigger a cold load.
 //
 // Placement is the whole design: it runs after the routing plugins, so governance
 // and routing rules keep first refusal on the name the client actually sent, and

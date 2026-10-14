@@ -53,6 +53,7 @@ type residencyTarget struct {
 	fields       *schemas.ResidencyFieldMap
 	tlsConfig    *tls.Config
 	allowPrivate bool
+	slotKey      string // provider|baseURL, built once so a cached probe reads a map without building a key
 }
 
 // residencySlot holds one endpoint's last reading plus the mutex that coalesces
@@ -63,6 +64,12 @@ type residencySlot struct {
 	adapter   schemas.ResidencyAdapter
 	snapshot  *schemas.ResidencySnapshot
 	expiresAt time.Time
+	flight    *residencyFlight
+}
+
+type residencyFlight struct {
+	done     chan struct{}
+	snapshot *schemas.ResidencySnapshot
 }
 
 // residencyRegistry is an immutable snapshot of the virtual model set. The whole
@@ -140,7 +147,12 @@ func (s *VirtualModelService) Install(virtualModels map[string]schemas.VirtualMo
 		if err != nil {
 			return fmt.Errorf("virtual model %q: %w", vm.Name, err)
 		}
-		registry.entries[strings.ToLower(vm.Name)] = &residencyEntry{model: &vm, target: target}
+		key := strings.ToLower(vm.Name)
+		if _, exists := registry.entries[key]; exists {
+			return fmt.Errorf("duplicate virtual model name %q", vm.Name)
+		}
+		vm.OnProbeError = schemas.NormalizeModelErrorPolicy(string(vm.OnProbeError))
+		registry.entries[key] = &residencyEntry{model: &vm, target: target}
 	}
 
 	s.registry.store(registry)
@@ -227,6 +239,7 @@ func buildResidencyTarget(provider schemas.ModelProvider, providerCfg configstor
 		fields:       fields,
 		tlsConfig:    tlsConfig,
 		allowPrivate: allowPrivate,
+		slotKey:      string(provider) + "|" + baseURL,
 	}, nil
 }
 
@@ -349,40 +362,68 @@ func (s *VirtualModelService) snapshot(ctx *schemas.BifrostContext, target *resi
 	slot := s.slotFor(target)
 
 	slot.mu.Lock()
-	defer slot.mu.Unlock()
-
 	now := time.Now()
 	if slot.snapshot != nil && now.Before(slot.expiresAt) {
-		return slot.snapshot
+		snapshot := slot.snapshot
+		slot.mu.Unlock()
+		return snapshot
 	}
+	if flight := slot.flight; flight != nil {
+		slot.mu.Unlock()
+		select {
+		case <-flight.done:
+			return flight.snapshot
+		case <-ctx.Done():
+			return &schemas.ResidencySnapshot{Provider: target.provider, ObservedAt: now}
+		}
+	}
+	flight := &residencyFlight{done: make(chan struct{})}
+	slot.flight = flight
+	known := slot.adapter
+	previous := slot.snapshot
+	slot.mu.Unlock()
 
 	probeCtx, cancel := context.WithTimeout(ctx, target.timeout)
 	defer cancel()
 
-	snapshot, adapter, err := probeResidency(probeCtx, target, slot.adapter, s.httpClient(target))
+	snapshot, adapter, err := probeResidency(probeCtx, target, known, s.httpClient(target))
 	if err != nil {
-		if slot.snapshot != nil {
+		if previous != nil {
 			if s.logger != nil {
 				s.logger.Debug("residency probe of %s failed, reusing a reading observed %s ago: %v",
-					target.baseURL, now.Sub(slot.snapshot.ObservedAt), err)
+					target.baseURL, now.Sub(previous.ObservedAt), err)
 			}
-			return slot.snapshot
+			snapshot = previous
+		} else {
+			if s.logger != nil {
+				s.logger.Warn("residency probe of %s failed with no earlier reading: %v", target.baseURL, err)
+			}
+			snapshot = &schemas.ResidencySnapshot{Provider: target.provider, ObservedAt: now}
 		}
-		if s.logger != nil {
-			s.logger.Warn("residency probe of %s failed with no earlier reading: %v", target.baseURL, err)
-		}
-		return &schemas.ResidencySnapshot{Provider: target.provider, ObservedAt: now}
 	}
 
-	slot.adapter = adapter
-	slot.snapshot = snapshot
-	slot.expiresAt = now.Add(target.ttl)
+	slot.mu.Lock()
+	if err == nil {
+		slot.adapter = adapter
+		slot.snapshot = snapshot
+		slot.expiresAt = time.Now().Add(target.ttl)
+	}
+	flight.snapshot = snapshot
+	slot.flight = nil
+	close(flight.done)
+	slot.mu.Unlock()
 	return snapshot
 }
 
-// slotFor returns the per-endpoint slot, created on first use.
+// slotFor returns the per-endpoint slot, created on first use. The key was built when the
+// target was installed, so a cached read costs a map load and no allocation.
 func (s *VirtualModelService) slotFor(target *residencyTarget) *residencySlot {
-	key := string(target.provider) + "|" + target.baseURL
+	key := target.slotKey
+	if key == "" {
+		// Only a hand-built target (tests) reaches here; one from buildResidencyTarget always
+		// carries a key, since an empty base URL is refused at install.
+		key = string(target.provider) + "|" + target.baseURL
+	}
 	if existing, ok := s.slots.Load(key); ok {
 		return existing.(*residencySlot)
 	}
@@ -448,28 +489,40 @@ func probeResidency(ctx context.Context, target *residencyTarget, known schemas.
 	candidates := residencyProbes
 	if target.adapter == schemas.ResidencyAdapterCustom {
 		candidates = []residencyProbe{{adapter: schemas.ResidencyAdapterCustom, path: target.path, parse: parseCustom}}
-	} else if known != "" && known != schemas.ResidencyAdapterAuto {
-		// A slot that already answered goes straight back to that reader; auto-detect
-		// is a per-endpoint once, not a per-request retry.
-		for _, probe := range residencyProbes {
-			if probe.adapter == known {
-				candidates = []residencyProbe{probe}
-				break
-			}
+	} else {
+		if target.adapter != "" && target.adapter != schemas.ResidencyAdapterAuto {
+			known = target.adapter
 		}
-		if len(candidates) != 1 || candidates[0].adapter != known {
-			return nil, "", fmt.Errorf("no residency reader for adapter %q", known)
+		if known != "" && known != schemas.ResidencyAdapterAuto {
+			// A slot that already answered goes straight back to that reader; auto-detect
+			// is a per-endpoint once, not a per-request retry.
+			for _, probe := range residencyProbes {
+				if probe.adapter == known {
+					candidates = []residencyProbe{probe}
+					break
+				}
+			}
+			if len(candidates) != 1 || candidates[0].adapter != known {
+				return nil, "", fmt.Errorf("no residency reader for adapter %q", known)
+			}
 		}
 	}
 
 	var lastErr error
 	for _, probe := range candidates {
-		body, err := fetchResidencyJSON(ctx, target, client, probe.path)
+		path := probe.path
+		if target.path != "" {
+			path = target.path
+		}
+		body, err := fetchResidencyJSON(ctx, target, client, path)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		snapshot := &schemas.ResidencySnapshot{Provider: target.provider, ObservedAt: time.Now(), States: map[string]schemas.ResidencyState{}}
+		snapshot := &schemas.ResidencySnapshot{Provider: target.provider, ObservedAt: time.Now(), States: map[string]schemas.ResidencyState{}, MissingState: schemas.ResidencyUnknown}
+		if probe.membership {
+			snapshot.MissingState = schemas.ResidencyUnloaded
+		}
 		if err := probe.parse(body, target, snapshot); err != nil {
 			lastErr = fmt.Errorf("%s: %w", probe.adapter, err)
 			continue
@@ -531,11 +584,19 @@ func parseStatusList(body map[string]any, _ *residencyTarget, snapshot *schemas.
 		// the id - embeddinggemma-2-bf16 is aliased embeddinggemma-2 - and a candidate
 		// may legitimately be written either way.
 		state := schemas.ResidencyUnloaded
+		_, hasLoaded := entry["loaded"].(bool)
+		_, hasLoading := entry["is_loading"].(bool)
+		understood := hasLoaded || hasLoading
 		switch strings.ToLower(firstString(entry, "value", "state", "status")) {
 		case "loaded", "ready", "ready_to_use":
-			state = schemas.ResidencyReady
+			state, understood = schemas.ResidencyReady, true
 		case "loading", "no_slot":
-			state = schemas.ResidencyLoading
+			state, understood = schemas.ResidencyLoading, true
+		case "unloaded":
+			understood = true
+		}
+		if !understood {
+			return fmt.Errorf("model entry has no recognized residency state")
 		}
 		if boolField(entry, "loaded") {
 			state = schemas.ResidencyReady
@@ -571,6 +632,7 @@ func parseOllamaProcesses(body map[string]any, _ *residencyTarget, snapshot *sch
 	if !ok {
 		return fmt.Errorf("no models array in the response")
 	}
+	snapshot.MissingState = schemas.ResidencyUnloaded
 	for _, raw := range entries {
 		entry, ok := raw.(map[string]any)
 		if !ok {
@@ -603,6 +665,9 @@ func parseCustom(body map[string]any, target *residencyTarget, snapshot *schemas
 	if entries == nil {
 		return fmt.Errorf("no array at %q in the response", fields.Items)
 	}
+	if fields.Loaded == "" && fields.Loading == "" {
+		snapshot.MissingState = schemas.ResidencyUnloaded
+	}
 	for _, raw := range entries {
 		entry, ok := raw.(map[string]any)
 		if !ok {
@@ -610,10 +675,22 @@ func parseCustom(body map[string]any, target *residencyTarget, snapshot *schemas
 		}
 		name := stringField(entry, fields.ID)
 		if name == "" {
-			continue
+			return fmt.Errorf("custom residency entry has no model identifier")
 		}
 		state := schemas.ResidencyReady
 		if fields.Loaded != "" || fields.Loading != "" {
+			understood := false
+			for _, field := range []string{fields.Loaded, fields.Loading} {
+				if value, exists := entry[field]; field != "" && exists {
+					if _, ok := value.(bool); !ok {
+						return fmt.Errorf("custom residency field %q is not a boolean", field)
+					}
+					understood = true
+				}
+			}
+			if !understood {
+				return fmt.Errorf("custom residency entry has no mapped state")
+			}
 			state = schemas.ResidencyUnloaded
 			if fields.Loaded != "" && boolField(entry, fields.Loaded) {
 				state = schemas.ResidencyReady

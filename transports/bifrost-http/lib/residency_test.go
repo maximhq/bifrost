@@ -92,13 +92,12 @@ func TestParseOllamaProcesses(t *testing.T) {
 	if got := populated.StateOf("qwen3:30b"); got != schemas.ResidencyReady {
 		t.Fatalf("state = %q, want %q", got, schemas.ResidencyReady)
 	}
-	// A candidate the list does not mention stays unknown rather than becoming an
-	// affirmative "not loaded": this reader only enumerates what is resident, so it has
-	// no standing to deny the rest. The selector still cold-loads the first candidate
-	// from an authoritative snapshot, so the decision is the same - it is the reasoning
-	// that stays honest.
-	if got := populated.StateOf("llama3:8b"); got != schemas.ResidencyUnknown {
-		t.Fatalf("absent candidate state = %q, want %q", got, schemas.ResidencyUnknown)
+	// /api/ps is the complete resident set; absence means unloaded.
+	if got := populated.StateOf("llama3:8b"); got != schemas.ResidencyUnloaded {
+		t.Fatalf("absent candidate state = %q, want %q", got, schemas.ResidencyUnloaded)
+	}
+	if got := empty.StateOf("llama3:8b"); got != schemas.ResidencyUnloaded {
+		t.Fatalf("empty process list state = %q, want unloaded", got)
 	}
 }
 

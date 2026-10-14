@@ -1265,12 +1265,12 @@ func (h *ProviderHandler) parseModelListQuery(ctx *fasthttp.RequestCtx, bifrostC
 	// route runs outside the request pipeline, so it asks governance directly rather than
 	// waiting for a hook to.
 	//
-	// Nothing resolved leaves the listing unfiltered: an unknown key, or a deployment with no
-	// governance at all, has nothing to narrow the listing by. So does a request nothing settled
-	// who it is; it is refused where it matters, and a listing is not that.
-	if access, err := h.modelsManager.ResolveAccess(bifrostCtx); err == nil && access != nil {
+	// Access is what the caller may reach; nil leaves the listing unfiltered, the same reading
+	// the concrete listing gives when nothing was resolved. Virtual names are filtered by it, so
+	// a settled grant is never shown a virtual model built on a provider or candidate it lacks.
+	query.Access = resolveVirtualModelAccess(bifrostCtx, h.modelsManager)
+	if query.Access != nil {
 		query.HasVKFilter = true
-		query.Access = access
 	}
 
 	return query, true
@@ -1341,7 +1341,7 @@ func (h *ProviderHandler) listManagementModels(query modelListQuery) ([]listedMo
 	// caller asked only for models that support decisions, which virtual models make no
 	// claim about.
 	if !query.Decisions {
-		models = append(models, virtualListedModels(h.inMemoryStore, providers)...)
+		models = append(models, virtualListedModels(h.inMemoryStore, providers, query.Access)...)
 	}
 
 	total := len(models)
