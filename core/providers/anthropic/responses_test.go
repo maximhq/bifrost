@@ -3472,3 +3472,87 @@ func BenchmarkToAnthropicResponsesRequestParallelToolCalls(b *testing.B) {
 		})
 	}
 }
+
+// TestToAnthropicResponsesRequest_InstructionsLeadSystemInput: top-level instructions and
+// system/developer input are complementary, so both reach system with instructions first
+// (OpenAI places instructions ahead of input). Previously instructions were dropped whenever
+// the input carried any system content.
+func TestToAnthropicResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
+	user := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+	developer := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("DEVELOPER_MUST_SURVIVE")},
+	}
+	cachedSystem := schemas.ResponsesMessage{
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+			Text:         schemas.Ptr("SYSTEM_MUST_SURVIVE"),
+			CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+		}}},
+	}
+
+	tests := []struct {
+		name         string
+		instructions *string
+		input        []schemas.ResponsesMessage
+		want         string
+	}{
+		{
+			name:         "instructions and developer input both reach system, instructions first",
+			instructions: schemas.Ptr("BASE_MUST_SURVIVE"),
+			input:        []schemas.ResponsesMessage{developer, user},
+			want:         `[{"type":"text","text":"BASE_MUST_SURVIVE"},{"type":"text","text":"DEVELOPER_MUST_SURVIVE"}]`,
+		},
+		{
+			name:         "cache_control on a system block survives behind instructions",
+			instructions: schemas.Ptr("BASE_MUST_SURVIVE"),
+			input:        []schemas.ResponsesMessage{cachedSystem, user},
+			want:         `[{"type":"text","text":"BASE_MUST_SURVIVE"},{"type":"text","text":"SYSTEM_MUST_SURVIVE","cache_control":{"type":"ephemeral"}}]`,
+		},
+		{
+			name:         "instructions alone keep the block form",
+			instructions: schemas.Ptr("BASE_MUST_SURVIVE"),
+			input:        []schemas.ResponsesMessage{user},
+			want:         `[{"type":"text","text":"BASE_MUST_SURVIVE"}]`,
+		},
+		{
+			name:  "developer input alone keeps the string form",
+			input: []schemas.ResponsesMessage{developer, user},
+			want:  `"DEVELOPER_MUST_SURVIVE"`,
+		},
+		{
+			name:         "empty instructions add nothing",
+			instructions: schemas.Ptr(""),
+			input:        []schemas.ResponsesMessage{developer, user},
+			want:         `"DEVELOPER_MUST_SURVIVE"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Anthropic,
+				Model:    "claude-opus-4-6",
+				Input:    tc.input,
+				Params:   &schemas.ResponsesParameters{Instructions: tc.instructions},
+			}
+			result, err := ToAnthropicResponsesRequest(schemas.NewBifrostContext(nil, time.Time{}), req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got, err := sonic.Marshal(result.System)
+			if err != nil {
+				t.Fatalf("marshal system: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("system mismatch\n got: %s\nwant: %s", got, tc.want)
+			}
+			if len(result.Messages) != 1 || result.Messages[0].Role != AnthropicMessageRoleUser {
+				t.Fatalf("expected only the user turn in messages, got %+v", result.Messages)
+			}
+		})
+	}
+}

@@ -2585,6 +2585,10 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 		}
 		bedrockReq.Messages = messages
 		if len(systemMessages) > 0 {
+			// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
+			if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil && *bifrostReq.Params.Instructions != "" {
+				systemMessages = append([]BedrockSystemMessage{{Text: bifrostReq.Params.Instructions}}, systemMessages...)
+			}
 			bedrockReq.System = systemMessages
 		} else {
 			if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil {

@@ -4842,13 +4842,9 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 	if bifrostReq.Input != nil {
 		anthropicMessages, systemContent := ConvertBifrostMessagesToAnthropicMessages(ctx, input, true, caps)
 
-		// Set system message if present
-		if systemContent != nil {
-			anthropicReq.System = systemContent
-		} else if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil && *bifrostReq.Params.Instructions != "" {
-			// if no system content, check if instructions are present
-			// system messages take precedence over instructions
-			anthropicReq.System = &AnthropicContent{
+		// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
+		if bifrostReq.Params != nil && bifrostReq.Params.Instructions != nil && *bifrostReq.Params.Instructions != "" {
+			instructions := &AnthropicContent{
 				ContentBlocks: []AnthropicContentBlock{
 					{
 						Type: AnthropicContentBlockTypeText,
@@ -4856,6 +4852,15 @@ func ToAnthropicResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schema
 					},
 				},
 			}
+			if systemContent != nil {
+				instructions = appendToSystemContent(instructions, *systemContent)
+			}
+			systemContent = instructions
+		}
+
+		// Set system message if present
+		if systemContent != nil {
+			anthropicReq.System = systemContent
 		}
 
 		// Set regular messages
