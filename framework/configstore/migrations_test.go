@@ -3704,6 +3704,7 @@ func TestMigrationWidenBatchJobFileIDColumns(t *testing.T) {
 				tables.ProviderJobAccountingStatusPending, now, now).Error)
 
 			require.NoError(t, migrationWidenBatchJobFileIDColumns(ctx, db, logger))
+			require.NoError(t, migrationHashBatchJobFileIDIndexes(ctx, db, logger))
 
 			if backend.name == "postgres" {
 				columnTypes, err := db.Migrator().ColumnTypes(&tables.TableProviderJob{})

@@ -231,9 +231,9 @@ func TestHighFixBatchJobsDueMigration(t *testing.T) {
 	}
 }
 
-// TestHighFixTagsBuildIndexes pins that fresh installs, which build tables from
-// struct tags through CreateTable, get the same indexes the upgrade migrations add.
-func TestHighFixTagsBuildIndexes(t *testing.T) {
+// TestHighFixTagsAndMigrationsBuildIndexes pins that fresh installs get the
+// same indexes as databases upgraded through the migrations.
+func TestHighFixTagsAndMigrationsBuildIndexes(t *testing.T) {
 	db := freshSQLiteDB(t)
 	mg := db.Migrator()
 	require.NoError(t, mg.CreateTable(&tables.TableVirtualKey{}))
@@ -242,6 +242,7 @@ func TestHighFixTagsBuildIndexes(t *testing.T) {
 	require.NoError(t, mg.CreateTable(&tables.TableVirtualKeyProviderConfig{}))
 	require.NoError(t, mg.CreateTable(&tables.TableVirtualKeyProviderConfigKey{}))
 	require.NoError(t, mg.CreateTable(&tables.TableProviderJob{}))
+	require.NoError(t, migrationAddBatchJobsFileIDIndexes(context.Background(), db, testMigrationLogger))
 
 	require.True(t, indexIsUnique(t, db, "governance_virtual_keys", "idx_virtual_key_value_hash"))
 	require.True(t, indexIsUnique(t, db, "sessions", "idx_session_token_hash"))

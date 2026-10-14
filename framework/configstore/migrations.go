@@ -574,6 +574,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_mcp_client_openapi_spec_column"}, run: migrationAddMCPClientOpenAPISpecColumn},
 	{IDs: []string{"add_mcp_client_openapi_config_json_column"}, run: migrationAddMCPClientOpenAPIConfigJSONColumn},
 	{IDs: []string{"widen_batch_job_file_id_columns"}, run: migrationWidenBatchJobFileIDColumns},
+	{IDs: []string{"hash_batch_job_file_id_indexes"}, run: migrationHashBatchJobFileIDIndexes},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1055,7 +1056,13 @@ func batchJobsFileIDIndexesMigration(ctx context.Context, migrationName string) 
 		Migrate: func(tx *gorm.DB) error {
 			tx = tx.WithContext(ctx)
 			for name, column := range indexes {
-				if err := ensureIndexConcurrently(tx, "batch_jobs", name, column, false); err != nil {
+				var err error
+				if tx.Dialector.Name() == "postgres" {
+					err = ensureIndexConcurrentlyUsing(tx, "batch_jobs", name, column, "hash", false)
+				} else {
+					err = ensureIndexConcurrently(tx, "batch_jobs", name, column, false)
+				}
+				if err != nil {
 					return err
 				}
 			}
@@ -15014,23 +15021,26 @@ func rollbackMCPClientOpenAPIConfigJSONColumn(*gorm.DB) error {
 // no index of that name. Index names are unique per schema, not per database, so
 // a bare name can also resolve to another table's index or another schema's;
 // callers drop by the qualified name returned here, never by the bare name.
-func postgresIndexOnTable(tx *gorm.DB, table, name string) (qualified string, valid, found bool, err error) {
+func postgresIndexOnTable(tx *gorm.DB, table, name string) (qualified string, valid bool, method string, found bool, err error) {
 	var rows []struct {
 		Qualified string
 		Valid     bool
+		Method    string
 	}
 	err = tx.Raw(`
-		SELECT quote_ident(n.nspname) || '.' || quote_ident(ic.relname) AS qualified, pi.indisvalid AS valid
+		SELECT quote_ident(n.nspname) || '.' || quote_ident(ic.relname) AS qualified,
+			pi.indisvalid AS valid, am.amname AS method
 		FROM pg_class pc
 		JOIN pg_index pi ON pi.indrelid = pc.oid
 		JOIN pg_class ic ON ic.oid = pi.indexrelid
 		JOIN pg_namespace n ON n.oid = ic.relnamespace
+		JOIN pg_am am ON am.oid = ic.relam
 		WHERE pc.relname = ? AND ic.relname = ? AND pg_catalog.pg_table_is_visible(pc.oid)
 	`, table, name).Scan(&rows).Error
 	if err != nil || len(rows) == 0 {
-		return "", false, false, err
+		return "", false, "", false, err
 	}
-	return rows[0].Qualified, rows[0].Valid, true, nil
+	return rows[0].Qualified, rows[0].Valid, rows[0].Method, true, nil
 }
 
 // concurrentIndexBuildPollInterval is how often waitForPostgresIndexBuild
@@ -15087,11 +15097,19 @@ func ensureIndexConcurrently(tx *gorm.DB, table, name, definition string, unique
 	return ensurePartialIndexConcurrently(tx, table, name, definition, "", unique)
 }
 
+func ensureIndexConcurrentlyUsing(tx *gorm.DB, table, name, definition, using string, unique bool) error {
+	return ensurePartialIndexConcurrentlyUsing(tx, table, name, definition, "", using, unique)
+}
+
 // ensurePartialIndexConcurrently is ensureIndexConcurrently with an optional
 // predicate: a non-empty where builds a partial index (CREATE INDEX ... WHERE
 // where), which both Postgres and SQLite support. An empty where builds a full
 // index. The same no-transaction requirement applies on postgres.
 func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where string, unique bool) error {
+	return ensurePartialIndexConcurrentlyUsing(tx, table, name, definition, where, "", unique)
+}
+
+func ensurePartialIndexConcurrentlyUsing(tx *gorm.DB, table, name, definition, where, using string, unique bool) error {
 	kind := "INDEX"
 	if unique {
 		kind = "UNIQUE INDEX"
@@ -15100,10 +15118,14 @@ func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where 
 	if where != "" {
 		predicate = " WHERE " + where
 	}
+	usingClause := ""
+	if using != "" {
+		usingClause = " USING " + using
+	}
 	if tx.Dialector.Name() != "postgres" {
 		return tx.Exec(fmt.Sprintf("CREATE %s IF NOT EXISTS %s ON %s (%s)%s", kind, name, table, definition, predicate)).Error
 	}
-	qualified, valid, found, err := postgresIndexOnTable(tx, table, name)
+	qualified, valid, method, found, err := postgresIndexOnTable(tx, table, name)
 	if err != nil {
 		return fmt.Errorf("check index %s: %w", name, err)
 	}
@@ -15113,12 +15135,12 @@ func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where 
 			return err
 		}
 		if waited {
-			if qualified, valid, found, err = postgresIndexOnTable(tx, table, name); err != nil {
+			if qualified, valid, method, found, err = postgresIndexOnTable(tx, table, name); err != nil {
 				return fmt.Errorf("check index %s: %w", name, err)
 			}
 		}
 	}
-	if found && valid {
+	if found && valid && (using == "" || method == using) {
 		return nil
 	}
 	if found {
@@ -15126,7 +15148,7 @@ func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where 
 			return fmt.Errorf("drop invalid index %s: %w", qualified, err)
 		}
 	}
-	return tx.Exec(fmt.Sprintf("CREATE %s CONCURRENTLY IF NOT EXISTS %s ON %s (%s)%s", kind, name, table, definition, predicate)).Error
+	return tx.Exec(fmt.Sprintf("CREATE %s CONCURRENTLY IF NOT EXISTS %s ON %s%s (%s)%s", kind, name, table, usingClause, definition, predicate)).Error
 }
 
 // dropIndexConcurrently is the rollback counterpart of ensureIndexConcurrently: it
@@ -15136,7 +15158,7 @@ func dropIndexConcurrently(tx *gorm.DB, table, name string) error {
 	if tx.Dialector.Name() != "postgres" {
 		return tx.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", name)).Error
 	}
-	qualified, _, found, err := postgresIndexOnTable(tx, table, name)
+	qualified, _, _, found, err := postgresIndexOnTable(tx, table, name)
 	if err != nil {
 		return fmt.Errorf("check index %s: %w", name, err)
 	}
@@ -16053,6 +16075,10 @@ func migrationWidenBatchJobFileIDColumns(ctx context.Context, db *gorm.DB, logge
 				return nil
 			}
 
+			if err := tx.Exec("SET LOCAL lock_timeout = '5s'").Error; err != nil {
+				return fmt.Errorf("failed to bound the batch_jobs lock wait: %w", err)
+			}
+
 			for _, column := range []string{"input_file_id", "output_file_id", "error_file_id"} {
 				if !tx.Migrator().HasColumn(&tables.TableProviderJob{}, column) {
 					continue
@@ -16069,6 +16095,77 @@ func migrationWidenBatchJobFileIDColumns(ctx context.Context, db *gorm.DB, logge
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+func migrationHashBatchJobFileIDIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "hash_batch_job_file_id_indexes"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+
+	noTxOpts := *migrator.DefaultOptions
+	noTxOpts.UseTransaction = false
+	indexes := map[string]string{
+		"idx_batch_jobs_input_file_id":  "input_file_id",
+		"idx_batch_jobs_output_file_id": "output_file_id",
+		"idx_batch_jobs_error_file_id":  "error_file_id",
+	}
+	m := migrator.New(db, &noTxOpts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			for name, column := range indexes {
+				if err := replaceBatchJobFileIDIndexWithHash(tx, name, column); err != nil {
+					return fmt.Errorf("failed to replace batch_jobs index %s: %w", name, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("%s is non-rollbackable: long provider file identifiers may already exceed the B-tree entry limit", migrationName)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
+}
+
+// replaceBatchJobFileIDIndexWithHash keeps an existing index usable while the
+// replacement is built, then swaps names after the hash index is ready.
+func replaceBatchJobFileIDIndexWithHash(tx *gorm.DB, name, column string) error {
+	table := "batch_jobs"
+	_, valid, method, found, err := postgresIndexOnTable(tx, table, name)
+	if err != nil {
+		return fmt.Errorf("check index %s: %w", name, err)
+	}
+	if found && valid && method == "hash" {
+		return nil
+	}
+
+	replacement := name + "_hash_replacement"
+	if err := ensureIndexConcurrentlyUsing(tx, table, replacement, column, "hash", false); err != nil {
+		return fmt.Errorf("build replacement index %s: %w", replacement, err)
+	}
+	if found {
+		if err := dropIndexConcurrently(tx, table, name); err != nil {
+			return fmt.Errorf("drop previous index %s: %w", name, err)
+		}
+	}
+
+	qualified, valid, method, found, err := postgresIndexOnTable(tx, table, replacement)
+	if err != nil {
+		return fmt.Errorf("check replacement index %s: %w", replacement, err)
+	}
+	if !found || !valid || method != "hash" {
+		return fmt.Errorf("replacement index %s is missing, invalid, or not a hash index", replacement)
+	}
+	if err := tx.Exec(fmt.Sprintf("ALTER INDEX %s RENAME TO %s", qualified, name)).Error; err != nil {
+		return fmt.Errorf("rename replacement index %s: %w", replacement, err)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"math/rand"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -164,6 +165,14 @@ func TestMigrationAddBatchJobsFileIDIndexes(t *testing.T) {
 				"batch_jobs", "idx_batch_jobs_input_file_id")
 			require.True(t, indexExists(t, ndb.db, "batch_jobs", "idx_batch_jobs_output_file_id"))
 			require.True(t, indexExists(t, ndb.db, "batch_jobs", "idx_batch_jobs_error_file_id"))
+			if ndb.name == "postgres" {
+				for _, index := range []string{"idx_batch_jobs_input_file_id", "idx_batch_jobs_output_file_id", "idx_batch_jobs_error_file_id"} {
+					_, valid, method, found, err := postgresIndexOnTable(ndb.db, "batch_jobs", index)
+					require.NoError(t, err)
+					require.True(t, found && valid)
+					require.Equal(t, "hash", method)
+				}
+			}
 
 			rollback := batchJobsFileIDIndexesMigration(context.Background(), "add_batch_jobs_file_id_indexes").Rollback
 			require.NoError(t, rollback(ndb.db))
@@ -173,6 +182,49 @@ func TestMigrationAddBatchJobsFileIDIndexes(t *testing.T) {
 			require.NoError(t, rollback(ndb.db), "rollback is safe to re-run")
 		})
 	}
+}
+
+func TestMigrationHashBatchJobFileIDIndexesReplacesBTreeIndexes(t *testing.T) {
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name != "postgres" {
+			continue
+		}
+		t.Run(ndb.name, func(t *testing.T) {
+			db := ndb.db
+			require.NoError(t, db.Exec(`CREATE TABLE batch_jobs (
+				id VARCHAR(512) PRIMARY KEY, input_file_id TEXT, output_file_id TEXT, error_file_id TEXT)`).Error)
+			for _, column := range []string{"input_file_id", "output_file_id", "error_file_id"} {
+				index := "idx_batch_jobs_" + column
+				require.NoError(t, db.Exec("CREATE INDEX "+index+" ON batch_jobs ("+column+")").Error)
+			}
+
+			require.NoError(t, migrationHashBatchJobFileIDIndexes(context.Background(), db, testMigrationLogger))
+			for _, column := range []string{"input_file_id", "output_file_id", "error_file_id"} {
+				index := "idx_batch_jobs_" + column
+				_, valid, method, found, err := postgresIndexOnTable(db, "batch_jobs", index)
+				require.NoError(t, err)
+				require.True(t, found && valid)
+				require.Equal(t, "hash", method)
+			}
+
+			fileID := poorlyCompressibleFileID(8192)
+			require.NoError(t, db.Exec("INSERT INTO batch_jobs (id, input_file_id) VALUES (?, ?)", "long-id", fileID).Error)
+			var foundID string
+			require.NoError(t, db.Raw("SELECT id FROM batch_jobs WHERE input_file_id = ?", fileID).Scan(&foundID).Error)
+			require.Equal(t, "long-id", foundID)
+		})
+	}
+}
+
+func poorlyCompressibleFileID(length int) string {
+	const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	rng := rand.New(rand.NewSource(42))
+	var b strings.Builder
+	b.Grow(length)
+	for i := 0; i < length; i++ {
+		b.WriteByte(alphabet[rng.Intn(len(alphabet))])
+	}
+	return b.String()
 }
 
 // TestProviderObjectsTableRollbackRefuses pins that rolling back the provider_objects
