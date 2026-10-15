@@ -180,8 +180,8 @@ Each node judges failures from its own traffic, so whether a request is redirect
 
 ### Key pins and direct keys
 
-- **A key pinned by the caller** (`x-bf-api-key-id` or `x-bf-api-key`) applies to the first attempt only. When adaptive routing redirects the request to another provider, the pin goes with that first attempt: if the new provider has no such key, the attempt fails without a call and the request moves to its fallbacks. The pin is not carried to the failing provider kept as the last fallback.
-- **A key pinned by a routing rule** stays with its provider. When the request is redirected, the failing provider kept as the last fallback still uses the rule's key.
+- **A key pinned by the caller** (`x-bf-api-key-id` or `x-bf-api-key`) applies to the first provider of the chain, its retries included. When adaptive routing redirects the request to another provider, the pin goes with it: if the new provider has no such key, the attempt fails without a call and the request moves to its fallbacks. The pin is not carried to the failing provider kept as the last fallback.
+- **A key pinned by a routing rule** outranks the caller's pin on the primary attempt (see [Fallback Chain](/providers/routing-rules#fallback-chain)) and stays with its provider. When the request is redirected, the failing provider kept as the last fallback still uses the rule's key.
 - **A key the caller sends in the request** (`x-bf-direct-key`) is used on the first provider the request is routed to, whichever that is. Picking a provider for a request that names none, redirecting a failing provider, and a [circuit breaker](/enterprise/circuit-breaker) redirect can each send that key to a provider it was not issued for. Fallbacks always use the provider's own keys. For traffic that brings its own keys, name the provider and keep redirecting and cross-provider circuit breaker policies off.
 
 ## Held keys

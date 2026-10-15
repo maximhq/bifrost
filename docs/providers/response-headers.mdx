@@ -1,0 +1,60 @@
+---
+title: "Response Headers"
+description: "Reference of the x-bifrost-* headers the gateway adds to inference responses: correlation IDs, which provider, model and key served the request, fallbacks, upstream latency and cache results."
+icon: "arrow-left-to-line"
+---
+
+The gateway adds `x-bifrost-*` headers to every inference response. They say which provider, model and key handled the request, whether a fallback served it, and how long the provider took. The same facts are in the response body's `extra_fields`, but the drop-in SDK routes (Anthropic, GenAI, Bedrock, Cohere) return the provider's own response shape with no `extra_fields`, so the headers are the only place to read them there.
+
+The headers to send with a request, such as `x-bf-vk`, `x-bf-api-key-id`, `x-bf-direct-key` and `x-bf-session-id`, are covered in [Request Options](/providers/request-options).
+
+## Correlation
+
+Sent on every inference response, including errors and requests refused before routing.
+
+| Header | Value |
+|--------|-------|
+| `x-bifrost-request-id` | The `x-request-id` you sent, or a UUID Bifrost generated. It is also the ID of the request's log entry. |
+| `x-bifrost-trace-id` | The trace ID, inherited from an incoming W3C `traceparent` or generated. |
+
+See [Correlation response headers](/providers/request-options#correlation-response-headers) for how to use them with your log store.
+
+## Routing
+
+Sent on success and on errors, by `/v1` and the drop-in routes alike, streams included. A header is left out when it has no value, and a `true`/`false` header is sent only when it is `true`. On an error, the headers describe the attempt whose error was returned. A request refused before routing, for example by governance, carries only the correlation headers, `x-bifrost-request-type` and the legacy headers below.
+
+| Header | Sent when | Value |
+|--------|-----------|-------|
+| `x-bifrost-routing-info-provider` | Unless refused before routing | The provider that ran the attempt, for example `openai`. |
+| `x-bifrost-routing-info-model` | Unless refused before routing | The model sent to that provider. |
+| `x-bifrost-routing-info-key` | A stored key was used | The key's name, never its ID or secret. |
+| `x-bifrost-routing-info-requested-provider` | The caller sent `provider/model` | The provider the caller asked for, before routing rules, load balancing or session affinity changed it. |
+| `x-bifrost-routing-info-requested-model` | Unless refused before routing | The model the caller asked for, before anything changed it. |
+| `x-bifrost-routing-info-is-fallback` | A fallback served the request, or returned the error | `true` |
+| `x-bifrost-routing-info-primary-provider` | With `is-fallback` | The primary attempt's provider. |
+| `x-bifrost-routing-info-primary-model` | With `is-fallback` | The primary attempt's model. |
+| `x-bifrost-fallback-index` | A fallback served the request | Which fallback, counting from `1`. Absent when the primary served. |
+| `x-bifrost-routing-info-alias-model-id` | A [model alias](/providers/aliasing-models) on the key matched | The model ID sent to the provider. |
+| `x-bifrost-routing-info-alias-model-name` | The matched alias has a name | The alias's canonical model name. |
+| `x-bifrost-routing-info-alias-model-family` | The matched alias sets a family | The model family. |
+| `x-bifrost-routing-info-server-side-fallback-model` | Anthropic switched models inside one call (not on streams) | The model that answered. |
+| `x-bifrost-request-type` | Always | The request type, for example `chat_completion` or `chat_completion_stream`. |
+| `x-bifrost-upstream-latency-ms` | The request reached a provider | Time spent waiting on the provider in milliseconds, with three decimals, summed over every attempt, retry and fallback. |
+
+`x-bifrost-provider`, `x-bifrost-original-model` and `x-bifrost-resolved-model` are still sent for older clients. They mirror the deprecated `extra_fields.provider`, `original_model_requested` and `resolved_model_used` fields; use the `routing-info` headers instead.
+
+<Note>
+On a stream the headers are written before the first chunk. `x-bifrost-upstream-latency-ms` then covers only the time until the stream opened, and `server-side-fallback-model` is never sent.
+
+On `/v1` error responses, `x-bifrost-fallback-index` and `x-bifrost-upstream-latency-ms` are not sent; the drop-in routes send both.
+</Note>
+
+## Cache
+
+When [semantic caching](/features/semantic-caching) looks a request up, the response carries `x-bifrost-cache-*` headers: whether it was a hit, the hit type, the similarity and the cache entry. See [its response headers](/features/semantic-caching#response-headers) for the full list.
+
+## Things to know
+
+- **Provider headers.** A provider's own response headers are forwarded to the caller, except any `x-bifrost-*` header, so an upstream Bifrost gateway can never overwrite this gateway's values. The provider's values are kept in `extra_fields.provider_response_headers`.
+- **Browsers.** Bifrost does not list these headers in `Access-Control-Expose-Headers`, so JavaScript in a browser calling the gateway from another origin cannot read them. Read them server side, or from the response body's `extra_fields`.
+- **Plugins.** A plugin's HTTP transport hook can change or remove any of these headers before the response is sent.
