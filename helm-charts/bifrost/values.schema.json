@@ -223,6 +223,9 @@
         }
       }
     },
+    "startupProbe": {
+      "type": ["object", "null"]
+    },
     "livenessProbe": {
       "type": "object"
     },
@@ -5516,6 +5519,11 @@
               "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default. Only applies when the store is postgres.",
               "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
             },
+            "migrationLockRetryBudget": {
+              "type": "string",
+              "description": "How long a schema migration step keeps retrying after lock timeouts before the pod exits (Go duration string, default 10m). Raise it on large deployments where older replicas' long queries hold the table during a rolling upgrade, and keep startupProbe at least as long. Only applies when the store is postgres.",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+            },
             "vaultStore": {
               "type": "object",
               "description": "Vault store for external secret management",
@@ -5627,6 +5635,11 @@
               "type": "string",
               "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default. Only applies when the store is postgres.",
               "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+            },
+            "migrationLockRetryBudget": {
+              "type": "string",
+              "description": "How long a schema migration step keeps retrying after lock timeouts before the pod exits (Go duration string, default 10m). Raise it on large deployments where older replicas' long queries hold the table during a rolling upgrade, and keep startupProbe at least as long. Only applies when the store is postgres.",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
             },
             "postgres": {
               "type": "object",

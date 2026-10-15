@@ -2638,6 +2638,12 @@
                     "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default.",
                     "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
                     "default": "120s"
+                  },
+                  "migration_lock_retry_budget": {
+                    "type": "string",
+                    "description": "How long a schema migration step keeps retrying after lock timeouts before the process gives up and exits (Go duration string, default 10m). During a rolling upgrade a step that needs a table lock retries while older replicas' long queries hold the table; raise this on large deployments so the budget outlasts those queries, and keep the Kubernetes startup probe at least as long. Each lock timeout logs the sessions holding the table so an operator can cancel them instead of waiting.",
+                    "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$",
+                    "default": "10m"
                   }
                 },
                 "required": [
@@ -3354,6 +3360,12 @@
                     "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default.",
                     "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
                     "default": "120s"
+                  },
+                  "migration_lock_retry_budget": {
+                    "type": "string",
+                    "description": "How long a schema migration step keeps retrying after lock timeouts before the process gives up and exits (Go duration string, default 10m). During a rolling upgrade a step that needs a table lock retries while older replicas' long queries hold the table; raise this on large deployments so the budget outlasts those queries, and keep the Kubernetes startup probe at least as long. Each lock timeout logs the sessions holding the table so an operator can cancel them instead of waiting.",
+                    "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$",
+                    "default": "10m"
                   }
                 },
                 "required": [

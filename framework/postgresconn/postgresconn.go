@@ -128,6 +128,13 @@ type Config struct {
 	// default). It ends a session left idle inside an open transaction, which
 	// otherwise holds row locks and blocks vacuum for as long as it stays open.
 	IdleInTransactionSessionTimeout string `json:"idle_in_transaction_session_timeout,omitempty"`
+	// MigrationLockRetryBudget is how long a schema migration step keeps
+	// retrying after lock timeouts before the process gives up and exits (Go
+	// duration string, default 10m). On a rolling upgrade a step that needs a
+	// table lock retries while older replicas' long queries hold the table; raise
+	// this on large deployments so the budget outlasts those queries, and keep
+	// the startup probe at least as long.
+	MigrationLockRetryBudget string `json:"migration_lock_retry_budget,omitempty"`
 }
 
 const (
