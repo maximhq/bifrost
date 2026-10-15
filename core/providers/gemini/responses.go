@@ -1469,6 +1469,18 @@ func releaseGeminiResponsesStreamState(state *GeminiResponsesStreamState) {
 	}
 }
 
+// AcquireGeminiResponsesStreamState gets a pooled Responses stream state for driving
+// ToBifrostResponsesStream outside the provider's own stream loop (e.g. rebuilding a recorded
+// passthrough stream). Pair every call with ReleaseGeminiResponsesStreamState.
+func AcquireGeminiResponsesStreamState() *GeminiResponsesStreamState {
+	return acquireGeminiResponsesStreamState()
+}
+
+// ReleaseGeminiResponsesStreamState returns a state obtained from AcquireGeminiResponsesStreamState.
+func ReleaseGeminiResponsesStreamState(state *GeminiResponsesStreamState) {
+	releaseGeminiResponsesStreamState(state)
+}
+
 func (state *GeminiResponsesStreamState) flush() {
 	// Clear maps
 	if state.ItemIDs == nil {

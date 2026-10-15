@@ -54,10 +54,11 @@ const (
 	wireGemini
 )
 
-// Parse decodes a passthrough call. It returns (nil, nil) for routes with no typed equivalent
-// (unsupported providers, list/retrieve calls, Bedrock agent routes), so the caller keeps the raw
-// bodies only. A non-nil error describes a body that matched a known route but failed to decode;
-// the Result alongside it still carries whichever side did decode.
+// Parse decodes a passthrough call on a best-effort basis. It returns (nil, nil) for routes with no
+// typed equivalent (unsupported providers, list/retrieve calls, Bedrock agent routes), so the caller
+// keeps the raw bodies only. A non-nil error describes a body that matched a known route but failed
+// to decode; the Result alongside it still carries whichever side did decode. Parse never panics:
+// a converter that panics on an unexpected body is reported as an error for that side.
 func Parse(in Input) (*Result, error) {
 	format, requestType := classify(in)
 	if format == wireUnknown || requestType == "" {
@@ -68,7 +69,9 @@ func Parse(in Input) (*Result, error) {
 	var errs []error
 
 	if len(in.RequestBody) > 0 {
-		req, err := parseRequest(format, requestType, in.RequestBody)
+		req, err := safeParse(func() (*schemas.BifrostRequest, error) {
+			return parseRequest(format, requestType, in.RequestBody)
+		})
 		if err != nil {
 			errs = append(errs, fmt.Errorf("request: %w", err))
 		} else if req != nil {
@@ -80,12 +83,22 @@ func Parse(in Input) (*Result, error) {
 		}
 	}
 
-	if len(in.ResponseBody) > 0 && (in.StatusCode == 0 || in.StatusCode < 400) && !in.Stream {
-		resp, err := parseResponse(format, requestType, in.Model, in.ResponseBody)
+	if len(in.ResponseBody) > 0 && (in.StatusCode == 0 || in.StatusCode < 400) {
+		var (
+			resp *schemas.BifrostResponse
+			err  error
+		)
+		resp, err = safeParse(func() (*schemas.BifrostResponse, error) {
+			if in.Stream {
+				return parseStreamResponse(format, requestType, in.ResponseBody)
+			}
+			return parseResponse(format, requestType, in.Model, in.ResponseBody)
+		})
+		if resp != nil {
+			result.Response = resp
+		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("response: %w", err))
-		} else {
-			result.Response = resp
 		}
 	}
 
@@ -139,6 +152,17 @@ func classify(in Input) (wireFormat, schemas.RequestType) {
 		return wireGemini, gemini.ClassifyPassthroughPath(in.Path)
 	}
 	return wireUnknown, ""
+}
+
+// safeParse runs one side of the parse, turning a converter panic into an error so a malformed or
+// unexpected body can never take down the caller (the logging writer).
+func safeParse[T any](fn func() (*T, error)) (out *T, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = nil, fmt.Errorf("converter panicked: %v", r)
+		}
+	}()
+	return fn()
 }
 
 func pathWithoutQuery(path string) string {
