@@ -1194,3 +1194,24 @@ func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestPassthroughWireFormat(t *testing.T) {
+	tests := []struct {
+		path string
+		want schemas.ModelProvider
+	}{
+		{"/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5:rawPredict", schemas.Anthropic},
+		{"/projects/p/locations/us-east5/publishers/Anthropic/models/claude-sonnet-4-5:streamRawPredict?alt=sse", schemas.Anthropic},
+		{"/projects/p/locations/us-central1/publishers/mistralai/models/mistral-large:rawPredict", schemas.Mistral},
+		{"/projects/p/locations/us-central1/endpoints/openapi/chat/completions", schemas.OpenAI},
+		{"/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent", schemas.Gemini},
+		{"/models/gemini-2.5-flash:streamGenerateContent", schemas.Gemini},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := PassthroughWireFormat(tt.path); got != tt.want {
+				t.Fatalf("PassthroughWireFormat(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}
