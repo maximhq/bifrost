@@ -104,7 +104,7 @@ DecisionInputImageAsset:
   type: object
   description: Typesafe only. An image sent by reference, as one of Typesafe's `assets`, placed wherever its ID is written in the input, instructions, or criteria instead of as evidence itself. Other providers reject it.
   required: [type, id]
-  oneOf:
+  anyOf:
     - required: [data]
     - required: [name]
   properties:
@@ -323,8 +323,8 @@ DecisionMapQuestion:
   properties:
     kind:
       type: string
-      enum: [noul, choice, score]
-      description: How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions.
+      enum: [noul, choice, score, box]
+      description: How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions, `box` yields the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14).
     instructions:
       description: Instructions for this question. A string, or structured data preserved losslessly.
       oneOf:
@@ -337,7 +337,8 @@ DecisionMapQuestion:
       description: |
         Applicable criteria. Optional `true`/`false` descriptions for `noul`; a
         required map of option to description for `choice` (at most 255 options);
-        a required ordered array of 2-10 level descriptions for `score`.
+        a required ordered array of 2-10 level descriptions for `score`; none
+        for `box`.
       oneOf:
         - type: object
           additionalProperties:
@@ -381,13 +382,14 @@ DecisionMapAnswer:
   properties:
     kind:
       type: string
-      enum: [noul, choice, score]
+      enum: [noul, choice, score, box]
       description: The question's decision kind
     value:
-      description: The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`.
+      description: The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`, the box's edges for `box`.
       oneOf:
         - type: number
         - type: string
+        - $ref: '#/DecisionBox'
     confidence:
       type: number
       description: Model confidence for this answer, when supplied

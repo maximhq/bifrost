@@ -116015,7 +116015,7 @@
           "type",
           "id"
         ],
-        "oneOf": [
+        "anyOf": [
           {
             "required": [
               "data"
@@ -116145,9 +116145,10 @@
             "enum": [
               "noul",
               "choice",
-              "score"
+              "score",
+              "box"
             ],
-            "description": "How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions."
+            "description": "How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions, `box` yields the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14)."
           },
           "instructions": {
             "description": "Instructions for this question. A string, or structured data preserved losslessly.",
@@ -116166,7 +116167,7 @@
             ]
           },
           "criteria": {
-            "description": "Applicable criteria. Optional `true`/`false` descriptions for `noul`; a\nrequired map of option to description for `choice` (at most 255 options);\na required ordered array of 2-10 level descriptions for `score`.\n",
+            "description": "Applicable criteria. Optional `true`/`false` descriptions for `noul`; a\nrequired map of option to description for `choice` (at most 255 options);\na required ordered array of 2-10 level descriptions for `score`; none\nfor `box`.\n",
             "oneOf": [
               {
                 "type": "object",
@@ -116196,18 +116197,43 @@
             "enum": [
               "noul",
               "choice",
-              "score"
+              "score",
+              "box"
             ],
             "description": "The question's decision kind"
           },
           "value": {
-            "description": "The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`.",
+            "description": "The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`, the box's edges for `box`.",
             "oneOf": [
               {
                 "type": "number"
               },
               {
                 "type": "string"
+              },
+              {
+                "type": "object",
+                "description": "Box answers. Each edge is a fraction from 0 to 1 of the image's height (`top`, `bottom`) or width (`left`, `right`), measured from its top-left",
+                "required": [
+                  "top",
+                  "bottom",
+                  "left",
+                  "right"
+                ],
+                "properties": {
+                  "top": {
+                    "type": "number"
+                  },
+                  "bottom": {
+                    "type": "number"
+                  },
+                  "left": {
+                    "type": "number"
+                  },
+                  "right": {
+                    "type": "number"
+                  }
+                }
               }
             ]
           },
