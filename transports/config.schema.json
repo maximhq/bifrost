@@ -3338,6 +3338,11 @@
                     "description": "Maximum time for a single materialized view refresh pass. Go duration string, min 30s, max 30m. Unset derives a budget from matview_refresh_interval (5x the interval, at least 5m). A refresh holds a pooled connection and a session advisory lock across every view, so without a bound one stuck refresh leaves the views permanently stale across all replicas.",
                     "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$"
                   },
+                  "migration_matview_cancel_after": {
+                    "type": "string",
+                    "description": "How long schema migrations wait for an in-flight materialized view refresh pass (from any replica, including older releases during a rolling upgrade) before cancelling its REFRESH statements. Migrations pause refreshes for their whole run, because a long refresh on a large logs table blocks their CREATE INDEX CONCURRENTLY and ALTER TABLE logs statements. A cancelled concurrent refresh rolls back and the view keeps its previous contents. Go duration string; unset uses 60s; \"off\" never cancels and only waits.",
+                    "pattern": "^(off|[0-9]+(ns|us|\u00b5s|ms|s|m|h))$"
+                  },
                   "conn_max_lifetime": {
                     "type": "string",
                     "description": "Maximum lifetime for physical database connections as a Go duration string",

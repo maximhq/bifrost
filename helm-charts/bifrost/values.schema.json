@@ -5755,6 +5755,11 @@
               "description": "Maximum time for a single materialized view refresh pass (min 30s, max 30m). Unset derives 5x the refresh interval, at least 5m. A cancelled refresh leaves the existing views intact and readable, just staler; the next tick retries.",
               "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
             },
+            "migrationMatviewCancelAfter": {
+              "type": "string",
+              "description": "How long schema migrations wait for an in-flight materialized view refresh (from any replica, including older releases mid-rollout) before cancelling its REFRESH statements. Unset uses 60s; 'off' never cancels and only waits.",
+              "pattern": "^(off|[0-9]+(ns|us|µs|ms|s|m|h))$"
+            },
             "clickhouse": {
               "type": "object",
               "description": "ClickHouse connection settings (only applies when type is clickhouse)",
