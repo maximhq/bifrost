@@ -5229,6 +5229,37 @@ func TestFinalizeBedrockStream_CleanCompletionUnaffected(t *testing.T) {
 	assert.Nil(t, terminal.Response.IncompleteDetails)
 }
 
+// An empty Converse turn (messageStart then messageStop, no content, which Claude
+// returns after a tool result) must stream output: [] on every lifecycle event. A null
+// output on response.completed crashes clients that iterate it (pydantic-ai: TypeError).
+func TestFinalizeBedrockStream_EmptyTurnSendsEmptyOutputArray(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	events, bifrostErr, _ := (&bedrock.BedrockStreamEvent{Role: new("assistant")}).ToBifrostResponsesStream(0, state)
+	require.Nil(t, bifrostErr)
+	state.StopReason = new("stop")
+	events = append(events, bedrock.FinalizeBedrockStream(state, len(events), &schemas.ResponsesResponseUsage{InputTokens: 12, TotalTokens: 12}, nil)...)
+
+	var lifecycle []schemas.ResponsesStreamResponseType
+	for _, event := range events {
+		if event.Response == nil {
+			continue
+		}
+		lifecycle = append(lifecycle, event.Type)
+		data, err := schemas.Marshal(event)
+		require.NoError(t, err)
+		var wire struct {
+			Response map[string]json.RawMessage `json:"response"`
+		}
+		require.NoError(t, json.Unmarshal(data, &wire))
+		assert.Equal(t, "[]", string(wire.Response["output"]), "%s must carry output: [] — %s", event.Type, data)
+	}
+	assert.Equal(t, []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeInProgress,
+		schemas.ResponsesStreamResponseTypeCompleted,
+	}, lifecycle)
+}
+
 // TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset keeps the streaming
 // path aligned with the non-streaming mapping: an unmapped stop reason ends the
 // stream as response.completed but must leave Status unset rather than asserting
