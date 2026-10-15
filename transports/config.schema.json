@@ -11345,6 +11345,21 @@
           "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. A listed provider keeps its own model allow/blacklist, budgets, rate limits, and key selection; an unlisted provider gets all models, all keys, and no per-provider limits. When false (default), access is deny-by-default via provider_configs.",
           "default": false
         },
+        "auto_rotation_interval": {
+          "type": [
+            "string",
+            "integer"
+          ],
+          "minimum": 0,
+          "maximum": 31536000000000000,
+          "description": "How often the virtual keys managed by this profile are rotated automatically. Accepts a day count (e.g. \"30d\") or a Go duration string (e.g. \"12h\"); integer values are nanoseconds, so prefer strings. 0, an empty string or omitting the field disables scheduled rotation. An enabled schedule must be between 1h and 365d; a profile with an out-of-range value is skipped at startup. Changing the interval re-anchors the next rotation to now + interval.",
+          "default": 0
+        },
+        "next_rotation_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Optional RFC 3339 time of the first scheduled rotation; requires an enabled (non-zero) auto_rotation_interval. Defaults to now + interval. Applied when the profile is created or its interval changes; otherwise the stored schedule is kept so a stale export does not rewind it."
+        },
         "provider_configs": {
           "type": "array",
           "description": "Per-provider restrictions and limits for this profile",
@@ -11394,7 +11409,33 @@
       "required": [
         "name"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "if": {
+        "required": [
+          "next_rotation_at"
+        ]
+      },
+      "then": {
+        "$comment": "next_rotation_at needs an enabled interval: 0, or a string with no non-zero digit (\"\", \"0\", \"0s\"), disables rotation.",
+        "required": [
+          "auto_rotation_interval"
+        ],
+        "properties": {
+          "auto_rotation_interval": {
+            "not": {
+              "anyOf": [
+                {
+                  "const": 0
+                },
+                {
+                  "type": "string",
+                  "pattern": "^[^1-9]*$"
+                }
+              ]
+            }
+          }
+        }
+      }
     },
     "access_profile_provider_config": {
       "type": "object",
