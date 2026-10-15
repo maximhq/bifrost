@@ -1230,13 +1230,125 @@ func (h *MCPHandler) getMCPLibrary(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	servers := make([]MCPLibraryEntryResponse, len(entries))
+	for i := range entries {
+		servers[i].TableMCPLibrary = entries[i]
+	}
+	if len(entries) > 0 {
+		clients, err := h.listAllMCPClientRows(ctx)
+		if err != nil {
+			logger.Error("failed to retrieve MCP clients for library installed check: %v", err)
+			SendError(ctx, 500, "Failed to retrieve MCP clients")
+			return
+		}
+		for i := range servers {
+			servers[i].Installed = isMCPLibraryEntryInstalled(&servers[i].TableMCPLibrary, clients)
+		}
+	}
+
 	SendJSON(ctx, map[string]interface{}{
-		"servers":     entries,
+		"servers":     servers,
 		"count":       len(entries),
 		"total_count": totalCount,
 		"limit":       params.Limit,
 		"offset":      params.Offset,
 	})
+}
+
+// MCPLibraryEntryResponse is a library row plus whether an MCP client already
+// installs it, so the UI does not have to match against the client list itself.
+type MCPLibraryEntryResponse struct {
+	configstoreTables.TableMCPLibrary
+	Installed bool `json:"installed"`
+}
+
+// mcpLibraryClientsPageSize is the page size used to read every MCP client row
+// when resolving which library entries are installed.
+const mcpLibraryClientsPageSize = 100
+
+// listAllMCPClientRows reads every MCP client row from the config store, page by
+// page, so the installed check is not capped at one page of clients.
+func (h *MCPHandler) listAllMCPClientRows(ctx context.Context) ([]configstoreTables.TableMCPClient, error) {
+	var all []configstoreTables.TableMCPClient
+	for offset := 0; ; offset += mcpLibraryClientsPageSize {
+		rows, total, err := h.store.ConfigStore.GetMCPClientsPaginated(ctx, configstore.MCPClientsQueryParams{
+			Limit:  mcpLibraryClientsPageSize,
+			Offset: offset,
+		})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, rows...)
+		if len(rows) == 0 || int64(offset+len(rows)) >= total {
+			return all, nil
+		}
+	}
+}
+
+// sanitizeMCPLibraryServerName mirrors sanitizeServerName in the UI install
+// sheet: it turns a catalog display name into the MCP client name the install
+// flow proposes (runs of characters outside [a-zA-Z0-9_] become one
+// underscore, and an empty or digit-led result gets an "mcp_" prefix).
+func sanitizeMCPLibraryServerName(name string) string {
+	var b strings.Builder
+	pendingUnderscore := false
+	for _, r := range strings.TrimSpace(name) {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
+			if pendingUnderscore && b.Len() > 0 {
+				b.WriteByte('_')
+			}
+			pendingUnderscore = false
+			b.WriteRune(r)
+			continue
+		}
+		pendingUnderscore = true
+	}
+	cleaned := strings.Trim(b.String(), "_")
+	if cleaned == "" || (cleaned[0] >= '0' && cleaned[0] <= '9') {
+		return "mcp_" + cleaned
+	}
+	return cleaned
+}
+
+// normalizeMCPLibraryURL trims whitespace and trailing slashes so
+// "https://x/mcp/" and "https://x/mcp" compare equal.
+func normalizeMCPLibraryURL(u string) string {
+	return strings.TrimRight(strings.TrimSpace(u), "/")
+}
+
+// isMCPLibraryEntryInstalled reports whether any client was installed from the
+// library entry. A client matches when it points at the same target (the
+// entry's URL for http/sse, the same command and args for stdio), when its name
+// equals the name the install flow proposes, or when its endpoint slug was
+// derived from that name. The endpoint slug is immutable, so the last rule
+// keeps a renamed client recognized.
+func isMCPLibraryEntryInstalled(entry *configstoreTables.TableMCPLibrary, clients []configstoreTables.TableMCPClient) bool {
+	installName := sanitizeMCPLibraryServerName(entry.Name)
+	installSlug := configstore.Slugify(installName)
+	entryURL := normalizeMCPLibraryURL(entry.ConnectionURL)
+	for i := range clients {
+		client := &clients[i]
+		if strings.EqualFold(client.Name, installName) {
+			return true
+		}
+		if installSlug != "" && client.EndpointSlug == installSlug {
+			return true
+		}
+		if entryURL != "" && client.ConnectionString != nil {
+			if normalizeMCPLibraryURL(client.ConnectionString.Val) == entryURL ||
+				normalizeMCPLibraryURL(client.ConnectionString.GetRawRef()) == entryURL {
+				return true
+			}
+		}
+		if entry.StdioConfig != nil && client.StdioConfig != nil {
+			command := strings.TrimSpace(entry.StdioConfig.Command)
+			if command != "" && command == strings.TrimSpace(client.StdioConfig.Command) &&
+				slices.Equal(entry.StdioConfig.Args, client.StdioConfig.Args) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // getMCPLibraryFilterData handles GET /api/mcp/library/filterdata — returns the
