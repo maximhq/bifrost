@@ -136,6 +136,12 @@ func (s *VirtualModelService) Install(virtualModels map[string]schemas.VirtualMo
 	for _, name := range names {
 		vm := virtualModels[name]
 		vm.Name = strings.TrimSpace(name)
+		// Providers are stored under a lowercased key by loadProviders, so the reference is put in
+		// the same form before the lookup: an operator who spells their provider "Local-OMLX" has
+		// named a provider that is present, and startup must not refuse the gateway for the case of
+		// a letter. The normalized value is the one kept on the entry, so the probe target, the
+		// owned_by in listings and the routing comparison all carry the form the rest of the stack uses.
+		vm.Provider = schemas.ModelProvider(strings.ToLower(string(vm.Provider)))
 		if err := vm.Validate(); err != nil {
 			return err
 		}

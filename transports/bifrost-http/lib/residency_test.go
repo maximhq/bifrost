@@ -298,3 +298,36 @@ func TestNilVirtualModelServiceIsInert(t *testing.T) {
 		t.Fatalf("nil service listed %v", got)
 	}
 }
+
+// loadProviders stores every provider under a lowercased key, so a virtual model that names
+// "Local-OMLX" refers to a provider that is present. Startup must not refuse the gateway for the
+// case of a letter, and the entry has to keep the normalized form so the probe target, the owned_by
+// in listings and the routing comparison all agree with the rest of the stack.
+func TestInstallNormalizesProviderCase(t *testing.T) {
+	service := NewVirtualModelService(nil, nil)
+	err := service.Install(map[string]schemas.VirtualModel{
+		"local-chat": {Name: "local-chat", Provider: "Local-OMLX", Models: []string{"flash"}},
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"local-omlx": {NetworkConfig: &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", AllowPrivateNetwork: true}},
+	})
+	if err != nil {
+		t.Fatalf("mixed-case provider reference was refused: %v", err)
+	}
+
+	vm, ok := service.Lookup("local-chat")
+	if !ok {
+		t.Fatal("virtual model not installed")
+	}
+	if vm.Provider != "local-omlx" {
+		t.Fatalf("provider kept as %q, want the normalized local-omlx", vm.Provider)
+	}
+
+	// A reference to a provider that genuinely does not exist is still refused.
+	if err := service.Install(map[string]schemas.VirtualModel{
+		"local-chat": {Name: "local-chat", Provider: "Not-Configured", Models: []string{"flash"}},
+	}, map[schemas.ModelProvider]configstore.ProviderConfig{
+		"local-omlx": {NetworkConfig: &schemas.NetworkConfig{BaseURL: "http://127.0.0.1:1", AllowPrivateNetwork: true}},
+	}); err == nil {
+		t.Fatal("unknown provider was accepted")
+	}
+}
