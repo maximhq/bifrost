@@ -336,7 +336,7 @@ curl http://localhost:8080/v1/chat/completions \
 Two details worth knowing:
 
 - **Per-tenant namespacing** — the upstream value is scoped to your virtual key (`sha256(vk, session)` prefix), so identical session strings from different tenants never share cache warmth or hotspot a backend. Without a virtual key the raw value is used.
-- **Opencode-only** — the header is never forwarded to other providers, even if you reuse a session ID across them. Likewise, do not set a static `x-opencode-session` in `network_config.extra_headers`: a single fixed value would pin every conversation to one session and defeat affinity.
+- **Opencode-only** — the header is never forwarded to other providers, even if you reuse a session ID across them. A static `x-opencode-session` in `network_config.extra_headers` is overridden by the resolved per-request value, since a fixed value would pin every conversation to one session and defeat affinity.
 
 ## Caveats
 

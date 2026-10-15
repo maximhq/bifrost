@@ -891,7 +891,7 @@ func ConvertToBifrostContext(ctx *fasthttp.RequestCtx, store HandlerStore) (*sch
 	// warmth, and multi-turn warmth remains the client's job. The value is
 	// validated header-safe here, so providers can emit it verbatim. It is stored
 	// under a dedicated key — never in shared extra headers — so only the
-	// opencode provider family can forward it (see opencodeSessionSigner).
+	// opencode provider family can forward it (see opencodeRequestExtraHeaders).
 	// A configured header filter governs the session header like any other
 	// forwarded header: a denylist hit or allowlist miss suppresses capture
 	// entirely, including synthesis. matcher is nil-safe (nil allows all), so

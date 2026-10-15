@@ -3,8 +3,8 @@ package opencode
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 
-	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -59,21 +59,47 @@ func opencodeNamespaceInput(ctx *schemas.BifrostContext) string {
 	return virtualKey
 }
 
-// opencodeSessionSigner returns a BodySigner emitting the transport-captured
-// affinity value from BifrostContextKeyOpencodeSession. It returns nil when no
-// session was captured, leaving the request untouched. The shared OpenAI
-// handlers apply signer headers after SetExtraHeaders, so the per-request
-// value always wins over any static network_config.extra_headers entry.
-func opencodeSessionSigner(ctx *schemas.BifrostContext) providerUtils.BodySigner {
+// opencodeSessionValue returns the upstream header value for this request, or ""
+// when the transport captured no session. The value is namespaced per tenant.
+func opencodeSessionValue(ctx *schemas.BifrostContext) string {
 	if ctx == nil {
-		return nil
+		return ""
 	}
 	session, _ := ctx.Value(schemas.BifrostContextKeyOpencodeSession).(string)
 	if session == "" {
-		return nil
+		return ""
 	}
-	headerValue := namespaceOpencodeSession(opencodeNamespaceInput(ctx), session)
-	return func(_ []byte) (map[string]string, *schemas.BifrostError) {
-		return map[string]string{opencodeSessionHeader: headerValue}, nil
+	return namespaceOpencodeSession(opencodeNamespaceInput(ctx), session)
+}
+
+// opencodeRequestExtraHeaders returns the extra-header map to hand a shared
+// OpenAI inference handler, with the per-request affinity value folded in.
+//
+// The header rides the ordinary extra-headers map rather than a BodySigner
+// because the shared handlers build the upstream request on more than one path.
+// A signer is invoked with the exact body the handler marshaled, which does not
+// exist on the large-payload passthrough (there the transport's deferred reader
+// is streamed straight to upstream) - and that path is precisely where a long
+// conversation with a large document most needs its cache warmth. extra_headers
+// is applied by every one of those paths, so the header cannot be dropped by
+// request shape.
+//
+// The provider's configured map is never mutated: with no captured session the
+// shared map is returned as-is, and otherwise a copy is built with every case
+// variant of the header dropped, so the resolved value wins over a static
+// network_config.extra_headers entry regardless of map iteration order.
+func opencodeRequestExtraHeaders(ctx *schemas.BifrostContext, networkHeaders map[string]string) map[string]string {
+	value := opencodeSessionValue(ctx)
+	if value == "" {
+		return networkHeaders
 	}
+	merged := make(map[string]string, len(networkHeaders)+1)
+	for name, configured := range networkHeaders {
+		if strings.EqualFold(name, opencodeSessionHeader) {
+			continue
+		}
+		merged[name] = configured
+	}
+	merged[opencodeSessionHeader] = value
+	return merged
 }

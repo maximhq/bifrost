@@ -105,6 +105,22 @@ func TestOpencodeProviderSessionHeader(t *testing.T) {
 		return ctx, cancel
 	}
 
+	// armLargePayload puts the context into large-payload passthrough mode, the
+	// state the transport leaves behind when it defers an oversized body instead
+	// of buffering it. The shared handlers then build their own request from that
+	// deferred reader rather than from a marshaled body.
+	armLargePayload := func(t *testing.T, ctx *schemas.BifrostContext, requestModel string) {
+		t.Helper()
+		payload := `{"model":"` + requestModel + `","messages":[{"role":"user","content":"hi"}]}`
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadMode, true)
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadReader, strings.NewReader(payload))
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentLength, len(payload))
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadContentType, "application/json")
+		ctx.SetValue(schemas.BifrostContextKeyLargePayloadMetadata, &schemas.LargePayloadMetadata{
+			Model: requestModel,
+		})
+	}
+
 	testKey := func() schemas.Key {
 		return schemas.Key{Value: *schemas.NewSecretVar(apiKey)}
 	}
@@ -277,6 +293,90 @@ func TestOpencodeProviderSessionHeader(t *testing.T) {
 		}
 		if other := doRequest("vk-test-2"); other == namespaced {
 			t.Fatalf("different tenants must map to different values, both got %q", other)
+		}
+	})
+
+	// Large payloads (documents, images, audio) skip JSON marshaling and stream
+	// the body straight from the transport's deferred reader, so they take a
+	// separate request-building path in the shared OpenAI handlers. That path
+	// must still carry the affinity header: it is the one request shape where
+	// OpenCode Go would otherwise see a header-less call on exactly the
+	// long-conversation workloads that need cache warmth most.
+	t.Run("large payload passthrough carries the session header", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			call func(t *testing.T, provider *opencodeProvider, ctx *schemas.BifrostContext)
+		}{
+			{
+				name: "chat",
+				call: func(t *testing.T, provider *opencodeProvider, ctx *schemas.BifrostContext) {
+					t.Helper()
+					if _, bifrostErr := provider.ChatCompletion(ctx, testKey(), newChatRequest()); bifrostErr != nil {
+						t.Fatalf("ChatCompletion: %v", bifrostErr)
+					}
+				},
+			},
+			{
+				name: "responses",
+				call: func(t *testing.T, provider *opencodeProvider, ctx *schemas.BifrostContext) {
+					t.Helper()
+					if _, bifrostErr := provider.Responses(ctx, testKey(), newResponsesRequest()); bifrostErr != nil {
+						t.Fatalf("Responses: %v", bifrostErr)
+					}
+				},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				capture := &headerCapture{}
+				server := serve(t, "application/json", responsesPayload, capture)
+				defer server.Close()
+
+				ctx, cancel := sessionCtx(t, "conv-large", "")
+				defer cancel()
+				armLargePayload(t, ctx, model)
+
+				tc.call(t, newTestProvider(t, server.URL), ctx)
+
+				if got := last(t, capture); !reflect.DeepEqual(got, []string{"conv-large"}) {
+					t.Fatalf("X-Opencode-Session = %q on large-payload passthrough, want [conv-large]", got)
+				}
+			})
+		}
+	})
+
+	// A static network_config.extra_headers entry must not survive alongside the
+	// resolved per-request value: two X-Opencode-Session values leave upstream
+	// free to pick either, which is how a conversation ends up split across
+	// backends. The resolved value wins, deterministically.
+	t.Run("resolved session overrides a static extra_headers entry", func(t *testing.T) {
+		capture := &headerCapture{}
+		server := serve(t, "application/json", responsesPayload, capture)
+		defer server.Close()
+		provider, err := NewOpencodeGoProvider(&schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{
+				BaseURL:                        server.URL,
+				DefaultRequestTimeoutInSeconds: 10,
+				ExtraHeaders: map[string]string{
+					"X-OpenCode-Session": "pinned-by-config",
+					"X-Trace":            "kept",
+				},
+			},
+		}, nil)
+		if err != nil {
+			t.Fatalf("new provider: %v", err)
+		}
+
+		ctx, cancel := sessionCtx(t, "conv-123", "")
+		defer cancel()
+		if _, bifrostErr := provider.Responses(ctx, testKey(), newResponsesRequest()); bifrostErr != nil {
+			t.Fatalf("Responses: %v", bifrostErr)
+		}
+
+		if got := last(t, capture); !reflect.DeepEqual(got, []string{"conv-123"}) {
+			t.Fatalf("X-Opencode-Session = %q, want the single resolved value [conv-123]", got)
+		}
+		if provider.networkConfig.ExtraHeaders["X-OpenCode-Session"] != "pinned-by-config" {
+			t.Fatalf("provider config map was mutated: %v", provider.networkConfig.ExtraHeaders)
 		}
 	})
 
@@ -457,15 +557,7 @@ func TestOpencodeNamespaceInput(t *testing.T) {
 		if !ctx.SetGrant(&stubGrant{identity: &stubIdentity{vk: &schemas.EntityRef{ID: "vk-row-9"}}}) {
 			t.Fatal("SetGrant refused stub grant")
 		}
-		signer := opencodeSessionSigner(ctx)
-		if signer == nil {
-			t.Fatal("signer is nil with session captured")
-		}
-		headers, bifrostErr := signer(nil)
-		if bifrostErr != nil {
-			t.Fatalf("signer: %v", bifrostErr)
-		}
-		got := headers[opencodeSessionHeader]
+		got := opencodeSessionValue(ctx)
 		if !strings.HasSuffix(got, ":conv-123") {
 			t.Fatalf("wire value %q must carry the raw session suffix", got)
 		}
@@ -484,17 +576,62 @@ func TestOpencodeNamespaceInput(t *testing.T) {
 		if !ctx.SetGrant(&stubGrant{identity: &stubIdentity{user: &schemas.UserRef{ID: "user-7"}}}) {
 			t.Fatal("SetGrant refused stub grant")
 		}
-		signer := opencodeSessionSigner(ctx)
-		if signer == nil {
-			t.Fatal("signer is nil with session captured")
-		}
-		headers, bifrostErr := signer(nil)
-		if bifrostErr != nil {
-			t.Fatalf("signer: %v", bifrostErr)
-		}
-		got := headers[opencodeSessionHeader]
+		got := opencodeSessionValue(ctx)
 		if want := namespaceOpencodeSession("user-7", "conv-123"); got != want {
 			t.Fatalf("wire value = %q, want user-namespaced %q", got, want)
+		}
+	})
+}
+
+// TestOpencodeRequestExtraHeaders pins the merge contract of the header map the
+// shared handlers apply: configured headers survive, every case variant of the
+// affinity header is dropped so the resolved value cannot be shadowed by map
+// iteration order, and the provider's own config map is never mutated (it is
+// read concurrently by every in-flight request).
+func TestOpencodeRequestExtraHeaders(t *testing.T) {
+	configured := map[string]string{
+		"X-Trace":            "kept",
+		"X-Opencode-Session": "static",
+		"x-OPENCODE-SESSION": "static",
+	}
+
+	t.Run("no captured session returns the configured map untouched", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if got := opencodeRequestExtraHeaders(ctx, configured); !reflect.DeepEqual(got, configured) {
+			t.Fatalf("merged = %v, want the configured map unchanged", got)
+		}
+	})
+
+	t.Run("captured session wins over every case variant", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		ctx.SetValue(schemas.BifrostContextKeyOpencodeSession, "conv-123")
+
+		merged := opencodeRequestExtraHeaders(ctx, configured)
+		if merged[opencodeSessionHeader] != "conv-123" {
+			t.Fatalf("%s = %q, want the resolved conv-123", opencodeSessionHeader, merged[opencodeSessionHeader])
+		}
+		if merged["X-Trace"] != "kept" {
+			t.Fatalf("unrelated configured header lost: %v", merged)
+		}
+		for name, value := range merged {
+			if strings.EqualFold(name, opencodeSessionHeader) && name != opencodeSessionHeader {
+				t.Fatalf("case variant %q survived the merge with value %q", name, value)
+			}
+		}
+		if want := map[string]string{"X-Trace": "kept", "X-Opencode-Session": "static", "x-OPENCODE-SESSION": "static"}; !reflect.DeepEqual(configured, want) {
+			t.Fatalf("configured map mutated: %v", configured)
+		}
+	})
+
+	t.Run("nil configured map yields only the session header", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		ctx.SetValue(schemas.BifrostContextKeyOpencodeSession, "conv-123")
+		want := map[string]string{opencodeSessionHeader: "conv-123"}
+		if got := opencodeRequestExtraHeaders(ctx, nil); !reflect.DeepEqual(got, want) {
+			t.Fatalf("merged = %v, want %v", got, want)
 		}
 	})
 }
