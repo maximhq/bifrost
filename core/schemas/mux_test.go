@@ -259,6 +259,46 @@ func TestToResponsesMessages_EmitsReasoningMessageBeforeToolCalls(t *testing.T) 
 	}
 }
 
+func TestToResponsesMessages_ToolResultBlocksUseResponsesInputTypes(t *testing.T) {
+	// A chat tool message with array content must become a function_call_output whose
+	// output blocks use the Responses spellings; OpenAI rejects "text" there with
+	// "Invalid value: 'text'. Supported values are: 'input_text', ...".
+	cm := ChatMessage{
+		Role:            ChatMessageRoleTool,
+		ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_1")},
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{
+			{Type: ChatContentBlockTypeText, Text: Ptr("18C, light rain"), CacheControl: &CacheControl{Type: CacheControlTypeEphemeral}},
+			{Type: ChatContentBlockTypeImage, ImageURLStruct: &ChatInputImage{URL: "https://example.com/radar.png"}},
+		}},
+	}
+	want := []ResponsesMessageContentBlockType{ResponsesInputMessageContentBlockTypeText, ResponsesInputMessageContentBlockTypeImage}
+
+	check := func(t *testing.T, name string, msg *ResponsesMessage) {
+		if msg == nil || msg.Type == nil || *msg.Type != ResponsesMessageTypeFunctionCallOutput {
+			t.Fatalf("%s: expected a function_call_output message, got %#v", name, msg)
+		}
+		out := msg.ResponsesToolMessage.Output
+		if out == nil || out.ResponsesFunctionToolCallOutputBlocks == nil || len(out.ResponsesFunctionToolCallOutputBlocks) != 2 {
+			t.Fatalf("%s: expected 2 output blocks, got %#v", name, out)
+		}
+		for i, b := range out.ResponsesFunctionToolCallOutputBlocks {
+			if b.Type != want[i] {
+				t.Errorf("%s: output[%d].type = %q, want %q", name, i, b.Type, want[i])
+			}
+		}
+		if out.ResponsesFunctionToolCallOutputBlocks[0].CacheControl == nil {
+			t.Errorf("%s: cache_control on the tool result block must survive the conversion", name)
+		}
+	}
+
+	check(t, "ToResponsesToolMessage", cm.ToResponsesToolMessage())
+	msgs := cm.ToResponsesMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("ToResponsesMessages: expected 1 message, got %d", len(msgs))
+	}
+	check(t, "ToResponsesMessages", &msgs[0])
+}
+
 func TestToResponsesMessages_EmitsReasoningMessageBeforeTextContent(t *testing.T) {
 	reasoning := "Thinking about how to summarize."
 	cm := &ChatMessage{

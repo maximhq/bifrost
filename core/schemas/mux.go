@@ -151,6 +151,21 @@ func (rtm *ResponsesToolMessage) ToChatAssistantMessageToolCall() *ChatAssistant
 	return toolCall
 }
 
+// responsesInputBlockType maps a chat content block type onto its Responses input
+func responsesInputBlockType(t ChatContentBlockType) ResponsesMessageContentBlockType {
+	switch t {
+	case ChatContentBlockTypeText:
+		return ResponsesInputMessageContentBlockTypeText
+	case ChatContentBlockTypeImage:
+		return ResponsesInputMessageContentBlockTypeImage
+	case ChatContentBlockTypeFile:
+		return ResponsesInputMessageContentBlockTypeFile
+	case ChatContentBlockTypeInputAudio:
+		return ResponsesInputMessageContentBlockTypeAudio
+	}
+	return ResponsesMessageContentBlockType(t)
+}
+
 // ToResponsesToolMessage converts a ChatToolMessage (tool execution result) to ResponsesToolMessage format.
 // This creates a function_call_output message suitable for the Responses API.
 //
@@ -195,7 +210,7 @@ func (cm *ChatMessage) ToResponsesToolMessage() *ResponsesMessage {
 			respBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
 			for i, block := range cm.Content.ContentBlocks {
 				respBlocks[i] = ResponsesMessageContentBlock{
-					Type:         ResponsesMessageContentBlockType(block.Type),
+					Type:         responsesInputBlockType(block.Type),
 					Text:         block.Text,
 					CacheControl: block.CacheControl,
 					GuardContent: block.GuardContent,
@@ -704,7 +719,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 				respBlocks := make([]ResponsesMessageContentBlock, len(cm.Content.ContentBlocks))
 				for i, block := range cm.Content.ContentBlocks {
 					respBlocks[i] = ResponsesMessageContentBlock{
-						Type:         ResponsesMessageContentBlockType(block.Type),
+						Type:         responsesInputBlockType(block.Type),
 						Text:         block.Text,
 						CacheControl: block.CacheControl,
 						GuardContent: block.GuardContent,
