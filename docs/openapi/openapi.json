@@ -11731,7 +11731,7 @@
       "get": {
         "operationId": "connectRealtime",
         "summary": "Realtime API WebSocket",
-        "description": "Opens a bidirectional WebSocket session to a realtime-capable provider\n(e.g. OpenAI Realtime, Azure Realtime preview). Bifrost proxies the upstream\nsocket and applies governance, observability, and key selection on connect.\n\nThe target model is provided via the `model` query parameter (or `deployment`\nfor Azure-style routes). The OpenAI SDK sends the API key over the\n`openai-insecure-api-key.<key>` WebSocket subprotocol; Bifrost extracts it and\ntreats it the same as a Bearer header.\n\nInference auth applies — Bearer/Basic/Virtual Key/API Key headers are all\naccepted, plus the subprotocol form above.\n",
+        "description": "Opens a bidirectional WebSocket session to a realtime-capable provider\n(e.g. OpenAI Realtime, Azure Realtime preview, Bedrock Nova Sonic). Bifrost proxies\nthe upstream session and applies governance, observability, and key selection on connect.\n\nThe target model is provided via the `model` query parameter (or `deployment`\nfor Azure-style routes). The OpenAI SDK sends the API key over the\n`openai-insecure-api-key.<key>` WebSocket subprotocol; Bifrost extracts it and\ntreats it the same as a Bearer header.\n\nInference auth applies — Bearer/Basic/Virtual Key/API Key headers are all\naccepted, plus the subprotocol form above.\n",
         "tags": [
           "Realtime"
         ],
