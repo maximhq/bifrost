@@ -10,6 +10,7 @@
 - **OpenAI-compatible xhigh Reasoning Effort** - `reasoning_effort: "xhigh"` is forwarded to vLLM, Ollama, SGL, and custom OpenAI-compatible providers instead of being rewritten to `high` by OpenAI model-name rules (thanks [@pranavthakur0-0](https://github.com/pranavthakur0-0)!) (#6193)
 - **Request Body Memory Retention** - Pooled keep-alive connections no longer keep their largest-ever request-body buffer. fasthttp kept one buffer per connection at its high-water mark (and handed it to the next connection), so per-pod memory ratcheted up with large LLM payloads and never came back. Buffers above `server.body_buffer_pool_limit_bytes` (default 4 MiB) are now released after each request; larger bodies are still accepted up to `max_request_body_size_mb`. Set `0` for unlimited (the previous behaviour)
 - **Async Raw Request Body** - Async jobs (`x-bf-async`) that forward the raw request body now copy it, instead of reading a buffer the next request on the same connection can overwrite
+- **Required delta on signature-only reasoning events** - On the native `/v1/responses` stream, a `response.reasoning_summary_text.delta` that carries only a thinking signature now goes out with the `delta` string the OpenAI Responses spec requires. This route marshals the chunk verbatim, so the omitempty-tagged nil field was dropped and strict clients (openai-java: ``delta`` is not set) aborted the stream whenever a thinking Claude response emitted a signature-only event (#8536) [@Vivek1898](https://github.com/Vivek1898)
 
 ## 🗄️ Database Migrations
 
