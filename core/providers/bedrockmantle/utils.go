@@ -17,12 +17,12 @@ var awsRegionRegex = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
 // mantle anthropic-version header added. It clones the input first so it never mutates the
 // shared networkConfig.ExtraHeaders map (which would leak anthropic-version onto the
 // OpenAI-compatible requests and race across concurrent requests).
-func addAnthropicHeaders(headers map[string]string) map[string]string {
+func addAnthropicHeaders(headers map[string]schemas.SecretVar) map[string]schemas.SecretVar {
 	out := maps.Clone(headers)
 	if out == nil {
-		out = make(map[string]string, 1)
+		out = make(map[string]schemas.SecretVar, 1)
 	}
-	out["anthropic-version"] = mantleAnthropicVersion
+	out["anthropic-version"] = schemas.SecretVar{Val: mantleAnthropicVersion}
 	return out
 }
 

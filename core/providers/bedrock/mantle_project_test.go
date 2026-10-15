@@ -11,24 +11,24 @@ import (
 // the target header name is honoured, and the base map is never mutated.
 func TestWithMantleProject(t *testing.T) {
 	t.Run("empty project returns base unchanged", func(t *testing.T) {
-		base := map[string]string{"X-Custom": "v"}
+		base := map[string]schemas.SecretVar{"X-Custom": {Val: "v"}}
 		got := WithMantleProject(base, MantleOpenAIProjectHeader, "")
 		if _, ok := got[MantleOpenAIProjectHeader]; ok {
 			t.Fatalf("expected no project header when project ID is empty, got %v", got)
 		}
 		// Empty project must return the base map as-is (default-project behaviour).
-		if len(got) != 1 || got["X-Custom"] != "v" {
+		if len(got) != 1 || got["X-Custom"].Val != "v" {
 			t.Fatalf("expected base returned unchanged, got %v", got)
 		}
 	})
 
 	t.Run("OpenAI project header set", func(t *testing.T) {
-		base := map[string]string{"X-Custom": "v"}
+		base := map[string]schemas.SecretVar{"X-Custom": {Val: "v"}}
 		got := WithMantleProject(base, MantleOpenAIProjectHeader, "proj_abc")
-		if got[MantleOpenAIProjectHeader] != "proj_abc" {
+		if got[MantleOpenAIProjectHeader].Val != "proj_abc" {
 			t.Fatalf("expected %s=proj_abc, got %v", MantleOpenAIProjectHeader, got)
 		}
-		if got["X-Custom"] != "v" {
+		if got["X-Custom"].Val != "v" {
 			t.Fatalf("existing headers must be preserved, got %v", got)
 		}
 		// base must not be mutated.
@@ -39,7 +39,7 @@ func TestWithMantleProject(t *testing.T) {
 
 	t.Run("Anthropic workspace header set", func(t *testing.T) {
 		got := WithMantleProject(nil, MantleAnthropicProjectHeader, "proj_xyz")
-		if got[MantleAnthropicProjectHeader] != "proj_xyz" {
+		if got[MantleAnthropicProjectHeader].Val != "proj_xyz" {
 			t.Fatalf("expected %s=proj_xyz, got %v", MantleAnthropicProjectHeader, got)
 		}
 	})

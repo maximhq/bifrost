@@ -40,7 +40,7 @@ const (
 // x-amzn-*. Verified live — a guardrail applies identically either way.
 //
 // Mantle is deliberately not wired: it accepts these headers and enforces nothing.
-func withGuardrailHeaders(base map[string]string, extraParams map[string]any) map[string]string {
+func withGuardrailHeaders(base map[string]schemas.SecretVar, extraParams map[string]any) map[string]schemas.SecretVar {
 	config, _ := extraParams["guardrailConfig"].(map[string]any)
 	identifier, _ := config["guardrailIdentifier"].(string)
 	version, _ := config["guardrailVersion"].(string)
@@ -50,7 +50,7 @@ func withGuardrailHeaders(base map[string]string, extraParams map[string]any) ma
 
 	out := maps.Clone(base)
 	if out == nil {
-		out = make(map[string]string, 3)
+		out = make(map[string]schemas.SecretVar, 3)
 	}
 	setHeader(out, guardrailIdentifierHeader, identifier)
 	setHeader(out, guardrailVersionHeader, version)
@@ -64,13 +64,13 @@ func withGuardrailHeaders(base map[string]string, extraParams map[string]any) ma
 // SetExtraHeaders canonicalises every key and keeps whichever it reaches first, and Go
 // map order is random, so a differently-cased entry would race this one rather than
 // lose to it.
-func setHeader(headers map[string]string, name, value string) {
+func setHeader(headers map[string]schemas.SecretVar, name, value string) {
 	for existing := range headers {
 		if existing != name && strings.EqualFold(existing, name) {
 			delete(headers, existing)
 		}
 	}
-	headers[name] = value
+	headers[name] = schemas.SecretVar{Val: value}
 }
 
 // runtimeResponses handles non-streaming Responses requests on bedrock-runtime's
