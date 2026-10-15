@@ -860,6 +860,12 @@
               "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
               "default": 65536
             },
+            "bodyBufferPoolLimitBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Largest request-body buffer (bytes) a keep-alive connection keeps for reuse. Larger buffers are freed after each request; bodies above it are still served. Unset uses the 4 MiB default; 0 means unlimited. Renders into server.body_buffer_pool_limit_bytes.",
+              "default": 4194304
+            },
             "pluginDownloadPrivateAllowlist": {
               "type": "array",
               "items": {

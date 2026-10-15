@@ -163,6 +163,13 @@ type pluginOrderInfo struct {
 type ServerConfig struct {
 	ReadBufferSize int `json:"read_buffer_size,omitempty"`
 
+	// BodyBufferPoolLimitBytes caps the request-body buffer a pooled keep-alive
+	// connection keeps between requests; larger buffers are released after each
+	// request. Not set uses DefaultBodyBufferPoolLimitBytes and 0 means unlimited, so
+	// it is a pointer to tell the two apart. See ApplyBodyBufferPoolLimit. Deploy-time
+	// only - read from config.json at startup.
+	BodyBufferPoolLimitBytes *int `json:"body_buffer_pool_limit_bytes,omitempty"`
+
 	// PluginDownloadPrivateAllowlist lists hostnames, IPs, and CIDR ranges that custom
 	// plugin (.so) downloads may reach even when they resolve to a private/loopback/
 	// link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted
