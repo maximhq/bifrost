@@ -21,6 +21,8 @@ import { ChatMessageContent, DisplayLogEntry, LLMUsage, LogEntry, ResponsesMessa
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { ColumnDef } from "@tanstack/react-table";
+import { showsPassthroughTag } from "../sheets/logDetailView.utils";
+import PassthroughTag from "./passthroughTag";
 import { format, formatDistanceToNow } from "date-fns";
 import { ArrowUpDown, ChevronRight, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
 import { type ReactNode, useState } from "react";
@@ -523,15 +525,18 @@ export const createColumns = (
 			size: 150,
 			cell: ({ row }) => {
 				return (
-					<Badge
-						variant="outline"
-						className={cn(
-							"font-mono text-[11px] py-0.5 px-1.5 uppercase",
-							RequestTypeColors[row.original.object as keyof typeof RequestTypeColors],
-						)}
-					>
-						{RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
-					</Badge>
+					<div className="flex flex-wrap items-center gap-1">
+						<Badge
+							variant="outline"
+							className={cn(
+								"font-mono text-[11px] py-0.5 px-1.5 uppercase",
+								RequestTypeColors[row.original.object as keyof typeof RequestTypeColors],
+							)}
+						>
+							{RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
+						</Badge>
+						{showsPassthroughTag(row.original) && <PassthroughTag compact testId="logs-table-passthrough-tag" />}
+					</div>
 				);
 			},
 		},

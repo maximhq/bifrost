@@ -14,22 +14,36 @@ func isPassthroughLog(entry *logstore.Log) bool {
 	return entry.Object == string(schemas.PassthroughRequest) || entry.Object == string(schemas.PassthroughStreamRequest)
 }
 
-// markPassthroughForParsing flags a completed passthrough row so the batch writer parses its bodies.
-// It runs on the request path, so it does nothing but a string compare and a context read: rows that are
-// not passthrough, and passthrough rows whose final content policy does not store content, are left
-// untouched and never parsed. The wire format comes from the base provider the core worker stamped
-// for this attempt, so a custom provider parses with the shape of the provider it wraps and a
-// fallback attempt with its own.
-func markPassthroughForParsing(ctx *schemas.BifrostContext, entry *logstore.Log, contentLoggingEnabled bool) {
-	if !contentLoggingEnabled || !isPassthroughLog(entry) {
+// tagPassthroughEntry types a completed passthrough row and flags it for body parsing. It runs on
+// the request path, so it reads no body: rows that are not passthrough return after a string
+// compare. A passthrough row is tagged is_passthrough and, when its route has a typed equivalent,
+// stored under that type (chat_completion, responses_stream, embedding, ...) so it is counted and
+// filtered like a typed request; an unknown route stays passthrough. Typing needs only the route,
+// so it applies whatever the content policy. Only when the final policy stores content is the row
+// also flagged for the batch writer to parse its bodies.
+//
+// The wire format comes from the base provider the core worker stamped for this attempt, so a
+// custom provider is read with the shape of the provider it wraps and a fallback attempt with its
+// own.
+func tagPassthroughEntry(ctx *schemas.BifrostContext, entry *logstore.Log, initial *InitialLogData, contentLoggingEnabled bool) {
+	if !isPassthroughLog(entry) {
 		return
 	}
 	format := schemas.ModelProvider(entry.Provider)
 	if base, ok := ctx.Value(schemas.BifrostContextKeyBaseProviderType).(schemas.ModelProvider); ok && base != "" {
 		format = base
 	}
-	entry.PassthroughParseFormat = format
-	entry.PassthroughParseMaxBytes = largePayloadRequestThreshold(ctx)
+	entry.IsPassthrough = true
+	if initial != nil {
+		stream := entry.Object == string(schemas.PassthroughStreamRequest)
+		if inferred := passthroughparse.InferRequestType(format, entry.Model, initial.PassthroughMethod, initial.PassthroughPath, stream); inferred != "" {
+			entry.Object = string(inferred)
+		}
+	}
+	if contentLoggingEnabled {
+		entry.PassthroughParseFormat = format
+		entry.PassthroughParseMaxBytes = largePayloadRequestThreshold(ctx)
+	}
 }
 
 // applyParsedPassthrough decodes a flagged passthrough row's raw bodies into the structured fields a
@@ -66,7 +80,7 @@ func (p *LoggerPlugin) applyParsedPassthrough(entry *logstore.Log) {
 		StatusCode:   params.StatusCode,
 		RequestBody:  []byte(entry.PassthroughRequestBody),
 		ResponseBody: []byte(entry.PassthroughResponseBody),
-		Stream:       entry.Object == string(schemas.PassthroughStreamRequest),
+		Stream:       entry.Stream,
 	})
 	if err != nil {
 		p.logger.Debug("passthrough log parse for %s was partial: %v", entry.ID, err)

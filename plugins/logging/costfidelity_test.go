@@ -1726,3 +1726,50 @@ func TestErrorBillingBreakdownSurvivesAttachWhenToggled(t *testing.T) {
 	require.NotNil(t, entry.TokenUsageParsed.Cost)
 	assert.InDelta(t, want, entry.TokenUsageParsed.Cost.TotalCost, 1e-12)
 }
+
+// TestTypedPassthroughRowRepricesAsItsType pins that a passthrough row stored under its inferred type
+// (object_type=responses, is_passthrough=true) reprices from its tokens exactly like a typed row of
+// that type. A row still stored as passthrough has no typed shape to price from and reprices to 0,
+// as it always has; typing is what makes these rows repriceable.
+func TestTypedPassthroughRowRepricesAsItsType(t *testing.T) {
+	plugin := newCostFidelityPlugin(t)
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 1200, CompletionTokens: 300, TotalTokens: 1500}
+	row := func(object string, isPassthrough, stream bool) *logstore.Log {
+		return &logstore.Log{
+			ID:               "req-typed-passthrough",
+			Timestamp:        time.Now().UTC(),
+			Object:           object,
+			IsPassthrough:    isPassthrough,
+			Stream:           stream,
+			Provider:         string(schemas.Anthropic),
+			Model:            "claude-sonnet-4-20250514",
+			Status:           "success",
+			PromptTokens:     usage.PromptTokens,
+			CompletionTokens: usage.CompletionTokens,
+			TotalTokens:      usage.TotalTokens,
+			TokenUsageParsed: usage.DeepCopy(),
+		}
+	}
+
+	for _, tc := range []struct {
+		object string
+		stream bool
+	}{
+		{string(schemas.ResponsesRequest), false},
+		{string(schemas.ResponsesStreamRequest), true},
+		{string(schemas.ChatCompletionStreamRequest), true},
+	} {
+		t.Run(tc.object, func(t *testing.T) {
+			want, err := plugin.calculateCostForLog(row(tc.object, false, tc.stream))
+			require.NoError(t, err)
+			require.Positive(t, want)
+			got, err := plugin.calculateCostForLog(row(tc.object, true, tc.stream))
+			require.NoError(t, err)
+			assertCostsEqual(t, "typed passthrough row", got, want)
+		})
+	}
+
+	legacy, err := plugin.calculateCostForLog(row(string(schemas.PassthroughRequest), true, false))
+	require.NoError(t, err)
+	assert.Zero(t, legacy, "an untyped passthrough row has nothing to reprice from")
+}

@@ -330,6 +330,7 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"agent_logs_init"}, run: migrationCreateAgentLogsTable},
 	{IDs: []string{"agent_logs_add_raw_payload_columns"}, run: migrationAddAgentRawPayloadColumns},
 	{IDs: []string{"logs_add_matview_refresh_state_table"}, run: migrationAddMatViewRefreshStateTable},
+	{IDs: []string{"logs_add_is_passthrough_column"}, run: migrationAddIsPassthroughColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -5757,4 +5758,41 @@ func migrationAddMatViewRefreshStateTable(ctx context.Context, db *gorm.DB, logg
 		return fmt.Errorf("error while creating matview_refresh_state table: %w", err)
 	}
 	return nil
+}
+
+// migrationAddIsPassthroughColumn adds the is_passthrough column to the logs table. A passthrough
+// call is stored under the request type its route was inferred as (chat_completion, responses, ...)
+// and tagged with this flag; rows written before it keep object_type=passthrough. A constant
+// default, so the ALTER does not rewrite the table on Postgres.
+func migrationAddIsPassthroughColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_is_passthrough_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{isPassthroughColumnMigration(ctx, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding is_passthrough column: %s", err.Error())
+	}
+	return nil
+}
+
+// isPassthroughColumnMigration bounds its lock wait like every logs DDL (see boundDDLLockWait). Its
+// rollback deliberately keeps the column: is_passthrough is the only marker of a passthrough row
+// stored under its inferred type, dropping it would make those rows indistinguishable from typed
+// requests, and older code ignores an extra column with a default.
+func isPassthroughColumnMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: "logs_add_is_passthrough_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "is_passthrough")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}
 }

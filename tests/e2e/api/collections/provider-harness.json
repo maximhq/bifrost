@@ -60,7 +60,8 @@
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
           "// Management API (/api/...) and OAuth (/oauth2/...) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
-          "var __skipShape = __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
+          "// Rows tagged [NO-CONTENT] expect an empty reply (a provider refusal) and assert their own bodies.",
+          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -269837,7 +269838,12 @@
                   "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
-                  "      pm.test('openai chat parsed: row is passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('passthrough'); });",
+                  "      pm.test('openai chat parsed: stored as chat_completion and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('chat_completion'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
+                  "      ['chat_completion', 'passthrough'].forEach(function (objectType) {",
+                  "        pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs?objects=' + objectType + '&request_id=' + reqId, method: 'GET' }, function (ferr, fres) {",
+                  "          pm.test('openai chat parsed: Type filter ' + objectType + ' finds the row', function () { pm.expect(ferr, String(ferr)).to.not.be.ok; pm.expect(fres.code, fres.text()).to.eql(200); var ids = (fres.json().logs || []).map(function (r) { return r.id; }); pm.expect(ids, fres.text()).to.include(reqId); });",
+                  "        });",
+                  "      });",
                   "      pm.test('openai chat parsed: parsed as chat completion', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('chat_completion'); });",
                   "      pm.test('openai chat parsed: input_history parsed from the request body', function () { pm.expect(j.input_history, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); pm.expect(JSON.stringify(j.input_history[0].content)).to.include('passthrough parsing'); });",
                   "      pm.test('openai chat parsed: output_message parsed from the response body', function () { pm.expect(j.output_message, JSON.stringify(j)).to.be.an('object'); pm.expect(j.output_message.role).to.eql('assistant'); pm.expect(JSON.stringify(j.output_message.content || '')).to.not.eql('\"\"'); });",
@@ -269898,7 +269904,7 @@
                   "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
-                  "      pm.test('openai chat stream parsed: row is passthrough_stream', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('passthrough_stream'); });",
+                  "      pm.test('openai chat stream parsed: stored as chat_completion_stream and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('chat_completion_stream'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('openai chat stream parsed: parsed as chat completion', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('chat_completion'); });",
                   "      pm.test('openai chat stream parsed: input_history parsed from the request body', function () { pm.expect(j.input_history, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); pm.expect(JSON.stringify(j.input_history[0].content)).to.include('passthrough parsing'); });",
                   "      pm.test('openai chat stream parsed: output_message parsed from the response body', function () { pm.expect(j.output_message, JSON.stringify(j)).to.be.an('object'); pm.expect(j.output_message.role).to.eql('assistant'); pm.expect(JSON.stringify(j.output_message.content || '')).to.not.eql('\"\"'); });",
@@ -269960,6 +269966,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('anthropic messages parsed: parsed as responses', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('responses'); });",
+                  "      pm.test('anthropic messages parsed: stored as responses and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('responses'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('anthropic messages parsed: responses_input_history parsed from the request body', function () { pm.expect(j.responses_input_history, JSON.stringify(j)).to.be.an('array').that.is.not.empty; pm.expect(JSON.stringify(j.responses_input_history)).to.include('passthrough parsing'); });",
                   "      pm.test('anthropic messages parsed: responses_output parsed from the response body', function () { pm.expect(j.responses_output, JSON.stringify(j)).to.be.an('array').that.is.not.empty; });",
                   "      pm.test('anthropic messages parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
@@ -270021,6 +270028,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('gemini generateContent parsed: parsed as responses', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('responses'); });",
+                  "      pm.test('gemini generateContent parsed: stored as responses and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('responses'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('gemini generateContent parsed: responses_input_history parsed from the request body', function () { pm.expect(j.responses_input_history, JSON.stringify(j)).to.be.an('array').that.is.not.empty; pm.expect(JSON.stringify(j.responses_input_history)).to.include('passthrough parsing'); });",
                   "      pm.test('gemini generateContent parsed: responses_output parsed from the response body', function () { pm.expect(j.responses_output, JSON.stringify(j)).to.be.an('array').that.is.not.empty; });",
                   "      pm.test('gemini generateContent parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
@@ -270085,6 +270093,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('openai embeddings parsed: parsed as embedding', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('embedding'); });",
+                  "      pm.test('openai embeddings parsed: stored as embedding and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('embedding'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('openai embeddings parsed: embedding_input recorded', function () { pm.expect(j.embedding_input, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
                   "      pm.test('openai embeddings parsed: embedding_output recorded', function () { pm.expect(j.embedding_output, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
                   "      pm.test('openai embeddings parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
@@ -270142,6 +270151,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('openai speech parsed: parsed as speech', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('speech'); });",
+                  "      pm.test('openai speech parsed: stored as speech and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('speech'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('openai speech parsed: speech_input recorded', function () { pm.expect(j.speech_input && j.speech_input.input, JSON.stringify(j)).to.eql('Passthrough parsing.'); });",
                   "      pm.test('openai speech parsed: audio response kept as a placeholder', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j.passthrough_response_body)).to.match(/^<binary content omitted: \\d+ bytes>$/); });",
                   "      return;",
@@ -270197,6 +270207,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('openai image generation parsed: parsed as image generation', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('image_generation'); });",
+                  "      pm.test('openai image generation parsed: stored as image_generation and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('image_generation'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('openai image generation parsed: image_generation_input recorded', function () { pm.expect(j.image_generation_input && j.image_generation_input.prompt, JSON.stringify(j)).to.eql('a small red square'); });",
                   "      pm.test('openai image generation parsed: image_generation_output recorded', function () { pm.expect(j.image_generation_output && j.image_generation_output.data, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
                   "      pm.test('openai image generation parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
@@ -270255,6 +270266,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('gemini embedContent parsed: parsed as embedding', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('embedding'); });",
+                  "      pm.test('gemini embedContent parsed: stored as embedding and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('embedding'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('gemini embedContent parsed: embedding_input recorded', function () { pm.expect(j.embedding_input, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
                   "      pm.test('gemini embedContent parsed: embedding_output recorded', function () { pm.expect(j.embedding_output, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
                   "      pm.test('gemini embedContent parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
@@ -270313,6 +270325,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('gemini batchEmbedContents parsed: parsed as embedding', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('embedding'); });",
+                  "      pm.test('gemini batchEmbedContents parsed: stored as embedding and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('embedding'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('gemini batchEmbedContents parsed: embedding_input recorded', function () { pm.expect(j.embedding_input, JSON.stringify(j)).to.be.an('array').with.lengthOf(2); });",
                   "      pm.test('gemini batchEmbedContents parsed: embedding_output recorded', function () { pm.expect(j.embedding_output, JSON.stringify(j)).to.be.an('array').with.lengthOf(2); });",
                   "      pm.test('gemini batchEmbedContents parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
@@ -270371,6 +270384,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('gemini imagen predict parsed: parsed as image generation', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('image_generation'); });",
+                  "      pm.test('gemini imagen predict parsed: stored as image_generation and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('image_generation'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('gemini imagen predict parsed: image_generation_input recorded', function () { pm.expect(j.image_generation_input && j.image_generation_input.prompt, JSON.stringify(j)).to.eql('a small red square'); });",
                   "      pm.test('gemini imagen predict parsed: image_generation_output recorded', function () { pm.expect(j.image_generation_output && j.image_generation_output.data, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
                   "      pm.test('gemini imagen predict parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
@@ -270429,6 +270443,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('vertex embedding predict parsed: parsed as embedding', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('embedding'); });",
+                  "      pm.test('vertex embedding predict parsed: stored as embedding and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('embedding'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('vertex embedding predict parsed: embedding_input recorded', function () { pm.expect(j.embedding_input, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
                   "      pm.test('vertex embedding predict parsed: embedding_output recorded', function () { pm.expect(j.embedding_output, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
                   "      pm.test('vertex embedding predict parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
@@ -270493,6 +270508,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('vertex imagen predict parsed: parsed as image generation', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('image_generation'); });",
+                  "      pm.test('vertex imagen predict parsed: stored as image_generation and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('image_generation'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('vertex imagen predict parsed: image_generation_input recorded', function () { pm.expect(j.image_generation_input && j.image_generation_input.prompt, JSON.stringify(j)).to.eql('a small red square'); });",
                   "      pm.test('vertex imagen predict parsed: image_generation_output recorded', function () { pm.expect(j.image_generation_output && j.image_generation_output.data, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
                   "      pm.test('vertex imagen predict parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
@@ -270563,6 +270579,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('openai transcription multipart parsed: parsed as transcription', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('transcription'); });",
+                  "      pm.test('openai transcription multipart parsed: stored as transcription and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('transcription'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('openai transcription multipart parsed: body logged as a form summary', function () { pm.expect(j.params.multipart_summary, JSON.stringify(j.params)).to.eql(true); var s = JSON.parse(j.passthrough_request_body); pm.expect(s.fields.model, j.passthrough_request_body).to.eql('whisper-1'); pm.expect(s.files, j.passthrough_request_body).to.be.an('array').with.lengthOf(1); pm.expect(s.files[0].filename).to.eql('sample.mp3'); pm.expect(s.files[0].bytes).to.be.above(1000); });",
                   "      pm.test('openai transcription multipart parsed: audio bytes not stored', function () { pm.expect(j.passthrough_request_body.length, 'summary length').to.be.below(2000); });",
                   "      pm.test('openai transcription multipart parsed: transcription_input names the file', function () { pm.expect(j.transcription_input && j.transcription_input.filename, JSON.stringify(j)).to.eql('sample.mp3'); });",
@@ -270630,6 +270647,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('openai image edit multipart parsed: parsed as image edit', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('image_edit'); });",
+                  "      pm.test('openai image edit multipart parsed: stored as image_edit and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('image_edit'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('openai image edit multipart parsed: image_edit_input records the prompt and the image', function () { pm.expect(j.image_edit_input && j.image_edit_input.prompt, JSON.stringify(j)).to.eql('add a small red square'); pm.expect(j.image_edit_input.images, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
                   "      pm.test('openai image edit multipart parsed: body logged as a form summary', function () { pm.expect(j.params.multipart_summary, JSON.stringify(j.params)).to.eql(true); var s = JSON.parse(j.passthrough_request_body); pm.expect(s.fields.model, j.passthrough_request_body).to.eql('gpt-image-1'); var f = (s.files || []).filter(function (x) { return x.field === 'image'; }); pm.expect(f, j.passthrough_request_body).to.have.lengthOf(1); pm.expect(f[0].filename).to.eql('sample.png'); pm.expect(f[0].bytes).to.be.above(1000); });",
                   "      pm.test('openai image edit multipart parsed: image bytes not stored', function () { pm.expect(j.passthrough_request_body.length, 'summary length').to.be.below(2000); });",
@@ -270707,6 +270725,7 @@
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('openai image variation multipart parsed: parsed as image variation', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('image_variation'); });",
+                  "      pm.test('openai image variation multipart parsed: stored as image_variation and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('image_variation'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      pm.test('openai image variation multipart parsed: params parsed from the form', function () { pm.expect(j.params.model_params && j.params.model_params.size, JSON.stringify(j.params)).to.eql('256x256'); });",
                   "      pm.test('openai image variation multipart parsed: body logged as a form summary', function () { pm.expect(j.params.multipart_summary, JSON.stringify(j.params)).to.eql(true); var s = JSON.parse(j.passthrough_request_body); pm.expect(s.fields.model, j.passthrough_request_body).to.eql('dall-e-2'); var f = (s.files || []).filter(function (x) { return x.field === 'image'; }); pm.expect(f, j.passthrough_request_body).to.have.lengthOf(1); pm.expect(f[0].filename).to.eql('sample.png'); pm.expect(f[0].bytes).to.be.above(1000); });",
                   "      pm.test('openai image variation multipart parsed: image bytes not stored', function () { pm.expect(j.passthrough_request_body.length, 'summary length').to.be.below(2000); });",
@@ -270762,6 +270781,1117 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "244. Responses output is always an array (responses output array)",
+      "description": "output is a required array on every Responses object. Claude streams on /v1/responses (Bedrock Converse, Bedrock InvokeModel, Anthropic) built response.created and response.in_progress with no items, and response.completed with none when the turn came back empty, and the native route serialized that as \"output\": null. /openai normalized it through WithDefaults; /v1 did not.\n\nClaude returns empty turns (content [], end_turn), typically right after a tool result in an agent loop. pydantic-ai iterates response.output on terminal events, so a customer streaming gpt-6-sol with a Bedrock Haiku fallback crashed with TypeError: 'NoneType' object is not iterable whenever the fallback served an empty turn. BifrostResponsesResponse.MarshalJSON now sends [] for a nil output.\n\nEach case forces an empty turn with an assistant prefill and asserts every lifecycle event carries an array. Red before the fix on every run (response.created was always null). The fallback case uses a nonexistent primary so the Bedrock fallback serves the stream, the customer's path.",
+      "item": [
+        {
+          "name": "bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0 /v1/responses stream empty turn: responses output array on every lifecycle event",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0\",\"stream\":true,\"max_output_tokens\":64,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Reply with exactly the word OK and nothing else.\"},{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"OK\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('responses output array bedrock: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var lifecycle = events.filter(function (e) { return e.response && typeof e.response === 'object'; });",
+                  "pm.test('responses output array bedrock: created, in_progress and completed all streamed', function () {",
+                  "  var types = lifecycle.map(function (e) { return e.type; });",
+                  "  pm.expect(types, 'lifecycle events: ' + txt.slice(0, 800)).to.include.members(['response.created', 'response.in_progress', 'response.completed']);",
+                  "});",
+                  "pm.test('responses output array bedrock: every lifecycle event carries response.output as an array, never null', function () {",
+                  "  lifecycle.forEach(function (e) {",
+                  "    pm.expect(Array.isArray(e.response.output), e.type + ' response.output = ' + JSON.stringify(e.response.output) + ' (required array; pydantic-ai iterates it)').to.be.true;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-haiku-4-5 /v1/responses stream empty turn: responses output array on every lifecycle event",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-haiku-4-5\",\"stream\":true,\"max_output_tokens\":64,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Reply with exactly the word OK and nothing else.\"},{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"OK\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('responses output array anthropic: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var lifecycle = events.filter(function (e) { return e.response && typeof e.response === 'object'; });",
+                  "pm.test('responses output array anthropic: created, in_progress and completed all streamed', function () {",
+                  "  var types = lifecycle.map(function (e) { return e.type; });",
+                  "  pm.expect(types, 'lifecycle events: ' + txt.slice(0, 800)).to.include.members(['response.created', 'response.in_progress', 'response.completed']);",
+                  "});",
+                  "pm.test('responses output array anthropic: every lifecycle event carries response.output as an array, never null', function () {",
+                  "  lifecycle.forEach(function (e) {",
+                  "    pm.expect(Array.isArray(e.response.output), e.type + ' response.output = ' + JSON.stringify(e.response.output) + ' (required array; pydantic-ai iterates it)').to.be.true;",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-6-sol-does-not-exist -> bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0 fallback /v1/responses stream empty turn: responses output array on every lifecycle event",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-sol-does-not-exist\",\"fallbacks\":[\"bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0\"],\"stream\":true,\"max_output_tokens\":64,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"Reply with exactly the word OK and nothing else.\"},{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"OK\"}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('responses output array fallback: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var lifecycle = events.filter(function (e) { return e.response && typeof e.response === 'object'; });",
+                  "pm.test('responses output array fallback: created, in_progress and completed all streamed', function () {",
+                  "  var types = lifecycle.map(function (e) { return e.type; });",
+                  "  pm.expect(types, 'lifecycle events: ' + txt.slice(0, 800)).to.include.members(['response.created', 'response.in_progress', 'response.completed']);",
+                  "});",
+                  "pm.test('responses output array fallback: every lifecycle event carries response.output as an array, never null', function () {",
+                  "  lifecycle.forEach(function (e) {",
+                  "    pm.expect(Array.isArray(e.response.output), e.type + ' response.output = ' + JSON.stringify(e.response.output) + ' (required array; pydantic-ai iterates it)').to.be.true;",
+                  "  });",
+                  "});",
+                  "pm.test('responses output array fallback: the stream was served by the Bedrock fallback', function () {",
+                  "  var done = lifecycle.filter(function (e) { return e.type === 'response.completed'; })[0] || {};",
+                  "  var ri = (done.extra_fields || {}).routing_info || {};",
+                  "  pm.expect(ri.is_fallback, 'routing_info: ' + JSON.stringify(ri)).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "245. Responses function_call_arguments.done carries no item (arguments done shape)",
+      "description": "response.function_call_arguments.done is {type, sequence_number, item_id, output_index, arguments} in the OpenAI Responses streaming spec. Gemini (and Vertex Gemini, which reuses the converter) and both Bedrock Converse tool-close paths attached a partial item to it: {\"call_id\", \"name\"} with no type. Lenient clients (OpenAI SDK) ignore it; opencode v2 validates every stream event against a schema where item requires type: string, so every Gemini or Bedrock turn that made a tool call aborted with \"Invalid ... openai-responses stream event\". Text-only turns passed, which made it look flaky.\n\nThe fix drops the item from the done event. The only reader of that item was the /genai reverse converter, which already falls back to the name and call id it records from output_item.added.\n\nCases: a forced write_file call streamed on /v1/responses and /openai/v1/responses for each affected host, asserting the done event has no item, its item_id matches the function_call output_item.added, and every item on the stream has a string type (red before the fix). The /genai cases pin the regression side: the functionCall part still carries the tool name and args once the done event stops carrying them (green before and after).\n\n/v1/chat/completions never emits this event. /anthropic and /bedrock re-render tool calls from output_item.added and the argument deltas and never read the done event, so they are covered by Go unit tests only. Bedrock Claude with a plain function tool takes the Converse path (no reasoning, context_management or invoke-only tools), which is where the stray item came from.",
+      "item": [
+        {
+          "name": "gemini/gemini-2.5-flash /v1/responses stream forced tool call: arguments done shape (no item, spec fields only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"stream\":true,\"max_output_tokens\":1024,\"input\":\"Write the text OK to /tmp/probe.txt using the write_file tool.\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write text content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}],\"tool_choice\":\"required\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('arguments done shape gemini /v1/responses: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var added = {};",
+                  "events.forEach(function (e) { if (e.type === 'response.output_item.added' && e.item && e.item.type === 'function_call') { added[e.output_index] = e.item.id; } });",
+                  "var done = events.filter(function (e) { return e.type === 'response.function_call_arguments.done'; });",
+                  "pm.test('arguments done shape gemini /v1/responses: the forced write_file call streamed function_call_arguments.done', function () {",
+                  "  pm.expect(done.length, 'no response.function_call_arguments.done: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});",
+                  "pm.test('arguments done shape gemini /v1/responses: function_call_arguments.done carries no item, only type/sequence_number/item_id/output_index/arguments', function () {",
+                  "  done.forEach(function (e) {",
+                  "    var wire = JSON.stringify(e).slice(0, 800);",
+                  "    pm.expect(e, 'stray item on function_call_arguments.done (strict clients reject it): ' + wire).to.not.have.property('item');",
+                  "    pm.expect(e.item_id, 'item_id: ' + wire).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(e.output_index, 'output_index: ' + wire).to.be.a('number');",
+                  "    pm.expect(e.item_id, 'item_id must match the function_call output_item.added at output_index ' + e.output_index + ': ' + wire).to.eql(added[e.output_index]);",
+                  "    pm.expect(e.arguments, 'arguments: ' + wire).to.be.a('string');",
+                  "    pm.expect(function () { JSON.parse(e.arguments); }, 'arguments must be JSON: ' + wire).to.not.throw();",
+                  "  });",
+                  "});",
+                  "pm.test('arguments done shape gemini /v1/responses: every streamed event parses and every item has a string type', function () {",
+                  "  events.forEach(function (e) {",
+                  "    pm.expect(e.unparsed, 'unparseable SSE data: ' + String(e.unparsed).slice(0, 300)).to.be.undefined;",
+                  "    if (Object.prototype.hasOwnProperty.call(e, 'item')) {",
+                  "      pm.expect(e.item && e.item.type, e.type + ' carries an item without a string type: ' + JSON.stringify(e).slice(0, 800)).to.be.a('string').that.is.not.empty;",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-2.5-flash /openai/v1/responses stream forced tool call: arguments done shape (no item, spec fields only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"gemini/gemini-2.5-flash\",\"stream\":true,\"max_output_tokens\":1024,\"input\":\"Write the text OK to /tmp/probe.txt using the write_file tool.\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write text content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}],\"tool_choice\":\"required\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('arguments done shape gemini /openai/v1/responses: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var added = {};",
+                  "events.forEach(function (e) { if (e.type === 'response.output_item.added' && e.item && e.item.type === 'function_call') { added[e.output_index] = e.item.id; } });",
+                  "var done = events.filter(function (e) { return e.type === 'response.function_call_arguments.done'; });",
+                  "pm.test('arguments done shape gemini /openai/v1/responses: the forced write_file call streamed function_call_arguments.done', function () {",
+                  "  pm.expect(done.length, 'no response.function_call_arguments.done: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});",
+                  "pm.test('arguments done shape gemini /openai/v1/responses: function_call_arguments.done carries no item, only type/sequence_number/item_id/output_index/arguments', function () {",
+                  "  done.forEach(function (e) {",
+                  "    var wire = JSON.stringify(e).slice(0, 800);",
+                  "    pm.expect(e, 'stray item on function_call_arguments.done (strict clients reject it): ' + wire).to.not.have.property('item');",
+                  "    pm.expect(e.item_id, 'item_id: ' + wire).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(e.output_index, 'output_index: ' + wire).to.be.a('number');",
+                  "    pm.expect(e.item_id, 'item_id must match the function_call output_item.added at output_index ' + e.output_index + ': ' + wire).to.eql(added[e.output_index]);",
+                  "    pm.expect(e.arguments, 'arguments: ' + wire).to.be.a('string');",
+                  "    pm.expect(function () { JSON.parse(e.arguments); }, 'arguments must be JSON: ' + wire).to.not.throw();",
+                  "  });",
+                  "});",
+                  "pm.test('arguments done shape gemini /openai/v1/responses: every streamed event parses and every item has a string type', function () {",
+                  "  events.forEach(function (e) {",
+                  "    pm.expect(e.unparsed, 'unparseable SSE data: ' + String(e.unparsed).slice(0, 300)).to.be.undefined;",
+                  "    if (Object.prototype.hasOwnProperty.call(e, 'item')) {",
+                  "      pm.expect(e.item && e.item.type, e.type + ' carries an item without a string type: ' + JSON.stringify(e).slice(0, 800)).to.be.a('string').that.is.not.empty;",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-2.5-flash /v1/responses stream forced tool call: arguments done shape (no item, spec fields only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-2.5-flash\",\"stream\":true,\"max_output_tokens\":1024,\"input\":\"Write the text OK to /tmp/probe.txt using the write_file tool.\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write text content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}],\"tool_choice\":\"required\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('arguments done shape vertex /v1/responses: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var added = {};",
+                  "events.forEach(function (e) { if (e.type === 'response.output_item.added' && e.item && e.item.type === 'function_call') { added[e.output_index] = e.item.id; } });",
+                  "var done = events.filter(function (e) { return e.type === 'response.function_call_arguments.done'; });",
+                  "pm.test('arguments done shape vertex /v1/responses: the forced write_file call streamed function_call_arguments.done', function () {",
+                  "  pm.expect(done.length, 'no response.function_call_arguments.done: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});",
+                  "pm.test('arguments done shape vertex /v1/responses: function_call_arguments.done carries no item, only type/sequence_number/item_id/output_index/arguments', function () {",
+                  "  done.forEach(function (e) {",
+                  "    var wire = JSON.stringify(e).slice(0, 800);",
+                  "    pm.expect(e, 'stray item on function_call_arguments.done (strict clients reject it): ' + wire).to.not.have.property('item');",
+                  "    pm.expect(e.item_id, 'item_id: ' + wire).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(e.output_index, 'output_index: ' + wire).to.be.a('number');",
+                  "    pm.expect(e.item_id, 'item_id must match the function_call output_item.added at output_index ' + e.output_index + ': ' + wire).to.eql(added[e.output_index]);",
+                  "    pm.expect(e.arguments, 'arguments: ' + wire).to.be.a('string');",
+                  "    pm.expect(function () { JSON.parse(e.arguments); }, 'arguments must be JSON: ' + wire).to.not.throw();",
+                  "  });",
+                  "});",
+                  "pm.test('arguments done shape vertex /v1/responses: every streamed event parses and every item has a string type', function () {",
+                  "  events.forEach(function (e) {",
+                  "    pm.expect(e.unparsed, 'unparseable SSE data: ' + String(e.unparsed).slice(0, 300)).to.be.undefined;",
+                  "    if (Object.prototype.hasOwnProperty.call(e, 'item')) {",
+                  "      pm.expect(e.item && e.item.type, e.type + ' carries an item without a string type: ' + JSON.stringify(e).slice(0, 800)).to.be.a('string').that.is.not.empty;",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-2.5-flash /openai/v1/responses stream forced tool call: arguments done shape (no item, spec fields only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-2.5-flash\",\"stream\":true,\"max_output_tokens\":1024,\"input\":\"Write the text OK to /tmp/probe.txt using the write_file tool.\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write text content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}],\"tool_choice\":\"required\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('arguments done shape vertex /openai/v1/responses: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var added = {};",
+                  "events.forEach(function (e) { if (e.type === 'response.output_item.added' && e.item && e.item.type === 'function_call') { added[e.output_index] = e.item.id; } });",
+                  "var done = events.filter(function (e) { return e.type === 'response.function_call_arguments.done'; });",
+                  "pm.test('arguments done shape vertex /openai/v1/responses: the forced write_file call streamed function_call_arguments.done', function () {",
+                  "  pm.expect(done.length, 'no response.function_call_arguments.done: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});",
+                  "pm.test('arguments done shape vertex /openai/v1/responses: function_call_arguments.done carries no item, only type/sequence_number/item_id/output_index/arguments', function () {",
+                  "  done.forEach(function (e) {",
+                  "    var wire = JSON.stringify(e).slice(0, 800);",
+                  "    pm.expect(e, 'stray item on function_call_arguments.done (strict clients reject it): ' + wire).to.not.have.property('item');",
+                  "    pm.expect(e.item_id, 'item_id: ' + wire).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(e.output_index, 'output_index: ' + wire).to.be.a('number');",
+                  "    pm.expect(e.item_id, 'item_id must match the function_call output_item.added at output_index ' + e.output_index + ': ' + wire).to.eql(added[e.output_index]);",
+                  "    pm.expect(e.arguments, 'arguments: ' + wire).to.be.a('string');",
+                  "    pm.expect(function () { JSON.parse(e.arguments); }, 'arguments must be JSON: ' + wire).to.not.throw();",
+                  "  });",
+                  "});",
+                  "pm.test('arguments done shape vertex /openai/v1/responses: every streamed event parses and every item has a string type', function () {",
+                  "  events.forEach(function (e) {",
+                  "    pm.expect(e.unparsed, 'unparseable SSE data: ' + String(e.unparsed).slice(0, 300)).to.be.undefined;",
+                  "    if (Object.prototype.hasOwnProperty.call(e, 'item')) {",
+                  "      pm.expect(e.item && e.item.type, e.type + ' carries an item without a string type: ' + JSON.stringify(e).slice(0, 800)).to.be.a('string').that.is.not.empty;",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /v1/responses stream forced tool call: arguments done shape (no item, spec fields only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\"stream\":true,\"max_output_tokens\":1024,\"input\":\"Write the text OK to /tmp/probe.txt using the write_file tool.\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write text content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}],\"tool_choice\":\"required\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('arguments done shape bedrock /v1/responses: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var added = {};",
+                  "events.forEach(function (e) { if (e.type === 'response.output_item.added' && e.item && e.item.type === 'function_call') { added[e.output_index] = e.item.id; } });",
+                  "var done = events.filter(function (e) { return e.type === 'response.function_call_arguments.done'; });",
+                  "pm.test('arguments done shape bedrock /v1/responses: the forced write_file call streamed function_call_arguments.done', function () {",
+                  "  pm.expect(done.length, 'no response.function_call_arguments.done: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});",
+                  "pm.test('arguments done shape bedrock /v1/responses: function_call_arguments.done carries no item, only type/sequence_number/item_id/output_index/arguments', function () {",
+                  "  done.forEach(function (e) {",
+                  "    var wire = JSON.stringify(e).slice(0, 800);",
+                  "    pm.expect(e, 'stray item on function_call_arguments.done (strict clients reject it): ' + wire).to.not.have.property('item');",
+                  "    pm.expect(e.item_id, 'item_id: ' + wire).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(e.output_index, 'output_index: ' + wire).to.be.a('number');",
+                  "    pm.expect(e.item_id, 'item_id must match the function_call output_item.added at output_index ' + e.output_index + ': ' + wire).to.eql(added[e.output_index]);",
+                  "    pm.expect(e.arguments, 'arguments: ' + wire).to.be.a('string');",
+                  "    pm.expect(function () { JSON.parse(e.arguments); }, 'arguments must be JSON: ' + wire).to.not.throw();",
+                  "  });",
+                  "});",
+                  "pm.test('arguments done shape bedrock /v1/responses: every streamed event parses and every item has a string type', function () {",
+                  "  events.forEach(function (e) {",
+                  "    pm.expect(e.unparsed, 'unparseable SSE data: ' + String(e.unparsed).slice(0, 300)).to.be.undefined;",
+                  "    if (Object.prototype.hasOwnProperty.call(e, 'item')) {",
+                  "      pm.expect(e.item && e.item.type, e.type + ' carries an item without a string type: ' + JSON.stringify(e).slice(0, 800)).to.be.a('string').that.is.not.empty;",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /openai/v1/responses stream forced tool call: arguments done shape (no item, spec fields only)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\"stream\":true,\"max_output_tokens\":1024,\"input\":\"Write the text OK to /tmp/probe.txt using the write_file tool.\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write text content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}],\"tool_choice\":\"required\"}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('arguments done shape bedrock /openai/v1/responses: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var added = {};",
+                  "events.forEach(function (e) { if (e.type === 'response.output_item.added' && e.item && e.item.type === 'function_call') { added[e.output_index] = e.item.id; } });",
+                  "var done = events.filter(function (e) { return e.type === 'response.function_call_arguments.done'; });",
+                  "pm.test('arguments done shape bedrock /openai/v1/responses: the forced write_file call streamed function_call_arguments.done', function () {",
+                  "  pm.expect(done.length, 'no response.function_call_arguments.done: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});",
+                  "pm.test('arguments done shape bedrock /openai/v1/responses: function_call_arguments.done carries no item, only type/sequence_number/item_id/output_index/arguments', function () {",
+                  "  done.forEach(function (e) {",
+                  "    var wire = JSON.stringify(e).slice(0, 800);",
+                  "    pm.expect(e, 'stray item on function_call_arguments.done (strict clients reject it): ' + wire).to.not.have.property('item');",
+                  "    pm.expect(e.item_id, 'item_id: ' + wire).to.be.a('string').that.is.not.empty;",
+                  "    pm.expect(e.output_index, 'output_index: ' + wire).to.be.a('number');",
+                  "    pm.expect(e.item_id, 'item_id must match the function_call output_item.added at output_index ' + e.output_index + ': ' + wire).to.eql(added[e.output_index]);",
+                  "    pm.expect(e.arguments, 'arguments: ' + wire).to.be.a('string');",
+                  "    pm.expect(function () { JSON.parse(e.arguments); }, 'arguments must be JSON: ' + wire).to.not.throw();",
+                  "  });",
+                  "});",
+                  "pm.test('arguments done shape bedrock /openai/v1/responses: every streamed event parses and every item has a string type', function () {",
+                  "  events.forEach(function (e) {",
+                  "    pm.expect(e.unparsed, 'unparseable SSE data: ' + String(e.unparsed).slice(0, 300)).to.be.undefined;",
+                  "    if (Object.prototype.hasOwnProperty.call(e, 'item')) {",
+                  "      pm.expect(e.item && e.item.type, e.type + ' carries an item without a string type: ' + JSON.stringify(e).slice(0, 800)).to.be.a('string').that.is.not.empty;",
+                  "    }",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "gemini/gemini-2.5-flash /genai streamGenerateContent forced tool call: arguments done shape (functionCall keeps name and args)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write the text OK to /tmp/probe.txt using the write_file tool.\"}]}],\"tools\":[{\"functionDeclarations\":[{\"name\":\"write_file\",\"description\":\"Write text content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"ANY\"}},\"generationConfig\":{\"maxOutputTokens\":1024}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('arguments done shape gemini /genai: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var calls = [];",
+                  "events.forEach(function (c) { (c.candidates || []).forEach(function (cand) { ((cand.content && cand.content.parts) || []).forEach(function (p) { if (p.functionCall) { calls.push(p.functionCall); } }); }); });",
+                  "pm.test('arguments done shape gemini /genai: the forced write_file call arrives as a functionCall part', function () {",
+                  "  pm.expect(calls.length, 'no functionCall part: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});",
+                  "pm.test('arguments done shape gemini /genai: every functionCall keeps its name and object args', function () {",
+                  "  calls.forEach(function (fc) {",
+                  "    pm.expect(fc.name, 'functionCall name lost: ' + JSON.stringify(fc)).to.eql('write_file');",
+                  "    pm.expect(fc.args, 'functionCall args: ' + JSON.stringify(fc)).to.be.an('object');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-2.5-flash /genai streamGenerateContent forced tool call: arguments done shape (functionCall keeps name and args)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-2.5-flash:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write the text OK to /tmp/probe.txt using the write_file tool.\"}]}],\"tools\":[{\"functionDeclarations\":[{\"name\":\"write_file\",\"description\":\"Write text content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"ANY\"}},\"generationConfig\":{\"maxOutputTokens\":1024}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('arguments done shape vertex /genai: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var calls = [];",
+                  "events.forEach(function (c) { (c.candidates || []).forEach(function (cand) { ((cand.content && cand.content.parts) || []).forEach(function (p) { if (p.functionCall) { calls.push(p.functionCall); } }); }); });",
+                  "pm.test('arguments done shape vertex /genai: the forced write_file call arrives as a functionCall part', function () {",
+                  "  pm.expect(calls.length, 'no functionCall part: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});",
+                  "pm.test('arguments done shape vertex /genai: every functionCall keeps its name and object args', function () {",
+                  "  calls.forEach(function (fc) {",
+                  "    pm.expect(fc.name, 'functionCall name lost: ' + JSON.stringify(fc)).to.eql('write_file');",
+                  "    pm.expect(fc.args, 'functionCall args: ' + JSON.stringify(fc)).to.be.an('object');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /genai streamGenerateContent forced tool call: arguments done shape (functionCall keeps name and args)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0:streamGenerateContent?alt=sse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "bedrock",
+                "global.anthropic.claude-haiku-4-5-20251001-v1:0:streamGenerateContent"
+              ],
+              "query": [
+                {
+                  "key": "alt",
+                  "value": "sse"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Write the text OK to /tmp/probe.txt using the write_file tool.\"}]}],\"tools\":[{\"functionDeclarations\":[{\"name\":\"write_file\",\"description\":\"Write text content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"ANY\"}},\"generationConfig\":{\"maxOutputTokens\":1024}}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('arguments done shape bedrock /genai: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var calls = [];",
+                  "events.forEach(function (c) { (c.candidates || []).forEach(function (cand) { ((cand.content && cand.content.parts) || []).forEach(function (p) { if (p.functionCall) { calls.push(p.functionCall); } }); }); });",
+                  "pm.test('arguments done shape bedrock /genai: the forced write_file call arrives as a functionCall part', function () {",
+                  "  pm.expect(calls.length, 'no functionCall part: ' + txt.slice(0, 1500)).to.be.above(0);",
+                  "});",
+                  "pm.test('arguments done shape bedrock /genai: every functionCall keeps its name and object args', function () {",
+                  "  calls.forEach(function (fc) {",
+                  "    pm.expect(fc.name, 'functionCall name lost: ' + JSON.stringify(fc)).to.eql('write_file');",
+                  "    pm.expect(fc.args, 'functionCall args: ' + JSON.stringify(fc)).to.be.an('object');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "246. Gemini blocked prompt reports failed, not an empty success (prompt block)",
+      "description": "When Gemini refuses the prompt itself it returns HTTP 200 with no candidates and the reason only in promptFeedback ({\"promptFeedback\":{\"blockReason\":\"SAFETY\",\"blockReasonMessage\":\"...\"}}). The Gemini converters (reused by Vertex) only read candidates, so on /v1/responses the turn normalized to status \"completed\" with empty output, no error and zero tokens, which clients read as the model saying nothing. The stream ended in response.incomplete with no reason, and /v1/chat/completions reported finish_reason \"stop\" with empty content.\n\nThe fix keeps the provider's HTTP 200 and converts the block: Responses reports status \"failed\" with error {code: invalid_prompt, message: blockReasonMessage} (invalid_prompt is OpenAI's ResponseError code for a refused prompt; content_filter is not in that enum) and keeps stop_reason content_filter, the stream closes on the block chunk with a response.failed event carrying that response (candidate-level blocks keep their existing response.completed terminal), and chat finishes with content_filter.\n\nCases: the reporter's Vertex gemini-4-argon repro (write_file tool, tool_choice auto) on /openai/v1/responses, /v1/responses and /v1/chat/completions, unary and streamed. Each case has a trigger check that fails loudly if Gemini stops refusing this prompt (the case then needs a new trigger, Bifrost is not at fault) and the conversion check, red before the fix.\n\n/genai and /anthropic render the same converter output and are not pinned here: unary /genai has no promptFeedback home on the Responses egress (unchanged by this fix), and on the stream their existing response.failed rendering applies (an Anthropic error event, a GenAI promptFeedback carrying the block message).",
+      "item": [
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses blocked prompt: prompt block reported, not an empty success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-4-argon\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Call the write_file tool to create /tmp/probe.txt with content OK.\"}]}],\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('prompt block vertex /openai/v1/responses: 200 (provider status kept)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var output = Array.isArray(body.output) ? body.output : [];",
+                  "var outTokens = body.usage && typeof body.usage.output_tokens === 'number' ? body.usage.output_tokens : 0;",
+                  "var blocked = output.length === 0 && outTokens === 0;",
+                  "pm.test('prompt block vertex /openai/v1/responses: Gemini blocked the prompt (trigger check: red here means Gemini stopped refusing this prompt, not a Bifrost bug)', function () {",
+                  "  pm.expect(blocked, 'upstream answered instead of blocking: ' + txt.slice(0, 1500)).to.eql(true);",
+                  "});",
+                  "pm.test('prompt block vertex /openai/v1/responses: blocked prompt is status failed with an invalid_prompt error carrying the reason, never an empty completed', function () {",
+                  "  if (!blocked) { return; }",
+                  "  pm.expect(body.status, 'status: ' + txt.slice(0, 1500)).to.eql('failed');",
+                  "  pm.expect(body.error, 'error: ' + txt.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(body.error.code, 'error.code: ' + txt.slice(0, 1500)).to.eql('invalid_prompt');",
+                  "  pm.expect(body.error.message, 'error.message carries the block reason: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses stream blocked prompt: prompt block reported, not an empty success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-4-argon\",\"stream\":true,\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Call the write_file tool to create /tmp/probe.txt with content OK.\"}]}],\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('prompt block vertex /openai/v1/responses stream: 200 (provider status kept)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var terminal = null;",
+                  "events.forEach(function (e) { if (e.type === 'response.completed' || e.type === 'response.incomplete' || e.type === 'response.failed') { terminal = e; } });",
+                  "var resp = (terminal && terminal.response) || {};",
+                  "var itemsAdded = events.filter(function (e) { return e.type === 'response.output_item.added'; }).length;",
+                  "var outTokens = resp.usage && typeof resp.usage.output_tokens === 'number' ? resp.usage.output_tokens : 0;",
+                  "var blocked = itemsAdded === 0 && outTokens === 0;",
+                  "pm.test('prompt block vertex /openai/v1/responses stream: stream ends with a terminal response event', function () {",
+                  "  pm.expect(terminal, 'no response.completed/incomplete/failed: ' + txt.slice(0, 1500)).to.not.eql(null);",
+                  "});",
+                  "pm.test('prompt block vertex /openai/v1/responses stream: Gemini blocked the prompt (trigger check: red here means Gemini stopped refusing this prompt, not a Bifrost bug)', function () {",
+                  "  pm.expect(blocked, 'upstream answered instead of blocking: ' + txt.slice(0, 1500)).to.eql(true);",
+                  "});",
+                  "pm.test('prompt block vertex /openai/v1/responses stream: blocked prompt ends in response.failed with an invalid_prompt error carrying the reason, never an empty completed', function () {",
+                  "  if (!blocked) { return; }",
+                  "  pm.expect(terminal.type, 'terminal event: ' + txt.slice(0, 1500)).to.eql('response.failed');",
+                  "  pm.expect(resp.status, 'status: ' + txt.slice(0, 1500)).to.eql('failed');",
+                  "  pm.expect(resp.error, 'error: ' + txt.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(resp.error.code, 'error.code: ' + txt.slice(0, 1500)).to.eql('invalid_prompt');",
+                  "  pm.expect(resp.error.message, 'error.message carries the block reason: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-4-argon /v1/responses blocked prompt: prompt block reported, not an empty success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-4-argon\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Call the write_file tool to create /tmp/probe.txt with content OK.\"}]}],\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('prompt block vertex /v1/responses: 200 (provider status kept)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var output = Array.isArray(body.output) ? body.output : [];",
+                  "var outTokens = body.usage && typeof body.usage.output_tokens === 'number' ? body.usage.output_tokens : 0;",
+                  "var blocked = output.length === 0 && outTokens === 0;",
+                  "pm.test('prompt block vertex /v1/responses: Gemini blocked the prompt (trigger check: red here means Gemini stopped refusing this prompt, not a Bifrost bug)', function () {",
+                  "  pm.expect(blocked, 'upstream answered instead of blocking: ' + txt.slice(0, 1500)).to.eql(true);",
+                  "});",
+                  "pm.test('prompt block vertex /v1/responses: blocked prompt is status failed with an invalid_prompt error carrying the reason, never an empty completed', function () {",
+                  "  if (!blocked) { return; }",
+                  "  pm.expect(body.status, 'status: ' + txt.slice(0, 1500)).to.eql('failed');",
+                  "  pm.expect(body.error, 'error: ' + txt.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(body.error.code, 'error.code: ' + txt.slice(0, 1500)).to.eql('invalid_prompt');",
+                  "  pm.expect(body.error.message, 'error.message carries the block reason: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-4-argon /v1/responses stream blocked prompt: prompt block reported, not an empty success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-4-argon\",\"stream\":true,\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Call the write_file tool to create /tmp/probe.txt with content OK.\"}]}],\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('prompt block vertex /v1/responses stream: 200 (provider status kept)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var terminal = null;",
+                  "events.forEach(function (e) { if (e.type === 'response.completed' || e.type === 'response.incomplete' || e.type === 'response.failed') { terminal = e; } });",
+                  "var resp = (terminal && terminal.response) || {};",
+                  "var itemsAdded = events.filter(function (e) { return e.type === 'response.output_item.added'; }).length;",
+                  "var outTokens = resp.usage && typeof resp.usage.output_tokens === 'number' ? resp.usage.output_tokens : 0;",
+                  "var blocked = itemsAdded === 0 && outTokens === 0;",
+                  "pm.test('prompt block vertex /v1/responses stream: stream ends with a terminal response event', function () {",
+                  "  pm.expect(terminal, 'no response.completed/incomplete/failed: ' + txt.slice(0, 1500)).to.not.eql(null);",
+                  "});",
+                  "pm.test('prompt block vertex /v1/responses stream: Gemini blocked the prompt (trigger check: red here means Gemini stopped refusing this prompt, not a Bifrost bug)', function () {",
+                  "  pm.expect(blocked, 'upstream answered instead of blocking: ' + txt.slice(0, 1500)).to.eql(true);",
+                  "});",
+                  "pm.test('prompt block vertex /v1/responses stream: blocked prompt ends in response.failed with an invalid_prompt error carrying the reason, never an empty completed', function () {",
+                  "  if (!blocked) { return; }",
+                  "  pm.expect(terminal.type, 'terminal event: ' + txt.slice(0, 1500)).to.eql('response.failed');",
+                  "  pm.expect(resp.status, 'status: ' + txt.slice(0, 1500)).to.eql('failed');",
+                  "  pm.expect(resp.error, 'error: ' + txt.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(resp.error.code, 'error.code: ' + txt.slice(0, 1500)).to.eql('invalid_prompt');",
+                  "  pm.expect(resp.error.message, 'error.message carries the block reason: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-4-argon /v1/chat/completions blocked prompt: prompt block reported, not an empty success [NO-CONTENT]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-4-argon\",\"messages\":[{\"role\":\"user\",\"content\":\"Call the write_file tool to create /tmp/probe.txt with content OK.\"}],\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"description\":\"Write content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('prompt block vertex /v1/chat/completions: 200 (provider status kept)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var choice = (body.choices && body.choices[0]) || {};",
+                  "var msg = choice.message || {};",
+                  "var content = typeof msg.content === 'string' ? msg.content : (Array.isArray(msg.content) && msg.content.length ? JSON.stringify(msg.content) : '');",
+                  "var toolCalls = msg.tool_calls || [];",
+                  "var outTokens = body.usage && typeof body.usage.completion_tokens === 'number' ? body.usage.completion_tokens : 0;",
+                  "var blocked = !content && toolCalls.length === 0 && outTokens === 0;",
+                  "var finish = choice.finish_reason;",
+                  "pm.test('prompt block vertex /v1/chat/completions: Gemini blocked the prompt (trigger check: red here means Gemini stopped refusing this prompt, not a Bifrost bug)', function () {",
+                  "  pm.expect(blocked, 'upstream answered instead of blocking: ' + txt.slice(0, 1500)).to.eql(true);",
+                  "});",
+                  "pm.test('prompt block vertex /v1/chat/completions: blocked prompt finishes content_filter, never an empty stop', function () {",
+                  "  if (!blocked) { return; }",
+                  "  pm.expect(finish, 'finish_reason: ' + txt.slice(0, 1500)).to.eql('content_filter');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-4-argon /v1/chat/completions stream blocked prompt: prompt block reported, not an empty success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-4-argon\",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":[{\"role\":\"user\",\"content\":\"Call the write_file tool to create /tmp/probe.txt with content OK.\"}],\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"description\":\"Write content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('prompt block vertex /v1/chat/completions stream: 200 (provider status kept)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var content = '';",
+                  "var toolCalls = 0;",
+                  "var finish = null;",
+                  "var outTokens = 0;",
+                  "events.forEach(function (e) {",
+                  "  if (e.usage && typeof e.usage.completion_tokens === 'number') { outTokens = e.usage.completion_tokens; }",
+                  "  (e.choices || []).forEach(function (c) {",
+                  "    var d = c.delta || {};",
+                  "    if (typeof d.content === 'string') { content += d.content; }",
+                  "    if (d.tool_calls && d.tool_calls.length) { toolCalls += d.tool_calls.length; }",
+                  "    if (c.finish_reason) { finish = c.finish_reason; }",
+                  "  });",
+                  "});",
+                  "var blocked = !content && toolCalls === 0 && outTokens === 0;",
+                  "pm.test('prompt block vertex /v1/chat/completions stream: stream reports a finish_reason', function () {",
+                  "  pm.expect(finish, 'no finish_reason on any chunk: ' + txt.slice(0, 1500)).to.be.a('string');",
+                  "});",
+                  "pm.test('prompt block vertex /v1/chat/completions stream: Gemini blocked the prompt (trigger check: red here means Gemini stopped refusing this prompt, not a Bifrost bug)', function () {",
+                  "  pm.expect(blocked, 'upstream answered instead of blocking: ' + txt.slice(0, 1500)).to.eql(true);",
+                  "});",
+                  "pm.test('prompt block vertex /v1/chat/completions stream: blocked prompt finishes content_filter, never an empty stop', function () {",
+                  "  if (!blocked) { return; }",
+                  "  pm.expect(finish, 'finish_reason: ' + txt.slice(0, 1500)).to.eql('content_filter');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

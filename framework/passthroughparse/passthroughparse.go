@@ -111,6 +111,43 @@ func Parse(in Input) (*Result, error) {
 	return result, errors.Join(errs...)
 }
 
+// InferRequestType returns the request type a passthrough call addresses from its route alone
+// (base provider, model, method, path) without reading either body, or "" when the route has no
+// typed equivalent. stream selects the streaming variant where one exists. It is cheap enough for
+// the request path: a few string suffix checks.
+func InferRequestType(provider schemas.ModelProvider, model, method, path string, stream bool) schemas.RequestType {
+	format, requestType := classify(Input{Provider: provider, Model: model, Method: method, Path: path})
+	if format == wireUnknown || requestType == "" {
+		return ""
+	}
+	if stream {
+		return streamVariant(requestType)
+	}
+	return requestType
+}
+
+// streamVariant maps a request type to its streaming counterpart; types without one are returned
+// unchanged.
+func streamVariant(requestType schemas.RequestType) schemas.RequestType {
+	switch requestType {
+	case schemas.ChatCompletionRequest:
+		return schemas.ChatCompletionStreamRequest
+	case schemas.TextCompletionRequest:
+		return schemas.TextCompletionStreamRequest
+	case schemas.ResponsesRequest:
+		return schemas.ResponsesStreamRequest
+	case schemas.SpeechRequest:
+		return schemas.SpeechStreamRequest
+	case schemas.TranscriptionRequest:
+		return schemas.TranscriptionStreamRequest
+	case schemas.ImageGenerationRequest:
+		return schemas.ImageGenerationStreamRequest
+	case schemas.ImageEditRequest:
+		return schemas.ImageEditStreamRequest
+	}
+	return requestType
+}
+
 // classify picks the wire format and inner request type for a call. It mirrors the dispatch each
 // provider's Passthrough method uses for usage extraction. Only POST generates on any of these APIs,
 // so every other method is no typed request; OpenAI's classifier applies the same rule (and keeps
