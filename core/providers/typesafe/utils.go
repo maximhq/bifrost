@@ -19,6 +19,19 @@ const typesafeSystemOnePath = "/v1/systemone"
 // typesafeModelsPath is the native model-listing endpoint.
 const typesafeModelsPath = "/v1/models"
 
+// typesafeImagesHeader turns on images and box questions, which Typesafe serves
+// only to requests that send it.
+const typesafeImagesHeader = "TypeSafe-Danger-Zone-Images"
+
+// typesafeImagesHeaderAllowed reports whether the provider may send
+// typesafeImagesHeader: it does unless its Beta Headers settings turn it off,
+// stored in network_config.beta_header_overrides under the header's lowercased
+// name.
+func typesafeImagesHeaderAllowed(overrides map[string]bool) bool {
+	allowed, set := overrides[strings.ToLower(typesafeImagesHeader)]
+	return !set || allowed
+}
+
 // typesafeModel is one entry of the static model catalog.
 type typesafeModel struct {
 	ID          string

@@ -170,21 +170,6 @@ func typesafeImageType(data []byte) string {
 	return mediaType
 }
 
-// typesafeImagesHeader turns on images and box questions, which Typesafe serves
-// only to requests that send it.
-const typesafeImagesHeader = "TypeSafe-Danger-Zone-Images"
-
-// typesafeImagesHeaderOverride is the network_config.beta_header_overrides key
-// for typesafeImagesHeader, set from the provider's Beta Headers settings.
-const typesafeImagesHeaderOverride = "typesafe-danger-zone-images"
-
-// typesafeImagesHeaderAllowed reports whether the provider may send
-// typesafeImagesHeader: it does unless its beta header overrides turn it off.
-func typesafeImagesHeaderAllowed(overrides map[string]bool) bool {
-	allowed, set := overrides[typesafeImagesHeaderOverride]
-	return !set || allowed
-}
-
 // usesTypesafeImages reports whether the request needs typesafeImagesHeader: it
 // carries assets or asks a box question.
 func usesTypesafeImages(request *schemas.BifrostDecisionRequest) bool {

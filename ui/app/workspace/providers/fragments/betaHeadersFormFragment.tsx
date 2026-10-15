@@ -101,8 +101,8 @@ const KNOWN_BETA_HEADERS = [
 const KNOWN_PREFIXES = new Set<string>(KNOWN_BETA_HEADERS.map((h) => h.prefix));
 
 // Headers TypeSafe-based providers send, keyed as in beta_header_overrides. Each is
-// added only to requests that need it. Mirrors typesafeImagesHeaderOverride in
-// core/providers/typesafe/decision.go.
+// added only to requests that need it. The key is the header's lowercased name, as
+// typesafeImagesHeaderAllowed in core/providers/typesafe/utils.go reads it.
 const TYPESAFE_BETA_HEADERS = [
 	{
 		prefix: "typesafe-danger-zone-images",
