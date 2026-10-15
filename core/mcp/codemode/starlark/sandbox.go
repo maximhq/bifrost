@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	starlarkjson "github.com/canonical/starlark/lib/json"
+	starlarkmath "github.com/canonical/starlark/lib/math"
 	"github.com/canonical/starlark/starlark"
 	"github.com/canonical/starlark/starlarkstruct"
 	"github.com/canonical/starlark/syntax"
@@ -18,6 +20,14 @@ import (
 // sandboxLimitsKey holds an execution's resolved limits as a thread local, so
 // conversions and tool-result checks deep in a call use the same budget.
 const sandboxLimitsKey = "bifrost.codemode.limits"
+
+// sandboxModules are predeclared in every execution: json lets a script parse a result that
+// arrives as a string, math covers arithmetic the builtins lack. Every function in both is
+// declared CPU-, memory- and time-safe, so the thread's safety requirement admits them.
+var sandboxModules = starlark.StringDict{
+	"json": starlarkjson.Module,
+	"math": starlarkmath.Module,
+}
 
 // sandboxLimits returns the limits of the execution running on thread, or the
 // defaults for a thread that was not started by runSandbox.
@@ -149,6 +159,12 @@ func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code stri
 		}
 		predeclared[client] = starlarkstruct.FromStringDict(starlark.String(client), members)
 		servers = append(servers, client)
+	}
+	// A server bound under a module's name keeps it, so scripts already calling it still work.
+	for name, module := range sandboxModules {
+		if _, taken := predeclared[name]; !taken {
+			predeclared[name] = module
+		}
 	}
 	sort.Strings(servers)
 	opts := &syntax.FileOptions{TopLevelControl: true, While: true, Set: true, GlobalReassign: true, Recursion: true}
