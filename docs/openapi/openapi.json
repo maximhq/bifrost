@@ -110630,6 +110630,9 @@
                       "type": "string"
                     }
                   }
+                },
+                "cache_control": {
+                  "$ref": "#/components/schemas/CacheControl"
                 }
               }
             }
@@ -117609,6 +117612,9 @@
                       "type": "string"
                     }
                   }
+                },
+                "cache_control": {
+                  "$ref": "#/components/schemas/CacheControl"
                 }
               }
             }
@@ -132516,6 +132522,10 @@
           "virtual_key": {
             "type": "object",
             "additionalProperties": true
+          },
+          "is_passthrough": {
+            "type": "boolean",
+            "description": "The request came through a passthrough route (/openai_passthrough, /anthropic_passthrough, /genai_passthrough, ...). Its object is the request type the route was inferred as (chat_completion, responses, embedding, ...), with the streaming variant for a streamed call (chat_completion_stream, responses_stream, text_completion_stream, ...), or passthrough / passthrough_stream when the route has no typed equivalent. Filtering objects=passthrough matches every passthrough row; objects=passthrough_stream matches the streamed ones."
           },
           "passthrough_request_body": {
             "type": "string",

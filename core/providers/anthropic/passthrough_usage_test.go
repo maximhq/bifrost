@@ -167,3 +167,25 @@ func anthropicMustLLM(t *testing.T, u *schemas.BifrostPassthroughUsage, prompt, 
 			u.LLMUsage.PromptTokens, u.LLMUsage.CompletionTokens, u.LLMUsage.TotalTokens, prompt, completion, total)
 	}
 }
+
+func TestClassifyPassthroughPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want schemas.RequestType
+	}{
+		{"/v1/messages", schemas.ResponsesRequest},
+		{"/v1/messages?beta=true", schemas.ResponsesRequest},
+		{"/anthropic/v1/messages", schemas.ResponsesRequest},
+		{"/v1/messages/count_tokens", schemas.CountTokensRequest},
+		{"/v1/complete", schemas.TextCompletionRequest},
+		{"/v1/messages/batches", ""},
+		{"/v1/models", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := anthropic.ClassifyPassthroughPath(tt.path); got != tt.want {
+				t.Fatalf("ClassifyPassthroughPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
+}

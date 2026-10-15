@@ -299,6 +299,14 @@ func (response *GenerateContentResponse) ToResponsesBifrostResponsesResponse() *
 		}
 	}
 
+	// A blocked prompt has no candidate; without this it normalizes to an empty "completed".
+	if blockErr := response.promptBlockError(); blockErr != nil {
+		bifrostResp.StopReason = new(ConvertGeminiFinishReasonToBifrost(FinishReasonSafety))
+		bifrostResp.Status = new(schemas.ResponsesResponseStatusFailed)
+		bifrostResp.Error = blockErr
+		return bifrostResp
+	}
+
 	// Convert candidates to Responses output messages
 	if len(response.Candidates) > 0 {
 		candidate := response.Candidates[0]
@@ -1401,6 +1409,7 @@ type GeminiResponsesStreamState struct {
 	// FinalizeGeminiResponsesStream reports it instead of an unknown finish.
 	PendingFinishReason  FinishReason
 	PendingFinishMessage string
+	PromptBlockError     *schemas.ResponsesResponseError // set when Gemini refused the prompt; terminal reports failed
 
 	// Content tracking
 	HasStartedText     bool            // Whether we've started text content
@@ -1469,6 +1478,18 @@ func releaseGeminiResponsesStreamState(state *GeminiResponsesStreamState) {
 	}
 }
 
+// AcquireGeminiResponsesStreamState gets a pooled Responses stream state for driving
+// ToBifrostResponsesStream outside the provider's own stream loop (e.g. rebuilding a recorded
+// passthrough stream). Pair every call with ReleaseGeminiResponsesStreamState.
+func AcquireGeminiResponsesStreamState() *GeminiResponsesStreamState {
+	return acquireGeminiResponsesStreamState()
+}
+
+// ReleaseGeminiResponsesStreamState returns a state obtained from AcquireGeminiResponsesStreamState.
+func ReleaseGeminiResponsesStreamState(state *GeminiResponsesStreamState) {
+	releaseGeminiResponsesStreamState(state)
+}
+
 func (state *GeminiResponsesStreamState) flush() {
 	// Clear maps
 	if state.ItemIDs == nil {
@@ -1506,6 +1527,7 @@ func (state *GeminiResponsesStreamState) flush() {
 	state.URLContextMetadata = nil
 	state.PendingFinishReason = ""
 	state.PendingFinishMessage = ""
+	state.PromptBlockError = nil
 	state.CreatedAt = int(time.Now().Unix())
 	state.HasEmittedCreated = false
 	state.HasEmittedCompleted = false
@@ -1593,6 +1615,12 @@ func (response *GenerateContentResponse) toBifrostResponsesStream(sequenceNumber
 			state.ResponseID = &response.ResponseID
 		}
 		responses = append(responses, state.startEvents(sequenceNumber)...)
+	}
+
+	// A blocked prompt arrives as one candidate-less chunk; close the stream on it.
+	if blockErr := response.promptBlockError(); blockErr != nil {
+		state.PromptBlockError = blockErr
+		return append(responses, closeGeminiOpenItems(state, nil, response.UsageMetadata, sequenceNumber+len(responses), "", "")...), nil
 	}
 
 	// Process candidates
@@ -2084,12 +2112,6 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 		OutputIndex:    &outputIndex,
 		ItemID:         &toolUseID,
 		Arguments:      &argsJSON,
-		Item: &schemas.ResponsesMessage{
-			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				CallID: &toolUseID,
-				Name:   &part.FunctionCall.Name,
-			},
-		},
 	}
 
 	responses = append(responses, doneEvent)
@@ -2735,7 +2757,11 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	}
 
 	// Set stop reason from finish reason
-	if finishReason != "" {
+	if state.PromptBlockError != nil {
+		completedResp.StopReason = new(ConvertGeminiFinishReasonToBifrost(FinishReasonSafety))
+		completedResp.Status = new(schemas.ResponsesResponseStatusFailed)
+		completedResp.Error = state.PromptBlockError
+	} else if finishReason != "" {
 		stopReason := ConvertGeminiFinishReasonToBifrost(finishReason)
 		completedResp.StopReason = &stopReason
 
@@ -2758,6 +2784,9 @@ func closeGeminiOpenItems(state *GeminiResponsesStreamState, groundingMetadata *
 	if completedResp.Status != nil && *completedResp.Status == schemas.ResponsesResponseStatusIncomplete {
 		terminalType = schemas.ResponsesStreamResponseTypeIncomplete
 		schemas.MarkTruncatedOutputItem(completedResp.Output)
+	} else if state.PromptBlockError != nil {
+		// A refused prompt ends in response.failed; candidate-level errors keep response.completed.
+		terminalType = schemas.ResponsesStreamResponseTypeFailed
 	}
 
 	// safetyRatings, avgLogprobs, and the native responseId have no field in Bifrost's

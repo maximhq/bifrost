@@ -849,6 +849,34 @@ func TestResponsesMessageSurfacesToolSearchIdentity(t *testing.T) {
 	assert.False(t, hosted.IsClientToolSearchItem())
 }
 
+// An Anthropic tool_search_call replayed through /v1/responses (Bifrost's own output
+// echoed back) surfaces its name and tool_references, so the Anthropic rebuild keeps
+// the search variant and the discovered tools; the bytes still round-trip unchanged.
+func TestResponsesMessageSurfacesAnthropicToolSearchReplay(t *testing.T) {
+	raw := `{"id":"srvtoolu_bdrk_01","arguments":{"query":"summarize_source_1"},"call_id":"srvtoolu_bdrk_01","status":"completed","type":"tool_search_call","name":"tool_search_tool_bm25","tool_references":["summarize_source_1"]}`
+	var msg ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(raw), &msg))
+	require.NotNil(t, msg.ResponsesToolMessage)
+	require.NotNil(t, msg.CallID)
+	assert.Equal(t, "srvtoolu_bdrk_01", *msg.CallID)
+	require.NotNil(t, msg.Name)
+	assert.Equal(t, "tool_search_tool_bm25", *msg.Name)
+	require.NotNil(t, msg.ResponsesToolSearchCall)
+	assert.Equal(t, []string{"summarize_source_1"}, msg.ResponsesToolSearchCall.ToolReferences)
+	require.NotNil(t, msg.Arguments)
+	assert.JSONEq(t, `{"query":"summarize_source_1"}`, *msg.Arguments)
+	assert.False(t, msg.IsClientToolSearchItem())
+	encoded, err := MarshalSorted(msg)
+	require.NoError(t, err)
+	assert.Equal(t, raw, string(encoded))
+
+	// OpenAI items carry neither field.
+	var openai ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(`{"id":"tsc_1","type":"tool_search_call","status":"completed","arguments":{},"call_id":"call_1","execution":"client"}`), &openai))
+	assert.Nil(t, openai.Name)
+	assert.Nil(t, openai.ResponsesToolSearchCall)
+}
+
 func TestResponsesMessageToolSearchOutputToolNames(t *testing.T) {
 	var msg ResponsesMessage
 	require.NoError(t, Unmarshal([]byte(`{"type":"tool_search_output","tools":[{"type":"function","name":"get_weather"},{"type":"namespace","name":"crm","tools":[{"type":"function","name":"list_orders"},{"type":"function","name":"get_order"}]}]}`), &msg))

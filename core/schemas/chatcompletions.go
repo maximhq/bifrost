@@ -1741,6 +1741,7 @@ type ChatAssistantMessageToolCall struct {
 	ID           *string                              `json:"id,omitempty"`
 	Function     ChatAssistantMessageToolCallFunction `json:"function"`
 	ExtraContent json.RawMessage                      `json:"extra_content,omitempty"`
+	CacheControl *CacheControl                        `json:"cache_control,omitempty"` // Anthropic-family cache breakpoint on the tool_use block
 }
 
 // ChatAssistantMessageToolCallFunction represents a call to a function.

@@ -104,6 +104,7 @@ type TableClientConfig struct {
 	// deserialized into MCPCodeModeLimits by AfterFind.
 	MCPCodeModeLimitsJSON        string `gorm:"column:mcp_code_mode_limits_json;type:text" json:"-"`
 	MCPOAuthPrivateAllowlistJSON string `gorm:"column:mcp_oauth_private_allowlist_json;type:text" json:"-"` // JSON serialized []string
+	A2APrivateAllowlistJSON      string `gorm:"column:a2a_private_allowlist_json;type:text" json:"-"`       // JSON serialized []string
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -128,6 +129,7 @@ type TableClientConfig struct {
 	MCPCodeModeLimits *schemas.MCPCodeModeLimits `gorm:"-" json:"mcp_code_mode_limits,omitempty"` // Virtual: per-execution code mode limits
 
 	MCPOAuthPrivateAllowlist []string `gorm:"-" json:"mcp_oauth_private_allowlist,omitempty"` // Virtual: private targets the MCP OAuth chain may reach
+	A2APrivateAllowlist      []string `gorm:"-" json:"a2a_private_allowlist,omitempty"`       // Virtual: private targets the Agent Gateway may reach
 }
 
 // WebhookConfig holds global webhook delivery settings. Delivery
@@ -283,6 +285,15 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 	} else {
 		cc.MCPOAuthPrivateAllowlistJSON = ""
 	}
+	if len(cc.A2APrivateAllowlist) > 0 {
+		data, err := json.Marshal(cc.A2APrivateAllowlist)
+		if err != nil {
+			return err
+		}
+		cc.A2APrivateAllowlistJSON = string(data)
+	} else {
+		cc.A2APrivateAllowlistJSON = ""
+	}
 
 	return nil
 }
@@ -385,6 +396,13 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 		}
 	} else {
 		cc.MCPOAuthPrivateAllowlist = nil
+	}
+	if cc.A2APrivateAllowlistJSON != "" {
+		if err := json.Unmarshal([]byte(cc.A2APrivateAllowlistJSON), &cc.A2APrivateAllowlist); err != nil {
+			return err
+		}
+	} else {
+		cc.A2APrivateAllowlist = nil
 	}
 
 	return nil

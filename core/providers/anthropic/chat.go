@@ -1120,9 +1120,10 @@ func ToAnthropicChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bif
 			if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
 				for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 					toolUse := AnthropicContentBlock{
-						Type: AnthropicContentBlockTypeToolUse,
-						ID:   providerUtils.SanitizeAnthropicToolUseIDPtr(toolCall.ID),
-						Name: toolCall.Function.Name,
+						Type:         AnthropicContentBlockTypeToolUse,
+						ID:           providerUtils.SanitizeAnthropicToolUseIDPtr(toolCall.ID),
+						Name:         toolCall.Function.Name,
+						CacheControl: toolCall.CacheControl,
 					}
 
 					// Preserve original key ordering of tool arguments for prompt caching.

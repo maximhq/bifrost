@@ -1251,7 +1251,8 @@ func HandleGeminiResponsesStream(
 
 					// Check if this is the last chunk
 					isLastChunk := false
-					if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+					if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete ||
+						response.Type == schemas.ResponsesStreamResponseTypeFailed {
 						isLastChunk = true
 					}
 

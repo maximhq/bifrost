@@ -15,13 +15,13 @@
       "aarch64-darwin" # 64-bit ARM macOS
     ];
 
-    # Temporary workaround until nixpkgs includes Go 1.27.0 (pinned rev has 1.27rc2).
-    go_1_27_0_overlay = final: prev: {
+    # Temporary workaround until nixpkgs includes Go 1.27.2 (pinned rev has 1.27rc2).
+    go_1_27_2_overlay = final: prev: {
       go_1_27 = prev.go_1_27.overrideAttrs (oldAttrs: rec {
-        version = "1.27.0";
+        version = "1.27.2";
         src = final.fetchurl {
           url = "https://go.dev/dl/go${version}.src.tar.gz";
-          sha256 = "7002403d7cc44529ef6d26f69a44818263395ead7c16c05a5808ae047ebeb0e5";
+          sha256 = "03495da2ba64894d40f5c4992e49454fa78b50690604ff92b6afff5081b76e62";
         };
       });
       go = final.go_1_27;
@@ -36,7 +36,7 @@
             # Provides a system-specific, configured Nixpkgs
             pkgs = import inputs.nixpkgs {
               inherit system;
-              overlays = [go_1_27_0_overlay];
+              overlays = [go_1_27_2_overlay];
               # Enable using unfree packages
               config.allowUnfree = true;
             };

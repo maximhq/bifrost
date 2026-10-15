@@ -754,6 +754,13 @@
               ],
               "description": "Public base URL for Skills Repository marketplaces. Required to enable Claude Code and Codex marketplace serving; skill management and downloads remain available when unset. Supports env var and vault references. Maps to client.skills_external_client_url."
             },
+            "a2aPrivateAllowlist": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Private hosts, IP addresses, or CIDR ranges Agent Gateway discovery, OAuth, and runtime requests may reach. Link-local and cloud metadata addresses are always blocked."
+            },
             "a2aExternalClientUrl": {
               "anyOf": [
                 {
@@ -2402,6 +2409,11 @@
                   "cel_expression": {
                     "type": "string"
                   },
+                  "chain_rule": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "If true, re-evaluates the routing chain after this rule matches"
+                  },
                   "targets": {
                     "type": "array",
                     "minItems": 1,
@@ -2421,6 +2433,11 @@
                           "type": "string",
                           "description": "Optional provider key name. Resolved to internal key_id at config load time."
                         },
+                        "key_id": {
+                          "type": "string",
+                          "minLength": 1,
+                          "description": "Optional provider key ID to pin. Requires provider. Not together with provider_key_name."
+                        },
                         "weight": {
                           "type": "number",
                           "description": "Probability weight for this target (must be > 0, all weights must sum to 1)",
@@ -2434,12 +2451,19 @@
                           "description": "Time-to-first-token deadline in milliseconds for streaming requests routed to this target. A slow attempt is cut off and the next fallback runs; the last attempt never is. Omit to disable."
                         }
                       },
-                      "required": ["weight"]
+                      "required": ["weight"],
+                      "dependentRequired": {
+                        "key_id": ["provider"],
+                        "provider_key_name": ["provider"]
+                      },
+                      "not": {
+                        "required": ["key_id", "provider_key_name"]
+                      }
                     }
                   },
                   "fallbacks": {
                     "type": "array",
-                    "description": "Fallback chain. Each entry is a 'provider/model' string ('provider/' keeps the incoming model), or an object that additionally pins a provider key.",
+                    "description": "Fallback chain. Each entry is a 'provider/model' string ('provider/' keeps the incoming model), or an object that additionally pins a provider key. A bare provider name such as 'openai' names no provider and is skipped at request time.",
                     "items": {
                       "oneOf": [
                         {
@@ -2463,9 +2487,17 @@
                               "type": "string",
                               "minLength": 1,
                               "description": "Optional provider key name to pin for this fallback. Resolved to the internal provider key ID at config load time."
+                            },
+                            "key_id": {
+                              "type": "string",
+                              "minLength": 1,
+                              "description": "Optional provider key ID to pin for this fallback. Not together with provider_key_name."
                             }
                           },
                           "required": ["provider"],
+                          "not": {
+                            "required": ["key_id", "provider_key_name"]
+                          },
                           "additionalProperties": false
                         }
                       ]
@@ -2474,14 +2506,17 @@
                   "scope": {
                     "type": "string",
                     "enum": ["global", "team", "customer", "virtual_key"],
-                    "default": "global"
+                    "default": "global",
+                    "description": "Rule scope level. User-scoped rules can be created through the API and UI only: config.json does not support them, and a user-scoped rule is dropped at load with a warning."
                   },
                   "scope_id": {
-                    "type": ["string", "null"]
+                    "type": ["string", "null"],
+                    "description": "ID (not name) of the team, customer or virtual key. Required for non-global scopes; ignored for global. A new rule whose scope_id does not resolve is dropped at load with a warning; an edit that does not resolve keeps the stored rule, if the stored rule's own scope still resolves, and is dropped otherwise."
                   },
                   "priority": {
                     "type": "integer",
-                    "default": 0
+                    "default": 0,
+                    "description": "Evaluation order within the rule's scope (scope plus scope_id); lower runs first. Must be unique within that scope, counting disabled rules and rules created in the UI or API. Two rules in one scope that both omit priority collide, and Bifrost exits at startup. Give every rule that shares a scope its own priority."
                   },
                   "query": {
                     "description": "Visual rule builder state for the management UI (react-querybuilder). Omitted unless exported from the dashboard. Not evaluated at routing runtime (cel_expression is). When present, must include combinator and rules[].",
@@ -3924,34 +3959,57 @@
           "properties": {
             "enabled": {
               "type": "boolean",
-              "description": "Whether load balancing is enabled"
+              "description": "Render load_balancer_config from these keys (Enterprise); they apply only when this is true. Adaptive routing runs either way: to turn it off, set this to true and directionSelectionEnabled and routeSelectionEnabled to false."
             },
             "directionSelectionEnabled": {
               "type": "boolean",
+              "default": true,
               "description": "Enable adaptive provider (direction) selection. Defaults to true; omit to leave on."
             },
             "routeSelectionEnabled": {
               "type": "boolean",
+              "default": true,
               "description": "Enable adaptive per-key (route) selection. Defaults to true; omit to leave on."
             },
             "appendFallbacksToPinned": {
               "type": "boolean",
+              "default": false,
               "description": "When a request already carries a provider, append the healthy providers eligible for its model as fallbacks behind any it configured. Defaults to false."
             },
             "rerouteFailedDirections": {
               "type": "boolean",
+              "default": false,
               "description": "When a pinned provider's direction is unhealthy, re-route the request to a healthy provider. Defaults to false."
             },
             "pruneFailedFallbacks": {
               "type": "boolean",
+              "default": false,
               "description": "Drop unhealthy directions from a request's configured fallbacks. Defaults to false."
             },
-            "trackerConfig": {
-              "type": "object",
-              "description": "Configuration for tracking route metrics and performance"
+            "rerouteTarget": {
+              "type": "string",
+              "default": "pool",
+              "enum": ["pool", "fallbacks"],
+              "description": "Where rerouteFailedDirections sends the request: 'pool' (default) or 'fallbacks'."
             },
-            "bootstrap": {
-              "type": "object"
+            "historyEnabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Record routing history. Defaults to true."
+            },
+            "historyRetentionDays": {
+              "type": "integer",
+              "default": 7,
+              "minimum": 1,
+              "maximum": 30,
+              "description": "Days of routing history to keep. Read at startup. Defaults to 7."
+            },
+            "snapshotPersistIntervalSeconds": {
+              "type": "integer",
+              "default": 300,
+              "minimum": 5,
+              "maximum": 86400,
+              "description": "How often routing state is saved, in seconds. Defaults to 300."
             }
           }
         },
@@ -4514,10 +4572,32 @@
                 "type": "boolean",
                 "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
                 "default": false
+              },
+              "auto_rotation_interval": {
+                "type": ["string", "integer"],
+                "minimum": 0,
+                "maximum": 31536000000000000,
+                "description": "How often the profile's managed virtual keys are rotated automatically. Accepts a day count (e.g. \"30d\") or a Go duration string (e.g. \"12h\"); integer values are nanoseconds, so prefer strings. 0 or an empty string disables it. An enabled schedule must be between 1h and 365d.",
+                "default": 0
+              },
+              "next_rotation_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Optional RFC 3339 time of the first scheduled rotation; requires an enabled (non-zero) auto_rotation_interval. Defaults to now + interval. Applied only when the profile is created or its interval changes."
               }
             },
             "required": ["name"],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "if": { "required": ["next_rotation_at"] },
+            "then": {
+              "$comment": "next_rotation_at needs an enabled interval: 0, or a string with no non-zero digit (\"\", \"0\", \"0s\"), disables rotation.",
+              "required": ["auto_rotation_interval"],
+              "properties": {
+                "auto_rotation_interval": {
+                  "not": { "anyOf": [{ "const": 0 }, { "type": "string", "pattern": "^[^1-9]*$" }] }
+                }
+              }
+            }
           }
         },
         "alerting": {
@@ -4965,6 +5045,13 @@
                 "$ref": "#/properties/bifrost/properties/agents/$defs/upstreamAuth",
                 "description": "Authentication attached to proxied upstream agent requests."
               },
+              "credential_origins": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^https?://[^@/?#\\s]+$" },
+                "description": "Additional HTTP(S) origins permitted to receive runtime credentials and client certificates. The card origin is permitted automatically."
+              },
               "extension_uris": {
                 "type": "array",
                 "items": { "type": "string" },
@@ -5269,18 +5356,21 @@
                 "properties": {
                   "name": {
                     "type": "string",
-                    "description": "Unique name for this policy"
+                    "minLength": 1,
+                    "description": "Unique name for this policy (case-insensitive)"
                   },
                   "enabled": {
                     "type": "boolean",
-                    "description": "Whether this policy is active"
+                    "description": "Whether this policy is active. Defaults to false: a policy without enabled: true is stored but inactive."
                   },
                   "primary_provider": {
                     "type": "string",
+                    "minLength": 1,
                     "description": "Provider to monitor (e.g. 'azure', 'openai')"
                   },
                   "primary_model": {
                     "type": "string",
+                    "minLength": 1,
                     "description": "Model to monitor as it appears in requests"
                   },
                   "primary_key_ids": {
@@ -5292,10 +5382,12 @@
                   },
                   "fallback_provider": {
                     "type": "string",
+                    "minLength": 1,
                     "description": "Provider to route to when the circuit is open"
                   },
                   "fallback_model": {
                     "type": "string",
+                    "minLength": 1,
                     "description": "Model to request from the fallback provider"
                   },
                   "condition": {
@@ -5304,8 +5396,9 @@
                     "properties": {
                       "operator": {
                         "type": "string",
-                        "enum": ["OR", "AND"],
-                        "default": "OR"
+                        "pattern": "^\\s*([Oo][Rr]|[Aa][Nn][Dd])?\\s*$",
+                        "default": "OR",
+                        "description": "OR (default): circuit opens when any signal matches. AND: only when all match. Case-insensitive; empty means OR."
                       },
                       "signals": {
                         "type": "array",
@@ -5318,7 +5411,8 @@
                               "enum": ["response_header"]
                             },
                             "header_name": {
-                              "type": "string"
+                              "type": "string",
+                              "pattern": "\\S"
                             },
                             "header_value": {
                               "type": "string"
@@ -5328,6 +5422,13 @@
                             }
                           },
                           "required": ["source", "header_name"],
+                          "not": {
+                            "required": ["header_value", "header_contains"],
+                            "properties": {
+                              "header_value": { "pattern": "\\S" },
+                              "header_contains": { "pattern": "\\S" }
+                            }
+                          },
                           "additionalProperties": false
                         }
                       }
@@ -5336,9 +5437,11 @@
                     "additionalProperties": false
                   },
                   "default_cooldown": {
-                    "type": "string",
-                    "pattern": "^[0-9]+(ns|us|µs|ms|s|m|h)$",
-                    "description": "How long to keep the circuit open when no header-based cooldown is available (Go duration, e.g. '30s')"
+                    "anyOf": [
+                      { "type": "string", "pattern": "^(|0|(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|µs|μs|ms|s|m|h))+)$" },
+                      { "type": "integer", "minimum": 0 }
+                    ],
+                    "description": "How long to keep the circuit open when no header-based cooldown is available. A Go duration string such as '30s', '5m' or '1m30s', or integer nanoseconds. Empty or omitted means 30s."
                   },
                   "cooldown_header": {
                     "type": "string",
@@ -5431,7 +5534,7 @@
                 },
                 "type": {
                   "type": "string",
-                  "enum": ["aws-secrets-manager", "gcp-secret-manager", "hashicorp-vault"]
+                  "enum": ["aws-secrets-manager", "gcp-secret-manager", "hashicorp-vault", "azure-key-vault"]
                 },
                 "prefix": {
                   "type": "string"
@@ -5471,8 +5574,23 @@
                     "namespace": { "type": "string" },
                     "mountPath": { "type": "string" },
                     "roleId": { "type": "string" },
-                    "secretId": { "type": "string" }
+                    "secretId": { "type": "string" },
+                    "kubernetesRole": { "type": "string" },
+                    "kubernetesMountPath": { "type": "string" },
+                    "kubernetesTokenPath": { "type": "string" }
                   },
+                  "additionalProperties": false
+                },
+                "azure": {
+                  "type": "object",
+                  "description": "Azure Key Vault configuration",
+                  "properties": {
+                    "vaultUrl": { "type": "string", "minLength": 1 },
+                    "tenantId": { "type": "string" },
+                    "clientId": { "type": "string" },
+                    "clientSecret": { "type": "string" }
+                  },
+                  "required": ["vaultUrl"],
                   "additionalProperties": false
                 }
               },
@@ -5636,6 +5754,11 @@
               "type": "string",
               "description": "Maximum time for a single materialized view refresh pass (min 30s, max 30m). Unset derives 5x the refresh interval, at least 5m. A cancelled refresh leaves the existing views intact and readable, just staler; the next tick retries.",
               "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+            },
+            "migrationMatviewCancelAfter": {
+              "type": "string",
+              "description": "How long schema migrations wait for an in-flight materialized view refresh (from any replica, including older releases mid-rollout) before cancelling its REFRESH statements. Unset uses 60s; 'off' never cancels and only waits.",
+              "pattern": "^(off|[0-9]+(ns|us|µs|ms|s|m|h))$"
             },
             "clickhouse": {
               "type": "object",
@@ -6075,6 +6198,18 @@
             },
             "env": {
               "type": "object"
+            },
+            "nodeSelector": {
+              "type": "object",
+              "description": "Node labels for the Weaviate pod assignment"
+            },
+            "tolerations": {
+              "type": "array",
+              "description": "Tolerations for the Weaviate pod assignment"
+            },
+            "affinity": {
+              "type": "object",
+              "description": "Affinity rules for the Weaviate pod assignment"
             }
           }
         },
@@ -6204,7 +6339,21 @@
               "type": "object"
             },
             "master": {
-              "type": "object"
+              "type": "object",
+              "properties": {
+                "nodeSelector": {
+                  "type": "object",
+                  "description": "Node labels for the Redis pod assignment"
+                },
+                "tolerations": {
+                  "type": "array",
+                  "description": "Tolerations for the Redis pod assignment"
+                },
+                "affinity": {
+                  "type": "object",
+                  "description": "Affinity rules for the Redis pod assignment"
+                }
+              }
             },
             "metrics": {
               "type": "object"
@@ -6269,6 +6418,18 @@
             },
             "resources": {
               "type": "object"
+            },
+            "nodeSelector": {
+              "type": "object",
+              "description": "Node labels for the Qdrant pod assignment"
+            },
+            "tolerations": {
+              "type": "array",
+              "description": "Tolerations for the Qdrant pod assignment"
+            },
+            "affinity": {
+              "type": "object",
+              "description": "Affinity rules for the Qdrant pod assignment"
             }
           }
         },
@@ -7510,7 +7671,7 @@
           "description": "Model alias mappings: each entry maps a user-facing model name to either a bare provider identifier (legacy string shape) or an AliasConfig object carrying the wire identifier plus optional canonical name, family, and provider-specific overrides."
         }
       },
-      "required": ["name", "weight"],
+      "required": ["name"],
       "oneOf": [
         {
           "not": {
