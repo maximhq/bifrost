@@ -101,7 +101,11 @@ export function LogsExportDialog({
 		}
 
 		// Scope: All matching entries (client-side batched collection)
-		const userCap = exportMaxLimit ? parseInt(exportMaxLimit, 10) : undefined;
+		const userCap = exportMaxLimit ? Number(exportMaxLimit) : undefined;
+		if (userCap !== undefined && (!Number.isInteger(userCap) || userCap < 1)) {
+			toast.error("Max entries must be a whole number of at least 1");
+			return;
+		}
 		const targetTotal = calculateExportTargetCount(totalLogs, userCap);
 
 		if (targetTotal === 0 || totalLogs === 0) {
