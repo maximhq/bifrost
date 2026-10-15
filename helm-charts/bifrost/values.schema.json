@@ -4521,10 +4521,32 @@
                 "type": "boolean",
                 "description": "Grant access to every provider, including ones without a provider_configs entry and providers added later. Listed providers keep their own model, key, budget, and rate-limit rules.",
                 "default": false
+              },
+              "auto_rotation_interval": {
+                "type": ["string", "integer"],
+                "minimum": 0,
+                "maximum": 31536000000000000,
+                "description": "How often the profile's managed virtual keys are rotated automatically. Accepts a day count (e.g. \"30d\") or a Go duration string (e.g. \"12h\"); integer values are nanoseconds, so prefer strings. 0 or an empty string disables it. An enabled schedule must be between 1h and 365d.",
+                "default": 0
+              },
+              "next_rotation_at": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Optional RFC 3339 time of the first scheduled rotation; requires an enabled (non-zero) auto_rotation_interval. Defaults to now + interval. Applied only when the profile is created or its interval changes."
               }
             },
             "required": ["name"],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "if": { "required": ["next_rotation_at"] },
+            "then": {
+              "$comment": "next_rotation_at needs an enabled interval: 0, or a string with no non-zero digit (\"\", \"0\", \"0s\"), disables rotation.",
+              "required": ["auto_rotation_interval"],
+              "properties": {
+                "auto_rotation_interval": {
+                  "not": { "anyOf": [{ "const": 0 }, { "type": "string", "pattern": "^[^1-9]*$" }] }
+                }
+              }
+            }
           }
         },
         "alerting": {

@@ -1675,6 +1675,57 @@ for uri in 'https://*.example.com/callback' 'https://app.example.com/*' '**'; do
   fi
 done
 
+###############################################################################
+# access_profiles[].auto_rotation_interval / next_rotation_at: string and integer forms render
+# unchanged, and next_rotation_at is refused unless the interval is enabled.
+###############################################################################
+echo ""
+echo -e "${CYAN}📋 Access profile auto rotation${NC}"
+
+cat > "$TMPDIR/values-ap-rotation.yaml" <<'VALS'
+bifrost:
+  accessProfiles:
+    - name: "days"
+      auto_rotation_interval: "30d"
+    - name: "duration"
+      auto_rotation_interval: "1h30m"
+    - name: "nanoseconds"
+      auto_rotation_interval: 2592000000000000
+    - name: "disabled-zero"
+      auto_rotation_interval: 0
+    - name: "disabled-empty"
+      auto_rotation_interval: ""
+    - name: "first-run"
+      auto_rotation_interval: "7d"
+      next_rotation_at: "2026-11-01T00:00:00Z"
+VALS
+
+render_config "$TMPDIR/values-ap-rotation.yaml"
+assert_field_value 'access_profiles auto_rotation_interval day string' '.access_profiles.[0].auto_rotation_interval' '"30d"'
+assert_field_value 'access_profiles auto_rotation_interval duration string' '.access_profiles.[1].auto_rotation_interval' '"1h30m"'
+assert_field_value 'access_profiles auto_rotation_interval integer ns (no exponent)' '.access_profiles.[2].auto_rotation_interval' '2592000000000000'
+assert_field_value 'access_profiles auto_rotation_interval 0' '.access_profiles.[3].auto_rotation_interval' '0'
+assert_field_value 'access_profiles auto_rotation_interval ""' '.access_profiles.[4].auto_rotation_interval' '""'
+assert_field_value 'access_profiles next_rotation_at' '.access_profiles.[5].next_rotation_at' '"2026-11-01T00:00:00Z"'
+
+for bad in '"next_rotation_at":"2026-11-01T00:00:00Z"' \
+           '"next_rotation_at":"2026-11-01T00:00:00Z","auto_rotation_interval":0' \
+           '"next_rotation_at":"2026-11-01T00:00:00Z","auto_rotation_interval":""' \
+           '"next_rotation_at":"2026-11-01T00:00:00Z","auto_rotation_interval":"0s"' \
+           '"auto_rotation_interval":true' '"auto_rotation_interval":-1'; do
+  if helm template bifrost "$CHART_DIR" --set image.tag=v1.0.0 \
+       --set-json "bifrost.accessProfiles=[{\"name\":\"p\",$bad}]" \
+       > "$TMPDIR/render-err.txt" 2>&1; then
+    report_result "access_profiles {$bad} is rejected" 1
+    echo -e "${YELLOW}    render succeeded; expected the values schema to reject it${NC}"
+  elif grep -q "accessProfiles/0" "$TMPDIR/render-err.txt"; then
+    report_result "access_profiles {$bad} is rejected" 0
+  else
+    report_result "access_profiles {$bad} is rejected" 1
+    head -5 "$TMPDIR/render-err.txt" | sed 's/^/      /'
+  fi
+done
+
 echo ""
 echo "======================================================================"
 echo "🏁 Config JSON Field Validation Complete!"
