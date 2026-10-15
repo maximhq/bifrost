@@ -82,6 +82,22 @@ func TestTokenExchangeConnectionHeadersMissingSubject(t *testing.T) {
 	}
 }
 
+// An id_jag client never uses the request's access token, so the fix it names is an SSO sign-in.
+func TestTokenExchangeConnectionHeadersMissingIDJAGSubject(t *testing.T) {
+	r := &tokenExchangeResolver{provider: &fakeExchangeProvider{exchangedTokenErr: schemas.ErrExchangeSubjectTokenMissing}}
+	cfg := exchangeClientConfig()
+	cfg.TokenExchange.Profile = schemas.TokenExchangeProfileIDJAG
+	_, err := r.ConnectionHeaders(newExchangeTestContext(), cfg)
+
+	var authErr *schemas.MCPAuthRequiredError
+	if !errors.As(err, &authErr) || !authErr.SubjectTokenMissing {
+		t.Fatalf("expected a subject-missing *MCPAuthRequiredError, got %T: %v", err, err)
+	}
+	if !strings.Contains(authErr.Message, "Sign in to Bifrost with your identity provider") {
+		t.Fatalf("message = %q, want the SSO sign-in instruction", authErr.Message)
+	}
+}
+
 // The refusal names what happened to a token the caller did send, when the auth layer recorded it.
 // Telling a caller who sent a token to send one gives them nothing to act on.
 func TestTokenExchangeConnectionHeadersMissingSubjectNamesTheRejection(t *testing.T) {
