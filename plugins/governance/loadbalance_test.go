@@ -238,6 +238,18 @@ func TestPublishRoutingAllowlist(t *testing.T) {
 			"an empty allowlist would mean no provider is permitted")
 	})
 
+	// A missing grant is a wiring fault that evaluation refuses; publishing stays out of it, so a
+	// routing layer never reads an allowlist built from nothing.
+	t.Run("a request carrying no grant publishes nothing", func(t *testing.T) {
+		p := newLoadBalanceTestPlugin(t, vk)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		p.PublishRoutingAllowlist(ctx, "gpt-4o")
+
+		assert.Nil(t, ctx.Value(schemas.BifrostContextKeyRoutingAllowedProviders),
+			"a request with no grant has nothing to allow or deny")
+	})
+
 	// Publishing keys off what the request holds, not off how it authenticated: a store that
 	// grants providers to a request presenting no key narrows routing the same way a key does.
 	t.Run("permits held without a key are published", func(t *testing.T) {
