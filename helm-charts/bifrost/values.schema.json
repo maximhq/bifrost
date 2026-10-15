@@ -6104,6 +6104,18 @@
             },
             "env": {
               "type": "object"
+            },
+            "nodeSelector": {
+              "type": "object",
+              "description": "Node labels for the Weaviate pod assignment"
+            },
+            "tolerations": {
+              "type": "array",
+              "description": "Tolerations for the Weaviate pod assignment"
+            },
+            "affinity": {
+              "type": "object",
+              "description": "Affinity rules for the Weaviate pod assignment"
             }
           }
         },
@@ -6233,7 +6245,21 @@
               "type": "object"
             },
             "master": {
-              "type": "object"
+              "type": "object",
+              "properties": {
+                "nodeSelector": {
+                  "type": "object",
+                  "description": "Node labels for the Redis pod assignment"
+                },
+                "tolerations": {
+                  "type": "array",
+                  "description": "Tolerations for the Redis pod assignment"
+                },
+                "affinity": {
+                  "type": "object",
+                  "description": "Affinity rules for the Redis pod assignment"
+                }
+              }
             },
             "metrics": {
               "type": "object"
@@ -6298,6 +6324,18 @@
             },
             "resources": {
               "type": "object"
+            },
+            "nodeSelector": {
+              "type": "object",
+              "description": "Node labels for the Qdrant pod assignment"
+            },
+            "tolerations": {
+              "type": "array",
+              "description": "Tolerations for the Qdrant pod assignment"
+            },
+            "affinity": {
+              "type": "object",
+              "description": "Affinity rules for the Qdrant pod assignment"
             }
           }
         },
