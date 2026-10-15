@@ -2086,8 +2086,10 @@ func TestTypesafeAssetsFromInputParts(t *testing.T) {
 	}
 
 	urlOnly := schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-cam"), ImageURL: schemas.Ptr("https://example.com/cam.jpg")}
+	namedOnly := schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-cam"), Name: schemas.Ptr("photo")}
 	for name, req := range map[string]*schemas.BifrostDecisionRequest{
 		"image_url without data": request(message(text("x"), urlOnly)),
+		"name without data":      request(message(text("x"), namedOnly)),
 		"duplicate id":           request(message(text("x"), asset("r-cam", png), asset("r-cam", png))),
 	} {
 		if _, err := ToTypesafeDecisionRequest(req); err == nil {

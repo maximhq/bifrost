@@ -118,6 +118,23 @@ TypeSafe places an image wherever its ID is written: in the input, inside a ques
 
 Here `r-cam` is the evidence, and `r-thumb` can define a choice option (`{ "value": "thumbs_up", "description": "r-thumb" }`) without becoming part of the evidence. Bifrost adds the header TypeSafe requires for images. Images sent by reference work only with TypeSafe; other providers reject them. See [TypeSafe: Images and Box](/providers/supported-providers/typesafe#images-and-box).
 
+To send the files as they are instead of base64, use a multipart request: the JSON goes in a part named `request`, each image in its own file part, and the image part names its file part with `name` instead of carrying `data`:
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -F 'request={
+    "model": "typesafe/jev-1.14.0",
+    "input": [{"role": "user", "content": [
+      {"type": "input_text", "text": {"camera": "r-cam"}},
+      {"type": "input_image", "id": "r-cam", "name": "camera-photo"}
+    ]}],
+    "questions": [{"type": "box", "name": "hand", "instructions": "the hand in `camera`"}]
+  };type=application/json' \
+  -F 'camera-photo=@camera.jpg;type=image/jpeg'
+```
+
+A `name` in a JSON request, a `name` with no matching file part, and a file part no image part names are each rejected with `400`.
+
 **Structured data**: an object, sent to System One models (TypeSafe, Clef, Perplexity, Ollama, Azure, Databricks, Laya, Nimble) as is, and to OpenAI as JSON text.
 
 ```json

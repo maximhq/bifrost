@@ -2221,7 +2221,7 @@
       "post": {
         "operationId": "createDecision",
         "summary": "Evaluate a decision",
-        "description": "Asks a list of questions about some input and returns one typed answer\nper question, in order, with per-answer confidence and probabilities.\nServed by any decision model: Typesafe's jev models (and Laya, Nimble,\nand Clef), or any chat model through structured output.\n\nThe map form (a `state` plus questions keyed by name) is deprecated but\nstill served; a map-form request is answered in the map form.\n",
+        "description": "Asks a list of questions about some input and returns one typed answer\nper question, in order, with per-answer confidence and probabilities.\nServed by any decision model: Typesafe's jev models (and Laya, Nimble,\nand Clef), or any chat model through structured output.\n\nThe map form (a `state` plus questions keyed by name) is deprecated but\nstill served; a map-form request is answered in the map form.\n\nImages sent by reference to Typesafe can also come as a multipart request:\nthe JSON in a part named `request`, and each image in its own file part,\nnamed by the image part's `name`.\n",
         "tags": [
           "Decisions"
         ],
@@ -2238,6 +2238,25 @@
                     "$ref": "#/components/schemas/DecisionMapFormRequest"
                   }
                 ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "request"
+                ],
+                "properties": {
+                  "request": {
+                    "type": "string",
+                    "description": "The JSON request, as for `application/json` (not the map form), with each image part's `name` naming a file part of this request."
+                  }
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "An image file part, named by exactly one image part's `name`"
+                }
               }
             }
           }
@@ -115994,8 +116013,19 @@
         "description": "Typesafe only. An image sent by reference, as one of Typesafe's `assets`, placed wherever its ID is written in the input, instructions, or criteria instead of as evidence itself. Other providers reject it.",
         "required": [
           "type",
-          "id",
-          "data"
+          "id"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "data"
+            ]
+          },
+          {
+            "required": [
+              "name"
+            ]
+          }
         ],
         "properties": {
           "type": {
@@ -116012,6 +116042,10 @@
             "type": "string",
             "format": "byte",
             "description": "The image file, base64-encoded, without a `data:` prefix; its format is read from the bytes"
+          },
+          "name": {
+            "type": "string",
+            "description": "In a multipart request, the name of the file part that holds the image. A JSON request cannot use it."
           }
         }
       },

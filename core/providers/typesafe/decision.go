@@ -153,11 +153,11 @@ func typesafeAssets(input schemas.DecisionInput) (schemas.DecisionInput, map[str
 // is sent as that part again; any other is sent as data_base64, with the format
 // read from its bytes.
 func typesafeAsset(part schemas.DecisionInputPart) (TypesafeAsset, error) {
+	if part.Data == nil {
+		return TypesafeAsset{}, providerUtils.InvalidRequestErrorf("asset %q has no data; send the image file base64-encoded in data, or as a multipart file part its name points at", *part.ID)
+	}
 	if part.Name != nil {
 		return TypesafeAsset{Type: "image", Part: *part.Name}, nil
-	}
-	if part.Data == nil {
-		return TypesafeAsset{}, providerUtils.InvalidRequestErrorf("asset %q has no data; send the image file base64-encoded in data", *part.ID)
 	}
 	format := strings.TrimPrefix(typesafeImageType(part.Data), "image/")
 	return TypesafeAsset{Type: "image", Format: format, DataBase64: base64.StdEncoding.EncodeToString(part.Data)}, nil

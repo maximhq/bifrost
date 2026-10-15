@@ -103,7 +103,10 @@ DecisionInputImage:
 DecisionInputImageAsset:
   type: object
   description: Typesafe only. An image sent by reference, as one of Typesafe's `assets`, placed wherever its ID is written in the input, instructions, or criteria instead of as evidence itself. Other providers reject it.
-  required: [type, id, data]
+  required: [type, id]
+  oneOf:
+    - required: [data]
+    - required: [name]
   properties:
     type:
       type: string
@@ -115,6 +118,9 @@ DecisionInputImageAsset:
       type: string
       format: byte
       description: The image file, base64-encoded, without a `data:` prefix; its format is read from the bytes
+    name:
+      type: string
+      description: In a multipart request, the name of the file part that holds the image. A JSON request cannot use it.
 
 DecisionQuestion:
   type: object

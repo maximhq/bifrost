@@ -194,6 +194,7 @@ func TestTypesafeSystemOneMultipartParserRejections(t *testing.T) {
 		"stray form field":     {{"request", "", "", one}, {"a", "a.png", "image/png", "PNG"}, {"note", "", "", "hello"}},
 		"two assets, one part": {{"request", "", "", request(`{"r-a":{"part":"a"},"r-b":{"part":"a"}}`)}, {"a", "a.png", "image/png", "PNG"}},
 		"part named request":   {{"request", "", "", request(`{"r-a":{"part":"request"}}`)}},
+		"part without a name":  {{"request", "", "", one}, {"a", "a.png", "image/png", "PNG"}, {"", "b.png", "image/png", "PNG"}},
 	} {
 		ctx, native := systemOneMultipart(t, parts...)
 		if err := parseTypesafeSystemOneRequest(ctx, native); err == nil {

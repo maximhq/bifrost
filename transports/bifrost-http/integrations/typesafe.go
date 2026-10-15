@@ -1,12 +1,9 @@
 package integrations
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"mime/multipart"
 	"sort"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -131,36 +128,9 @@ func parseTypesafeSystemOneRequest(ctx *fasthttp.RequestCtx, req interface{}) er
 		return parseJSONRequestBody(ctx.Request.Body(), typesafeReq)
 	}
 
-	var body []byte
-	files := make(map[string][]byte)
-	reader := multipart.NewReader(bytes.NewReader(ctx.Request.Body()), string(boundary))
-	for {
-		part, err := reader.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("invalid multipart body: %w", err)
-		}
-		name := part.FormName()
-		data, err := io.ReadAll(part)
-		if err != nil {
-			return fmt.Errorf("invalid multipart part %q: %w", name, err)
-		}
-		if name == "" {
-			return errors.New("each multipart part needs a name")
-		}
-		if _, seen := files[name]; seen || (name == "request" && body != nil) {
-			return fmt.Errorf("multipart part %q is sent more than once", name)
-		}
-		if name == "request" {
-			body = data
-			continue
-		}
-		files[name] = data
-	}
-	if body == nil {
-		return errors.New(`multipart request requires a "request" part holding the JSON body`)
+	body, files, err := lib.ReadMultipartRequest(ctx.Request.Body(), string(boundary))
+	if err != nil {
+		return err
 	}
 	if err := parseJSONRequestBody(body, typesafeReq); err != nil {
 		return err
