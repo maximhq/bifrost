@@ -91,29 +91,7 @@ The custom provider is addressed by its own name: `typesafe-eu/jev-latest` on `/
 
 To list a custom provider's models on the native `/typesafe/v1/models` route, send `x-bf-model-provider: typesafe-eu`. Model names come back bare (`jev-latest`), as on the standard provider. The pinned jev catalog is only merged in when no `base_url` is set.
 
-#### Cloudflare Clef
-
-Cloudflare serves its Jev-compatible Clef models on per-model Workers AI URLs and wraps responses in its REST envelope (`{"result": ..., "success": ..., "errors": [...]}`). Bifrost unwraps the envelope and reads `errors[].message`, so Clef works as a custom TypeSafe provider. Use one custom provider per model, because the model in the URL must match the `model` in the request body:
-
-```json
-{
-  "providers": {
-    "clef": {
-      "keys": [{ "name": "Cloudflare", "value": "env.CLOUDFLARE_API_TOKEN", "weight": 1, "models": ["*"] }],
-      "network_config": { "base_url": "https://api.cloudflare.com" },
-      "custom_provider_config": {
-        "base_provider_type": "typesafe",
-        "allowed_requests": { "decisions": true },
-        "request_path_overrides": {
-          "decisions": "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/ai/run/@cf/cloudflare/clef"
-        }
-      }
-    }
-  }
-}
-```
-
-Call it as `clef/clef`. For `clef-flash`, add a second provider whose override ends in `@cf/cloudflare/clef-flash` and call it as `<provider>/clef-flash`.
+To run Laya or Nimble on your own infrastructure this way, follow [Self-Hosted Decision Models](/providers/self-hosted-decision-models), which covers model listing, allowed models, pricing, and the settings that otherwise make the provider look broken.
 
 ## Decisions API
 
@@ -123,7 +101,7 @@ Call it as `clef/clef`. For `clef-flash`, add a second provider whose override e
 |------|---------------|--------|---------|
 | `predicate` | `noul` | `probability` between 0 and 1 | Optional `criteria`: `true`/`false` descriptions |
 | `choice` | `choice` | `choice`: one of the values | Required `choices` (max 255) |
-| `score` | `score` | `score`: rubric score, including fractions | Required ordered `levels` (2-10) |
+| `score` | `score` | `score`: rubric score, including fractions | Required ordered `levels` (2-10 on TypeSafe) |
 
 ```bash
 curl http://localhost:8080/v1/decisions \
@@ -177,7 +155,7 @@ How Bifrost's `/v1/decisions` request reaches TypeSafe's native `/v1/systemone` 
 | `questions[].instructions` | `instructions` | string, object, array (lossless); null or absent is forwarded |
 | `questions[].criteria` | `criteria` | Predicate only: optional map with only `"true"` and `"false"` keys |
 | `questions[].choices` | `criteria` map of option → description | A boolean value is keyed `"true"`/`"false"`; missing, empty, or more than 255 choices rejected with 400 |
-| `questions[].levels` | `criteria` array of descriptions | A label other than the level's index is folded in (`"label: description"`, or the label alone); fewer than 2 or more than 10 levels rejected with 400 |
+| `questions[].levels` | `criteria` array of descriptions | A label other than the level's index is folded in (`"label: description"`, or the label alone); the level count is checked upstream (TypeSafe accepts 2-10 and rejects other counts with its own error) |
 | `safety_identifier` | - | Not sent; TypeSafe has no end-user identifier |
 | `fallbacks` | - | Bifrost-only; consumed by fallback routing, never sent upstream |
 
@@ -194,7 +172,7 @@ Descriptions may be a string, object, array, or null, and pass through to TypeSa
 | `answers[].probabilities` | `probabilities` | Listed in choice or level order; score entries carry the level's label |
 | `answers[].confidence`, `.legend` | `confidence`, `legend` | When supplied |
 | `usage.prompt_tokens` | `usage.input_tokens` | TypeSafe bills input tokens only |
-| `usage.completion_tokens` | `usage.output_tokens` | Output rate is $0 |
+| `usage.completion_tokens` | `usage.output_tokens` | Output rate is \$0 |
 | `usage.total_tokens` | - | Computed: input + output |
 | `extra_fields` | - | Bifrost-only: request type, routing info, latency, raw request/response capture |
 
@@ -223,7 +201,7 @@ Bifrost also exposes TypeSafe's native API 1:1 under the `/typesafe` prefix, for
 The native route accepts bare model IDs (`jev-1.13.0`) exactly as TypeSafe does, and additionally accepts `typesafe/`-prefixed IDs.
 
 <Note>
-Success and error responses from the TypeSafe provider are relayed byte-for-byte (answer and usage metadata outside the shared shape, and native `detail` values, all survive), together with upstream headers such as `x-typesafe-request-id` and `Retry-After`. Emulated, cached, and fallback responses are rebuilt in the native shape. Additional top-level request fields the SDK forwards (for example a compatible endpoint's `images`) reach the endpoint unchanged; a fallback to an LLM refuses such a request with `400` instead of answering it text-only. Requests rejected by Bifrost's local validation use the `{"detail": {"error_type", "message"}}` envelope with `400`.
+Success and error responses from the TypeSafe provider are relayed byte-for-byte (answer and usage metadata outside the shared shape, and native `detail` values, all survive), together with upstream headers such as `x-typesafe-request-id` and `Retry-After`. Cached and fallback responses are rebuilt in the native shape. Additional top-level request fields the SDK forwards (for example a compatible endpoint's `images`) reach the endpoint unchanged; a fallback to an LLM refuses such a request with `400` instead of answering it text-only. Requests rejected by Bifrost's local validation use the `{"detail": {"error_type", "message"}}` envelope with `400`.
 </Note>
 
 ## Model Naming

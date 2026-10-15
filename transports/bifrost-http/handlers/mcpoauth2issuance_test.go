@@ -16,7 +16,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -979,6 +979,81 @@ func TestHandleRegister_ApprovedRemoteCallback(t *testing.T) {
 		ctx.Request.SetBody(body)
 		h.handleRegister(ctx)
 		require.Equal(t, tc.status, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+}
+
+func TestHandleRegister_WildcardCallback(t *testing.T) {
+	h, _, cfg := newIssuanceHandler(t)
+	cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = []string{"*"}
+	for _, tc := range []struct {
+		uri    string
+		status int
+	}{
+		{"https://www.cursor.com/agents/mcp/oauth/callback", 201}, {"https://any.example/cb?next=1", 201},
+		// The wildcard waives the allowlist, never the callback shape checks.
+		{"http://remote.example/cb", 400}, {"https://user@any.example/cb", 400}, {"https://any.example/cb#frag", 400}, {"javascript://any.example/cb", 400},
+		// Private-use schemes stay exact-match only; the built-in Cursor callback is unaffected.
+		{"cursor://other.example/cb", 400}, {"cursor://anysphere.cursor-mcp/oauth/callback", 201},
+	} {
+		body, err := schemas.MarshalSorted(map[string]any{"redirect_uris": []string{tc.uri}})
+		require.NoError(t, err)
+		ctx := formPostCtx("")
+		ctx.Request.SetBody(body)
+		h.handleRegister(ctx)
+		require.Equal(t, tc.status, ctx.Response.StatusCode(), "%s: %s", tc.uri, string(ctx.Response.Body()))
+	}
+}
+
+func TestHandleAuthorize_WildcardAllowsRegisteredCallback(t *testing.T) {
+	h, store, cfg := newIssuanceHandler(t)
+	cid := seedClient(t, store, []string{"https://unlisted.example/cb"})
+	authorize := func() *fasthttp.RequestCtx {
+		ctx := getCtx("/oauth2/authorize?" + url.Values{"client_id": {cid}, "redirect_uri": {"https://unlisted.example/cb"}, "response_type": {"code"}, "code_challenge": {pkceChallenge("verifier")}, "code_challenge_method": {"S256"}}.Encode())
+		h.handleAuthorize(ctx)
+		return ctx
+	}
+	require.Equal(t, 400, authorize().Response.StatusCode())
+	cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = []string{"*"}
+	ctx := authorize()
+	require.NotEqual(t, 400, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+}
+
+// A client registered while its custom-scheme callback was listed must be refused
+// at authorize once the list holds only "*": the wildcard covers https only.
+func TestHandleAuthorize_WildcardRefusesPrivateUseCallback(t *testing.T) {
+	h, store, cfg := newIssuanceHandler(t)
+	const callback = "cursor://other.example/cb"
+	cid := seedClient(t, store, []string{callback})
+	authorize := func() *fasthttp.RequestCtx {
+		ctx := getCtx("/oauth2/authorize?" + url.Values{"client_id": {cid}, "redirect_uri": {callback}, "response_type": {"code"}, "code_challenge": {pkceChallenge("verifier")}, "code_challenge_method": {"S256"}}.Encode())
+		h.handleAuthorize(ctx)
+		return ctx
+	}
+	cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = []string{callback}
+	ctx := authorize()
+	require.NotEqual(t, 400, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs = []string{"*"}
+	ctx = authorize()
+	require.Equal(t, 400, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Empty(t, ctx.Response.Header.Peek("Location"))
+}
+
+func TestUpdateConfig_RedirectPolicyWildcard(t *testing.T) {
+	_, _, cfg := newIssuanceHandler(t)
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["*"]}}}`)
+	h.updateConfig(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Equal(t, []string{"*"}, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs)
+
+	// Only a bare "*" is a wildcard; a partial pattern would silently match nothing.
+	for _, uri := range []string{"https://*.example.com/cb", "https://app.example.com/*", "**"} {
+		ctx := putConfigCtx(`{"client_config":{"log_retention_days":7,"oauth2_server_config":{"issuer_url":"https://bifrost.test","allowed_redirect_uris":["` + uri + `"]}}}`)
+		h.updateConfig(ctx)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "%s: %s", uri, string(ctx.Response.Body()))
+		require.Equal(t, []string{"*"}, cfg.ClientConfig.OAuth2ServerConfig.AllowedRedirectURIs)
 	}
 }
 

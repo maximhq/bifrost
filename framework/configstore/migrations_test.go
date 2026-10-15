@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
@@ -2424,6 +2426,36 @@ func TestMigrationAddCompatForceReasoningOnlyModelsToResponsesColumn(t *testing.
 	assert.True(t, rows[0].CompatForceReasoningOnlyModelsToResponses, "existing rows must have the toggle on by default")
 }
 
+func TestMigrationAddCompatConvertDecisionToResponsesColumn(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	err = db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+
+	// Simulate the pre-migration schema
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "compat_convert_decision_to_responses"))
+	require.False(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "compat_convert_decision_to_responses"))
+
+	now := time.Now()
+	require.NoError(t, db.Exec(`INSERT INTO config_client (created_at, updated_at) VALUES (?, ?)`, now, now).Error)
+
+	require.NoError(t, migrationAddCompatConvertDecisionToResponsesColumn(ctx, db, testMigrationLogger))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "compat_convert_decision_to_responses"))
+
+	type row struct {
+		CompatConvertDecisionToResponses bool `gorm:"column:compat_convert_decision_to_responses"`
+	}
+	var rows []row
+	require.NoError(t, db.Table("config_client").Select("compat_convert_decision_to_responses").Order("id").Find(&rows).Error)
+	require.Len(t, rows, 1)
+	assert.False(t, rows[0].CompatConvertDecisionToResponses, "existing rows must keep decision emulation off")
+}
+
 // setupCalendarAlignedPreMigrationDB creates a SQLite DB with governance_virtual_keys,
 // governance_budgets, and governance_rate_limits tables, then drops the calendar_aligned
 // column from budgets and rate_limits to simulate the pre-migration schema state.
@@ -4357,6 +4389,63 @@ func TestMigrationAddVirtualKeyDisableContentLoggingColumn(t *testing.T) {
 	assert.Equal(t, storedOff.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
 }
 
+// TestMigrationAddVirtualKeyMetadataColumn pins the metadata column: the migration adds it and is
+// idempotent, a key without metadata reads back with none, and the config hash only moves when the
+// key has metadata, so every pre-existing key keeps the hash synchronization already stored for it.
+func TestMigrationAddVirtualKeyMetadataColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	mg := db.Migrator()
+
+	require.False(t, mg.HasColumn(&tables.TableVirtualKey{}, "metadata"), "metadata column must not exist before migration")
+	require.NoError(t, migrationAddVirtualKeyMetadataColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableVirtualKey{}, "metadata"))
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_virtual_key_metadata_column").Error)
+	require.NoError(t, migrationAddVirtualKeyMetadataColumn(ctx, db, testMigrationLogger))
+
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}))
+	plain := tables.TableVirtualKey{ID: "vk-md-none", Name: "vk-md-none", Value: *schemas.NewSecretVar("sk-bf-vk-md-none")}
+	tagged := tables.TableVirtualKey{ID: "vk-md-tagged", Name: "vk-md-tagged", Value: *schemas.NewSecretVar("sk-bf-vk-md-tagged"), Metadata: map[string]string{"cost_center": "cc-42", "env": "prod"}}
+	for _, vk := range []*tables.TableVirtualKey{&plain, &tagged} {
+		hash, err := GenerateVirtualKeyHash(*vk)
+		require.NoError(t, err)
+		vk.ConfigHash = hash
+		require.NoError(t, db.Create(vk).Error)
+	}
+	read := func(id string) tables.TableVirtualKey {
+		var stored tables.TableVirtualKey
+		require.NoError(t, db.First(&stored, "id = ?", id).Error)
+		return stored
+	}
+	assert.Nil(t, read(plain.ID).Metadata)
+	storedTagged := read(tagged.ID)
+	assert.Equal(t, map[string]string{"cost_center": "cc-42", "env": "prod"}, storedTagged.Metadata)
+	recomputed, err := GenerateVirtualKeyHash(storedTagged)
+	require.NoError(t, err)
+	assert.Equal(t, storedTagged.ConfigHash, recomputed, "the stored hash must match what synchronization recomputes")
+
+	// Hash stability: nil and empty metadata hash like a key from before the column existed, any
+	// metadata moves the hash, and a value change moves it again.
+	same := tables.TableVirtualKey{ID: plain.ID, Name: plain.Name, Value: *schemas.NewSecretVar("sk-bf-vk-md-none")}
+	hashWith := func(md map[string]string) string {
+		same.Metadata = md
+		hash, err := GenerateVirtualKeyHash(same)
+		require.NoError(t, err)
+		return hash
+	}
+	assert.Equal(t, plain.ConfigHash, hashWith(nil), "no metadata must hash exactly like a key from before the column existed")
+	assert.Equal(t, plain.ConfigHash, hashWith(map[string]string{}), "empty metadata must hash like no metadata")
+	withMD := hashWith(map[string]string{"cost_center": "cc-42"})
+	assert.NotEqual(t, plain.ConfigHash, withMD, "adding metadata must change the hash")
+	assert.NotEqual(t, withMD, hashWith(map[string]string{"cost_center": "cc-43"}), "changing a value must change the hash")
+	assert.NotEqual(t, hashWith(map[string]string{"a": "bc"}), hashWith(map[string]string{"ab": "c"}), "key/value boundaries must not be ambiguous")
+	for range 20 {
+		assert.Equal(t, hashWith(map[string]string{"a": "1", "b": "2", "c": "3"}), hashWith(map[string]string{"c": "3", "b": "2", "a": "1"}), "map order must not move the hash")
+	}
+}
+
 // TestMigrationAddVirtualKeyDisableContentLoggingColumn_NonRollbackable pins that rolling the
 // column back is refused rather than performed. The column is the only home for a key's own
 // content-logging decision, and a nil reads as "inherit": dropping it would not merely lose
@@ -4525,6 +4614,28 @@ func TestMigrationAddClientConfigDeleteExpiredVirtualKeysColumn(t *testing.T) {
 	require.NoError(t, migrationAddClientConfigDeleteExpiredVirtualKeysColumn(ctx, db, testMigrationLogger))
 }
 
+func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "enforce_vk_object_ownership"))
+	mg := db.Migrator()
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "enforce_vk_object_ownership"))
+
+	require.NoError(t, migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "enforce_vk_object_ownership"))
+
+	// Existing rows read back as on: an upgrade keeps provider objects bound to their creator.
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.True(t, cfg.EnforceVKObjectOwnership)
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_enforce_vk_object_ownership_column").Error)
+	require.NoError(t, migrationAddClientConfigEnforceVKObjectOwnershipColumn(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddVirtualKeyDeleteAfterExpireColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()
@@ -4561,4 +4672,380 @@ func TestMigrationAddIgnoreProviderCostColumn_NonRollbackable(t *testing.T) {
 	assert.Contains(t, err.Error(), "non-rollbackable")
 	assert.True(t, db.Migrator().HasColumn(&tables.TableProvider{}, "ignore_provider_cost"),
 		"a refused rollback must leave the column in place")
+}
+
+// Directly owned virtual key limits move onto the key's model config tiers.
+func TestMigrationMoveConfigJSONVKLimitsToModelConfigs(t *testing.T) {
+	db := setupTestDB(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}, &tables.TableVirtualKeyProviderConfig{},
+		&tables.TableBudget{}, &tables.TableRateLimit{}, &tables.TableModelConfig{}))
+
+	tokenMax, tokenDur := int64(100), "1d"
+	rateLimit := func(id string) *tables.TableRateLimit {
+		return &tables.TableRateLimit{ID: id, TokenMaxLimit: &tokenMax, TokenResetDuration: &tokenDur}
+	}
+	for _, id := range []string{"rl-key", "rl-pc", "rl-file", "rl-tier"} {
+		require.NoError(t, db.Create(rateLimit(id)).Error)
+	}
+
+	// The shape config.json reconciliation wrote.
+	require.NoError(t, db.Create(&tables.TableVirtualKey{
+		ID: "vk-cal", Name: "vk-cal", Value: *schemas.NewSecretVar("sk-bf-cal"),
+		CalendarAligned: true, RateLimitID: schemas.Ptr("rl-key"),
+	}).Error)
+	providerConfig := &tables.TableVirtualKeyProviderConfig{
+		VirtualKeyID: "vk-cal", Provider: "openai", RateLimitID: schemas.Ptr("rl-pc"),
+	}
+	require.NoError(t, db.Create(providerConfig).Error)
+
+	// Tier already holds an API-set rate limit while the key still references the file's.
+	require.NoError(t, db.Create(&tables.TableVirtualKey{
+		ID: "vk-tiered", Name: "vk-tiered", Value: *schemas.NewSecretVar("sk-bf-tiered"),
+		RateLimitID: schemas.Ptr("rl-file"),
+	}).Error)
+	require.NoError(t, db.Create(&tables.TableModelConfig{
+		ID: "mc-tiered", ModelName: tables.ModelConfigAllModels, Scope: tables.ModelConfigScopeVirtualKey,
+		ScopeID: schemas.Ptr("vk-tiered"), RateLimitID: schemas.Ptr("rl-tier"),
+	}).Error)
+
+	lastReset := time.Now().UTC().Add(-72 * time.Hour).Truncate(time.Second)
+	require.NoError(t, db.Create(&tables.TableBudget{
+		ID: "b-key", MaxLimit: 10, ResetDuration: "1M", CurrentUsage: 7, LastReset: lastReset,
+		VirtualKeyID: schemas.Ptr("vk-cal"),
+	}).Error)
+	require.NoError(t, db.Create(&tables.TableBudget{
+		ID: "b-pc", MaxLimit: 20, ResetDuration: "1M", CurrentUsage: 3, LastReset: lastReset,
+		ProviderConfigID: &providerConfig.ID,
+	}).Error)
+	// Already on a model config.
+	require.NoError(t, db.Create(&tables.TableModelConfig{
+		ID: "mc-done", ModelName: "gpt-4o", Scope: tables.ModelConfigScopeVirtualKey, ScopeID: schemas.Ptr("vk-cal"),
+	}).Error)
+	require.NoError(t, db.Create(&tables.TableBudget{
+		ID: "b-done", MaxLimit: 5, ResetDuration: "1d", ModelConfigID: schemas.Ptr("mc-done"),
+	}).Error)
+	// Orphan: its key is gone.
+	require.NoError(t, db.Exec(
+		`INSERT INTO governance_budgets (id, max_limit, reset_duration, virtual_key_id, created_at, updated_at)
+		 VALUES ('b-orphan', 1, '1d', 'vk-gone', ?, ?)`, time.Now(), time.Now()).Error)
+
+	require.NoError(t, migrationMoveConfigJSONVKLimitsToModelConfigs(ctx, db, testMigrationLogger))
+
+	tier := func(vkID string, provider *string) tables.TableModelConfig {
+		t.Helper()
+		q := db.Where("scope = ? AND scope_id = ? AND model_name = ?",
+			tables.ModelConfigScopeVirtualKey, vkID, tables.ModelConfigAllModels)
+		if provider == nil {
+			q = q.Where("provider IS NULL")
+		} else {
+			q = q.Where("provider = ?", *provider)
+		}
+		var rows []tables.TableModelConfig
+		require.NoError(t, q.Find(&rows).Error)
+		require.Len(t, rows, 1, "expected exactly one all-models tier for %s provider %v", vkID, provider)
+		return rows[0]
+	}
+	budget := func(id string) tables.TableBudget {
+		t.Helper()
+		var b tables.TableBudget
+		require.NoError(t, db.First(&b, "id = ?", id).Error)
+		return b
+	}
+
+	openai := "openai"
+	keyTier, providerTier := tier("vk-cal", nil), tier("vk-cal", &openai)
+
+	// Only the owning FK moves.
+	moved := budget("b-key")
+	require.NotNil(t, moved.ModelConfigID)
+	assert.Equal(t, keyTier.ID, *moved.ModelConfigID)
+	assert.Nil(t, moved.VirtualKeyID)
+	assert.EqualValues(t, 7, moved.CurrentUsage)
+	assert.WithinDuration(t, lastReset, moved.LastReset, time.Second)
+
+	movedPC := budget("b-pc")
+	require.NotNil(t, movedPC.ModelConfigID, "a budget owned by a provider config was never migrated before")
+	assert.Equal(t, providerTier.ID, *movedPC.ModelConfigID)
+	assert.Nil(t, movedPC.ProviderConfigID)
+	assert.EqualValues(t, 3, movedPC.CurrentUsage)
+
+	// The tiers carry the key's calendar alignment.
+	assert.True(t, keyTier.CalendarAligned)
+	assert.True(t, providerTier.CalendarAligned)
+
+	// Rate limits move to their tier; direct references dropped.
+	require.NotNil(t, keyTier.RateLimitID)
+	assert.Equal(t, "rl-key", *keyTier.RateLimitID)
+	require.NotNil(t, providerTier.RateLimitID)
+	assert.Equal(t, "rl-pc", *providerTier.RateLimitID)
+	var vkCal tables.TableVirtualKey
+	require.NoError(t, db.Select("id", "rate_limit_id").First(&vkCal, "id = ?", "vk-cal").Error)
+	assert.Nil(t, vkCal.RateLimitID)
+	var reloadedPC tables.TableVirtualKeyProviderConfig
+	require.NoError(t, db.First(&reloadedPC, "id = ?", providerConfig.ID).Error)
+	assert.Nil(t, reloadedPC.RateLimitID)
+
+	// A tier with a rate limit keeps it, and the key keeps the reference this migration did not move.
+	tiered := tier("vk-tiered", nil)
+	require.NotNil(t, tiered.RateLimitID)
+	assert.Equal(t, "rl-tier", *tiered.RateLimitID, "the tier's own rate limit is the one in force")
+	var vkTiered tables.TableVirtualKey
+	require.NoError(t, db.Select("id", "rate_limit_id").First(&vkTiered, "id = ?", "vk-tiered").Error)
+	require.NotNil(t, vkTiered.RateLimitID, "a reference the migration did not relocate was dropped, orphaning the row")
+	assert.Equal(t, "rl-file", *vkTiered.RateLimitID)
+
+	// Untouched.
+	done := budget("b-done")
+	require.NotNil(t, done.ModelConfigID)
+	assert.Equal(t, "mc-done", *done.ModelConfigID)
+	orphan := budget("b-orphan")
+	assert.Nil(t, orphan.ModelConfigID, "a budget whose key is gone was moved onto a model config")
+	var orphanTiers int64
+	require.NoError(t, db.Model(&tables.TableModelConfig{}).Where("scope_id = ?", "vk-gone").Count(&orphanTiers).Error)
+	assert.Zero(t, orphanTiers, "a model config was minted for a key that no longer exists")
+
+	// Idempotent.
+	var tiersBefore int64
+	require.NoError(t, db.Model(&tables.TableModelConfig{}).Count(&tiersBefore).Error)
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "move_config_json_vk_limits_to_model_configs").Error)
+	require.NoError(t, migrationMoveConfigJSONVKLimitsToModelConfigs(ctx, db, testMigrationLogger))
+	var tiersAfter int64
+	require.NoError(t, db.Model(&tables.TableModelConfig{}).Count(&tiersAfter).Error)
+	assert.Equal(t, tiersBefore, tiersAfter, "a re-run created another tier")
+}
+
+// TestEnsureVKLimitModelConfigSkipsAMissingKey: the tier is scoped to the key by a column with no
+// foreign key, so a key that is gone must yield no tier rather than an orphan the delete cannot reach.
+func TestEnsureVKLimitModelConfigSkipsAMissingKey(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&tables.TableVirtualKey{}, &tables.TableModelConfig{}))
+
+	for _, provider := range []*string{nil, schemas.Ptr("openai")} {
+		mcID, err := ensureVKLimitModelConfig(db, "vk-gone", provider)
+		require.NoError(t, err, "a missing key is not an error, it is nothing to move")
+		assert.Empty(t, mcID, "a tier was minted for a key that does not exist")
+	}
+	var tiers int64
+	require.NoError(t, db.Model(&tables.TableModelConfig{}).Where("scope_id = ?", "vk-gone").Count(&tiers).Error)
+	assert.Zero(t, tiers, "an orphaned tier was left behind")
+}
+
+// TestMigrationAddOAuthKeyConfigColumns_BoundsTheLockWait pins the rolling-upgrade behaviour
+// of the oauth column-add on Postgres: ADD COLUMN takes ACCESS EXCLUSIVE on config_keys, so
+// while another session holds the table the migration must fail fast with lock_not_available
+// and leave the step unapplied, instead of parking at the head of the lock queue where every
+// later read and write on the table waits behind it. Skips when Postgres is not reachable.
+func TestMigrationAddOAuthKeyConfigColumns_BoundsTheLockWait(t *testing.T) {
+	const schema = pgTestSchema + "_oauth_lockwait"
+	dsn := strings.Replace(postgresDSN, "search_path="+pgTestSchema, "search_path="+schema, 1)
+	pgDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		t.Skipf("postgres unavailable: %v", err)
+	}
+	sqlDB, err := pgDB.DB()
+	require.NoError(t, err)
+	if err := sqlDB.Ping(); err != nil {
+		t.Skipf("postgres unavailable: %v", err)
+	}
+	require.NoError(t, pgDB.Exec("DROP SCHEMA IF EXISTS "+schema+" CASCADE").Error)
+	require.NoError(t, pgDB.Exec("CREATE SCHEMA "+schema).Error)
+	t.Cleanup(func() { pgDB.Exec("DROP SCHEMA IF EXISTS " + schema + " CASCADE") })
+	// The pre-upgrade shape: a key table without any oauth_* column, and an empty ledger.
+	require.NoError(t, pgDB.Exec(`CREATE TABLE config_keys (id VARCHAR(255) PRIMARY KEY)`).Error)
+	require.NoError(t, pgDB.Exec(`CREATE TABLE migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+
+	// A second session holds the table, as a long transaction would during a rolling upgrade.
+	ctx := context.Background()
+	holder, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	holderTx, err := holder.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	_, err = holderTx.ExecContext(ctx, "LOCK TABLE config_keys IN ACCESS EXCLUSIVE MODE")
+	require.NoError(t, err)
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_ = holderTx.Rollback()
+			_ = holder.Close()
+		}
+	}
+	t.Cleanup(release)
+
+	migrationCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	start := time.Now()
+	err = migrationAddOAuthKeyConfigColumns(migrationCtx, pgDB, testMigrationLogger)
+	waited := time.Since(start)
+	require.Error(t, err, "the migration must not succeed while config_keys is locked")
+	var pgErr *pgconn.PgError
+	require.True(t, errors.As(err, &pgErr), "expected a lock_not_available failure, got %v after %s", err, waited)
+	assert.Equal(t, "55P03", pgErr.Code, "expected SQLSTATE 55P03 lock_not_available, got %s: %s", pgErr.Code, pgErr.Message)
+	assert.Less(t, waited, 15*time.Second, "the lock wait must be bounded, took %s", waited)
+
+	// Nothing was recorded for the failed attempt, so the next boot retries and succeeds.
+	var applied int64
+	require.NoError(t, pgDB.Table("migrations").Where("id = ?", "add_oauth_key_config_columns").Count(&applied).Error)
+	assert.Zero(t, applied, "a failed column-add must not be recorded as applied")
+	release()
+	require.NoError(t, migrationAddOAuthKeyConfigColumns(ctx, pgDB, testMigrationLogger))
+	for _, column := range oauthKeyConfigColumns {
+		assert.True(t, pgDB.Migrator().HasColumn(&tables.TableKey{}, column), "column %s missing after the retry", column)
+	}
+}
+
+// TestA2ARawCaptureSettingMigration defaults existing deployments to capture disabled.
+func TestA2ARawCaptureSettingMigration(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+	require.NoError(t, db.Exec("INSERT INTO config_client (id) VALUES (1)").Error)
+	for range 2 {
+		require.NoError(t, migrationAddA2ARawCaptureSetting(context.Background(), db, testMigrationLogger))
+	}
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "A2AStoreRawRequestResponse"))
+	var enabled bool
+	require.NoError(t, db.Table("config_client").Select("a2a_store_raw_request_response").Where("id = 1").Scan(&enabled).Error)
+	require.False(t, enabled)
+}
+
+// TestMigrationAddMCPClientOpenAPIColumns_RollbackRefuses: the openapi columns
+// hold the only stored copy of a client's spec and its encrypted credentials,
+// so both rollbacks refuse rather than drop them and report success.
+func TestMigrationAddMCPClientOpenAPIColumns_RollbackRefuses(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`CREATE TABLE config_mcp_clients (id INTEGER PRIMARY KEY AUTOINCREMENT, client_id VARCHAR(255) NOT NULL UNIQUE)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	ctx := context.Background()
+	require.NoError(t, migrationAddMCPClientOpenAPISpecColumn(ctx, db, testMigrationLogger))
+	require.NoError(t, migrationAddMCPClientOpenAPIConfigJSONColumn(ctx, db, testMigrationLogger))
+
+	for column, rollback := range map[string]func(*gorm.DB) error{
+		"openapi_spec":        rollbackMCPClientOpenAPISpecColumn,
+		"openapi_config_json": rollbackMCPClientOpenAPIConfigJSONColumn,
+	} {
+		err := rollback(db)
+		require.Error(t, err, "rollback of %s must refuse", column)
+		assert.Contains(t, err.Error(), "non-rollbackable")
+		assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, column), "a refused rollback must leave %s intact", column)
+	}
+}
+
+// TestMigrationAddMCPClientOpenAPIColumns_Idempotent runs both openapi column
+// migrations against a config_mcp_clients table created without them and again
+// once they exist: both passes succeed, both columns are present, and existing
+// rows are untouched.
+func TestMigrationAddMCPClientOpenAPIColumns_Idempotent(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	require.NoError(t, db.Exec(`
+		CREATE TABLE config_mcp_clients (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			client_id VARCHAR(255) NOT NULL UNIQUE,
+			name VARCHAR(255) NOT NULL UNIQUE,
+			connection_type VARCHAR(20) NOT NULL,
+			tools_to_execute_json TEXT,
+			created_at DATETIME NOT NULL,
+			updated_at DATETIME NOT NULL,
+			encryption_status VARCHAR(20) DEFAULT 'plain_text'
+		)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE IF NOT EXISTS migrations (id VARCHAR(255) PRIMARY KEY)`).Error)
+	now := time.Now()
+	require.NoError(t, db.Exec(`INSERT INTO config_mcp_clients (client_id, name, connection_type, tools_to_execute_json, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, "pre-existing", "pre_existing", "http", `["*"]`, now, now).Error)
+
+	ctx := context.Background()
+	for pass := 1; pass <= 2; pass++ {
+		require.NoError(t, migrationAddMCPClientOpenAPISpecColumn(ctx, db, testMigrationLogger), "spec column pass %d", pass)
+		require.NoError(t, migrationAddMCPClientOpenAPIConfigJSONColumn(ctx, db, testMigrationLogger), "config json column pass %d", pass)
+	}
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, "openapi_spec"))
+	assert.True(t, db.Migrator().HasColumn(&tables.TableMCPClient{}, "openapi_config_json"))
+
+	var row struct {
+		Name              string
+		OpenAPISpec       *string
+		OpenAPIConfigJSON *string
+	}
+	require.NoError(t, db.Table("config_mcp_clients").Select("name, openapi_spec, openapi_config_json").Where("client_id = ?", "pre-existing").Scan(&row).Error)
+	assert.Equal(t, "pre_existing", row.Name)
+	assert.True(t, row.OpenAPISpec == nil || *row.OpenAPISpec == "")
+	assert.Nil(t, row.OpenAPIConfigJSON)
+}
+
+// TestMigrationSkillsExternalClientURL copies the current MCP client URL without overwriting explicit skills configuration.
+func TestMigrationSkillsExternalClientURL(t *testing.T) {
+	t.Setenv("BIFROST_URL", "https://bifrost.example.com")
+	for _, legacy := range []bool{true, false} {
+		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
+			db := setupTestDB(t)
+			ctx := context.Background()
+			require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY)").Error)
+			require.NoError(t, migrationAddSkillsExternalClientURLColumn(ctx, db, testMigrationLogger))
+			require.True(t, db.Migrator().HasColumn("config_client", "skills_external_client_url"))
+			if legacy {
+				require.NoError(t, db.Exec("ALTER TABLE config_client ADD COLUMN mcp_external_client_url VARCHAR(512)").Error)
+				require.NoError(t, db.Exec("INSERT INTO config_client (id, mcp_external_client_url, skills_external_client_url) VALUES (1, ?, NULL), (2, ?, ?), (3, '', NULL)", "env.BIFROST_URL", "https://mcp.example", "https://skills.example").Error)
+			} else {
+				require.NoError(t, db.Exec("INSERT INTO config_client (id) VALUES (1)").Error)
+			}
+			require.NoError(t, migrationAddSkillsExternalClientURLColumn(ctx, db, testMigrationLogger))
+			require.NoError(t, migrationBackfillSkillsExternalClientURL(ctx, db, testMigrationLogger))
+			require.NoError(t, migrationBackfillSkillsExternalClientURL(ctx, db, testMigrationLogger))
+			var rows []struct {
+				ID                      int
+				SkillsExternalClientURL string
+			}
+			require.NoError(t, db.Table("config_client").Order("id").Find(&rows).Error)
+			if legacy {
+				require.Equal(t, "env.BIFROST_URL", rows[0].SkillsExternalClientURL)
+				require.Equal(t, "https://skills.example", rows[1].SkillsExternalClientURL)
+				require.Empty(t, rows[2].SkillsExternalClientURL)
+				var mcpURL string
+				require.NoError(t, db.Table("config_client").Select("mcp_external_client_url").Where("id = 1").Scan(&mcpURL).Error)
+				require.Equal(t, "env.BIFROST_URL", mcpURL)
+			} else {
+				require.Empty(t, rows[0].SkillsExternalClientURL)
+			}
+		})
+	}
+}
+
+// TestMigrationSkillsURLSkipsPrivateComponents preserves MCP credentials without publishing them as marketplace URLs.
+func TestMigrationSkillsURLSkipsPrivateComponents(t *testing.T) {
+	t.Setenv("BIFROST_UNSAFE_MCP_URL", "https://user:password@example.com")
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE config_client (id INTEGER PRIMARY KEY, mcp_external_client_url TEXT, skills_external_client_url TEXT)").Error)
+	for i, value := range []string{"https://user:password@example.com", "https://example.com?token=private", "https://example.com?", "env.BIFROST_UNSAFE_MCP_URL", "https://safe.example/path"} {
+		require.NoError(t, db.Exec("INSERT INTO config_client (id, mcp_external_client_url) VALUES (?, ?)", i+1, value).Error)
+	}
+	require.NoError(t, migrationBackfillSkillsExternalClientURL(context.Background(), db, testMigrationLogger))
+	var rows []struct {
+		ID                      int
+		SkillsExternalClientURL string
+	}
+	require.NoError(t, db.Table("config_client").Order("id").Find(&rows).Error)
+	for _, row := range rows[:4] {
+		require.Empty(t, row.SkillsExternalClientURL)
+	}
+	require.Equal(t, "https://safe.example/path", rows[4].SkillsExternalClientURL)
+}
+
+// TestMigrationAddAgentDestinationPolicyColumns preserves registrations when upgrading the old table.
+func TestMigrationAddAgentDestinationPolicyColumns(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE config_agent_registrations (name TEXT PRIMARY KEY, agent_card_url TEXT NOT NULL)").Error)
+	require.NoError(t, db.Exec("INSERT INTO config_agent_registrations (name, agent_card_url) VALUES (?, ?)", "existing", "https://cards.example.com").Error)
+	require.NoError(t, migrationAddAgentDestinationPolicyColumns(context.Background(), db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "credential_origins"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "require_public_target"))
+	var row struct {
+		Name                string
+		RequirePublicTarget bool
+	}
+	require.NoError(t, db.Table("config_agent_registrations").Select("name, require_public_target").First(&row).Error)
+	require.Equal(t, "existing", row.Name)
+	require.False(t, row.RequirePublicTarget)
+	require.NoError(t, migrationAddAgentDestinationPolicyColumns(context.Background(), db, testMigrationLogger))
 }

@@ -5,10 +5,6 @@
     "dark": "/media/bifrost-logo-dark.png",
     "light": "/media/bifrost-logo.png"
   },
-  "banner": {
-    "content": "Try Bifrost Enterprise free for 14 days. [Explore now](https://www.getmaxim.ai/bifrost/enterprise)",
-    "dismissible": true
-  },
   "theme": "mint",
   "colors": {
     "primary": "#0C3B43",
@@ -21,20 +17,14 @@
   "navbar": {
     "links": [
       {
-        "label": "Discord",
-        "href": "https://discord.gg/exN5KAydbU",
-        "icon": "discord"
-      },
-      {
-        "label": "GitHub",
-        "href": "https://github.com/maximhq/bifrost",
-        "icon": "github"
+        "label": "Request License",
+        "href": "https://www.getmaxim.ai/enterprise?utm_source=bifrost_docs&utm_medium=Bifrost_Navbar#free-license"
       }
     ],
     "primary": {
       "type": "button",
-      "label": "Book a demo",
-      "href": "https://www.getmaxim.ai/bifrost/book-a-demo"
+      "label": "Book a Demo",
+      "href": "https://www.getmaxim.ai/book-a-demo?utm_source=bifrost_docs&utm_medium=Bifrost_Navbar"
     }
   },
   "navigation": {
@@ -44,6 +34,11 @@
           "anchor": "Discord",
           "icon": "discord",
           "href": "https://discord.gg/exN5KAydbU"
+        },
+        {
+          "anchor": "GitHub",
+          "icon": "github",
+          "href": "https://github.com/maximhq/bifrost"
         },
         {
           "anchor": "Try Enterprise",
@@ -60,7 +55,9 @@
           {
             "group": "Overview",
             "icon": "book-open-cover",
-            "pages": ["overview"]
+            "pages": [
+              "overview"
+            ]
           },
           {
             "group": "Quick Start",
@@ -81,7 +78,19 @@
                   "quickstart/gateway/integrations"
                 ]
               },
-              "quickstart/cli/getting-started",
+              {
+                "group": "Bifrost CLI",
+                "icon": "laptop-code",
+                "pages": [
+                  "quickstart/cli/getting-started",
+                  "quickstart/cli/oss-setup",
+                  "quickstart/cli/enterprise-setup",
+                  "quickstart/cli/contexts",
+                  "quickstart/cli/coding-agents",
+                  "quickstart/cli/commands",
+                  "quickstart/cli/troubleshooting"
+                ]
+              },
               {
                 "group": "Use as Go SDK",
                 "icon": "code",
@@ -102,22 +111,31 @@
           {
             "group": "Release Cadence",
             "icon": "calendar",
-            "pages": ["release-cadence"]
+            "pages": [
+              "release-cadence"
+            ]
           },
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": ["migration-guides/v2.0.0", "migration-guides/v1.5.0"]
+            "pages": [
+              "migration-guides/v2.0.0",
+              "migration-guides/v1.5.0"
+            ]
           },
           {
             "group": "Migrate from other Gateway",
             "icon": "arrow-up",
-            "pages": ["migration-guides/litellm"]
+            "pages": [
+              "migration-guides/litellm"
+            ]
           },
           {
             "group": "SDK Integrations",
             "icon": "plug",
-            "pages": ["integrations/what-is-an-integration"]
+            "pages": [
+              "integrations/what-is-an-integration"
+            ]
           },
           {
             "group": "Providers & Guides",
@@ -134,6 +152,7 @@
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
                   "providers/supported-providers/cerebras",
+                  "providers/supported-providers/cloudflare",
                   "providers/supported-providers/cohere",
                   "providers/supported-providers/databricks",
                   "providers/supported-providers/deepseek",
@@ -170,6 +189,7 @@
               "providers/reasoning",
               "providers/performance",
               "providers/custom-providers",
+              "providers/self-hosted-decision-models",
               "providers/custom-pricing",
               "providers/request-options",
               "providers/test-harness-coverage"
@@ -181,6 +201,7 @@
             "pages": [
               "mcp/overview",
               "mcp/connecting-to-servers",
+              "mcp/openapi-servers",
               "mcp/connections",
               "mcp/virtual-mcps",
               {
@@ -206,6 +227,24 @@
             ]
           },
           {
+            "group": "Agent Gateway",
+            "icon": "robot",
+            "pages": [
+              "features/agent-gateway/overview",
+              "features/agent-gateway/registration",
+              "features/agent-gateway/authentication",
+              "features/agent-gateway/access-control",
+              "features/agent-gateway/messages-and-tasks",
+              "features/agent-gateway/integrating-your-agent",
+              "features/agent-gateway/observability",
+              "features/agent-gateway/configuration",
+              "features/agent-gateway/transports-and-recovery",
+              "features/agent-gateway/push-notifications",
+              "features/agent-gateway/connectors",
+              "features/agent-gateway/troubleshooting"
+            ]
+          },
+          {
             "group": "Custom plugins",
             "icon": "puzzle-piece",
             "pages": [
@@ -215,7 +254,10 @@
               {
                 "group": "Writing Plugins",
                 "icon": "code",
-                "pages": ["plugins/writing-go-plugin", "plugins/writing-wasm-plugin"]
+                "pages": [
+                  "plugins/writing-go-plugin",
+                  "plugins/writing-wasm-plugin"
+                ]
               },
               "plugins/migration-guide"
             ]
@@ -227,6 +269,7 @@
               "features/drop-in-replacement",
               "features/retries-and-fallbacks",
               "features/complexity-router",
+              "features/warp",
               "features/compat-plugin",
               "features/keys-management",
               "features/async-inference",
@@ -261,7 +304,10 @@
               {
                 "group": "Plugins",
                 "icon": "puzzle-piece",
-                "pages": ["features/plugins/mocker", "features/plugins/jsonparser"]
+                "pages": [
+                  "features/plugins/mocker",
+                  "features/plugins/jsonparser"
+                ]
               }
             ]
           }
@@ -274,7 +320,9 @@
           {
             "group": "Getting Started",
             "icon": "rocket",
-            "pages": ["enterprise/overview"]
+            "pages": [
+              "enterprise/overview"
+            ]
           },
           {
             "group": "Moving from OSS",
@@ -290,12 +338,17 @@
           {
             "group": "Release Cadence",
             "icon": "calendar",
-            "pages": ["enterprise/release-cadence"]
+            "pages": [
+              "enterprise/release-cadence"
+            ]
           },
           {
             "group": "Migration Guides",
             "icon": "arrow-up-right-dots",
-            "pages": ["enterprise/migration-guides/v2.0.0", "enterprise/migration-guides/v1.4.0"]
+            "pages": [
+              "enterprise/migration-guides/v2.0.0",
+              "enterprise/migration-guides/v1.4.0"
+            ]
           },
           {
             "group": "Features",
@@ -303,6 +356,7 @@
             "pages": [
               "enterprise/user-provisioning",
               "enterprise/how-identity-sync-works",
+              "enterprise/teams-business-units-customers",
               "enterprise/access-profiles",
               "enterprise/rbac",
               "enterprise/data-access-control",
@@ -360,7 +414,9 @@
           {
             "group": "Security",
             "icon": "shield",
-            "pages": ["security"]
+            "pages": [
+              "security"
+            ]
           }
         ]
       },
@@ -370,22 +426,35 @@
         "groups": [
           {
             "group": "Overview",
-            "pages": ["edge/overview", "edge/how-it-works"]
+            "pages": [
+              "edge/overview",
+              "edge/how-it-works"
+            ]
           },
           {
             "group": "Governance & Control",
             "icon": "shield-halved",
-            "pages": ["edge/app-governance", "edge/mcp-governance", "edge/security"]
+            "pages": [
+              "edge/app-governance",
+              "edge/mcp-governance",
+              "edge/security"
+            ]
           },
           {
             "group": "Admin controls",
             "icon": "sliders",
-            "pages": ["edge/admin-devices", "edge/admin-approvals", "edge/admin-configurations"]
+            "pages": [
+              "edge/admin-devices",
+              "edge/admin-approvals",
+              "edge/admin-configurations"
+            ]
           },
           {
             "group": "Deployment",
             "icon": "cloud-arrow-up",
-            "pages": ["edge/deployment-mdm"]
+            "pages": [
+              "edge/deployment-mdm"
+            ]
           },
           {
             "group": "Onboarding Instructions",
@@ -402,7 +471,9 @@
           {
             "group": "Reference",
             "icon": "list",
-            "pages": ["edge/supported-applications"]
+            "pages": [
+              "edge/supported-applications"
+            ]
           }
         ]
       },
@@ -413,7 +484,10 @@
           {
             "group": "Runbooks",
             "icon": "book-open",
-            "pages": ["runbooks/claude-code-bedrock", "runbooks/codex-bedrock"]
+            "pages": [
+              "runbooks/claude-code-bedrock",
+              "runbooks/codex-bedrock"
+            ]
           },
           {
             "group": "CLI Agents & Editors",
@@ -466,7 +540,14 @@
               {
                 "group": "GenAI SDK",
                 "icon": "diamond",
-                "pages": ["integrations/genai-sdk/overview"]
+                "pages": [
+                  "integrations/genai-sdk/overview"
+                ]
+              },
+              {
+                "group": "Cohere SDK",
+                "icon": "c",
+                "pages": ["integrations/cohere-sdk/overview"]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -483,37 +564,50 @@
                 "group": "Okta",
                 "icon": "/media/okta-icon.svg",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-okta/oidc", "enterprise/setting-up-okta/scim"]
+                "pages": [
+                  "enterprise/setting-up-okta/oidc",
+                  "enterprise/setting-up-okta/scim"
+                ]
               },
               {
                 "group": "Microsoft Entra",
                 "icon": "microsoft",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-entra/oidc"]
+                "pages": [
+                  "enterprise/setting-up-entra/oidc"
+                ]
               },
               {
                 "group": "Zitadel",
                 "icon": "/media/zitadel-icon.svg",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-zitadel/oidc"]
+                "pages": [
+                  "enterprise/setting-up-zitadel/oidc"
+                ]
               },
               {
                 "group": "Keycloak",
                 "icon": "/media/keycloak-icon.svg",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-keycloak/oidc"]
+                "pages": [
+                  "enterprise/setting-up-keycloak/oidc"
+                ]
               },
               {
                 "group": "Google Workspace",
                 "icon": "google",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-google-workspace"]
+                "pages": [
+                  "enterprise/setting-up-google-workspace"
+                ]
               },
               {
                 "group": "Auth0",
                 "icon": "/media/auth0-icon.svg",
                 "collapsed": true,
-                "pages": ["enterprise/setting-up-auth0/oidc"]
+                "pages": [
+                  "enterprise/setting-up-auth0/oidc"
+                ]
               },
               {
                 "group": "Generic OIDC",
@@ -685,7 +779,9 @@
           {
             "group": "Authentication",
             "icon": "key",
-            "pages": ["api/procuring-api-keys"]
+            "pages": [
+              "api/procuring-api-keys"
+            ]
           },
           {
             "group": "Inference",
@@ -693,17 +789,23 @@
               {
                 "group": "Models",
                 "expanded": false,
-                "pages": ["GET /v1/models"]
+                "pages": [
+                  "GET /v1/models"
+                ]
               },
               {
                 "group": "Chat Completions",
                 "expanded": false,
-                "pages": ["POST /v1/chat/completions"]
+                "pages": [
+                  "POST /v1/chat/completions"
+                ]
               },
               {
                 "group": "Text Completions",
                 "expanded": false,
-                "pages": ["POST /v1/completions"]
+                "pages": [
+                  "POST /v1/completions"
+                ]
               },
               {
                 "group": "Responses",
@@ -720,12 +822,16 @@
               {
                 "group": "OCR",
                 "expanded": false,
-                "pages": ["POST /v1/ocr"]
+                "pages": [
+                  "POST /v1/ocr"
+                ]
               },
               {
                 "group": "Rerank",
                 "expanded": false,
-                "pages": ["POST /v1/rerank"]
+                "pages": [
+                  "POST /v1/rerank"
+                ]
               },
               {
                 "group": "Decisions",
@@ -737,12 +843,17 @@
               {
                 "group": "Embeddings",
                 "expanded": false,
-                "pages": ["POST /v1/embeddings"]
+                "pages": [
+                  "POST /v1/embeddings"
+                ]
               },
               {
                 "group": "Audio",
                 "expanded": false,
-                "pages": ["POST /v1/audio/speech", "POST /v1/audio/transcriptions"]
+                "pages": [
+                  "POST /v1/audio/speech",
+                  "POST /v1/audio/transcriptions"
+                ]
               },
               {
                 "group": "Images",
@@ -768,12 +879,16 @@
               {
                 "group": "Count Tokens",
                 "expanded": false,
-                "pages": ["POST /v1/responses/input_tokens"]
+                "pages": [
+                  "POST /v1/responses/input_tokens"
+                ]
               },
               {
                 "group": "Compaction",
                 "expanded": false,
-                "pages": ["POST /v1/responses/compact"]
+                "pages": [
+                  "POST /v1/responses/compact"
+                ]
               },
               {
                 "group": "Batch",
@@ -1102,7 +1217,9 @@
               {
                 "group": "Health",
                 "expanded": false,
-                "pages": ["GET /health"]
+                "pages": [
+                  "GET /health"
+                ]
               },
               {
                 "group": "Configuration",
@@ -1206,6 +1323,41 @@
                   "GET /api/mcp/tool-groups/{id}",
                   "PUT /api/mcp/tool-groups/{id}",
                   "DELETE /api/mcp/tool-groups/{id}"
+                ]
+              },
+              {
+                "group": "Agent Gateway",
+                "expanded": false,
+                "pages": [
+                  "POST /api/agents",
+                  "GET /api/agents",
+                  "GET /api/agents/{name}",
+                  "PUT /api/agents/{name}",
+                  "DELETE /api/agents/{name}",
+                  "POST /api/agents/inspect",
+                  "GET /api/agents/push-configs",
+                  "DELETE /api/agents/push-configs/{agent}/{task}/{config}",
+                  "GET /api/agents/history",
+                  "DELETE /api/agents/history",
+                  "GET /api/agents/history/stats",
+                  "GET /api/agents/history/histogram",
+                  "GET /api/agents/history/top-agents",
+                  "GET /api/agents/history/filterdata",
+                  "GET /api/agents/history/{id}",
+                  "GET /agents/a2a/{name}/.well-known/agent-card.json",
+                  "POST /agents/a2a/{name}/json-rpc",
+                  "POST /agents/a2a/{name}/rest/message:send",
+                  "POST /agents/a2a/{name}/rest/message:stream",
+                  "GET /agents/a2a/{name}/rest/tasks",
+                  "GET /agents/a2a/{name}/rest/tasks/{taskId}",
+                  "POST /agents/a2a/{name}/rest/tasks/{taskId}:cancel",
+                  "POST /agents/a2a/{name}/rest/tasks/{taskId}:subscribe",
+                  "POST /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs",
+                  "GET /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs",
+                  "GET /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs/{configId}",
+                  "DELETE /agents/a2a/{name}/rest/tasks/{taskId}/pushNotificationConfigs/{configId}",
+                  "GET /agents/a2a/{name}/rest/extendedAgentCard",
+                  "POST /agents/a2a/{name}/push/callback"
                 ]
               },
               {
@@ -1332,12 +1484,20 @@
               {
                 "group": "Vault",
                 "expanded": false,
-                "pages": ["POST /api/vault/flush-cache"]
+                "pages": [
+                  "POST /api/vault/flush-cache"
+                ]
               },
               {
                 "group": "Infrastructure",
                 "expanded": false,
-                "pages": ["GET /ws", "GET /mcp", "POST /mcp", "GET /metrics", "POST /inspect"]
+                "pages": [
+                  "GET /ws",
+                  "GET /mcp",
+                  "POST /mcp",
+                  "GET /metrics",
+                  "POST /inspect"
+                ]
               },
               {
                 "group": "API Keys",
@@ -1369,12 +1529,26 @@
               {
                 "group": "Notifications",
                 "expanded": false,
-                "pages": ["GET /api/notifications", "POST /api/notifications"]
+                "pages": [
+                  "GET /api/notifications",
+                  "POST /api/notifications"
+                ]
               },
               {
                 "group": "Warp",
                 "expanded": false,
-                "pages": ["GET /api/warp/config", "PUT /api/warp/config", "POST /api/warp/log-index/backfill", "GET /api/warp/log-index/backfill/status", "POST /api/warp/log-index/backfill/cancel", "POST /api/warp/chat", "GET /api/warp/log-index/status", "GET /api/warp/conversations", "GET /api/warp/conversations/{id}", "DELETE /api/warp/conversations/{id}"]
+                "pages": [
+                  "GET /api/warp/config",
+                  "PUT /api/warp/config",
+                  "POST /api/warp/log-index/backfill",
+                  "GET /api/warp/log-index/backfill/status",
+                  "POST /api/warp/log-index/backfill/cancel",
+                  "POST /api/warp/chat",
+                  "GET /api/warp/log-index/status",
+                  "GET /api/warp/conversations",
+                  "GET /api/warp/conversations/{id}",
+                  "DELETE /api/warp/conversations/{id}"
+                ]
               }
             ]
           },
@@ -1545,7 +1719,10 @@
               {
                 "group": "Budgets & Rate Limits",
                 "expanded": false,
-                "pages": ["GET /api/governance/budgets", "GET /api/governance/rate-limits"]
+                "pages": [
+                  "GET /api/governance/budgets",
+                  "GET /api/governance/rate-limits"
+                ]
               },
               {
                 "group": "Model Configs",
@@ -1633,7 +1810,9 @@
               {
                 "group": "Customers",
                 "expanded": false,
-                "pages": ["GET /api/customers/{customer_id}/teams"]
+                "pages": [
+                  "GET /api/customers/{customer_id}/teams"
+                ]
               },
               {
                 "group": "RBAC",
@@ -1781,6 +1960,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.3.0",
               "changelogs/v2.2.6",
               "changelogs/v2.2.5",
               {
@@ -2001,7 +2181,10 @@
               },
               {
                 "group": "September 2025",
-                "pages": ["changelogs/v1.2.22", "changelogs/v1.2.21"]
+                "pages": [
+                  "changelogs/v1.2.22",
+                  "changelogs/v1.2.21"
+                ]
               }
             ]
           },
@@ -2009,6 +2192,8 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.3.0",
+              "changelogs/ent-v2.2.6",
               "changelogs/ent-v2.2.5",
               {
                 "group": "September 2026",
@@ -2113,6 +2298,7 @@
             "item": "Edge",
             "icon": "grip",
             "pages": [
+              "changelogs/edge-v0.9.3",
               "changelogs/edge-v0.9.2",
               {
                 "group": "September 2026",
@@ -2126,7 +2312,10 @@
               },
               {
                 "group": "August 2026",
-                "pages": ["changelogs/edge-v0.5.6", "changelogs/edge-v0.4.0"]
+                "pages": [
+                  "changelogs/edge-v0.5.6",
+                  "changelogs/edge-v0.4.0"
+                ]
               },
               {
                 "group": "July 2026",
@@ -2142,10 +2331,19 @@
             "item": "Bifrost CLI",
             "icon": "laptop-code",
             "pages": [
-              "changelogs/cli-v0.10.6",
+              "changelogs/cli-v1.0.0",
+              {
+                "group": "June 2026",
+                "pages": [
+                  "changelogs/cli-v0.10.6"
+                ]
+              },
               {
                 "group": "May 2026",
-                "pages": ["changelogs/cli-v0.10.5", "changelogs/cli-v0.10.4"]
+                "pages": [
+                  "changelogs/cli-v0.10.5",
+                  "changelogs/cli-v0.10.4"
+                ]
               },
               {
                 "group": "March 2026",
@@ -2162,6 +2360,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.45",
               "changelogs/helm-v2.1.44",
               "changelogs/helm-v2.1.43",
               "changelogs/helm-v2.1.42",
@@ -2484,9 +2683,123 @@
   ],
   "footer": {
     "socials": {
-      "x": "https://x.com/getmaximai",
-      "github": "https://github.com/maximhq/bifrost",
-      "linkedin": "https://linkedin.com/company/maxim-ai"
-    }
+      "x": "https://x.com/getbifrost",
+      "linkedin": "https://linkedin.com/company/maxim-ai",
+      "github": "https://github.com/maximhq/bifrost"
+    },
+    "links": [
+      {
+        "header": "Company",
+        "items": [
+          {
+            "label": "Book a Demo",
+            "href": "https://www.getmaxim.ai/book-a-demo?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Partner Program",
+            "href": "https://www.getmaxim.ai/partners-program?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Careers",
+            "href": "https://www.getmaxim.ai/careers?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Contact Us",
+            "href": "mailto:contact@getmaxim.ai"
+          },
+          {
+            "label": "Security",
+            "href": "https://docs.getbifrost.ai/security"
+          },
+          {
+            "label": "Trust Center",
+            "href": "https://trust.getmaxim.ai/"
+          },
+          {
+            "label": "Terms of Service",
+            "href": "https://www.getmaxim.ai/terms-of-service?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Privacy Policy",
+            "href": "https://www.getmaxim.ai/privacy-policy?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          }
+        ]
+      },
+      {
+        "header": "Products",
+        "items": [
+          {
+            "label": "LLM Gateway",
+            "href": "https://www.getmaxim.ai/llm-gateway?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "MCP Gateway",
+            "href": "https://www.getmaxim.ai/mcp-gateway?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Governance",
+            "href": "https://www.getmaxim.ai/ai-governance?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Guardrails",
+            "href": "https://www.getmaxim.ai/ai-guardrails?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Observability",
+            "href": "https://www.getmaxim.ai/ai-observability?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Bifrost Edge",
+            "href": "https://www.getmaxim.ai/edge?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          }
+        ]
+      },
+      {
+        "header": "Resources",
+        "items": [
+          {
+            "label": "Bifrost Enterprise",
+            "href": "https://www.getmaxim.ai/enterprise?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Performance Benchmarks",
+            "href": "https://www.getmaxim.ai/bifrost/resources/benchmarks?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "LLM Gateway Buyer's Guide",
+            "href": "https://www.getmaxim.ai/bifrost/resources/buyers-guide?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Claude Code Integration",
+            "href": "https://www.getmaxim.ai/bifrost/resources/claude-code?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Migrating from LiteLLM",
+            "href": "https://www.getmaxim.ai/bifrost/resources/migrating-from-litellm?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          },
+          {
+            "label": "Blogs",
+            "href": "https://www.getmaxim.ai/bifrost/blog?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          }
+        ]
+      },
+      {
+        "header": "For LLMs",
+        "items": [
+          {
+            "label": "llms-full.txt",
+            "href": "https://docs.getbifrost.ai/llms-full.txt"
+          },
+          {
+            "label": "llms.txt",
+            "href": "https://docs.getbifrost.ai/llms.txt"
+          },
+          {
+            "label": "llm-info",
+            "href": "https://www.getmaxim.ai/llm-info?utm_source=bifrost_docs&utm_medium=Bifrost_Footer"
+          }
+        ]
+      }
+    ]
   }
 }

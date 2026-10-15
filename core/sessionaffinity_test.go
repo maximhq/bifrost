@@ -999,10 +999,10 @@ func TestSessionAffinityFailureDropsWhatTheRequestFollowed(t *testing.T) {
 		_ = kv.SetWithTTL(route, "openai/gpt-4o", time.Minute)
 		_ = kv.SetWithTTL(openaiKey, "key-b", time.Minute)
 		// The caller named its provider, so the route binding was never consulted, and the key
-		// pool had one key, so neither was the key binding.
+		// pool had one key, the bound one, so the key binding was not followed either.
 		named := routeOf(schemas.OpenAI, "gpt-4o")
 		a.ResolveRoute(ctx, named, chain[:1])
-		a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool[:1])
+		a.ResolveKey(ctx, schemas.OpenAI, "gpt-4o", sessionTestPool[1:2])
 		a.Observe(ctx, named, failed)
 		if entry := kv.data[route]; entry.value != "openai/gpt-4o" {
 			t.Fatalf("route binding touched by a request that never followed it: %+v", entry)
@@ -1174,6 +1174,18 @@ func TestResolveSessionRouteAppliesTheAnswer(t *testing.T) {
 		}
 		if fake.routeCalls != 1 {
 			t.Fatalf("ResolveRoute called %d times, want 1", fake.routeCalls)
+		}
+	})
+
+	t.Run("a reordered inferred chain stays inferred", func(t *testing.T) {
+		client, _ := setup(t, reverse)
+		req := newRequest(schemas.OpenAI)
+		req.SetFallbacks([]schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o", Inferred: true}, {Provider: schemas.Groq, Model: "openai/gpt-4o", Inferred: true}})
+		client.resolveSessionRoute(sessionCtx("s"), routeOf("", "gpt-4o"), req)
+		_, _, fallbacks := req.GetRequestFields()
+		want := []schemas.Fallback{{Provider: schemas.Azure, Model: "gpt-4o", Inferred: true}, {Provider: schemas.OpenAI, Model: "gpt-4o", Inferred: true}}
+		if !slices.Equal(fallbacks, want) {
+			t.Fatalf("fallbacks = %v, want %v", fallbacks, want)
 		}
 	})
 

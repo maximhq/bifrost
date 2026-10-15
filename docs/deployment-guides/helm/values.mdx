@@ -387,6 +387,8 @@ A quick-reference table of the most commonly used top-level parameters:
 | `vectorStore.enabled` | Enable vector store | `false` |
 | `vectorStore.type` | Vector store type (`weaviate`, `redis`, `qdrant`) | `none` |
 | `bifrost.encryptionKey` | Optional encryption key (use `encryptionKeySecret` in production). If omitted, data is stored in plaintext. | `""` |
+| `bifrost.loadBalancer.enabled` | Render `load_balancer_config` from the `bifrost.loadBalancer.*` keys *(enterprise only)*. See [Adaptive Routing settings](/enterprise/adaptive-routing/overview#settings) | `false` |
+| `bifrost.circuitBreakerConfig` | Circuit breaker policies, rendered as `circuit_breaker_config` *(enterprise only)*. See [Circuit Breaker](/enterprise/circuit-breaker) | unset |
 | `ingress.enabled` | Enable ingress | `false` |
 | `autoscaling.enabled` | Enable HPA | `false` |
 
@@ -801,3 +803,8 @@ helm install bifrost bifrost/bifrost -f secrets-only.yaml
 
 </Tab>
 </Tabs>
+
+
+## Agent Gateway
+
+Use `bifrost.client.a2aPrivateAllowlist` for private network destinations and `bifrost.agents[].credential_origins` for additional runtime origins. These are separate permissions. See [Agent Gateway destination permissions](/deployment-guides/helm/client#agent-gateway-destination-permissions) for a complete values example and the corresponding config.json fields.

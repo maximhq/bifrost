@@ -4,16 +4,37 @@ description: "Ask questions about some input and get typed answers using /v1/dec
 icon: "scale-balanced"
 ---
 
-Use decisions to get structured judgments - probabilities, choices, and rubric scores - from judgment models like TypeSafe's jev family. A decision request carries an `input` (what to evaluate) and a list of `questions`; every question produces one typed answer, in the same order.
+Decision models answer typed questions about an input: the probability that something is true, which option fits, or where it lands on a rubric. Send an `input` and a list of `questions`; you get back one typed answer per question, in order.
 
-Any decision model serves the same request: TypeSafe's jev models (and Laya, Nimble, and Clef deployments), OpenAI's decision models such as gpt-6-luna, or any chat model, which answers through structured output.
+## Endpoints
 
-## Provider Model Examples
+Bifrost serves decisions on three routes. Each one reaches **every** decision provider below; they differ only in the request and response shape, so pick the one that matches your client.
 
-- TypeSafe: `typesafe/jev-1.13.0`, `typesafe/jev-latest`, `typesafe/jev-preview`
-- OpenRouter: `openrouter/typesafe/jev-1.13`, `openrouter/~typesafe/jev-latest`
-- OpenAI: `openai/gpt-6-luna` (OpenAI's decisions endpoint)
-- Any chat model, for example `openai/gpt-4o-mini`
+| Route | Shape | Use it from | Bare model name goes to |
+|-------|-------|-------------|-------------------------|
+| `POST /v1/decisions` | Bifrost's unified shape (this page) | `curl`, any HTTP client, the [Go SDK](/quickstart/go-sdk/decisions) | A configured provider that serves it, picked by routing rules or the model catalog |
+| `POST /openai/v1/decisions` | OpenAI's Decisions API | [OpenAI SDKs](/integrations/openai-sdk/overview#decisions-api) | `openai` |
+| `POST /typesafe/v1/systemone` | TypeSafe's System One API | [TypeSafe SDK](/integrations/typesafe-sdk) | `typesafe` |
+
+## Providers
+
+Write models as `provider/model` to pick the provider explicitly. Switching providers only changes `model`.
+
+| Provider | Example models | Bifrost endpoint | Images |
+|----------|----------------|------------------|--------|
+| [TypeSafe](/providers/supported-providers/typesafe) | `typesafe/jev-latest`, `typesafe/jev-1.13.0` | `/v1/decisions`, or `/typesafe/v1/systemone` (TypeSafe's native API) | No |
+| [OpenAI](/providers/supported-providers/openai#15-decisions) | `openai/gpt-6-luna` | `/v1/decisions`, or `/openai/v1/decisions` (OpenAI's native API) | Yes |
+| [OpenRouter](/providers/supported-providers/openrouter#decisions) | `openrouter/~typesafe/jev-latest` | `/v1/decisions` | Depends on the model |
+| [Cloudflare](/providers/supported-providers/cloudflare#4-decisions) | `cloudflare/clef`, `cloudflare/clef-flash`, `cloudflare/clef-omni` | `/v1/decisions` | Yes |
+| [Perplexity](/providers/supported-providers/perplexity#3-decisions) | `perplexity/pplx-decider-v1.1-27b`, `perplexity/pplx-decider-v1-27b` | `/v1/decisions` | Yes |
+| [Ollama](/providers/supported-providers/ollama#6-decisions) | `ollama/nimble`, `ollama/clef-flash`, `ollama/tev1:0.8b` | `/v1/decisions` | Yes, base64 only |
+| [Azure](/providers/supported-providers/azure#10-decisions) | `azure/Microsoft-Decision-1` (a key alias maps it to your deployment) | `/v1/decisions` | No |
+| [Databricks](/providers/supported-providers/databricks#decisions) | `databricks/ai_decide` | `/v1/decisions` | No |
+| [Laya, Nimble](/providers/self-hosted-decision-models) | `laya/english`, `nimble/nimble-latest` | `/v1/decisions` | No |
+
+Every provider also answers on `/openai/v1/decisions` and `/typesafe/v1/systemone` when you send a `provider/model` name, so an OpenAI or TypeSafe SDK can reach any of them. Each provider page covers its setup.
+
+Chat models (for example `openai/gpt-4o`) have no decisions endpoint. By default they return `400` with code `unsupported_operation`; with the compat setting `convert_decision_to_responses` on, Bifrost emulates the answer through the model's Responses API. See [Decision-to-Responses Emulation](/features/compat-plugin#4-decision-to-responses-emulation).
 
 ## Basic Request
 
@@ -51,25 +72,55 @@ curl --location 'http://localhost:8080/v1/decisions' \
 
 ## Input
 
-| `input` | Meaning |
-|---------|---------|
-| A string | Text to evaluate |
-| An array | Messages, each `{ "role": "user", "content": ... }` where content is text or parts: `{ "type": "input_text", "text": ... }` and `{ "type": "input_image", "image_url": "data:image/png;base64,...", "detail": "high" }`, where `image_url` is a base64 data URL or an HTTP(S) URL and `detail` (`low`, `high`, `auto`, or `original`) is optional. Images are read only by models that accept them; TypeSafe-based and chat models read text only and reject an image with a `400`, so a fallback can serve it. Parts of other types are rejected with a `400` |
-| An object | Structured data, passed to TypeSafe-based models as their state and rendered as JSON for others |
-| `null` | No input; TypeSafe-based models receive a `null` state, and OpenAI's decision models reject it with a `400`, so a fallback can serve it |
+`input` is what the questions are about. It takes one of four forms:
+
+**Text**: a string.
+
+```json
+"input": "Customer message: I was double charged and nobody replied."
+```
+
+**Messages**: an array of `{ "role", "content" }`. `content` is a string, or a list of parts. Use parts to send images:
+
+```json
+"input": [
+  {
+    "role": "user",
+    "content": [
+      { "type": "input_text", "text": "Is this receipt itemized?" },
+      { "type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo...", "detail": "high" }
+    ]
+  }
+]
+```
+
+- `image_url` is a base64 data URL or an `https` URL. Ollama reads base64 only.
+- `detail` is optional: `low`, `high`, `auto`, or `original`.
+- Only `input_text` and `input_image` parts are accepted. A provider that reads text only (TypeSafe, Azure, Databricks, Laya, Nimble) rejects an image with a `400`, which lets a [fallback](#fallbacks) that reads images take the request.
+
+**Structured data**: an object, sent to System One models (TypeSafe, Clef, Perplexity, Ollama, Azure, Databricks, Laya, Nimble) as is, and to OpenAI as JSON text.
+
+```json
+"input": { "ticket_id": 4812, "message": "I was double charged.", "plan": "pro" }
+```
+
+**`null`**: no input. OpenAI rejects it with a `400`, and Clef rejects it with a `422`.
 
 ## Questions
 
 | Field | Meaning |
 |-------|---------|
-| `type` | `predicate` (probability that a condition is true), `choice` (one of the choices), or `score` (a level index, which may fall between levels) |
-| `name` | Optional; the answer carries it back |
-| `instructions` | A string, or structured data (object or array) preserved for TypeSafe-based models and rendered as JSON for others |
-| `criteria` | Predicate only, optional: descriptions of the `true` and `false` outcomes; models without a criteria field receive them appended to the instructions |
-| `choices` | Choice only: each choice's `value` (a string or a boolean) and optional `description` |
-| `levels` | Score only: the ordered levels, each with a `label` and optional `description` |
+| `type` | `predicate`: probability that a statement is true. `choice`: which option fits. `score`: a level on an ordered scale (may fall between levels) |
+| `name` | Optional. Echoed on the answer so you can match it up |
+| `instructions` | A string, or structured data (object or array): sent as is to System One models, as JSON text to OpenAI |
+| `criteria` | Predicate only, optional: what `true` and `false` mean. Appended to the instructions for models without a criteria field |
+| `choices` | Choice only: each option's `value` (string or boolean) and optional `description` |
+| `levels` | Score only: the levels in order, each with a `label` and optional `description` |
 
-`safety_identifier` is forwarded to models that accept a stable end-user identifier.
+`safety_identifier` (optional) is a stable end-user ID. It is sent to OpenAI, and to OpenRouter as `user`; other providers do not take one.
+
+Provider-only fields, such as Laya's `min_confidence`, go at the top level of the body with the header `x-bf-passthrough-extra-params: true`.
+
 
 ## Response
 
@@ -106,11 +157,11 @@ curl --location 'http://localhost:8080/v1/decisions' \
 }
 ```
 
-Every question produces an answer of its type, in question order. `confidence`, `probabilities`, and `legend` are included when the model supplies them. A model that declines a question answers it with `"type": "refusal"`.
+There is one answer per question, in question order, with the question's `type`. `confidence`, `probabilities`, and `legend` appear when the model supplies them. A model that declines a question answers it with `"type": "refusal"`.
 
 ### Provider-Specific Fields
 
-Some decision providers return fields beyond this shape. They appear on the response only when the provider supplies them.
+Some providers return extra fields. They appear only when that provider supplies them.
 
 | Provider | Where | Fields |
 |----------|-------|--------|
@@ -120,12 +171,12 @@ Some decision providers return fields beyond this shape. They appear on the resp
 
 ## Fallbacks
 
-Add `fallbacks` to any request above; a model that fails, or rejects an input it cannot read, hands the request to the next one:
+Add `fallbacks` to try other models in order when one fails, including when it rejects an input it cannot read (an image sent to TypeSafe, for example). Fallbacks can cross providers:
 
 ```json
 {
-  "model": "typesafe/jev-preview",
-  "fallbacks": ["typesafe/jev-1.13.0"],
+  "model": "typesafe/jev-latest",
+  "fallbacks": ["cloudflare/clef-flash", "openai/gpt-6-luna"],
   "input": "Customer message: I was double charged and nobody replied to my two emails.",
   "questions": [
     { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" }
@@ -135,11 +186,23 @@ Add `fallbacks` to any request above; a model that fails, or rejects an input it
 
 ## Validation
 
-Requests are validated before dispatch and rejected with a `400` rather than silently approximated: unsupported question types, a choice question without choices, score levels outside what the model accepts, and repeated question names. A detail one model cannot read (an image or audio part for a TypeSafe model) fails only that attempt, so a configured fallback can serve the request; if every fallback fails too, the response carries the first attempt's error.
+Bifrost rejects these with a `400` before calling any provider:
+
+- An unknown question `type`
+- A `choice` question with no `choices`
+- Two questions with the same `name`
+
+The number of score levels is checked by each provider (TypeSafe, Azure and Databricks accept 2-10, Perplexity 1-10).
+
+An input part one model cannot read fails only that attempt, so a fallback can still serve it. If every attempt fails, you get the first attempt's error.
 
 ## Map Form (Deprecated)
 
-Requests written in the earlier map form are still served and answered in the same form. New integrations should use the request above.
+<Warning>
+The map form is deprecated. It still works, but move to the request shape above.
+</Warning>
+
+Requests in the earlier map form are still served, and answered in the same form:
 
 ```json
 {
@@ -174,12 +237,4 @@ The response keys answers by question name, each with a `kind` and a `value`:
 }
 ```
 
-A body that does not read as the request above is read as the map form: its `questions` are an object keyed by name rather than a list. A `state` sent alongside `input` is ignored.
-
-<Note>
-OpenAI SDKs can send their own Decisions request to `POST /openai/v1/decisions` (see [OpenAI SDK](/integrations/openai-sdk/overview#decisions-api)). The body is the request above, and every decision model can answer it within the inputs it reads: TypeSafe-based and chat models read text only and reject image parts with a `400`, which a configured fallback can serve.
-</Note>
-
-<Note>
-TypeSafe's native API is also available 1:1 at `POST /typesafe/v1/systemone` - see the [TypeSafe provider page](/providers/supported-providers/typesafe) for the mapping between the two.
-</Note>
+Bifrost treats a body as the map form when `questions` is an object keyed by name instead of a list. A `state` sent alongside `input` is ignored.

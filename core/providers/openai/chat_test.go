@@ -1,8 +1,12 @@
 package openai
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/bytedance/sonic"
@@ -1808,6 +1812,122 @@ func TestToOpenAIChatRequest_LegacyMaxTokensProvidersUseMaxTokensOnWire(t *testi
 // embedded in the tool call_id as "<baseID>_ts_<sig>" and can exceed OpenAI's 64-char
 // limit. The chat converter must strip it to the base ID on the wire while leaving the
 // caller's input intact (so a later Gemini turn can still recover the signature).
+func TestToOpenAIChatRequest_ToolCallCacheControl_OpenRouterOnly(t *testing.T) {
+	// The tool_calls marker follows the same rule as block and tool markers: forwarded to
+	// OpenRouter, which relays it to Claude, and stripped for every other OpenAI-shaped target.
+	makeReq := func(provider schemas.ModelProvider) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    "anthropic/claude-sonnet-4-6",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("weather in paris?")}},
+				{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID: schemas.Ptr("call_paris"), Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+						Function:     schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_weather"), Arguments: `{"city":"Paris"}`},
+						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+					}},
+				}},
+				{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_paris")},
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("18C")}},
+			},
+		}
+	}
+	for _, tt := range []struct {
+		provider schemas.ModelProvider
+		wantKept bool
+	}{{schemas.OpenRouter, true}, {schemas.OpenAI, false}, {schemas.Groq, false}} {
+		t.Run(string(tt.provider), func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			req := makeReq(tt.provider)
+			wire, err := json.Marshal(ToOpenAIChatRequest(ctx, req))
+			require.NoError(t, err)
+			if tt.wantKept {
+				require.Equal(t, 1, strings.Count(string(wire), "cache_control"), "OpenRouter must keep the tool_calls marker: %s", wire)
+			} else {
+				require.NotContains(t, string(wire), "cache_control", "%s must not receive the tool_calls marker: %s", tt.provider, wire)
+			}
+			require.Contains(t, string(wire), `"call_paris"`)
+			require.NotNil(t, req.Input[1].ChatAssistantMessage.ToolCalls[0].CacheControl, "strip must copy, not mutate the caller's request")
+		})
+	}
+}
+
+func TestToOpenAIChatRequest_OpenRouterClampsCacheControlToFour(t *testing.T) {
+	cc := func() *schemas.CacheControl { return &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral} }
+	// Five markers in render order: tool definition, system block, user block, tool call, tool result.
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenRouter,
+		Model:    "anthropic/claude-sonnet-5",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("You are a weather assistant."), CacheControl: cc()},
+			}}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("What is the weather in Paris?"), CacheControl: cc()},
+			}}},
+			{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{
+				ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					ID: schemas.Ptr("toolu_paris"), Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+					Function:     schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_weather"), Arguments: `{"city":"Paris"}`},
+					CacheControl: cc(),
+				}},
+			}},
+			{
+				Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_paris")},
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("18C, light rain"), CacheControl: cc()},
+				}},
+			},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Thanks. Is that warm?")}},
+		},
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:         schemas.ChatToolTypeFunction,
+			Function:     &schemas.ChatToolFunction{Name: "get_weather", Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+			CacheControl: cc(),
+		}}},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, req)
+	require.NotNil(t, result)
+
+	wireBody, err := json.Marshal(result)
+	require.NoError(t, err)
+	wire := string(wireBody)
+	require.Equal(t, 4, strings.Count(wire, "cache_control"), "OpenRouter relays markers to Claude, which caps them at 4: %s", wire)
+
+	// The earliest marker in render order (the tool definition) is the one dropped;
+	// the later ones, which anchor longer prefixes, all survive.
+	require.Nil(t, result.ChatParameters.Tools[0].CacheControl, "tool-definition marker must be the one dropped")
+	require.NotNil(t, result.Messages[0].Content.ContentBlocks[0].CacheControl, "system marker must survive")
+	require.NotNil(t, result.Messages[1].Content.ContentBlocks[0].CacheControl, "user marker must survive")
+	require.NotNil(t, result.Messages[2].OpenAIChatAssistantMessage.ToolCalls[0].CacheControl, "tool_calls marker must survive")
+	require.NotNil(t, result.Messages[3].Content.ContentBlocks[0].CacheControl, "tool result marker must survive")
+
+	// The caller's request is shared across retries and fallbacks and must not be mutated.
+	require.NotNil(t, req.Params.Tools[0].CacheControl, "clamp must copy, not mutate the caller's tools")
+	require.NotNil(t, req.Input[0].Content.ContentBlocks[0].CacheControl)
+	require.NotNil(t, req.Input[2].ChatAssistantMessage.ToolCalls[0].CacheControl)
+
+	// A non-Claude upstream on OpenRouter ignores the markers, so all five pass through.
+	req.Model = "google/gemini-2.5-pro"
+	result = ToOpenAIChatRequest(ctx, req)
+	wireBody, err = json.Marshal(result)
+	require.NoError(t, err)
+	require.Equal(t, 5, strings.Count(string(wireBody), "cache_control"), "clamp must be scoped to Claude upstreams: %s", wireBody)
+
+	// Four markers or fewer pass through untouched on Claude too.
+	req.Model = "anthropic/claude-sonnet-5"
+	req.Params.Tools[0].CacheControl = nil
+	result = ToOpenAIChatRequest(ctx, req)
+	wireBody, err = json.Marshal(result)
+	require.NoError(t, err)
+	require.Equal(t, 4, strings.Count(string(wireBody), "cache_control"))
+}
+
 func TestToOpenAIChatRequest_StripsThoughtSignatureFromToolCallIDs(t *testing.T) {
 	embeddedID := "search" + providerUtils.ThoughtSignatureSeparator + strings.Repeat("A", 6000)
 
@@ -2275,10 +2395,12 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 					ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("echo"), Arguments: `{"text":"hello"}`},
 				}}}},
-				{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+				{
+					Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
 					Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
 						{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("hello"), CacheControl: ephemeral},
-					}}},
+					}},
+				},
 			},
 			Params: &schemas.ChatParameters{},
 		}
@@ -2466,5 +2588,338 @@ func TestOpenAIInbound_ReasoningSummaryIsNotForwarded(t *testing.T) {
 	}
 	if responses.Params.Reasoning.Summary != nil {
 		t.Fatalf("reasoning.summary leaked through the openai integration: %q", *responses.Params.Reasoning.Summary)
+	}
+}
+
+// oauthTokenStub answers every token request with one fixed bearer and counts hits.
+func oauthTokenStub(t testing.TB) (*httptest.Server, *atomic.Int64) {
+	t.Helper()
+	var hits atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"minted-token","token_type":"Bearer","expires_in":3600}`))
+	}))
+	t.Cleanup(server.Close)
+	return server, &hits
+}
+
+func oauthTestProvider(t testing.TB) *OpenAIProvider {
+	t.Helper()
+	return NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: "https://llm.example", DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+}
+
+func oauthKey(name, tokenURL string) schemas.Key {
+	return schemas.Key{Name: name, Models: []string{"*"}, OAuthKeyConfig: &schemas.OAuthKeyConfig{
+		GrantType:    schemas.OAuthGrantClientCredentials,
+		TokenURL:     *schemas.NewSecretVar(tokenURL),
+		ClientID:     schemas.NewSecretVar(name + "-id"),
+		ClientSecret: schemas.NewSecretVar(name + "-secret"),
+	}}
+}
+
+// TestFileListCursorSelectsTheKeyByPosition pins that a serial pagination cursor keeps
+// addressing the key it was issued for. The cursor stores a position, so a failed mint on an
+// earlier key must not shift the later keys: the cursor for key 2 queries key 2.
+func TestFileListCursorSelectsTheKeyByPosition(t *testing.T) {
+	stub, _ := oauthTokenStub(t)
+	var authSeen atomic.Value
+	files := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authSeen.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"file-1","object":"file","bytes":1,"created_at":1,"filename":"a.txt","purpose":"assistants"}],"has_more":false}`))
+	}))
+	t.Cleanup(files.Close)
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: files.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+	keys := []schemas.Key{
+		oauthKey("down", "http://127.0.0.1:1/token"),
+		oauthKey("up", stub.URL+"/token"),
+	}
+	cursor := schemas.EncodeSerialCursor(schemas.NewSerialCursor(1, ""))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bErr := provider.FileList(ctx, keys, &schemas.BifrostFileListRequest{After: &cursor})
+	if bErr != nil {
+		t.Fatalf("the cursor names the working key, so the list must succeed: %v", bErr.Error.Message)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "file-1" {
+		t.Fatalf("data = %+v, want the second key's one file", resp.Data)
+	}
+	if got, _ := authSeen.Load().(string); got != "Bearer minted-token" {
+		t.Fatalf("Authorization = %q, want the second key's minted bearer", got)
+	}
+
+	// The cursor for the failed key surfaces that key's error instead of silently serving a
+	// different key's files.
+	cursor = schemas.EncodeSerialCursor(schemas.NewSerialCursor(0, ""))
+	_, bErr = provider.FileList(ctx, keys, &schemas.BifrostFileListRequest{After: &cursor})
+	if bErr == nil {
+		t.Fatal("the cursor for the key whose mint fails must return that failure")
+	}
+}
+
+// TestDecisionMintsOAuthBearer pins that the native decisions path resolves an OAuth key: the
+// single-key method must carry the minted bearer, not the key's empty static value.
+func TestDecisionMintsOAuthBearer(t *testing.T) {
+	stub, _ := oauthTokenStub(t)
+	var authSeen atomic.Value
+	decisions := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authSeen.Store(r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"dec_1","model":"gpt-6-luna","answers":[{"type":"predicate","probability":0.9}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}`))
+	}))
+	t.Cleanup(decisions.Close)
+	provider := NewOpenAIProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: decisions.URL, DefaultRequestTimeoutInSeconds: 10, AllowPrivateNetwork: true},
+	}, nil)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bErr := provider.Decision(ctx, oauthKey("dec", stub.URL+"/token"), &schemas.BifrostDecisionRequest{
+		Provider:  schemas.OpenAI,
+		Model:     "gpt-6-luna",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("this is unacceptable")},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("angry")}},
+	})
+	if bErr != nil {
+		t.Fatalf("decision failed: %v", bErr.Error.Message)
+	}
+	if len(resp.Answers) != 1 {
+		t.Fatalf("answers = %+v, want one", resp.Answers)
+	}
+	if got, _ := authSeen.Load().(string); got != "Bearer minted-token" {
+		t.Fatalf("Authorization = %q, want the minted bearer", got)
+	}
+
+	// A key whose token endpoint is down fails the request with the mint error, not a bare 401.
+	_, bErr = provider.Decision(ctx, oauthKey("down", "http://127.0.0.1:1/token"), &schemas.BifrostDecisionRequest{
+		Provider:  schemas.OpenAI,
+		Model:     "gpt-6-luna",
+		Input:     schemas.DecisionInput{Text: schemas.Ptr("x")},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("angry")}},
+	})
+	if bErr == nil || !strings.Contains(bErr.Error.Message, "oauth token") {
+		t.Fatalf("want the token mint failure, got %+v", bErr)
+	}
+}
+
+// TestWebSocketHeadersMintOAuthBearer pins that the native WebSocket path carries the minted
+// bearer for an OAuth key instead of dialing with an empty Authorization header.
+func TestWebSocketHeadersMintOAuthBearer(t *testing.T) {
+	stub, hits := oauthTokenStub(t)
+	provider := oauthTestProvider(t)
+	key := oauthKey("ws", stub.URL+"/token")
+
+	headers := provider.WebSocketHeaders(key)
+	if headers["Authorization"] != "Bearer minted-token" {
+		t.Fatalf("Authorization = %q, want the minted bearer", headers["Authorization"])
+	}
+	headers = provider.WebSocketHeaders(key)
+	if headers["Authorization"] != "Bearer minted-token" || hits.Load() != 1 {
+		t.Fatalf("second call: Authorization = %q, mints = %d, want the cached bearer and one mint", headers["Authorization"], hits.Load())
+	}
+
+	// A key whose endpoint is down keeps today's behaviour: no Authorization header, so the
+	// transport falls back to the HTTP bridge.
+	headers = provider.WebSocketHeaders(oauthKey("down", "http://127.0.0.1:1/token"))
+	if _, ok := headers["Authorization"]; ok {
+		t.Fatalf("a failed mint must not send an Authorization header, got %q", headers["Authorization"])
+	}
+	if provider.WebSocketHeaders(schemas.Key{Value: *schemas.NewSecretVar("sk")})["Authorization"] != "Bearer sk" {
+		t.Fatal("a static key is unchanged")
+	}
+}
+
+// BenchmarkResolveKeyOAuthWarm is the per-request cost of an OAuth key once its token is
+// cached: the cache-key hash, the warm cache lookup and the SecretVar copy. The token is
+// minted once before the timer.
+func BenchmarkResolveKeyOAuthWarm(b *testing.B) {
+	stub, _ := oauthTokenStub(b)
+	provider := oauthTestProvider(b)
+	key := oauthKey("bench", stub.URL+"/token")
+	if _, bErr := provider.resolveKey(context.Background(), key); bErr != nil {
+		b.Fatal(bErr.Error.Message)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, bErr := provider.resolveKey(context.Background(), key); bErr != nil {
+			b.Fatal(bErr.Error.Message)
+		}
+	}
+}
+
+// BenchmarkResolveKeyStatic is the cost every OpenAI request now pays at method entry when
+// the key carries a value: it must stay at two comparisons and zero allocations.
+func BenchmarkResolveKeyStatic(b *testing.B) {
+	provider := &OpenAIProvider{}
+	key := schemas.Key{Value: *schemas.NewSecretVar("sk-static")}
+	b.ReportAllocs()
+	for range b.N {
+		if _, bErr := provider.resolveKey(context.Background(), key); bErr != nil {
+			b.Fatal(bErr)
+		}
+	}
+}
+
+// deepSeekJSONSchemaBody is a chat/completions body carrying a json_schema
+// response_format and a system prompt of its own, as a client sends it.
+const deepSeekJSONSchemaBody = `{"model":"deepseek-v4-flash","messages":[{"role":"system","content":"You extract people."},{"role":"user","content":"Ada is 36."}],"response_format":{"type":"json_schema","json_schema":{"name":"person","schema":{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"],"additionalProperties":false},"strict":true}}}`
+
+func deepSeekJSONSchemaRequest(t testing.TB, body string, provider schemas.ModelProvider) (*schemas.BifrostContext, *schemas.BifrostChatRequest) {
+	t.Helper()
+	var inbound OpenAIChatRequest
+	require.NoError(t, schemas.Unmarshal([]byte(body), &inbound))
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	bifrostReq := inbound.ToBifrostChatRequest(ctx)
+	require.NotNil(t, bifrostReq)
+	bifrostReq.Provider = provider
+	return ctx, bifrostReq
+}
+
+// TestToOpenAIChatRequest_DeepSeekDowngradesJSONSchema pins that a json_schema
+// response_format reaches DeepSeek as json_object, which is the only structured
+// mode its chat endpoint accepts, with the schema carried as an instruction.
+func TestToOpenAIChatRequest_DeepSeekDowngradesJSONSchema(t *testing.T) {
+	ctx, bifrostReq := deepSeekJSONSchemaRequest(t, deepSeekJSONSchemaBody, schemas.DeepSeek)
+	originalFormat := bifrostReq.Params.ResponseFormat
+	originalFormatValue := *originalFormat
+
+	out := ToOpenAIChatRequest(ctx, bifrostReq)
+	require.NotNil(t, out)
+
+	raw, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	require.Equal(t, "json_object", gjsonString(raw, "response_format.type"), "wire: %s", raw)
+	require.False(t, gjsonExists(raw, "response_format.json_schema"), "json_schema must not reach DeepSeek: %s", raw)
+
+	require.Len(t, out.Messages, 3, "schema instruction must be added as one system message")
+	require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[0].Role)
+	require.Equal(t, "You extract people.", *out.Messages[0].Content.ContentStr, "client system prompt stays first")
+	require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[1].Role)
+	require.NotNil(t, out.Messages[1].Content)
+	require.NotNil(t, out.Messages[1].Content.ContentStr)
+	instruction := *out.Messages[1].Content.ContentStr
+	require.Contains(t, instruction, "json", "DeepSeek json_object requires the word json in the prompt")
+	require.Contains(t, instruction, `{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"],"additionalProperties":false}`,
+		"schema must be carried verbatim")
+	require.Contains(t, instruction, "person", "schema name is carried")
+	require.Equal(t, schemas.ChatMessageRoleUser, out.Messages[2].Role)
+
+	// The caller's request is shared with fallbacks and post-hooks.
+	require.Same(t, originalFormat, bifrostReq.Params.ResponseFormat)
+	require.Equal(t, originalFormatValue, *bifrostReq.Params.ResponseFormat)
+	require.Len(t, bifrostReq.Input, 2)
+}
+
+// TestToOpenAIChatRequest_DeepSeekJSONSchemaWithoutSystemPrompt covers the
+// common shape with no client system prompt: the instruction leads.
+func TestToOpenAIChatRequest_DeepSeekJSONSchemaWithoutSystemPrompt(t *testing.T) {
+	body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Ada is 36."}],"response_format":{"type":"json_schema","json_schema":{"name":"person","schema":{"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}}}}`
+	ctx, bifrostReq := deepSeekJSONSchemaRequest(t, body, schemas.DeepSeek)
+
+	out := ToOpenAIChatRequest(ctx, bifrostReq)
+	require.NotNil(t, out)
+	require.Len(t, out.Messages, 2)
+	require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[0].Role)
+	require.Contains(t, *out.Messages[0].Content.ContentStr, `"required":["name"]`)
+	require.Equal(t, schemas.ChatMessageRoleUser, out.Messages[1].Role)
+}
+
+// TestToOpenAIChatRequest_DeepSeekResponsesTextFormatDowngraded covers the
+// Responses route: DeepSeek serves /v1/responses through ToChatRequest, where
+// text.format arrives as an in-memory response_format rather than raw bytes.
+func TestToOpenAIChatRequest_DeepSeekResponsesTextFormatDowngraded(t *testing.T) {
+	var inbound OpenAIResponsesRequest
+	body := `{"model":"deepseek-v4-flash","input":"Ada is 36.","text":{"format":{"type":"json_schema","name":"person","schema":{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"]}}}}`
+	require.NoError(t, schemas.Unmarshal([]byte(body), &inbound))
+	ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	responsesReq := inbound.ToBifrostResponsesRequest(ctx)
+	require.NotNil(t, responsesReq)
+	responsesReq.Provider = schemas.DeepSeek
+
+	out := ToOpenAIChatRequest(ctx, responsesReq.ToChatRequest())
+	require.NotNil(t, out)
+	raw, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	require.Equal(t, "json_object", gjsonString(raw, "response_format.type"), "wire: %s", raw)
+	require.False(t, gjsonExists(raw, "response_format.json_schema"), "wire: %s", raw)
+	require.Equal(t, schemas.ChatMessageRoleSystem, out.Messages[0].Role)
+	instruction := *out.Messages[0].Content.ContentStr
+	require.Contains(t, instruction, "json")
+	require.Contains(t, instruction, `"required":["name","age"]`)
+}
+
+// TestToOpenAIChatRequest_JSONSchemaDowngradeScope pins what the DeepSeek
+// downgrade must leave alone: json_object on DeepSeek, and json_schema on any
+// provider that accepts it.
+func TestToOpenAIChatRequest_JSONSchemaDowngradeScope(t *testing.T) {
+	t.Run("deepseek json_object untouched", func(t *testing.T) {
+		body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Reply in json."}],"response_format":{"type":"json_object"}}`
+		ctx, bifrostReq := deepSeekJSONSchemaRequest(t, body, schemas.DeepSeek)
+		out := ToOpenAIChatRequest(ctx, bifrostReq)
+		require.NotNil(t, out)
+		require.Same(t, bifrostReq.Params.ResponseFormat, out.ResponseFormat)
+		require.Len(t, out.Messages, 1)
+	})
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Groq, schemas.XAI} {
+		t.Run(string(provider)+" json_schema untouched", func(t *testing.T) {
+			ctx, bifrostReq := deepSeekJSONSchemaRequest(t, deepSeekJSONSchemaBody, provider)
+			out := ToOpenAIChatRequest(ctx, bifrostReq)
+			require.NotNil(t, out)
+			require.Same(t, bifrostReq.Params.ResponseFormat, out.ResponseFormat)
+			require.Len(t, out.Messages, 2)
+		})
+	}
+	// A custom provider reports its own name, so the downgrade keys on the base provider.
+	t.Run("custom provider on a deepseek base downgrades", func(t *testing.T) {
+		ctx, bifrostReq := deepSeekJSONSchemaRequest(t, deepSeekJSONSchemaBody, schemas.ModelProvider("my-deepseek"))
+		ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.DeepSeek)
+		out := ToOpenAIChatRequest(ctx, bifrostReq)
+		require.NotNil(t, out)
+		raw, err := providerUtils.MarshalSorted(out)
+		require.NoError(t, err)
+		require.Equal(t, "json_object", gjsonString(raw, "response_format.type"), "wire: %s", raw)
+		require.False(t, gjsonExists(raw, "response_format.json_schema"), "json_schema must not reach a custom DeepSeek: %s", raw)
+	})
+	t.Run("custom provider on an openai base json_schema untouched", func(t *testing.T) {
+		ctx, bifrostReq := deepSeekJSONSchemaRequest(t, deepSeekJSONSchemaBody, schemas.ModelProvider("my-openai"))
+		ctx.SetValue(schemas.BifrostContextKeyIsCustomProvider, true)
+		ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.OpenAI)
+		out := ToOpenAIChatRequest(ctx, bifrostReq)
+		require.NotNil(t, out)
+		require.Same(t, bifrostReq.Params.ResponseFormat, out.ResponseFormat)
+	})
+}
+
+func gjsonString(raw []byte, path string) string {
+	return providerUtils.GetJSONField(raw, path).String()
+}
+
+func gjsonExists(raw []byte, path string) bool {
+	return providerUtils.JSONFieldExists(raw, path)
+}
+
+// BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat measures the DeepSeek
+// conversion with no response_format (the common case, which must not pay for
+// the downgrade) and with a json_schema response_format (which does).
+func BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat(b *testing.B) {
+	plainBody := `{"model":"deepseek-v4-flash","messages":[{"role":"system","content":"You extract people."},{"role":"user","content":"Ada is 36."}]}`
+	for _, tc := range []struct{ name, body string }{
+		{"no_response_format", plainBody},
+		{"json_schema", deepSeekJSONSchemaBody},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			ctx, bifrostReq := deepSeekJSONSchemaRequest(b, tc.body, schemas.DeepSeek)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = ToOpenAIChatRequest(ctx, bifrostReq)
+			}
+		})
 	}
 }

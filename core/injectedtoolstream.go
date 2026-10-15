@@ -506,7 +506,7 @@ func (bifrost *Bifrost) startInjectedChatStream(ctx *schemas.BifrostContext, pro
 		advance: func() {
 			assistant, injected := session.endTurn()
 			results := executeInjectedCalls(injected, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
-				return bifrost.executeInjectedCall(ctx, call)
+				return bifrost.executeInjectedCall(ctx, set, call)
 			})
 			next := *turn
 			next.Params = relaxForcedChatChoice(turn.Params)
@@ -545,10 +545,10 @@ func (bifrost *Bifrost) startInjectedResponsesStream(ctx *schemas.BifrostContext
 		advance: func() {
 			items, injected := session.endTurn()
 			results := executeInjectedCalls(injected, func(call schemas.ChatAssistantMessageToolCall) *schemas.ChatMessage {
-				return bifrost.executeInjectedCall(ctx, call)
+				return bifrost.executeInjectedCall(ctx, set, call)
 			})
 			next := *turn
-			next.Params = relaxForcedResponsesChoice(turn.Params)
+			next.Params = relaxForcedResponsesChoice(nextResponsesTools(original, turn, set).Params)
 			next.Input = make([]schemas.ResponsesMessage, 0, len(turn.Input)+len(items)+len(results))
 			next.Input = append(next.Input, turn.Input...)
 			next.Input = append(next.Input, items...)

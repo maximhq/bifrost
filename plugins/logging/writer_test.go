@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -1030,4 +1031,1235 @@ func TestBatchWriterGateUnderSteadyLoadPostgres(t *testing.T) {
 		t.Fatalf("expected zero drops end to end, got dropped=%d droppedDuringMaintenance=%d", d, m)
 	}
 	t.Logf("%d logs enqueued at 100/s, %d written before the pause, all %d landed after the lock cleared with 0 drops", total, atPause, total)
+}
+
+// evictablePending builds a pending entry whose idle clock is already past
+// pendingLogTTL, so the next cleanupStalePendingLogs sweep evicts it.
+func evictablePending(id, input string) *PendingLogData {
+	stale := time.Now().Add(-pendingLogTTL - time.Minute)
+	pending := &PendingLogData{
+		RequestID: id,
+		Timestamp: time.Now().Add(-2 * time.Hour),
+		Status:    "processing",
+		CreatedAt: stale,
+		InitialData: &InitialLogData{
+			Object:   "chat.completion",
+			Provider: "openai",
+			Model:    "gpt-4o",
+			InputHistory: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &input},
+			}},
+		},
+	}
+	pending.LastActivity.Store(stale.UnixNano())
+	return pending
+}
+
+// evictionChatResult is a successful non-streaming chat response with usage and
+// an assistant message, used to finish an evicted request.
+func evictionChatResult(output string) *schemas.BifrostResponse {
+	finish := "stop"
+	return &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{
+				Index:        0,
+				FinishReason: &finish,
+				ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+					Message: &schemas.ChatMessage{
+						Role:    schemas.ChatMessageRoleAssistant,
+						Content: &schemas.ChatMessageContent{ContentStr: &output},
+					},
+				},
+			}},
+			Usage: &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
+			},
+		},
+	}
+}
+
+func evictionRequestCtx(id string) *schemas.BifrostContext {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, id)
+	return ctx
+}
+
+// TestPersistEvictedPartialSkipsEntryAlreadyTaken: eviction must own the pending
+// entry before persisting anything. When PostLLMHook has already taken the entry
+// (the completion will insert the full row), eviction writes neither a partial
+// row nor a marker, otherwise the partial could land first and the completed
+// IfNotExists insert would no-op, leaving the row stuck in "processing".
+func TestPersistEvictedPartialSkipsEntryAlreadyTaken(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	pending := evictablePending("req-taken", "input")
+	plugin.pendingLogsEntries.Store("req-taken", pending)
+	// PostLLMHook won the entry between the sweep's Range and the eviction.
+	plugin.pendingLogsEntries.Delete("req-taken")
+
+	plugin.persistEvictedPartial("req-taken", pending)
+	if _, marked := plugin.evictedPartials.Load("req-taken"); marked {
+		t.Fatal("expected no eviction marker for an entry PostLLMHook already took")
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if _, err := store.FindByID(context.Background(), "req-taken"); err == nil {
+		t.Fatal("expected no partial row for an entry PostLLMHook already took")
+	}
+}
+
+// TestConcurrentEvictionAndCompletionKeepsEveryLog races the stale sweep against
+// terminal PostLLMHook calls for the same requests: whichever side wins each
+// entry, every request must end as a single success row with its input.
+func TestConcurrentEvictionAndCompletionKeepsEveryLog(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const n = 300
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("race-%d", i)
+		plugin.pendingLogsEntries.Store(id, evictablePending(id, "input-"+id))
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		plugin.cleanupStalePendingLogs()
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < n; i++ {
+			id := fmt.Sprintf("race-%d", i)
+			if _, _, err := plugin.PostLLMHook(evictionRequestCtx(id), evictionChatResult("out"), nil); err != nil {
+				t.Errorf("PostLLMHook(%s) error = %v", id, err)
+			}
+		}
+	}()
+	wg.Wait()
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("race-%d", i)
+		row, err := store.FindByID(context.Background(), id)
+		if err != nil {
+			t.Fatalf("FindByID(%s) error = %v (log lost)", id, err)
+		}
+		if row.Status != "success" {
+			t.Fatalf("%s: expected success, got %q", id, row.Status)
+		}
+		if len(row.InputHistoryParsed) != 1 {
+			t.Fatalf("%s: expected input preserved, got %d messages", id, len(row.InputHistoryParsed))
+		}
+	}
+	if dropped := plugin.droppedRequests.Load(); dropped != 0 {
+		t.Fatalf("expected 0 dropped requests, got %d", dropped)
+	}
+}
+
+// TestEvictionWithoutQueuedPartialKeepsPendingEntry: when the write queue is
+// full the partial insert cannot be queued. The pending entry must stay in
+// memory (no marker, nothing counted as dropped yet) so the next sweep retries
+// the insert or a completion still writes the full row; otherwise the input
+// would be gone with no copy anywhere.
+func TestEvictionWithoutQueuedPartialKeepsPendingEntry(t *testing.T) {
+	plugin := &LoggerPlugin{ctx: context.Background(), store: newTestStore(t), logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1)}
+	plugin.writeQueue <- &writeQueueEntry{}
+
+	pending := evictablePending("req-full", "input")
+	plugin.pendingLogsEntries.Store("req-full", pending)
+	plugin.persistEvictedPartial("req-full", pending)
+
+	if _, marked := plugin.evictedPartials.Load("req-full"); marked {
+		t.Fatal("expected no eviction marker when the partial insert was not queued")
+	}
+	if _, kept := plugin.pendingLogsEntries.Load("req-full"); !kept {
+		t.Fatal("expected the pending entry kept for a retry when the partial insert was not queued")
+	}
+	if got := plugin.droppedRequests.Load(); got != 0 {
+		t.Fatalf("expected nothing counted as dropped while a retry is pending, got %d", got)
+	}
+
+	// The queue drains; the next sweep persists the partial and records the marker.
+	<-plugin.writeQueue
+	plugin.persistEvictedPartial("req-full", pending)
+	if _, marked := plugin.evictedPartials.Load("req-full"); !marked {
+		t.Fatal("expected the retried eviction to record the marker")
+	}
+	if _, kept := plugin.pendingLogsEntries.Load("req-full"); kept {
+		t.Fatal("expected the pending entry released once the partial was queued")
+	}
+	queued := <-plugin.writeQueue
+	if queued.log == nil || queued.log.ID != "req-full" || len(queued.log.InputHistoryParsed) != 1 {
+		t.Fatalf("expected the queued partial to carry the input, got %+v", queued.log)
+	}
+}
+
+// TestEvictionGivesUpAfterRepeatedQueueFailures: retries are capped so a queue
+// that stays full cannot pin evicted entries in memory forever; after the last
+// attempt the entry is dropped and counted.
+func TestEvictionGivesUpAfterRepeatedQueueFailures(t *testing.T) {
+	plugin := &LoggerPlugin{ctx: context.Background(), store: newTestStore(t), logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1)}
+	plugin.writeQueue <- &writeQueueEntry{}
+
+	pending := evictablePending("req-stuck", "input")
+	plugin.pendingLogsEntries.Store("req-stuck", pending)
+	for i := 0; i < maxEvictionAttempts; i++ {
+		plugin.persistEvictedPartial("req-stuck", pending)
+	}
+
+	if _, kept := plugin.pendingLogsEntries.Load("req-stuck"); kept {
+		t.Fatalf("expected the entry dropped after %d failed attempts", maxEvictionAttempts)
+	}
+	if got := plugin.droppedRequests.Load(); got != 1 {
+		t.Fatalf("expected exactly one drop counted when giving up, got %d", got)
+	}
+	if _, marked := plugin.evictedPartials.Load("req-stuck"); marked {
+		t.Fatal("expected no marker for an entry that was never persisted")
+	}
+}
+
+// TestEvictionKeepsVirtualKeyHiddenPolicy: with retain_content_in_object_storage
+// on, a virtual key that disables content logging still has its input captured
+// (for hidden storage). Eviction must keep that decision instead of stamping the
+// global, visible policy on the partial row.
+func TestEvictionKeepsVirtualKeyHiddenPolicy(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	retain := true
+	plugin.retainContentInObjectStorage = &retain
+	plugin.objectStorageEnabled = true
+
+	ctx := evictionRequestCtx("req-vk-hidden")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, true)
+	if _, _, err := plugin.PreLLMHook(ctx, &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: schemas.OpenAI,
+			Model:    "gpt-4o",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: strPtrLogging("secret prompt")}}},
+			Params:   &schemas.ChatParameters{},
+		},
+	}); err != nil {
+		t.Fatalf("PreLLMHook() error = %v", err)
+	}
+	pendingVal, ok := plugin.pendingLogsEntries.Load("req-vk-hidden")
+	if !ok {
+		t.Fatal("expected pending entry after PreLLMHook")
+	}
+	pending := pendingVal.(*PendingLogData)
+	if len(pending.InitialData.InputHistory) != 1 {
+		t.Fatalf("expected input captured for hidden storage, got %d messages", len(pending.InitialData.InputHistory))
+	}
+	stale := time.Now().Add(-pendingLogTTL - time.Minute)
+	pending.CreatedAt = stale
+	pending.LastActivity.Store(stale.UnixNano())
+
+	plugin.cleanupStalePendingLogs()
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	row, err := store.FindByID(context.Background(), "req-vk-hidden")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if !row.ContentHidden {
+		t.Fatal("expected the partial row to keep the virtual key's hidden decision")
+	}
+	if len(row.InputHistoryParsed) != 1 {
+		t.Fatalf("expected hidden input retained on the partial row, got %d messages", len(row.InputHistoryParsed))
+	}
+}
+
+func strPtrLogging(s string) *string { return &s }
+
+// chunkCountingTracer records streaming chunks handed to the accumulator and
+// reports its trace as alive.
+type chunkCountingTracer struct {
+	schemas.NoOpTracer
+	chunks atomic.Int64
+}
+
+func (c *chunkCountingTracer) ProcessStreamingChunk(_ *schemas.BifrostContext, _ string, _ bool, _ *schemas.BifrostResponse, _ *schemas.BifrostError) *schemas.StreamAccumulatorResult {
+	c.chunks.Add(1)
+	return nil
+}
+
+func (c *chunkCountingTracer) GetSpanHandleByID(_ string, _ *string) schemas.SpanHandle {
+	return struct{}{}
+}
+
+// TestResumedStreamChunksAccumulateAfterEviction: once a stream's pending entry
+// has been evicted, its later non-final chunks must still reach the accumulator
+// (without probing the DB) so the final reconcile carries the resumed output.
+func TestResumedStreamChunksAccumulateAfterEviction(t *testing.T) {
+	spy := &fallbackSpyStore{LogStore: newTestStore(t)}
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, spy, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	plugin.evictedPartials.Store("req-resumed", time.Now())
+
+	tracer := &chunkCountingTracer{}
+	chunk := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.ChatCompletionStreamRequest, Provider: schemas.OpenAI},
+		},
+	}
+	for i := 0; i < 3; i++ {
+		ctx := evictionRequestCtx("req-resumed")
+		ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+		ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-resumed")
+		if _, _, err := plugin.PostLLMHook(ctx, chunk, nil); err != nil {
+			t.Fatalf("PostLLMHook() chunk %d error = %v", i, err)
+		}
+	}
+	if got := tracer.chunks.Load(); got != 3 {
+		t.Fatalf("expected 3 resumed chunks accumulated after eviction, got %d", got)
+	}
+	if got := spy.presentCalls.Load(); got != 0 {
+		t.Fatalf("expected no DB probe for non-final chunks, got %d", got)
+	}
+	if _, marked := plugin.evictedPartials.Load("req-resumed"); !marked {
+		t.Fatal("expected the eviction marker kept until the terminal chunk")
+	}
+}
+
+// blockingPresenceStore blocks IsLogEntryPresent until its context ends, like a
+// store that has stopped answering.
+type blockingPresenceStore struct {
+	logstore.LogStore
+}
+
+func (s *blockingPresenceStore) IsLogEntryPresent(ctx context.Context, _ string) (bool, error) {
+	<-ctx.Done()
+	return false, ctx.Err()
+}
+
+// TestEvictedPartialProbeIsBounded: the DB probe on the terminal no-pending path
+// runs synchronously inside the hook, so a store that never answers must not
+// hold the response.
+func TestEvictedPartialProbeIsBounded(t *testing.T) {
+	prev := evictedPartialProbeTimeout
+	evictedPartialProbeTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { evictedPartialProbeTimeout = prev })
+
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, &blockingPresenceStore{LogStore: newTestStore(t)}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	t.Cleanup(func() { _ = plugin.Cleanup() })
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _, _ = plugin.PostLLMHook(evictionRequestCtx("req-slow-probe"), evictionChatResult("out"), nil)
+	}()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("PostLLMHook blocked on the presence probe instead of bounding it")
+	}
+}
+
+// TestEvictionPersistsMediaInputs: the partial row must carry every captured
+// input kind, not only chat and embedding history, or a late completion of a
+// speech/transcription/image/video request loses its input for good.
+func TestEvictionPersistsMediaInputs(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	pending := evictablePending("req-speech", "")
+	pending.InitialData.Object = "audio.speech"
+	pending.InitialData.InputHistory = nil
+	pending.InitialData.SpeechInput = &schemas.SpeechInput{Input: "read this aloud"}
+	plugin.pendingLogsEntries.Store("req-speech", pending)
+
+	plugin.cleanupStalePendingLogs()
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	row, err := store.FindByID(context.Background(), "req-speech")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != "processing" {
+		t.Fatalf("expected processing partial, got %q", row.Status)
+	}
+	if row.SpeechInputParsed == nil || row.SpeechInputParsed.Input != "read this aloud" {
+		t.Fatalf("expected speech input preserved on the partial row, got %+v", row.SpeechInputParsed)
+	}
+}
+
+// seedProcessingRow inserts a partial "processing" row (input only) that mimics
+// what cleanupStalePendingLogs persists before evicting an idle pending entry.
+func seedProcessingRow(t *testing.T, store logstore.LogStore, id string, origTimestamp time.Time) {
+	t.Helper()
+	content := "hello from input"
+	pending := &PendingLogData{
+		RequestID: id,
+		Timestamp: origTimestamp,
+		InitialData: &InitialLogData{
+			Object:   "chat.completion",
+			Provider: "openai",
+			Model:    "gpt-4o",
+			InputHistory: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &content},
+			}},
+		},
+	}
+	partial := buildInitialLogEntry(pending)
+	partial.CreatedAt = time.Now().UTC()
+	if err := store.CreateIfNotExists(context.Background(), partial); err != nil {
+		t.Fatalf("seed CreateIfNotExists() error = %v", err)
+	}
+}
+
+// TestCleanupStalePendingPersistsPartialRow verifies the persist-before-evict
+// half of the durability fallback: a stale LLM pending entry is written to the
+// DB as a "processing" row (input preserved, CreatedAt reset to now, original
+// Timestamp kept) before it is dropped from memory.
+func TestCleanupStalePendingPersistsPartialRow(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	origTimestamp := time.Now().Add(-2 * time.Hour)
+	stale := time.Now().Add(-pendingLogTTL - time.Minute)
+	content := "input that must survive eviction"
+	pending := &PendingLogData{
+		RequestID: "req-evicted",
+		Timestamp: origTimestamp,
+		Status:    "processing",
+		CreatedAt: stale,
+		InitialData: &InitialLogData{
+			Object:   "chat.completion",
+			Provider: "openai",
+			Model:    "gpt-4o",
+			InputHistory: []schemas.ChatMessage{{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: &content},
+			}},
+		},
+	}
+	pending.LastActivity.Store(stale.UnixNano())
+	plugin.pendingLogsEntries.Store("req-evicted", pending)
+
+	plugin.cleanupStalePendingLogs()
+
+	if _, ok := plugin.pendingLogsEntries.Load("req-evicted"); ok {
+		t.Fatal("expected stale pending entry to be removed from memory")
+	}
+
+	// Flush the async write queue.
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	row, err := store.FindByID(context.Background(), "req-evicted")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != "processing" {
+		t.Fatalf("expected status processing, got %q", row.Status)
+	}
+	if row.Provider != "openai" || row.Model != "gpt-4o" {
+		t.Fatalf("expected input fields preserved, got provider=%q model=%q", row.Provider, row.Model)
+	}
+	if len(row.InputHistoryParsed) != 1 {
+		t.Fatalf("expected input history preserved, got %d messages", len(row.InputHistoryParsed))
+	}
+	// Timestamp keeps the original request time; CreatedAt is reset to ~now so the
+	// processing-row Flush window restarts.
+	if !row.Timestamp.Equal(origTimestamp.UTC()) {
+		t.Fatalf("expected original timestamp %v, got %v", origTimestamp.UTC(), row.Timestamp)
+	}
+	if row.CreatedAt.Before(time.Now().Add(-5 * time.Minute)) {
+		t.Fatalf("expected CreatedAt reset to ~now, got %v", row.CreatedAt)
+	}
+}
+
+// TestPostLLMHookReconcilesEvictedPartialRowSuccess verifies the finish half: a
+// successful response whose in-memory pending was already evicted reconciles
+// output onto the persisted partial row via UPDATE, preserving the input.
+func TestPostLLMHookReconcilesEvictedPartialRowSuccess(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const id = "req-reconcile-success"
+	origTimestamp := time.Now().Add(-90 * time.Minute)
+	seedProcessingRow(t, store, id, origTimestamp)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, id)
+
+	finish := "stop"
+	usage := &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
+	result := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			Choices: []schemas.BifrostResponseChoice{{Index: 0, FinishReason: &finish}},
+			Usage:   usage,
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType:            schemas.ChatCompletionRequest,
+				Provider:               schemas.OpenAI,
+				OriginalModelRequested: "gpt-4o",
+				ResolvedModelUsed:      "gpt-4o",
+			},
+		},
+	}
+
+	if _, _, err := plugin.PostLLMHook(ctx, result, nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	row, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != "success" {
+		t.Fatalf("expected status success after reconcile, got %q", row.Status)
+	}
+	if row.TotalTokens != 15 {
+		t.Fatalf("expected total tokens 15 from reconciled output, got %d", row.TotalTokens)
+	}
+	// Input from the partial row must be preserved (UPDATE writes non-zero output
+	// fields only, leaving input columns intact).
+	if len(row.InputHistoryParsed) != 1 {
+		t.Fatalf("expected input history preserved through reconcile, got %d messages", len(row.InputHistoryParsed))
+	}
+}
+
+// TestPostLLMHookReconcilesEvictedPartialRowError verifies the error variant of
+// the reconcile path: a terminal error with no in-memory pending updates the
+// persisted partial row to status=error with error details.
+func TestPostLLMHookReconcilesEvictedPartialRowError(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const id = "req-reconcile-error"
+	seedProcessingRow(t, store, id, time.Now().Add(-90*time.Minute))
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, id)
+
+	statusCode := 500
+	bifrostErr := &schemas.BifrostError{
+		IsBifrostError: true,
+		StatusCode:     &statusCode,
+		Error:          &schemas.ErrorField{Message: "provider failed late"},
+		ExtraFields: schemas.BifrostErrorExtraFields{
+			RequestType:            schemas.ChatCompletionRequest,
+			Provider:               schemas.OpenAI,
+			OriginalModelRequested: "gpt-4o",
+			ResolvedModelUsed:      "gpt-4o",
+		},
+	}
+
+	if _, _, err := plugin.PostLLMHook(ctx, nil, bifrostErr); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	row, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != "error" {
+		t.Fatalf("expected status error after reconcile, got %q", row.Status)
+	}
+	if row.ErrorDetails == "" && row.ErrorDetailsParsed == nil {
+		t.Fatal("expected error details persisted on reconciled row")
+	}
+	if len(row.InputHistoryParsed) != 1 {
+		t.Fatalf("expected input history preserved through reconcile, got %d messages", len(row.InputHistoryParsed))
+	}
+}
+
+// fallbackSpyStore counts the DB-fallback probe (IsLogEntryPresent) so we can
+// assert the terminal-call guard prevents per-chunk DB hits.
+type fallbackSpyStore struct {
+	logstore.LogStore
+	presentCalls atomic.Int64
+}
+
+func (s *fallbackSpyStore) IsLogEntryPresent(ctx context.Context, id string) (bool, error) {
+	s.presentCalls.Add(1)
+	// Report absent so the fallback falls through to existing behavior; this test
+	// only cares about whether the probe is invoked.
+	return false, nil
+}
+
+// TestPostLLMHookNoDBProbeOnNonFinalChunk verifies that a non-final streaming
+// chunk with no in-memory pending does NOT probe the DB (avoiding the per-chunk
+// hammering that caused the original warning storm), while a terminal call does.
+func TestPostLLMHookNoDBProbeOnNonFinalChunk(t *testing.T) {
+	spy := &fallbackSpyStore{LogStore: newTestStore(t)}
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, spy, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	streamResult := &schemas.BifrostResponse{
+		ChatResponse: &schemas.BifrostChatResponse{
+			ExtraFields: schemas.BifrostResponseExtraFields{
+				RequestType: schemas.ChatCompletionStreamRequest,
+				Provider:    schemas.OpenAI,
+			},
+		},
+	}
+
+	// Non-final chunk: no StreamEndIndicator set => IsFinalChunk == false.
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "req-stream-nopending")
+	if _, _, err := plugin.PostLLMHook(ctx, streamResult, nil); err != nil {
+		t.Fatalf("PostLLMHook() non-final error = %v", err)
+	}
+	if got := spy.presentCalls.Load(); got != 0 {
+		t.Fatalf("expected no DB probe on non-final chunk, got %d calls", got)
+	}
+
+	// Final chunk: StreamEndIndicator set => terminal call => DB probe runs.
+	finalCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	finalCtx.SetValue(schemas.BifrostContextKeyRequestID, "req-stream-nopending")
+	finalCtx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+	if _, _, err := plugin.PostLLMHook(finalCtx, streamResult, nil); err != nil {
+		t.Fatalf("PostLLMHook() final error = %v", err)
+	}
+	if got := spy.presentCalls.Load(); got != 1 {
+		t.Fatalf("expected exactly one DB probe on the final chunk, got %d calls", got)
+	}
+}
+
+// slowStore wraps a LogStore and injects latency into the batched write paths so
+// inserts and updates back up in the writeQueue/batch — the worst case for the
+// evict→persist→reconcile ordering guarantee.
+type slowStore struct {
+	logstore.LogStore
+	delay time.Duration
+}
+
+func (s *slowStore) BatchCreateIfNotExists(ctx context.Context, entries []*logstore.Log) error {
+	time.Sleep(s.delay)
+	return s.LogStore.BatchCreateIfNotExists(ctx, entries)
+}
+
+func (s *slowStore) BatchUpdate(ctx context.Context, entries []*logstore.Log) error {
+	time.Sleep(s.delay)
+	return s.LogStore.BatchUpdate(ctx, entries)
+}
+
+// TestBulkEvictReconcileIntegritySQLite is the end-to-end stress test: a large
+// batch of requests is evicted (bulk partial-row inserts) and then finished (bulk
+// reconcile updates) against a deliberately slow store so the two write lanes back
+// up and interleave. It asserts that EVERY request ends up with a single row whose
+// input (from the partial) AND output (from the reconcile) are intact, the final
+// status is correct, and nothing was dropped — proving the ordering guarantee holds
+// under load on sqlite.
+func TestBulkEvictReconcileIntegritySQLite(t *testing.T) {
+	base := newTestStore(t)
+	slow := &slowStore{LogStore: base, delay: 3 * time.Millisecond}
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, slow, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const N = 800
+	origTimestamp := time.Now().Add(-2 * time.Hour)
+	stale := time.Now().Add(-pendingLogTTL - time.Minute)
+
+	// Phase 1: seed N pending entries that are all past the idle TTL, then evict
+	// them in one sweep — this bulk-enqueues N partial "processing" inserts.
+	for i := 0; i < N; i++ {
+		id := fmt.Sprintf("bulk-%d", i)
+		content := "input-" + id
+		pending := &PendingLogData{
+			RequestID: id,
+			Timestamp: origTimestamp,
+			Status:    "processing",
+			CreatedAt: stale,
+			InitialData: &InitialLogData{
+				Object:   "chat.completion",
+				Provider: "openai",
+				Model:    "gpt-4o",
+				InputHistory: []schemas.ChatMessage{{
+					Role:    schemas.ChatMessageRoleUser,
+					Content: &schemas.ChatMessageContent{ContentStr: &content},
+				}},
+			},
+		}
+		pending.LastActivity.Store(stale.UnixNano())
+		plugin.pendingLogsEntries.Store(id, pending)
+	}
+	plugin.cleanupStalePendingLogs()
+
+	// Phase 2: finish all N requests with no in-memory pending (the entries were
+	// just evicted) — this bulk-enqueues N reconcile updates while the inserts are
+	// still draining through the slow store.
+	finish := "stop"
+	for i := 0; i < N; i++ {
+		id := fmt.Sprintf("bulk-%d", i)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, id)
+		result := &schemas.BifrostResponse{
+			ChatResponse: &schemas.BifrostChatResponse{
+				Choices: []schemas.BifrostResponseChoice{{Index: 0, FinishReason: &finish}},
+				Usage:   &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+				ExtraFields: schemas.BifrostResponseExtraFields{
+					RequestType:            schemas.ChatCompletionRequest,
+					Provider:               schemas.OpenAI,
+					OriginalModelRequested: "gpt-4o",
+					ResolvedModelUsed:      "gpt-4o",
+				},
+			},
+		}
+		if _, _, err := plugin.PostLLMHook(ctx, result, nil); err != nil {
+			t.Fatalf("PostLLMHook(%s) error = %v", id, err)
+		}
+	}
+
+	// Phase 3: drain the queue fully.
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	// Phase 4: every request must have exactly one row with input + output intact.
+	for i := 0; i < N; i++ {
+		id := fmt.Sprintf("bulk-%d", i)
+		row, err := base.FindByID(context.Background(), id)
+		if err != nil {
+			t.Fatalf("FindByID(%s) error = %v (log lost)", id, err)
+		}
+		if row.Status != "success" {
+			t.Fatalf("%s: expected reconciled status success, got %q", id, row.Status)
+		}
+		if row.TotalTokens != 15 {
+			t.Fatalf("%s: expected output tokens 15, got %d", id, row.TotalTokens)
+		}
+		if len(row.InputHistoryParsed) != 1 {
+			t.Fatalf("%s: expected input preserved through reconcile, got %d messages", id, len(row.InputHistoryParsed))
+		}
+		if !row.Timestamp.Equal(origTimestamp.UTC()) {
+			t.Fatalf("%s: expected original timestamp preserved, got %v", id, row.Timestamp)
+		}
+	}
+	if dropped := plugin.droppedRequests.Load(); dropped != 0 {
+		t.Fatalf("expected 0 dropped requests, got %d", dropped)
+	}
+}
+
+// TestProcessBatchAppliesInsertsBeforeUpdates pins the ordering the reconcile
+// path relies on: within one batch the partial-row insert runs before the
+// update even when the update was queued first.
+func TestProcessBatchAppliesInsertsBeforeUpdates(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{ctx: context.Background(), store: store, logger: testLogger{}}
+
+	partial := buildInitialLogEntry(evictablePending("order-1", "input first"))
+	partial.CreatedAt = time.Now().UTC()
+	update := &logstore.Log{ID: "order-1", Status: "success", TotalTokens: 15}
+
+	if left := plugin.processBatch(context.Background(), []*writeQueueEntry{{logUpdate: update}, {log: partial}}); len(left) != 0 {
+		t.Fatalf("expected no unwritten entries, got %d", len(left))
+	}
+
+	row, err := store.FindByID(context.Background(), "order-1")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != "success" || row.TotalTokens != 15 {
+		t.Fatalf("expected update applied after insert, got status=%q tokens=%d", row.Status, row.TotalTokens)
+	}
+	if len(row.InputHistoryParsed) != 1 {
+		t.Fatalf("expected input from the insert preserved, got %d messages", len(row.InputHistoryParsed))
+	}
+}
+
+// TestReconcileLeavesPartialMetadataIntact guards the metadata column: the
+// stub has no request metadata, and a load-balancer attempt on the finishing
+// context must not replace what the partial row recorded.
+func TestReconcileLeavesPartialMetadataIntact(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const id = "req-meta"
+	partial := buildInitialLogEntry(evictablePending(id, "input"))
+	partial.CreatedAt = time.Now().UTC()
+	partial.MetadataParsed = map[string]interface{}{"x": "y"}
+	if err := store.CreateIfNotExists(context.Background(), partial); err != nil {
+		t.Fatalf("seed error = %v", err)
+	}
+
+	ctx := evictionRequestCtx(id)
+	ctx.SetValue(schemas.BifrostContextKeyLoadBalancerAttempt, map[string]string{schemas.LoadBalancerMetadataPrefix + "node": "a"})
+	if _, _, err := plugin.PostLLMHook(ctx, evictionChatResult("late output"), nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	row, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != "success" {
+		t.Fatalf("expected reconciled status success, got %q", row.Status)
+	}
+	if got := row.MetadataParsed["x"]; got != "y" {
+		t.Fatalf("expected partial metadata preserved, got %v", row.MetadataParsed)
+	}
+}
+
+// TestReconcileKeepsInputContentSummary guards content_summary: an output-only
+// update must not regenerate the row's summary from the output alone.
+func TestReconcileKeepsInputContentSummary(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const id = "req-summary"
+	seedProcessingRow(t, store, id, time.Now().Add(-time.Hour))
+	before, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if !strings.Contains(before.ContentSummary, "hello from input") {
+		t.Fatalf("expected input-derived summary on the partial row, got %q", before.ContentSummary)
+	}
+
+	if _, _, err := plugin.PostLLMHook(evictionRequestCtx(id), evictionChatResult("late output"), nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	after, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if after.Status != "success" || after.OutputMessage == "" {
+		t.Fatalf("expected reconciled output, got status=%q output=%q", after.Status, after.OutputMessage)
+	}
+	if after.ContentSummary != before.ContentSummary {
+		t.Fatalf("expected content summary unchanged %q, got %q", before.ContentSummary, after.ContentSummary)
+	}
+}
+
+// TestEvictionHonoursGlobalContentPolicy: with content logging disabled, the
+// partial row persisted at eviction carries no input and is marked hidden.
+func TestEvictionHonoursGlobalContentPolicy(t *testing.T) {
+	store := newTestStore(t)
+	disabled := true
+	plugin, err := Init(context.Background(), &Config{DisableContentLogging: &disabled}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	plugin.pendingLogsEntries.Store("req-hidden", evictablePending("req-hidden", "secret input"))
+	plugin.cleanupStalePendingLogs()
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	row, err := store.FindByID(context.Background(), "req-hidden")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != "processing" {
+		t.Fatalf("expected processing partial, got %q", row.Status)
+	}
+	if row.InputHistory != "" || len(row.InputHistoryParsed) != 0 {
+		t.Fatalf("expected no input persisted under disabled content logging, got %q", row.InputHistory)
+	}
+	if !row.ContentHidden {
+		t.Fatal("expected partial row marked content hidden")
+	}
+}
+
+// TestEvictionDropsProvisionalInput: input captured before the virtual key's
+// content decision was known is never persisted by eviction, even when the
+// global policy allows content.
+func TestEvictionDropsProvisionalInput(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	pending := evictablePending("req-provisional", "undecided input")
+	pending.ProvisionalInput = true
+	plugin.pendingLogsEntries.Store("req-provisional", pending)
+	plugin.cleanupStalePendingLogs()
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	row, err := store.FindByID(context.Background(), "req-provisional")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.InputHistory != "" || len(row.InputHistoryParsed) != 0 {
+		t.Fatalf("expected provisional input dropped at eviction, got %q", row.InputHistory)
+	}
+	if row.ContentHidden {
+		t.Fatal("expected row visible under the global policy")
+	}
+}
+
+// TestReconcileCallbackReceivesFullRow: subscribers get the full row, not the
+// output-only update entry.
+func TestReconcileCallbackReceivesFullRow(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const id = "req-callback"
+	seedProcessingRow(t, store, id, time.Now().Add(-time.Hour))
+
+	got := make(chan *logstore.Log, 1)
+	unsubscribe := plugin.SubscribeLogCallback(func(_ context.Context, entry *logstore.Log) {
+		select {
+		case got <- entry:
+		default:
+		}
+	})
+	defer unsubscribe()
+
+	if _, _, err := plugin.PostLLMHook(evictionRequestCtx(id), evictionChatResult("late output"), nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	select {
+	case entry := <-got:
+		if entry.ID != id || entry.Provider != "openai" || entry.Model != "gpt-4o" || entry.Timestamp.IsZero() {
+			t.Fatalf("expected full row in callback, got id=%q provider=%q model=%q ts=%v", entry.ID, entry.Provider, entry.Model, entry.Timestamp)
+		}
+		if entry.Status != "success" || len(entry.InputHistoryParsed) != 1 {
+			t.Fatalf("expected reconciled row with input, got status=%q messages=%d", entry.Status, len(entry.InputHistoryParsed))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the reconcile callback")
+	}
+}
+
+// TestEvictedPartialMarkerExpires: stale markers are pruned, and a finish after
+// that still reconciles through the DB probe while the row exists.
+func TestEvictedPartialMarkerExpires(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	plugin.evictedPartials.Store("req-old", time.Now().Add(-pendingLogTTL-time.Minute))
+	plugin.evictedPartials.Store("req-fresh", time.Now())
+	plugin.cleanupStalePendingLogs()
+	if _, ok := plugin.evictedPartials.Load("req-old"); ok {
+		t.Fatal("expected stale marker pruned")
+	}
+	if _, ok := plugin.evictedPartials.Load("req-fresh"); !ok {
+		t.Fatal("expected fresh marker kept")
+	}
+
+	seedProcessingRow(t, store, "req-old", time.Now().Add(-time.Hour))
+	if _, _, err := plugin.PostLLMHook(evictionRequestCtx("req-old"), evictionChatResult("late output"), nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	row, err := store.FindByID(context.Background(), "req-old")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != "success" {
+		t.Fatalf("expected reconcile via DB probe after marker expiry, got %q", row.Status)
+	}
+}
+
+// TestPersistCompletedEntryBypassesInject: with a live trace on the context the
+// normal path parks entries for Inject; a reconcile must write directly, since
+// Inject re-enqueues as an insert that would no-op against the partial row.
+func TestPersistCompletedEntryBypassesInject(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	const id = "req-traced"
+	seedProcessingRow(t, store, id, time.Now().Add(-time.Hour))
+
+	ctx := evictionRequestCtx(id)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, "trace-1")
+	if _, _, err := plugin.PostLLMHook(ctx, evictionChatResult("late output"), nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if _, parked := plugin.pendingLogsToInject.Load("trace-1"); parked {
+		t.Fatal("expected reconcile to bypass the Inject parking slot")
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	row, err := store.FindByID(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != "success" || row.TotalTokens != 15 {
+		t.Fatalf("expected output reconciled despite live trace, got status=%q tokens=%d", row.Status, row.TotalTokens)
+	}
+}
+
+// TestEnqueueLogUpdateDropsWhenQueueFull: a full write queue drops the update
+// and counts it, never blocking the request goroutine.
+func TestEnqueueLogUpdateDropsWhenQueueFull(t *testing.T) {
+	plugin := &LoggerPlugin{ctx: context.Background(), logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 1)}
+	plugin.writeQueue <- &writeQueueEntry{}
+
+	plugin.enqueueLogUpdate(&logstore.Log{ID: "req-full"}, nil)
+
+	if got := plugin.droppedRequests.Load(); got != 1 {
+		t.Fatalf("expected 1 dropped request, got %d", got)
+	}
+	if len(plugin.writeQueue) != 1 {
+		t.Fatalf("expected queue untouched, got %d entries", len(plugin.writeQueue))
+	}
+}
+
+// TestEvictionPersistsRequestMetadata: the partial row must carry the request
+// metadata captured in PreLLMHook (logging headers, isAsyncRequest); the
+// reconcile deliberately writes none, so eviction is its only source.
+func TestEvictionPersistsRequestMetadata(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	pending := evictablePending("req-meta-evict", "input")
+	pending.InitialData.Metadata = map[string]any{"x-team": "payments", "isAsyncRequest": true}
+	plugin.pendingLogsEntries.Store("req-meta-evict", pending)
+	plugin.cleanupStalePendingLogs()
+
+	if _, _, err := plugin.PostLLMHook(evictionRequestCtx("req-meta-evict"), evictionChatResult("late"), nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	row, err := store.FindByID(context.Background(), "req-meta-evict")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != "success" {
+		t.Fatalf("expected reconciled status success, got %q", row.Status)
+	}
+	if got := row.MetadataParsed["x-team"]; got != "payments" {
+		t.Fatalf("expected request metadata preserved through eviction and reconcile, got %v", row.MetadataParsed)
+	}
+	if got, _ := row.MetadataParsed["isAsyncRequest"].(bool); !got {
+		t.Fatalf("expected isAsyncRequest preserved, got %v", row.MetadataParsed)
+	}
+}
+
+// staleReadStore returns rows without their output, like a hybrid store whose
+// stored object has not yet received the reconcile's merge upload.
+type staleReadStore struct {
+	logstore.LogStore
+}
+
+func (s *staleReadStore) FindByID(ctx context.Context, id string) (*logstore.Log, error) {
+	row, err := s.LogStore.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	row.OutputMessage = ""
+	row.OutputMessageParsed = nil
+	return row, nil
+}
+
+// TestReconcileCallbackCarriesWrittenOutput: subscribers must see the completed
+// response even when the re-read row's offloaded content lags behind the update.
+func TestReconcileCallbackCarriesWrittenOutput(t *testing.T) {
+	base := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, &staleReadStore{LogStore: base}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+	seedProcessingRow(t, base, "req-stale-cb", time.Now().Add(-time.Hour))
+
+	got := make(chan *logstore.Log, 1)
+	defer plugin.SubscribeLogCallback(func(_ context.Context, entry *logstore.Log) {
+		select {
+		case got <- entry:
+		default:
+		}
+	})()
+
+	if _, _, err := plugin.PostLLMHook(evictionRequestCtx("req-stale-cb"), evictionChatResult("the late answer"), nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	select {
+	case entry := <-got:
+		if !strings.Contains(entry.OutputMessage, "the late answer") {
+			t.Fatalf("expected the written output on the notified row, got %q", entry.OutputMessage)
+		}
+		if entry.OutputMessageParsed == nil || entry.OutputMessageParsed.Content == nil || entry.OutputMessageParsed.Content.ContentStr == nil || *entry.OutputMessageParsed.Content.ContentStr != "the late answer" {
+			t.Fatalf("expected parsed output on the notified row, got %+v", entry.OutputMessageParsed)
+		}
+		if len(entry.InputHistoryParsed) != 1 || entry.Provider != "openai" {
+			t.Fatalf("expected the re-read input and identity kept, got %d messages provider=%q", len(entry.InputHistoryParsed), entry.Provider)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the reconcile callback")
+	}
+}
+
+// TestReconcileAppliesFinalVisibility: the partial row is saved with the policy
+// known at eviction (hidden here), and the virtual key's decision arriving at
+// completion allows content. The reconcile must be able to write that final
+// "visible" decision, not only flip a row to hidden.
+func TestReconcileAppliesFinalVisibility(t *testing.T) {
+	store := newTestStore(t)
+	disabled := true
+	plugin, err := Init(context.Background(), &Config{DisableContentLogging: &disabled}, testLogger{}, store, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("Init() error = %v", err)
+	}
+
+	pending := evictablePending("req-visible-late", "input")
+	pending.ContentPolicy = &contentPolicy{storeContent: true, hidden: true}
+	plugin.pendingLogsEntries.Store("req-visible-late", pending)
+	plugin.cleanupStalePendingLogs()
+
+	ctx := evictionRequestCtx("req-visible-late")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceDisableContentLogging, false)
+	if _, _, err := plugin.PostLLMHook(ctx, evictionChatResult("allowed answer"), nil); err != nil {
+		t.Fatalf("PostLLMHook() error = %v", err)
+	}
+	if err := plugin.Cleanup(); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	row, err := store.FindByID(context.Background(), "req-visible-late")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if row.Status != "success" {
+		t.Fatalf("expected reconciled status success, got %q", row.Status)
+	}
+	if row.ContentHidden {
+		t.Fatal("expected the completion's visible decision applied to the row")
+	}
+}
+
+// TestProcessBatchOmitsBinaryBodies pins that body columns holding binary data
+// (an audio passthrough response, a multipart upload, a Bedrock event stream)
+// are stored as a size placeholder instead of raw bytes, and that a text
+// preview cut inside a multi-byte character keeps its text with the partial
+// character dropped. Raw NUL bytes and invalid UTF-8 are what Postgres rejects
+// with SQLSTATE 22021, failing the whole batch INSERT.
+func TestProcessBatchOmitsBinaryBodies(t *testing.T) {
+	store := newTestStore(t)
+	plugin := &LoggerPlugin{ctx: context.Background(), store: store, logger: testLogger{}}
+
+	audio := "ID3\x03\x00\x00\x00\x00\xff\xfb\x90"
+	multipart := "--b\r\nContent-Type: audio/wav\r\n\r\nRIFF\x24\x00\x00\x00WAVE\r\n--b--"
+	cutPreview := `{"text":"caf` + "\xc3"
+	eventStream := "\x00\x00\x00\x8a\x00\x00\x00\x52event"
+
+	insert := &logstore.Log{ID: "binary-insert", Timestamp: time.Now().UTC(), CreatedAt: time.Now().UTC(), Provider: "openai", Model: "whisper-1", Status: "success", Object: "audio.transcription",
+		RawRequest: multipart, RawResponse: cutPreview, PassthroughRequestBody: `{"ok":true}`, PassthroughResponseBody: audio}
+	update := &logstore.Log{ID: "binary-insert", RawResponse: eventStream}
+
+	if left := plugin.processBatch(context.Background(), []*writeQueueEntry{{log: insert}, {logUpdate: update}}); len(left) != 0 {
+		t.Fatalf("expected no unwritten entries, got %d", len(left))
+	}
+	row, err := store.FindByID(context.Background(), "binary-insert")
+	if err != nil {
+		t.Fatalf("FindByID() error = %v", err)
+	}
+	if want := fmt.Sprintf("<binary content omitted: %d bytes>", len(audio)); row.PassthroughResponseBody != want {
+		t.Errorf("passthrough_response_body = %q, want %q", row.PassthroughResponseBody, want)
+	}
+	if want := fmt.Sprintf("<binary content omitted: %d bytes>", len(multipart)); row.RawRequest != want {
+		t.Errorf("raw_request = %q, want %q", row.RawRequest, want)
+	}
+	if want := fmt.Sprintf("<binary content omitted: %d bytes>", len(eventStream)); row.RawResponse != want {
+		t.Errorf("raw_response after update = %q, want %q", row.RawResponse, want)
+	}
+	if row.PassthroughRequestBody != `{"ok":true}` {
+		t.Errorf("text passthrough_request_body changed: %q", row.PassthroughRequestBody)
+	}
+}
+
+// TestOmitBinaryBody pins the text/binary decision.
+func TestOmitBinaryBody(t *testing.T) {
+	for _, c := range []struct{ name, in, want string }{
+		{"empty", "", ""},
+		{"json", `{"a":"b"}`, `{"a":"b"}`},
+		{"multibyte_text", "café ☕", "café ☕"},
+		{"preview_cut_mid_rune", "caf\xc3", "caf"},
+		{"preview_cut_mid_4byte_rune", "a\xf0\x9f\x98", "a"},
+		{"nul_byte", "a\x00b", "<binary content omitted: 3 bytes>"},
+		{"invalid_byte", "a\xffb", "<binary content omitted: 3 bytes>"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := omitBinaryBody(c.in); got != c.want {
+				t.Fatalf("omitBinaryBody(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
 }

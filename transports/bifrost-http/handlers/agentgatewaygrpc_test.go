@@ -9,7 +9,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -220,4 +220,22 @@ func TestAgentGatewayGRPCAuthenticate(t *testing.T) {
 		defer cancel()
 		require.Nil(t, authedCtx.Value(schemas.BifrostContextKeyVirtualKey))
 	})
+}
+
+// TestAgentGatewayGRPCRequiresExternalURL rejects unary and streaming traffic before routing or authentication.
+func TestAgentGatewayGRPCRequiresExternalURL(t *testing.T) {
+	s := &AgentGatewayGRPCServer{config: &lib.Config{}}
+	called := false
+	_, err := s.unaryAuth(context.Background(), nil, &grpc.UnaryServerInfo{}, func(context.Context, any) (any, error) { called = true; return nil, nil })
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.False(t, called)
+	err = s.streamAuth(nil, &authenticatedServerStream{ctx: context.Background()}, &grpc.StreamServerInfo{}, func(any, grpc.ServerStream) error {
+		called = true
+		return nil
+	})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.False(t, called)
+	_, cancel, err := s.intercept(context.Background())
+	require.Nil(t, cancel)
+	require.Equal(t, codes.Unavailable, status.Code(err))
 }

@@ -483,6 +483,22 @@ export function splitWarpAnswer(content: string): WarpAnswerParts {
 	return { answer: content.slice(0, match.index).trimEnd(), provenance };
 }
 
+const WARP_PROVENANCE_OPEN = "```warp-scope";
+
+/**
+ * Streaming counterpart of splitWarpAnswer: drops the scope block, closed or not, so it never renders
+ * as a code block that vanishes into the provenance toggle when the turn finishes. A trailing partial
+ * fence line ("```w") is held too; a bare "```" is not, since it may close an ordinary code block.
+ */
+export function holdWarpProvenance(text: string): string {
+	const open = text.lastIndexOf("\n" + WARP_PROVENANCE_OPEN);
+	if (open !== -1 || text.startsWith(WARP_PROVENANCE_OPEN)) return text.slice(0, Math.max(open, 0)).trimEnd();
+	const lineStart = text.lastIndexOf("\n") + 1;
+	const tail = text.slice(lineStart);
+	if (tail.length > 3 && WARP_PROVENANCE_OPEN.startsWith(tail)) return text.slice(0, lineStart).trimEnd();
+	return text;
+}
+
 /** Formats a turn's token and cost usage, or null when there is nothing to report. */
 export function formatWarpUsage(usage: WarpUsage | undefined): string | null {
 	if (!usage) return null;
@@ -568,6 +584,37 @@ export function parseWarpChartSpec(raw: string): WarpChartSpec | null {
 		window: spec.window && typeof spec.window === "object" ? (spec.window as WarpChartSpec["window"]) : undefined,
 		link: typeof spec.link === "string" ? spec.link : undefined,
 	};
+}
+
+const TABLE_DELIMITER_CELL = /^\s*:?-+:?\s*$/;
+
+/** Cells of a pipe table row; an escaped pipe stays inside its cell. */
+function tableRowCells(line: string): string[] {
+	return line
+		.trim()
+		.replace(/^\|/, "")
+		.replace(/(?<!\\)\|$/, "")
+		.split(/(?<!\\)\|/);
+}
+
+/**
+ * Drops a trailing pipe table that has no complete delimiter row yet. Until that row arrives the
+ * header renders as a line of raw pipes, which then snaps into a table a few tokens later.
+ */
+export function holdPartialWarpTable(text: string): string {
+	const lines = text.split("\n");
+	let end = lines.length;
+	if (end > 0 && lines[end - 1].trim() === "") end--;
+	let start = end;
+	while (start > 0 && lines[start - 1].trimStart().startsWith("|")) start--;
+	if (start === end) return text;
+	const before = lines.slice(0, start);
+	// Pipes inside an open code fence are code, not a table.
+	if (before.filter((line) => line.trimStart().startsWith("```")).length % 2 === 1) return text;
+	const header = tableRowCells(lines[start]);
+	const delimiter = start + 1 < end ? tableRowCells(lines[start + 1]) : [];
+	if (delimiter.length === header.length && delimiter.every((cell) => TABLE_DELIMITER_CELL.test(cell))) return text;
+	return before.join("\n");
 }
 
 /** Splits answer text around chart blocks; an unclosed block is pending while streaming, invalid once finished. */

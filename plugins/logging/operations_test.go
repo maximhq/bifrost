@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +21,8 @@ import (
 	"github.com/maximhq/bifrost/framework/streaming"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/fasthttpadaptor"
 )
 
 type testLogger struct{}
@@ -280,6 +284,29 @@ func TestUserAgentFromContextFallsBackToUserAgentKey(t *testing.T) {
 
 	if got := userAgentFromContext(ctx); got != "cursor/0.47" {
 		t.Fatalf("expected fallback user agent, got %q", got)
+	}
+}
+
+// TestAntigravityLogClassification preserves synthetic raw agents while giving logs distinct built-in labels and honoring custom mappings.
+func TestAntigravityLogClassification(t *testing.T) {
+	plugin := &LoggerPlugin{}
+	for userAgent, expected := range map[string]string{"antigravity/2.23.0": "Antigravity Desktop", "antigravity-cli/1.0": "Antigravity CLI"} {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestHeaders, map[string]string{"user-agent": userAgent})
+		ctx.SetValue(schemas.BifrostContextKeyUserAgent, "bifrost-edge/0.1.0")
+		actual := userAgentFromContext(ctx)
+		if actual != userAgent || plugin.detectAppFromUserAgent(actual) != expected {
+			t.Fatalf("user agent %q was not classified as %s", actual, expected)
+		}
+		entry := &logstore.Log{}
+		applyUserAgent(entry, actual)
+		if entry.App == nil || *entry.App != expected || entry.UserAgent == nil || *entry.UserAgent != userAgent {
+			t.Fatalf("log lost raw agent or classification: %+v", entry)
+		}
+	}
+	plugin.userAgentMappings.Store([]compiledUserAgentMapping{{Pattern: "antigravity/", MatchType: schemas.UserAgentMappingMatchTypeContains, App: "Custom Antigravity"}})
+	if actual := plugin.detectAppFromUserAgent("antigravity/2.23.0"); actual != "Custom Antigravity" {
+		t.Fatalf("custom mapping overridden: %s", actual)
 	}
 }
 
@@ -4587,6 +4614,61 @@ func TestObserveA2AEventAppliesContentPolicy(t *testing.T) {
 	require.False(t, entry.ContentHidden)
 }
 
+// TestA2ASubscriptionLogOwnsRESTTaskID reproduces reuse of the adaptor's borrowed URL buffer before the queued log is written.
+func TestA2ASubscriptionLogOwnsRESTTaskID(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "rest-subscription")
+	var fastCtx fasthttp.RequestCtx
+	fastCtx.Request.SetRequestURI("/tasks/task-original:subscribe")
+	fastCtx.Request.Header.SetMethod(http.MethodGet)
+	var request http.Request
+	require.NoError(t, fasthttpadaptor.ConvertRequest(&fastCtx, &request, true))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /tasks/{idAndAction}", func(w http.ResponseWriter, r *http.Request) {
+		taskID, ok := strings.CutSuffix(r.PathValue("idAndAction"), ":subscribe")
+		require.True(t, ok)
+		_, _, err := plugin.PreA2AHook(ctx, &schemas.BifrostA2ARequest{
+			RequestType:           schemas.A2ARequestTypeSubscribeToTask,
+			BifrostA2ATaskRequest: &schemas.BifrostA2ATaskRequest{TaskID: taskID},
+		})
+		require.NoError(t, err)
+		_, _, err = plugin.PostA2AHook(ctx, &schemas.BifrostA2AResponse{
+			ExtraFields: schemas.BifrostA2AResponseExtraFields{A2ARequestType: schemas.A2ARequestTypeSubscribeToTask},
+		}, nil)
+		require.NoError(t, err)
+	})
+	mux.ServeHTTP(httptest.NewRecorder(), &request)
+	// Reuse the same bytes after the request ends, while the log is still queued.
+	copy(fastCtx.RequestURI(), "/tasks/task-replaced:subscribe")
+	entry := (<-plugin.writeQueue).agentLog
+	require.NotNil(t, entry.TaskID)
+	require.Equal(t, "task-original", *entry.TaskID)
+}
+
+// BenchmarkA2ACorrelationOwnership compares retaining a borrowed value with owning its bytes.
+func BenchmarkA2ACorrelationOwnership(b *testing.B) {
+	value := "12345678-1234-1234-1234-123456789abc"
+	for _, owned := range []bool{false, true} {
+		b.Run(fmt.Sprintf("owned=%t", owned), func(b *testing.B) {
+			b.ReportAllocs()
+			var retained *string
+			for b.Loop() {
+				if owned {
+					retained = optionalBoundedA2AValue(value, 255)
+				} else {
+					bounded := clampString(value, 255)
+					retained = &bounded
+				}
+			}
+			if *retained != value {
+				b.Fatal("correlation value changed")
+			}
+		})
+	}
+}
+
 func TestA2AResponseCorrelationPreservesRequestValuesWhenResponseOmitsThem(t *testing.T) {
 	entry := &logstore.AgentLog{}
 	applyA2ARequestCorrelation(entry, &schemas.BifrostA2ARequest{
@@ -4888,6 +4970,35 @@ func TestRefusalLogOutcome(t *testing.T) {
 					}
 				})
 			}
+		}
+	}
+}
+
+// TestA2ARawCaptureContentPolicy verifies raw captures follow the same content policy as typed bodies.
+func TestA2ARawCaptureContentPolicy(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		plugin := policyTestPlugin(boolPtr(disabled), nil, false)
+		plugin.writeQueue = make(chan *writeQueueEntry, 1)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyRequestID, "raw-policy")
+		var captures schemas.A2ARawCaptureManager
+		ctx.SetValue(schemas.A2ARawCaptureContextKey, captures.Start("capture-test"))
+		capture := schemas.GetA2ARawCapture(ctx)
+		capture.Append([]byte("request"), true)
+		capture.Append([]byte("response"), false)
+		req := &schemas.BifrostA2ARequest{RequestType: schemas.A2ARequestTypeSendMessage, AgentName: "fixture"}
+		_, _, err := plugin.PreA2AHook(ctx, req)
+		require.NoError(t, err)
+		resp := &schemas.BifrostA2AResponse{ExtraFields: schemas.BifrostA2AResponseExtraFields{A2ARequestType: req.RequestType, AgentName: req.AgentName}}
+		_, _, err = plugin.PostA2AHook(ctx, resp, nil)
+		require.NoError(t, err)
+		entry := (<-plugin.writeQueue).agentLog
+		if disabled {
+			require.Nil(t, entry.RawRequest)
+			require.Nil(t, entry.RawResponse)
+		} else {
+			require.Equal(t, "cmVxdWVzdA==", *entry.RawRequest)
+			require.Equal(t, "cmVzcG9uc2U=", *entry.RawResponse)
 		}
 	}
 }

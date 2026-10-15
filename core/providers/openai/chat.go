@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"encoding/json"
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -116,6 +118,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.Messages = applyChatCacheBreakpoints(openaiReq.Messages, ceiling)
 	}
 
+	// OpenRouter forwards cache_control verbatim to Claude, which rejects more than four
+	// markers outright, so clamp the same way the direct Anthropic path does.
+	if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.OpenRouter && schemas.IsAnthropicModel(capModel) {
+		clampOpenRouterCacheControl(openaiReq, maxResponsesCacheBreakpoints)
+	}
+
 	switch bifrostReq.Provider {
 	case schemas.OpenAI, schemas.Azure:
 		openaiReq.normalizeReasoningEffort(caps)
@@ -138,6 +146,7 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		// without it. Stripping both forced thinking off for every tool-calling conversation
 		// — see issue #5887.
 		openaiReq.stripReasoningDetailsExceptToolCalls()
+		openaiReq.downgradeJSONSchemaToJSONObject()
 		return openaiReq
 	case schemas.Groq, schemas.Cerebras:
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -204,6 +213,11 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	default:
 		// Check if provider is a custom provider
 		if isCustomProvider, ok := ctx.Value(schemas.BifrostContextKeyIsCustomProvider).(bool); ok && isCustomProvider {
+			// A custom provider reports its own name, so a DeepSeek-based one lands here
+			// and still needs the json_schema downgrade DeepSeek's endpoint requires.
+			if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.DeepSeek {
+				openaiReq.downgradeJSONSchemaToJSONObject()
+			}
 			return openaiReq
 		}
 		openaiReq.filterOpenAISpecificParameters(caps)
@@ -355,6 +369,78 @@ func (req *OpenAIChatRequest) stripReasoningDetailsExceptToolCalls() {
 	}
 }
 
+// downgradeJSONSchemaToJSONObject rewrites a json_schema response_format to
+// json_object and carries the schema to the model as a system instruction.
+//
+// DeepSeek's chat endpoint rejects json_schema with HTTP 400 ("This response_format
+// type is unavailable now") and accepts only json_object, which in turn requires the
+// word "json" somewhere in the prompt. This is a property of the DeepSeek API surface,
+// not of a model, so it is not gated on SupportsResponseSchema: the datasheet marks
+// the DeepSeek rows supports_response_schema=true because they do support JSON mode.
+//
+// Only requests that carry json_schema pay for this. The caller's response_format and
+// messages are never written: the format is replaced by pointer and the instruction is
+// inserted into a new slice (Messages is already a fresh conversion of the input).
+func (req *OpenAIChatRequest) downgradeJSONSchemaToJSONObject() {
+	if req.ResponseFormat == nil {
+		return
+	}
+	rf, ok := schemas.ParseChatResponseFormat(req.ResponseFormat)
+	if !ok || rf.Type != "json_schema" {
+		return
+	}
+
+	var jsonObject interface{} = json.RawMessage(`{"type":"json_object"}`)
+	req.ResponseFormat = &jsonObject
+
+	instruction := jsonSchemaInstruction(rf)
+	// The instruction goes after any leading system/developer messages so the
+	// client's own system prompt keeps its place at the top of the prompt.
+	insertAt := 0
+	for insertAt < len(req.Messages) &&
+		(req.Messages[insertAt].Role == schemas.ChatMessageRoleSystem || req.Messages[insertAt].Role == schemas.ChatMessageRoleDeveloper) {
+		insertAt++
+	}
+	messages := make([]OpenAIMessage, 0, len(req.Messages)+1)
+	messages = append(messages, req.Messages[:insertAt]...)
+	messages = append(messages, OpenAIMessage{
+		Role:    schemas.ChatMessageRoleSystem,
+		Content: &schemas.ChatMessageContent{ContentStr: &instruction},
+	})
+	messages = append(messages, req.Messages[insertAt:]...)
+	req.Messages = messages
+}
+
+// jsonSchemaInstruction renders a json_schema response_format as a prompt
+// instruction for providers that only offer JSON mode. It always contains the
+// lowercase word "json", which DeepSeek's JSON mode requires in the prompt.
+func jsonSchemaInstruction(rf *schemas.ChatResponseFormat) string {
+	const lead = "Respond with only a valid json object, with no surrounding text or code fences"
+	schema := rf.RawSchema()
+	if len(schema) == 0 {
+		return lead + "."
+	}
+	name, _ := rf.Name()
+	description, _ := rf.Description()
+	var sb strings.Builder
+	sb.Grow(len(lead) + len(name) + len(description) + len(schema) + 80)
+	sb.WriteString(lead)
+	sb.WriteString(", that conforms to the following JSON Schema")
+	if name != "" {
+		sb.WriteString(" (")
+		sb.WriteString(name)
+		sb.WriteString(")")
+	}
+	sb.WriteString(".")
+	if description != "" {
+		sb.WriteString(" ")
+		sb.WriteString(description)
+	}
+	sb.WriteString("\n\nJSON Schema:\n")
+	sb.Write(schema)
+	return sb.String()
+}
+
 // renameAssistantReasoningToAlias moves replayed assistant reasoning from
 // reasoning_content to the "reasoning" key, for providers that only accept the latter.
 func (req *OpenAIChatRequest) renameAssistantReasoningToAlias() {
@@ -410,6 +496,79 @@ func chatUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schemas.Mod
 		return caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(model))
 	default:
 		return false
+	}
+}
+
+type openRouterCacheRef struct {
+	tool, msg, block, toolCall int
+}
+
+// clampOpenRouterCacheControl drops the earliest surplus markers so at most n remain
+// (same trade-off as clampAnthropicCacheBreakpoints).
+func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) {
+	if req == nil {
+		return
+	}
+	var buf [8]openRouterCacheRef // stays on the stack for the usual marker counts
+	refs := buf[:0]
+	for i := range req.ChatParameters.Tools {
+		if req.ChatParameters.Tools[i].CacheControl != nil {
+			refs = append(refs, openRouterCacheRef{tool: i, msg: -1, block: -1, toolCall: -1})
+		}
+	}
+	for i := range req.Messages {
+		msg := &req.Messages[i]
+		if msg.Content != nil {
+			for j := range msg.Content.ContentBlocks {
+				if msg.Content.ContentBlocks[j].CacheControl != nil {
+					refs = append(refs, openRouterCacheRef{tool: -1, msg: i, block: j, toolCall: -1})
+				}
+			}
+		}
+		if msg.OpenAIChatAssistantMessage != nil {
+			for j := range msg.OpenAIChatAssistantMessage.ToolCalls {
+				if msg.OpenAIChatAssistantMessage.ToolCalls[j].CacheControl != nil {
+					refs = append(refs, openRouterCacheRef{tool: -1, msg: i, block: -1, toolCall: j})
+				}
+			}
+		}
+	}
+	excess := len(refs) - n
+	if excess <= 0 {
+		return
+	}
+
+	toolsCopied := false
+	contentCopied := map[int]bool{}
+	assistantCopied := map[int]bool{}
+	for _, ref := range refs[:excess] {
+		switch {
+		case ref.tool >= 0:
+			if !toolsCopied {
+				req.ChatParameters.Tools = slices.Clone(req.ChatParameters.Tools)
+				toolsCopied = true
+			}
+			req.ChatParameters.Tools[ref.tool].CacheControl = nil
+			req.ChatParameters.Tools[ref.tool].InvalidateSerialized()
+		case ref.block >= 0:
+			msg := &req.Messages[ref.msg]
+			if !contentCopied[ref.msg] {
+				contentCopy := *msg.Content
+				contentCopy.ContentBlocks = slices.Clone(msg.Content.ContentBlocks)
+				msg.Content = &contentCopy
+				contentCopied[ref.msg] = true
+			}
+			msg.Content.ContentBlocks[ref.block].CacheControl = nil
+		case ref.toolCall >= 0:
+			msg := &req.Messages[ref.msg]
+			if !assistantCopied[ref.msg] {
+				assistantCopy := *msg.OpenAIChatAssistantMessage
+				assistantCopy.ToolCalls = slices.Clone(msg.OpenAIChatAssistantMessage.ToolCalls)
+				msg.OpenAIChatAssistantMessage = &assistantCopy
+				assistantCopied[ref.msg] = true
+			}
+			msg.OpenAIChatAssistantMessage.ToolCalls[ref.toolCall].CacheControl = nil
+		}
 	}
 }
 

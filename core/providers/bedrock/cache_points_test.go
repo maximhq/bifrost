@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"context"
 	"reflect"
 	"testing"
 
@@ -312,5 +313,86 @@ func TestBuildBedrockTokenUsage_StreamMatchesNonStream(t *testing.T) {
 	if streamEvent.Usage.CacheReadInputTokens != 2000 || streamEvent.Usage.CacheWriteInputTokens != 647 {
 		t.Errorf("cache tokens: want read=2000 write=647, got read=%d write=%d",
 			streamEvent.Usage.CacheReadInputTokens, streamEvent.Usage.CacheWriteInputTokens)
+	}
+}
+
+// TestToBedrockChatCompletionRequest_ToolCallCacheControlBecomesCachePoint — a
+// cache_control on a chat tool_calls entry becomes a standalone cachePoint block
+// directly after the toolUse it was placed on; unmarked siblings get none.
+func TestToBedrockChatCompletionRequest_ToolCallCacheControlBecomesCachePoint(t *testing.T) {
+	ttl := "1h"
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("weather in paris and berlin?")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							ID:           schemas.Ptr("toolu_paris"),
+							Type:         schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							Function:     schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_weather"), Arguments: `{"city":"Paris"}`},
+							CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: &ttl},
+						},
+						{
+							ID:       schemas.Ptr("toolu_berlin"),
+							Type:     schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_weather"), Arguments: `{"city":"Berlin"}`},
+						},
+					},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_paris")},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("18C")},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_berlin")},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("15C")},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToBedrockChatCompletionRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var assistant *BedrockMessage
+	for i := range result.Messages {
+		if result.Messages[i].Role == BedrockMessageRoleAssistant {
+			assistant = &result.Messages[i]
+		}
+	}
+	if assistant == nil {
+		t.Fatal("expected an assistant message in the converted request")
+	}
+	blocks := assistant.Content
+	if len(blocks) != 3 {
+		t.Fatalf("expected [toolUse, cachePoint, toolUse], got %d blocks: %+v", len(blocks), blocks)
+	}
+	if blocks[0].ToolUse == nil || blocks[0].ToolUse.ToolUseID != "toolu_paris" {
+		t.Fatalf("block 0 must be the paris toolUse, got %+v", blocks[0])
+	}
+	if blocks[1].CachePoint == nil {
+		t.Fatalf("expected a cachePoint directly after the marked toolUse, got %+v", blocks[1])
+	}
+	if blocks[1].CachePoint.Type != BedrockCachePointTypeDefault {
+		t.Errorf("cachePoint type = %q, want %q", blocks[1].CachePoint.Type, BedrockCachePointTypeDefault)
+	}
+	if blocks[1].CachePoint.TTL == nil || *blocks[1].CachePoint.TTL != "1h" {
+		t.Errorf("cachePoint ttl must carry the marker's 1h ttl, got %+v", blocks[1].CachePoint.TTL)
+	}
+	if blocks[2].ToolUse == nil || blocks[2].ToolUse.ToolUseID != "toolu_berlin" {
+		t.Fatalf("block 2 must be the unmarked berlin toolUse with no cachePoint after it, got %+v", blocks[2])
 	}
 }

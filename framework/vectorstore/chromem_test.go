@@ -336,6 +336,7 @@ func TestChromemStore_DimensionHandling(t *testing.T) {
 	// Invalid dimensions are rejected at namespace creation.
 	assert.Error(t, ts.Store.CreateNamespace(ts.ctx, "chromem_bad_dim", 0, nil))
 	assert.Error(t, ts.Store.CreateNamespace(ts.ctx, "chromem_bad_dim", -1, nil))
+	assert.Error(t, ts.Store.CreateNamespace(ts.ctx, "chromem_bad_dim", maxChromemDimension+1, nil))
 }
 
 // TestChromemStore_CreateNamespaceRejectsDimensionChange pins the guard every store shares: a

@@ -4618,7 +4618,12 @@ func (provider *VertexProvider) Passthrough(
 		keyRegion = "global"
 	}
 
-	baseURL := getVertexAPIBaseURL(keyRegion, "v1")
+	// Model calls stay on v1 as they always have; other resources (interactions) use the client's version.
+	apiVersion := "v1"
+	if req.APIVersion != "" && req.APIVersion != "v1beta" && !strings.Contains(req.Path, "/models/") {
+		apiVersion = req.APIVersion
+	}
+	baseURL := getVertexAPIBaseURL(keyRegion, apiVersion)
 
 	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments (e.g. /v1/v1/...)
 	path := req.Path
@@ -4727,12 +4732,12 @@ func (provider *VertexProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		switch {
-		case isAnthropicPassthroughPath(req.Path):
+		switch PassthroughWireFormat(req.Path) {
+		case schemas.Anthropic:
 			passthroughUsage = anthropic.ExtractAnthropicMessagesUsage(body)
-		case isMistralPassthroughPath(req.Path):
+		case schemas.Mistral:
 			passthroughUsage = openai.ExtractOAIChatUsage(body)
-		case isOpenAICompatPassthroughPath(req.Path):
+		case schemas.OpenAI:
 			passthroughUsage = openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, body)
 		default:
 			passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
@@ -4772,7 +4777,11 @@ func (provider *VertexProvider) PassthroughStream(
 		keyRegion = "global"
 	}
 
-	baseURL := getVertexAPIBaseURL(keyRegion, "v1")
+	apiVersion := "v1"
+	if req.APIVersion != "" && req.APIVersion != "v1beta" && !strings.Contains(req.Path, "/models/") {
+		apiVersion = req.APIVersion
+	}
+	baseURL := getVertexAPIBaseURL(keyRegion, apiVersion)
 
 	// Normalize path: remove leading /v1 or /v1/ to avoid duplicate version segments.
 	path := req.Path
@@ -4904,17 +4913,17 @@ func (provider *VertexProvider) PassthroughStream(
 	observe := func(event []byte) *schemas.BifrostPassthroughUsage {
 		return gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
 	}
-	switch {
-	case isAnthropicPassthroughPath(req.Path):
+	switch PassthroughWireFormat(req.Path) {
+	case schemas.Anthropic:
 		messagesUsage := &anthropic.AnthropicPassthroughStreamUsage{}
 		hasUsage = anthropic.HasAnthropicPassthroughUsage
 		observe = messagesUsage.ObserveEvent
-	case isMistralPassthroughPath(req.Path):
+	case schemas.Mistral:
 		hasUsage = openai.HasOpenAIPassthroughUsage
 		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
 			return openai.ExtractOAIChatUsage(event)
 		}
-	case isOpenAICompatPassthroughPath(req.Path):
+	case schemas.OpenAI:
 		hasUsage = openai.HasOpenAIPassthroughUsage
 		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
 			return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)

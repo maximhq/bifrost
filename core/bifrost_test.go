@@ -17,10 +17,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/keyselectors"
+	"github.com/maximhq/bifrost/core/mcp"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -807,6 +810,22 @@ func BenchmarkCalculateBackoff(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		calculateBackoff(i%10, config)
+	}
+}
+
+// BenchmarkAgentContinuationChecksOnPlainRequest measures what the MCP agent-loop continuation
+// and MCP-instructions cache-placement checks add to a request that uses neither: one context
+// lookup each, expected to allocate nothing.
+func BenchmarkAgentContinuationChecksOnPlainRequest(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestedModel, "gpt-4o-mini")
+	input := []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if agentContinuationRoute(ctx) != nil || injectedMCPInstructionsChatIndex(ctx, input) != -1 {
+			b.Fatal("plain request read as an agent continuation")
+		}
 	}
 }
 
@@ -3494,6 +3513,171 @@ func TestRequestedRouteSurvivesPreRequestRewrite(t *testing.T) {
 	}
 }
 
+// agentLoopServer is an OpenAI-compatible upstream for one MCP agent loop: the first turn calls
+// the in-process echo tool, and a turn that carries the tool result answers. It records the
+// model of every request it serves.
+func agentLoopServer(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var models []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var parsed struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &parsed)
+		mu.Lock()
+		models = append(models, parsed.Model)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), `"role":"tool"`) {
+			fmt.Fprint(w, `{"id":"chatcmpl-2","object":"chat.completion","created":1,"model":"m",`+
+				`"choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],`+
+				`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+			return
+		}
+		fmt.Fprint(w, `{"id":"chatcmpl-1","object":"chat.completion","created":1,"model":"m",`+
+			`"choices":[{"index":0,"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-1","type":"function",`+
+			`"function":{"name":"bifrostInternal-echo","arguments":"{\"message\":\"hi\"}"}}]},"finish_reason":"tool_calls"}],`+
+			`"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(server.Close)
+	return server, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), models...)
+	}
+}
+
+// newAgentLoopClient initializes Bifrost with MCP and an auto-executed in-process echo tool.
+func newAgentLoopClient(t *testing.T, account *MockAccount, plugins ...schemas.LLMPlugin) *Bifrost {
+	t.Helper()
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{
+		Account:    account,
+		Logger:     NewNoOpLogger(),
+		LLMPlugins: plugins,
+		MCPConfig:  &schemas.MCPConfig{},
+	})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+	echo := schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{
+		Name:       "echo",
+		Parameters: &schemas.ToolFunctionParameters{Type: "object", Properties: schemas.NewOrderedMapFromPairs(schemas.KV("message", map[string]interface{}{"type": "string"}))},
+	}}
+	if err := client.RegisterMCPTool("echo", "Echoes the message", func(args any) (string, error) { return "echoed", nil }, echo); err != nil {
+		t.Fatalf("RegisterMCPTool failed: %v", err)
+	}
+	for _, state := range client.MCPManager.GetClients() {
+		if state.ExecutionConfig.ID == "bifrostInternal" {
+			state.ExecutionConfig.ToolsToAutoExecute = []string{"*"}
+			if err := client.MCPManager.UpdateClient(state.ExecutionConfig.ID, state.ExecutionConfig); err != nil {
+				t.Fatalf("UpdateClient failed: %v", err)
+			}
+		}
+	}
+	return client
+}
+
+// TestAgentLoopContinuationKeepsRequestedRoute pins that an MCP agent loop's later turns report
+// the route the caller sent, not the one a routing rule rewrote it to on turn 1, and stay on the
+// routed model.
+func TestAgentLoopContinuationKeepsRequestedRoute(t *testing.T) {
+	server, models := agentLoopServer(t)
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newAgentLoopClient(t, account, &modelRewritingPlugin{routedModel: "gpt-4o"})
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.OpenAI,
+		Model:    "requested-alias",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("echo hi")}},
+		},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+	}
+	if got := models(); !reflect.DeepEqual(got, []string{"gpt-4o", "gpt-4o"}) {
+		t.Fatalf("upstream models = %v, want both turns on the routed gpt-4o", got)
+	}
+	info := resp.ExtraFields.RoutingInfo
+	if info.RequestedProvider != schemas.OpenAI || info.RequestedModel != "requested-alias" {
+		t.Errorf("final RoutingInfo requested route = (%q, %q), want (openai, requested-alias)", info.RequestedProvider, info.RequestedModel)
+	}
+	if info.Model != "gpt-4o" {
+		t.Errorf("final RoutingInfo.Model = %q, want gpt-4o", info.Model)
+	}
+}
+
+// TestAgentLoopContinuationStaysOnServingFallback pins that when a fallback served turn 1 of an
+// MCP agent loop, later turns go straight to that fallback instead of retrying the primary, and
+// the final response still reports it as the fallback it is.
+func TestAgentLoopContinuationStaysOnServingFallback(t *testing.T) {
+	var primaryHits atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`)
+	}))
+	t.Cleanup(primary.Close)
+	fallback, models := agentLoopServer(t)
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Anthropic, 1, 1, primary.URL)
+	account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{
+		{ID: "primary-key", Value: *schemas.NewSecretVar("sk-primary"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, fallback.URL)
+	account.configs[schemas.OpenAI].NetworkConfig.MaxRetries = 0
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{
+		{ID: "openai-key", Value: *schemas.NewSecretVar("sk-test"), Models: schemas.WhiteList{"*"}, Weight: 100},
+	})
+	client := newAgentLoopClient(t, account)
+
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+	defer ctx.Cancel()
+	resp, bifrostErr := client.ChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-3-5-haiku-20241022",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("echo hi")}},
+		},
+		Fallbacks: []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-4o-mini"}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %s", bifrostErr.Error.Message)
+	}
+	if got := primaryHits.Load(); got != 1 {
+		t.Errorf("primary was called %d times, want 1: the continuation turn must not retry the primary turn 1 fell back from", got)
+	}
+	if got := models(); !reflect.DeepEqual(got, []string{"gpt-4o-mini", "gpt-4o-mini"}) {
+		t.Fatalf("fallback upstream models = %v, want both turns on gpt-4o-mini", got)
+	}
+	info := resp.ExtraFields.RoutingInfo
+	if info.Provider != schemas.OpenAI || !info.IsFallback {
+		t.Errorf("final RoutingInfo = provider %q is_fallback %v, want the openai fallback", info.Provider, info.IsFallback)
+	}
+	if info.PrimaryProvider == nil || *info.PrimaryProvider != schemas.Anthropic {
+		t.Errorf("final RoutingInfo.PrimaryProvider = %v, want anthropic", info.PrimaryProvider)
+	}
+	if idx, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); idx != 1 {
+		t.Errorf("fallback index on the context = %d, want 1 (the transport's x-bifrost-fallback-index header reads it)", idx)
+	}
+	if info.RequestedProvider != schemas.Anthropic || info.RequestedModel != "claude-3-5-haiku-20241022" {
+		t.Errorf("final RoutingInfo requested route = (%q, %q), want the caller's anthropic route", info.RequestedProvider, info.RequestedModel)
+	}
+}
+
 // TestClearAnthropicPassthroughForNonNativeProvider verifies that Anthropic raw-body
 // passthrough flags are cleared only when an Anthropic-integration request resolves to a
 // provider/model pair that doesn't speak the Anthropic Messages API natively (e.g. Bedrock).
@@ -4160,9 +4344,9 @@ func lookaroundToolParams() *schemas.ToolFunctionParameters {
 	return &schemas.ToolFunctionParameters{Type: "object", Properties: props}
 }
 
-// Only Moonshot and DeepSeek models get their tool-schema patterns rewritten.
-// Every other model, on every provider, must reach the wire byte-identical, and
-// the no-op path must hand back the caller's request itself so nothing is copied.
+// Without a datasheet row, only Moonshot and DeepSeek models get their tool-schema
+// patterns rewritten. Every other model must reach the wire byte-identical, and the
+// no-op path must hand back the caller's request itself so nothing is copied.
 func TestToolSchemaPatternRewriteAppliesOnlyToMoonshotAndDeepSeek(t *testing.T) {
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	cases := []struct {
@@ -4192,7 +4376,7 @@ func TestToolSchemaPatternRewriteAppliesOnlyToMoonshotAndDeepSeek(t *testing.T) 
 					ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: lookaroundToolParams()},
 				}}},
 			}
-			out := normalizeResponsesToolSchemas(ctx, req)
+			out := normalizeResponsesToolSchemas(ctx, schemas.Bedrock, req)
 			got := patternOf(t, out.Params.Tools[0].ResponsesToolFunction.Parameters)
 			if !tc.rewritten {
 				if out != req {
@@ -4211,6 +4395,210 @@ func TestToolSchemaPatternRewriteAppliesOnlyToMoonshotAndDeepSeek(t *testing.T) 
 			}
 		})
 	}
+}
+
+// kimiRejectedToolParams mirrors the Claude Code tools moonshotai.kimi-k3 on Bedrock
+// rejected (Gmail's nested `format: byte`, Artifact's `\0` and lookahead), next to
+// formats it accepts.
+func kimiRejectedToolParams(t *testing.T) *schemas.ToolFunctionParameters {
+	t.Helper()
+	raw := `{"type":"object","properties":{` +
+		`"attachments":{"type":"array","items":{"$ref":"#/$defs/Attachment"}},` +
+		`"send_at":{"type":"string","format":"date-time"},` +
+		`"size":{"type":"integer","format":"int64"},` +
+		`"path":{"type":"string","pattern":"^(?!\\.\\.?$)[^\\0]{1,200}$"}},` +
+		`"$defs":{"Attachment":{"type":"object","properties":{"content":{"type":"string","format":"byte"}},"required":["content"]}}}`
+	var params schemas.ToolFunctionParameters
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return &params
+}
+
+// assertKimiToolParamsNormalized checks the rejected constructs are gone, the accepted
+// ones survive, and the caller's schema was not written through.
+func assertKimiToolParamsNormalized(t *testing.T, caller, sent *schemas.ToolFunctionParameters) {
+	t.Helper()
+	out, err := json.Marshal(sent)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rendered := string(out)
+	for _, gone := range []string{`"byte"`, `(?!`, `\\0`} {
+		if strings.Contains(rendered, gone) {
+			t.Fatalf("%s reached the provider: %s", gone, rendered)
+		}
+	}
+	for _, kept := range []string{`"date-time"`, `"int64"`, `[^\\x00]{1,200}`} {
+		if !strings.Contains(rendered, kept) {
+			t.Fatalf("%s was lost before the provider: %s", kept, rendered)
+		}
+	}
+	if before, _ := json.Marshal(caller); !strings.Contains(string(before), `"byte"`) {
+		t.Fatalf("caller's schema was mutated in place: %s", before)
+	}
+}
+
+// kimi-k3 on Bedrock answers a nested non-standard `format` with HTTP 200 and an empty
+// stream, so the Responses path drops it alongside the regex rewrites.
+func TestPrepareResponsesRequest_NormalizesToolSchemasForKimi(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	params := kimiRejectedToolParams(t)
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "us.moonshotai.kimi-k3",
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type:                  schemas.ResponsesToolTypeFunction,
+			Name:                  new("send_message"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params},
+		}}},
+	}
+	prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: schemas.Bedrock}, schemas.Key{}, req)
+	if bifrostErr != nil {
+		t.Fatalf("prepare failed: %v", bifrostErr.Error)
+	}
+	assertKimiToolParamsNormalized(t, params, prepared.Params.Tools[0].ResponsesToolFunction.Parameters)
+}
+
+// Codex also declares tools inside namespaces and additional_tools input items. Converse
+// has no namespace container, so both are hoisted to the top level; a wire that has one
+// keeps the namespace. Either way the schemas kimi-k3 receives are normalized.
+func TestPrepareResponsesRequest_NormalizesEmbeddedToolSchemasForKimi(t *testing.T) {
+	sendMessage := func(params *schemas.ToolFunctionParameters) schemas.ResponsesTool {
+		return schemas.ResponsesTool{
+			Type:                  schemas.ResponsesToolTypeFunction,
+			Name:                  new("send_message"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params},
+		}
+	}
+	namespaced := func(t *testing.T, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest {
+		return &schemas.BifrostResponsesRequest{Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type:                   schemas.ResponsesToolTypeNamespace,
+			Name:                   new("gmail"),
+			ResponsesToolNamespace: &schemas.ResponsesToolNamespace{Tools: []schemas.ResponsesTool{sendMessage(params)}},
+		}}}}
+	}
+	cases := []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		wantType schemas.ResponsesToolType
+		build    func(t *testing.T, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest
+	}{
+		{"additional_tools item hoisted for Converse", schemas.Bedrock, "us.moonshotai.kimi-k3", schemas.ResponsesToolTypeFunction,
+			func(t *testing.T, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest {
+				declared, err := json.Marshal([]schemas.ResponsesTool{sendMessage(params)})
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				return &schemas.BifrostResponsesRequest{Input: []schemas.ResponsesMessage{{
+					Type:            new(schemas.ResponsesMessageTypeAdditionalTools),
+					AdditionalTools: declared,
+				}}}
+			}},
+		{"namespace flattened for Converse", schemas.Bedrock, "us.moonshotai.kimi-k3", schemas.ResponsesToolTypeFunction, namespaced},
+		{"namespace kept by an OpenAI-compatible wire", schemas.OpenAI, "kimi-k3", schemas.ResponsesToolTypeNamespace, namespaced},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := kimiRejectedToolParams(t)
+			req := tc.build(t, params)
+			req.Provider, req.Model = tc.provider, tc.model
+			prepared, bifrostErr := prepareResponsesRequest(ctx, &schemas.ProviderConfig{}, stubProvider{key: tc.provider}, schemas.Key{}, req)
+			if bifrostErr != nil {
+				t.Fatalf("prepare failed: %v", bifrostErr.Error)
+			}
+			if len(prepared.Params.Tools) != 1 || prepared.Params.Tools[0].Type != tc.wantType {
+				t.Fatalf("want one %s tool on the wire, got %+v", tc.wantType, prepared.Params.Tools)
+			}
+			sent := prepared.Params.Tools[0]
+			if sent.ResponsesToolNamespace != nil {
+				sent = sent.ResponsesToolNamespace.Tools[0]
+			}
+			assertKimiToolParamsNormalized(t, params, sent.ResponsesToolFunction.Parameters)
+		})
+	}
+}
+
+// The Chat Completions path reaches kimi-k3 too and must normalize the same way.
+func TestHandleProviderRequest_ChatNormalizesToolSchemasForKimi(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	params := kimiRejectedToolParams(t)
+	provider := &chatCapturingProvider{stubProvider: stubProvider{key: schemas.Bedrock}}
+	msg := &ChannelMessage{
+		Context: ctx,
+		BifrostRequest: schemas.BifrostRequest{
+			RequestType: schemas.ChatCompletionRequest,
+			ChatRequest: &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    "us.moonshotai.kimi-k3",
+				Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+					Type:     schemas.ChatToolTypeFunction,
+					Function: &schemas.ChatToolFunction{Name: "send_message", Parameters: params},
+				}}},
+			},
+		},
+	}
+	if _, bifrostErr := (&Bifrost{}).handleProviderRequest(provider, &schemas.ProviderConfig{}, msg, schemas.Key{}, nil); bifrostErr != nil {
+		t.Fatalf("dispatch failed: %v", bifrostErr.Error)
+	}
+	if provider.got == nil {
+		t.Fatal("the provider never received the request")
+	}
+	assertKimiToolParamsNormalized(t, params, provider.got.Params.Tools[0].Function.Parameters)
+}
+
+// A datasheet row decides in either direction: it restricts a model the fallback leaves
+// alone, and lifts a restriction the fallback would apply. A model with neither row nor
+// fallback gets the zero policy, which skips the walk.
+func TestToolSchemaPolicy_DatasheetRowWins(t *testing.T) {
+	schemas.SetCapabilityResolver(func(_ schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		switch model {
+		case "xai.grok-4.7":
+			return &schemas.ModelCapabilities{SupportsRegexLookaround: new(false), SupportedSchemaFormats: []string{"date-time"}}
+		case "us.moonshotai.kimi-k3":
+			return &schemas.ModelCapabilities{SupportsRegexLookaround: new(true), SupportsRegexNULEscape: new(true), SupportedSchemaFormats: []string{"byte"}}
+		}
+		return nil
+	})
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	grok := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "xai.grok-4.7"))
+	if !grok.StripLookaround || grok.NormalizeNULEscape || !slices.Equal(grok.StringFormats, []string{"date-time"}) {
+		t.Fatalf("grok row not applied: %+v", grok)
+	}
+	kimi := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "us.moonshotai.kimi-k3"))
+	if kimi.StripLookaround || kimi.NormalizeNULEscape || !slices.Equal(kimi.StringFormats, []string{"byte"}) {
+		t.Fatalf("kimi row did not override the fallback: %+v", kimi)
+	}
+	if claude := toolSchemaPolicy(schemas.ResolveModelCaps(schemas.Bedrock, "global.anthropic.claude-sonnet-5")); !claude.IsZero() {
+		t.Fatalf("a model with no row and no fallback must get the zero policy: %+v", claude)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "global.anthropic.claude-sonnet-5",
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:     schemas.ChatToolTypeFunction,
+			Function: &schemas.ChatToolFunction{Name: "send_message", Parameters: kimiRejectedToolParams(t)},
+		}}},
+	}
+	if out := prepareChatRequest(ctx, nil, schemas.Bedrock, req); out != req {
+		t.Fatal("a chat request for an unrestricted model must be returned as-is")
+	}
+}
+
+// chatCapturingProvider records the Chat request dispatch hands the provider.
+type chatCapturingProvider struct {
+	stubProvider
+	got *schemas.BifrostChatRequest
+}
+
+func (p *chatCapturingProvider) ChatCompletion(_ *schemas.BifrostContext, _ schemas.Key, req *schemas.BifrostChatRequest) (*schemas.BifrostChatResponse, *schemas.BifrostError) {
+	p.got = req
+	return &schemas.BifrostChatResponse{}, nil
 }
 
 // TestSetFallbackPinnedAPIKeyID_SurvivesBlockedWrites covers the streaming race, where a prior attempt's async post-hooks hold blockRestrictedWrites.
@@ -4714,6 +5102,121 @@ func TestSDKFidelityDecisionRequestNullStateReachesProvider(t *testing.T) {
 	if len(bodies) != 1 || !strings.Contains(bodies[0], `"state":null`) {
 		t.Errorf("provider must receive state null, got bodies %v", bodies)
 	}
+}
+
+// TestDecisionEmulationRequiresCompatOptIn pins that core emulates a decision
+// only when the compat plugin marks it (ChangeRequestType = ResponsesRequest, set
+// by convert_decision_to_responses for a model the catalog does not list as a
+// native decisions model). Unmarked, the provider answers: natively for a
+// decisions model, and with an unsupported_operation that names the setting for
+// any other model, without calling the emulating model.
+func TestDecisionEmulationRequiresCompatOptIn(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/decisions" {
+			_, _ = w.Write([]byte(`{"id":"dec_1","model":"gpt-6-luna","answers":[{"type":"predicate","name":"approve","probability":0.9}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}`))
+			return
+		}
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"model":"gpt-4o","status":"completed","output":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"emit_decision","arguments":"{\"approve\":{\"value\":0.9,\"confidence\":0.8}}","status":"completed"}],"usage":{"input_tokens":5,"output_tokens":5,"total_tokens":10}}`))
+	}))
+	defer server.Close()
+
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.OpenAI, 1, 1, server.URL)
+	account.SetKeysForProvider(schemas.OpenAI, []schemas.Key{{
+		ID:     "test-key-openai",
+		Value:  *schemas.NewSecretVar("sk-test-openai"),
+		Models: schemas.WhiteList{"*"},
+		Weight: 100,
+	}})
+
+	initCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	client, err := Init(initCtx, schemas.BifrostConfig{
+		Account: account,
+		Logger:  NewDefaultLogger(schemas.LogLevelError),
+	})
+	if err != nil {
+		t.Fatalf("Error initializing Bifrost: %v", err)
+	}
+	defer client.Shutdown()
+
+	newRequest := func(model ...string) *schemas.BifrostDecisionRequest {
+		m := "gpt-4o"
+		if len(model) > 0 {
+			m = model[0]
+		}
+		return &schemas.BifrostDecisionRequest{
+			Provider: schemas.OpenAI,
+			Model:    m,
+			Input:    schemas.DecisionInput{Text: schemas.Ptr("Customer message: I was double charged.")},
+			Questions: []schemas.DecisionQuestion{
+				{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("approve"), Instructions: schemas.NewDecisionText("Approve a billing review?")},
+			},
+		}
+	}
+
+	t.Run("disabled", func(t *testing.T) {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		resp, bifrostErr := client.DecisionRequest(ctx, newRequest())
+		if bifrostErr == nil {
+			t.Fatalf("expected unsupported_operation without compat opt-in, got response %+v", resp)
+		}
+		if bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
+			t.Fatalf("expected unsupported_operation code, got %+v", bifrostErr.Error)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(paths) != 0 {
+			t.Errorf("no upstream call expected without opt-in, got %v", paths)
+		}
+	})
+
+	t.Run("enabled", func(t *testing.T) {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		ctx.SetValue(schemas.BifrostContextKeyChangeRequestType, schemas.ResponsesRequest)
+		resp, bifrostErr := client.DecisionRequest(ctx, newRequest())
+		if bifrostErr != nil {
+			t.Fatalf("expected emulated decision, got error: %+v", bifrostErr.Error)
+		}
+		if resp == nil || len(resp.Answers) != 1 {
+			t.Fatalf("expected one emulated answer, got %+v", resp)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(paths) != 1 || paths[0] != "/v1/responses" {
+			t.Errorf("emulation must call the Responses API once, got %v", paths)
+		}
+	})
+
+	t.Run("unmarked native model is served natively", func(t *testing.T) {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := client.DecisionRequest(ctx, newRequest("gpt-6-luna")); bifrostErr != nil {
+			t.Fatalf("expected a native decision, got error: %+v", bifrostErr.Error)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if len(paths) != 1 || paths[0] != "/v1/decisions" {
+			t.Errorf("a native model must call the decisions endpoint once, got %v", paths)
+		}
+	})
 }
 
 // An attempt that already ran a provider-injected MCP tool is not retried: a retry would
@@ -6758,6 +7261,134 @@ func TestScenarioSingleKeyProviderSkipsTheKeyLevel(t *testing.T) {
 	requireHits(t, u, map[string]int{"sk-c1": 5, "sk-c2": 0})
 }
 
+// A session's key removed from its provider is dropped on the next turn, and the session rebinds to
+// the key that served, whether one key or several are left. Added back, the removed key does not
+// take the session back: it stays on the key it rebound to, though a free pick would land on the
+// returning key (plan row KS-22; one subtest per pool size).
+func TestScenarioSessionKeyRemovedThenAddedBack(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		left []string // the keys left once a2 is removed
+	}{
+		{"one key left", []string{"a1"}},
+		{"two keys left", []string{"a1", "a3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			kv := newMockKVStore()
+			all := append([]string{"a2"}, tc.left...)
+			keysOf := func(names []string, weightOf func(string) float64) []schemas.Key {
+				keys := make([]schemas.Key, 0, len(names))
+				for _, name := range names {
+					keys = append(keys, scenarioKey(name, weightOf(name)))
+				}
+				return keys
+			}
+			even := func(string) float64 { return 1 }
+			account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{provA: keysOf(all, even)})
+			client := scenarioClient(t, account, nil, kv)
+			bindSession(t, kv, "s", SessionStateKindKey, provA, "m", "a2")
+
+			account.SetKeysForProvider(provA, keysOf(tc.left, even))
+			ctx := sessionCtx("s")
+			served, err := scenarioChat(client, ctx, provA, "m")
+			requireServed(t, served, err, provA)
+			if !strings.Contains(routingLogs(ctx), "no longer eligible") {
+				t.Fatalf("the removed key's binding should be reported as dropped:\n%s", routingLogs(ctx))
+			}
+			rebound, _ := sessionState(kv, "s", SessionStateKindKey, provA, "m")
+			if !slices.Contains(tc.left, rebound) {
+				t.Fatalf("the session should rebind to a key left on the provider, holds %q", rebound)
+			}
+
+			// a2 returns as the only key with weight, so only the binding keeps a turn off it.
+			account.SetKeysForProvider(provA, keysOf(all, func(name string) float64 {
+				if name == "a2" {
+					return 1
+				}
+				return 0
+			}))
+			u.clearHits()
+			for range 5 {
+				served, err := scenarioChat(client, sessionCtx("s"), provA, "m")
+				requireServed(t, served, err, provA)
+			}
+			requireHits(t, u, map[string]int{"sk-" + rebound: 5, "sk-a2": 0})
+			requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", rebound)
+		})
+	}
+}
+
+// batchOnlyA2 is a provider whose keys both serve chat, but only a2 is enabled for the batch and file
+// APIs, so a batch or file pool holds a2 alone.
+func batchOnlyA2() []schemas.Key {
+	a2 := scenarioKey("a2", 1)
+	a2.UseForBatchAPI = schemas.Ptr(true)
+	return []schemas.Key{scenarioKey("a1", 1), a2}
+}
+
+// A one-key pool that does not hold the session's key leaves the binding alone when the pool says
+// nothing about the session's own requests, each case on its own guard: a pool a second model
+// narrowed, or a batch or file pool cut to its batch-enabled keys, where the bound key still serves
+// the session's HTTP turns, and a realtime or WebSocket Responses pick, which never writes the
+// session's bindings, though there the bound key is gone (plan rows KS-20 and KS-22).
+func TestScenarioOneKeyPoolKeepsTheSessionKeyWhenItSaysNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		requestType schemas.RequestType
+		keys        func() []schemas.Key
+		extraModels []string
+	}{
+		{
+			name:        "a chat pool a second model narrowed",
+			requestType: schemas.ChatCompletionRequest,
+			keys: func() []schemas.Key {
+				a1 := scenarioKey("a1", 1)
+				a1.Models = schemas.WhiteList{"m"}
+				return []schemas.Key{a1, scenarioKey("a2", 1)}
+			},
+			extraModels: []string{"m2"},
+		},
+		{
+			name:        "a realtime pick",
+			requestType: schemas.RealtimeRequest,
+			keys:        func() []schemas.Key { return []schemas.Key{scenarioKey("a2", 1)} },
+		},
+		{
+			name:        "a WebSocket Responses pick",
+			requestType: schemas.WebSocketResponsesRequest,
+			keys:        func() []schemas.Key { return []schemas.Key{scenarioKey("a2", 1)} },
+		},
+		{
+			name:        "a batch pool of the one batch-enabled key",
+			requestType: schemas.BatchCreateRequest,
+			keys:        batchOnlyA2,
+		},
+		{
+			name:        "a file pool of the one batch-enabled key",
+			requestType: schemas.FileUploadRequest,
+			keys:        batchOnlyA2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newScenarioUpstream(t)
+			kv := newMockKVStore()
+			client := scenarioClient(t, scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{provA: tc.keys()}), nil, kv)
+			bindSession(t, kv, "s", SessionStateKindKey, provA, "m", "a1")
+
+			ctx := sessionCtx("s")
+			key, err := client.SelectKeyForProviderRequestType(ctx, tc.requestType, provA, "m", tc.extraModels...)
+			if err != nil || key.ID != "a2" {
+				t.Fatalf("the pick got %q (err %v), want a2, the one key in the pool", key.ID, err)
+			}
+			requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", "a1")
+			if logs := routingLogs(ctx); strings.Contains(logs, "no longer eligible") {
+				t.Fatalf("the pool should not judge the session's key:\n%s", logs)
+			}
+		})
+	}
+}
+
 // A fallback picks its key without the session, so the key binding the session already held on the
 // fallback's provider is replaced by the key that served there, and the binding the request followed
 // on the failed primary is dropped (plan row KS-15).
@@ -7002,4 +7633,322 @@ func TestScenarioKeyBindingsArePerModel(t *testing.T) {
 	})
 	requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m", "a1")
 	requireSessionState(t, kv, "s", SessionStateKindKey, provA, "m2", "a2")
+}
+
+// A batch names its work once: an input file (or blob) or inline requests. No provider runs inline
+// requests beside a file, so the mix is refused at the core entrypoint, which every route reaches
+// (the /v1/batches handler, the OpenAI, Azure and GenAI SDK batch routes, and the Go SDK), before
+// a provider is looked up. Each input on its own still passes this check.
+func TestBatchCreateRequest_RejectsFileAndInlineRequestsTogether(t *testing.T) {
+	blob := "eyJjdXN0b21faWQiOiAiYSJ9"
+	inline := []schemas.BatchRequestItem{{CustomID: "a", Body: map[string]interface{}{"model": "gpt-4o-mini"}}}
+	b := &Bifrost{}
+	for name, req := range map[string]*schemas.BifrostBatchCreateRequest{
+		"file and requests": {Provider: schemas.OpenAI, InputFileID: "file-abc", Requests: inline},
+		"blob and requests": {Provider: schemas.OpenAI, InputBlob: &blob, Requests: inline},
+	} {
+		t.Run(name, func(t *testing.T) {
+			resp, bifrostErr := b.BatchCreateRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+			if resp != nil || bifrostErr == nil {
+				t.Fatalf("a batch naming a file and inline requests must be refused, got resp=%v err=%v", resp, bifrostErr)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != 400 {
+				t.Fatalf("the refusal must carry status 400, got %v (%s)", bifrostErr.StatusCode, bifrostErr.Error.Message)
+			}
+			if !strings.Contains(bifrostErr.Error.Message, "exclusive") {
+				t.Fatalf("the refusal must say the inputs are exclusive, got %q", bifrostErr.Error.Message)
+			}
+		})
+	}
+}
+
+// callerFaultBody is an OpenAI-shaped refusal of the request itself, the way Google answers a
+// logprobs value outside its range: no key or provider is at fault, the request is.
+const callerFaultBody = `{"error":{"message":"logprobs must be in the range [0, 20]","type":"invalid_request_error","param":"logprobs","code":"invalid_value"}}`
+
+// TestScenarioInferredFallbacksStopOnCallerFault pins which primary failures run a fallback chain
+// Bifrost inferred (the model-catalog resolver promoting every other provider that serves a bare
+// model) rather than one the caller or a routing config named. A refusal of the request itself
+// (a 400 with a provider error body) comes back to the caller instead of being answered by a
+// provider nobody asked for; a failure another provider or key can get past (5xx, 429, a rejected
+// key, a model this provider cannot reach) still falls back. A caller-named chain falls back on the
+// same 400, as it always has. Both orchestrator loops are covered.
+func TestScenarioInferredFallbacksStopOnCallerFault(t *testing.T) {
+	notFound := `{"error":{"message":"The model m does not exist or you do not have access to it.","type":"invalid_request_error","code":"model_not_found"}}`
+	for _, tc := range []struct {
+		name         string
+		reply        scenarioReply
+		inferred     bool
+		wantFallback bool
+	}{
+		{name: "inferred chain, caller fault 400 returns the primary error", reply: scenarioReply{status: http.StatusBadRequest, body: callerFaultBody}, inferred: true},
+		{name: "inferred chain, caller fault 422 returns the primary error", reply: scenarioReply{status: http.StatusUnprocessableEntity, body: callerFaultBody}, inferred: true},
+		{name: "inferred chain, 503 falls back", reply: scenarioReply{status: http.StatusServiceUnavailable, body: `{"error":{"message":"overloaded","type":"server_error"}}`}, inferred: true, wantFallback: true},
+		{name: "inferred chain, 429 falls back", reply: scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`}, inferred: true, wantFallback: true},
+		{name: "inferred chain, rejected key 401 falls back", reply: scenarioReply{status: http.StatusUnauthorized, body: `{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`}, inferred: true, wantFallback: true},
+		{name: "inferred chain, model not found 404 falls back", reply: scenarioReply{status: http.StatusNotFound, body: notFound}, inferred: true, wantFallback: true},
+		{name: "caller-named chain, caller fault 400 still falls back", reply: scenarioReply{status: http.StatusBadRequest, body: callerFaultBody}, wantFallback: true},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
+				u := newScenarioUpstream(t)
+				account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+					provA: {scenarioKey("a1", 1)},
+					provB: {scenarioKey("b1", 1)},
+				})
+				route := fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, schemas.Fallback{Provider: provB, Model: "m", Inferred: tc.inferred})
+				client := scenarioClient(t, account, &scenarioRouter{route: route}, nil)
+				u.reply("sk-a1", tc.reply)
+
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+				var bifrostErr *schemas.BifrostError
+				if stream {
+					var ch chan *schemas.BifrostStreamChunk
+					ch, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+					if bifrostErr == nil {
+						if _, errs := drainChatStream(ch); len(errs) > 0 {
+							t.Fatalf("stream emitted error chunks: %v", errs)
+						}
+					}
+				} else {
+					_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+				}
+
+				if tc.wantFallback {
+					if bifrostErr != nil {
+						t.Fatalf("want the fallback to serve, got error: %s", bifrostErr.GetErrorString())
+					}
+					if got := u.count("sk-b1"); got != 1 {
+						t.Fatalf("fallback reached the upstream %d times, want 1", got)
+					}
+					return
+				}
+				if bifrostErr == nil {
+					t.Fatalf("an inferred fallback answered a request the primary refused as malformed (fallback hits %d)", u.count("sk-b1"))
+				}
+				if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.reply.status {
+					t.Fatalf("status %v, want the primary's %d: %s", bifrostErr.StatusCode, tc.reply.status, bifrostErr.GetErrorString())
+				}
+				if got := u.count("sk-b1"); got != 0 {
+					t.Fatalf("fallback reached the upstream %d times, want 0", got)
+				}
+			})
+		}
+	}
+}
+
+// BenchmarkShouldTryFallbacks measures the fallback decision on a failed primary, for a
+// caller-named chain (the common case, which must stay a field check) and an inferred chain
+// refused as a caller fault (which classifies the error).
+func BenchmarkShouldTryFallbacks(b *testing.B) {
+	bifrost := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	status := http.StatusBadRequest
+	errType := "invalid_request_error"
+	primaryErr := &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Type: &errType, Message: "logprobs must be in the range [0, 20]"}}
+	for _, bc := range []struct {
+		name     string
+		inferred bool
+	}{{"caller-named", false}, {"inferred", true}} {
+		req := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionRequest, ChatRequest: &schemas.BifrostChatRequest{
+			Provider: provA, Model: "m", Fallbacks: []schemas.Fallback{{Provider: provB, Model: "m", Inferred: bc.inferred}},
+		}}
+		b.Run(bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = bifrost.shouldTryFallbacks(nil, req, primaryErr)
+			}
+		})
+	}
+}
+
+// TestSetMCPManager_ReceivesTheRegisteredFactory: an SDK caller may register
+// the openapi factory before injecting its own manager; the injected manager
+// gets the factory, and the two setters do not race (run with -race).
+func TestSetMCPManager_ReceivesTheRegisteredFactory(t *testing.T) {
+	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		return server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false)), nil
+	}
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer b.Shutdown()
+	b.SetMCPInProcessServerFactory(factory)
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	b.SetMCPManager(injected)
+	err = b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{ID: "oa-id", Name: "oa", ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}})
+	if err != nil {
+		t.Fatalf("the injected manager did not get the registered factory: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); b.SetMCPInProcessServerFactory(factory) }()
+	go func() {
+		defer wg.Done()
+		b.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil))
+	}()
+	wg.Wait()
+}
+
+// TestLazyMCPManager_ConcurrentFirstCallersDoNotRace: the first MCP calls on a
+// Bifrost without an mcp block create the manager lazily. Concurrent first
+// callers must not read the manager field while another publishes it (run
+// with -race), and a manager injected with SetMCPManager is never replaced.
+func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
+	client := func(name string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{ID: name + "-id", Name: name, ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}}
+	}
+	for i := 0; i < 10; i++ {
+		b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() { defer wg.Done(); _ = b.AddMCPClient(context.Background(), client("a")) }()
+		go func() {
+			defer wg.Done()
+			_, _, _, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
+		}()
+		go func() {
+			defer wg.Done()
+			_, _, _, _ = b.VerifyPerUserOAuthConnection(context.Background(), client("c"), "token")
+		}()
+		wg.Wait()
+		b.Shutdown()
+	}
+
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer b.Shutdown()
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	b.SetMCPManager(injected)
+	_ = b.AddMCPClient(context.Background(), client("d"))
+	if b.MCPManager != mcp.MCPManagerInterface(injected) {
+		t.Fatal("an injected MCP manager was replaced by the lazy one")
+	}
+}
+
+// TestSetMCPInProcessServerFactory_RacesLazyManagerCreation: the HTTP transport
+// registers the openapi factory after Init, while a request may be lazily
+// creating the MCP manager. Whichever wins, the manager that ends up serving
+// must carry the factory, and the registration must not race the creation.
+func TestSetMCPInProcessServerFactory_RacesLazyManagerCreation(t *testing.T) {
+	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		return server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false)), nil
+	}
+	openAPIClient := func(name string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID:             name + "-id",
+			Name:           name,
+			ConnectionType: schemas.MCPConnectionTypeOpenAPI,
+			ToolsToExecute: schemas.WhiteList{"*"},
+			OpenAPIConfig:  &schemas.MCPOpenAPIConfig{Spec: "unused by the stub"},
+		}
+	}
+	for i := 0; i < 20; i++ {
+		// No MCPConfig: the manager is created lazily by the first MCP call.
+		b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			b.SetMCPInProcessServerFactory(factory)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = b.AddMCPClient(context.Background(), openAPIClient("first"))
+		}()
+		wg.Wait()
+		if err := b.AddMCPClient(context.Background(), openAPIClient("second")); err != nil {
+			t.Fatalf("iteration %d: the manager lost the registered factory: %v", i, err)
+		}
+		b.Shutdown()
+	}
+}
+
+// A Responses request that defers tools on a model with no tool search of its own
+// (gpt-4o) goes through the gateway-run search: the upstream first sees only the
+// eager tools plus bifrost_tool_search, the model searches, and the second upstream
+// call carries the loaded tool and the search turn. The caller sees one response.
+func TestResponsesRequest_GatewayToolSearch(t *testing.T) {
+	searchCall := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4o","output":[` +
+		`{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_s1","name":"bifrost_tool_search","arguments":"{\"query\":\"weather\"}"}],` +
+		`"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}`
+	weatherCall := `{"id":"resp_2","object":"response","created_at":1,"status":"completed","model":"gpt-4o","output":[` +
+		`{"id":"fc_2","type":"function_call","status":"completed","call_id":"call_w1","name":"get_weather","arguments":"{\"city\":\"Tokyo\"}"}],` +
+		`"usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}}`
+	upstream := newRecordingServer(func(attempt int, w http.ResponseWriter) {
+		if attempt == 1 {
+			writeJSON(w, http.StatusOK, searchCall)
+			return
+		}
+		writeJSON(w, http.StatusOK, weatherCall)
+	})
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	configureUpstream(account, schemas.OpenAI, "openai-key", upstream.URL, 0)
+	client := newStreamTestClient(t, account)
+
+	tool := func(name string, deferred bool) schemas.ResponsesTool {
+		t := schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr(name), Description: schemas.Ptr(name + " tool"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+		}
+		if deferred {
+			t.DeferLoading = schemas.Ptr(true)
+		}
+		return t
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	resp, bifrostErr := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("weather in Tokyo?")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{tool("lookup_city", false), tool("get_weather", true)}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %v", bifrostErr.Error)
+	}
+
+	bodies := upstream.snapshot()
+	if len(bodies) != 2 {
+		t.Fatalf("want 2 upstream calls, got %d", len(bodies))
+	}
+	names := func(body string) []string {
+		var out []string
+		for _, tool := range gjson.Get(body, "tools").Array() {
+			out = append(out, tool.Get("name").String())
+		}
+		return out
+	}
+	if got := names(bodies[0]); !slices.Equal(got, []string{"lookup_city", "bifrost_tool_search"}) {
+		t.Errorf("first call tools = %v, want the eager tool plus the search", got)
+	}
+	if strings.Contains(bodies[0], "defer_loading") {
+		t.Errorf("defer_loading must not reach a model without tool search: %s", bodies[0])
+	}
+	if got := names(bodies[1]); !slices.Equal(got, []string{"lookup_city", "get_weather", "bifrost_tool_search"}) {
+		t.Errorf("second call tools = %v, want the loaded tool too", got)
+	}
+	if out := gjson.Get(bodies[1], `input.#(type=="function_call_output").output`).String(); !strings.Contains(out, "get_weather") {
+		t.Errorf("second call must carry the search result, got input %s", gjson.Get(bodies[1], "input").Raw)
+	}
+
+	if len(resp.Output) != 1 || resp.Output[0].Name == nil || *resp.Output[0].Name != "get_weather" {
+		t.Fatalf("want only the get_weather call in the response, got %+v", resp.Output)
+	}
+	if resp.Usage == nil || resp.Usage.InputTokens != 30 || resp.Usage.OutputTokens != 5 {
+		t.Errorf("want usage summed across both calls, got %+v", resp.Usage)
+	}
 }

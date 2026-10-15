@@ -8,12 +8,30 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/canonical/starlark/syntax"
 	"github.com/mark3labs/mcp-go/mcp"
+	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+// serverInstructionsComment renders the client's upstream instructions, or "" if it advertises
+// none. Shared by readToolFile and getToolDocs: every stub documenting a server carries them.
+func (s *StarlarkCodeMode) serverInstructionsComment(clientName string) string {
+	client := s.clientManager.GetClientByName(clientName)
+	if client == nil || client.ExecutionConfig == nil {
+		return ""
+	}
+	// Client override first, then the configured global. The aggregate total stays out of it:
+	// a stub carries one server, so being clamped by the whole-set budget would cut it early.
+	limit := client.ExecutionConfig.MaxInstructionsLength
+	if limit <= 0 {
+		limit = s.clientManager.InstructionCaps().PerClient
+	}
+	return codemcp.InstructionsCommentBlock(client.ServerInstructions, limit)
+}
 
 // extractResultFromChatMessage extracts the result from a chat message and parses it as JSON if possible.
 func extractResultFromChatMessage(msg *schemas.ChatMessage) interface{} {
@@ -79,12 +97,30 @@ func extractResultFromResponsesMessage(msg *schemas.ResponsesMessage) (interface
 	return nil, nil
 }
 
+// codeModeDiagnosticBytes bounds any tool text surfaced to the caller.
+const codeModeDiagnosticBytes = 2048
+
+// truncateDiagnostic bounds caller-visible text without JSON-encoding it. Cuts on
+// a rune boundary: it is raised as an error, not only escaped into a log line.
+func truncateDiagnostic(text string) string {
+	if len(text) <= codeModeDiagnosticBytes {
+		return text
+	}
+	// The marker counts against the cap, so reserve it before picking the prefix.
+	const marker = "... (truncated)"
+	cut := text[:codeModeDiagnosticBytes-len(marker)]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + marker
+}
+
 // formatResultForLog formats a result value for logging purposes.
 func formatResultForLog(result interface{}) string {
 	// Tool responses can be large even when code returns a small projection.
 	// Bound automatic diagnostic previews before JSON escaping/copying them.
-	if text, ok := result.(string); ok && len(text) > 2048 {
-		result = text[:2048] + "... (truncated)"
+	if text, ok := result.(string); ok {
+		result = truncateDiagnostic(text)
 	}
 	var resultStr string
 	if result == nil {
@@ -94,7 +130,9 @@ func formatResultForLog(result interface{}) string {
 	} else {
 		resultStr = fmt.Sprintf("%v", result)
 	}
-	return resultStr
+	// Encoding expands: escaping turns one control byte into six, and a non-string result is not
+	// bounded above. The preview is rendered into the tool message the model receives.
+	return truncateDiagnostic(resultStr)
 }
 
 // exceptionHandlingHints explains that Starlark has no exception handling.

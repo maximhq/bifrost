@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -30,8 +33,8 @@ import (
 	"github.com/maximhq/bifrost/plugins/prompts"
 	"github.com/maximhq/bifrost/plugins/semanticcache"
 	"github.com/maximhq/bifrost/plugins/telemetry"
-	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -808,6 +811,118 @@ func TestRefreshLiveModelsForProvider_AllKeysDisabled(t *testing.T) {
 	}
 }
 
+// TestRefreshLiveModelsForProvider_KeylessWithResidualDisabledKeys is the
+// regression guard for issue #8500: a custom provider created keyed, whose
+// only key was disabled before it was switched to keyless, kept that disabled
+// key in its config. Discovery counted enabled keys before asking whether the
+// provider needs keys at all, so it logged "no enabled keys configured" and
+// never fetched, leaving the provider with no models. Core ignores keys
+// entirely for keyless providers, so discovery must take the keyless path
+// whatever residual keys are still stored.
+func TestRefreshLiveModelsForProvider_KeylessWithResidualDisabledKeys(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"keyless-model","object":"model","owned_by":"test"}]}`))
+	}))
+	defer upstream.Close()
+
+	const provider schemas.ModelProvider = "keyless-provider"
+	cfg := &lib.Config{
+		ModelCatalog: modelcatalog.NewTestCatalog(nil),
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			provider: {
+				Keys: []schemas.Key{{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1, Enabled: schemas.Ptr(false)}},
+				NetworkConfig: &schemas.NetworkConfig{
+					BaseURL:                        upstream.URL,
+					AllowPrivateNetwork:            true,
+					DefaultRequestTimeoutInSeconds: 5,
+				},
+				CustomProviderConfig: &schemas.CustomProviderConfig{
+					IsKeyLess:        true,
+					BaseProviderType: schemas.OpenAI,
+				},
+			},
+		},
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(cfg),
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	server := &BifrostHTTPServer{Config: cfg, Client: client}
+	keys, err := cfg.GetProviderKeysRaw(provider)
+	require.NoError(t, err)
+
+	server.RefreshLiveModelsForProvider(context.Background(), provider, keys)
+
+	require.NotZero(t, calls.Load(), "keyless provider with a residual disabled key never reached the upstream /v1/models")
+	require.NotEmpty(t, cfg.ModelCatalog.GetModelsForProvider(provider), "keyless provider with a residual disabled key has no live models after discovery")
+}
+
+// TestRefreshLiveModelsForProvider_KeylessWithResidualEnabledKey covers the
+// other half of issue #8500's root cause: a keyless provider whose residual key
+// is still enabled was fanned out per key and cached under that key's ID, even
+// though core ignores keys for keyless providers. Its entries must land under
+// the "" sentinel that the OnKey* helpers and ReloadProvider's keep set use.
+func TestRefreshLiveModelsForProvider_KeylessWithResidualEnabledKey(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"keyless-model","object":"model","owned_by":"test"}]}`))
+	}))
+	defer upstream.Close()
+
+	const provider schemas.ModelProvider = "keyless-provider"
+	cfg := &lib.Config{
+		ModelCatalog: modelcatalog.NewTestCatalog(nil),
+		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+			provider: {
+				Keys: []schemas.Key{{ID: "residual-key", Value: *schemas.NewSecretVar("sk-residual"), Models: schemas.WhiteList{"*"}, Weight: 1}},
+				NetworkConfig: &schemas.NetworkConfig{
+					BaseURL:                        upstream.URL,
+					AllowPrivateNetwork:            true,
+					DefaultRequestTimeoutInSeconds: 5,
+				},
+				CustomProviderConfig: &schemas.CustomProviderConfig{
+					IsKeyLess:        true,
+					BaseProviderType: schemas.OpenAI,
+				},
+			},
+		},
+	}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: lib.NewBaseAccount(cfg),
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+	})
+	require.NoError(t, err)
+	defer client.Shutdown()
+
+	server := &BifrostHTTPServer{Config: cfg, Client: client}
+	keys, err := cfg.GetProviderKeysRaw(provider)
+	require.NoError(t, err)
+
+	server.RefreshLiveModelsForProvider(context.Background(), provider, keys)
+	require.NotEmpty(t, cfg.ModelCatalog.GetModelsForProvider(provider), "keyless provider has no live models after discovery")
+
+	// Dropping the residual key's entries must leave the catalog intact, and
+	// dropping the sentinel's must empty it: everything was cached under "".
+	cfg.ModelCatalog.InvalidateLive(provider, "residual-key")
+	require.NotEmpty(t, cfg.ModelCatalog.GetModelsForProvider(provider), "keyless models were cached under the residual key's ID")
+	cfg.ModelCatalog.InvalidateLive(provider, "")
+	require.Empty(t, cfg.ModelCatalog.GetModelsForProvider(provider), "keyless models were not cached under the \"\" sentinel")
+}
+
 // TestOnKeyAdded_DisabledKeySkipsFetch cross-checks that adding a key that
 // is already disabled never schedules a discovery fetch for it.
 func TestOnKeyAdded_DisabledKeySkipsFetch(t *testing.T) {
@@ -1008,6 +1123,31 @@ func TestReloadProvider_KeylessProviderRetainsSentinelEntry(t *testing.T) {
 
 	if got := catalog.GetModelsForProvider("keyless-provider"); !slices.Equal(got, []string{"keyless-model"}) {
 		t.Errorf("keyless catalog after failed refetch = %v, want [keyless-model] retained", got)
+	}
+}
+
+// TestReloadProvider_KeylessPrunesResidualKeyEntries pins that a keyless
+// provider keeps only its "" sentinel entry across a reload. Entries cached
+// under a residual key's ID (written before issue #8500's fix, when keyless
+// discovery still fanned out per enabled key) are never refetched, so keeping
+// them would advertise their models indefinitely.
+func TestReloadProvider_KeylessPrunesResidualKeyEntries(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	catalog := modelcatalog.NewTestCatalog(nil)
+	catalog.UpsertLive("keyless-provider", "", false, []string{"keyless-model"})
+	catalog.UpsertLive("keyless-provider", "residual-key", false, []string{"residual-model"})
+
+	server := newReloadProviderServer(catalog, "keyless-provider", []schemas.Key{{ID: "residual-key"}}, true)
+
+	if _, err := server.ReloadProvider(context.Background(), "keyless-provider", false); err != nil {
+		t.Fatalf("ReloadProvider returned unexpected error: %v", err)
+	}
+
+	if got := catalog.GetModelsForProvider("keyless-provider"); !slices.Equal(got, []string{"keyless-model"}) {
+		t.Errorf("keyless catalog after reload = %v, want only [keyless-model] (residual key entry pruned)", got)
 	}
 }
 
@@ -1362,11 +1502,10 @@ func TestMarshalPluginConfig_WithComplexType(t *testing.T) {
 	}
 }
 
-// GetConfiguredProviders hands back the live provider map uncopied, which is safe for the callers
-// that index it once. The name listing cannot be written that way: provider add, delete and status
-// updates all write to that map in place under the write lock, so a caller ranging it after the read
-// lock is released hits a concurrent map iteration and write. That is fatal rather than merely
-// stale — it takes the process down — so the slice is built under the lock instead. Run with -race.
+// Provider add, delete and status updates all write to the provider map in place under the write
+// lock, so a caller ranging it after the read lock is released hits a concurrent map iteration and
+// write. That is fatal rather than merely stale — it takes the process down — so the slice is built
+// under the lock instead. Run with -race.
 func TestGetConfiguredProviderNamesIsSafeAgainstConcurrentProviderEdits(t *testing.T) {
 	config := &lib.Config{
 		Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}},
@@ -1885,8 +2024,9 @@ func TestIssue8212RetentionChange(t *testing.T) {
 				}()
 			})
 		})
-  }
+	}
 }
+
 // The telemetry plugin reads config.CustomLabels, but the loader only ever seeded it
 // from client_config.prometheus_labels, so the plugin's own custom_labels were accepted
 // and ignored. Both name extra Prometheus labels, so they union.
@@ -2021,4 +2161,81 @@ func TestPrometheusHTTPMiddlewarePassesThroughWithoutThePlugin(t *testing.T) {
 	if !served {
 		t.Error("request was not served when no telemetry plugin is loaded")
 	}
+}
+
+// TestGovernanceInMemoryStoreProvidersSurviveEdits pins that the provider map the governance
+// plugin reads (batchBaseProvider, modelMatcher) can be indexed after the accessor has released
+// its lock while a provider edit writes to the live map: the accessor must hand back a copy, not
+// the map itself, or the read is a fatal concurrent map access under load.
+// The per-request model check reads one provider through GetConfiguredProvider: it takes the read
+// lock and copies nothing, unlike GetConfiguredProviders, which snapshots the whole map.
+func TestGovernanceInMemoryStoreReadsOneProviderWithoutCopying(t *testing.T) {
+	config := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}, schemas.Anthropic: {}}}
+	store := &GovernanceInMemoryStore{Config: config}
+	var single interface {
+		GetConfiguredProvider(schemas.ModelProvider) (configstore.ProviderConfig, bool)
+	} = store
+
+	_, ok := single.GetConfiguredProvider(schemas.OpenAI)
+	assert.True(t, ok)
+	_, ok = single.GetConfiguredProvider(schemas.Gemini)
+	assert.False(t, ok)
+	assert.Zero(t, testing.AllocsPerRun(100, func() { _, _ = single.GetConfiguredProvider(schemas.OpenAI) }), "a one-provider read allocates nothing")
+}
+
+// BenchmarkGovernanceInMemoryStoreProviderLookup compares reading one provider out of a snapshot of
+// the whole map (what a model check did) with reading it alone, across twenty configured providers.
+func BenchmarkGovernanceInMemoryStoreProviderLookup(b *testing.B) {
+	providers := map[schemas.ModelProvider]configstore.ProviderConfig{}
+	for i := 0; i < 20; i++ {
+		providers[schemas.ModelProvider(fmt.Sprintf("provider-%d", i))] = configstore.ProviderConfig{}
+	}
+	providers[schemas.OpenAI] = configstore.ProviderConfig{}
+	store := &GovernanceInMemoryStore{Config: &lib.Config{Providers: providers}}
+	b.Run("whole_map", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = store.GetConfiguredProviders()[schemas.OpenAI]
+		}
+	})
+	b.Run("single", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_, _ = store.GetConfiguredProvider(schemas.OpenAI)
+		}
+	})
+}
+
+func TestGovernanceInMemoryStoreProvidersSurviveEdits(t *testing.T) {
+	t.Parallel()
+	config := &lib.Config{Providers: map[schemas.ModelProvider]configstore.ProviderConfig{schemas.OpenAI: {}}}
+	store := &GovernanceInMemoryStore{Config: config}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			providers := store.GetConfiguredProviders()
+			_, _ = providers[schemas.OpenAI]
+			_, _ = providers[schemas.Anthropic]
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			config.Mu.Lock()
+			config.Providers[schemas.Anthropic] = configstore.ProviderConfig{}
+			delete(config.Providers, schemas.Anthropic)
+			config.Mu.Unlock()
+		}
+	}()
+	wg.Wait()
+
+	providers := store.GetConfiguredProviders()
+	config.Mu.Lock()
+	config.Providers[schemas.Gemini] = configstore.ProviderConfig{}
+	config.Mu.Unlock()
+	_, leaked := providers[schemas.Gemini]
+	assert.False(t, leaked, "the returned map is a snapshot, not the live map")
 }

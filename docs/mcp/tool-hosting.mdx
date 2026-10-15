@@ -9,6 +9,10 @@ icon: "toolbox"
 This feature is only available when using Bifrost as a **Go SDK**. It is not available in the Gateway deployment.
 </Info>
 
+<Tip>
+To expose an existing REST API as tools without writing handlers, use the [OpenAPI connection type](/mcp/openapi-servers) instead: Bifrost synthesizes the server from the API's document. Go SDK users register `openapimcp.Factory()` on `MCPConfig.InProcessServerFactory` to enable it.
+</Tip>
+
 ## Overview
 
 **Tool Hosting** allows you to register custom tools directly within your Go application. These tools run in-process with zero network overhead, making them ideal for:

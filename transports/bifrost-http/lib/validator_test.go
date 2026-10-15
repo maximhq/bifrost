@@ -3707,6 +3707,90 @@ func copilotKeyConfig(keyBody string) string {
 	}`, keyBody)
 }
 
+// TestSchemaOAuthKeyConfig pins that oauth_key_config is accepted on any key (the base key
+// definition carries it) and that the schema enforces the per-grant required fields, so a
+// half-configured block is refused by the schema rather than at boot.
+func TestSchemaOAuthKeyConfig(t *testing.T) {
+	compiled := compileSchema(t)
+
+	customProvider := func(keyBody string) string {
+		return fmt.Sprintf(`{
+		"providers": {
+			"openai": {
+				"keys": [{%s}]
+			},
+			"acme": {
+				"keys": [{%s}],
+				"custom_provider_config": {"base_provider_type": "openai"},
+				"network_config": {"base_url": "https://llm.acme.example/v1"}
+			}
+		}
+	}`, keyBody, keyBody)
+	}
+
+	const cc = `"oauth_key_config": {
+		"grant_type": "client_credentials",
+		"token_url": "https://idp.acme.example/oauth2/token",
+		"client_id": "env.ACME_CLIENT_ID",
+		"client_secret": "env.ACME_CLIENT_SECRET",
+		"scopes": ["inference"],
+		"auth_style": "body"
+	}`
+	const jb = `"oauth_key_config": {
+		"grant_type": "jwt_bearer",
+		"token_url": "https://idp.acme.example/oauth2/token",
+		"private_key": "env.ACME_PRIVATE_KEY",
+		"issuer": "svc-bifrost",
+		"audience": "https://idp.acme.example/oauth2/token",
+		"signing_algorithm": "ES256",
+		"assertion_lifetime_seconds": 120
+	}`
+
+	valid := []struct {
+		name   string
+		config string
+	}{
+		{"client_credentials", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, ` + cc)},
+		{"jwt_bearer", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, ` + jb)},
+		{"alongside a value", customProvider(`"name": "k", "value": "sk", "models": ["*"], "weight": 1.0, ` + cc)},
+		// OAuthKeyConfig.Validate treats 0 as "use the default lifetime", so the schema must too.
+		{"zero assertion lifetime means the default", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": 0}`)},
+	}
+	for _, tt := range valid {
+		t.Run("valid "+tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err != nil {
+				t.Fatalf("config should be valid: %v", err)
+			}
+		})
+	}
+
+	invalid := []struct {
+		name   string
+		config string
+	}{
+		{"client_credentials without secret", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id"}`)},
+		{"jwt_bearer without issuer", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "audience": "a"}`)},
+		{"unknown grant", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "password", "token_url": "https://idp/token"}`)},
+		{"symmetric algorithm", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "signing_algorithm": "HS256"}`)},
+		{"unknown field", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id", "client_secret": "s", "refresh_token": "x"}`)},
+		// Validate rejects a blank literal for every per-grant credential, so presence alone is
+		// not enough: an empty string must fail the schema the same way a missing field does.
+		{"blank client_id", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "", "client_secret": "s"}`)},
+		{"blank client_secret", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "client_credentials", "token_url": "https://idp/token", "client_id": "id", "client_secret": ""}`)},
+		{"blank private_key", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "", "issuer": "i", "audience": "a"}`)},
+		{"blank issuer", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "", "audience": "a"}`)},
+		{"blank audience", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": ""}`)},
+		{"negative assertion lifetime", customProvider(`"name": "k", "models": ["*"], "weight": 1.0, "oauth_key_config": {"grant_type": "jwt_bearer", "token_url": "https://idp/token", "private_key": "pem", "issuer": "i", "audience": "a", "assertion_lifetime_seconds": -1}`)},
+	}
+	for _, tt := range invalid {
+		t.Run("invalid "+tt.name, func(t *testing.T) {
+			if err := validateConfig(t, compiled, tt.config); err == nil {
+				t.Fatal("config should be invalid")
+			}
+		})
+	}
+}
+
 // TestSchemaGithubCopilotCredentialRequired pins that the schema demands one of the two
 // credential forms. core/utils.go rejects a key carrying neither, and the schema is the
 // source of truth for config fields, so it has to reject the same shape rather than
@@ -3948,12 +4032,45 @@ func TestSchemaCodeModeLimitsValueBytes(t *testing.T) {
 	}
 }
 
+// TestValidateConfigSchema_VirtualKeyMetadata checks that config.schema.json enforces the same
+// metadata rules as the configstore validator, including the reserved keys.
+func TestValidateConfigSchema_VirtualKeyMetadata(t *testing.T) {
+	tests := []struct {
+		name     string
+		metadata string
+		wantErr  bool
+	}{
+		{name: "string values", metadata: `{"cost_center": "cc-42", "owner.email": "a@example.com", "env-name": ""}`},
+		{name: "empty object", metadata: `{}`},
+		{name: "non-string value", metadata: `{"cost_center": 42}`, wantErr: true},
+		{name: "key with space", metadata: `{"cost center": "cc-42"}`, wantErr: true},
+		{name: "empty key", metadata: `{"": "cc-42"}`, wantErr: true},
+		{name: "value too long", metadata: `{"k": "` + strings.Repeat("v", 513) + `"}`, wantErr: true},
+		{name: "not an object", metadata: `["cc-42"]`, wantErr: true},
+		{name: "reserved key", metadata: `{"isAsyncRequest": "true"}`, wantErr: true},
+		{name: "load balancer prefix", metadata: `{"bifrost_alb_provider": "x"}`, wantErr: true},
+		{name: "reserved name as a substring", metadata: `{"my_bifrost_alb_x": "v", "isAsyncRequestCount": "1"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := `{"governance": {"virtual_keys": [{"id": "vk-1", "name": "Test Virtual Key", "value": "vk_test_123456", "metadata": ` + tt.metadata + `}]}}`
+			err := ValidateConfigSchema([]byte(config), loadLocalSchema(t))
+			if tt.wantErr && err == nil {
+				t.Errorf("expected metadata %s to fail validation", tt.metadata)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("expected metadata %s to pass validation, got error: %v", tt.metadata, err)
+			}
+		})
+	}
+}
+
 // TestValidateConfigSchema_InjectedTools pins injected_tools on every provider shape.
 // The provider_with_*_config variants set additionalProperties:false, so a field listed
 // only on the generic provider def is rejected for Bedrock, Azure, Vertex and the rest.
 func TestValidateConfigSchema_InjectedTools(t *testing.T) {
 	schema := loadLocalSchema(t)
-	const injected = `"injected_tools": {"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}`
+	const injected = `"injected_tools": [{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "search"}, {"name": "read_page", "mcp_client_name": "fetcher", "tool_name": "fetch"}]`
 	// Each base config must pass on its own. A base that fails for an unrelated reason
 	// fails identically with injected_tools added, which would hide a rejection.
 	keyConfigs := map[string]string{
@@ -4004,14 +4121,63 @@ func TestValidateConfigSchema_InjectedTools(t *testing.T) {
 	if err := ValidateConfigSchema([]byte(openaiBase), schema); err != nil {
 		t.Fatalf("openai base config must pass before the rejection cases mean anything: %v", err)
 	}
+	for _, block := range []string{`[]`, `[{"name": "read_page", "mcp_client_name": "fetcher", "tool_name": "fetch"}]`} {
+		config := fmt.Sprintf(`{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "injected_tools": %s}}}`, block)
+		if err := ValidateConfigSchema([]byte(config), schema); err != nil {
+			t.Errorf("%s: injected_tools rejected: %v", block, err)
+		}
+	}
 	for name, block := range map[string]string{
-		"missing tool_name": `{"web_search": {"mcp_client_name": "tavily"}}`,
-		"empty client name": `{"web_search": {"mcp_client_name": "", "tool_name": "search"}}`,
-		"unknown slot":      `{"code_exec": {"mcp_client_name": "tavily", "tool_name": "run"}}`,
+		"old object shape":  `{"web_search": {"mcp_client_name": "tavily", "tool_name": "search"}}`,
+		"missing name":      `[{"mcp_client_name": "tavily", "tool_name": "search"}]`,
+		"name with a space": `[{"name": "web search", "mcp_client_name": "tavily", "tool_name": "search"}]`,
+		"missing tool_name": `[{"name": "web_search", "mcp_client_name": "tavily"}]`,
+		"empty client name": `[{"name": "web_search", "mcp_client_name": "", "tool_name": "search"}]`,
+		"unknown field":     `[{"name": "web_search", "mcp_client_name": "tavily", "tool_name": "run", "max_results": 3}]`,
+		"null entry":        `[null]`,
 	} {
 		config := fmt.Sprintf(`{"providers": {"openai": {"keys": [{"name": "k", "value": "v", "weight": 1.0}], "injected_tools": %s}}}`, block)
 		if err := ValidateConfigSchema([]byte(config), schema); err == nil {
 			t.Errorf("%s: expected injected_tools to fail validation", name)
 		}
+	}
+}
+
+// TestValidateConfigSchema_MCPOpenAPIClient pins the config.schema.json rules
+// for connection_type "openapi": openapi_config is required there and only
+// there, it must name a spec source, and only header-shaped auth types apply.
+func TestValidateConfigSchema_MCPOpenAPIClient(t *testing.T) {
+	schema := loadLocalSchema(t)
+	mcpConfig := func(client string) string {
+		return `{"mcp": {"client_configs": [` + client + `]}}`
+	}
+	for _, tc := range []struct {
+		name    string
+		client  string
+		wantErr bool
+	}{
+		{"inline spec", `{"name":"petstore","connection_type":"openapi","openapi_config":{"spec":"openapi: 3.0.3\npaths: {}"}}`, false},
+		{"spec_file with credentials and options", `{"name":"petstore","connection_type":"openapi","auth_type":"headers","headers":{"X-Tenant":"acme"},"openapi_config":{"spec_file":"specs/petstore.yaml","base_url":"https://api.example.com","security_credentials":{"ApiKeyAuth":{"value":"env.PETSTORE_KEY"},"Basic":{"username":"u","password":"env.P"}},"include_deprecated":true,"max_response_bytes":4096}}`, false},
+		{"spec_url with per-user headers", `{"name":"petstore","connection_type":"openapi","auth_type":"per_user_headers","per_user_header_keys":["X-User-Token"],"openapi_config":{"spec_url":"https://api.example.com/openapi.json"}}`, false},
+		{"spec with spec_url provenance", `{"name":"petstore","connection_type":"openapi","openapi_config":{"spec":"x","spec_url":"https://api.example.com/openapi.json"}}`, false},
+		{"file spec_url refused", `{"name":"petstore","connection_type":"openapi","openapi_config":{"spec_url":"file:///etc/openapi.json"}}`, true},
+		{"ftp base_url refused", `{"name":"petstore","connection_type":"openapi","openapi_config":{"spec":"x","base_url":"ftp://api.example.com/"}}`, true},
+		{"missing openapi_config", `{"name":"petstore","connection_type":"openapi"}`, true},
+		{"no spec source", `{"name":"petstore","connection_type":"openapi","openapi_config":{"base_url":"https://api.example.com"}}`, true},
+		{"unknown openapi_config field", `{"name":"petstore","connection_type":"openapi","openapi_config":{"spec":"x","spec_path":"y"}}`, true},
+		{"oauth auth refused", `{"name":"petstore","connection_type":"openapi","auth_type":"oauth","openapi_config":{"spec":"x"}}`, true},
+		{"token exchange refused", `{"name":"petstore","connection_type":"openapi","auth_type":"token_exchange","token_exchange":{"audience":"a"},"openapi_config":{"spec":"x"}}`, true},
+		{"openapi_config on http client", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com","openapi_config":{"spec":"x"}}`, true},
+		{"http client unaffected", `{"name":"remote","connection_type":"http","connection_string":"https://mcp.example.com"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateConfigSchema([]byte(mcpConfig(tc.client)), schema)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected %s to fail schema validation", tc.name)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("expected %s to pass schema validation, got: %v", tc.name, err)
+			}
+		})
 	}
 }

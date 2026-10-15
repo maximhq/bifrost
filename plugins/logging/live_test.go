@@ -502,3 +502,68 @@ func TestLiveSessionTerminalBackendFailure(t *testing.T) {
 		})
 	}
 }
+
+// A sideband is logged as a request of its own, like a download: it names the provider session it
+// joined and the keys it attached with, carries how long it stayed, and never folds into the
+// session's row.
+func TestLiveSidebandIsLoggedAsItsOwnRow(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "sb-1")
+	ctx.SetValue(schemas.BifrostContextKeySelectedKeyID, "key-1")
+	ctx.SetValue(schemas.BifrostContextKeyGovernanceVirtualKeyID, "vk-1")
+	ctx.SetValue(schemas.BifrostContextKeyRealtimeProviderSessionID, "live_abc")
+	req := &schemas.BifrostRequest{RequestType: schemas.LiveSidebandRequest, ResponsesRequest: &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI}}
+	_, _, err = plugin.PreLLMHook(ctx, req)
+	require.NoError(t, err)
+	resp := &schemas.BifrostResponse{ResponsesResponse: &schemas.BifrostResponsesResponse{
+		Object:      "live.sideband",
+		ExtraFields: schemas.BifrostResponseExtraFields{RequestType: schemas.LiveSidebandRequest, Provider: schemas.OpenAI, Latency: 1234},
+	}}
+	_, _, err = plugin.PostLLMHook(ctx, resp, nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	row, err := store.FindByID(context.Background(), "sb-1")
+	require.NoError(t, err)
+	assert.Equal(t, string(schemas.LiveSidebandRequest), row.Object)
+	assert.Equal(t, logStatusSuccess, row.Status)
+	assert.Equal(t, "openai", row.Provider)
+	assert.Equal(t, "key-1", row.SelectedKeyID)
+	require.NotNil(t, row.VirtualKeyID)
+	assert.Equal(t, "vk-1", *row.VirtualKeyID)
+	assert.Equal(t, "live_abc", row.MetadataParsed["provider_session_id"])
+	require.NotNil(t, row.Latency)
+	assert.EqualValues(t, 1234, *row.Latency)
+	assert.Nil(t, row.LiveSessionParsed, "a sideband is not a session")
+}
+
+// TestLiveSessionRowKeepsVirtualKeyMetadata: a live session row is built by buildLiveSessionEntry,
+// not the PostLLMHook tail, so the realtime merge there must not overwrite the virtual key's
+// metadata on a key collision (realtime_transport here), and the key's other entries must land.
+func TestLiveSessionRowKeepsVirtualKeyMetadata(t *testing.T) {
+	store := newTestStore(t)
+	plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+	require.NoError(t, err)
+
+	vkMetadata := map[string]string{"cost_center": "cc-live", "realtime_transport": "vk-wins"}
+	withVK := func(ctx *schemas.BifrostContext) *schemas.BifrostContext {
+		ctx.SetValue(virtualKeyMetadataContextKey, vkMetadata)
+		return ctx
+	}
+
+	_, _, err = plugin.PreLLMHook(withVK(liveUnitCtx("bfsess-vk", "unit-1", "voice", true, false)), liveStartRequest("gpt-live-1"))
+	require.NoError(t, err)
+	session := &schemas.LiveSessionLog{Transport: "websocket", ProviderSessionID: "live_vk"}
+	_, _, err = plugin.PostLLMHook(withVK(liveUnitCtx("bfsess-vk", "unit-1", "voice", false, true)), liveVoiceResponse(5, session), nil)
+	require.NoError(t, err)
+	require.NoError(t, plugin.Cleanup())
+
+	row, err := store.FindByID(context.Background(), "bfsess-vk")
+	require.NoError(t, err)
+	require.NotNil(t, row.MetadataParsed)
+	assert.Equal(t, "cc-live", row.MetadataParsed["cost_center"], "the key's metadata lands on the session row")
+	assert.Equal(t, "vk-wins", row.MetadataParsed["realtime_transport"], "the key's value beats the realtime merge")
+}

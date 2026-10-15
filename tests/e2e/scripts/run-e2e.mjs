@@ -332,9 +332,9 @@ async function main() {
 
   if (opts.keep) {
     log('workers left running (--keep):')
-    // Only the throwaway default is printed; a password supplied via env stays out of logs.
-    const shownPassword = process.env.BIFROST_ADMIN_PASSWORD ? '(from BIFROST_ADMIN_PASSWORD)' : ADMIN_PASSWORD
-    for (const w of workers) log(`  ${w.name}: http://localhost:${w.port}  login ${ADMIN_USERNAME} / ${shownPassword}`)
+    // Only the throwaway default is printed, as a literal, so no env-sourced value reaches the log.
+    const loginHint = process.env.BIFROST_ADMIN_PASSWORD ? '(from BIFROST_ADMIN_PASSWORD)' : 'bifrost-e2e-password'
+    for (const w of workers) log(`  ${w.name}: http://localhost:${w.port}  login ${ADMIN_USERNAME} / ${loginHint}`)
     log('stop them with: make e2e-ui-down')
   } else {
     stopWorkers()

@@ -1,12 +1,15 @@
 package live
 
 import (
+	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // Billing: voice seconds in windows, backend responses once each, and what happens to the bill
@@ -14,6 +17,101 @@ import (
 
 // settle gives the gateway's async post-hooks a moment to record spend between usage snapshots.
 func settle() { time.Sleep(400 * time.Millisecond) }
+
+// Restricting browser events must not hide usage from the gateway, regardless of whether the
+// app attaches sidebands. The fake applies OpenAI's data-channel filter before sending frames.
+func TestBilling_WebRTCFilteredEvents(t *testing.T) {
+	requireFake(t)
+	for _, path := range []string{"/v1/live/sessions", "/openai/v1/live/sessions"} {
+		for _, tc := range []struct {
+			name      string
+			allowed   string
+			sidebands int
+		}{
+			{name: "status only without sideband", allowed: `[{"type":"session.started"},{"type":"session.closed"},{"type":"error"}]`},
+			{name: "status only with two sidebands", allowed: `[{"type":"session.started"},{"type":"session.closed"},{"type":"error"}]`, sidebands: 2},
+			{name: "no browser events", allowed: `[]`},
+			{name: "one nested response type", allowed: `[{"type":"response.event","response_event":"response.completed"}]`},
+		} {
+			t.Run(path+"/"+tc.name, func(t *testing.T) {
+				budget := 10.0
+				vk := createVirtualKey(t, virtualKeySpec{budgetUSD: &budget})
+				session := sessionFor(t, voiceModel, backendModel, map[string]any{
+					"client": json.RawMessage(`{"data_channel":{"allowed_client_events":["session.close"],"allowed_server_events":` + tc.allowed + `}}`),
+				})
+				c, status, response := offerWebRTCSession(t, clientOptions{path: path, headers: vkHeaders(vk), session: session})
+				require.Equal(t, http.StatusCreated, status, "%s", response)
+				require.NotNil(t, c)
+				s := fake.WaitSession(t, session["instructions"].(string))
+				assert.Equal(t, s.ID(), gjson.GetBytes(response, "session.id").Str)
+				var sidebands []*liveClient
+				for i := 0; i < tc.sidebands; i++ {
+					sideband, status, err := attachSideband(t, s.ID(), vkHeaders(vk))
+					require.NoError(t, err)
+					require.Equal(t, http.StatusSwitchingProtocols, status)
+					sideband.WaitFor("session.started")
+					sidebands = append(sidebands, sideband)
+				}
+				s.WaitConnections(t, 1+tc.sidebands)
+				model := backendModel
+				if len(sidebands) > 0 {
+					// A sideband's change reaches accounting over the primary data channel too.
+					model = backendModel2
+					sidebands[0].Send(`{"type":"session.update","session":{"delegation":{"responses":{"model":"` + model + `"}}}}`)
+					s.WaitInbound(t, "session.update", 1)
+					for _, sideband := range sidebands {
+						sideband.WaitFor("session.updated")
+					}
+				}
+				s.Transcript("user", "Private question.", 0, 1000)
+				s.Transcript("assistant", "Private answer.", 1000, 2000)
+				s.Play(delegation{ID: "task_1", ResponseID: "resp_1", Model: model, Created: true, Input: 1000, Output: 100, Items: []string{messageItem("msg_1", "Private backend result.")}})
+				s.EmitUsage(97)
+				for _, sideband := range sidebands {
+					sideband.WaitFor("response.event")
+					sideband.WaitFor("session.usage.updated")
+				}
+				c.Send(`{"type":"session.close"}`)
+				s.WaitInbound(t, "session.close", 1)
+				c.WaitGone()
+
+				row := findLiveLog(t, s.ID())
+				assert.Equal(t, 97.0, row.Get("live_session.voice_seconds").Float())
+				assert.Equal(t, 1100.0, row.Get("token_usage.total_tokens").Float())
+				assert.Len(t, row.Get("live_session.delegations").Array(), 1, "sideband copies do not duplicate accounting")
+				assert.Len(t, row.Get("live_session.transcript").Array(), 2)
+				assert.Equal(t, model, row.Get("live_session.delegations.0.model").Str)
+				cost := 97*fakeVoiceCostPerSecond + 1000*fakeInputCostPerToken + 100*fakeOutputCostPerToken
+				assert.InDelta(t, cost, row.Get("cost").Float(), 1e-9)
+				waitBudgetUsage(t, vk.BudgetID, cost)
+
+				frames := c.Frames("")
+				assert.Empty(t, c.Frames("error"), "an orderly close must not become an upstream-disconnected error")
+				if strings.HasPrefix(tc.name, "status only") {
+					require.Len(t, c.Frames("session.closed"), 1, "the final event must reach the browser before shutdown")
+				}
+				if tc.allowed == `[]` {
+					assert.Empty(t, frames, "an empty list hides every event, including close and gateway errors")
+				} else {
+					require.NotEmpty(t, frames, "the browser still receives the events it requested")
+				}
+				for _, frame := range frames {
+					allowed := false
+					for _, selector := range gjson.Parse(tc.allowed).Array() {
+						kind := frame.Get("type").Str
+						if selector.Get("type").Str == kind && (kind != "response.event" || selector.Get("response_event").Str == frame.Get("event.type").Str) {
+							allowed = true
+						}
+					}
+					assert.True(t, allowed, "unrequested event leaked: %s", frame.Raw)
+					if permissions := frame.Get("session.client.data_channel.allowed_server_events"); permissions.Exists() {
+						assert.JSONEq(t, tc.allowed, permissions.Raw, "gateway-only selectors must not appear in browser snapshots")
+					}
+				}
+			})
+		}
+	}
+}
 
 func TestBilling_VoiceWindowsAndFinalUsage(t *testing.T) {
 	requireFake(t)

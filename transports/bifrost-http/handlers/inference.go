@@ -26,7 +26,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -2335,6 +2335,8 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// Routed-identity headers from the context snapshot — routing is final once
 	// the stream channel is returned, before any chunk arrives.
 	lib.ApplyBifrostStreamResponseHeaders(ctx, bifrostCtx, requestType)
+	// Read once on the handler goroutine: in headers mode every chunk drops extra_fields.
+	stripExtraFields := lib.ExtraFieldsInHeaders(ctx)
 
 	// Signal to tracing middleware that trace completion should be deferred
 	// The streaming callback will complete the trace after the stream ends
@@ -2501,6 +2503,9 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 							}
 							return
 						}
+						if stripExtraFields {
+							errorJSON = lib.StripExtraFields(errorJSON)
+						}
 						// Return error event and stop streaming
 						reader.SendError(errorJSON)
 						cancel()
@@ -2520,6 +2525,9 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// Convert response to JSON (transport-goroutine CPU).
 			cpuStart := time.Now()
 			chunkJSON, err := sonic.Marshal(chunk)
+			if err == nil && stripExtraFields {
+				chunkJSON = lib.StripExtraFields(chunkJSON)
+			}
 			streamTransportCPUNs += time.Since(cpuStart).Nanoseconds()
 			if err != nil {
 				logger.Warn("Failed to marshal streaming response: %v", err)
@@ -3767,6 +3775,14 @@ func (h *CompletionHandler) batchCreate(ctx *fasthttp.RequestCtx) {
 	hasInputBlob := req.InputBlob != nil && strings.TrimSpace(*req.InputBlob) != ""
 	if req.InputFileID == "" && len(req.Requests) == 0 && !hasInputBlob {
 		SendError(ctx, fasthttp.StatusBadRequest, "either input_file_id, input_blob, or requests is required")
+		return
+	}
+	// A batch's work is named once. No provider runs inline requests beside a file: OpenAI, Azure
+	// and Bedrock submit the file and drop them, Gemini and Vertex refuse the mix. Refusing it here
+	// keeps a client from losing its inline requests, and keeps the file batch rule in governance
+	// from being judged on items that would never run.
+	if (req.InputFileID != "" || hasInputBlob) && len(req.Requests) > 0 {
+		SendError(ctx, fasthttp.StatusBadRequest, "input_file_id or input_blob and requests are exclusive: name the batch's work as a file, a blob, or inline requests, not both")
 		return
 	}
 

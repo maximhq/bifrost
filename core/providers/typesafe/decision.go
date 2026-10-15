@@ -1,12 +1,16 @@
 package typesafe
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"reflect"
 	"sort"
 	"strconv"
 
 	"github.com/tidwall/gjson"
+	"github.com/valyala/fasthttp"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -14,12 +18,6 @@ import (
 
 // typesafeMaxChoiceOptions is Typesafe's documented cap on choice options.
 const typesafeMaxChoiceOptions = 255
-
-// typesafeMinScoreLevels and typesafeMaxScoreLevels bound a score criteria array.
-const (
-	typesafeMinScoreLevels = 2
-	typesafeMaxScoreLevels = 10
-)
 
 // typesafeQuestionTypes maps the normalized question types to the native
 // ones Typesafe serves; its "noul" is the normalized predicate.
@@ -57,8 +55,9 @@ func validStructuredValue(value interface{}) bool {
 // become an option -> description map, a boolean choice keyed "true" or
 // "false", and levels an ordered array of descriptions with their labels
 // folded in. Unsupported types and malformed criteria are rejected rather than
-// silently approximated, and so is an image in the input, which Typesafe would
-// read as text. Validation is never stricter than the official SDKs' types:
+// silently approximated, and so is an image in the input, which Typesafe (and
+// any other text-only systemone endpoint, such as Azure's Microsoft-Decision-1)
+// would read as text. Validation is never stricter than the official SDKs' types:
 // null state, null or absent instructions, and null descriptions are
 // forwarded for the endpoint to judge.
 func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error) {
@@ -66,7 +65,7 @@ func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*Typesa
 		return nil, providerUtils.InvalidRequestErrorf("decision request requires at least one question")
 	}
 	if partType := request.Input.NonTextPartType(); partType != "" {
-		return nil, providerUtils.InvalidRequestErrorf("decision input carries an %q part, which Typesafe cannot read; route the request to a provider that accepts it", partType)
+		return nil, providerUtils.InvalidRequestErrorf("decision input carries an %q part, which this provider cannot read; route the request to a provider that accepts it", partType)
 	}
 	state := typesafeState(request.Input)
 	if !isJSONNull(state) && !validStructuredValue(state) {
@@ -221,10 +220,12 @@ func choiceCriteria(name string, criteria interface{}) (map[string]any, error) {
 	return m, nil
 }
 
-// scoreCriteria validates the ordered array of 2-10 level descriptions, each
-// a string, object, or array, or null for an undescribed level, preserved
+// scoreCriteria validates the ordered array of level descriptions, each a
+// string, object, or array, or null for an undescribed level, preserved
 // losslessly. Go SDK callers supply []string; HTTP JSON decoding supplies
-// []interface{} - both are the same ordered array on the wire.
+// []interface{} - both are the same ordered array on the wire. The number of
+// levels is the endpoint's rule, not ours: Typesafe accepts 2-10, Perplexity
+// 1-10, and each rejects the rest with its own error.
 func scoreCriteria(name string, criteria interface{}) (interface{}, error) {
 	var levels []any
 	switch typed := criteria.(type) {
@@ -248,9 +249,6 @@ func scoreCriteria(name string, criteria interface{}) (interface{}, error) {
 		for i := range levels {
 			levels[i] = value.Index(i).Interface()
 		}
-	}
-	if len(levels) < typesafeMinScoreLevels || len(levels) > typesafeMaxScoreLevels {
-		return nil, providerUtils.InvalidRequestErrorf("question %q score criteria must have between %d and %d levels, got %d", name, typesafeMinScoreLevels, typesafeMaxScoreLevels, len(levels))
 	}
 	for i, level := range levels {
 		if !isJSONNull(level) && !validStructuredValue(level) {
@@ -684,4 +682,115 @@ func ToTypesafeAnswers(answers []schemas.DecisionAnswer) map[string]TypesafeAnsw
 		native[names[i]] = converted
 	}
 	return native
+}
+
+// HandleTypesafeDecisionRequest sends a decision to a systemone endpoint, one whose
+// request and response are Typesafe's (Typesafe, Azure's Microsoft-Decision-1,
+// Perplexity's deciders), and converts the reply. toRequest builds the body, so a
+// provider can adapt the input (Perplexity keeps images); the caller resolves the
+// URL and auth headers, and parseError reads the provider's error body. A reply in a
+// {result, success} envelope is unwrapped. keepNativeResponse copies the reply into
+// NativeResponse for the native /typesafe route, which relays it only for Typesafe.
+func HandleTypesafeDecisionRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostDecisionRequest,
+	toRequest func(*schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error),
+	authHeaders map[string]string,
+	extraHeaders map[string]string,
+	providerName schemas.ModelProvider,
+	parseError func(*fasthttp.Response) *schemas.BifrostError,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	keepNativeResponse bool,
+) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return toRequest(request)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
+	}
+	// A nil body means large-payload passthrough staged the request as a
+	// stream; apply it instead of sending an empty body.
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, providerName) {
+		req.SetBody(jsonData)
+	}
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	// Captured before the status check so error responses forward them too
+	// (the SDKs read request ids and Retry-After off every reply).
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(ctx, parseError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
+	respBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
+	if err != nil {
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+	respBody, envelopeFailed := unwrapResultEnvelope(respBody)
+	if envelopeFailed {
+		return nil, providerUtils.EnrichError(ctx, parseTypesafeEnvelopeFailure(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	var decisionResp TypesafeDecisionResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &decisionResp, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, respBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	bifrostResp, bifrostErr := ToBifrostDecisionResponse(&decisionResp, request)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, respBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+	if keepNativeResponse {
+		// Compacting copies the body, which is released with resp.
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, respBody); err == nil {
+			bifrostResp.NativeResponse = json.RawMessage(compact.Bytes())
+		}
+	}
+	return bifrostResp, nil
 }

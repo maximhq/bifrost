@@ -23,13 +23,13 @@ import type { LogEntry, LogFilters, MCPToolLogEntry, MCPToolLogFilters } from "@
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
-import { format, isValid } from "date-fns";
+import { format, formatDistanceToNow, isValid } from "date-fns";
 import { ChevronLeft, ChevronRight, ExternalLink, Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 const PAGE_SIZE = 10;
-const LLM_HEADERS = ["Time", "", "Type", "Message", "Model", "App", "Latency", "Tokens", "Cost"];
-const MCP_HEADERS = ["Time", "", "Tool", "Server", "App", "Latency", "Cost"];
+const LLM_HEADERS = ["", "Time", "Type", "Message", "Model", "App", "Latency", "Tokens", "Cost"];
+const MCP_HEADERS = ["", "Time", "Tool", "Server", "App", "Latency", "Cost"];
 
 type Correlation = { session_id: string } | { agent_correlation_id: string };
 type CorrelatedLogKind = "llm" | "mcp";
@@ -105,7 +105,7 @@ function CorrelatedTableHeader({ kind }: { kind: CorrelatedLogKind }) {
 		<TableHeader className="sticky top-0 z-10 bg-[#f9f9f9] dark:bg-[#27272a]">
 			<TableRow>
 				{headers.map((header, index) => (
-					<TableHead key={`${header}-${index}`} className={cn("px-4 text-xs", header === "" && "w-1 px-0")}>
+					<TableHead key={`${header}-${index}`} className={cn("px-4 text-xs", header === "" && "w-1 pl-3 pr-0")}>
 						{header}
 					</TableHead>
 				))}
@@ -139,12 +139,19 @@ function CorrelatedLLMRow({ log, search }: { log: LogEntry; search: Record<strin
 	const tokenUsage = log.token_usage;
 	const openLog = () => navigate({ to: "/workspace/logs", search: { ...search, selected_log: log.id } });
 	return (
-		<TableRow className="cursor-pointer" onClick={openLog}>
-			<TableCell className="text-muted-foreground font-mono text-xs tabular-nums">
-				{isValid(timestamp) ? format(timestamp, "MMM dd  HH:mm:ss") : log.timestamp}
-			</TableCell>
-			<TableCell className="w-1 px-0">
+		<TableRow className="cursor-pointer [&>td]:py-1.5" onClick={openLog}>
+			<TableCell className="w-1 pr-0 pl-3">
 				<CorrelatedStatusBar status={log.status} />
+			</TableCell>
+			<TableCell className="whitespace-nowrap">
+				<div className="flex h-8 flex-col justify-center leading-tight">
+					<span className="font-mono text-xs tabular-nums">
+						{isValid(timestamp) ? format(timestamp, "MMM dd HH:mm:ss") : log.timestamp}
+					</span>
+					{isValid(timestamp) && (
+						<span className="text-muted-foreground text-[10.5px] tabular-nums">{formatDistanceToNow(timestamp, { addSuffix: true })}</span>
+					)}
+				</div>
 			</TableCell>
 			<TableCell>
 				<Badge
@@ -184,12 +191,19 @@ function CorrelatedMCPRow({ log, search }: { log: MCPToolLogEntry; search: Recor
 	const preview = getMCPArgumentPreview(log);
 	const openLog = () => navigate({ to: "/workspace/mcp-logs", search: { ...search, selected_log: log.id } });
 	return (
-		<TableRow className="cursor-pointer" onClick={openLog}>
-			<TableCell className="text-muted-foreground font-mono text-xs tabular-nums">
-				{isValid(timestamp) ? format(timestamp, "MMM dd  HH:mm:ss") : log.timestamp}
-			</TableCell>
-			<TableCell className="w-1 px-0">
+		<TableRow className="cursor-pointer [&>td]:py-1.5" onClick={openLog}>
+			<TableCell className="w-1 pr-0 pl-3">
 				<CorrelatedStatusBar status={log.status} />
+			</TableCell>
+			<TableCell className="whitespace-nowrap">
+				<div className="flex h-8 flex-col justify-center leading-tight">
+					<span className="font-mono text-xs tabular-nums">
+						{isValid(timestamp) ? format(timestamp, "MMM dd HH:mm:ss") : log.timestamp}
+					</span>
+					{isValid(timestamp) && (
+						<span className="text-muted-foreground text-[10.5px] tabular-nums">{formatDistanceToNow(timestamp, { addSuffix: true })}</span>
+					)}
+				</div>
 			</TableCell>
 			<TableCell className="max-w-md overflow-hidden">
 				<span className="block truncate font-mono text-sm">{log.tool_name}</span>
@@ -289,7 +303,7 @@ export function CorrelatedLogsContent({
 				<Link
 					to={isLLM ? "/workspace/logs" : "/workspace/mcp-logs"}
 					search={fullPageSearch}
-					className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs transition-colors"
+					className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 text-xs underline-offset-2 transition-colors hover:underline"
 				>
 					View all <ExternalLink className="size-3" />
 				</Link>

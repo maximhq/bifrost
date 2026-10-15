@@ -293,6 +293,90 @@ test("Get Proxy Config survives a non-JSON body without a script error", () => {
   assert.ok(ctx.state.tests.length > 0, "the script must reach its named assertions");
 });
 
+const disableProxyPrerequest = scriptFor("Proxy / Teardown - Disable Proxy Config", "prerequest");
+
+test("proxy teardown is skipped in the unauthenticated pass, which stored nothing", () => {
+  const ctx = run(disableProxyPrerequest, {});
+  assert.strictEqual(ctx.state.skipped, true, "expected skipRequest()");
+});
+
+test("proxy teardown runs in the authenticated pass and disables the proxy for every surface", () => {
+  for (const variables of [{ admin_auth_header: "Bearer x" }, { setup_token: "t" }]) {
+    const ctx = run(disableProxyPrerequest, { variables });
+    assert.strictEqual(ctx.state.skipped, false, `unexpected skipRequest() for ${JSON.stringify(variables)}`);
+  }
+  const proxyFolder = collection.item.find((f) => f.name === "Proxy");
+  const teardown = proxyFolder.item.find((i) => i.name === "Teardown - Disable Proxy Config");
+  assert.strictEqual(proxyFolder.item.at(-1), teardown, "teardown must be the folder's last request");
+  const body = JSON.parse(teardown.request.body.raw);
+  assert.strictEqual(body.enabled, false);
+  assert.strictEqual(body.enable_for_inference, false);
+  assert.strictEqual(body.enable_for_api, false);
+});
+
+// ── Governance - VK Allow All Providers / per-provider catalog counts ─────────
+function modelsBody(provider, n) {
+  const models = Array.from({ length: n }, (_, i) => ({ name: `${provider}-m${i}`, provider }));
+  return JSON.stringify({ models, total: n });
+}
+
+test("allow-all baselines store each provider's filtered count, not a share of one capped page", () => {
+  for (const provider of ["anthropic", "openai"]) {
+    const src = scriptFor(`Governance - VK Allow All Providers / Baseline - ${provider} catalog size with no VK`, "test");
+    const ctx = run(src, { responseBody: modelsBody(provider, 26) });
+    assert.strictEqual(ctx.vars[`vkall_base_${provider}`], "26");
+  }
+});
+
+test("allow-all baselines and VK checks survive a non-JSON body without a script error", () => {
+  for (const name of [
+    "Baseline - anthropic catalog size with no VK",
+    "Baseline - openai catalog size with no VK",
+    "/api/models/details - unnamed provider is granted in full",
+    "/api/models/details - overridden provider stays narrowed",
+  ]) {
+    const ctx = run(scriptFor(`Governance - VK Allow All Providers / ${name}`, "test"), {
+      responseBody: SPA_FALLBACK,
+      variables: { vkall_base_anthropic: "26", vkall_base_openai: "163" },
+    });
+    assert.ok(ctx.state.tests.length > 0, `${name} must reach its named assertions`);
+  }
+});
+
+test("allow-all VK checks query one provider each", () => {
+  const folder = collection.item.find((f) => f.name === "Governance - VK Allow All Providers");
+  for (const [name, provider] of [
+    ["Baseline - anthropic catalog size with no VK", "anthropic"],
+    ["Baseline - openai catalog size with no VK", "openai"],
+    ["/api/models/details - unnamed provider is granted in full", "anthropic"],
+    ["/api/models/details - overridden provider stays narrowed", "openai"],
+  ]) {
+    const item = folder.item.find((i) => i.name === name);
+    assert.ok(item, `request not found: ${name}`);
+    const q = Object.fromEntries(item.request.url.query.map((p) => [p.key, p.value]));
+    assert.strictEqual(q.provider, provider, `${name} must filter by provider`);
+  }
+});
+
+// ── Request guards / cases the OSS setup lock must refuse ─────────────────────
+test("request-guard lock cases drop the setup token and expect the lock's 401", () => {
+  for (const name of [
+    "MCP client registration / A target host that does not resolve is refused without a setup token",
+    "MCP client registration / A loopback target is refused without a setup token",
+    "Provider endpoint changes / Changing the proxy URL is refused without a setup token",
+    "Provider endpoint changes / A custom provider with a base URL is refused without a setup token",
+    "Provider endpoint changes / A provider key carrying an endpoint is refused without a setup token",
+    "Webhook delivery test gate / A test delivery is refused without a setup token",
+    "Dashboard auth update / Re-enabling auth without a setup token is refused",
+    "Dashboard auth update / Re-enabling auth with a wrong current_password and no setup token is refused",
+  ]) {
+    const pre = guardsScriptFor(name, "prerequest");
+    assert.match(pre, /pm\.request\.headers\.remove\('X-Bifrost-Setup-Token'\)/, `${name} must send no setup token`);
+    const post = guardsScriptFor(name, "test");
+    assert.match(post, /to\.eql\(401\)/, `${name} must expect the lock's 401`);
+  }
+});
+
 // ── MCP Clients / Add MCP Client and its dependents ───────────────────────────
 const addMCPClientTest = scriptFor("MCP Clients / Add MCP Client", "test");
 
@@ -693,6 +777,10 @@ const standardProviders = [...standardBlock.matchAll(/^\s*(\w+),/gm)].map((m) =>
 const redactionRef = "env.BIFROST_SECRET_REDACTION_CANARY";
 const redactionCanary = "synthetic-secretvar-harness-canary-0123456789";
 const redactionMask = "synt" + "*".repeat(24) + "6789";
+// Key server URLs are validated as http(s) URLs once resolved, so they use a URL canary.
+const redactionUrlRef = "env.BIFROST_SECRET_REDACTION_URL_CANARY";
+const redactionUrlMask = "http" + "*".repeat(24) + "6789";
+const redactionUrlFields = new Set(["OllamaKeyConfig.url", "SGLKeyConfig.url", "VLLMKeyConfig.url"]);
 
 test("redaction folder authenticates the initial request as well as callback requests", () => {
   let header;
@@ -732,7 +820,10 @@ test("redaction matrix covers every provider-specific SecretVar field", () => {
     if (!fields.length) continue; // Replicate has no secret-bearing key config.
     const fixture = redactionFixtures.find((f) => f.key[property]);
     assert.ok(fixture, `no fixture covers ${type}`);
-    for (const field of fields) assert.strictEqual(fixture.key[property][field], redactionRef, `${type}.${field}`);
+    for (const field of fields) {
+      const ref = redactionUrlFields.has(`${type}.${field}`) ? redactionUrlRef : redactionRef;
+      assert.strictEqual(fixture.key[property][field], ref, `${type}.${field}`);
+    }
     if (structBody(type).includes("*BedrockEndpoints")) {
       for (const field of secretFields("BedrockEndpoints")) {
         assert.strictEqual(fixture.key[property].endpoints[field], redactionRef, `${type}.endpoints.${field}`);
@@ -768,6 +859,9 @@ function simulateRedaction(fixture, mode = "masked", existing = false, auth = fa
   function wire(value) {
     if (value === redactionRef || (value && value.ref === redactionRef)) {
       return { ref: redactionRef, type: "env", value: redactionMask };
+    }
+    if (value === redactionUrlRef || (value && value.ref === redactionUrlRef)) {
+      return { ref: redactionUrlRef, type: "env", value: redactionUrlMask };
     }
     if (Array.isArray(value)) return value.map(wire);
     if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, val]) => [key, wire(val)]));

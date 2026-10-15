@@ -541,7 +541,9 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 			// Copy message
 			processedMessages[i] = msg
 
-			// Strip the Bifrost-extension citation text from assistant annotations
+			// Strip the Bifrost-extension citation text from assistant annotations and
+			// the Anthropic cache_control marker from tool_calls entries (kept for OpenRouter,
+			// like the block and tool markers above).
 			if msg.OpenAIChatAssistantMessage != nil {
 				needsAnnotationStrip := false
 				for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
@@ -550,13 +552,30 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 						break
 					}
 				}
-				if needsAnnotationStrip {
+				needsToolCallStrip := false
+				if !keepCacheControl {
+					for _, toolCall := range msg.OpenAIChatAssistantMessage.ToolCalls {
+						if toolCall.CacheControl != nil {
+							needsToolCallStrip = true
+							break
+						}
+					}
+				}
+				if needsAnnotationStrip || needsToolCallStrip {
 					assistantCopy := *msg.OpenAIChatAssistantMessage
-					assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(msg.OpenAIChatAssistantMessage.Annotations))
-					for j, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
-						annotationCopy := annotation
-						annotationCopy.URLCitation.Text = nil
-						assistantCopy.Annotations[j] = annotationCopy
+					if needsAnnotationStrip {
+						assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(msg.OpenAIChatAssistantMessage.Annotations))
+						for j, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+							annotationCopy := annotation
+							annotationCopy.URLCitation.Text = nil
+							assistantCopy.Annotations[j] = annotationCopy
+						}
+					}
+					if needsToolCallStrip {
+						assistantCopy.ToolCalls = slices.Clone(msg.OpenAIChatAssistantMessage.ToolCalls)
+						for j := range assistantCopy.ToolCalls {
+							assistantCopy.ToolCalls[j].CacheControl = nil
+						}
 					}
 					processedMessages[i].OpenAIChatAssistantMessage = &assistantCopy
 				}
@@ -895,19 +914,30 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				// as an array of content blocks and has to be flattened here.
 				// Strict upstream implementations (e.g. Ollama Cloud) return a
 				// 400 otherwise.
-				if msg.ResponsesToolMessage.Output != nil &&
-					msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil &&
-					isFunctionCallOutputBlocksFlattenable(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) {
-					flattened := flattenFunctionCallOutputBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+				// tool_reference is Anthropic-only; OpenAI has no block for it.
+				var outputBlocks []schemas.ResponsesMessageContentBlock
+				hadToolReferences := false
+				if msg.ResponsesToolMessage.Output != nil {
+					outputBlocks, hadToolReferences = withoutToolReferenceBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+				}
+				if hadToolReferences && len(outputBlocks) == 0 {
+					empty := ""
+					outputCopy := *msg.ResponsesToolMessage.Output
+					outputCopy.ResponsesToolCallOutputStr = &empty
+					outputCopy.ResponsesFunctionToolCallOutputBlocks = nil
+					toolMsgCopy.Output = &outputCopy
+					toolMsgModified = true
+				} else if outputBlocks != nil && isFunctionCallOutputBlocksFlattenable(outputBlocks) {
+					flattened := flattenFunctionCallOutputBlocks(outputBlocks)
 					outputCopy := *msg.ResponsesToolMessage.Output
 					outputCopy.ResponsesToolCallOutputStr = &flattened
 					outputCopy.ResponsesFunctionToolCallOutputBlocks = nil
 					toolMsgCopy.Output = &outputCopy
 					toolMsgModified = true
-				} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+				} else if outputBlocks != nil {
 					// Strip CacheControl and FileType from tool message output blocks if needed
-					hasToolModification := false
-					for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+					hasToolModification := hadToolReferences
+					for _, block := range outputBlocks {
 						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
 							hasToolModification = true
 							break
@@ -916,8 +946,8 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 					if hasToolModification {
 						outputCopy := *msg.ResponsesToolMessage.Output
-						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
-						for j, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(outputBlocks))
+						for j, block := range outputBlocks {
 							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
 							if needsBlockCopy {
 								blockCopy := block
@@ -1138,6 +1168,13 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 				return true
 			}
 		}
+		if !keepCacheControl {
+			for _, toolCall := range msg.OpenAIChatAssistantMessage.ToolCalls {
+				if toolCall.CacheControl != nil {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -1190,6 +1227,9 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 				return true
 			}
 			for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+				if block.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+					return true
+				}
 				if block.CacheControl != nil {
 					return true
 				}
@@ -1233,6 +1273,23 @@ func isFunctionCallOutputBlocksFlattenable(blocks []schemas.ResponsesMessageCont
 		}
 	}
 	return true
+}
+
+// withoutToolReferenceBlocks returns blocks minus any tool_reference blocks and
+// whether any were removed. The input slice is returned unchanged when none are.
+func withoutToolReferenceBlocks(blocks []schemas.ResponsesMessageContentBlock) ([]schemas.ResponsesMessageContentBlock, bool) {
+	if !slices.ContainsFunc(blocks, func(b schemas.ResponsesMessageContentBlock) bool {
+		return b.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference
+	}) {
+		return blocks, false
+	}
+	filtered := make([]schemas.ResponsesMessageContentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type != schemas.ResponsesInputMessageContentBlockTypeToolReference {
+			filtered = append(filtered, block)
+		}
+	}
+	return filtered, true
 }
 
 // flattenFunctionCallOutputBlocks concatenates the text of every block in the

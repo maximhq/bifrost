@@ -36,7 +36,7 @@ type entrypoint struct {
 
 var entrypoints = []entrypoint{
 	{
-		pkg:        "github.com/maximhq/bifrost/transports/bifrost-http/lib",
+		pkg:        "github.com/maximhq/bifrost/transports/v2/bifrost-http/lib",
 		typeName:   "ConfigData",
 		schemaPath: "", // root schema node — collectProperties will find .properties
 		moduleDir:  "transports",
@@ -126,6 +126,10 @@ var ignoreGoFields = map[string]string{
 	// provider_key_id is the internal DB column resolved from provider_key_name at config load time;
 	// schema documents only the human-readable provider_key_name alias.
 	"/properties/governance/properties/pricing_overrides/items|provider_key_id": "internal DB column; config uses provider_key_name alias instead",
+	// governance.providers decodes into TableProvider for budget and rate-limit wiring only;
+	// injected_tools is read from providers.<name>, so the schema must not advertise it here
+	// (TestValidateConfigSchema_InjectedTools pins that).
+	"/properties/governance/properties/providers/items|injected_tools": "gorm:\"-\" field never read from governance.providers; configured under providers.<name>.injected_tools",
 	// oauth_client_id / oauth_client_secret are response-only fields on MCPClientConfig:
 	// populated on GET from the oauth_configs table, never accepted as config.json input.
 	"/properties/mcp/properties/client_configs/items|oauth_client_id":     "response-only; populated on GET from oauth_configs, not user-configurable via config.json",
@@ -150,6 +154,14 @@ var ignoreGoFields = map[string]string{
 	"/properties/mcp/properties/client_configs/items/properties/oauth_config|redirect_uri":  "computed by Bifrost (MCP OAuth callback URI); not authored in config.json",
 	"/properties/mcp/properties/client_configs/items/properties/oauth_config|server_url":    "derived from the client connection_string for OAuth discovery; not authored in config.json",
 	"/properties/mcp/properties/client_configs/items/properties/oauth_config|use_discovery": "deprecated; discovery is automatic when URLs are missing",
+	// openapi_config (schemas.MCPOpenAPIConfig) carries five fields the server computes from the
+	// parsed spec at write time and returns on read; they are never authored in config.json, and
+	// the schema's additionalProperties: false on openapi_config keeps them out deliberately.
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|spec_size":       "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|spec_hash":       "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|spec_title":      "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|openapi_version": "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|operation_count": "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
 	// source_id is a stable external identifier for teams provisioned by an
 	// integrating system (PR #3395). It is assigned through the API by that
 	// system, never authored in config.json.

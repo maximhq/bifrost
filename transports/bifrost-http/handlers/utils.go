@@ -15,7 +15,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -176,6 +176,7 @@ func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
 		return
 	}
+	body = lib.StripExtraFieldsIfInHeaders(ctx, body)
 	ctx.SetBody(append(body, '\n'))
 }
 
@@ -189,6 +190,7 @@ func SendJSONWithStatus(ctx *fasthttp.RequestCtx, data interface{}, statusCode i
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
 		return
 	}
+	body = lib.StripExtraFieldsIfInHeaders(ctx, body)
 	ctx.SetBody(append(body, '\n'))
 }
 
@@ -206,6 +208,8 @@ func SendError(ctx *fasthttp.RequestCtx, statusCode int, message string) {
 
 // SendBifrostError sends a BifrostError response
 func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
+	// Before sanitizing: the span keeps the unredacted detail core already stamps.
+	stampRootSpanError(ctx, bifrostErr)
 	bifrostErr = lib.SanitizeBifrostErrorForClient(bifrostErr)
 	if bifrostErr == nil {
 		SendError(ctx, fasthttp.StatusInternalServerError, lib.ClientSafeInternalErrorMessage)
@@ -222,10 +226,54 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 	lib.ApplyBifrostErrorResponseHeaders(ctx, nil, bifrostErr.ExtraFields)
 
 	ctx.SetContentType("application/json")
+	if lib.ExtraFieldsInHeaders(ctx) {
+		body, encodeErr := json.Marshal(bifrostErr)
+		if encodeErr != nil {
+			logger.Warn(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+			ctx.SetBodyString(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
+			return
+		}
+		ctx.SetBody(append(lib.StripExtraFields(body), '\n'))
+		return
+	}
 	if encodeErr := json.NewEncoder(ctx).Encode(bifrostErr); encodeErr != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
 		ctx.SetBodyString(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
+	}
+}
+
+// stampRootSpanError records the failure identity on the root span. A request
+// rejected before dispatch has no llm.call span to carry it.
+func stampRootSpanError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError) {
+	if bifrostErr == nil {
+		return
+	}
+	tracer, ok := ctx.UserValue(schemas.BifrostContextKeyTracer).(schemas.Tracer)
+	if !ok || tracer == nil {
+		return
+	}
+	traceID, _ := ctx.UserValue(schemas.BifrostContextKeyTraceID).(string)
+	if traceID == "" {
+		return
+	}
+	// A nil span ID resolves to the root span.
+	span := tracer.SpanFromHandle(tracer.GetSpanHandleByID(traceID, nil))
+	if span == nil {
+		return
+	}
+	span.SetAttributes(schemas.RootSpanErrorAttributes(bifrostErr,
+		schemas.ClassifyErrorType(bifrostErr, bifrostErr.ExtraFields.RequestType)))
+
+	// A request that reached a provider already propagated its resolved identity up.
+	ef := bifrostErr.ExtraFields
+	if _, exists := span.GetAttribute(schemas.AttrRequestModel); !exists && ef.OriginalModelRequested != "" {
+		span.SetAttribute(schemas.AttrRequestModel, ef.OriginalModelRequested)
+	}
+	if _, exists := span.GetAttribute(schemas.AttrProviderName); !exists && ef.Provider != "" {
+		span.SetAttribute(schemas.AttrProviderName, schemas.OTelProviderName(ef.Provider))
+		span.SetAttribute(schemas.AttrBifrostProviderName, string(ef.Provider))
 	}
 }
 

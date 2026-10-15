@@ -2,11 +2,14 @@ package logstore
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
@@ -409,4 +412,238 @@ func TestBifrostSafeJsonb_NullInput(t *testing.T) {
 	err := db.Raw("SELECT bifrost_safe_jsonb(NULL::text)").Scan(&got).Error
 	require.NoError(t, err, "bifrost_safe_jsonb(NULL) must not error")
 	assert.Nil(t, got, "bifrost_safe_jsonb(NULL) should return NULL")
+}
+
+// setupPGTextSafetyStore returns a migrated Postgres store with the text-safety
+// callbacks installed and the GIN expression indexes built, so inserts evaluate
+// metadata::jsonb and team_ids::jsonb exactly as production does.
+func setupPGTextSafetyStore(t *testing.T) (*RDBLogStore, *gorm.DB) {
+	t.Helper()
+	store, db := setupPerfTestDB(t)
+	registerPGTextSafetyCallbacks(db)
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	conn, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	defer conn.Close()
+	require.NoError(t, ensureMetadataGINIndex(ctx, conn))
+	require.NoError(t, ensureMultiTeamBusinessUnitGINIndexes(ctx, conn))
+	return store, db
+}
+
+func pgTextSafetyBatch(prefix string, n int) []*Log {
+	now := time.Now().UTC()
+	entries := make([]*Log, n)
+	for i := range entries {
+		entries[i] = &Log{
+			ID:        fmt.Sprintf("%s-%03d", prefix, i),
+			Timestamp: now,
+			Provider:  "openai",
+			Model:     "gpt-4o",
+			Status:    "success",
+			Object:    "chat.completion",
+		}
+	}
+	return entries
+}
+
+// TestPGTextSafety_PoisonedRowDoesNotFailBatch pins that one row carrying bytes
+// Postgres rejects (a raw NUL, invalid UTF-8, or a JSON escape jsonb refuses in
+// an indexed column) no longer fails the whole multi-row INSERT with SQLSTATE
+// 22021 / 22P05 / 22P02, which made the writer fall back to per-row inserts.
+func TestPGTextSafety_PoisonedRowDoesNotFailBatch(t *testing.T) {
+	store, db := setupPGTextSafetyStore(t)
+	ctx := context.Background()
+
+	cases := []struct {
+		name   string
+		poison func(l *Log)
+	}{
+		{"raw_nul_in_raw_response", func(l *Log) { l.RawResponse = "a\x00b" }},
+		{"raw_nul_in_varchar_model", func(l *Log) { l.Model = "gpt\x00-4o" }},
+		{"invalid_utf8_in_passthrough_body", func(l *Log) { l.PassthroughResponseBody = "ID3\x03\xff\xfb" }},
+		{"invalid_utf8_in_serialized_history", func(l *Log) {
+			content := "caf\xc3"
+			l.InputHistoryParsed = []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &content}}}
+		}},
+		{"nul_escape_in_gin_indexed_metadata", func(l *Log) { l.MetadataParsed = map[string]interface{}{"note": "a\x00b"} }},
+		{"nul_escape_in_gin_indexed_team_ids", func(l *Log) { l.TeamIDsParsed = []string{"team\x00"} }},
+		{"lone_surrogate_in_gin_indexed_metadata", func(l *Log) {
+			l.MetadataParsed = map[string]interface{}{"raw": json.RawMessage(`"\ud800"`)}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			require.NoError(t, db.Exec("TRUNCATE logs").Error)
+			entries := pgTextSafetyBatch(c.name, 67)
+			c.poison(entries[33])
+			require.NoError(t, store.BatchCreateIfNotExists(ctx, entries), "one poisoned row must not fail the batch")
+			var count int64
+			require.NoError(t, db.Model(&Log{}).Count(&count).Error)
+			assert.Equal(t, int64(67), count)
+		})
+	}
+}
+
+// TestPGTextSafety_JSONColumnsStayJSONBCastable pins that every JSON column the
+// ranking and dimension queries cast with ::jsonb stays castable after a NUL or
+// a lone surrogate reaches it, so one row cannot error a whole dashboard query.
+func TestPGTextSafety_JSONColumnsStayJSONBCastable(t *testing.T) {
+	store, db := setupPGTextSafetyStore(t)
+	ctx := context.Background()
+
+	entries := pgTextSafetyBatch("jsonb-cast", 2)
+	msg := "upstream said a\x00b"
+	entries[0].Status = "error"
+	entries[0].ErrorDetailsParsed = &schemas.BifrostError{Error: &schemas.ErrorField{Message: msg}}
+	out := "reply a\x00b"
+	entries[0].OutputMessageParsed = &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &out}}
+	entries[1].ParamsParsed = map[string]interface{}{"raw": json.RawMessage(`"\udc00"`)}
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, entries))
+
+	var n int64
+	err := db.Raw(`SELECT COUNT(*) FROM logs WHERE
+		(NULLIF(error_details, '')::jsonb IS NOT NULL OR error_details IS NULL OR error_details = '')
+		AND (NULLIF(output_message, '')::jsonb IS NOT NULL OR output_message IS NULL OR output_message = '')
+		AND (NULLIF(params, '')::jsonb IS NOT NULL OR params IS NULL OR params = '')`).Scan(&n).Error
+	require.NoError(t, err, "stored JSON columns must cast to jsonb")
+	assert.Equal(t, int64(2), n)
+}
+
+// TestPGTextSafety_LiteralBackslashU0000RoundTrips pins that text which merely
+// mentions the six characters \u0000 (an escaped backslash in JSON) is stored
+// unchanged, rather than being cut into a different escape or invalid JSON.
+func TestPGTextSafety_LiteralBackslashU0000RoundTrips(t *testing.T) {
+	store, _ := setupPGTextSafetyStore(t)
+	ctx := context.Background()
+
+	for i, content := range []string{`in Go write \u0000 for NUL`, `ends with \u0000`, `C:\\u0000dir`} {
+		entry := pgTextSafetyBatch(fmt.Sprintf("literal-%d", i), 1)[0]
+		c := content
+		entry.InputHistoryParsed = []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &c}}}
+		require.NoError(t, store.BatchCreateIfNotExists(ctx, []*Log{entry}))
+
+		got, err := store.FindByID(ctx, entry.ID)
+		require.NoError(t, err)
+		require.Len(t, got.InputHistoryParsed, 1, "input_history must stay valid JSON: %q", got.InputHistory)
+		require.NotNil(t, got.InputHistoryParsed[0].Content)
+		require.NotNil(t, got.InputHistoryParsed[0].Content.ContentStr)
+		assert.Equal(t, content, *got.InputHistoryParsed[0].Content.ContentStr)
+	}
+}
+
+// TestPGTextSafety_UpdatesAndMCPLogs pins the same guarantee on the update
+// paths (struct and map targets) and on MCP tool logs.
+func TestPGTextSafety_UpdatesAndMCPLogs(t *testing.T) {
+	store, _ := setupPGTextSafetyStore(t)
+	ctx := context.Background()
+
+	entry := pgTextSafetyBatch("update", 1)[0]
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, []*Log{entry}))
+	require.NoError(t, store.Update(ctx, entry.ID, &Log{RawRequest: "req\x00body"}), "struct update")
+	require.NoError(t, store.Update(ctx, entry.ID, map[string]interface{}{"raw_response": "resp\x00body\xff"}), "map update")
+
+	got, err := store.FindByID(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "reqbody", got.RawRequest)
+	assert.Equal(t, "respbody\uFFFD", got.RawResponse)
+
+	now := time.Now().UTC()
+	mcp := &MCPToolLog{
+		ID:              "mcp-text-safety",
+		Timestamp:       now,
+		ToolName:        "search\x00",
+		Status:          "success",
+		ArgumentsParsed: map[string]interface{}{"q": "caf\xc3"},
+		ResultParsed:    "found\x00",
+	}
+	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, []*MCPToolLog{mcp}))
+}
+
+// TestPGTextSafety_PlainTextColumnsKeepEscapeText pins that plain-text columns
+// which merely start with "{" or "[" are not run through the JSON escape
+// sanitizer: routing_engine_logs always starts with "[<timestamp>]", and
+// content_summary does whenever a message starts with JSON. Neither is cast to
+// jsonb, so the six characters \u0000 or \ud800 in them must survive as typed.
+func TestPGTextSafety_PlainTextColumnsKeepEscapeText(t *testing.T) {
+	store, db := setupPGTextSafetyStore(t)
+	ctx := context.Background()
+
+	routing := "[1700000000] [routing] [info] - matched rule for \\u0000 and \\ud800\n"
+	summary := `{"note": "literal \u0000 and \ud800 in a pasted payload"}`
+	entry := pgTextSafetyBatch("plain-text", 1)[0]
+	entry.RoutingEngineLogs = routing
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, []*Log{entry}))
+	// content_summary is rebuilt by SerializeFields on insert, so set it with a
+	// map update, which is how the column is written without a rebuild.
+	require.NoError(t, store.Update(ctx, entry.ID, map[string]interface{}{"content_summary": summary}))
+
+	var got struct {
+		RoutingEngineLogs string
+		ContentSummary    string
+	}
+	require.NoError(t, db.Raw("SELECT routing_engine_logs, content_summary FROM logs WHERE id = ?", entry.ID).Scan(&got).Error)
+	assert.Equal(t, routing, got.RoutingEngineLogs)
+	assert.Equal(t, summary, got.ContentSummary)
+}
+
+// TestPGTextSafety_MapUpdateShapes pins the update-map shapes GORM accepts:
+// JSON with leading whitespace (Postgres IS JSON accepts it, so the
+// metadata::jsonb index still casts it), a pointer to the map (GORM unwraps
+// it), and keys spelled as Go field names (GORM resolves them to columns).
+func TestPGTextSafety_MapUpdateShapes(t *testing.T) {
+	store, db := setupPGTextSafetyStore(t)
+	ctx := context.Background()
+
+	entry := pgTextSafetyBatch("map-shapes", 1)[0]
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, []*Log{entry}))
+	readColumns := func() (out struct {
+		Metadata          string
+		RawResponse       string
+		ContentSummary    string
+		RoutingEngineLogs string
+	}) {
+		require.NoError(t, db.Raw("SELECT metadata, raw_response, content_summary, routing_engine_logs FROM logs WHERE id = ?", entry.ID).Scan(&out).Error)
+		return out
+	}
+
+	t.Run("leading_whitespace_json", func(t *testing.T) {
+		require.NoError(t, store.Update(ctx, entry.ID, map[string]interface{}{"metadata": " \n\t{\"note\":\"a\\u0000b\"}"}),
+			"metadata with whitespace before { must still be made jsonb-castable")
+		assert.Equal(t, " \n\t{\"note\":\"ab\"}", readColumns().Metadata)
+	})
+
+	t.Run("pointer_to_map", func(t *testing.T) {
+		updates := map[string]interface{}{"raw_response": "resp\x00body"}
+		require.NoError(t, store.Update(ctx, entry.ID, &updates), "a *map update must be cleaned like a map")
+		assert.Equal(t, "respbody", readColumns().RawResponse)
+	})
+
+	t.Run("go_field_name_keys", func(t *testing.T) {
+		summary := `{"note": "literal \u0000 and \ud800"}`
+		routing := "[1700000000] [routing] [info] - literal \\u0000 and \\ud800\n"
+		require.NoError(t, store.Update(ctx, entry.ID, map[string]interface{}{"ContentSummary": summary, "RoutingEngineLogs": routing}))
+		got := readColumns()
+		assert.Equal(t, summary, got.ContentSummary, "plain-text column named by its Go field must keep its escape text")
+		assert.Equal(t, routing, got.RoutingEngineLogs)
+	})
+}
+
+// TestPGTextSafety_StructUpdateNULOnlyValueIsWritten pins that a struct update
+// whose value is only NUL bytes still replaces the column. Cleaning it to ""
+// would make GORM's struct Updates skip the field as a zero value and silently
+// keep the previous value, so it is stored as U+FFFD instead.
+func TestPGTextSafety_StructUpdateNULOnlyValueIsWritten(t *testing.T) {
+	store, db := setupPGTextSafetyStore(t)
+	ctx := context.Background()
+
+	entry := pgTextSafetyBatch("nul-only", 1)[0]
+	entry.RawRequest = "previous body"
+	require.NoError(t, store.BatchCreateIfNotExists(ctx, []*Log{entry}))
+	require.NoError(t, store.Update(ctx, entry.ID, &Log{RawRequest: "\x00\x00"}))
+
+	var got string
+	require.NoError(t, db.Raw("SELECT raw_request FROM logs WHERE id = ?", entry.ID).Scan(&got).Error)
+	assert.Equal(t, "�", got, "a NUL-only update must replace the previous value, not be skipped")
 }

@@ -39,16 +39,17 @@ type fakeOpenAI struct {
 // fakeSession is one live session on the fake: its connections (primary and sidebands) and
 // every frame Bifrost sent it.
 type fakeSession struct {
-	fake      *fakeOpenAI
-	id        string
-	transport string
-	marker    string
-	model     string
-	backend   string
-	client    bool // client delegation: the app runs the backend itself
-	store     bool
-	auth      string
-	createdAt time.Time
+	fake         *fakeOpenAI
+	id           string
+	transport    string
+	marker       string
+	model        string
+	backend      string
+	client       bool // client delegation: the app runs the backend itself
+	store        bool
+	clientConfig json.RawMessage
+	auth         string
+	createdAt    time.Time
 
 	mu      sync.Mutex
 	conns   []fakeConn
@@ -64,6 +65,7 @@ type fakeSession struct {
 // fakeConn is one connection of a session: a WebSocket, or a WebRTC data channel.
 type fakeConn interface {
 	send([]byte) error
+	bufferedAmount() uint64
 	close()
 	hangUp() // end the connection the orderly way, still without session.closed
 }
@@ -71,6 +73,7 @@ type fakeConn interface {
 type wsFakeConn struct {
 	mu   sync.Mutex
 	conn *websocket.Conn
+	auth string // the Authorization header the connection was opened with
 }
 
 func (c *wsFakeConn) send(frame []byte) error {
@@ -81,6 +84,8 @@ func (c *wsFakeConn) send(frame []byte) error {
 
 func (c *wsFakeConn) close() { _ = c.conn.Close() }
 
+func (c *wsFakeConn) bufferedAmount() uint64 { return 0 }
+
 func (c *wsFakeConn) hangUp() {
 	c.mu.Lock()
 	_ = c.conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""), time.Now().Add(time.Second))
@@ -89,13 +94,94 @@ func (c *wsFakeConn) hangUp() {
 }
 
 type dcFakeConn struct {
-	dc *webrtc.DataChannel
-	pc *webrtc.PeerConnection
+	dc           *webrtc.DataChannel
+	pc           *webrtc.PeerConnection
+	serverEvents gjson.Result
 }
 
-func (c *dcFakeConn) send(frame []byte) error { return c.dc.SendText(string(frame)) }
-func (c *dcFakeConn) close()                  { _ = c.pc.Close() }
-func (c *dcFakeConn) hangUp()                 { _ = c.pc.Close() }
+func (c *dcFakeConn) send(frame []byte) error {
+	if c.serverEvents.Exists() && !(c.serverEvents.Type == gjson.String && c.serverEvents.Str == "all") {
+		allowed := false
+		kind := gjson.GetBytes(frame, "type").Str
+		for _, selector := range c.serverEvents.Array() {
+			if selector.Get("type").Str == kind && (kind != "response.event" || selector.Get("response_event").Str == gjson.GetBytes(frame, "event.type").Str) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return nil
+		}
+	}
+	return c.dc.SendText(string(frame))
+}
+func (c *dcFakeConn) close()  { _ = c.pc.Close() }
+func (c *dcFakeConn) hangUp() { _ = c.pc.Close() }
+
+func (c *dcFakeConn) bufferedAmount() uint64 {
+	if c.dc.ReadyState() == webrtc.DataChannelStateClosed {
+		return 0
+	}
+	return c.dc.BufferedAmount()
+}
+
+// delayedFakeConn models a data channel whose final frames remain queued until the
+// transport acknowledges them. Sending a frame is not a delivery acknowledgment.
+type delayedFakeConn struct {
+	buffered atomic.Uint64
+	sent     chan struct{}
+	closed   chan struct{}
+}
+
+func (c *delayedFakeConn) send(frame []byte) error {
+	c.buffered.Add(uint64(len(frame)))
+	close(c.sent)
+	return nil
+}
+
+func (c *delayedFakeConn) bufferedAmount() uint64 { return c.buffered.Load() }
+func (c *delayedFakeConn) close()                 { close(c.closed) }
+func (c *delayedFakeConn) hangUp()                { c.close() }
+
+func TestFakeSessionCloseDrainsFinalFrames(t *testing.T) {
+	c := &delayedFakeConn{sent: make(chan struct{}), closed: make(chan struct{})}
+	s := &fakeSession{conns: []fakeConn{c}}
+	done := make(chan struct{})
+	go func() {
+		s.Close("close_requested", 97)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		c.buffered.Store(0)
+		await(t, done, "fake session close")
+	})
+	await(t, c.sent, "final usage queued")
+	select {
+	case <-c.closed:
+		t.Fatal("fake upstream closed with final usage still buffered")
+	case <-time.After(100 * time.Millisecond):
+	}
+	c.buffered.Store(0)
+	await(t, c.closed, "close after final usage drained")
+}
+
+func TestFakeSessionDisconnectDiscardsBufferedFrames(t *testing.T) {
+	for _, kind := range []string{"drop", "hangup"} {
+		t.Run(kind, func(t *testing.T) {
+			c := &delayedFakeConn{closed: make(chan struct{})}
+			c.buffered.Store(100)
+			s := &fakeSession{conns: []fakeConn{c}}
+			go func() {
+				if kind == "drop" {
+					s.Drop()
+				} else {
+					s.HangUp()
+				}
+			}()
+			awaitWithin(t, c.closed, time.Second, "disconnect without draining")
+		})
+	}
+}
 
 func startFakeOpenAI(addr string) (*fakeOpenAI, error) {
 	f := &fakeOpenAI{
@@ -153,16 +239,17 @@ func (f *fakeOpenAI) newSession(transport, auth string, session gjson.Result) *f
 	defer f.mu.Unlock()
 	f.nextID++
 	s := &fakeSession{
-		fake:      f,
-		id:        fmt.Sprintf("live_fake_%s_%d", f.run, f.nextID),
-		transport: transport,
-		marker:    session.Get("instructions").Str,
-		model:     session.Get("model").Str,
-		backend:   session.Get("delegation.responses.model").Str,
-		client:    session.Get("delegation.type").Str == "client",
-		store:     session.Get("store").Bool(),
-		auth:      auth,
-		createdAt: time.Now(),
+		fake:         f,
+		id:           fmt.Sprintf("live_fake_%s_%d", f.run, f.nextID),
+		transport:    transport,
+		marker:       session.Get("instructions").Str,
+		model:        session.Get("model").Str,
+		backend:      session.Get("delegation.responses.model").Str,
+		client:       session.Get("delegation.type").Str == "client",
+		store:        session.Get("store").Bool(),
+		clientConfig: json.RawMessage(session.Get("client").Raw),
+		auth:         auth,
+		createdAt:    time.Now(),
 	}
 	f.sessions[s.id] = s
 	if ch, ok := f.waiters[s.marker]; ok {
@@ -254,7 +341,7 @@ func (f *fakeOpenAI) serveAttach(w http.ResponseWriter, r *http.Request, id stri
 	if err != nil {
 		return
 	}
-	c := &wsFakeConn{conn: conn}
+	c := &wsFakeConn{conn: conn, auth: r.Header.Get("Authorization")}
 	s.addConn(c)
 	_ = c.send(s.startedFrame())
 	s.readLoop(conn, c)
@@ -305,7 +392,7 @@ func (f *fakeOpenAI) serveWebRTCCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		c := &dcFakeConn{dc: dc, pc: pc}
+		c := &dcFakeConn{dc: dc, pc: pc, serverEvents: gjson.GetBytes(body.Session, "client.data_channel.allowed_server_events")}
 		dc.OnOpen(func() {
 			s.addConn(c)
 			_ = c.send(s.startedFrame())
@@ -482,6 +569,9 @@ func (s *fakeSession) sessionFrameLocked(typ string) []byte {
 // sessionObjectLocked is the resolved session as OpenAI echoes it on started, updated and closed.
 func (s *fakeSession) sessionObjectLocked() map[string]any {
 	session := map[string]any{"id": s.id, "model": s.model, "expires_at": s.createdAt.Add(time.Hour).Unix(), "instructions": s.marker, "store": s.store}
+	if len(s.clientConfig) > 0 {
+		session["client"] = s.clientConfig
+	}
 	if s.client {
 		session["delegation"] = map[string]any{"type": "client"}
 	} else if s.backend != "" {
@@ -574,7 +664,15 @@ func (s *fakeSession) Close(reason string, seconds float64) {
 	for _, c := range conns {
 		_ = c.send(frame)
 	}
-	time.Sleep(50 * time.Millisecond)
+	// SendText only queues SCTP data. Closing the peer after a fixed sleep can
+	// discard usage and session.closed on a slow runner, turning an orderly close
+	// into an upstream outage. Wait for acknowledgments, bounded for a lost peer.
+	deadline := time.Now().Add(frameTimeout)
+	for _, c := range conns {
+		for c.bufferedAmount() > 0 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
 	for _, c := range conns {
 		c.close()
 	}
@@ -630,6 +728,19 @@ func (s *fakeSession) WaitInbound(t *testing.T, typ string, n int) gjson.Result 
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// SidebandAuths lists the Authorization header of every attached WebSocket sideband, in order.
+func (s *fakeSession) SidebandAuths() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var auths []string
+	for _, c := range s.conns {
+		if ws, ok := c.(*wsFakeConn); ok && ws.auth != "" {
+			auths = append(auths, ws.auth)
+		}
+	}
+	return auths
 }
 
 // Connections is how many connections the session has right now.

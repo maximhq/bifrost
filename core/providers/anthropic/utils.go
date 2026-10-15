@@ -137,6 +137,14 @@ func ProviderRequiresSyntheticStructuredOutput(provider schemas.ModelProvider) b
 // matching ValidateToolsForProvider. The per-type gating mirrors
 // ValidateToolsForProvider exactly — only the control flow differs (partition
 // instead of erroring).
+// SupportsToolSearch reports whether provider serves the Claude model with
+// Anthropic's tool search, the same gate ValidateResponsesToolsForProvider applies
+// to a tool_search tool.
+func SupportsToolSearch(provider schemas.ModelProvider, model string) bool {
+	features, ok := ProviderFeatures[provider]
+	return ok && schemas.ResolveModelCaps(provider, model).SupportsToolSearch(features.ToolSearch)
+}
+
 func ValidateResponsesToolsForProvider(tools []schemas.ResponsesTool, caps schemas.ModelCaps) (keep []schemas.ResponsesTool, dropped []string) {
 	features, ok := ProviderFeatures[caps.Provider()]
 	if !ok {

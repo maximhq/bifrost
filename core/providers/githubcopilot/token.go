@@ -2,22 +2,18 @@ package githubcopilot
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
 	"github.com/golang-jwt/jwt/v5"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/providers/utils/tokencache"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -41,16 +37,6 @@ const (
 
 	// maxExchangeBodyBytes caps every credential-exchange response.
 	maxExchangeBodyBytes = 64 * 1024
-	// exchangeTimeout bounds the whole refresh pipeline. Callers queued on the entry
-	// mutex wait at most this long.
-	exchangeTimeout = 20 * time.Second
-
-	// Backoff for a cached failure. Permanent faults are configuration errors and there is
-	// no point retrying them quickly; transient ones deserve a short pause.
-	permanentBackoffBase = 2 * time.Second
-	permanentBackoffCap  = 60 * time.Second
-	transientBackoffBase = 500 * time.Millisecond
-	transientBackoffCap  = 10 * time.Second
 
 	// clockSkewWarnThreshold is when host clock drift becomes worth reporting. Drift is the
 	// most common cause of App JWT 401s and is invisible from the error body.
@@ -107,42 +93,23 @@ type copilotToken struct {
 	refreshAt time.Time
 }
 
-// exchangeFailure is the negative cache. Without it, a permanently misconfigured key
-// issues two api.github.com calls for every inbound request, and GitHub's penalty lands
-// on the App rather than on the key.
-type exchangeFailure struct {
-	err        *schemas.BifrostError
-	retryAfter time.Time
-	attempts   int
-}
-
-// copilotTokenEntry is one cache slot holding both token layers behind one refresh lock.
+// copilotLayers is what one cache slot holds: both token layers behind one refresh lock.
 //
 // Layers 2 and 3 derive from a byte-identical cache key and form a strict pipeline, so
-// splitting them across two maps would buy no reuse while making the invalidation ordering
-// between them unspecifiable. Independent expiry lives in the two snapshot structs, not in
-// two locks.
-type copilotTokenEntry struct {
-	mu           sync.Mutex
-	installation atomic.Pointer[installationToken]
-	copilot      atomic.Pointer[copilotToken]
-	failure      atomic.Pointer[exchangeFailure]
+// splitting them across two cache slots would buy no reuse while making the invalidation
+// ordering between them unspecifiable. Independent expiry lives in the two snapshot
+// structs; the slot refreshes on the Copilot token's schedule and the minter reuses the
+// installation token while it is still valid.
+type copilotLayers struct {
+	installation *installationToken
+	copilot      *copilotToken
 }
 
-// copilotTokenPool maps cache key to *copilotTokenEntry.
-//
-// Entries are never deleted, which is a deliberate departure from VertexProvider.tokenSources
-// (core/providers/vertex/vertex.go) where removeVertexClient deletes. That is safe
-// there because the cached value is a Google oauth2.TokenSource that locks internally.
-// Here the entry is the lock, and it also holds the negative cache. Deleting it on
-// invalidation would split goroutines across two mutexes for as long as any of them still
-// holds the old pointer, and would reset the failure backoff every time, so a permanently
-// misconfigured key would retry on every request. Eviction stores nil into the atomic
-// pointers and leaves the entry in place.
-//
-// The cost is that a rotated credential leaks its old entry, a couple of hundred bytes,
-// bounded by the number of distinct historical credentials.
-var copilotTokenPool sync.Map
+// copilotTokens is the package-level cache keyed by copilotCacheKey. Caching, single-flight
+// refresh, the negative cache and never-delete eviction all live in tokencache; this file
+// supplies only the two GitHub exchanges. Package-level rather than per provider so the
+// exchange tests can drive mintWithConfig without a provider.
+var copilotTokens = tokencache.New[copilotLayers](tokencache.Options{})
 
 // invalidationScope selects how far back up the chain to discard.
 type invalidationScope uint8
@@ -188,20 +155,18 @@ func mintCredentials(
 	if bErr != nil {
 		return nil, bErr
 	}
-
-	// WithoutCancel: the caller that happens to trigger a refresh may hang up, but others
-	// are blocked on the entry mutex waiting for its result. Killing the refresh because
-	// one client disconnected would turn one cancellation into many failures. Context
-	// values survive, so latency accounting still lands correctly.
+	// A nil *BifrostContext must not reach the cache as a non-nil context.Context interface.
 	parent := context.Background()
 	if ctx != nil {
-		parent = context.WithoutCancel(ctx)
+		parent = ctx
 	}
 	return mintWithConfig(parent, cfg, client, configuredBaseURL, logger)
 }
 
-// mintWithConfig is the cache and exchange pipeline, split from mintCredentials so the
-// endpoints can be pointed somewhere other than api.github.com under test.
+// mintWithConfig is the exchange pipeline behind the shared cache, split from
+// mintCredentials so the endpoints can be pointed somewhere other than api.github.com
+// under test. The cache detaches the mint from the caller's cancellation, bounds it with
+// its exchange timeout, collapses concurrent callers onto one mint and caches failures.
 func mintWithConfig(
 	parent context.Context,
 	cfg *copilotConfig,
@@ -209,74 +174,55 @@ func mintWithConfig(
 	configuredBaseURL string,
 	logger schemas.Logger,
 ) (*copilotCredentials, *schemas.BifrostError) {
-	entry := loadOrCreateEntry(cfg.cacheKey)
-	now := time.Now()
-
-	// Fast path: one atomic load and one comparison, never blocking. Snapshots are
-	// immutable and replaced wholesale, so a reader sees either the whole old token or
-	// the whole new one.
-	if tok := entry.copilot.Load(); tok != nil && now.Before(tok.refreshAt) {
-		return credentialsFrom(tok, configuredBaseURL), nil
+	entry, bErr := copilotTokens.Get(parent, cfg.cacheKey, func(ctx context.Context, prev *tokencache.Entry[copilotLayers]) (*tokencache.Entry[copilotLayers], *schemas.BifrostError) {
+		return mintLayers(ctx, cfg, client, prev, logger)
+	})
+	if bErr != nil {
+		return nil, bErr
 	}
-	// Checked before the lock, so a misconfigured key does not queue every in-flight
-	// request behind a mutex just to be told no.
-	if f := entry.failure.Load(); f != nil && now.Before(f.retryAfter) {
-		return nil, f.err
+	return credentialsFrom(entry.Value.copilot, configuredBaseURL), nil
+}
+
+// mintLayers runs the two exchanges. The installation token from prev is reused while it is
+// still fresh, so a Copilot-token refresh (roughly every 30 minutes) costs one GitHub call
+// rather than two. Either layer failing drops both: the cache stores nothing on error, and
+// layer 3's only input was that installation token.
+func mintLayers(
+	ctx context.Context,
+	cfg *copilotConfig,
+	client *fasthttp.Client,
+	prev *tokencache.Entry[copilotLayers],
+	logger schemas.Logger,
+) (*tokencache.Entry[copilotLayers], *schemas.BifrostError) {
+	var inst *installationToken
+	if prev != nil {
+		inst = prev.Value.installation
 	}
-
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-
-	// Double-checked read. Every goroutine that queued behind the one that actually
-	// refreshed exits here with the fresh token, having issued no HTTP request.
-	now = time.Now()
-	if tok := entry.copilot.Load(); tok != nil && now.Before(tok.refreshAt) {
-		return credentialsFrom(tok, configuredBaseURL), nil
-	}
-	if f := entry.failure.Load(); f != nil && now.Before(f.retryAfter) {
-		return nil, f.err
-	}
-
-	exchangeCtx, cancel := context.WithTimeout(parent, exchangeTimeout)
-	defer cancel()
-
-	inst := entry.installation.Load()
-	if inst == nil || !now.Before(inst.refreshAt) {
+	if inst == nil || !time.Now().Before(inst.refreshAt) {
 		// The App JWT is not cached. It is minted only inside a layer 2 refresh, roughly
 		// once an hour per credential, so an RSA sign is never on a hot path.
 		appJWT, err := signAppJWT(cfg, time.Now())
 		if err != nil {
-			bErr := configurationError(
+			return nil, configurationError(
 				"github copilot: could not sign the GitHub App JWT: " + err.Error())
-			entry.recordFailure(bErr, true)
-			return nil, bErr
 		}
-
 		var bErr *schemas.BifrostError
-		inst, bErr = exchangeInstallationToken(exchangeCtx, client, cfg, appJWT, logger)
+		inst, bErr = exchangeInstallationToken(ctx, client, cfg, appJWT, logger)
 		if bErr != nil {
-			entry.recordFailure(bErr, isPermanentError(bErr))
-			entry.installation.Store(nil)
-			entry.copilot.Store(nil)
 			return nil, bErr
 		}
-		entry.installation.Store(inst)
-
 		warnOnMissingCopilotPermission(inst, logger)
 	}
 
-	tok, bErr := exchangeCopilotToken(exchangeCtx, client, cfg, inst.token, logger)
+	tok, bErr := exchangeCopilotToken(ctx, client, cfg, inst.token, logger)
 	if bErr != nil {
-		entry.recordFailure(bErr, isPermanentError(bErr))
-		entry.copilot.Store(nil)
-		// Layer 3's only input was this installation token, so discard it too.
-		entry.installation.Store(nil)
 		return nil, bErr
 	}
-
-	entry.copilot.Store(tok)
-	entry.failure.Store(nil)
-	return credentialsFrom(tok, configuredBaseURL), nil
+	return &tokencache.Entry[copilotLayers]{
+		Value:     copilotLayers{installation: inst, copilot: tok},
+		ExpiresAt: tok.expiresAt,
+		RefreshAt: tok.refreshAt,
+	}, nil
 }
 
 // credentialsFrom converts a cached token into per-request credentials. An explicitly
@@ -290,58 +236,6 @@ func credentialsFrom(tok *copilotToken, configuredBaseURL string) *copilotCreden
 	return &copilotCredentials{Token: tok.token, BaseURL: baseURL}
 }
 
-func loadOrCreateEntry(cacheKey string) *copilotTokenEntry {
-	if existing, ok := copilotTokenPool.Load(cacheKey); ok {
-		return existing.(*copilotTokenEntry)
-	}
-	actual, _ := copilotTokenPool.LoadOrStore(cacheKey, &copilotTokenEntry{})
-	return actual.(*copilotTokenEntry)
-}
-
-// recordFailure caches an error so repeated requests do not hammer api.github.com.
-func (e *copilotTokenEntry) recordFailure(bErr *schemas.BifrostError, permanent bool) {
-	attempts := 1
-	if prev := e.failure.Load(); prev != nil {
-		attempts = prev.attempts + 1
-	}
-	e.failure.Store(&exchangeFailure{
-		err:        bErr,
-		retryAfter: time.Now().Add(backoffFor(attempts, permanent)),
-		attempts:   attempts,
-	})
-}
-
-// backoffFor grows the retry delay geometrically and clamps it.
-func backoffFor(attempts int, permanent bool) time.Duration {
-	base, cap := transientBackoffBase, transientBackoffCap
-	if permanent {
-		base, cap = permanentBackoffBase, permanentBackoffCap
-	}
-	delay := base
-	for i := 1; i < attempts && delay < cap; i++ {
-		delay *= 2
-	}
-	if delay > cap {
-		delay = cap
-	}
-	return delay
-}
-
-// isPermanentError reports whether a failure is a configuration fault rather than a
-// transient one. Rate limits and server errors are transient; everything else on the
-// credential path means something is misconfigured.
-func isPermanentError(bErr *schemas.BifrostError) bool {
-	if bErr == nil || bErr.StatusCode == nil {
-		return false
-	}
-	switch status := *bErr.StatusCode; {
-	case status == http.StatusTooManyRequests, status >= 500:
-		return false
-	default:
-		return true
-	}
-}
-
 // invalidateCredentials discards cached tokens for a credential after the inference call
 // rejected them.
 //
@@ -349,19 +243,17 @@ func isPermanentError(bErr *schemas.BifrostError) bool {
 // This is intentionally coarser than a generation-scoped CAS: the provider does not hold
 // the snapshot pointer, so a same-key retry after a 401 discards whatever is cached. The
 // negative cache and the refresh margin together keep that from becoming a loop.
+// scopeCopilotOnly expires the slot but keeps its value, so the next mint still receives
+// the installation token as prev and reuses it while fresh.
 func invalidateCredentials(keyConfig *schemas.GithubCopilotKeyConfig, scope invalidationScope) {
 	if keyConfig == nil {
 		return
 	}
-	entry, ok := copilotTokenPool.Load(copilotCacheKey(keyConfig))
-	if !ok {
+	if scope == scopeAll {
+		copilotTokens.Invalidate(copilotCacheKey(keyConfig))
 		return
 	}
-	e := entry.(*copilotTokenEntry)
-	e.copilot.Store(nil)
-	if scope == scopeAll {
-		e.installation.Store(nil)
-	}
+	copilotTokens.Expire(copilotCacheKey(keyConfig))
 }
 
 // validateKeyConfig parses and checks the stored credential before anything touches the
@@ -424,27 +316,16 @@ func isASCIIDigits(s string) bool {
 	return true
 }
 
-// copilotCacheKey derives the pool key from every input that changes the identity of the
-// minted token.
-//
-// Fields are length-framed rather than joined with a separator. With a plain "|",
-// {app:"a|b", install:"c"} and {app:"a", install:"b|c"} collide, and a collision here
-// means one tenant's Copilot token served on another tenant's request.
+// copilotCacheKey derives the cache key from every input that changes the identity of the
+// minted token. tokencache.CacheKey length-frames the fields so no two configs can collide.
 func copilotCacheKey(keyConfig *schemas.GithubCopilotKeyConfig) string {
-	h := sha256.New()
-	field := func(s string) {
-		var n [8]byte
-		binary.BigEndian.PutUint64(n[:], uint64(len(s)))
-		_, _ = h.Write(n[:])
-		_, _ = h.Write([]byte(s))
-	}
-	field(cacheKeyVersion)
-	field(keyConfig.AppID.GetValue())
-	field(keyConfig.InstallationID.GetValue())
-	field(keyConfig.RepositoryID.GetValue())
-	field(keyConfig.PrivateKey.GetValue())
-	field(keyConfig.GithubDomain.GetValue())
-	return hex.EncodeToString(h.Sum(nil))
+	return tokencache.CacheKey(cacheKeyVersion,
+		keyConfig.AppID.GetValue(),
+		keyConfig.InstallationID.GetValue(),
+		keyConfig.RepositoryID.GetValue(),
+		keyConfig.PrivateKey.GetValue(),
+		keyConfig.GithubDomain.GetValue(),
+	)
 }
 
 // normalizeGithubDomain strips scheme, path, port, whitespace and case from an
@@ -511,7 +392,7 @@ func resolveCopilotEndpoints(domain string) copilotEndpoints {
 
 // signAppJWT mints the layer 1 GitHub App JWT.
 func signAppJWT(cfg *copilotConfig, now time.Time) (string, error) {
-	key, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(normalizePEM(cfg.privateKeyPEM)))
+	key, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(tokencache.NormalizePEM(cfg.privateKeyPEM)))
 	if err != nil {
 		return "", fmt.Errorf("private_key could not be parsed as an RSA PEM (PKCS#1 or PKCS#8): %w", err)
 	}
@@ -522,18 +403,6 @@ func signAppJWT(cfg *copilotConfig, now time.Time) (string, error) {
 		Issuer:    cfg.appID,
 	})
 	return token.SignedString(key)
-}
-
-// normalizePEM repairs the most common deployment mistake: a PEM pasted into an
-// environment variable or a JSON config where the newlines survived as the two characters
-// backslash and n. pem.Decode returns nil for that input, and the operator gets a parse
-// failure with nothing to act on.
-func normalizePEM(raw string) string {
-	s := strings.TrimSpace(raw)
-	if !strings.Contains(s, "\n") && strings.Contains(s, `\n`) {
-		s = strings.ReplaceAll(s, `\n`, "\n")
-	}
-	return strings.ReplaceAll(s, "\r\n", "\n")
 }
 
 // exchangeInstallationToken performs layer 2: App JWT in, ghs_ token out.
@@ -768,12 +637,12 @@ func validateCopilotAPIBaseURL(rawURL string, allowedDomains []string) (string, 
 		host, strings.Join(allowedDomains, " / "))
 }
 
-// doRequest issues one exchange request, honouring the context deadline.
+// doRequest issues one exchange request, honouring the context deadline the cache set.
 func doRequest(ctx context.Context, client *fasthttp.Client, req *fasthttp.Request, resp *fasthttp.Response) error {
 	if deadline, ok := ctx.Deadline(); ok {
 		return client.DoDeadline(req, resp, deadline)
 	}
-	return client.DoTimeout(req, resp, exchangeTimeout)
+	return client.DoTimeout(req, resp, tokencache.DefaultExchangeTimeout)
 }
 
 // warnOnClockSkew reports host clock drift, the most common cause of App JWT 401s and one

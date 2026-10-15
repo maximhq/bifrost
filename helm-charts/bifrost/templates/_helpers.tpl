@@ -336,6 +336,9 @@ false
 {{- if .Values.bifrost.client.dualCredentialConflictBehavior }}
 {{- $_ := set $client "dual_credential_conflict_behavior" .Values.bifrost.client.dualCredentialConflictBehavior }}
 {{- end }}
+{{- if .Values.bifrost.client.extraFieldsPlacement }}
+{{- $_ := set $client "extra_fields_placement" .Values.bifrost.client.extraFieldsPlacement }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "enforceGovernanceHeader" }}
 {{- $_ := set $client "enforce_governance_header" .Values.bifrost.client.enforceGovernanceHeader }}
 {{- end }}
@@ -361,6 +364,9 @@ false
 {{- end }}
 {{- if hasKey .Values.bifrost.client.compat "forceReasoningOnlyModelsToResponses" }}
 {{- $_ := set $compat "force_reasoning_only_models_to_responses" .Values.bifrost.client.compat.forceReasoningOnlyModelsToResponses }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client.compat "convertDecisionToResponses" }}
+{{- $_ := set $compat "convert_decision_to_responses" .Values.bifrost.client.compat.convertDecisionToResponses }}
 {{- end }}
 {{- $_ := set $client "compat" $compat }}
 {{- end }}
@@ -461,7 +467,13 @@ false
 {{- if .Values.bifrost.client.mcpExternalClientUrl }}
 {{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
 {{- end }}
-{{- if .Values.bifrost.client.a2aExternalClientUrl }}
+{{- if hasKey .Values.bifrost.client "skillsExternalClientUrl" }}
+{{- $_ := set $client "skills_external_client_url" .Values.bifrost.client.skillsExternalClientUrl }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "a2aPrivateAllowlist" }}
+{{- $_ := set $client "a2a_private_allowlist" .Values.bifrost.client.a2aPrivateAllowlist }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "a2aExternalClientUrl" }}
 {{- $_ := set $client "a2a_external_client_url" .Values.bifrost.client.a2aExternalClientUrl }}
 {{- end }}
 {{- if .Values.bifrost.client.mcpServerAuthMode }}
@@ -889,7 +901,7 @@ false
 {{- end }}
 {{- /* Load Balancer Config */ -}}
 {{- if and .Values.bifrost.loadBalancer .Values.bifrost.loadBalancer.enabled }}
-{{- $lb := dict "enabled" true }}
+{{- $lb := dict }}
 {{- if hasKey .Values.bifrost.loadBalancer "directionSelectionEnabled" }}
 {{- $_ := set $lb "direction_selection_enabled" .Values.bifrost.loadBalancer.directionSelectionEnabled }}
 {{- end }}
@@ -905,11 +917,17 @@ false
 {{- if hasKey .Values.bifrost.loadBalancer "pruneFailedFallbacks" }}
 {{- $_ := set $lb "prune_failed_fallbacks" .Values.bifrost.loadBalancer.pruneFailedFallbacks }}
 {{- end }}
-{{- if .Values.bifrost.loadBalancer.trackerConfig }}
-{{- $_ := set $lb "tracker_config" .Values.bifrost.loadBalancer.trackerConfig }}
+{{- if hasKey .Values.bifrost.loadBalancer "rerouteTarget" }}
+{{- $_ := set $lb "reroute_target" .Values.bifrost.loadBalancer.rerouteTarget }}
 {{- end }}
-{{- if .Values.bifrost.loadBalancer.bootstrap }}
-{{- $_ := set $lb "bootstrap" .Values.bifrost.loadBalancer.bootstrap }}
+{{- if hasKey .Values.bifrost.loadBalancer "historyEnabled" }}
+{{- $_ := set $lb "history_enabled" .Values.bifrost.loadBalancer.historyEnabled }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "historyRetentionDays" }}
+{{- $_ := set $lb "history_retention_days" .Values.bifrost.loadBalancer.historyRetentionDays }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "snapshotPersistIntervalSeconds" }}
+{{- $_ := set $lb "snapshot_persist_interval_seconds" .Values.bifrost.loadBalancer.snapshotPersistIntervalSeconds }}
 {{- end }}
 {{- $_ := set $config "load_balancer_config" $lb }}
 {{- end }}
@@ -1073,7 +1091,18 @@ false
 {{- if $vs.hashicorp.mountPath }}{{- $_ := set $hashicorp "mount_path" $vs.hashicorp.mountPath }}{{- end }}
 {{- if $vs.hashicorp.roleId }}{{- $_ := set $hashicorp "role_id" $vs.hashicorp.roleId }}{{- end }}
 {{- if $vs.hashicorp.secretId }}{{- $_ := set $hashicorp "secret_id" $vs.hashicorp.secretId }}{{- end }}
+{{- if $vs.hashicorp.kubernetesRole }}{{- $_ := set $hashicorp "kubernetes_role" $vs.hashicorp.kubernetesRole }}{{- end }}
+{{- if $vs.hashicorp.kubernetesMountPath }}{{- $_ := set $hashicorp "kubernetes_mount_path" $vs.hashicorp.kubernetesMountPath }}{{- end }}
+{{- if $vs.hashicorp.kubernetesTokenPath }}{{- $_ := set $hashicorp "kubernetes_token_path" $vs.hashicorp.kubernetesTokenPath }}{{- end }}
 {{- $_ := set $vaultStore "hashicorp" $hashicorp }}
+{{- end }}
+{{- if $vs.azure }}
+{{- $azure := dict }}
+{{- if $vs.azure.vaultUrl }}{{- $_ := set $azure "vault_url" $vs.azure.vaultUrl }}{{- end }}
+{{- if $vs.azure.tenantId }}{{- $_ := set $azure "tenant_id" $vs.azure.tenantId }}{{- end }}
+{{- if $vs.azure.clientId }}{{- $_ := set $azure "client_id" $vs.azure.clientId }}{{- end }}
+{{- if $vs.azure.clientSecret }}{{- $_ := set $azure "client_secret" $vs.azure.clientSecret }}{{- end }}
+{{- $_ := set $vaultStore "azure" $azure }}
 {{- end }}
 {{- $cs := index $config "config_store" }}
 {{- $_ := set $cs "vault_store" $vaultStore }}
@@ -1112,6 +1141,9 @@ false
 {{- end }}
 {{- if .Values.storage.logsStore.matviewRefreshTimeout }}
 {{- $_ := set $pgConfig "matview_refresh_timeout" .Values.storage.logsStore.matviewRefreshTimeout }}
+{{- end }}
+{{- if .Values.storage.logsStore.migrationMatviewCancelAfter }}
+{{- $_ := set $pgConfig "migration_matview_cancel_after" .Values.storage.logsStore.migrationMatviewCancelAfter }}
 {{- end }}
 {{- if .Values.storage.logsStore.connMaxIdleTime }}
 {{- $_ := set $pgConfig "conn_max_idle_time" .Values.storage.logsStore.connMaxIdleTime }}
@@ -1558,6 +1590,10 @@ false
 {{- end }}
 {{- /* Render the key even when every limit is 0, so an explicit setting resets stored limits to defaults. */}}
 {{- $_ := set $tmConfig "code_mode_limits" $limits }}
+{{- end }}
+{{- if hasKey .Values.bifrost.mcp.toolManagerConfig "oauthPrivateAllowlist" }}
+{{- /* Render the key even when empty, so an explicit [] clears a stored allowlist. */}}
+{{- $_ := set $tmConfig "oauth_private_allowlist" (.Values.bifrost.mcp.toolManagerConfig.oauthPrivateAllowlist | default list) }}
 {{- end }}
 {{- if $tmConfig }}
 {{- $_ := set $mcpConfig "tool_manager_config" $tmConfig }}
@@ -2381,7 +2417,7 @@ Call this template at the beginning of deployment/stateful templates
 {{/* When dimension is 1, direct (hash-based) caching is used — provider and keys are not required. */}}
 {{- if ne (int .Values.bifrost.plugins.semanticCache.config.dimension) 1 }}
 {{- if not .Values.bifrost.plugins.semanticCache.config.provider }}
-{{- fail "ERROR: bifrost.plugins.semanticCache.config.provider is required for semantic caching. Supported providers: openai, anthropic, gemini, bedrock, azure, cohere, mistral, groq, ollama, openrouter, vertex, cerebras, parasail, perplexity, sgl, huggingface. The provider's API keys are inherited from bifrost.providers, so configure that provider there. For direct (hash-based) caching, set dimension: 1." }}
+{{- fail "ERROR: bifrost.plugins.semanticCache.config.provider is required for semantic caching. Supported providers: openai, anthropic, gemini, bedrock, azure, cohere, mistral, groq, ollama, openrouter, vertex, cerebras, parasail, perplexity, sgl, huggingface, cloudflare. The provider's API keys are inherited from bifrost.providers, so configure that provider there. For direct (hash-based) caching, set dimension: 1." }}
 {{- end }}
 {{- end }}
 {{- end }}

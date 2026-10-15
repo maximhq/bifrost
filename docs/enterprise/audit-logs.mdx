@@ -126,6 +126,12 @@ Supported export formats:
 
 With `omit_ip_addresses` on, exports contain no IP addresses in any format. The syslog `clientIP` parameter is left out.
 
+## Event type URI
+
+Every audit event has a `typeURI` field. New events use `https://getbifrost.ai/schemas/auditlog.json`. Older events keep `http://schemas.bifrost.io/audit/api/v1`.
+
+Stored events are not rewritten, so exports and searches that cover both periods return both values. If a SIEM rule matches on `typeURI`, make it accept both.
+
 ## Archiving to Object Storage
 
 By default, audit events live only in the database, which is the source of truth for everything you see in the dashboard (viewing, filtering, HMAC verification, and export). Databases, however, are not ideal for multi-year compliance retention or off-box durability.

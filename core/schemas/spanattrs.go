@@ -284,6 +284,9 @@ func (d *LLMSpanData) appendResponseEnvelope(attrs map[string]any) {
 		setIfNotEmpty(attrs, AttrServiceTier, d.ServiceTier)
 		d.appendOutputMessagesJSON(attrs, AttrOutputMessages)
 		d.appendResponsesEcho(attrs)
+		if len(d.FinishReasons) > 0 {
+			attrs[AttrFinishReasons] = d.FinishReasons
+		}
 
 	case TextCompletionRequest, TextCompletionStreamRequest:
 		attrs[AttrResponseID] = d.ResponseID
@@ -456,7 +459,11 @@ func (d *LLMSpanData) appendUsage(attrs map[string]any) {
 }
 
 func (d *LLMSpanData) appendError(attrs map[string]any) {
-	e := d.Error
+	AppendSpanErrorAttributes(attrs, d.Error)
+}
+
+// AppendSpanErrorAttributes writes the failure identity both spans render.
+func AppendSpanErrorAttributes(attrs map[string]any, e *SpanError) {
 	if e == nil {
 		return
 	}
@@ -469,6 +476,22 @@ func (d *LLMSpanData) appendError(attrs map[string]any) {
 	if e.Type != "" {
 		attrs[AttrBifrostErrorType] = e.Type
 	}
+}
+
+// RootSpanErrorAttributes lets a trace-level dashboard classify a failure without
+// opening the llm.call span, which a request rejected before dispatch never has.
+// errorType is caller-supplied so both spans report it identically.
+func RootSpanErrorAttributes(err *BifrostError, errorType ErrorType) map[string]any {
+	if err == nil {
+		return nil
+	}
+	attrs := make(map[string]any, 5)
+	AppendSpanErrorAttributes(attrs, &SpanError{
+		Detail:     err.Error,
+		StatusCode: Ptr(err.EffectiveHTTPStatus()),
+		Type:       string(errorType),
+	})
+	return attrs
 }
 
 // usesInputTokenDetailsNamespace reports which of the two token-detail key

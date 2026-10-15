@@ -607,6 +607,7 @@ func dropLegacyMatViews(ctx context.Context, conn *sql.Conn) error {
 		if _, err := conn.ExecContext(ctx, "DROP MATERIALIZED VIEW IF EXISTS "+view+" CASCADE"); err != nil {
 			return fmt.Errorf("failed to drop legacy matview %s: %w", view, err)
 		}
+		_ = forgetMatViewRefresh(ctx, conn, view)
 	}
 	return nil
 }
@@ -625,6 +626,8 @@ func repairMatViewShapes(ctx context.Context, conn *sql.Conn) error {
 		if _, err := conn.ExecContext(ctx, "DROP MATERIALIZED VIEW IF EXISTS "+view+" CASCADE"); err != nil {
 			return fmt.Errorf("failed to drop old-shape matview %s: %w", view, err)
 		}
+		// The rebuilt view must not be skipped on the old view's refresh record.
+		_ = forgetMatViewRefresh(ctx, conn, view)
 	}
 	return nil
 }
@@ -714,15 +717,29 @@ func ensureIndexes(ctx context.Context, conn *sql.Conn, defs []matviewIndexDef) 
 		// the view this connection would refresh, not a same-named one in
 		// another schema, which would otherwise count as ready and leave the
 		// real view without the unique index REFRESH CONCURRENTLY needs.
-		var indexReady bool
-		if err := conn.QueryRowContext(ctx, fmt.Sprintf(`
+		readyQuery := fmt.Sprintf(`
 			SELECT COALESCE(bool_and(%s), false)
 			FROM pg_index pi
 			JOIN pg_class ic ON ic.oid = pi.indexrelid
 			WHERE pi.indrelid = to_regclass($1)
 			  AND ic.relname = $2
-		`, validityExpr), idx.view, idx.name).Scan(&indexReady); err != nil {
+		`, validityExpr)
+		var indexReady bool
+		if err := conn.QueryRowContext(ctx, readyQuery, idx.view, idx.name).Scan(&indexReady); err != nil {
 			return fmt.Errorf("failed to check matview index %s validity: %w", idx.name, err)
+		}
+		if !indexReady {
+			// A build another node is still running reads as INVALID too; wait
+			// for it rather than drop it (see pgWaitForIndexBuild).
+			waited, err := pgWaitForIndexBuild(ctx, conn, idx.name)
+			if err != nil {
+				return err
+			}
+			if waited {
+				if err := conn.QueryRowContext(ctx, readyQuery, idx.view, idx.name).Scan(&indexReady); err != nil {
+					return fmt.Errorf("failed to check matview index %s validity: %w", idx.name, err)
+				}
+			}
 		}
 		if indexReady {
 			continue
@@ -863,7 +880,13 @@ func (g *matViewRefreshGate) markRefreshed(activityAtStart int64, activityOK boo
 // Also short-circuits when pg_stat_user_tables reports no INSERT/UPDATE/DELETE
 // on `logs` since the last refresh. A periodic safety-interval refresh runs
 // regardless so the rolling 30-day filter window evicts aged-out rows.
-func refreshMatViews(ctx context.Context, db *gorm.DB) error {
+//
+// minGap is the cluster-wide spacing between refreshes of one view: a view whose
+// last successful refresh, by any replica, finished less than minGap ago is
+// skipped (see matViewRefreshStateDDL). Callers pass matview_refresh_interval;
+// zero refreshes every view regardless, for repair paths that must not trust the
+// record.
+func refreshMatViews(ctx context.Context, db *gorm.DB, minGap time.Duration) error {
 	sqlDB, err := db.DB()
 	if err != nil {
 		return fmt.Errorf("failed to get sql.DB for matview refresh: %w", err)
@@ -953,9 +976,25 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 	// so the pass continues; it stops only once the deadline has passed, since every
 	// later statement would fail the same way. markRefreshed is skipped on any
 	// failure so the next tick sees a changed activity counter and retries.
+	//
+	// Views another replica refreshed within minGap are skipped, so passes across
+	// the cluster are spaced by the interval instead of running back to back. If
+	// the record cannot be read every view is refreshed and nothing is recorded.
+	fresh, recordOK := recentlyRefreshedMatViews(ctx, conn, minGap)
 	var refreshErrs []error
 	for _, view := range matViewRefreshOrder() {
-		if _, err := conn.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+view); err != nil {
+		if fresh[view] {
+			continue
+		}
+		if recordOK {
+			recordMatViewRefreshStart(ctx, sqlDB, view)
+		}
+		started := time.Now()
+		_, err := conn.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+view)
+		if recordOK {
+			recordMatViewRefreshEnd(ctx, sqlDB, view, time.Since(started), err)
+		}
+		if err != nil {
 			refreshErrs = append(refreshErrs, fmt.Errorf("failed to refresh %s: %w", view, err))
 			if ctx.Err() != nil {
 				break
@@ -1014,7 +1053,7 @@ func runMatViewRefreshTick(ctx context.Context, db *gorm.DB, gate *migrationLock
 	// fails silently, leaving matviews permanently stale.
 	started := time.Now()
 	tickCtx, cancel := context.WithTimeout(ctx, timeout)
-	err := refreshMatViews(tickCtx, db)
+	err := refreshMatViews(tickCtx, db, interval)
 	cancel()
 	elapsed := time.Since(started)
 

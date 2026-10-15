@@ -28,6 +28,7 @@ import (
 	a2agrpc "github.com/a2aproject/a2a-go/v2/a2agrpc/v1"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"golang.org/x/mod/semver"
 	"golang.org/x/sync/singleflight"
@@ -138,9 +139,11 @@ type upstreamCandidate struct {
 }
 
 type clientGeneration struct {
-	card       *a2a.AgentCard
-	candidates []upstreamCandidate
-	active     int
+	card          *a2a.AgentCard
+	candidates    []upstreamCandidate
+	active        int
+	networkPolicy *outboundPolicy
+	closeHTTP     func()
 
 	mu        sync.Mutex
 	cond      *sync.Cond
@@ -226,6 +229,9 @@ func (g *clientGeneration) destroyLocked() {
 		return
 	}
 	g.destroyed = true
+	if g.closeHTTP != nil {
+		g.closeHTTP()
+	}
 	for _, candidate := range g.candidates {
 		_ = candidate.client.Destroy()
 	}
@@ -278,6 +284,8 @@ type runtimeConfig struct {
 	forwardAcceptedCredential              bool
 	forwardAcceptedCredentialOverridesAuth bool
 	extensionURIs                          []string
+	credentialOrigins                      []string
+	requirePublicTarget                    bool
 }
 
 func upstreamCredentialID(agentName, phase string) string {
@@ -293,6 +301,8 @@ func runtimeConfigFromRegistration(reg schemas.AgentRegistration) runtimeConfig 
 		forwardAcceptedCredential:              reg.ForwardAcceptedCredential,
 		forwardAcceptedCredentialOverridesAuth: reg.ForwardAcceptedCredentialOverridesAuth,
 		extensionURIs:                          slices.Clone(reg.ExtensionURIs),
+		credentialOrigins:                      slices.Clone(reg.CredentialOrigins),
+		requirePublicTarget:                    reg.RequirePublicTarget,
 	}
 }
 
@@ -360,6 +370,7 @@ type oauthToken struct {
 // decision, and generates the gateway-facing agent card. Mutations are serialized
 // so persistence and the published runtime cannot diverge.
 type Manager struct {
+	rawCaptures        schemas.A2ARawCaptureManager
 	store              Store
 	logger             schemas.Logger
 	httpClient         *http.Client
@@ -372,8 +383,10 @@ type Manager struct {
 	oauthFetches       singleflight.Group
 	// externalURLFn overrides externalURL when set; see
 	// ManagerConfig.ExternalURLProvider.
-	externalURLFn func() string
-	authPolicy    schemas.AgentGatewayAuthPolicy
+	externalURLFn      func() string
+	rawCaptureFn       func() bool
+	privateAllowlistFn func() []string
+	authPolicy         schemas.AgentGatewayAuthPolicy
 	// grpcBaseDomain and grpcPort mirror ManagerConfig; see its documentation.
 	grpcBaseDomain string
 	grpcPort       int
@@ -413,6 +426,7 @@ type CreateRequest struct {
 	DiscoveryAuth                          *schemas.UpstreamAuth `json:"discovery_auth,omitempty"`
 	RuntimeAuth                            *schemas.UpstreamAuth `json:"runtime_auth,omitempty"`
 	VirtualKeyIDs                          []string              `json:"virtual_key_ids,omitempty"`
+	CredentialOrigins                      []string              `json:"credential_origins,omitempty"`
 	ExtensionURIs                          []string              `json:"extension_uris,omitempty"`
 }
 
@@ -460,6 +474,7 @@ type InspectedAgentExtension struct {
 }
 
 type InspectResponse struct {
+	Card                 *a2a.AgentCard            `json:"card,omitempty"`
 	Name                 string                    `json:"name,omitempty"`
 	Description          string                    `json:"description,omitempty"`
 	Version              string                    `json:"version,omitempty"`
@@ -493,6 +508,7 @@ type UpdateRequest struct {
 	DiscoveryAuth                          *schemas.UpstreamAuth `json:"discovery_auth,omitempty"`
 	RuntimeAuth                            *schemas.UpstreamAuth `json:"runtime_auth,omitempty"`
 	VirtualKeyIDs                          []string              `json:"virtual_key_ids,omitempty"`
+	CredentialOrigins                      []string              `json:"credential_origins,omitempty"`
 	ExtensionURIs                          []string              `json:"extension_uris,omitempty"`
 }
 
@@ -516,6 +532,9 @@ type ManagerConfig struct {
 	// matching how MCP reads the same setting per request. The constructor's
 	// externalURL argument remains the fallback when unset.
 	ExternalURLProvider func() string
+	RawCaptureProvider  func() bool
+	// PrivateAllowlistProvider returns operator-approved private destinations.
+	PrivateAllowlistProvider func() []string
 }
 
 // externalBaseURL returns the public base URL used for gateway-facing URLs
@@ -554,6 +573,8 @@ func NewManager(ctx context.Context, store Store, logger schemas.Logger, externa
 		logger:             logger,
 		externalURL:        strings.TrimRight(externalURL, "/"),
 		externalURLFn:      config.ExternalURLProvider,
+		rawCaptureFn:       config.RawCaptureProvider,
+		privateAllowlistFn: config.PrivateAllowlistProvider,
 		httpClient:         client,
 		pushDeliveryClient: newPushDeliveryClient(config.AllowPrivatePushCallbacks),
 		pushRelayID:        uuid.NewString(),
@@ -680,6 +701,7 @@ func (m *Manager) closeInBackground(runtime *runtimeAgent) {
 // published, so an unreachable agent can still be registered ahead of time.
 func (m *Manager) Create(ctx context.Context, req CreateRequest) (schemas.AgentRegistrationView, error) {
 	reg, err := normalize(req)
+	reg.RequirePublicTarget = requiresPublicTargets(ctx)
 	if err != nil {
 		return schemas.AgentRegistrationView{}, invalidRegistrationError(err)
 	}
@@ -777,10 +799,11 @@ func (m *Manager) Update(ctx context.Context, name string, req UpdateRequest) (s
 	if err != nil {
 		return schemas.AgentRegistrationView{}, invalidRegistrationError(err)
 	}
-	reg, err := normalize(CreateRequest{Name: name, AgentCardURL: *req.AgentCardURL, Tenant: req.Tenant, Enabled: req.Enabled, AllowByDefault: req.AllowByDefault, ForwardAcceptedCredential: req.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: req.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: discoveryAuth, RuntimeAuth: runtimeAuth, VirtualKeyIDs: req.VirtualKeyIDs, ExtensionURIs: req.ExtensionURIs})
+	reg, err := normalize(CreateRequest{Name: name, AgentCardURL: *req.AgentCardURL, Tenant: req.Tenant, Enabled: req.Enabled, AllowByDefault: req.AllowByDefault, ForwardAcceptedCredential: req.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: req.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: discoveryAuth, RuntimeAuth: runtimeAuth, VirtualKeyIDs: req.VirtualKeyIDs, ExtensionURIs: req.ExtensionURIs, CredentialOrigins: req.CredentialOrigins})
 	if err != nil {
 		return schemas.AgentRegistrationView{}, invalidRegistrationError(err)
 	}
+	reg.RequirePublicTarget = requiresPublicTargets(ctx)
 	reg.CreatedAt = existing.CreatedAt
 	var replacement *runtimeAgent
 	if reg.Enabled {
@@ -814,10 +837,10 @@ func (m *Manager) Update(ctx context.Context, name string, req UpdateRequest) (s
 
 func (m *Manager) Inspect(ctx context.Context, req InspectRequest) (InspectResponse, error) {
 	if err := validateAgentCardURL(req.AgentCardURL); err != nil {
-		return InspectResponse{}, err
+		return InspectResponse{}, invalidRegistrationError(err)
 	}
 	if err := validateUpstreamAuth(req.DiscoveryAuth); err != nil {
-		return InspectResponse{}, err
+		return InspectResponse{}, invalidRegistrationError(err)
 	}
 	card, capabilities, err := m.resolveCardForInspection(ctx, req.AgentCardURL, req.DiscoveryAuth, upstreamCredentialID(req.AgentCardURL, "discovery"))
 	if err != nil {
@@ -828,6 +851,7 @@ func (m *Manager) Inspect(ctx context.Context, req InspectRequest) (InspectRespo
 
 func inspectCard(card *a2a.AgentCard, capabilities map[string]bool) InspectResponse {
 	response := InspectResponse{
+		Card:                 card,
 		Name:                 card.Name,
 		Description:          card.Description,
 		Version:              card.Version,
@@ -1067,7 +1091,20 @@ func (m *Manager) CardHandler(name, requestOrigin string) (http.Handler, bool) {
 					status = *gateErr.StatusCode
 				}
 			}
-			http.Error(w, http.StatusText(status), status)
+			message := http.StatusText(status)
+			var blocked *network.PrivateTargetNotAllowedError
+			if errors.As(opErr, &blocked) {
+				message = "Agent card unavailable: the upstream destination is blocked by the Agent Gateway private network policy. Ask your Bifrost administrator to allow it in Agent Settings."
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				_ = json.NewEncoder(w).Encode(&schemas.BifrostError{
+					IsBifrostError: true,
+					StatusCode:     &status,
+					Error:          &schemas.ErrorField{Message: message},
+				})
+				return
+			}
+			http.Error(w, message, status)
 			return
 		}
 		if response == nil || response.ResponseBody == nil {
@@ -1188,6 +1225,7 @@ func (m *Manager) transportPanicHandler(name string) func(any) error {
 // upstream reachability is proven, so it is used both for registration-time
 // validation and for lazy or refreshed client construction.
 func (m *Manager) buildGeneration(ctx context.Context, config runtimeConfig) (*clientGeneration, error) {
+	ctx = WithPublicTargetsOnly(ctx, config.requirePublicTarget)
 	card, err := m.resolveCard(ctx, config.agentCardURL, config.discoveryAuth, upstreamCredentialID(config.name, "discovery"))
 	if err != nil {
 		return nil, err
@@ -1198,7 +1236,7 @@ func (m *Manager) buildGeneration(ctx context.Context, config runtimeConfig) (*c
 	if err = validateAuthCardMatch(card, config.runtimeAuth); err != nil {
 		return nil, err
 	}
-	httpClient, err := m.clientFor(config.runtimeAuth, nil, true)
+	httpClient, err := m.clientForContext(ctx, config.runtimeAuth, nil, true)
 	if err != nil {
 		return nil, fmt.Errorf("configure upstream HTTP client: %w", err)
 	}
@@ -1216,6 +1254,11 @@ func (m *Manager) buildGeneration(ctx context.Context, config runtimeConfig) (*c
 	var candidates []upstreamCandidate
 	var candidateErrors []error
 	for _, iface := range interfaces {
+		endpoint, parseErr := runtimeInterfaceURL(iface.URL)
+		if parseErr != nil || !permitsCredentialOrigin(config.agentCardURL, config.credentialOrigins, endpoint) {
+			candidateErrors = append(candidateErrors, gatewayPolicyError("upstream runtime origin is not permitted by credential_origins"))
+			continue
+		}
 		candidateCard := *card
 		candidateCard.SupportedInterfaces = []*a2a.AgentInterface{iface}
 		selectedTransport := ""
@@ -1240,7 +1283,19 @@ func (m *Manager) buildGeneration(ctx context.Context, config runtimeConfig) (*c
 				if grpcErr != nil {
 					return nil, grpcErr
 				}
-				conn, grpcErr := grpc.NewClient(target, grpc.WithTransportCredentials(creds))
+				policy := httpClient.Transport.(*credentialTransport).networkPolicy
+				// Preserve the hostname until the guarded dialer resolves it. The
+				// SDK's DNS resolver would otherwise discard hostname permissions.
+				conn, grpcErr := grpc.NewClient("passthrough:///"+target, grpc.WithTransportCredentials(creds), grpc.WithNoProxy(), grpc.WithContextDialer(func(dialCtx context.Context, addr string) (net.Conn, error) {
+					if !m.policyCurrent(policy) {
+						return nil, gatewayPolicyError("Agent Gateway network permissions changed")
+					}
+					proxy, err := network.DefaultProxyFunc(network.ClientPurposeAPI)(&http.Request{URL: &url.URL{Scheme: "https", Host: addr}})
+					if err != nil {
+						return nil, err
+					}
+					return policy.dial.DialContext(dialCtx, "tcp", addr, proxy)
+				}))
 				if grpcErr != nil {
 					return nil, grpcErr
 				}
@@ -1255,9 +1310,26 @@ func (m *Manager) buildGeneration(ctx context.Context, config runtimeConfig) (*c
 		candidates = append(candidates, upstreamCandidate{client: client, transport: selectedTransport})
 	}
 	if len(candidates) == 0 {
+		httpClient.CloseIdleConnections()
 		return nil, fmt.Errorf("create upstream SDK client: %w", errors.Join(candidateErrors...))
 	}
-	return newCandidateGeneration(card, candidates), nil
+	generation := newCandidateGeneration(card, candidates)
+	policy := httpClient.Transport.(*credentialTransport).networkPolicy
+	if !m.policyCurrent(policy) {
+		generation.retire()
+		httpClient.CloseIdleConnections()
+		return nil, gatewayPolicyError("Agent Gateway network permissions changed during initialization")
+	}
+	generation.networkPolicy = &policy
+	generation.closeHTTP = httpClient.CloseIdleConnections
+	transport := httpClient.Transport.(*credentialTransport)
+	cardURL, _ := validatedHTTPURL(config.agentCardURL)
+	defaultOrigin := canonicalOrigin(cardURL)
+	transport.allowedOrigin = func(target *url.URL) bool {
+		origin := canonicalOrigin(target)
+		return origin == defaultOrigin || slices.Contains(config.credentialOrigins, origin)
+	}
+	return generation, nil
 }
 
 // acquire returns a lease on a usable client generation, lazily building one on
@@ -1271,6 +1343,13 @@ func (r *runtimeAgent) acquire(ctx context.Context, manager *Manager) (*generati
 		if r.closed {
 			r.mu.Unlock()
 			return nil, ErrNotFound
+		}
+		if r.generation != nil && r.generation.networkPolicy != nil && !manager.policyCurrent(*r.generation.networkPolicy) {
+			old := r.generation
+			r.generation = nil
+			r.mu.Unlock()
+			old.retire()
+			continue
 		}
 		if r.generation != nil {
 			lease, ok := r.generation.acquire()
@@ -1436,6 +1515,15 @@ func finishClose(generation *clientGeneration, attempt *initializationAttempt) {
 	}
 }
 
+// UpstreamError identifies an agent discovery failure originating outside the gateway.
+type UpstreamError struct{ cause error }
+
+// Error preserves the discovery failure message for management clients.
+func (e *UpstreamError) Error() string { return e.cause.Error() }
+
+// Unwrap preserves the underlying failure for cancellation and policy checks.
+func (e *UpstreamError) Unwrap() error { return e.cause }
+
 // resolveCard fetches and parses the upstream agent card itself rather than
 // through the SDK resolver, because the gateway must apply its own protections:
 // the discovery credential is injected by transport, redirects are not followed,
@@ -1453,7 +1541,7 @@ func (contextWithoutValues) Value(any) any { return nil }
 func (m *Manager) resolveCardForInspection(ctx context.Context, agentCardURL string, auth *schemas.UpstreamAuth, credentialID string) (*a2a.AgentCard, map[string]bool, error) {
 	// Discovery is an administrative operation. Preserve cancellation and
 	// deadlines without letting caller identity select a per-user credential.
-	requestCtx := schemas.NewBifrostContext(contextWithoutValues{ctx}, schemas.NoDeadline)
+	requestCtx := schemas.NewBifrostContext(WithPublicTargetsOnly(contextWithoutValues{ctx}, requiresPublicTargets(ctx)), schemas.NoDeadline)
 	headers, err := m.resolveAuthHeaders(requestCtx, auth, credentialID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("resolve upstream agent card authentication: %w", err)
@@ -1462,39 +1550,45 @@ func (m *Manager) resolveCardForInspection(ctx context.Context, agentCardURL str
 	if err != nil {
 		return nil, nil, fmt.Errorf("create upstream agent card request: %w", err)
 	}
-	client, err := m.clientFor(auth, headers, false)
+	client, err := m.clientForContext(ctx, auth, headers, false)
 	if err != nil {
 		return nil, nil, fmt.Errorf("configure upstream agent card client: %w", err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("fetch upstream agent card: %w", err)
+		var blocked *network.PrivateTargetNotAllowedError
+		var policyError gatewayPolicyError
+		if errors.As(err, &blocked) || errors.As(err, &policyError) {
+			return nil, nil, fmt.Errorf("fetch upstream agent card: %w", err)
+		}
+		return nil, nil, &UpstreamError{cause: fmt.Errorf("fetch upstream agent card: %w", err)}
 	}
 	defer resp.Body.Close()
+	defer client.CloseIdleConnections()
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("fetch upstream agent card: unexpected HTTP status %s", resp.Status)
+		return nil, nil, &UpstreamError{cause: fmt.Errorf("fetch upstream agent card: unexpected HTTP status %s", resp.Status)}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAgentCardResponseSize+1))
 	if err != nil {
-		return nil, nil, fmt.Errorf("read upstream agent card: %w", err)
+		return nil, nil, &UpstreamError{cause: fmt.Errorf("read upstream agent card: %w", err)}
 	}
 	if len(body) > maxAgentCardResponseSize {
-		return nil, nil, errAgentCardTooLarge
+		return nil, nil, &UpstreamError{cause: errAgentCardTooLarge}
 	}
 	capabilities, err := inspectBooleanCapabilities(body)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse upstream agent card capabilities: %w", err)
+		return nil, nil, &UpstreamError{cause: fmt.Errorf("parse upstream agent card capabilities: %w", err)}
 	}
 	body, err = normalizeAgentCardSecurityJSON(body)
 	if err != nil {
-		return nil, nil, fmt.Errorf("parse upstream agent card security: %w", err)
+		return nil, nil, &UpstreamError{cause: fmt.Errorf("parse upstream agent card security: %w", err)}
 	}
 	card := new(a2a.AgentCard)
 	if err = json.Unmarshal(body, card); err != nil {
-		return nil, nil, fmt.Errorf("parse upstream agent card: %w", err)
+		return nil, nil, &UpstreamError{cause: fmt.Errorf("parse upstream agent card: %w", err)}
 	}
 	if err = validateStrictV1Interfaces(card, agentCardURL); err != nil {
-		return nil, nil, err
+		return nil, nil, &UpstreamError{cause: err}
 	}
 	return card, capabilities, nil
 }
@@ -1746,6 +1840,15 @@ func upstreamTLSConfig(auth *schemas.UpstreamAuth) (*tls.Config, error) {
 // sanitization are applied per credential. Card discovery disables redirect
 // following so a redirect cannot carry the upstream credential to another host.
 func (m *Manager) clientFor(auth *schemas.UpstreamAuth, headers http.Header, followRedirects bool) (*http.Client, error) {
+	return m.clientForContext(context.Background(), auth, headers, followRedirects)
+}
+
+// clientForContext builds a credentialed client under the caller's destination policy.
+func (m *Manager) clientForContext(ctx context.Context, auth *schemas.UpstreamAuth, headers http.Header, followRedirects bool) (*http.Client, error) {
+	policy, err := m.outboundPolicy(ctx)
+	if err != nil {
+		return nil, err
+	}
 	client := *m.httpClient
 	base := client.Transport
 	if base == nil {
@@ -1758,24 +1861,24 @@ func (m *Manager) clientFor(auth *schemas.UpstreamAuth, headers http.Header, fol
 			return nil, err
 		}
 		clone.TLSClientConfig = tlsConfig
-		base = clone
+		base = m.configureOutboundTransport(clone, policy)
 	} else if auth != nil && auth.TLS != nil {
 		return nil, errors.New("upstream TLS configuration requires an *http.Transport")
 	}
-	client.Transport = &credentialTransport{base: base, headers: headers}
+	client.Transport = &credentialTransport{base: base, headers: headers, networkPolicy: policy, policyValid: func() bool { return m.policyCurrent(policy) }}
 	if !followRedirects {
 		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	} else {
 		configuredCheckRedirect := client.CheckRedirect
 		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 			if len(via) > 0 && !sameOrigin(via[0].URL, req.URL) {
-				return errors.New("upstream redirect must remain on the original origin")
+				return gatewayPolicyError("upstream redirect must remain on the original origin")
 			}
 			if configuredCheckRedirect != nil {
 				return configuredCheckRedirect(req, via)
 			}
 			if len(via) >= 10 {
-				return errors.New("stopped after 10 redirects")
+				return gatewayPolicyError("stopped after 10 redirects")
 			}
 			return nil
 		}
@@ -1787,7 +1890,7 @@ func sameOrigin(left, right *url.URL) bool {
 	return strings.EqualFold(left.Scheme, right.Scheme) && strings.EqualFold(left.Host, right.Host)
 }
 
-func (m *Manager) resolveAuthHeaders(ctx *schemas.BifrostContext, auth *schemas.UpstreamAuth, credentialID string) (http.Header, error) {
+func (m *Manager) resolveAuthHeaders(ctx context.Context, auth *schemas.UpstreamAuth, credentialID string) (http.Header, error) {
 	headers := make(http.Header, len(authHeaders(auth))+1)
 	for name, value := range authHeaders(auth) {
 		headers.Set(name, value.GetValue())
@@ -1827,6 +1930,11 @@ func oauthConfigFingerprint(oauth *schemas.UpstreamOAuthConfig) [sha256.Size]byt
 func (m *Manager) oauthAccessToken(ctx context.Context, credentialID string, auth *schemas.UpstreamAuth) (string, error) {
 	oauth := auth.OAuth
 	fingerprint := oauthConfigFingerprint(oauth)
+	policy, err := m.outboundPolicy(ctx)
+	if err != nil {
+		return "", err
+	}
+	fingerprint = sha256.Sum256(append(fingerprint[:], policy.fingerprint[:]...))
 	m.oauthMu.Lock()
 	if m.oauthTokens == nil {
 		m.oauthTokens = make(map[string]oauthToken)
@@ -1852,7 +1960,7 @@ func (m *Manager) oauthAccessToken(ctx context.Context, credentialID string, aut
 
 		fetchCtx, cancel := context.WithTimeout(context.Background(), oauthFetchTimeout)
 		defer cancel()
-		token, expiresAt, err := m.fetchOAuthAccessToken(fetchCtx, auth)
+		token, expiresAt, err := m.fetchOAuthAccessToken(WithPublicTargetsOnly(fetchCtx, requiresPublicTargets(ctx)), auth)
 		if err != nil {
 			return nil, err
 		}
@@ -1882,7 +1990,7 @@ func (m *Manager) fetchOAuthAccessToken(ctx context.Context, auth *schemas.Upstr
 		if discoveryURL == "" {
 			discoveryURL = strings.TrimRight(oauth.ProviderURL, "/") + "/.well-known/oauth-authorization-server"
 		}
-		discoveryClient, err := m.clientFor(auth, nil, false)
+		discoveryClient, err := m.clientForContext(ctx, auth, nil, false)
 		if err != nil {
 			return "", time.Time{}, err
 		}
@@ -1895,6 +2003,7 @@ func (m *Manager) fetchOAuthAccessToken(ctx context.Context, auth *schemas.Upstr
 			return "", time.Time{}, fmt.Errorf("discover OAuth token endpoint: %w", err)
 		}
 		defer resp.Body.Close()
+		defer discoveryClient.CloseIdleConnections()
 		if resp.StatusCode != http.StatusOK {
 			return "", time.Time{}, fmt.Errorf("discover OAuth token endpoint: unexpected HTTP status %s", resp.Status)
 		}
@@ -1924,7 +2033,7 @@ func (m *Manager) fetchOAuthAccessToken(ctx context.Context, auth *schemas.Upstr
 	if oauth.Resource != "" {
 		form.Set("resource", oauth.Resource)
 	}
-	tokenClient, err := m.clientFor(auth, nil, false)
+	tokenClient, err := m.clientForContext(ctx, auth, nil, false)
 	if err != nil {
 		return "", time.Time{}, err
 	}
@@ -1938,6 +2047,7 @@ func (m *Manager) fetchOAuthAccessToken(ctx context.Context, auth *schemas.Upstr
 		return "", time.Time{}, fmt.Errorf("acquire OAuth access token: %w", err)
 	}
 	defer resp.Body.Close()
+	defer tokenClient.CloseIdleConnections()
 	if resp.StatusCode != http.StatusOK {
 		return "", time.Time{}, fmt.Errorf("acquire OAuth access token: unexpected HTTP status %s", resp.Status)
 	}
@@ -2020,8 +2130,12 @@ func normalize(req CreateRequest) (schemas.AgentRegistration, error) {
 			return schemas.AgentRegistration{}, errors.New("duplicate extension URI: " + uri)
 		}
 	}
+	origins, err := ValidateCredentialOrigins(req.CredentialOrigins)
+	if err != nil {
+		return schemas.AgentRegistration{}, err
+	}
 	now := time.Now().UTC()
-	return schemas.AgentRegistration{Name: name, AgentCardURL: req.AgentCardURL, Tenant: req.Tenant, Enabled: enabled, AllowByDefault: req.AllowByDefault, ForwardAcceptedCredential: req.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: req.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: req.DiscoveryAuth, RuntimeAuth: req.RuntimeAuth, ExtensionURIs: extensions, VirtualKeyIDs: ids, CreatedAt: now, UpdatedAt: now}, nil
+	return schemas.AgentRegistration{CredentialOrigins: origins, Name: name, AgentCardURL: req.AgentCardURL, Tenant: req.Tenant, Enabled: enabled, AllowByDefault: req.AllowByDefault, ForwardAcceptedCredential: req.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: req.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: req.DiscoveryAuth, RuntimeAuth: req.RuntimeAuth, ExtensionURIs: extensions, VirtualKeyIDs: ids, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func validateUpstreamAuth(auth *schemas.UpstreamAuth) error {
@@ -2077,8 +2191,11 @@ func validateUpstreamAuth(auth *schemas.UpstreamAuth) error {
 // mutated. It also converts non-protocol upstream POST errors into a typed status
 // error so stale-interface recovery can react to them.
 type credentialTransport struct {
-	base    http.RoundTripper
-	headers http.Header
+	base          http.RoundTripper
+	headers       http.Header
+	networkPolicy outboundPolicy
+	policyValid   func() bool
+	allowedOrigin func(*url.URL) bool
 }
 
 // RoundTrip sanitizes and credentials the outbound request. For HTTP+JSON, a
@@ -2086,6 +2203,12 @@ type credentialTransport struct {
 // can decode errors such as TaskNotFound. Other non-OK POST responses are closed
 // and converted to upstreamHTTPStatusError for stale-interface recovery.
 func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t.policyValid != nil && !t.policyValid() {
+		return nil, gatewayPolicyError("Agent Gateway network permissions changed; retry the request")
+	}
+	if t.allowedOrigin != nil && !t.allowedOrigin(req.URL) {
+		return nil, gatewayPolicyError("upstream runtime origin is not permitted by credential_origins")
+	}
 	clone := req.Clone(req.Context())
 	managed := t.headers.Clone()
 	if managed == nil {
@@ -2095,9 +2218,41 @@ func (t *credentialTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		managed[http.CanonicalHeaderKey("x-bf-vk")] = slices.Clone(values)
 	}
 	clone.Header = sanitizeUpstreamHeaders(req.Header, managed)
+	capture := schemas.GetA2ARawCapture(clone.Context())
+	if capture != nil {
+		capture.Reset()
+		if clone.Body != nil {
+			clone.Body = &captureReadCloser{ReadCloser: clone.Body, capture: capture, request: true, expected: clone.ContentLength}
+		}
+		if getBody := clone.GetBody; getBody != nil {
+			// HTTP transport retries recreate the body instead of reading the original wrapper.
+			clone.GetBody = func() (io.ReadCloser, error) {
+				body, err := getBody()
+				if err != nil {
+					return nil, err
+				}
+				capture.Reset()
+				return &captureReadCloser{ReadCloser: body, capture: capture, request: true, expected: clone.ContentLength}, nil
+			}
+		}
+	}
 	resp, err := t.base.RoundTrip(clone)
+	if capture != nil && resp != nil && resp.Body != nil {
+		resp.Body = &captureReadCloser{ReadCloser: resp.Body, capture: capture, expected: resp.ContentLength}
+	}
 	if err == nil && resp != nil && resp.StatusCode != http.StatusOK && clone.Method == http.MethodPost && !isHTTPJSONErrorResponse(clone, resp) {
-		resp.Body.Close()
+		if capture != nil {
+			// Closing the HTTP body interrupts a stalled read. Capture must not
+			// delay a status-only SDK error indefinitely just to record its body.
+			var closeOnce sync.Once
+			closeBody := func() { closeOnce.Do(func() { _ = resp.Body.Close() }) }
+			timer := time.AfterFunc(time.Second, closeBody)
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, (1<<20)+1))
+			timer.Stop()
+			closeBody()
+		} else {
+			resp.Body.Close()
+		}
 		return nil, &upstreamHTTPStatusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	if err == nil && resp != nil {
@@ -2435,7 +2590,8 @@ func (h *proxyRequestHandler) upstreamContext(ctx context.Context) (context.Cont
 	if !ok {
 		bifrostCtx = schemas.NewBifrostContext(ctx, schemas.NoDeadline)
 	}
-	headers, err := h.manager.resolveAuthHeaders(bifrostCtx, h.config.runtimeAuth, upstreamCredentialID(h.config.name, "runtime"))
+	authCtx := WithPublicTargetsOnly(bifrostCtx, h.config.requirePublicTarget)
+	headers, err := h.manager.resolveAuthHeaders(authCtx, h.config.runtimeAuth, upstreamCredentialID(h.config.name, "runtime"))
 	if err != nil {
 		return nil, err
 	}

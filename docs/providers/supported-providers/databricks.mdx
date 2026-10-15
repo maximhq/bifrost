@@ -31,6 +31,7 @@ Key characteristics:
 | Responses API | ✅ | ✅ | `/serving-endpoints/responses` where the endpoint supports it; emulated via chat everywhere else |
 | Embeddings | ✅ | - | `<base>/embeddings` |
 | List Models | ✅ | - | Served from Bifrost's model catalog; no workspace API is called |
+| Decisions | ✅ | - | `/api/2.0/ai-functions/ai-decide` (`ai_decide` only) |
 | Text Completions | ❌ | ❌ | - |
 | Image Generation | ❌ | ❌ | - |
 | Speech (TTS) / Transcriptions (STT) | ❌ | ❌ | - |
@@ -289,6 +290,33 @@ Anthropic-native fields — `context_management`, `cache_control`, `speed`, `inf
 ### Provisioned throughput
 
 A provisioned-throughput endpoint uses the same request format as a pay-per-token one. Address it by its endpoint name on the Model Serving surface — no separate configuration.
+
+## Decisions
+
+Databricks' [`ai_decide`](https://docs.databricks.com/api/ai-functions/v1/ai-decide) AI Function (Beta) answers [`/v1/decisions`](/quickstart/gateway/decisions). It is a workspace function rather than a serving endpoint, so address it as `databricks/ai_decide`:
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "databricks/ai_decide",
+    "input": "The API returns 500 on every call.",
+    "questions": [
+      { "type": "choice", "name": "team", "instructions": "Which team should handle this ticket?",
+        "choices": [{ "value": "billing" }, { "value": "engineering" }, { "value": "support" }] }
+    ]
+  }'
+```
+
+Bifrost calls `POST {workspace_url}/api/2.0/ai-functions/ai-decide` with the key's personal access token or service principal. The workspace needs the AI Functions preview enabled, and the token needs the `ai-functions` scope (or `all-apis` for OAuth). The body is TypeSafe's System One format, so questions are converted as on [TypeSafe](/providers/supported-providers/typesafe#field-mapping-reference). Differences from TypeSafe:
+
+- **No model on the wire.** `ai_decide` rejects a `model` field, so none is sent; the response reports `ai_decide`. Bifrost pins the function version with `options.version: "1.0"`.
+- **Text only.** An `input_image` part is rejected by Bifrost with a `400`; the function would otherwise read it as text. An empty input is also a `400`, since `ai_decide` answers a null state with no answers.
+- **Strict fields.** An extra top-level or question field forwarded with `x-bf-passthrough-extra-params` comes back as Databricks' `400` (`Unexpected parameters`).
+- **Limits.** Choice questions take 1-255 options and score questions 2-10 levels; every question needs `instructions`.
+- **No usage or response `id`.** Databricks' `x-request-id` is in `extra_fields.provider_response_headers`, and a decision is priced at $0 unless you add a [pricing override](/providers/custom-pricing) for the Decisions request type.
+
+Any other Databricks model returns `unsupported_operation` for decisions; with [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, it is emulated on the endpoint's Responses API instead. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use `ai_decide` as its classifier.
 
 ## Usage attribution
 

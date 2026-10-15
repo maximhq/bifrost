@@ -219,7 +219,7 @@ providers:
     streaming: "command-a-03-2025"
     count_tokens: "command-a-03-2025"
     alternatives:
-      - "command-r-plus"
+      - "command-a-03-2025"
   
   huggingface:
     image_generation: "fal-ai/fal-ai/flux/dev"

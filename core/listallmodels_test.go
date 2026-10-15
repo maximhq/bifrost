@@ -284,3 +284,93 @@ func TestListAllModelsAllPollsFailWithoutCatalogReturnsError(t *testing.T) {
 		t.Fatalf("expected an error when every provider poll fails with no catalog fallback; got %v", modelIDs(resp))
 	}
 }
+
+// modelDenyPlugin drops every listed model whose bare name is in deny, in
+// PostLLMHook, the way the governance plugin narrows a listing to what a
+// virtual key may see.
+type modelDenyPlugin struct {
+	deny map[string]bool
+}
+
+func (p *modelDenyPlugin) GetName() string { return "model-deny" }
+func (p *modelDenyPlugin) Cleanup() error  { return nil }
+func (p *modelDenyPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) error {
+	return nil
+}
+func (p *modelDenyPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	return req, nil, nil
+}
+func (p *modelDenyPlugin) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	if resp == nil || resp.ListModelsResponse == nil {
+		return resp, bifrostErr, nil
+	}
+	kept := make([]schemas.Model, 0, len(resp.ListModelsResponse.Data))
+	for _, m := range resp.ListModelsResponse.Data {
+		if _, name := schemas.ParseModelString(m.ID, ""); !p.deny[name] {
+			kept = append(kept, m)
+		}
+	}
+	resp.ListModelsResponse.Data = kept
+	return resp, bifrostErr, nil
+}
+
+// The last-known models served for a failed poll must pass through the plugin
+// post-hooks like a live listing does; otherwise a virtual key's model
+// allow/block lists are skipped whenever its provider is unreachable.
+func TestListAllModelsLastKnownModelsPassThroughPostHooks(t *testing.T) {
+	account := NewMockAccount()
+	// Nothing listens here: the poll fails fast with connection refused.
+	account.AddProviderWithBaseURL(schemas.Groq, 1, 10, "http://127.0.0.1:1")
+	account.SetKeysForProvider(schemas.Groq, wildcardKey(schemas.Groq))
+	tuneProviderForTest(t, account, schemas.Groq)
+
+	catalog := &staticListerCatalog{modelsByProvider: map[schemas.ModelProvider][]string{
+		schemas.Groq: {"llama-3.3-70b-versatile", "llama-guard-4"},
+	}}
+	client, initErr := Init(context.Background(), schemas.BifrostConfig{
+		Account:      account,
+		Logger:       NewNoOpLogger(),
+		ModelCatalog: catalog,
+		LLMPlugins:   []schemas.LLMPlugin{&modelDenyPlugin{deny: map[string]bool{"llama-guard-4": true}}},
+	})
+	if initErr != nil {
+		t.Fatalf("Init failed: %v", initErr)
+	}
+	t.Cleanup(client.Shutdown)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ListAllModels(ctx, &schemas.BifrostListModelsRequest{})
+	if bfErr != nil {
+		t.Fatalf("ListAllModels returned error: %s", bfErr.GetErrorString())
+	}
+	if !containsModelID(resp, "groq/llama-3.3-70b-versatile") {
+		t.Fatalf("last-known model the plugin allows is missing; got %v", modelIDs(resp))
+	}
+	if containsModelID(resp, "groq/llama-guard-4") {
+		t.Fatalf("last-known model the plugin's PostLLMHook drops leaked into the aggregate; got %v", modelIDs(resp))
+	}
+}
+
+// A single-provider list call keeps returning the poll error: the last-known
+// fallback belongs to the aggregate only.
+func TestListModelsRequestDoesNotServeLastKnownModels(t *testing.T) {
+	account := NewMockAccount()
+	account.AddProviderWithBaseURL(schemas.Groq, 1, 10, "http://127.0.0.1:1")
+	account.SetKeysForProvider(schemas.Groq, wildcardKey(schemas.Groq))
+	tuneProviderForTest(t, account, schemas.Groq)
+
+	catalog := &staticListerCatalog{modelsByProvider: map[schemas.ModelProvider][]string{
+		schemas.Groq: {"llama-3.3-70b-versatile"},
+	}}
+	client := newListModelsTestClient(t, account, catalog)
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	defer ctx.Cancel()
+
+	resp, bfErr := client.ListModelsRequest(ctx, &schemas.BifrostListModelsRequest{Provider: schemas.Groq})
+	if bfErr == nil {
+		t.Fatalf("expected the poll error from a single-provider list call; got %v", modelIDs(resp))
+	}
+}

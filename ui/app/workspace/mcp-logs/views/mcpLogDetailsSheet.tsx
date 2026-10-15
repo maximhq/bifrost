@@ -118,7 +118,7 @@ function HeroStat({
 }) {
 	return (
 		<div className={cn("border-border/70 min-w-0 border-b px-5 py-3 md:border-b-0", hasRightBorder && "md:border-r")}>
-			<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase">{label}</div>
+			<div className="text-muted-foreground text-[10.5px] font-semibold tracking-wider uppercase truncate">{label}</div>
 			<div className={cn("mt-0.5 truncate text-[18px] font-semibold tabular-nums", mono && "font-mono text-[15px]", valueClass)}>
 				{value}
 			</div>
@@ -191,8 +191,8 @@ export function MCPLogDetailSheet({
 	if (!isFullDataReady) {
 		return (
 			<Sheet open={open} onOpenChange={onOpenChange}>
-				<SheetContent className="border-secondary flex w-full flex-col gap-4 overflow-x-hidden border p-4 sm:max-w-[60%] md:p-8">
-					<div className="flex h-full items-center justify-center">
+				<SheetContent className="border-secondary flex w-full flex-col gap-2 overflow-x-hidden border p-0 sm:max-w-[60%]">
+					<div className="flex h-full items-center justify-center p-4 md:p-8">
 						<SheetTitle className="sr-only">Loading MCP log details</SheetTitle>
 						<Loader2 className="text-muted-foreground h-6 w-6 animate-spin" />
 					</div>
@@ -447,7 +447,6 @@ export function MCPLogDetailSheet({
 							/>
 							<HeroStat
 								label="Server"
-								mono
 								value={displayLog.source === "native" ? "Local" : displayLog.server_label || "—"}
 								sub={displayLog.source === "native" ? "native" : "mcp"}
 								valueClass="whitespace-normal overflow-visible break-all"
@@ -553,7 +552,7 @@ export function MCPLogDetailSheet({
 													search={{ server_labels: [displayLog.server_label] }}
 													data-testid="mcplogdetails-server-link"
 												>
-													<Badge variant="secondary" className="font-mono hover:underline">
+													<Badge variant="secondary" className="hover:underline">
 														{displayLog.server_label}
 													</Badge>
 												</Link>

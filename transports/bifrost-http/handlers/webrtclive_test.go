@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -73,19 +74,163 @@ func TestCreateLiveWebRTCSessionSendsBifrostOffer(t *testing.T) {
 		ctx:        schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
 		meter:      meter,
 	}
-	body := []byte(`{"session":{"model":"gpt-live-1","instructions":"Be brief."},"transport":{"type":"webrtc","sdp":"browser offer"}}`)
+	body := []byte(`{"session":{"model":"gpt-live-1","instructions":"Be brief.","client":{"data_channel":{"allowed_client_events":["session.close"],"allowed_server_events":[{"type":"session.started"},{"type":"session.closed"},{"type":"error"}]}}},"transport":{"type":"webrtc","sdp":"browser offer"}}`)
 
-	created, bifrostErr := createLiveWebRTCSession(admission, body, "bifrost offer")
+	created, filter, bifrostErr := createLiveWebRTCSession(admission, body, "bifrost offer")
 	require.Nil(t, bifrostErr)
+	require.NotNil(t, filter)
 	assert.Equal(t, "live_webrtc", created.Session.ID)
 	assert.Equal(t, "bifrost offer", gjson.GetBytes(provider.body, "transport.sdp").Str, "Bifrost, not the browser, is OpenAI's peer")
 	assert.Equal(t, "Be brief.", gjson.GetBytes(provider.body, "session.instructions").Str, "the rest of the body is relayed as sent")
+	assert.Equal(t, `["session.close"]`, gjson.GetBytes(provider.body, "session.client.data_channel.allowed_client_events").Raw, "the browser's command permissions must stay unchanged")
+	var upstreamEvents []string
+	for _, selector := range gjson.GetBytes(provider.body, "session.client.data_channel.allowed_server_events").Array() {
+		upstreamEvents = append(upstreamEvents, selector.Get("type").Str+"/"+selector.Get("response_event").Str)
+	}
+	assert.Contains(t, upstreamEvents, "session.usage.updated/", "voice usage must reach Bifrost even when the browser excludes it")
+	assert.Contains(t, upstreamEvents, "response.event/response.completed", "backend usage must reach Bifrost without an application sideband")
 
 	// A created session bills at least the 15 seconds OpenAI charges at creation.
 	meter.finish(4)
 	_, posts, _ := runner.snapshot()
 	require.Len(t, posts, 1)
 	assert.Equal(t, 15.0, postSeconds(t, posts[0]))
+}
+
+func TestLiveWebRTCServerEventPermissions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, value  string
+		all, invalid bool
+	}{
+		{name: "omitted", all: true},
+		{name: "all", value: `"all"`, all: true},
+		{name: "none", value: `[]`},
+		{name: "status only", value: `[{"type":"session.started"},{"type":"session.closed"},{"type":"error"}]`},
+		{name: "nested responses", value: `[{"type":"response.event","response_event":"response.output_text.delta"}]`},
+		{name: "future event", value: `[{"type":"session.future"}]`},
+		{name: "null", value: `null`, invalid: true},
+		{name: "wrong string", value: `"none"`, invalid: true},
+		{name: "object", value: `{}`, invalid: true},
+		{name: "string selector", value: `["session.started"]`, invalid: true},
+		{name: "null selector", value: `[null]`, invalid: true},
+		{name: "missing type", value: `[{}]`, invalid: true},
+		{name: "empty type", value: `[{"type":""}]`, invalid: true},
+		{name: "numeric type", value: `[{"type":123}]`, invalid: true},
+		{name: "long type", value: `[{"type":"` + strings.Repeat("x", 257) + `"}]`, invalid: true},
+		{name: "missing response selector", value: `[{"type":"response.event"}]`, invalid: true},
+		{name: "empty response selector", value: `[{"type":"response.event","response_event":""}]`, invalid: true},
+		{name: "null response selector", value: `[{"type":"response.event","response_event":null}]`, invalid: true},
+		{name: "long response selector", value: `[{"type":"response.event","response_event":"` + strings.Repeat("x", 257) + `"}]`, invalid: true},
+		{name: "unexpected response selector", value: `[{"type":"session.started","response_event":"response.completed"}]`, invalid: true},
+		{name: "unexpected null response selector", value: `[{"type":"session.started","response_event":null}]`, invalid: true},
+		{name: "unsupported selector field", value: `[{"type":"session.started","private_only":true}]`, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			permissions := `"allowed_client_events":["session.close"]`
+			if tc.value != "" {
+				permissions += `,"allowed_server_events":` + tc.value
+			}
+			body := []byte(`{"session":{"model":"gpt-live-1","input":[{"role":"user","content":"private history"}],"client":{"data_channel":{` + permissions + `}}},"transport":{"type":"webrtc","sdp":"offer"},"future_setting":{"b":2,"a":1}}`)
+			upstream, filter, bifrostErr := prepareLiveWebRTCEvents(body)
+			if tc.invalid {
+				require.NotNil(t, bifrostErr)
+				assert.Equal(t, 400, *bifrostErr.StatusCode)
+				assert.Contains(t, bifrostErr.Error.Message, liveServerEventsPath)
+				assert.Nil(t, upstream)
+				return
+			}
+			require.Nil(t, bifrostErr)
+			assert.Equal(t, `["session.close"]`, gjson.GetBytes(upstream, "session.client.data_channel.allowed_client_events").Raw)
+			assert.Equal(t, gjson.GetBytes(body, "session.input").Raw, gjson.GetBytes(upstream, "session.input").Raw)
+			assert.Equal(t, `{"b":2,"a":1}`, gjson.GetBytes(upstream, "future_setting").Raw, "unrelated JSON is not reserialized")
+			if tc.all {
+				assert.Nil(t, filter)
+				assert.Equal(t, body, upstream, "the default and all need no rewrite")
+			} else {
+				require.NotNil(t, filter)
+				assert.JSONEq(t, tc.value, string(filter.original))
+			}
+			for _, message := range []string{
+				`{"type":"session.started"}`, `{"type":"session.usage.updated","usage":{"seconds":30}}`,
+				`{"type":"session.input_transcript.delta","delta":"secret"}`, `{"type":"session.future"}`, `{"type":"error"}`,
+				`{"type":"response.event","event":{"type":"response.output_text.delta","delta":"secret"}}`,
+				`{"type":"response.event","event":{"type":"response.completed"}}`,
+				`{"type":"response.event","event":{}}`, `{}`, `{"type":123}`,
+			} {
+				allowed := tc.all
+				for _, selector := range gjson.Parse(tc.value).Array() {
+					kind := gjson.Get(message, "type").Str
+					if selector.Get("type").Str == kind && (kind != "response.event" || selector.Get("response_event").Str == gjson.Get(message, "event.type").Str) {
+						allowed = true
+					}
+				}
+				client, err := filter.clientMessage([]byte(message))
+				require.NoError(t, err)
+				if allowed {
+					assert.Equal(t, message, string(client), "allowed events keep their exact bytes")
+				} else {
+					assert.Nil(t, client, "unrequested or malformed event must not reach the browser: %s", message)
+				}
+			}
+		})
+	}
+}
+
+func TestLiveWebRTCServerEventPermissionsRestoreSnapshots(t *testing.T) {
+	t.Parallel()
+	const original = `[{"type":"session.started"},{"type":"session.updated"},{"type":"session.closed"}]`
+	upstream, filter, bifrostErr := prepareLiveWebRTCEvents([]byte(`{"session":{"client":{"data_channel":{"allowed_server_events":` + original + `}}}}`))
+	require.Nil(t, bifrostErr)
+	for _, kind := range []string{"session.started", "session.updated", "session.closed"} {
+		message := []byte(`{"type":"` + kind + `","event_id":"evt_1","session":{"id":"live_1","client":{"data_channel":{"allowed_client_events":["session.close"],"allowed_server_events":` + gjson.GetBytes(upstream, liveServerEventsPath).Raw + `}},"future":{"b":2,"a":1}}}`)
+		client, err := filter.clientMessage(message)
+		require.NoError(t, err)
+		assert.JSONEq(t, original, gjson.GetBytes(client, liveServerEventsPath).Raw)
+		assert.Equal(t, "evt_1", gjson.GetBytes(client, "event_id").Str)
+		assert.Equal(t, "live_1", gjson.GetBytes(client, "session.id").Str)
+		assert.Equal(t, `["session.close"]`, gjson.GetBytes(client, "session.client.data_channel.allowed_client_events").Raw)
+		assert.Equal(t, `{"b":2,"a":1}`, gjson.GetBytes(client, "session.future").Raw)
+	}
+}
+
+func TestLiveWebRTCServerEventPermissionsRejectBeforeProviderCreate(t *testing.T) {
+	t.Parallel()
+	provider := &fakeLiveWebRTCProvider{}
+	admission := &liveAdmission{liveTarget: liveTarget{provider: provider}}
+	_, _, bifrostErr := createLiveWebRTCSession(admission, []byte(`{"session":{"client":{"data_channel":{"allowed_server_events":[{"type":"response.event"}]}}}}`), "offer")
+	require.NotNil(t, bifrostErr)
+	assert.Equal(t, 400, *bifrostErr.StatusCode)
+	assert.Empty(t, provider.body, "invalid permissions must not create a billable upstream session")
+}
+
+func TestLiveWebRTCServerEventPermissionsApplyToGatewayErrors(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, allowed string
+		wantError     bool
+	}{
+		{name: "none", allowed: `[]`},
+		{name: "status only", allowed: `[{"type":"session.started"}]`},
+		{name: "errors", allowed: `[{"type":"error"}]`, wantError: true},
+		{name: "all", allowed: `"all"`, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, filter, bifrostErr := prepareLiveWebRTCEvents([]byte(`{"session":{"client":{"data_channel":{"allowed_server_events":` + tc.allowed + `}}}}`))
+			require.Nil(t, bifrostErr)
+			messages := &liveWebRTCMessages{relay: &webrtcRelay{}, serverEvents: filter}
+			messages.liveSessionController = &liveSessionController{io: messages}
+			messages.sendError(newRealtimeWireBifrostError(403, "permission_error", "private policy failure"))
+			frames := messages.relay.pendingToDownstream
+			if !tc.wantError {
+				assert.Empty(t, frames, "filter gateway errors before they can enter the browser's pending queue")
+				return
+			}
+			require.Len(t, frames, 1)
+			assert.Equal(t, "error", gjson.GetBytes(frames[0].payload, "type").Str)
+			assert.Contains(t, string(frames[0].payload), "private policy failure")
+		})
+	}
 }
 
 // webrtcTestPeer is one end of a pion connection with its data channel's messages collected.
@@ -252,6 +397,109 @@ func TestLiveWebRTCRelayEndToEnd(t *testing.T) {
 	assert.Equal(t, []float64{31, 9}, voice, "a full window, then the rest reported by session.closed")
 }
 
+type pausedLiveWebRTCMessages struct {
+	*liveWebRTCMessages
+	paused chan struct{}
+	resume chan struct{}
+}
+
+func (m *pausedLiveWebRTCMessages) fromProvider(r *webrtcRelay, msg webrtc.DataChannelMessage) {
+	m.liveWebRTCMessages.fromProvider(r, msg)
+	if schemas.LiveEventTypeOf(msg.Data) == schemas.LiveEventSessionStarted {
+		close(m.paused)
+		<-m.resume
+	}
+}
+
+// Acknowledged SCTP messages can still be waiting behind an application callback.
+// DTLS close must not finalize billing before the data-channel reader drains them.
+func TestLiveWebRTCTransportCloseDrainsReceivedUsage(t *testing.T) {
+	if logger == nil {
+		SetLogger(&mockLogger{})
+	}
+	for _, tc := range []struct {
+		name        string
+		frames      []string
+		seconds     float64
+		closed      bool
+		browserGone bool
+	}{
+		{name: "usage then session closed", frames: []string{`{"type":"session.usage.updated","usage":{"seconds":97}}`, `{"type":"session.closed","usage":{"seconds":97}}`}, seconds: 97, closed: true},
+		{name: "final usage only", frames: []string{`{"type":"session.closed","usage":{"seconds":97}}`}, seconds: 97, closed: true},
+		{name: "final usage increases last snapshot", frames: []string{`{"type":"session.usage.updated","usage":{"seconds":31}}`, `{"type":"session.closed","usage":{"seconds":97}}`}, seconds: 97, closed: true},
+		{name: "duplicate snapshots do not double bill", frames: []string{`{"type":"session.usage.updated","usage":{"seconds":97}}`, `{"type":"session.usage.updated","usage":{"seconds":97}}`, `{"type":"session.closed","usage":{"seconds":97}}`}, seconds: 97, closed: true},
+		{name: "late usage after session closed is ignored", frames: []string{`{"type":"session.closed","usage":{"seconds":97}}`, `{"type":"session.usage.updated","usage":{"seconds":999}}`}, seconds: 97, closed: true},
+		{name: "usage then hangup", frames: []string{`{"type":"session.usage.updated","usage":{"seconds":97}}`}, seconds: 97},
+		{name: "hangup without usage", seconds: 15},
+		{name: "browser left before final usage", frames: []string{`{"type":"session.closed","usage":{"seconds":97}}`}, seconds: 97, closed: true, browserGone: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := newWebRTCTestPeer(t)
+			receiver := newWebRTCTestPeer(t)
+			provider.pc.OnDataChannel(provider.bind)
+			runner := &fakeLiveRunner{}
+			meter := newTestLiveMeter(runner)
+			require.Nil(t, meter.admit("gpt-live-1", ""))
+			meter.setMinimumSeconds(15)
+			messages := &pausedLiveWebRTCMessages{
+				liveWebRTCMessages: &liveWebRTCMessages{},
+				paused:             make(chan struct{}), resume: make(chan struct{}),
+			}
+			messages.liveSessionController = newTestLiveController(fakeLiveModels{allowed: true}, meter, messages.liveWebRTCMessages)
+			closed, peerEnded := make(chan struct{}), make(chan struct{}, 1)
+			relay := &webrtcRelay{upstreamPC: receiver.pc, handler: messages, onClose: func() { close(closed) }}
+			messages.relay = relay
+			var resumeOnce sync.Once
+			resume := func() { resumeOnce.Do(func() { close(messages.resume) }) }
+			t.Cleanup(relay.close)
+			t.Cleanup(resume)
+			receiver.pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+				relay.onUpstreamState(state)
+				if state == webrtc.PeerConnectionStateClosed {
+					select {
+					case peerEnded <- struct{}{}:
+					default:
+					}
+				}
+			})
+			dc, err := receiver.pc.CreateDataChannel(liveWebRTCDataChannelLabel, nil)
+			require.NoError(t, err)
+			relay.bindUpstreamChannel(dc)
+			offer, err := receiver.pc.CreateOffer(nil)
+			require.NoError(t, err)
+			require.NoError(t, provider.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: gatheredSDP(t, receiver.pc, offer)}))
+			answer, err := provider.pc.CreateAnswer(nil)
+			require.NoError(t, err)
+			require.NoError(t, receiver.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: gatheredSDP(t, provider.pc, answer)}))
+			provider.waitOpen(t)
+			require.True(t, relay.markEstablished())
+			provider.send(t, `{"type":"session.started","session":{"id":"live_queued_usage"}}`)
+			waitSignal(t, messages.paused, "paused application callback")
+			if tc.browserGone {
+				relay.onDownstreamState(webrtc.PeerConnectionStateFailed)
+			}
+			for _, frame := range tc.frames {
+				provider.send(t, frame)
+			}
+			provider.mu.Lock()
+			providerDC := provider.dc
+			provider.mu.Unlock()
+			require.Eventually(t, func() bool { return providerDC.BufferedAmount() == 0 }, 5*time.Second, time.Millisecond, "all frames acknowledged while application callback is blocked")
+			require.NoError(t, provider.pc.Close())
+			waitSignal(t, peerEnded, "DTLS peer close")
+			resume()
+			waitSignal(t, closed, "relay finalization")
+			_, posts, _ := runner.snapshot()
+			var seconds float64
+			for _, post := range posts {
+				seconds += postSeconds(t, post)
+			}
+			assert.Equal(t, tc.seconds, seconds, "bill received usage before finalizing")
+			assert.Equal(t, tc.closed, messages.sessionClosed.Load(), "queued terminal event is processed")
+		})
+	}
+}
+
 // TestLiveWebRTCCloseBeforeEstablishedDoesNotFinish: a relay that fails during setup must not run
 // the session's finish, which would bill the transport minimum as a success; the create handler
 // aborts the meter instead. Once the relay is established, a close finishes the session.
@@ -400,7 +648,7 @@ func TestLiveWebRTCSetupFailureSettlesCreatedSession(t *testing.T) {
 				ctx:        schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
 				meter:      meter,
 			}
-			created, setupErr := createLiveWebRTCSession(admission, []byte(`{"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"browser"}}`), "relay")
+			created, _, setupErr := createLiveWebRTCSession(admission, []byte(`{"session":{"model":"gpt-live-1"},"transport":{"type":"webrtc","sdp":"browser"}}`), "relay")
 			if tc.refuse {
 				require.Nil(t, created)
 				require.NotNil(t, setupErr)

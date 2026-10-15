@@ -3,6 +3,7 @@ package objectstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -62,14 +63,25 @@ func NewR2ObjectStore(ctx context.Context, cfg *Config, logger schemas.Logger) (
 		// uploads to R2. Required checksums (e.g. DeleteObjects) are retained.
 		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
 	})
-	return &R2ObjectStore{client: client, bucket: cfg.Bucket.GetValue(), compress: cfg.Compress, logger: logger}, nil
+	return &R2ObjectStore{client: client, bucket: cfg.Bucket.GetValue(), compress: cfg.gzipObjects(), logger: logger}, nil
 }
 
 // Put uploads data without tags, which R2 does not support.
 // When compression is enabled, data is gzip-compressed before upload.
-func (r *R2ObjectStore) Put(ctx context.Context, key string, data []byte, _ map[string]string) error {
+func (r *R2ObjectStore) Put(ctx context.Context, key string, data []byte, tags map[string]string) error {
+	return r.PutWithOptions(ctx, key, data, tags, PutOptions{})
+}
+
+// PutWithOptions uploads untagged data with a caller-chosen content type and
+// optional gzip bypass for formats such as parquet that compress internally.
+func (r *R2ObjectStore) PutWithOptions(ctx context.Context, key string, data []byte, _ map[string]string, opts PutOptions) error {
+	gzipBody := r.compress && !opts.SkipCompression
+	contentType := opts.ContentType
+	if contentType == "" {
+		contentType = ContentTypeJSON
+	}
 	body := data
-	if r.compress {
+	if gzipBody {
 		compressed, err := gzipCompress(data)
 		if err != nil {
 			return fmt.Errorf("objectstore: r2 gzip compress: %w", err)
@@ -81,9 +93,9 @@ func (r *R2ObjectStore) Put(ctx context.Context, key string, data []byte, _ map[
 		Bucket:      aws.String(r.bucket),
 		Key:         aws.String(key),
 		Body:        bytes.NewReader(body),
-		ContentType: aws.String("application/json"),
+		ContentType: aws.String(contentType),
 	}
-	if r.compress {
+	if gzipBody {
 		input.ContentEncoding = aws.String("gzip")
 	}
 
@@ -101,6 +113,10 @@ func (r *R2ObjectStore) Get(ctx context.Context, key string) ([]byte, error) {
 		Key:    aws.String(key),
 	})
 	if err != nil {
+		var noSuchKey *types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return nil, fmt.Errorf("objectstore: r2 get object %s: %w", key, ErrNotFound)
+		}
 		return nil, fmt.Errorf("objectstore: r2 get object %s: %w", key, err)
 	}
 	defer output.Body.Close()

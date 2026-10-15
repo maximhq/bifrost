@@ -722,6 +722,9 @@ func TestAnthropicMessageDeltaSafeguardResultsRoundTrip(t *testing.T) {
 			if got := gjson.Get(deltas[0], "delta.safeguard_results").Raw; got != results {
 				t.Fatalf("safeguard_results lost from message_delta.delta: %s", deltas[0])
 			}
+			if gjson.Get(deltas[0], "safeguard_results").Exists() {
+				t.Fatalf("safeguard_results must stay inside delta, not at the event top level: %s", deltas[0])
+			}
 		})
 	}
 }

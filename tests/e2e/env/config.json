@@ -69,6 +69,9 @@
     }
   },
   "mcp": {
+    "tool_manager_config": {
+      "oauth_private_allowlist": ["localhost", "127.0.0.1", "::1"]
+    },
     "client_configs": [
       {
         "name": "TestClient001",

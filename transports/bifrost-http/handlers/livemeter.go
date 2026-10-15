@@ -71,7 +71,8 @@ type liveMeter struct {
 	key      schemas.Key
 	window   float64
 
-	sessionID string // Bifrost's id: every unit groups under it, from admission on
+	sessionID string                // Bifrost's id: every unit groups under it, from admission on
+	bind      func(id string) error // called once with OpenAI's id, before any client learns it
 
 	mu                sync.Mutex
 	providerSessionID string // OpenAI's id, known from session.started
@@ -185,14 +186,24 @@ func (m *liveMeter) abort(bifrostErr *schemas.BifrostError) {
 	}
 }
 
-// setProviderSessionID records OpenAI's session id once session.started names it.
-func (m *liveMeter) setProviderSessionID(id string) {
+// setProviderSessionID records OpenAI's session id once session.started (or the WebRTC create
+// response) names it, and binds the session to its opener through bind. Both callers run before
+// the id is handed to the client, so the binding exists by the time anyone can address the
+// session by it. A binding that cannot be written is returned, and the caller must not hand the
+// id out: a session nobody is recorded for is reachable to every key on the provider.
+func (m *liveMeter) setProviderSessionID(id string) error {
 	if id = strings.TrimSpace(id); id == "" {
-		return
+		return nil
 	}
 	m.mu.Lock()
+	first := m.providerSessionID == ""
 	m.providerSessionID = id
+	bind := m.bind
 	m.mu.Unlock()
+	if first && bind != nil {
+		return bind(id)
+	}
+	return nil
 }
 
 // onUsage records a cumulative session.usage.updated snapshot and bills a full window.
@@ -339,12 +350,27 @@ func (m *liveMeter) finish(finalSeconds float64) {
 	}
 	m.finished = true
 	m.accrueSecondsLocked(max(finalSeconds, m.minimumSeconds))
-	// The voice lane closes last: its unit carries the session's end for plugins.
-	for _, lane := range m.backends {
+	// The voice lane closes last: its unit carries the session's end for plugins. Every lane is
+	// closed even if a post hook panics on one: finish runs once, so a lane skipped here would never
+	// be billed or cleaned, and the voice unit's session end would be lost. The first panic is
+	// raised again once every lane is closed, for the session's recovery to log.
+	var firstPanic any
+	closeLane := func(lane *liveLane) {
+		defer func() {
+			if rec := recover(); rec != nil && firstPanic == nil {
+				firstPanic = rec
+			}
+		}()
 		m.closeLaneLocked(lane)
 	}
+	for _, lane := range m.backends {
+		closeLane(lane)
+	}
 	if m.voice != nil {
-		m.closeLaneLocked(m.voice)
+		closeLane(m.voice)
+	}
+	if firstPanic != nil {
+		panic(firstPanic)
 	}
 }
 
@@ -379,8 +405,11 @@ func (m *liveMeter) rotateLocked(lane *liveLane) {
 		m.refusal = bifrostErr
 		return
 	}
+	// The admitted unit becomes the lane's even if closing the old one panics in a post hook: the
+	// session's recovery then ends the session through finish, which bills and cleans the lane's
+	// current unit, and an unassigned one would never be billed, cleaned or marked as the end.
+	defer func() { lane.current = next }()
 	m.closeLaneLocked(lane)
-	lane.current = next
 }
 
 // closeLaneLocked bills the lane's accrued usage on its current unit and clears it.

@@ -1,0 +1,518 @@
+---
+title: "Overview"
+description: "Use Bifrost as a drop-in replacement for the Cohere API with full compatibility and enhanced features."
+icon: "book"
+---
+
+## Overview
+
+Bifrost provides Cohere v2 API compatibility through protocol adaptation. The integration accepts Cohere's native request bodies on `/cohere`, converts them into Bifrost's internal format, and rebuilds Cohere's native response envelopes on the way out. Point the official Cohere SDK at Bifrost and your existing code keeps working, with governance, load balancing, semantic caching, logging and multi-provider routing added underneath.
+
+**Endpoint:** `/cohere`
+
+### Supported routes
+
+| Route | Cohere SDK method | Bifrost operation | Streaming |
+|-------|-------------------|-------------------|-----------|
+| `POST /cohere/v2/chat` | `chat()` / `chat_stream()` | Chat completion | ✅ |
+| `POST /cohere/v2/embed` | `embed()` | Embedding, including text + image `inputs` | - |
+| `POST /cohere/v2/rerank` | `rerank()` | Rerank | - |
+| `POST /cohere/v1/tokenize` | `tokenize()` | Count tokens | - |
+
+Each route works against Cohere models by default and against any other provider when the model is prefixed with the provider name (see [Provider/Model Usage](#providermodel-usage-examples)).
+
+<Note>
+The Cohere SDKs append the version path themselves (`/v2/chat`, `/v2/embed`, `/v2/rerank`, `/v1/tokenize`), so the base URL is the bare `http://localhost:8080/cohere`, without a version suffix.
+</Note>
+
+---
+
+## Setup
+
+<Tabs group="cohere-sdk">
+<Tab title="Python">
+
+```python {5}
+import cohere
+
+# Configure client to use Bifrost
+co = cohere.ClientV2(
+    base_url="http://localhost:8080/cohere",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
+)
+
+# Make requests as usual
+response = co.chat(
+    model="command-a-03-2025",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+
+print(response.message.content[0].text)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript {5}
+import { CohereClientV2 } from "cohere-ai";
+
+// Configure client to use Bifrost
+const cohere = new CohereClientV2({
+  baseUrl: "http://localhost:8080/cohere",
+  token: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
+});
+
+// Make requests as usual
+const response = await cohere.chat({
+  model: "command-a-03-2025",
+  messages: [{ role: "user", content: "Hello!" }],
+});
+
+console.log(response.message.content[0].text);
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Provider/Model Usage Examples
+
+Use multiple providers through the same Cohere SDK format by prefixing model names with the provider. Bifrost converts the Cohere request into the target provider's format and converts the result back into Cohere's response shape.
+
+<Tabs group="cohere-sdk">
+<Tab title="Python">
+
+```python
+import cohere
+
+co = cohere.ClientV2(
+    base_url="http://localhost:8080/cohere",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
+)
+
+# Cohere models (default)
+cohere_response = co.chat(
+    model="command-a-03-2025",
+    messages=[{"role": "user", "content": "Hello from Cohere!"}],
+)
+
+# OpenAI models via Cohere SDK format
+openai_response = co.chat(
+    model="openai/gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello from OpenAI!"}],
+)
+
+# Anthropic models
+anthropic_response = co.chat(
+    model="anthropic/claude-sonnet-4-20250514",
+    messages=[{"role": "user", "content": "Hello from Claude!"}],
+)
+
+# Bedrock models
+bedrock_response = co.chat(
+    model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
+    messages=[{"role": "user", "content": "Hello from Bedrock!"}],
+)
+
+# OpenAI embeddings via Cohere SDK format
+openai_embeddings = co.embed(
+    model="openai/text-embedding-3-small",
+    texts=["hello"],
+    input_type="search_document",
+    embedding_types=["float"],
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { CohereClientV2 } from "cohere-ai";
+
+const cohere = new CohereClientV2({
+  baseUrl: "http://localhost:8080/cohere",
+  token: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
+});
+
+// Cohere models (default)
+const cohereResponse = await cohere.chat({
+  model: "command-a-03-2025",
+  messages: [{ role: "user", content: "Hello from Cohere!" }],
+});
+
+// OpenAI models via Cohere SDK format
+const openaiResponse = await cohere.chat({
+  model: "openai/gpt-4o-mini",
+  messages: [{ role: "user", content: "Hello from OpenAI!" }],
+});
+
+// Anthropic models
+const anthropicResponse = await cohere.chat({
+  model: "anthropic/claude-sonnet-4-20250514",
+  messages: [{ role: "user", content: "Hello from Claude!" }],
+});
+
+// OpenAI embeddings via Cohere SDK format
+const openaiEmbeddings = await cohere.embed({
+  model: "openai/text-embedding-3-small",
+  texts: ["hello"],
+  inputType: "search_document",
+  embeddingTypes: ["float"],
+});
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Chat
+
+`/cohere/v2/chat` accepts the full Cohere v2 chat body: `messages`, `tools`, `response_format`, `thinking`, `max_tokens`, `temperature`, `p`, `k`, `stop_sequences` and the rest. Bifrost maps these onto each provider's own parameters. See the [Cohere provider page](../../providers/supported-providers/cohere#request-parameters) for the exact parameter mapping.
+
+### Streaming
+
+<Tabs group="cohere-sdk">
+<Tab title="Python">
+
+```python
+import cohere
+
+co = cohere.ClientV2(
+    base_url="http://localhost:8080/cohere",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
+)
+
+for event in co.chat_stream(
+    model="command-a-03-2025",
+    messages=[{"role": "user", "content": "Write a haiku about gateways."}],
+):
+    if event.type == "content-delta":
+        print(event.delta.message.content.text, end="", flush=True)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { CohereClientV2 } from "cohere-ai";
+
+const cohere = new CohereClientV2({
+  baseUrl: "http://localhost:8080/cohere",
+  token: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
+});
+
+const stream = await cohere.chatStream({
+  model: "command-a-03-2025",
+  messages: [{ role: "user", content: "Write a haiku about gateways." }],
+});
+
+for await (const event of stream) {
+  if (event.type === "content-delta") {
+    process.stdout.write(event.delta?.message?.content?.text ?? "");
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+<Warning>
+Streaming on `/cohere/v2/chat` returns Cohere's native event stream only when **both** hold: the model is served by Cohere, and raw responses are enabled for the Cohere provider. Bifrost replays the raw Cohere events rather than rebuilding them, so without raw responses the stream is emitted in Bifrost's OpenAI-style chunk format even for Cohere models, and the Cohere SDK's stream parser will not understand it.
+
+Enable raw responses either in the provider config or per request:
+
+```json
+{
+  "providers": {
+    "cohere": {
+      "keys": [{ "name": "cohere-key", "value": "env.COHERE_API_KEY", "weight": 1.0 }],
+      "send_back_raw_response": true
+    }
+  }
+}
+```
+
+```
+x-bf-send-back-raw-response: true
+```
+
+For a `provider/model` that routes elsewhere, the stream is always emitted in Bifrost's chunk format. Use non-streaming calls for cross-provider chat through this route, or use the [OpenAI SDK integration](../openai-sdk/overview) for cross-provider streaming. See [Request Options](../../providers/request-options) for the full list of `x-bf-*` headers.
+</Warning>
+
+---
+
+## Embeddings
+
+`/cohere/v2/embed` accepts all three of Cohere's input fields and returns Cohere's native envelope (`embeddings`, `response_type`, `meta.billed_units`) for every provider.
+
+| Field | Content | Notes |
+|-------|---------|-------|
+| `texts` | Array of strings | Works against any provider that supports embeddings. |
+| `images` | Array of base64 data URIs | Image-only embeddings. `input_type` should be `image`. |
+| `inputs` | Array of `{ "content": [ ... ] }` with `text` and `image_url` blocks | Mixed text + image in one vector. Cohere Embed v4 and other multimodal models. |
+
+`input_type`, `embedding_types`, `truncate` and `output_dimension` are forwarded. When `embedding_types` lists several formats, each comes back under its own key in `embeddings` (`float`, `int8`, `uint8`, `binary`, `ubinary`, `base64`).
+
+<Tabs group="cohere-sdk">
+<Tab title="Python">
+
+```python
+import base64
+import cohere
+
+co = cohere.ClientV2(
+    base_url="http://localhost:8080/cohere",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
+)
+
+# Text embeddings
+response = co.embed(
+    model="embed-v4.0",
+    texts=["a golden retriever playing fetch", "a cat asleep on a sofa"],
+    input_type="search_document",
+    embedding_types=["float", "int8"],
+)
+print(len(response.embeddings.float_[0]), len(response.embeddings.int8[0]))
+
+# Image embeddings
+with open("photo.jpg", "rb") as f:
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(f.read()).decode()
+
+response = co.embed(
+    model="embed-v4.0",
+    images=[image_uri],
+    input_type="image",
+    embedding_types=["float"],
+)
+
+# Mixed text + image in one vector
+response = co.embed(
+    model="embed-v4.0",
+    inputs=[
+        cohere.EmbedInput(
+            content=[
+                {"type": "text", "text": "a golden retriever in a park"},
+                {"type": "image_url", "image_url": {"url": image_uri}},
+            ]
+        )
+    ],
+    input_type="search_document",
+    embedding_types=["float"],
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import fs from "node:fs";
+import { CohereClientV2 } from "cohere-ai";
+
+const cohere = new CohereClientV2({
+  baseUrl: "http://localhost:8080/cohere",
+  token: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
+});
+
+// Text embeddings
+const textResponse = await cohere.embed({
+  model: "embed-v4.0",
+  texts: ["a golden retriever playing fetch", "a cat asleep on a sofa"],
+  inputType: "search_document",
+  embeddingTypes: ["float", "int8"],
+});
+
+// Image embeddings
+const imageUri = "data:image/jpeg;base64," + fs.readFileSync("photo.jpg").toString("base64");
+
+const imageResponse = await cohere.embed({
+  model: "embed-v4.0",
+  images: [imageUri],
+  inputType: "image",
+  embeddingTypes: ["float"],
+});
+
+// Mixed text + image in one vector
+const mixedResponse = await cohere.embed({
+  model: "embed-v4.0",
+  inputs: [
+    {
+      content: [
+        { type: "text", text: "a golden retriever in a park" },
+        { type: "image_url", imageUrl: { url: imageUri } },
+      ],
+    },
+  ],
+  inputType: "search_document",
+  embeddingTypes: ["float"],
+});
+```
+
+</Tab>
+</Tabs>
+
+Images must be inline data URIs; Cohere does not fetch remote URLs. Which modalities a non-Cohere model accepts through this route follows the model, not the SDK: see the [multimodal embeddings support matrix](../../providers/supported-providers/overview#multimodal-embeddings).
+
+---
+
+## Rerank
+
+`/cohere/v2/rerank` accepts string documents or object documents, `top_n` and `max_tokens_per_doc`, and returns Cohere's `results[]` with `index` and `relevance_score`. Map `index` back onto the documents you sent to recover the text. Cross-provider rerank (for example a vLLM or custom OpenAI-compatible reranker) is converted into the same shape.
+
+<Tabs group="cohere-sdk">
+<Tab title="Python">
+
+```python
+import cohere
+
+co = cohere.ClientV2(
+    base_url="http://localhost:8080/cohere",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
+)
+
+documents = [
+    "Paris is the capital and largest city of France.",
+    "Berlin is the capital of Germany.",
+    "The Eiffel Tower is in Paris.",
+]
+
+response = co.rerank(
+    model="rerank-v3.5",
+    query="What is the capital of France?",
+    documents=documents,
+    top_n=2,
+)
+
+for result in response.results:
+    print(result.index, result.relevance_score, documents[result.index])
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { CohereClientV2 } from "cohere-ai";
+
+const cohere = new CohereClientV2({
+  baseUrl: "http://localhost:8080/cohere",
+  token: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
+});
+
+const documents = [
+  "Paris is the capital and largest city of France.",
+  "Berlin is the capital of Germany.",
+  "The Eiffel Tower is in Paris.",
+];
+
+const response = await cohere.rerank({
+  model: "rerank-v3.5",
+  query: "What is the capital of France?",
+  documents,
+  topN: 2,
+});
+
+for (const result of response.results) {
+  console.log(result.index, result.relevanceScore, documents[result.index]);
+}
+```
+
+</Tab>
+</Tabs>
+
+See the [Reranking guide](../../quickstart/gateway/reranking) for the provider-neutral `/v1/rerank` endpoint and the models that support it.
+
+---
+
+## Tokenize
+
+`/cohere/v1/tokenize` takes `model` and `text` and maps to Bifrost's count-tokens operation. Cohere's native response (`tokens`, `token_strings`, `meta`) is returned only when the model is served by Cohere **and** raw responses are enabled (`send_back_raw_response` on the provider, or the `x-bf-send-back-raw-response: true` header, as in the streaming note above). In every other case, including Cohere models without raw responses, the response is Bifrost's count-tokens shape, which the SDK's typed `tokenize()` client does not parse.
+
+```python
+# offline=False is required: the Python SDK defaults to offline=True and tokenizes
+# locally with a downloaded tokenizer, never calling Bifrost at all.
+response = co.tokenize(model="command-a-03-2025", text="Hello, world!", offline=False)
+print(len(response.tokens))
+```
+
+---
+
+## Adding Custom Headers
+
+Pass custom headers required by Bifrost plugins (like governance, telemetry, etc.):
+
+<Tabs group="cohere-sdk">
+<Tab title="Python">
+
+```python
+import cohere
+import httpx
+
+# Sending the virtual key through both fields requires dual_credential_conflict_behavior to be set to "prefer_vk".
+co = cohere.ClientV2(
+    base_url="http://localhost:8080/cohere",
+    api_key="<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
+    httpx_client=httpx.Client(
+        headers={
+            "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>",  # Replace with your actual Bifrost virtual key.
+        }
+    ),
+)
+
+response = co.chat(
+    model="command-a-03-2025",
+    messages=[{"role": "user", "content": "Hello with custom headers!"}],
+)
+```
+
+</Tab>
+<Tab title="JavaScript">
+
+```javascript
+import { CohereClientV2 } from "cohere-ai";
+
+// Sending the virtual key through both fields requires dual_credential_conflict_behavior to be set to "prefer_vk".
+const cohere = new CohereClientV2({
+  baseUrl: "http://localhost:8080/cohere",
+  token: "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
+  headers: {
+    "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>", // Replace with your actual Bifrost virtual key.
+  },
+});
+
+// Headers can also be set per request
+const response = await cohere.chat(
+  {
+    model: "command-a-03-2025",
+    messages: [{ role: "user", content: "Hello with custom headers!" }],
+  },
+  { headers: { "x-bf-vk": "<YOUR-BIFROST-VIRTUAL-KEY>" } }
+);
+```
+
+</Tab>
+</Tabs>
+
+---
+
+## Supported Features
+
+The Cohere integration supports the four routes above for any model Bifrost can reach. Operations the Cohere API does not expose (text completions, image generation, speech, transcription, files, batch) are not available on `/cohere`; use the [OpenAI SDK integration](../openai-sdk/overview) or the native `/v1` endpoints for those.
+
+Known differences from calling Cohere directly:
+
+- **Streaming and tokenize need raw responses.** Native Cohere stream events and the native tokenize response are passed through only when `send_back_raw_response` is enabled for the Cohere provider (or the `x-bf-send-back-raw-response` header is set). Otherwise both fall back to Bifrost's own shape, even for Cohere models.
+- **Cross-provider streaming** on `/v2/chat` always emits Bifrost's chunk format rather than Cohere's event stream, regardless of the raw-response setting.
+- **Cross-provider tokenize** always returns Bifrost's count-tokens response rather than Cohere's `tokens` / `token_strings` shape.
+- **Native passthrough:** with raw responses enabled and the model served by Cohere, chat, embed, rerank and tokenize responses are returned exactly as Cohere sent them. Without raw responses, non-streaming chat, embed and rerank are rebuilt from Bifrost's format into Cohere's shape, so they still parse in the SDK.
+
+---
+
+## Next Steps
+
+- **[OpenAI SDK](../openai-sdk/overview)** - GPT integration patterns
+- **[Anthropic SDK](../anthropic-sdk/overview)** - Claude integration patterns
+- **[Google GenAI SDK](../genai-sdk/overview)** - Gemini integration patterns
+- **[Cohere Provider](../../providers/supported-providers/cohere)** - Parameter mapping and provider configuration
+- **[Multimodal Embeddings](../../quickstart/gateway/multimodal#multimodal-embeddings)** - Image, audio, video and PDF embeddings
+- **[Configuration](../../quickstart/README)** - Bifrost setup and configuration

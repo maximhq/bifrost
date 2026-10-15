@@ -283,6 +283,45 @@ func liveLogRows(t *testing.T, providerSessionID string) []gjson.Result {
 // contentRowSessionOf caches which provider session each download row belongs to.
 var contentRowSessionOf sync.Map
 
+// sidebandRowOwner caches which provider session and virtual key each sideband row belongs to.
+var sidebandRowOwner sync.Map
+
+// findSidebandLog waits for the row a sideband on the session wrote under the virtual key, with
+// the row status named by wantStatus when it is not empty.
+func findSidebandLog(t *testing.T, providerSessionID, virtualKeyID, wantStatus string) gjson.Result {
+	t.Helper()
+	deadline := time.Now().Add(rowWaitTimeout)
+	for {
+		status, raw, err := apiCall(http.MethodGet, "/api/logs?objects=live_sideband&limit=500&start_time="+suiteStart.Format(time.RFC3339Nano), nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, status, "list logs: %s", raw)
+		var matches []gjson.Result
+		for _, summary := range gjson.GetBytes(raw, "logs").Array() {
+			id := summary.Get("id").Str
+			owner, known := sidebandRowOwner.Load(id)
+			if !known {
+				row := fetchLog(t, id)
+				owner = row.Get("metadata.provider_session_id").Str + "|" + row.Get("virtual_key_id").Str
+				sidebandRowOwner.Store(id, owner)
+			}
+			if owner != providerSessionID+"|"+virtualKeyID {
+				continue
+			}
+			if row := fetchLog(t, id); wantStatus == "" || row.Get("status").Str == wantStatus {
+				matches = append(matches, row)
+			}
+		}
+		require.LessOrEqual(t, len(matches), 1, "one sideband logs one row, found %d for %s", len(matches), providerSessionID)
+		if len(matches) == 1 {
+			return matches[0]
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no %s live_sideband row for session %s under virtual key %s", wantStatus, providerSessionID, virtualKeyID)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // findContentLog waits for the row a recording download leaves, found by the provider's session
 // id in its metadata. A download is a request of its own, so it never shares the session's row.
 func findContentLog(t *testing.T, providerSessionID string) gjson.Result {
