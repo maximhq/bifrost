@@ -19,10 +19,13 @@ const databricksDecisionVersion = "1.0"
 // ToDatabricksDecisionRequest converts a normalized decision request into the ai_decide
 // body. Questions go through Typesafe's converter, so they validate exactly as they do on
 // Typesafe. An empty input is rejected locally: ai_decide answers a null state with a 200
-// and no answers.
+// and no answers. Images sent by reference are refused: only Typesafe reads them.
 func ToDatabricksDecisionRequest(request *schemas.BifrostDecisionRequest) (*DatabricksDecisionRequest, error) {
 	if request.Input.IsEmpty() {
 		return nil, providerUtils.InvalidRequestErrorf("decision input is required")
+	}
+	if request.Input.HasAssetParts() {
+		return nil, providerUtils.DecisionAssetsUnsupportedError()
 	}
 	native, err := typesafe.ToTypesafeDecisionRequest(request)
 	if err != nil {

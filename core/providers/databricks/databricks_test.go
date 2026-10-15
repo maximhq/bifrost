@@ -1574,6 +1574,13 @@ func TestDatabricksDecisionRejectsLocally(t *testing.T) {
 		"serving endpoint model": {model: "databricks-claude-sonnet-4", input: schemas.DecisionInput{Text: schemas.Ptr("hi")}},
 		"empty input":            {model: "ai_decide", wantStatus: http.StatusBadRequest},
 		"image part":             {model: "ai_decide", input: image, wantStatus: http.StatusBadRequest},
+		"image sent by reference": {model: "ai_decide", input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
+			Role: "user",
+			Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+				{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Same as r-a?")},
+				{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: []byte("\x89PNG\r\n\x1a\n")},
+			}},
+		}}}, wantStatus: http.StatusBadRequest},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

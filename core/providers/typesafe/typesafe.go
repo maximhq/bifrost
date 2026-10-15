@@ -240,7 +240,7 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 		provider.client,
 		provider.buildRequestURL(ctx, typesafeSystemOnePath, schemas.DecisionRequest),
 		request,
-		toTypesafeSystemOneRequest,
+		ToTypesafeDecisionRequest,
 		headers,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),

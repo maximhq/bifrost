@@ -59,23 +59,25 @@ func validStructuredValue(value interface{}) bool {
 // question is keyed by its name (see schemas.DecisionQuestionNames). Choices
 // become an option -> description map, a boolean choice keyed "true" or
 // "false", and levels an ordered array of descriptions with their labels
-// folded in. Unsupported types and malformed criteria are rejected rather than
-// silently approximated, and so is an image in the input, which Typesafe (and
-// any other text-only systemone endpoint, such as Azure's Microsoft-Decision-1)
-// would read as text. Validation is never stricter than the official SDKs' types:
-// null state, null or absent instructions, and null descriptions are
-// forwarded for the endpoint to judge.
+// folded in. Image parts with an ID become the request's assets (see
+// typesafeAssets); only Typesafe reads them, so every other provider that sends
+// this shape rejects them before converting. Unsupported types and malformed
+// criteria are rejected rather than silently approximated, and so is an inline
+// image in the input, which a systemone endpoint would read as text. Validation
+// is never stricter than the official SDKs' types: null state, null or absent
+// instructions, and null descriptions are forwarded for the endpoint to judge.
 func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error) {
 	if len(request.Questions) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("decision request requires at least one question")
 	}
-	if request.Input.HasAssetParts() {
-		return nil, providerUtils.DecisionAssetsUnsupportedError()
+	input, assets, err := typesafeAssets(request.Input)
+	if err != nil {
+		return nil, err
 	}
-	if partType := request.Input.NonTextPartType(); partType != "" {
+	if partType := input.NonTextPartType(); partType != "" {
 		return nil, providerUtils.InvalidRequestErrorf("decision input carries an %q part, which this provider cannot read; route the request to a provider that accepts it", partType)
 	}
-	state := typesafeState(request.Input)
+	state := typesafeState(input)
 	if !isJSONNull(state) && !validStructuredValue(state) {
 		return nil, providerUtils.InvalidRequestErrorf("state must be a string, object, or array")
 	}
@@ -97,28 +99,9 @@ func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*Typesa
 		State:       state,
 		Model:       request.Model,
 		Questions:   questions,
+		Assets:      assets,
 		ExtraParams: request.ExtraParams,
 	}, nil
-}
-
-// toTypesafeSystemOneRequest is Typesafe's own converter: ToTypesafeDecisionRequest,
-// with the input's asset parts sent as the request's assets (see typesafeAssets).
-func toTypesafeSystemOneRequest(request *schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error) {
-	input, assets, err := typesafeAssets(request.Input)
-	if err != nil {
-		return nil, err
-	}
-	if assets == nil {
-		return ToTypesafeDecisionRequest(request)
-	}
-	withoutAssets := *request
-	withoutAssets.Input = input
-	native, err := ToTypesafeDecisionRequest(&withoutAssets)
-	if err != nil {
-		return nil, err
-	}
-	native.Assets = assets
-	return native, nil
 }
 
 // typesafeAssets moves the input's asset parts into Typesafe's assets map, keyed

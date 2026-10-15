@@ -1982,7 +1982,7 @@ func TestTypesafeAssetsRoundTrip(t *testing.T) {
 		t.Errorf("asset part = %+v, want the decoded bytes", parts[2])
 	}
 
-	out, err := toTypesafeSystemOneRequest(shared)
+	out, err := ToTypesafeDecisionRequest(shared)
 	if err != nil {
 		t.Fatalf("to typesafe: %v", err)
 	}
@@ -2024,7 +2024,7 @@ func TestTypesafeAssetsStateShapes(t *testing.T) {
 			if err != nil {
 				t.Fatalf("to shared: %v", err)
 			}
-			out, err := toTypesafeSystemOneRequest(shared)
+			out, err := ToTypesafeDecisionRequest(shared)
 			if err != nil {
 				t.Fatalf("to typesafe: %v", err)
 			}
@@ -2056,7 +2056,7 @@ func TestTypesafeAssetsFromInputParts(t *testing.T) {
 		return schemas.DecisionInputMessage{Role: "user", Content: schemas.DecisionInputContent{Parts: parts}}
 	}
 
-	out, err := toTypesafeSystemOneRequest(request(message(text("The frame is r-cam."), asset("r-cam", jpeg))))
+	out, err := ToTypesafeDecisionRequest(request(message(text("The frame is r-cam."), asset("r-cam", jpeg))))
 	if err != nil {
 		t.Fatalf("convert: %v", err)
 	}
@@ -2068,7 +2068,7 @@ func TestTypesafeAssetsFromInputParts(t *testing.T) {
 	}
 
 	// More than one message stays a message state, without the asset parts.
-	out, err = toTypesafeSystemOneRequest(request(
+	out, err = ToTypesafeDecisionRequest(request(
 		message(text("first")),
 		message(text("second"), asset("r-cam", png)),
 	))
@@ -2080,7 +2080,7 @@ func TestTypesafeAssetsFromInputParts(t *testing.T) {
 	}
 
 	// Typesafe judges the image itself, so a GIF is sent on for it to reject.
-	out, err = toTypesafeSystemOneRequest(request(message(text("x"), asset("r-cam", gif))))
+	out, err = ToTypesafeDecisionRequest(request(message(text("x"), asset("r-cam", gif))))
 	if err != nil || out.Assets["r-cam"].Format != "gif" {
 		t.Errorf("gif asset = %+v, %v; want sent with format gif", out.Assets["r-cam"], err)
 	}
@@ -2090,15 +2090,9 @@ func TestTypesafeAssetsFromInputParts(t *testing.T) {
 		"image_url without data": request(message(text("x"), urlOnly)),
 		"duplicate id":           request(message(text("x"), asset("r-cam", png), asset("r-cam", png))),
 	} {
-		if _, err := toTypesafeSystemOneRequest(req); err == nil {
+		if _, err := ToTypesafeDecisionRequest(req); err == nil {
 			t.Errorf("%s: expected a 400", name)
 		}
-	}
-
-	// Every other systemone-shaped provider goes through ToTypesafeDecisionRequest,
-	// which refuses asset parts instead of reading references as text.
-	if _, err := ToTypesafeDecisionRequest(request(message(text("x"), asset("r-cam", png)))); err == nil {
-		t.Error("ToTypesafeDecisionRequest accepted asset parts")
 	}
 }
 
@@ -2252,9 +2246,9 @@ func TestTypesafeImagesHeaderAndMultipart(t *testing.T) {
 	}
 }
 
-// BenchmarkTypesafeSystemOneRequestWithoutImages measures what images support adds
-// to a request without images: Typesafe's converter against the shared one it
-// wraps, which every other systemone provider calls directly.
+// BenchmarkTypesafeSystemOneRequestWithoutImages measures the converter and the
+// images header check on a request without images, the common case images
+// support must not slow down.
 func BenchmarkTypesafeSystemOneRequestWithoutImages(b *testing.B) {
 	request := &schemas.BifrostDecisionRequest{
 		Model: "jev-latest",
@@ -2270,14 +2264,6 @@ func BenchmarkTypesafeSystemOneRequestWithoutImages(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			if _, err := ToTypesafeDecisionRequest(request); err != nil {
-				b.Fatal(err)
-			}
-		}
-	})
-	b.Run("toTypesafeSystemOneRequest", func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			if _, err := toTypesafeSystemOneRequest(request); err != nil {
 				b.Fatal(err)
 			}
 		}

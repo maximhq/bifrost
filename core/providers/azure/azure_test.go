@@ -460,29 +460,37 @@ func TestAzureDecisionSendsTypesafeBodyToSystemOne(t *testing.T) {
 // Microsoft-Decision-1: the model is text-only and answers an image part read as JSON
 // text with a 200, so the request is a local 400 instead.
 func TestAzureDecisionRejectsImageInputLocally(t *testing.T) {
-	hit := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
-	defer server.Close()
+	for name, tc := range map[string]struct {
+		part    schemas.DecisionInputPart
+		wantSub string
+	}{
+		"inline image":            {schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")}, "this provider cannot read"},
+		"image sent by reference": {schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: []byte("\x89PNG\r\n\x1a\n")}, "only Typesafe reads"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hit := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
+			defer server.Close()
 
-	request := newAzureDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
-		Role: "user",
-		Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
-			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
-		}},
-	}}})
-	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	_, bifrostErr := newAzureDecisionProvider(t).Decision(ctx, newAzureDecisionKey(server.URL), request)
-	if bifrostErr == nil {
-		t.Fatal("expected an error for an image input")
-	}
-	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
-		t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
-	}
-	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "this provider cannot read") {
-		t.Errorf("message = %+v, want the provider-neutral image rejection", bifrostErr.Error)
-	}
-	if hit {
-		t.Error("the request reached Azure")
+			request := newAzureDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
+				Role:    "user",
+				Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{tc.part}},
+			}}})
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := newAzureDecisionProvider(t).Decision(ctx, newAzureDecisionKey(server.URL), request)
+			if bifrostErr == nil {
+				t.Fatal("expected an error for an image input")
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
+			}
+			if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, tc.wantSub) {
+				t.Errorf("message = %+v, want %q", bifrostErr.Error, tc.wantSub)
+			}
+			if hit {
+				t.Error("the request reached Azure")
+			}
+		})
 	}
 }
 
