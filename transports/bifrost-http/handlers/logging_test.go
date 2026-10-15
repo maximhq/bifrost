@@ -1567,3 +1567,29 @@ func TestGetDroppedRequestsMaintenanceSubsetNeverExceedsTotal(t *testing.T) {
 		t.Fatalf("dropped_during_maintenance (%d) exceeds dropped_requests (%d): the subset must be read first", maintenance, total)
 	}
 }
+
+func TestFindRedactedKeyDeletedSuffix(t *testing.T) {
+	existing := []schemas.Key{{ID: "k1", Name: "current-name"}}
+	tests := []struct {
+		name   string
+		keys   []schemas.Key
+		id     string
+		object string
+		want   string
+	}{
+		{name: "existing key uses current name", keys: existing, id: "k1", object: "chat.completion", want: "current-name"},
+		{name: "existing key on passthrough uses current name", keys: existing, id: "k1", object: string(schemas.PassthroughRequest), want: "current-name"},
+		{name: "missing key is marked deleted", keys: existing, id: "k2", object: "chat.completion", want: "logged-name (deleted)"},
+		{name: "missing key with empty lookup is marked deleted", keys: nil, id: "k2", object: "chat.completion", want: "logged-name (deleted)"},
+		{name: "missing key on passthrough is not marked deleted", keys: existing, id: "k2", object: string(schemas.PassthroughRequest), want: "logged-name"},
+		{name: "missing key on passthrough stream is not marked deleted", keys: nil, id: "k2", object: string(schemas.PassthroughStreamRequest), want: "logged-name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := findRedactedKey(tt.keys, tt.id, "logged-name", tt.object)
+			if got.ID != tt.id || got.Name != tt.want {
+				t.Fatalf("findRedactedKey() = {%q, %q}, want {%q, %q}", got.ID, got.Name, tt.id, tt.want)
+			}
+		})
+	}
+}
