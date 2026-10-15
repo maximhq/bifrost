@@ -960,13 +960,15 @@ func TestWarpTopicsJobReplacesPreviousTopics(t *testing.T) {
 	service, start := topicTestService(t, newFakeWarpVectorStore(), nil, unreachable)
 	store := service.topicStore()
 	ctx := context.Background()
+	// Built before the topics it replaces exist: a seed run is refused once
+	// they do, but one already enqueued still replaces them.
+	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.NoError(t, err)
 	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{{
 		ID: "stale", Label: "Old", EmbeddingSignature: topicTestSignature(), Centroid: logstore.EncodeWarpVector([]float32{0, 0, 1}),
 	}}))
 	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []logstore.WarpTopicAssignment{{LogID: "earlier", TopicID: "stale", Timestamp: start.Add(-time.Hour)}}))
 
-	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
-	require.NoError(t, err)
 	finalJSON, err := service.RunTopicsJob(ctx, tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
 	require.NoError(t, err)
 
@@ -1004,13 +1006,13 @@ func TestWarpTopicsJobRetiresOnlyTheTopicsItReplaces(t *testing.T) {
 	store := service.topicStore()
 	ctx := context.Background()
 	centre := logstore.EncodeWarpVector([]float32{0, 0, 1})
+	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.NoError(t, err)
 	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
 		{ID: "replaced", Label: "Old", EmbeddingSignature: topicTestSignature(), Centroid: centre},
 		{ID: "other-model", Label: "Other", EmbeddingSignature: "another-embedding-space", Centroid: centre},
 	}))
 
-	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
-	require.NoError(t, err)
 	_, err = service.RunTopicsJob(ctx, tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
 	require.NoError(t, err)
 
@@ -1038,10 +1040,10 @@ func TestWarpTopicsJobKeepsPreviousTopicsWhenWriteFails(t *testing.T) {
 	reader.topics = &failingTopicStore{LogStore: store, err: fmt.Errorf("log store unavailable")}
 	service, _ := topicTestService(t, newFakeWarpVectorStore(), reader, topicTestNaming)
 	ctx := context.Background()
-	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{{ID: "previous", Label: "Old", EmbeddingSignature: topicTestSignature()}}))
-
 	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
 	require.NoError(t, err)
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{{ID: "previous", Label: "Old", EmbeddingSignature: topicTestSignature()}}))
+
 	finalJSON, err := service.RunTopicsJob(ctx, tables.TableSidekiqJob{ID: "job-1", Metadata: metaJSON}, func(string) error { return nil })
 	require.ErrorContains(t, err, "log store unavailable")
 
@@ -1071,9 +1073,11 @@ func TestWarpTopicsJobRestoresAssignmentsWhenALaterBatchFails(t *testing.T) {
 	store := reader.topics.(logstore.LogStore)
 	service, _ := topicTestService(t, newFakeWarpVectorStore(), reader, topicTestNaming)
 	ctx := context.Background()
+	// Built once: the second run replaces topics the first wrote, which a seed
+	// run asked for afterwards would be refused.
+	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.NoError(t, err)
 	run := func(id string) (string, error) {
-		metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
-		require.NoError(t, err)
 		return service.RunTopicsJob(ctx, tables.TableSidekiqJob{ID: id, Metadata: metaJSON}, func(string) error { return nil })
 	}
 	assignments := func() map[string]string {
@@ -1085,7 +1089,7 @@ func TestWarpTopicsJobRestoresAssignmentsWhenALaterBatchFails(t *testing.T) {
 		}
 		return byLog
 	}
-	_, err := run("job-1")
+	_, err = run("job-1")
 	require.NoError(t, err)
 	// One request with no row yet, so the failed run's first batch both
 	// replaces rows and adds one.
@@ -1961,4 +1965,69 @@ func TestWarpTopicsJobAgainstLiveVectorStores(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Topics are seeded once per embedding model. From then on they are kept up
+// to date as requests are indexed - filed live, new subjects discovered from
+// the pool, the stale retired and the alike merged - and a second run would
+// only throw that away. Another model's topics, a retired topic and a theme
+// do not count: none of them is a topic this model's requests are filed under.
+func TestWarpTopicsSeedRunsOncePerEmbeddingModel(t *testing.T) {
+	service, start := topicTestService(t, newFakeWarpVectorStore(), nil, topicTestNaming)
+	store := service.topicStore()
+	ctx := context.Background()
+	centre := logstore.EncodeWarpVector([]float32{0, 0, 1})
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
+		{ID: "other-model", Label: "Other", EmbeddingSignature: "another-embedding-space", Centroid: centre},
+		{ID: "retired", Label: "Gone", EmbeddingSignature: topicTestSignature(), Status: logstore.WarpTopicStatusRetired, Centroid: centre},
+		{ID: "theme", Kind: logstore.WarpTopicKindTheme, Label: "Theme", EmbeddingSignature: topicTestSignature()},
+	}))
+	metaJSON, err := service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.NoError(t, err, "nothing is filed under this model's topics yet")
+	_, err = service.RunTopicsJob(ctx, tables.TableSidekiqJob{ID: "seed", Metadata: metaJSON}, func(string) error { return nil })
+	require.NoError(t, err)
+
+	_, err = service.BuildTopicsJobMeta(ctx, start, start.Add(24*time.Hour))
+	require.ErrorIs(t, err, ErrTopicsAlreadyBuilt)
+}
+
+// A seed run clusters the vectors already indexed, so before any exist there
+// is nothing for it to do: the settings page asks for a backfill first. Only
+// Warp's own vectors count, and a store that cannot answer says so rather
+// than reading as empty.
+func TestWarpHasIndexedRequests(t *testing.T) {
+	service, _ := topicTestService(t, newFakeWarpVectorStore(), nil, topicTestNaming)
+	indexed, err := service.HasIndexedRequests(context.Background())
+	require.NoError(t, err)
+	require.True(t, indexed)
+
+	vectors := newFakeWarpVectorStore()
+	require.NoError(t, vectors.Add(context.Background(), schemas.WarpDefaultLogVectorStoreNamespace, "not-warps", []float32{1, 0, 0}, map[string]interface{}{"log_id": "x"}))
+	empty := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(vectors))
+	t.Cleanup(empty.Shutdown)
+	indexed, err = empty.HasIndexedRequests(context.Background())
+	require.NoError(t, err)
+	require.False(t, indexed, "another owner's entry is not an indexed request")
+
+	// A store that does not apply the filter can fill the first page with
+	// entries that are not Warp's. A log vector past it still counts.
+	for index := range 2 * topicsIndexedProbePage {
+		require.NoError(t, vectors.Add(context.Background(), schemas.WarpDefaultLogVectorStoreNamespace, fmt.Sprintf("a-other-%03d", index), []float32{1, 0, 0}, map[string]interface{}{"log_id": "x"}))
+	}
+	require.NoError(t, vectors.Add(context.Background(), schemas.WarpDefaultLogVectorStoreNamespace, "z-log", []float32{1, 0, 0}, map[string]interface{}{"log_id": "z", "warp_log": true}))
+	indexed, err = empty.HasIndexedRequests(context.Background())
+	require.NoError(t, err)
+	require.True(t, indexed, "a Warp log vector past the first page is found")
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = empty.HasIndexedRequests(cancelled)
+	require.ErrorIs(t, err, context.Canceled)
+
+	forgetful := newFakeWarpVectorStore()
+	forgetful.strict = true
+	unknown := NewService(nil, WithConfigStore(&recordingStore{row: validWarpConfigRow()}), WithVectorStore(forgetful))
+	t.Cleanup(unknown.Shutdown)
+	_, err = unknown.HasIndexedRequests(context.Background())
+	require.Error(t, err)
 }

@@ -182,8 +182,9 @@ func (s *Service) BuildBackfillJobMeta(ctx context.Context, start, end time.Time
 	return marshalBackfillMeta(meta)
 }
 
-// BackfillMatchesConfig reports whether a backfill job's checkpoint was frozen
-// against the embedding space the deployment is configured with now.
+// BackfillMatchesConfig reports whether a backfill or topics job was frozen
+// against the embedding space the deployment is configured with now. Both
+// carry the same metadata, signature included.
 //
 // A finished job is only the current state of the index while the space it
 // ran under is still the configured one: after the embedding model, dimension

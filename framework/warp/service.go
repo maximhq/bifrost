@@ -24,6 +24,10 @@ var (
 	// ErrInvalidConfig wraps every validation failure from SaveConfig, so a
 	// caller can map the whole family to one status without matching text.
 	ErrInvalidConfig = errors.New("warp: invalid configuration")
+	// ErrTopicsAlreadyBuilt refuses a seed run for an embedding model that
+	// already has topics: from there they are kept up to date as requests
+	// are indexed, and a run would only replace them.
+	ErrTopicsAlreadyBuilt = errors.New("warp: topics are already built for this embedding model")
 	// ErrNoVectorStore means Warp's required semantic index has no backend.
 	ErrNoVectorStore = errors.New("warp: vector store is not connected")
 )
@@ -84,6 +88,9 @@ type Service struct {
 	upkeepStopOnce sync.Once
 	stopUpkeep     chan struct{}
 	topicJobs      TopicJobQueue
+	// topicsAdmitMu admits jobs to TopicsJobPartition one at a time (see
+	// LockTopicsJobAdmission).
+	topicsAdmitMu sync.Mutex
 	// catalog prices Warp's own usage. Nil is supported: the panel then reports
 	// tokens without a cost, rather than reporting a cost of zero.
 	catalog     *modelcatalog.ModelCatalog

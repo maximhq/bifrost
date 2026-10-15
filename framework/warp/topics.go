@@ -24,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
+	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
 // Topic clusters.
@@ -993,12 +994,76 @@ func (s *Service) BuildTopicsJobMeta(ctx context.Context, start, end time.Time) 
 	if !end.After(start) {
 		return "", fmt.Errorf("%w: end_time must be after start_time", ErrInvalidConfig)
 	}
+	// A run seeds the topics for an embedding model, once. After that they
+	// are kept up to date as requests are indexed: each is filed under its
+	// topic, what matches none is discovered from the pool, and upkeep retires
+	// the stale and merges the alike. A second run would replace all of that
+	// with one window's clustering. Should upkeep ever retire every topic, the
+	// model is back to having none and can be seeded again.
+	signature := embeddingConfigSignature(config)
+	seeded, err := s.topicStore().ListWarpTopics(ctx, logstore.WarpTopicFilter{
+		Kinds: []string{logstore.WarpTopicKindTopic}, Statuses: []string{logstore.WarpTopicStatusActive}, EmbeddingSignature: signature, OmitCentroids: true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("read topics: %w", err)
+	}
+	if len(seeded) > 0 {
+		return "", fmt.Errorf("%w: %d topic(s) are kept up to date as requests are indexed", ErrTopicsAlreadyBuilt, len(seeded))
+	}
 	return marshalBackfillMeta(BackfillJobMeta{
 		StartTime:       start.UTC(),
 		EndTime:         end.UTC(),
-		ConfigSignature: embeddingConfigSignature(config),
+		ConfigSignature: signature,
 		Namespace:       config.EffectiveLogVectorStoreNamespace(),
 	})
+}
+
+// topicsIndexedProbePage is how many vectors HasIndexedRequests reads per page.
+const topicsIndexedProbePage = 100
+
+// HasIndexedRequests reports whether the configured namespace holds any of
+// Warp's log vectors, for the settings page to ask for a backfill before a
+// seed run that would have nothing to cluster.
+//
+// Small pages are read until one holds a Warp log vector or the namespace runs
+// out. A store that applies the filter answers on the first; one that does not
+// can fill a page with other entries, which is why warp_log is checked on what
+// comes back, as the topics run checks it, and the next page read. An error is
+// returned as one, not as "nothing indexed": a store that cannot say must not
+// lock the seed run away on a guess.
+func (s *Service) HasIndexedRequests(ctx context.Context) (bool, error) {
+	s.mu.RLock()
+	vectors := s.vectorStore
+	s.mu.RUnlock()
+	if vectors == nil {
+		return false, ErrNoVectorStore
+	}
+	config, err := s.Config(ctx)
+	if err != nil {
+		return false, err
+	}
+	namespace := config.EffectiveLogVectorStoreNamespace()
+	isLog := []vectorstore.Query{{Field: "warp_log", Operator: vectorstore.QueryOperatorEqual, Value: true}}
+	var cursor *string
+	for {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		results, next, err := vectors.GetAll(ctx, namespace, isLog, []string{"log_id", "warp_log"}, cursor, topicsIndexedProbePage)
+		if err != nil {
+			return false, fmt.Errorf("read log vectors: %w", err)
+		}
+		for _, result := range results {
+			if propertyBool(result.Properties["warp_log"]) {
+				return true, nil
+			}
+		}
+		// A cursor that does not move would read the same page forever.
+		if len(results) == 0 || next == nil || *next == "" || (cursor != nil && *next == *cursor) {
+			return false, nil
+		}
+		cursor = next
+	}
 }
 
 // topicVector is one indexed request as the clustering sees it. The

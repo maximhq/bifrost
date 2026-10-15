@@ -145,6 +145,14 @@ WarpConfig:
       minimum: 1
       maximum: 25
       default: 10
+    topic_discovery_min_requests:
+      type: integer
+      minimum: 10
+      maximum: 20000
+      default: 100
+      description: |
+        How many requests that matched no topic have to be waiting before an
+        hourly pass clusters them into new topics.
     vector_store_connected:
       type: boolean
       readOnly: true
@@ -163,6 +171,7 @@ WarpConfig:
     - log_vector_store_namespace
     - semantic_search_threshold
     - semantic_search_limit
+    - topic_discovery_min_requests
     - vector_store_connected
 
 WarpConfigInput:
@@ -302,6 +311,17 @@ WarpConfigInput:
       maximum: 25
       default: 10
       description: Zero means "use the default", resolved before validation.
+    topic_discovery_min_requests:
+      type: integer
+      oneOf:
+        - const: 0
+        - minimum: 10
+          maximum: 20000
+      description: |
+        How many requests that matched no topic have to be waiting before an
+        hourly pass clusters them into new topics, from 10 to 20000. Omitted
+        keeps the stored value; zero means "use the default", resolved before
+        validation. 1 to 9 are refused.
 
 WarpUnavailable:
   type: object
@@ -641,6 +661,12 @@ WarpLogIndexStatus:
       allOf:
         - $ref: '#/WarpTopicHealth'
       description: How live topic filing is doing, when the index is usable and the log store keeps topics.
+    has_indexed_requests:
+      type: boolean
+      description: |
+        Whether the configured namespace holds any indexed request to seed
+        topics from. Present only while the embedding model has no active
+        topics, and absent when the vector store cannot say.
   required: [state, vector_store_connected, embedding_configured]
 
 WarpTopicHealth:

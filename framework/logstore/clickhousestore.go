@@ -888,7 +888,8 @@ func (s *ClickHouseLogStore) DeleteLogsBatch(ctx context.Context, cutoff time.Ti
 }
 
 // DeleteLog deletes a log entry by id with a lightweight delete, and with it
-// what Warp's topic tables hold about it.
+// what Warp's topic tables hold about it. There is no transaction to put the
+// two in, so a cleanup that fails after the log went is ErrLogsDeletedPartially.
 func (s *ClickHouseLogStore) DeleteLog(ctx context.Context, id string) error {
 	if err := s.chLightweightDelete(ctx, "logs", "id = ?", id); err != nil {
 		return err
@@ -897,7 +898,7 @@ func (s *ClickHouseLogStore) DeleteLog(ctx context.Context, id string) error {
 }
 
 // DeleteLogs deletes multiple log entries by id with one lightweight delete,
-// and with them what Warp's topic tables hold about them.
+// and with them what Warp's topic tables hold about them. See DeleteLog.
 func (s *ClickHouseLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
@@ -909,8 +910,16 @@ func (s *ClickHouseLogStore) DeleteLogs(ctx context.Context, ids []string) error
 }
 
 // deleteWarpTopicRowsForLogs is the lightweight-delete form of the RDB
-// store's.
+// store's. It runs once the logs are gone, so its failures are
+// ErrLogsDeletedPartially.
 func (s *ClickHouseLogStore) deleteWarpTopicRowsForLogs(ctx context.Context, ids []string) error {
+	if err := s.deleteWarpTopicRowsForLogsChunked(ctx, ids); err != nil {
+		return fmt.Errorf("%w: %w", ErrLogsDeletedPartially, err)
+	}
+	return nil
+}
+
+func (s *ClickHouseLogStore) deleteWarpTopicRowsForLogsChunked(ctx context.Context, ids []string) error {
 	for chunk := range slices.Chunk(ids, chWarpTopicDeleteChunk) {
 		if err := s.chLightweightDelete(ctx, "warp_topic_assignments", "log_id IN ?", chunk); err != nil {
 			return err
