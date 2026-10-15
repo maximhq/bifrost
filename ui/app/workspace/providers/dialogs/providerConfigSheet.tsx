@@ -7,13 +7,13 @@ import { useEffect, useMemo, useState } from "react";
 import {
 	ApiStructureFormFragment,
 	BetaHeadersFormFragment,
-	isTypesafeBased,
 	GovernanceFormFragment,
 	InjectedToolsFormFragment,
 	OpenAIConfigFormFragment,
 	PricingFormFragment,
 	ProxyFormFragment,
 } from "../fragments";
+import { isTypesafeBased } from "../fragments/betaHeadersFormFragment";
 import { DebuggingFormFragment } from "../fragments/debuggingFormFragment";
 import { PromptCacheFormFragment } from "../fragments/promptCacheFormFragment";
 import { NetworkFormFragment } from "../fragments/networkFormFragment";

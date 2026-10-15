@@ -5621,7 +5621,7 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 				continue
 			case schemas.DecisionInputPartTypeText:
 				if part.Text != nil {
-					items = append(items, DecisionTextString(part.Text))
+					items = append(items, *part.Text)
 				}
 			}
 			parts = append(parts, part)

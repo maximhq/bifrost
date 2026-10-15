@@ -1,5 +1,5 @@
 export { AllowedRequestsFields } from "./allowedRequestsFields";
-export { BetaHeadersFormFragment, isTypesafeBased } from "./betaHeadersFormFragment";
+export { BetaHeadersFormFragment } from "./betaHeadersFormFragment";
 export { ApiKeyFormFragment } from "./apiKeysFormFragment";
 export { ApiStructureFormFragment } from "./apiStructureFormFragment";
 export { DebuggingFormFragment } from "./debuggingFormFragment";
