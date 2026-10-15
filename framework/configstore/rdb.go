@@ -9939,6 +9939,102 @@ func (s *RDBConfigStore) GetOAuth2ClientByClientID(ctx context.Context, clientID
 	return &c, nil
 }
 
+// --- OAuth2 Managed Clients (jwt-bearer / ID-JAG) ---
+
+// ListOAuth2ManagedClients returns every managed client, newest first.
+func (s *RDBConfigStore) ListOAuth2ManagedClients(ctx context.Context) ([]tables.TableOAuth2ManagedClient, error) {
+	var clients []tables.TableOAuth2ManagedClient
+	if err := s.DB().WithContext(ctx).Order("created_at DESC").Find(&clients).Error; err != nil {
+		return nil, fmt.Errorf("list oauth2 managed clients: %w", err)
+	}
+	return clients, nil
+}
+
+// GetOAuth2ManagedClientByID returns the managed client with the given row ID.
+func (s *RDBConfigStore) GetOAuth2ManagedClientByID(ctx context.Context, id string) (*tables.TableOAuth2ManagedClient, error) {
+	var c tables.TableOAuth2ManagedClient
+	err := s.DB().WithContext(ctx).Where("id = ?", id).First(&c).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 managed client: %w", err)
+	}
+	return &c, nil
+}
+
+// GetOAuth2ManagedClientByClientID looks a client up through its client_id hash.
+func (s *RDBConfigStore) GetOAuth2ManagedClientByClientID(ctx context.Context, clientID string) (*tables.TableOAuth2ManagedClient, error) {
+	var c tables.TableOAuth2ManagedClient
+	err := s.DB().WithContext(ctx).Where("client_id_hash = ?", tables.ManagedClientIDHash(clientID)).First(&c).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get oauth2 managed client: %w", err)
+	}
+	return &c, nil
+}
+
+// CreateOAuth2ManagedClient persists a new managed client; a duplicate client_id returns ErrAlreadyExists.
+// The unique index on the client_id hash decides duplicates, so concurrent creates cannot race past a pre-check.
+func (s *RDBConfigStore) CreateOAuth2ManagedClient(ctx context.Context, client *tables.TableOAuth2ManagedClient) error {
+	if err := s.DB().WithContext(ctx).Create(client).Error; err != nil {
+		if isUniqueConstraintError(err) {
+			return ErrAlreadyExists
+		}
+		return fmt.Errorf("create oauth2 managed client: %w", err)
+	}
+	return nil
+}
+
+// UpdateOAuth2ManagedClient writes the patch's set fields of an existing managed client.
+func (s *RDBConfigStore) UpdateOAuth2ManagedClient(ctx context.Context, id string, patch tables.OAuth2ManagedClientPatch) error {
+	cols := map[string]any{"updated_at": time.Now()}
+	if patch.Name != nil {
+		cols["name"] = *patch.Name
+	}
+	if patch.ClientSecretHash != nil {
+		cols["client_secret_hash"] = *patch.ClientSecretHash
+	}
+	if patch.Identity != nil {
+		cols["identity"] = *patch.Identity
+	}
+	if patch.VirtualKeyID != nil {
+		cols["virtual_key_id"] = *patch.VirtualKeyID
+	}
+	if patch.Disabled != nil {
+		cols["disabled"] = *patch.Disabled
+	}
+	// UpdateColumns with a map skips hooks, so the client_id hash is never recomputed from a zero model.
+	res := s.DB().WithContext(ctx).Model(&tables.TableOAuth2ManagedClient{}).Where("id = ?", id).UpdateColumns(cols)
+	if res.Error != nil {
+		return fmt.Errorf("update oauth2 managed client: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteOAuth2ManagedClient removes a managed client; tokens it already minted expire on their own.
+func (s *RDBConfigStore) DeleteOAuth2ManagedClient(ctx context.Context, id string) error {
+	res := s.DB().WithContext(ctx).Where("id = ?", id).Delete(&tables.TableOAuth2ManagedClient{})
+	if res.Error != nil {
+		return fmt.Errorf("delete oauth2 managed client: %w", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// TouchOAuth2ManagedClientLastUsed stamps the client's last successful grant.
+func (s *RDBConfigStore) TouchOAuth2ManagedClientLastUsed(ctx context.Context, id string, usedAt time.Time) error {
+	return s.DB().WithContext(ctx).Model(&tables.TableOAuth2ManagedClient{}).Where("id = ?", id).
+		UpdateColumn("last_used_at", usedAt).Error
+}
+
 // --- OAuth2 Authorize Requests ---
 
 // CreateOAuth2AuthorizeRequest persists a new pending authorize request.

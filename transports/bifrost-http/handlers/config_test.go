@@ -1476,3 +1476,36 @@ func TestUpdateConfig_A2APrivateAllowlist(t *testing.T) {
 	require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode(), string(cleared.Response.Body()))
 	assert.Empty(t, persistedAllowlist())
 }
+
+// TestManagedAuthTrustChanged pins which managed-auth fields need an
+// authenticated admin to change: trust and provisioning, not the token TTL.
+func TestManagedAuthTrustChanged(t *testing.T) {
+	base := func() *configtables.OAuth2ServerConfig {
+		return &configtables.OAuth2ServerConfig{ManagedAuth: &configtables.ManagedAuthConfig{
+			Enabled: true, TrustedIssuer: "https://acme.okta.com", JWKSURL: "https://acme.okta.com/keys", AccessTokenTTL: 3600, ProvisionUsers: false,
+		}}
+	}
+	cases := map[string]struct {
+		mutate func(*configtables.ManagedAuthConfig)
+		want   bool
+	}{
+		"unchanged":            {mutate: func(*configtables.ManagedAuthConfig) {}},
+		"ttl only":             {mutate: func(m *configtables.ManagedAuthConfig) { m.AccessTokenTTL = 60 }},
+		"enabled":              {mutate: func(m *configtables.ManagedAuthConfig) { m.Enabled = false }, want: true},
+		"issuer":               {mutate: func(m *configtables.ManagedAuthConfig) { m.TrustedIssuer = "https://evil.example" }, want: true},
+		"jwks":                 {mutate: func(m *configtables.ManagedAuthConfig) { m.JWKSURL = "" }, want: true},
+		"provisioning enabled": {mutate: func(m *configtables.ManagedAuthConfig) { m.ProvisionUsers = true }, want: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			next := base()
+			tc.mutate(next.ManagedAuth)
+			if got := managedAuthTrustChanged(base(), next); got != tc.want {
+				t.Fatalf("managedAuthTrustChanged = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if !managedAuthTrustChanged(nil, base()) || managedAuthTrustChanged(nil, nil) {
+		t.Fatal("nil handling: adding a block is a change, nil to nil is not")
+	}
+}

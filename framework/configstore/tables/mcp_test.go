@@ -167,3 +167,27 @@ func TestTableMCPClient_OpenAPIConfigPlaintextWithoutEncryptionKey(t *testing.T)
 	assert.Contains(t, stored, "literal-secret", "without an encryption key the credentials are stored as written")
 	assert.NotEqual(t, EncryptionStatusEncrypted, raw["encryption_status"])
 }
+
+// TestManagedAuthConfigValidate pins the URL shape checks on the managed-auth
+// trust settings, including a URL that has a port but no host.
+func TestManagedAuthConfigValidate(t *testing.T) {
+	cases := map[string]struct {
+		cfg     ManagedAuthConfig
+		wantErr bool
+	}{
+		"https issuer":            {cfg: ManagedAuthConfig{Enabled: true, TrustedIssuer: "https://acme.okta.com"}},
+		"loopback http issuer":    {cfg: ManagedAuthConfig{Enabled: true, TrustedIssuer: "http://127.0.0.1:9000"}},
+		"port without host":       {cfg: ManagedAuthConfig{Enabled: true, TrustedIssuer: "https://:443"}, wantErr: true},
+		"jwks port without host":  {cfg: ManagedAuthConfig{TrustedIssuer: "https://acme.okta.com", JWKSURL: "https://:443/keys"}, wantErr: true},
+		"plain http issuer":       {cfg: ManagedAuthConfig{TrustedIssuer: "http://acme.okta.com"}, wantErr: true},
+		"enabled without issuer":  {cfg: ManagedAuthConfig{Enabled: true}, wantErr: true},
+		"disabled without issuer": {cfg: ManagedAuthConfig{}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := tc.cfg.Validate(); (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}

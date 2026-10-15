@@ -2796,6 +2796,22 @@ func TestGenerateClientConfigHash_MCPCodeModeLimits(t *testing.T) {
 	assert.NotEqual(t, withoutLimits, withLimits, "tool_manager_config.code_mode_limits must take part in the file hash")
 }
 
+// TestGenerateClientConfigHash_ManagedAuthFieldsUnambiguous checks managed-auth
+// values that differ only in where a "|" falls hash differently, so a file edit
+// moving it cannot be mistaken for no change.
+func TestGenerateClientConfigHash_ManagedAuthFieldsUnambiguous(t *testing.T) {
+	hash := func(ma *tables.ManagedAuthConfig) string {
+		h, err := (&ClientConfig{InitialPoolSize: 100, MCPServerAuthMode: tables.MCPServerAuthModeBoth,
+			OAuth2ServerConfig: &tables.OAuth2ServerConfig{ManagedAuth: ma}}).GenerateClientConfigHash()
+		require.NoError(t, err)
+		return h
+	}
+	a := hash(&tables.ManagedAuthConfig{TrustedIssuer: "https://idp.example/x|https://keys.example/k", JWKSURL: "https://new.example/keys"})
+	b := hash(&tables.ManagedAuthConfig{TrustedIssuer: "https://idp.example/x", JWKSURL: "https://keys.example/k|https://new.example/keys"})
+	assert.NotEqual(t, a, b)
+	assert.NotEqual(t, hash(&tables.ManagedAuthConfig{Enabled: true}), hash(&tables.ManagedAuthConfig{Enabled: true, ProvisionUsers: true}))
+}
+
 func TestGenerateClientConfigHash_OAuth2ServerConfigPolicyFields(t *testing.T) {
 	hash := func(oc *tables.OAuth2ServerConfig) string {
 		h, err := (&ClientConfig{InitialPoolSize: 100, MCPServerAuthMode: tables.MCPServerAuthModeBoth, OAuth2ServerConfig: oc}).GenerateClientConfigHash()

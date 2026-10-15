@@ -576,6 +576,16 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		if oc.DisableVKIdentity {
 			hash.Write([]byte("oauth2DisableVKIdentity:true"))
 		}
+		if ma := oc.ManagedAuth; ma != nil {
+			// JSON quotes each URL, so no field value can shift a boundary the way a
+			// separator-joined string could.
+			data, err := json.Marshal(ma)
+			if err != nil {
+				return "", fmt.Errorf("failed to marshal managed_auth for hashing: %w", err)
+			}
+			hash.Write([]byte("oauth2ManagedAuth:"))
+			hash.Write(data)
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil

@@ -2,6 +2,8 @@ package tables
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/encrypt"
@@ -20,6 +22,13 @@ const (
 	DefaultAuthCodeTTL    = 300 // 5 minutes
 	MaxAuthCodeTTL        = 900 // 15 minutes — hard ceiling; enforced at config save and at code issuance
 	DefaultAccessTokenTTL = 600 // 10 minutes
+
+	// Managed-auth (ID-JAG) access tokens get their own, longer default: Okta
+	// caps Cross App Access at 250 ID-JAGs per user, resource app and month,
+	// and a client may fetch a fresh ID-JAG for every token it needs.
+	DefaultManagedAuthAccessTokenTTL = 86400
+	MinManagedAuthAccessTokenTTL     = 60
+	MaxManagedAuthAccessTokenTTL     = 86400
 )
 
 const (
@@ -77,6 +86,8 @@ type OAuth2ServerConfig struct {
 	// option. Only meaningful when MCPServerAuthMode is oauth.
 	DisableVKIdentity bool `json:"disable_vk_identity,omitempty"`
 
+	ManagedAuth *ManagedAuthConfig `json:"managed_auth,omitempty"` // jwt-bearer (ID-JAG) grant settings
+
 	// Refresh tokens have no hard expiry — they are invalidated only by:
 	//   - rotation on use (each /oauth2/token refresh call issues a new token
 	//     and immediately invalidates the previous one)
@@ -86,6 +97,75 @@ type OAuth2ServerConfig struct {
 	//   - DisableVKIdentity enabled (vk-mode grants denied on refresh)
 	// No RefreshTokenTTL field exists by design — there is no timer, only
 	// explicit invalidation paths.
+}
+
+// ManagedAuthConfig configures the enterprise-managed authorization grant (MCP
+// Enterprise-Managed Authorization / Okta Cross App Access): clients present an
+// IdP-signed ID-JAG at /oauth2/token with the jwt-bearer grant and receive an
+// access token without a refresh token. TrustedIssuer is the only issuer whose
+// ID-JAGs are accepted (for Okta, the org authorization server). Clients that may
+// use the grant are registered separately (TableOAuth2ManagedClient), because the
+// IdP stamps a fixed client_id into every assertion and DCR cannot satisfy that.
+// For user-identity clients an unknown subject is refused unless ProvisionUsers
+// is set, in which case the identity resolver may create the user.
+type ManagedAuthConfig struct {
+	Enabled        bool   `json:"enabled"`
+	TrustedIssuer  string `json:"trusted_issuer,omitempty"`   // the only accepted ID-JAG iss
+	JWKSURL        string `json:"jwks_url,omitempty"`         // overrides discovery from TrustedIssuer
+	AccessTokenTTL int    `json:"access_token_ttl,omitempty"` // seconds; 0 = DefaultManagedAuthAccessTokenTTL
+
+	ProvisionUsers bool `json:"provision_users,omitempty"` // create a user for a subject with none; off by default
+}
+
+// EffectiveAccessTokenTTL returns the configured managed-auth token lifetime or its default.
+func (c *ManagedAuthConfig) EffectiveAccessTokenTTL() int {
+	if c == nil || c.AccessTokenTTL <= 0 {
+		return DefaultManagedAuthAccessTokenTTL
+	}
+	return c.AccessTokenTTL
+}
+
+// Validate checks the managed-auth settings. Disabled settings are accepted as
+// stored so an operator can stage them; enabled ones need a trusted issuer.
+func (c *ManagedAuthConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	if c.AccessTokenTTL != 0 && (c.AccessTokenTTL < MinManagedAuthAccessTokenTTL || c.AccessTokenTTL > MaxManagedAuthAccessTokenTTL) {
+		return fmt.Errorf("managed_auth.access_token_ttl must be between %d and %d seconds", MinManagedAuthAccessTokenTTL, MaxManagedAuthAccessTokenTTL)
+	}
+	if c.TrustedIssuer != "" && !isSecureIdPURL(c.TrustedIssuer) {
+		return fmt.Errorf("managed_auth.trusted_issuer must be an https URL")
+	}
+	if c.JWKSURL != "" && !isSecureIdPURL(c.JWKSURL) {
+		return fmt.Errorf("managed_auth.jwks_url must be an https URL")
+	}
+	if c.Enabled && c.TrustedIssuer == "" {
+		return fmt.Errorf("managed_auth.trusted_issuer is required when managed_auth is enabled")
+	}
+	return nil
+}
+
+// isSecureIdPURL accepts https URLs, and http only on loopback for local testing.
+func isSecureIdPURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || u.User != nil || u.Fragment != "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		host := u.Hostname()
+		ip := net.ParseIP(host)
+		return host == "localhost" || (ip != nil && ip.IsLoopback())
+	}
+	return false
+}
+
+// IsManagedAuthEnabled reports whether the jwt-bearer grant is switched on and has an issuer to trust.
+func (c *OAuth2ServerConfig) IsManagedAuthEnabled() bool {
+	return c != nil && c.ManagedAuth != nil && c.ManagedAuth.Enabled && c.ManagedAuth.TrustedIssuer != ""
 }
 
 // DefaultOAuth2ServerConfig returns sensible defaults for the AS-specific settings.
