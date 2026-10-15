@@ -116,7 +116,7 @@ TypeSafe places an image wherever its ID is written: in the input, inside a ques
 ]
 ```
 
-Here `r-cam` is the evidence, and `r-thumb` can define a choice option (`{ "value": "thumbs_up", "description": "r-thumb" }`) without becoming part of the evidence. Bifrost adds the header TypeSafe requires for images. Other providers reject a part with an `id` with a `400`. See [TypeSafe: Images and Box](/providers/supported-providers/typesafe#images-and-box).
+Here `r-cam` is the evidence, and `r-thumb` can define a choice option (`{ "value": "thumbs_up", "description": "r-thumb" }`) without becoming part of the evidence. Bifrost adds the header TypeSafe requires for images. Other providers receive the images as TypeSafe's `assets` too and accept or reject them themselves. See [TypeSafe: Images and Box](/providers/supported-providers/typesafe#images-and-box).
 
 **Structured data**: an object, sent to System One models (TypeSafe, Clef, Perplexity, Ollama, Azure, Databricks, Laya, Nimble) as is, and to OpenAI as JSON text.
 

@@ -38,9 +38,6 @@ func ToOpenAIDecisionRequest(request *schemas.BifrostDecisionRequest) (*OpenAIDe
 	if request.Input.IsEmpty() {
 		return nil, providerUtils.InvalidRequestErrorf("OpenAI decisions require an input, and this request has none")
 	}
-	if request.Input.HasAssetParts() {
-		return nil, providerUtils.DecisionAssetsUnsupportedError()
-	}
 	if partType := unsupportedOpenAIPartType(request.Input); partType != "" {
 		return nil, providerUtils.InvalidRequestErrorf("OpenAI decisions read text and image input parts, not %q", partType)
 	}

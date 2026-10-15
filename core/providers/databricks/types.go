@@ -8,6 +8,7 @@ type DatabricksDecisionRequest struct {
 	State       interface{}                          `json:"state"`
 	Questions   map[string]typesafe.TypesafeQuestion `json:"questions"`
 	Options     *DatabricksDecisionOptions           `json:"options,omitempty"`
+	Assets      map[string]typesafe.TypesafeAsset    `json:"assets,omitempty"` // images sent by reference, for ai_decide to judge
 	ExtraParams map[string]interface{}               `json:"-"`
 }
 

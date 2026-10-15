@@ -5594,9 +5594,6 @@ type DecisionImageURLBody struct {
 // image_url is rejected here; whether a URL or detail is accepted is the provider's call.
 // The input is not modified.
 func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.DecisionInput, state interface{}, err error) {
-	if input.HasAssetParts() {
-		return schemas.DecisionInput{}, nil, DecisionAssetsUnsupportedError()
-	}
 	if !hasDecisionImage(input.Messages) {
 		return input, nil, nil
 	}
@@ -5614,6 +5611,9 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 		for _, part := range message.Content.Parts {
 			switch part.Type {
 			case schemas.DecisionInputPartTypeImage:
+				if part.IsAsset() {
+					break
+				}
 				if part.ImageURL == nil || *part.ImageURL == "" {
 					return schemas.DecisionInput{}, nil, InvalidRequestErrorf("decision input carries an input_image part without an image_url")
 				}
@@ -5637,18 +5637,11 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 	return schemas.DecisionInput{Messages: messages}, items, nil
 }
 
-// DecisionAssetsUnsupportedError is the 400 for a decision whose input carries asset
-// parts (images sent by ID and placed where the ID is written), which only Typesafe
-// reads. Treating them as inline images would answer on the wrong evidence.
-func DecisionAssetsUnsupportedError() error {
-	return InvalidRequestErrorf("decision input carries input_image parts with an id, which only Typesafe reads; route the request to Typesafe")
-}
-
 // hasDecisionImage reports whether any message carries an input_image part.
 func hasDecisionImage(messages []schemas.DecisionInputMessage) bool {
 	for _, message := range messages {
 		for _, part := range message.Content.Parts {
-			if part.Type == schemas.DecisionInputPartTypeImage {
+			if part.Type == schemas.DecisionInputPartTypeImage && !part.IsAsset() {
 				return true
 			}
 		}

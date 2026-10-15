@@ -60,8 +60,8 @@ func validStructuredValue(value interface{}) bool {
 // become an option -> description map, a boolean choice keyed "true" or
 // "false", and levels an ordered array of descriptions with their labels
 // folded in. Image parts with an ID become the request's assets (see
-// typesafeAssets); only Typesafe reads them, so every other provider that sends
-// this shape rejects them before converting. Unsupported types and malformed
+// typesafeAssets), for each endpoint that receives this shape to accept or
+// reject. Unsupported types and malformed
 // criteria are rejected rather than silently approximated, and so is an inline
 // image in the input, which a systemone endpoint would read as text. Validation
 // is never stricter than the official SDKs' types: null state, null or absent

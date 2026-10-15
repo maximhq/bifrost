@@ -770,7 +770,7 @@ func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas
 		provider.client,
 		endpoint+providerUtils.GetPathFromContext(ctx, azureDecisionPath),
 		request,
-		toAzureDecisionRequest,
+		typesafe.ToTypesafeDecisionRequest,
 		authHeaders,
 		provider.networkConfig.ExtraHeaders,
 		provider.GetProviderKey(),
@@ -779,15 +779,6 @@ func (provider *AzureProvider) Decision(ctx *schemas.BifrostContext, key schemas
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		false,
 	)
-}
-
-// toAzureDecisionRequest builds the systemone body for a Microsoft decision model.
-// Images sent by reference are refused: only Typesafe reads them.
-func toAzureDecisionRequest(request *schemas.BifrostDecisionRequest) (*typesafe.TypesafeDecisionRequest, error) {
-	if request.Input.HasAssetParts() {
-		return nil, providerUtils.DecisionAssetsUnsupportedError()
-	}
-	return typesafe.ToTypesafeDecisionRequest(request)
 }
 
 // OCR is not supported by the Azure provider.

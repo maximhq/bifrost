@@ -460,37 +460,59 @@ func TestAzureDecisionSendsTypesafeBodyToSystemOne(t *testing.T) {
 // Microsoft-Decision-1: the model is text-only and answers an image part read as JSON
 // text with a 200, so the request is a local 400 instead.
 func TestAzureDecisionRejectsImageInputLocally(t *testing.T) {
-	for name, tc := range map[string]struct {
-		part    schemas.DecisionInputPart
-		wantSub string
-	}{
-		"inline image":            {schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")}, "this provider cannot read"},
-		"image sent by reference": {schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: []byte("\x89PNG\r\n\x1a\n")}, "only Typesafe reads"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			hit := false
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
-			defer server.Close()
+	hit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { hit = true }))
+	defer server.Close()
 
-			request := newAzureDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
-				Role:    "user",
-				Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{tc.part}},
-			}}})
-			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			_, bifrostErr := newAzureDecisionProvider(t).Decision(ctx, newAzureDecisionKey(server.URL), request)
-			if bifrostErr == nil {
-				t.Fatal("expected an error for an image input")
-			}
-			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
-				t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
-			}
-			if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, tc.wantSub) {
-				t.Errorf("message = %+v, want %q", bifrostErr.Error, tc.wantSub)
-			}
-			if hit {
-				t.Error("the request reached Azure")
-			}
-		})
+	request := newAzureDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
+		Role: "user",
+		Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
+		}},
+	}}})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := newAzureDecisionProvider(t).Decision(ctx, newAzureDecisionKey(server.URL), request)
+	if bifrostErr == nil {
+		t.Fatal("expected an error for an image input")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %v, want 400", bifrostErr.StatusCode)
+	}
+	if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, "this provider cannot read") {
+		t.Errorf("message = %+v, want the provider-neutral image rejection", bifrostErr.Error)
+	}
+	if hit {
+		t.Error("the request reached Azure")
+	}
+}
+
+// TestAzureDecisionForwardsAssets pins that images sent by reference reach Azure as
+// Typesafe's assets rather than being refused locally, and that Azure's own verdict
+// comes back: Microsoft-Decision-1 rejects the field today.
+func TestAzureDecisionForwardsAssets(t *testing.T) {
+	var body []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"code":"unrecognized_request_argument","message":"Unrecognized request argument supplied: assets"}}`)
+	}))
+	defer server.Close()
+
+	request := newAzureDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
+		Role: "user",
+		Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Is r-a a red square?")},
+			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: []byte("\x89PNG\r\n\x1a\n")},
+		}},
+	}}})
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := newAzureDecisionProvider(t).Decision(ctx, newAzureDecisionKey(server.URL), request)
+	if !strings.Contains(string(body), `"assets":{"r-a":{"type":"image","format":"png"`) {
+		t.Errorf("body sent to Azure = %s, want the asset", body)
+	}
+	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Message != "Unrecognized request argument supplied: assets" {
+		t.Errorf("error = %+v, want Azure's own message", bifrostErr)
 	}
 }
 

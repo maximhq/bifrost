@@ -190,12 +190,17 @@ func TestToOllamaDecisionRequest_RejectsImageWithoutURL(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestToOllamaDecisionRequest_RejectsAssetParts(t *testing.T) {
+// Images sent by reference are sent as Typesafe's assets, for Ollama to accept or
+// reject, and never as inline images.
+func TestToOllamaDecisionRequest_SendsAssets(t *testing.T) {
 	t.Parallel()
-	_, err := ollama.ToOllamaDecisionRequest(newOllamaDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
-		ollamaUserMessage(ollamaTextPart("Same as r-a?"), schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), ImageURL: schemas.Ptr("data:image/png;base64,AAAA")}),
+	native, err := ollama.ToOllamaDecisionRequest(newOllamaDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		ollamaUserMessage(ollamaTextPart("Same as r-a?"), schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: []byte("\x89PNG\r\n\x1a\n")}),
 	}}))
-	require.ErrorContains(t, err, "only Typesafe reads")
+	require.NoError(t, err)
+	require.Contains(t, native.Assets, "r-a")
+	require.Empty(t, native.Images)
+	require.Equal(t, "Same as r-a?", native.State)
 }
 
 // keep_alive and native images are Ollama's own fields, so they are lifted out

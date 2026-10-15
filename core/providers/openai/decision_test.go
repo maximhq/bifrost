@@ -131,16 +131,6 @@ func TestToOpenAIDecisionRequestRejections(t *testing.T) {
 			},
 			wantSub: `not "input_audio"`,
 		},
-		"asset part": {
-			request: &schemas.BifrostDecisionRequest{
-				Input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
-					{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Same as r-badge?")},
-					{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-badge"), ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
-				}}}}},
-				Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate}},
-			},
-			wantSub: "only Typesafe reads",
-		},
 		"unsupported type": {
 			request: &schemas.BifrostDecisionRequest{Input: text, Questions: []schemas.DecisionQuestion{{Type: "ranking"}}},
 			wantSub: "unsupported type",

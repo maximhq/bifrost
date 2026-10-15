@@ -1574,13 +1574,6 @@ func TestDatabricksDecisionRejectsLocally(t *testing.T) {
 		"serving endpoint model": {model: "databricks-claude-sonnet-4", input: schemas.DecisionInput{Text: schemas.Ptr("hi")}},
 		"empty input":            {model: "ai_decide", wantStatus: http.StatusBadRequest},
 		"image part":             {model: "ai_decide", input: image, wantStatus: http.StatusBadRequest},
-		"image sent by reference": {model: "ai_decide", input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
-			Role: "user",
-			Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
-				{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Same as r-a?")},
-				{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: []byte("\x89PNG\r\n\x1a\n")},
-			}},
-		}}}, wantStatus: http.StatusBadRequest},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1610,6 +1603,34 @@ func TestDatabricksDecisionRejectsLocally(t *testing.T) {
 // TestDatabricksDecisionPassesDatabricksErrorsThrough pins that ai_decide's own validation
 // errors reach the caller with their status, code and message, and that its response headers
 // are kept on the context for error replies too.
+// TestDatabricksDecisionForwardsAssets pins that images sent by reference reach
+// ai_decide as Typesafe's assets instead of being dropped from the body, so
+// Databricks gives its own verdict: it rejects the field today.
+func TestDatabricksDecisionForwardsAssets(t *testing.T) {
+	t.Parallel()
+	var body []byte
+	provider, server := newStubProvider(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error_code":"BAD_REQUEST","message":"Unexpected parameters: {'assets'}"}`))
+	})
+	request := newDatabricksDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
+		Role: "user",
+		Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Is r-a a red square?")},
+			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: []byte("\x89PNG\r\n\x1a\n")},
+		}},
+	}}})
+	_, bErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), newDatabricksDecisionKey(t, server), request)
+	if !strings.Contains(string(body), `"assets":{"r-a":{"type":"image","format":"png"`) {
+		t.Errorf("body sent to Databricks = %s, want the asset", body)
+	}
+	if bErr == nil || bErr.Error == nil || !strings.Contains(bErr.Error.Message, "Unexpected parameters") {
+		t.Errorf("error = %+v, want Databricks' own message", bErr)
+	}
+}
+
 func TestDatabricksDecisionPassesDatabricksErrorsThrough(t *testing.T) {
 	t.Parallel()
 
