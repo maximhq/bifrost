@@ -844,6 +844,37 @@
                     ]
                   },
                   "description": "Exact remote OAuth client callback URIs approved by the administrator. Local loopback and cursor://anysphere.cursor-mcp callbacks are permitted without entries; other remote callbacks are denied by default. A bare \"*\" entry allows any https callback; private-use scheme callbacks still need an exact entry, and partial wildcards are rejected. Maps to client.oauth2_server_config.allowed_redirect_uris."
+                },
+                "managedAuth": {
+                  "type": "object",
+                  "description": "Enterprise-managed authorization (Okta Cross App Access): accept the jwt-bearer grant with an IdP-issued ID-JAG at /oauth2/token. Managed clients are registered through the UI or /api/oauth2/managed-clients. Maps to client.oauth2_server_config.managed_auth.",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Accept ID-JAGs and advertise the grant in discovery. Requires mcpServerAuthMode 'both' or 'oauth' and trustedIssuer. Renders into enabled."
+                    },
+                    "trustedIssuer": {
+                      "type": "string",
+                      "pattern": "^$|^https://[^/?#@\\s]+([/?][^#]*)?$|^http://(localhost|127(\\.[0-9]{1,3}){3}|\\[::1\\])(:[0-9]+)?([/?][^#]*)?$",
+                      "description": "The only identity-provider issuer whose ID-JAGs are accepted; for Okta, the org authorization server. Must be https. Renders into trusted_issuer."
+                    },
+                    "jwksUrl": {
+                      "type": "string",
+                      "pattern": "^$|^https://[^/?#@\\s]+([/?][^#]*)?$|^http://(localhost|127(\\.[0-9]{1,3}){3}|\\[::1\\])(:[0-9]+)?([/?][^#]*)?$",
+                      "description": "Overrides the JWKS discovered from trustedIssuer. Must be https. Renders into jwks_url."
+                    },
+                    "accessTokenTtl": {
+                      "type": "integer",
+                      "minimum": 60,
+                      "maximum": 86400,
+                      "description": "Lifetime in seconds of tokens minted from an ID-JAG (default 86400). No refresh token is issued. Renders into access_token_ttl."
+                    },
+                    "provisionUsers": {
+                      "type": "boolean",
+                      "description": "Enterprise only: create a Bifrost user for an assertion whose subject matches none, instead of refusing it. Off by default; the new user must still resolve a role. Renders into provision_users."
+                    }
+                  },
+                  "additionalProperties": false
                 }
               },
               "additionalProperties": false
@@ -8101,9 +8132,41 @@
                 "type": "string"
               },
               "description": "Optional scopes to request on the exchanged token. Include 'offline_access' where supported so exchanges issue refresh tokens."
+            },
+            "profile": {
+              "type": "string",
+              "enum": ["", "id_jag"],
+              "description": "Empty: the identity provider issues the upstream token. 'id_jag': Cross App Access; the identity provider issues an ID-JAG for audience (the upstream authorization server issuer), redeemed there for the user's token. Renders into profile."
+            },
+            "resource": {
+              "type": "string",
+              "description": "id_jag only: resource indicator sent to the identity provider; set it only when the IdP connection defines one (Okta rejects an unexpected resource). Omitted when empty. Renders into resource."
+            },
+            "resourceTokenEndpoint": {
+              "type": "string",
+              "pattern": "^$|^https://[^/?#@\\s]+([/?#].*)?$|^http://(localhost|127(\\.[0-9]{1,3}){3}|\\[::1\\])(:[0-9]+)?([/?#].*)?$",
+              "description": "id_jag only: the upstream authorization server token endpoint; discovered from the MCP server when empty. Renders into resource_token_endpoint."
+            },
+            "resourceClientId": {
+              "type": "string",
+              "minLength": 1,
+              "description": "id_jag only, required: Bifrost's client ID at the upstream authorization server. Can use env./vault. prefix. Renders into resource_client_id."
+            },
+            "resourceClientSecret": {
+              "type": "string",
+              "description": "id_jag only: secret for resourceClientId; omit for a public client. Can use env./vault. prefix. Renders into resource_client_secret."
             }
           },
           "required": ["audience"],
+          "allOf": [
+            {
+              "if": {
+                "properties": { "profile": { "const": "id_jag" } },
+                "required": ["profile"]
+              },
+              "then": { "required": ["resourceClientId"] }
+            }
+          ],
           "additionalProperties": false
         },
         "oauthConfigId": {

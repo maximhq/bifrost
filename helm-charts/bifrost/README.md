@@ -4,13 +4,15 @@
 
 Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost) - a high-performance AI gateway with unified interface for multiple providers.
 
-**Latest Version:** 2.1.45
+**Latest Version:** 2.1.46
 
 ## Changelog
 
 ### Upcoming
 
 - Configurable request-body buffer pool limit via `bifrost.server.bodyBufferPoolLimitBytes`. Maps to `server.body_buffer_pool_limit_bytes` in config.json. Keep-alive connections free request-body buffers larger than this after each request instead of holding the largest body they ever read (default 4 MiB when unset; `0` means unlimited, the old behaviour).
+- Added `bifrost.client.oauth2ServerConfig.managedAuth` (`enabled`, `trustedIssuer`, `jwksUrl`, `accessTokenTtl`, `provisionUsers`), rendered as `client.oauth2_server_config.managed_auth`, for enterprise-managed authorization (Okta Cross App Access): MCP clients such as Claude exchange an IdP-issued ID-JAG at `/oauth2/token` for a `/mcp` token. The chart fails to render when `enabled` is set without `trustedIssuer` or outside `mcpServerAuthMode` `both`/`oauth`, matching the startup check. `trustedIssuer` and `jwksUrl` must be `https` URLs (plain `http` only on a loopback host), and chart validation rejects other values. Managed clients are registered in the UI or API, not in values.
+- Added the Cross App Access fields to `bifrost.mcp.clientConfigs[].tokenExchange`: `profile` (`id_jag`), `resource`, `resourceTokenEndpoint`, `resourceClientId` and `resourceClientSecret`, rendered into `token_exchange.profile`, `resource`, `resource_token_endpoint`, `resource_client_id` and `resource_client_secret`. `resourceClientId` is required when `profile` is `id_jag`. `resourceTokenEndpoint` follows the same `https`-or-loopback rule.
 
 ### 2.1.45
 

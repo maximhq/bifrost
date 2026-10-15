@@ -1,0 +1,13 @@
+---
+title: "v2.1.46"
+description: "Helm v2.1.46 changelog - 2026-10-15"
+---
+
+<Update label="Bifrost Helm" description="v2.1.46">
+
+## Changelog
+
+- Added `bifrost.client.oauth2ServerConfig.managedAuth` (`enabled`, `trustedIssuer`, `jwksUrl`, `accessTokenTtl`, `provisionUsers`), rendered as `client.oauth2_server_config.managed_auth`, for enterprise-managed authorization (Okta Cross App Access): MCP clients such as Claude exchange an IdP-issued ID-JAG at `/oauth2/token` for a `/mcp` token. The chart fails to render when `enabled` is set without `trustedIssuer` or outside `mcpServerAuthMode` `both`/`oauth`, matching the startup check. `trustedIssuer` and `jwksUrl` must be `https` URLs (plain `http` only on a loopback host), and chart validation rejects other values. Managed clients are registered in the UI or API, not in values.
+- Added the Cross App Access fields to `bifrost.mcp.clientConfigs[].tokenExchange`: `profile` (`id_jag`), `resource`, `resourceTokenEndpoint`, `resourceClientId` and `resourceClientSecret`, rendered into `token_exchange.profile`, `resource`, `resource_token_endpoint`, `resource_client_id` and `resource_client_secret`. `resourceClientId` is required when `profile` is `id_jag`. `resourceTokenEndpoint` follows the same `https`-or-loopback rule.
+
+</Update>

@@ -491,6 +491,19 @@ false
 {{- with .Values.bifrost.client.oauth2ServerConfig.accessTokenTtl }}{{- $_ := set $oauth2 "access_token_ttl" (. | int) }}{{- end }}
 {{- if hasKey .Values.bifrost.client.oauth2ServerConfig "disableVkIdentity" }}{{- $_ := set $oauth2 "disable_vk_identity" .Values.bifrost.client.oauth2ServerConfig.disableVkIdentity }}{{- end }}
 {{- if hasKey .Values.bifrost.client.oauth2ServerConfig "allowedRedirectUris" }}{{- $_ := set $oauth2 "allowed_redirect_uris" (default (list) .Values.bifrost.client.oauth2ServerConfig.allowedRedirectUris) }}{{- end }}
+{{- with .Values.bifrost.client.oauth2ServerConfig.managedAuth }}
+{{- $managed := dict }}
+{{- if hasKey . "enabled" }}{{- $_ := set $managed "enabled" .enabled }}{{- end }}
+{{- with .trustedIssuer }}{{- $_ := set $managed "trusted_issuer" . }}{{- end }}
+{{- with .jwksUrl }}{{- $_ := set $managed "jwks_url" . }}{{- end }}
+{{- with .accessTokenTtl }}{{- $_ := set $managed "access_token_ttl" (. | int) }}{{- end }}
+{{- if hasKey . "provisionUsers" }}{{- $_ := set $managed "provision_users" .provisionUsers }}{{- end }}
+{{- if and .enabled (not .trustedIssuer) }}{{- fail "ERROR: bifrost.client.oauth2ServerConfig.managedAuth.trustedIssuer is required when managedAuth.enabled is true. Bifrost exits at startup without it." }}{{- end }}
+{{- if $managed }}{{- $_ := set $oauth2 "managed_auth" $managed }}{{- end }}
+{{- end }}
+{{- if and .Values.bifrost.client.oauth2ServerConfig.managedAuth .Values.bifrost.client.oauth2ServerConfig.managedAuth.enabled }}
+{{- if not (or (eq (.Values.bifrost.client.mcpServerAuthMode | default "headers") "oauth") (eq (.Values.bifrost.client.mcpServerAuthMode | default "headers") "both")) }}{{- fail "ERROR: bifrost.client.oauth2ServerConfig.managedAuth.enabled requires bifrost.client.mcpServerAuthMode 'both' or 'oauth'. Bifrost exits at startup otherwise." }}{{- end }}
+{{- end }}
 {{- if $oauth2 }}{{- $_ := set $client "oauth2_server_config" $oauth2 }}{{- end }}
 {{- end }}
 {{- $_ := set $config "client" $client }}
@@ -1468,6 +1481,11 @@ false
 {{- with $client.tokenExchange.clientSecret }}{{- $_ := set $te "client_secret" . }}{{- end }}
 {{- with $client.tokenExchange.authorizationServerUrl }}{{- $_ := set $te "authorization_server_url" . }}{{- end }}
 {{- with $client.tokenExchange.scopes }}{{- $_ := set $te "scopes" . }}{{- end }}
+{{- with $client.tokenExchange.profile }}{{- $_ := set $te "profile" . }}{{- end }}
+{{- with $client.tokenExchange.resource }}{{- $_ := set $te "resource" . }}{{- end }}
+{{- with $client.tokenExchange.resourceTokenEndpoint }}{{- $_ := set $te "resource_token_endpoint" . }}{{- end }}
+{{- with $client.tokenExchange.resourceClientId }}{{- $_ := set $te "resource_client_id" . }}{{- end }}
+{{- with $client.tokenExchange.resourceClientSecret }}{{- $_ := set $te "resource_client_secret" . }}{{- end }}
 {{- $_ := set $cc "token_exchange" $te }}
 {{- end }}
 {{- if hasKey $client "isPingAvailable" }}

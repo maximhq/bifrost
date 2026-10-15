@@ -374,6 +374,15 @@ bifrost:
     #   accessTokenTtl: 600       # Issued JWT lifetime in seconds (default 600)
     #   disableVkIdentity: false  # Only valid when mcpServerAuthMode is "oauth"
     #   allowedRedirectUris: []   # Exact remote OAuth client callback URIs to allow (loopback and Cursor callbacks need no entry); "*" allows any https callback
+    #   # Enterprise-managed authorization (Okta Cross App Access): MCP clients such as Claude exchange an
+    #   # IdP-signed ID-JAG at /oauth2/token (jwt-bearer grant) for a /mcp token, with no consent screen.
+    #   # Clients allowed to do this are registered in the UI or via /api/oauth2/managed-clients, not here.
+    #   managedAuth:
+    #     enabled: false                 # requires mcpServerAuthMode "both" or "oauth" and trustedIssuer
+    #     trustedIssuer: "https://acme.okta.com"  # the only accepted ID-JAG issuer; for Okta, the org authorization server
+    #     jwksUrl: ""                    # optional; overrides the keys discovered from trustedIssuer
+    #     accessTokenTtl: 86400          # seconds (60-86400); no refresh token is issued
+    #     provisionUsers: false          # Enterprise: create a user for a subject with none (off by default)
 
   # Server configuration
   server:
@@ -648,6 +657,23 @@ bifrost:
       #     clientSecret: "env.MY_EXCHANGE_CLIENT_SECRET"  # omit for public clients
       #     authorizationServerUrl: ""                   # optional — override exchange endpoint (e.g. Okta custom AS)
       #     scopes: []                                   # optional; include 'offline_access' for refresh tokens
+      #
+      # - name: "example-cross-app-access-mcp"
+      #   connectionType: "http"
+      #   httpConfig:
+      #     url: "https://mcp.linear.app/mcp"
+      #   # Cross App Access (Okta XAA, Enterprise builds only): Bifrost exchanges the user's SSO token for an
+      #   # ID-JAG addressed to the upstream authorization server, which redeems it for the user's own token.
+      #   authType: "token_exchange"
+      #   tokenExchange:
+      #     profile: "id_jag"
+      #     audience: "https://mcp.linear.app"            # upstream authorization server issuer
+      #     useIdpCredentials: true                       # Okta accepts the user's token only from the SSO app
+      #     scopes: ["read"]
+      #     resourceClientId: "env.LINEAR_XAA_CLIENT_ID"  # required: Bifrost's client at the upstream authorization server
+      #     resourceClientSecret: "env.LINEAR_XAA_CLIENT_SECRET"  # omit for a public client
+      #     resourceTokenEndpoint: ""                     # optional; discovered from the MCP server when empty
+      #     resource: ""                                  # optional; only if the IdP connection defines a resource indicator
       # - name: "example-per-user-headers-mcp"
       #   connectionType: "http"
       #   httpConfig:
