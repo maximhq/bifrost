@@ -1116,17 +1116,19 @@ bifrost:
       #   description: "Route GPT requests to Azure"
       #   enabled: true
       #   cel_expression: "model.startsWith('gpt-')"
+      #   chain_rule: false         # true re-evaluates the routing chain after this rule matches
       #   targets:
       #     - provider: "azure"
-      #       model: ""              # Empty means use original model
-      #       provider_key_name: ""  # Optional provider key name (resolved to internal key_id at load time)
-      #       weight: 1.0
+      #       # model: "gpt-4o"     # Omit to keep the incoming model
+      #       # provider_key_name: "azure-eu"  # Optional: pin a key by name (resolved to its key_id at load time)
+      #       # key_id: "<key-id>"  # Optional: pin a key by ID instead; never together with provider_key_name
+      #       weight: 1.0           # Weights across targets must sum to 1
       #       ttft_timeout_ms: 5000  # Optional: cut off a streaming attempt with no first token in 5s and run the next fallback
-      #   fallbacks: ["openai"]     # "provider/model" strings, or objects that pin a key:
+      #   fallbacks: ["openai/", "anthropic/claude-sonnet-4-5"]  # "provider/" keeps the incoming model; name one a provider lacks
       #   # fallbacks: [{ provider: "azure", model: "gpt-4o", provider_key_name: "azure-eu" }]
-      #   scope: "global"           # Options: global, team, customer, virtual_key
-      #   scope_id: ""              # Required for non-global scopes
-      #   priority: 0               # Lower = evaluated first
+      #   scope: "global"           # Options: global, team, customer, virtual_key (user-scoped rules are API/UI only)
+      #   # scope_id: "team-1"      # Required for team, customer, virtual_key: the entity's ID, not its name
+      #   priority: 0               # Lower = evaluated first. Must be unique within a scope
     pricingOverrides: []
       # - id: "override-1"
       #   name: "Provider key pricing override"
@@ -1460,14 +1462,17 @@ bifrost:
 
   # Load balancer configuration for intelligent request routing
   loadBalancer:
-    enabled: false
+    enabled: false   # Renders load_balancer_config from the keys below (Enterprise); they apply only when this is true.
+                     # Adaptive routing runs either way: to turn it off, set this to true and directionSelectionEnabled / routeSelectionEnabled to false.
     # directionSelectionEnabled: true   # Enable adaptive provider selection. Defaults to true; omit to leave on.
     # routeSelectionEnabled: true       # Enable adaptive per-key (route) selection. Defaults to true; omit to leave on.
     # appendFallbacksToPinned: false    # When a request already carries a provider, append the healthy providers eligible for its model as fallbacks behind any it configured. Defaults to false.
     # rerouteFailedDirections: false    # Re-route to a healthy provider when a pinned direction is unhealthy. Defaults to false.
     # pruneFailedFallbacks: false       # Drop unhealthy directions from a request's configured fallbacks. Defaults to false.
-    trackerConfig: {}
-    bootstrap: {}
+    # rerouteTarget: pool               # Where rerouteFailedDirections sends the request: "pool" (default) or "fallbacks".
+    # historyEnabled: true              # Record routing history. Defaults to true.
+    # historyRetentionDays: 7           # Days of routing history to keep (1 to 30). Read at startup. Defaults to 7.
+    # snapshotPersistIntervalSeconds: 300  # How often routing state is saved, in seconds (5 to 86400). Defaults to 300.
 
   # Guardrails configuration for content moderation and policy enforcement
   guardrails:

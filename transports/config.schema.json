@@ -5726,11 +5726,12 @@
       "additionalProperties": false
     },
     "routing_fallback": {
-      "description": "A fallback in a routing rule's chain. Either the 'provider/model' string ('provider/' keeps the incoming model), or an object that additionally pins a provider key.",
+      "description": "A fallback in a routing rule's chain. Either the 'provider/model' string ('provider/' keeps the incoming model), or an object that additionally pins a provider key. A string must start with a provider and a slash: a bare provider name such as 'openai' names no provider and is skipped at request time.",
       "oneOf": [
         {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "^[^/]+/"
         },
         {
           "type": "object",
@@ -5749,11 +5750,22 @@
               "type": "string",
               "minLength": 1,
               "description": "Optional provider key name. Resolved to internal key_id at config load time. Requires provider."
+            },
+            "key_id": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Optional provider key ID to pin for this fallback. Not together with provider_key_name."
             }
           },
           "required": [
             "provider"
           ],
+          "not": {
+            "required": [
+              "key_id",
+              "provider_key_name"
+            ]
+          },
           "additionalProperties": false
         }
       ]
@@ -5777,6 +5789,11 @@
           "minLength": 1,
           "description": "Optional provider key name. Resolved to internal key_id at config load time. Requires provider."
         },
+        "key_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional provider key ID to pin for this target. Requires provider. Not together with provider_key_name."
+        },
         "weight": {
           "type": "number",
           "description": "Probability weight for this target (must be > 0). All weights in a rule must sum to 1",
@@ -5793,6 +5810,20 @@
       "required": [
         "weight"
       ],
+      "dependentRequired": {
+        "key_id": [
+          "provider"
+        ],
+        "provider_key_name": [
+          "provider"
+        ]
+      },
+      "not": {
+        "required": [
+          "key_id",
+          "provider_key_name"
+        ]
+      },
       "additionalProperties": false
     },
     "routing_rule": {
@@ -5850,16 +5881,19 @@
             "customer",
             "virtual_key"
           ],
-          "description": "Rule scope level",
+          "description": "Rule scope level. User-scoped rules can be created through the API and UI only: config.json does not support them, and a user-scoped rule in it is dropped at load with a warning.",
           "default": "global"
         },
         "scope_id": {
-          "type": "string",
-          "description": "Entity ID for non-global scopes (required for non-global scope)"
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ID (not name) of the team, customer or virtual key. Required for non-global scopes; ignored for global. A new rule whose scope_id does not resolve is dropped at load with a warning; an edit that does not resolve keeps the stored rule, if the stored rule's own scope still resolves, and is dropped otherwise."
         },
         "priority": {
           "type": "integer",
-          "description": "Evaluation priority within scope (lower = earlier)",
+          "description": "Evaluation order within the rule's scope (scope plus scope_id); lower runs first. Must be unique within that scope, counting disabled rules and rules created in the UI or API. Defaults to 0, so two rules in one scope that both omit priority collide, and Bifrost exits at startup with 'routing rule with priority 0 already exists for scope ...'. Give every rule that shares a scope its own priority.",
           "default": 0
         },
         "query": {
@@ -10969,58 +11003,62 @@
     },
     "load_balancer_config": {
       "type": "object",
-      "description": "Load balancer configuration for intelligent request routing",
+      "description": "Adaptive routing settings (Enterprise). Only the keys listed are applied; omitted keys keep their defaults. Settings saved from the dashboard or API are stored in the database and take precedence over this block.",
       "properties": {
-        "enabled": {
-          "type": "boolean",
-          "description": "Whether load balancing is enabled"
-        },
         "direction_selection_enabled": {
           "type": "boolean",
+          "default": true,
           "description": "Enable adaptive provider (direction) selection. Defaults to true; omit to leave on."
         },
         "route_selection_enabled": {
           "type": "boolean",
+          "default": true,
           "description": "Enable adaptive per-key (route) selection. Defaults to true; omit to leave on."
         },
         "append_fallbacks_to_pinned": {
           "type": "boolean",
+          "default": false,
           "description": "When a request already carries a provider, append the healthy providers eligible for its model as fallbacks behind any it configured. Defaults to false."
         },
         "reroute_failed_directions": {
           "type": "boolean",
-          "description": "When a pinned provider's direction is unhealthy, re-route the request to a healthy provider. Defaults to false."
+          "default": false,
+          "description": "When a pinned provider is failing for the model, re-route the request to a healthy provider. Defaults to false."
+        },
+        "reroute_target": {
+          "type": "string",
+          "enum": [
+            "pool",
+            "fallbacks"
+          ],
+          "default": "pool",
+          "description": "Where reroute_failed_directions sends the request: 'pool' picks among the healthy providers adaptive routing scores; 'fallbacks' takes the request's first configured fallback that is not failing, and uses the pool when none is. Defaults to 'pool'."
         },
         "prune_failed_fallbacks": {
           "type": "boolean",
-          "description": "Drop unhealthy directions from a request's configured fallbacks. Defaults to false."
+          "default": false,
+          "description": "Drop providers that are failing for the model from a request's configured fallbacks. Defaults to false."
         },
-        "tracker_config": {
-          "type": "object",
-          "description": "Configuration for tracking route metrics and performance"
+        "history_enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Record routing history. Defaults to true."
         },
-        "bootstrap": {
-          "type": "object",
-          "description": "Bootstrap data for initializing load balancer with historical metrics",
-          "properties": {
-            "route_metrics": {
-              "type": "object",
-              "description": "Historical metrics per route"
-            },
-            "direction_metrics": {
-              "type": "object",
-              "description": "Historical metrics per direction"
-            },
-            "routes": {
-              "type": "object",
-              "description": "Known routes"
-            }
-          }
+        "history_retention_days": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30,
+          "default": 7,
+          "description": "Days of routing history to keep, separate from log retention. Read at startup. Out-of-range values are brought into range. Defaults to 7."
+        },
+        "snapshot_persist_interval_seconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 86400,
+          "default": 300,
+          "description": "How often routing state is saved, in seconds. Out-of-range values are brought into range. Defaults to 300."
         }
       },
-      "required": [
-        "enabled"
-      ],
       "additionalProperties": false
     },
     "guardrails_config": {
@@ -12970,18 +13008,21 @@
             "properties": {
               "name": {
                 "type": "string",
-                "description": "Unique name for this policy"
+                "minLength": 1,
+                "description": "Unique name for this policy (case-insensitive)"
               },
               "enabled": {
                 "type": "boolean",
-                "description": "Whether this policy is active. Disabled policies are ignored by all hooks."
+                "description": "Whether this policy is active. Defaults to false: a policy without enabled: true is stored but inactive."
               },
               "primary_provider": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Provider to monitor (e.g. 'azure', 'openai')"
               },
               "primary_model": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Model to monitor as it appears in requests (e.g. 'gpt-4-ptu')"
               },
               "primary_key_ids": {
@@ -12993,10 +13034,12 @@
               },
               "fallback_provider": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Provider to route to when the circuit is open"
               },
               "fallback_model": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Model to request from the fallback provider when the circuit is open"
               },
               "condition": {
@@ -13005,12 +13048,9 @@
                 "properties": {
                   "operator": {
                     "type": "string",
-                    "enum": [
-                      "OR",
-                      "AND"
-                    ],
+                    "pattern": "^\\s*([Oo][Rr]|[Aa][Nn][Dd])?\\s*$",
                     "default": "OR",
-                    "description": "OR (default): circuit opens when any signal matches. AND: circuit opens only when all signals match simultaneously."
+                    "description": "OR (default): circuit opens when any signal matches. AND: circuit opens only when all signals match simultaneously. Case-insensitive; empty means OR."
                   },
                   "signals": {
                     "type": "array",
@@ -13027,6 +13067,7 @@
                         },
                         "header_name": {
                           "type": "string",
+                          "pattern": "\\S",
                           "description": "HTTP response header name to inspect"
                         },
                         "header_value": {
@@ -13043,10 +13084,11 @@
                         "header_name"
                       ],
                       "not": {
-                        "required": [
-                          "header_value",
-                          "header_contains"
-                        ]
+                        "required": ["header_value", "header_contains"],
+                        "properties": {
+                          "header_value": { "pattern": "\\S" },
+                          "header_contains": { "pattern": "\\S" }
+                        }
                       },
                       "additionalProperties": false
                     },
@@ -13059,9 +13101,11 @@
                 "additionalProperties": false
               },
               "default_cooldown": {
-                "type": "string",
-                "pattern": "^[0-9]+(ns|us|\u00b5s|ms|s|m|h)$",
-                "description": "How long to keep the circuit open when no header-based cooldown is available. Accepts a Go duration string (e.g. '30s', '5m'). Defaults to 30s."
+                "anyOf": [
+                  { "type": "string", "pattern": "^(|0|(([0-9]+(\\.[0-9]*)?|\\.[0-9]+)(ns|us|\u00b5s|\u03bcs|ms|s|m|h))+)$" },
+                  { "type": "integer", "minimum": 0 }
+                ],
+                "description": "How long to keep the circuit open when no header-based cooldown is available. A Go duration string such as '30s', '5m' or '1m30s', or integer nanoseconds. Empty or omitted means 30s."
               },
               "cooldown_header": {
                 "type": "string",
