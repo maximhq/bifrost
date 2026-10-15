@@ -401,7 +401,7 @@ func TestClearCtxForFallback(t *testing.T) {
 	preserved := []schemas.BifrostContextKey{
 		schemas.BifrostContextKeyVirtualKey,
 		schemas.BifrostContextKeyUserID,
-// What the caller sent is the same for every attempt of the request.
+		// What the caller sent is the same for every attempt of the request.
 		schemas.BifrostContextKeyRequestedProvider,
 		schemas.BifrostContextKeyRequestedModel,
 		// Opencode affinity is resolved once in the transport so retries and
