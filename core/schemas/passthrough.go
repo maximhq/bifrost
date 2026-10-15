@@ -67,4 +67,6 @@ type PassthroughLogParams struct {
 	ParsedType   RequestType   `json:"parsed_type,omitempty"`   // typed request kind the bodies were parsed as, e.g. "chat_completion"
 	BaseProvider ModelProvider `json:"base_provider,omitempty"` // wire format of a custom provider, when it differs from the row's provider
 	ModelParams  interface{}   `json:"model_params,omitempty"`  // model parameters parsed from the request body
+
+	MultipartSummary bool `json:"multipart_summary,omitempty"` // request body logged as its form fields and file sizes, not raw
 }

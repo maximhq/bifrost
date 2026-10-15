@@ -26,6 +26,7 @@ import (
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/overhead"
+	"github.com/maximhq/bifrost/framework/passthroughparse"
 	"github.com/maximhq/bifrost/framework/streaming"
 )
 
@@ -3700,16 +3701,25 @@ func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *sch
 			VideoID: req.VideoDeleteRequest.ID,
 		}
 	case schemas.PassthroughRequest, schemas.PassthroughStreamRequest:
-		initialData.Params = &schemas.PassthroughLogParams{
+		passthroughParams := &schemas.PassthroughLogParams{
 			Method:   req.PassthroughRequest.Method,
 			Path:     req.PassthroughRequest.Path,
 			RawQuery: req.PassthroughRequest.RawQuery,
 			Model:    req.PassthroughRequest.Model,
 		}
+		initialData.Params = passthroughParams
 		if len(req.PassthroughRequest.Body) > 0 {
-			ct := strings.ToLower(req.PassthroughRequest.SafeHeaders["content-type"])
+			rawCT := req.PassthroughRequest.SafeHeaders["content-type"]
+			ct := strings.ToLower(rawCT)
 			if strings.Contains(ct, "application/json") {
 				initialData.PassthroughRequestBody = string(req.PassthroughRequest.Body)
+			} else if strings.HasPrefix(ct, "multipart/form-data") {
+				// Uploads (audio, images) are logged as their form fields plus the name and size of
+				// each file; the file bytes are never stored.
+				if summary, ok := passthroughparse.SummarizeMultipart(rawCT, req.PassthroughRequest.Body); ok {
+					initialData.PassthroughRequestBody = string(summary)
+					passthroughParams.MultipartSummary = true
+				}
 			}
 		}
 	}

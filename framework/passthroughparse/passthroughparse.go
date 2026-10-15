@@ -222,6 +222,9 @@ func parseRequest(format wireFormat, requestType schemas.RequestType, body []byt
 				return nil, err
 			}
 			return &schemas.BifrostRequest{RequestType: requestType, ImageGenerationRequest: native.ToBifrostImageGenerationRequest(ctx)}, nil
+		case schemas.TranscriptionRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
+			// Multipart uploads are logged as a SummarizeMultipart summary, not the raw body.
+			return parseOpenAIMultipartRequest(requestType, body), nil
 		}
 	case wireAnthropic:
 		switch requestType {
