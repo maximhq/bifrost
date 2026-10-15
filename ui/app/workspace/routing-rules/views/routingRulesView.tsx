@@ -47,7 +47,6 @@ export function RoutingRulesView() {
 	const {
 		data: rulesData,
 		isLoading,
-		isError,
 		error,
 		refetch,
 	} = useGetRoutingRulesQuery(
@@ -111,7 +110,7 @@ export function RoutingRulesView() {
 
 	const hasActiveFilters = debouncedSearch;
 
-	if (showLoadError(isError, rulesData)) {
+	if (showLoadError(error, rulesData)) {
 		return <LoadErrorView entity="routing rules" error={error} onRetry={() => void refetch()} testId="routing-rules-load-error" />;
 	}
 

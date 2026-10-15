@@ -75,13 +75,7 @@ export default function Providers() {
 
 	const MigrationDialog = migrationSession?.target === CLOUDFLARE_PROVIDER ? CloudflareMigrationDialog : DatabricksMigrationDialog;
 
-	const {
-		data: savedProviders,
-		isLoading: isLoadingProviders,
-		isError: isProvidersError,
-		error: providersError,
-		refetch: refetchProviders,
-	} = useGetProvidersQuery();
+	const { data: savedProviders, isLoading: isLoadingProviders, error: providersError, refetch: refetchProviders } = useGetProvidersQuery();
 	const [getProvider, { isLoading: isLoadingProvider }] = useLazyGetProviderQuery();
 	const [createProvider] = useCreateProviderMutation();
 
@@ -189,7 +183,7 @@ export default function Providers() {
 	if (isLoadingProviders) {
 		return <FullPageLoader />;
 	}
-	if (showLoadError(isProvidersError, savedProviders)) {
+	if (showLoadError(providersError, savedProviders)) {
 		return (
 			<div className="mx-auto w-full max-w-7xl">
 				<LoadErrorView entity="providers" error={providersError} onRetry={() => void refetchProviders()} testId="providers-load-error" />

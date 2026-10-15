@@ -18,7 +18,7 @@ export default function PluginsPage() {
 	const dispatch = useAppDispatch();
 	const hasCreatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Create);
 	const hasUpdatePluginAccess = useRbac(RbacResource.Plugins, RbacOperation.Update);
-	const { data: plugins, isLoading, isError, error, refetch } = useGetPluginsQuery();
+	const { data: plugins, isLoading, error, refetch } = useGetPluginsQuery();
 	const selectedPlugin = useAppSelector((state) => state.plugin.selectedPlugin);
 	const [selectedPluginId, setSelectedPluginId] = useQueryState("plugin");
 	const customPlugins = useMemo(() => plugins?.filter((plugin) => plugin.isCustom), [plugins]);
@@ -51,7 +51,7 @@ export default function PluginsPage() {
 		setSelectedPluginId(selectedPlugin?.name ?? "");
 	}, [customPlugins]);
 
-	if (showLoadError(isError, plugins)) {
+	if (showLoadError(error, plugins)) {
 		return (
 			<div className="mx-auto w-full max-w-7xl">
 				<LoadErrorView entity="plugins" error={error} onRetry={() => void refetch()} testId="plugins-load-error" />

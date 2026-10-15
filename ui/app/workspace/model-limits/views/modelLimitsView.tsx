@@ -34,7 +34,6 @@ export default function ModelLimitsView() {
 	const {
 		data: modelConfigsData,
 		error: modelConfigsError,
-		isError: isModelConfigsError,
 		isLoading: isModelConfigsLoading,
 		refetch: refetchModelConfigs,
 	} = useGetModelConfigsQuery(
@@ -79,7 +78,7 @@ export default function ModelLimitsView() {
 		return <FullPageLoader />;
 	}
 
-	if (showLoadError(isModelConfigsError, modelConfigsData)) {
+	if (showLoadError(modelConfigsError, modelConfigsData)) {
 		return (
 			<LoadErrorView
 				entity="model limits"

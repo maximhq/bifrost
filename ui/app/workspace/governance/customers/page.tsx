@@ -34,7 +34,6 @@ export default function GovernanceCustomersPage() {
 	const {
 		data: customersData,
 		error: customersError,
-		isError: isCustomersError,
 		isLoading: customersLoading,
 		refetch: refetchCustomers,
 	} = useGetCustomersQuery(
@@ -78,7 +77,7 @@ export default function GovernanceCustomersPage() {
 		return <FullPageLoader />;
 	}
 
-	if (showLoadError(isCustomersError, customersData)) {
+	if (showLoadError(customersError, customersData)) {
 		return (
 			<LoadErrorView entity="customers" error={customersError} onRetry={() => void refetchCustomers()} testId="customers-load-error" />
 		);

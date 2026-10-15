@@ -47,7 +47,6 @@ export default function GovernanceVirtualKeysPage() {
 	const {
 		data: virtualKeysData,
 		error: vkError,
-		isError: isVkError,
 		isLoading: vkLoading,
 		refetch: refetchVirtualKeys,
 	} = useGetVirtualKeysQuery(
@@ -95,7 +94,7 @@ export default function GovernanceVirtualKeysPage() {
 		return <FullPageLoader />;
 	}
 
-	if (showLoadError(isVkError, virtualKeysData)) {
+	if (showLoadError(vkError, virtualKeysData)) {
 		return (
 			<LoadErrorView entity="virtual keys" error={vkError} onRetry={() => void refetchVirtualKeys()} testId="virtual-keys-load-error" />
 		);

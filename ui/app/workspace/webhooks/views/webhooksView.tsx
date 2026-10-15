@@ -200,7 +200,7 @@ export default function WebhooksView() {
 	// a hand-edited "?offset=-25" never 400s the query and blocks recovery.
 	const offset = Math.max(0, Math.floor(urlState.offset / PAGE_SIZE) * PAGE_SIZE);
 
-	const { data, isLoading, isFetching, isError, error, refetch } = useGetWebhookEndpointsQuery(
+	const { data, isLoading, isFetching, error, refetch } = useGetWebhookEndpointsQuery(
 		{
 			search: debouncedSearch.trim() || undefined,
 			events: selectedEvents.length ? selectedEvents : undefined,
@@ -332,7 +332,7 @@ export default function WebhooksView() {
 	// invites creating an endpoint, so a hidden fetch error could prompt a
 	// duplicate. Only fatal when there is no data to fall back on; a transient
 	// poll failure over cached rows keeps rendering the list.
-	if (showLoadError(isError, data)) {
+	if (showLoadError(error, data)) {
 		return <LoadErrorView entity="webhook endpoints" error={error} onRetry={() => void refetch()} testId="webhooks-load-error" />;
 	}
 

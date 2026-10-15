@@ -92,7 +92,6 @@ export default function MCPServersPage() {
 	const {
 		data: mcpClientsData,
 		error,
-		isError,
 		isLoading,
 		refetch,
 	} = useGetMCPClientsQuery(
@@ -140,7 +139,7 @@ export default function MCPServersPage() {
 		return <FullPageLoader />;
 	}
 
-	if (showLoadError(isError && !isMCPNotConfigured(error), mcpClientsData)) {
+	if (showLoadError(isMCPNotConfigured(error) ? undefined : error, mcpClientsData)) {
 		return <LoadErrorView entity="MCP servers" error={error} onRetry={() => void refetch()} testId="mcp-servers-load-error" />;
 	}
 

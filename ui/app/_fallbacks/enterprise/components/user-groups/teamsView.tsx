@@ -35,7 +35,6 @@ export function TeamsView() {
 	const {
 		data: teamsData,
 		error: teamsError,
-		isError: isTeamsError,
 		isLoading: teamsLoading,
 		refetch: refetchTeams,
 	} = useGetTeamsQuery(
@@ -76,7 +75,7 @@ export function TeamsView() {
 		return <FullPageLoader />;
 	}
 
-	if (showLoadError(isTeamsError, teamsData)) {
+	if (showLoadError(teamsError, teamsData)) {
 		return <LoadErrorView entity="teams" error={teamsError} onRetry={() => void refetchTeams()} testId="teams-load-error" />;
 	}
 

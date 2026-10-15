@@ -108,7 +108,7 @@ export default function AgentGatewayPage() {
 		return <FullPageLoader />;
 	}
 
-	if (showLoadError(Boolean(error), data)) {
+	if (showLoadError(error, data)) {
 		return (
 			<LoadErrorView entity="agents" error={error} onRetry={() => void refetch()} testId="agents-load-error" className="h-full py-0" />
 		);
