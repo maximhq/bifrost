@@ -4,29 +4,28 @@ import "github.com/valyala/fasthttp"
 
 // DefaultBodyBufferPoolLimitBytes is the largest request-body buffer a pooled
 // fasthttp RequestCtx keeps between requests when server.body_buffer_pool_limit_bytes
-// is unset. 4 MiB keeps typical bodies on the zero-allocation reuse path while
+// is not set. 4 MiB keeps typical bodies on the zero-allocation reuse path while
 // stopping keep-alive connections from pinning their largest-ever body.
 const DefaultBodyBufferPoolLimitBytes = 4 * 1024 * 1024
 
-// BodyBufferPoolLimitDisabled turns the limit off, restoring fasthttp's default of
-// keeping every body buffer at its high-water mark.
+// BodyBufferPoolLimitDisabled is the resolved value for "no limit": fasthttp's default
+// of keeping every body buffer at its high-water mark. It is also fasthttp's own
+// "disabled" value for SetBodySizePoolLimit.
 const BodyBufferPoolLimitDisabled = -1
 
 // ResolveBodyBufferPoolLimit returns the per-buffer retention limit in bytes for the
 // given server config, or BodyBufferPoolLimitDisabled when the limit is turned off.
-// Unset (0) resolves to DefaultBodyBufferPoolLimitBytes; positive values are clamped
-// to maxRequestBodySizeBytes when that is positive, since no body buffer can grow
-// past it and a larger limit would be indistinguishable from it.
+// Not set resolves to DefaultBodyBufferPoolLimitBytes and 0 (or any negative value)
+// means unlimited. Positive values are clamped to maxRequestBodySizeBytes when that
+// is positive, since no body buffer can grow past it and a larger limit would be
+// indistinguishable from it.
 func ResolveBodyBufferPoolLimit(serverConfig *ServerConfig, maxRequestBodySizeBytes int) int {
-	limit := 0
-	if serverConfig != nil {
-		limit = serverConfig.BodyBufferPoolLimitBytes
+	limit := DefaultBodyBufferPoolLimitBytes
+	if serverConfig != nil && serverConfig.BodyBufferPoolLimitBytes != nil {
+		limit = *serverConfig.BodyBufferPoolLimitBytes
 	}
-	if limit < 0 {
+	if limit <= 0 {
 		return BodyBufferPoolLimitDisabled
-	}
-	if limit == 0 {
-		limit = DefaultBodyBufferPoolLimitBytes
 	}
 	if maxRequestBodySizeBytes > 0 && limit > maxRequestBodySizeBytes {
 		limit = maxRequestBodySizeBytes
@@ -50,7 +49,7 @@ func ApplyBodyBufferPoolLimit(serverConfig *ServerConfig, maxRequestBodySizeByte
 	limit := ResolveBodyBufferPoolLimit(serverConfig, maxRequestBodySizeBytes)
 	if limit == BodyBufferPoolLimitDisabled {
 		if logger != nil {
-			logger.Info("request body buffer pool limit disabled: pooled connections keep their largest body buffer")
+			logger.Info("request body buffer pool limit: unlimited (pooled connections keep their largest body buffer)")
 		}
 		return
 	}

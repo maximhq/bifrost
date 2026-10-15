@@ -501,7 +501,7 @@ false
 {{- if .Values.bifrost.server.readBufferSize }}
 {{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
 {{- end }}
-{{- if .Values.bifrost.server.bodyBufferPoolLimitBytes }}
+{{- if not (kindIs "invalid" .Values.bifrost.server.bodyBufferPoolLimitBytes) }}
 {{- $_ := set $server "body_buffer_pool_limit_bytes" .Values.bifrost.server.bodyBufferPoolLimitBytes }}
 {{- end }}
 {{- if .Values.bifrost.server.pluginDownloadPrivateAllowlist }}

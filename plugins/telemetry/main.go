@@ -1011,9 +1011,14 @@ func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.
 
 // acquireActiveRequest increments ActiveRequests unless this request already holds a
 // slot. The held request type lives on the shared BifrostContext, so a hook that runs
-// twice for the same in-flight attempt cannot count it twice.
+// twice for the same in-flight attempt cannot count it twice. If the held type differs,
+// the slot moves to the new label so release decrements the label that was counted.
 func (p *PrometheusPlugin) acquireActiveRequest(ctx *schemas.BifrostContext, requestType schemas.RequestType) {
-	if _, held := ctx.GetAndSetValue(activeRequestTypeKey, requestType).(schemas.RequestType); held {
+	if heldType, held := ctx.GetAndSetValue(activeRequestTypeKey, requestType).(schemas.RequestType); held {
+		if heldType != requestType {
+			p.ActiveRequests.WithLabelValues(string(heldType)).Dec()
+			p.ActiveRequests.WithLabelValues(string(requestType)).Inc()
+		}
 		return
 	}
 	p.ActiveRequests.WithLabelValues(string(requestType)).Inc()

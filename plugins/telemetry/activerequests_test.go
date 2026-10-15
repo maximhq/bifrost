@@ -146,6 +146,32 @@ func TestActiveRequestsDoublePreHookCountsOnce(t *testing.T) {
 	}
 }
 
+// TestActiveRequestsDoublePreHookDifferentTypeTransfers pins that a repeated PreLLMHook
+// with a different request type moves the held slot to the new label, so the release
+// decrements the label that was counted and neither label drifts.
+func TestActiveRequestsDoublePreHookDifferentTypeTransfers(t *testing.T) {
+	p := newTestPlugin(t)
+	ctx := newPreHookContext(t, p, schemas.ResponsesRequest)
+	if _, _, err := p.PreLLMHook(ctx, &schemas.BifrostRequest{RequestType: schemas.ResponsesStreamRequest}); err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	if got := activeGauge(p, schemas.ResponsesRequest); got != 0 {
+		t.Fatalf("held-before label gauge = %v, want 0", got)
+	}
+	if got := activeGauge(p, schemas.ResponsesStreamRequest); got != 1 {
+		t.Fatalf("held-after label gauge = %v, want 1", got)
+	}
+	if err := p.HTTPTransportPostHook(ctx, &schemas.HTTPRequest{}, &schemas.HTTPResponse{}); err != nil {
+		t.Fatalf("HTTPTransportPostHook: %v", err)
+	}
+	if got := activeGauge(p, schemas.ResponsesRequest); got != 0 {
+		t.Fatalf("after release %s gauge = %v, want 0", schemas.ResponsesRequest, got)
+	}
+	if got := activeGauge(p, schemas.ResponsesStreamRequest); got != 0 {
+		t.Fatalf("after release %s gauge = %v, want 0", schemas.ResponsesStreamRequest, got)
+	}
+}
+
 // TestActiveRequestsTransportHookWithoutLLMHooks checks requests that never reached
 // the LLM pipeline (e.g. auth failures, non-inference routes) never go negative.
 func TestActiveRequestsTransportHookWithoutLLMHooks(t *testing.T) {

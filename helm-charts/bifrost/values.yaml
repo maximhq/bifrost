@@ -379,7 +379,7 @@ bifrost:
   server:
     readBufferSize: 65536 # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
     # Largest request-body buffer a keep-alive connection keeps for reuse. Larger buffers are freed
-    # after each request (the body is still served). Unset/0 = 4 MiB default, -1 = never free (previous behaviour).
+    # after each request (the body is still served). Unset = 4 MiB default, 0 = unlimited (previous behaviour).
     # bodyBufferPoolLimitBytes: 4194304
     # Hosts/IPs/CIDRs custom plugin (.so) downloads may reach despite resolving to a private address (blocked by default to prevent SSRF).
     # pluginDownloadPrivateAllowlist:

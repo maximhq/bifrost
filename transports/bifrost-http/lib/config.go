@@ -165,9 +165,10 @@ type ServerConfig struct {
 
 	// BodyBufferPoolLimitBytes caps the request-body buffer a pooled keep-alive
 	// connection keeps between requests; larger buffers are released after each
-	// request. 0 uses DefaultBodyBufferPoolLimitBytes, -1 disables the limit. See
-	// ApplyBodyBufferPoolLimit. Deploy-time only - read from config.json at startup.
-	BodyBufferPoolLimitBytes int `json:"body_buffer_pool_limit_bytes,omitempty"`
+	// request. Not set uses DefaultBodyBufferPoolLimitBytes and 0 means unlimited, so
+	// it is a pointer to tell the two apart. See ApplyBodyBufferPoolLimit. Deploy-time
+	// only - read from config.json at startup.
+	BodyBufferPoolLimitBytes *int `json:"body_buffer_pool_limit_bytes,omitempty"`
 
 	// PluginDownloadPrivateAllowlist lists hostnames, IPs, and CIDR ranges that custom
 	// plugin (.so) downloads may reach even when they resolve to a private/loopback/

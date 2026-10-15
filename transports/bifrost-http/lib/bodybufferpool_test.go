@@ -2,6 +2,7 @@ package lib
 
 import (
 	"bytes"
+	"encoding/json"
 	"net"
 	"sync"
 	"testing"
@@ -10,7 +11,7 @@ import (
 	"github.com/valyala/fasthttp/fasthttputil"
 )
 
-// TestResolveBodyBufferPoolLimit covers default, explicit, clamped and disabled values.
+// TestResolveBodyBufferPoolLimit covers default, explicit, clamped and unlimited values.
 func TestResolveBodyBufferPoolLimit(t *testing.T) {
 	const maxBody = 100 * 1024 * 1024
 	tests := []struct {
@@ -20,17 +21,42 @@ func TestResolveBodyBufferPoolLimit(t *testing.T) {
 		want    int
 	}{
 		{name: "nil config uses default", cfg: nil, maxBody: maxBody, want: DefaultBodyBufferPoolLimitBytes},
-		{name: "unset uses default", cfg: &ServerConfig{}, maxBody: maxBody, want: DefaultBodyBufferPoolLimitBytes},
-		{name: "explicit value", cfg: &ServerConfig{BodyBufferPoolLimitBytes: 16 << 20}, maxBody: maxBody, want: 16 << 20},
-		{name: "clamped to max body size", cfg: &ServerConfig{BodyBufferPoolLimitBytes: 512 << 20}, maxBody: maxBody, want: maxBody},
+		{name: "not set uses default", cfg: &ServerConfig{}, maxBody: maxBody, want: DefaultBodyBufferPoolLimitBytes},
+		{name: "explicit value", cfg: &ServerConfig{BodyBufferPoolLimitBytes: new(16 << 20)}, maxBody: maxBody, want: 16 << 20},
+		{name: "clamped to max body size", cfg: &ServerConfig{BodyBufferPoolLimitBytes: new(512 << 20)}, maxBody: maxBody, want: maxBody},
 		{name: "default clamped to small max body size", cfg: &ServerConfig{}, maxBody: 1 << 20, want: 1 << 20},
-		{name: "no max body size leaves value", cfg: &ServerConfig{BodyBufferPoolLimitBytes: 512 << 20}, maxBody: 0, want: 512 << 20},
-		{name: "disabled", cfg: &ServerConfig{BodyBufferPoolLimitBytes: -1}, maxBody: maxBody, want: BodyBufferPoolLimitDisabled},
-		{name: "any negative disables", cfg: &ServerConfig{BodyBufferPoolLimitBytes: -42}, maxBody: maxBody, want: BodyBufferPoolLimitDisabled},
+		{name: "no max body size leaves value", cfg: &ServerConfig{BodyBufferPoolLimitBytes: new(512 << 20)}, maxBody: 0, want: 512 << 20},
+		{name: "zero is unlimited", cfg: &ServerConfig{BodyBufferPoolLimitBytes: new(0)}, maxBody: maxBody, want: BodyBufferPoolLimitDisabled},
+		{name: "negative is unlimited", cfg: &ServerConfig{BodyBufferPoolLimitBytes: new(-1)}, maxBody: maxBody, want: BodyBufferPoolLimitDisabled},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := ResolveBodyBufferPoolLimit(tt.cfg, tt.maxBody); got != tt.want {
+				t.Fatalf("ResolveBodyBufferPoolLimit() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBodyBufferPoolLimitFromConfigJSON checks that an explicit 0 in config.json
+// survives decoding as "unlimited" instead of collapsing into "not set".
+func TestBodyBufferPoolLimitFromConfigJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want int
+	}{
+		{name: "key absent", json: `{}`, want: DefaultBodyBufferPoolLimitBytes},
+		{name: "zero", json: `{"body_buffer_pool_limit_bytes": 0}`, want: BodyBufferPoolLimitDisabled},
+		{name: "explicit", json: `{"body_buffer_pool_limit_bytes": 1048576}`, want: 1 << 20},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg ServerConfig
+			if err := json.Unmarshal([]byte(tt.json), &cfg); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if got := ResolveBodyBufferPoolLimit(&cfg, 100<<20); got != tt.want {
 				t.Fatalf("ResolveBodyBufferPoolLimit() = %d, want %d", got, tt.want)
 			}
 		})
@@ -101,7 +127,7 @@ func (s *bodyCapServer) lastCap() int {
 // process-global default afterwards so other tests are unaffected.
 func withBodyBufferPoolLimit(t *testing.T, limit int) {
 	t.Helper()
-	ApplyBodyBufferPoolLimit(&ServerConfig{BodyBufferPoolLimitBytes: limit}, 256<<20)
+	ApplyBodyBufferPoolLimit(&ServerConfig{BodyBufferPoolLimitBytes: &limit}, 256<<20)
 	t.Cleanup(func() { fasthttp.SetBodySizePoolLimit(-1, -1) })
 }
 
@@ -145,16 +171,16 @@ func TestBodyBufferPoolLimitReleasesOnConnectionClose(t *testing.T) {
 	}
 }
 
-// TestBodyBufferPoolLimitDisabledKeepsLegacyBehavior pins that -1 restores
+// TestBodyBufferPoolLimitZeroKeepsLegacyBehavior pins that 0 (unlimited) restores
 // fasthttp's default of keeping the high-water-mark buffer.
-func TestBodyBufferPoolLimitDisabledKeepsLegacyBehavior(t *testing.T) {
+func TestBodyBufferPoolLimitZeroKeepsLegacyBehavior(t *testing.T) {
 	fasthttp.SetBodySizePoolLimit(-1, -1)
-	withBodyBufferPoolLimit(t, BodyBufferPoolLimitDisabled)
+	withBodyBufferPoolLimit(t, 0)
 	s := newBodyCapServer(t)
 	s.send(t, 32<<20, false)
 	s.send(t, 1024, false)
 	if got := s.lastCap(); got < 32<<20 {
-		t.Fatalf("disabled limit released buffer: cap %d, want >= 32MB", got)
+		t.Fatalf("unlimited setting released buffer: cap %d, want >= 32MB", got)
 	}
 }
 

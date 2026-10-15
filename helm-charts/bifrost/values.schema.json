@@ -862,8 +862,8 @@
             },
             "bodyBufferPoolLimitBytes": {
               "type": "integer",
-              "minimum": -1,
-              "description": "Largest request-body buffer (bytes) a keep-alive connection keeps for reuse. Larger buffers are freed after each request; bodies above it are still served. 0 or unset uses the 4 MiB default, -1 disables the limit. Renders into server.body_buffer_pool_limit_bytes.",
+              "minimum": 0,
+              "description": "Largest request-body buffer (bytes) a keep-alive connection keeps for reuse. Larger buffers are freed after each request; bodies above it are still served. Unset uses the 4 MiB default; 0 means unlimited. Renders into server.body_buffer_pool_limit_bytes.",
               "default": 4194304
             },
             "pluginDownloadPrivateAllowlist": {
