@@ -1380,17 +1380,6 @@
                 ]
               },
               {
-                "group": "Circuit Breaker",
-                "expanded": false,
-                "pages": [
-                  "GET /api/circuit-breaker/policies",
-                  "POST /api/circuit-breaker/policies",
-                  "PUT /api/circuit-breaker/policies/{name}",
-                  "DELETE /api/circuit-breaker/policies/{name}",
-                  "GET /api/circuit-breaker/state"
-                ]
-              },
-              {
                 "group": "Logging",
                 "expanded": false,
                 "pages": [
@@ -1788,6 +1777,25 @@
                   "GET /api/routing/complexity-analyzer-status",
                   "POST /api/routing/complexity-analyzer-status/retry"
                 ]
+              },
+              {
+                "group": "Adaptive Routing",
+                "expanded": false,
+                "pages": [
+                  "GET /api/adaptive-routing/config",
+                  "PUT /api/adaptive-routing/config"
+                ]
+              },
+              {
+                "group": "Circuit Breaker",
+                "expanded": false,
+                "pages": [
+                  "GET /api/circuit-breaker/policies",
+                  "POST /api/circuit-breaker/policies",
+                  "PUT /api/circuit-breaker/policies/{name}",
+                  "DELETE /api/circuit-breaker/policies/{name}",
+                  "GET /api/circuit-breaker/state"
+                ]
               }
             ]
           },
@@ -1902,6 +1910,14 @@
                   "GET /api/audit-logs/export",
                   "GET /api/audit-logs/{id}",
                   "GET /api/audit-logs/{id}/verify"
+                ]
+              },
+              {
+                "group": "Adaptive Routing",
+                "expanded": false,
+                "pages": [
+                  "GET /api/load-balancer-config",
+                  "PUT /api/load-balancer-config"
                 ]
               }
             ]
