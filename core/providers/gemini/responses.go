@@ -2096,12 +2096,6 @@ func processGeminiFunctionCallPart(part *Part, state *GeminiResponsesStreamState
 		OutputIndex:    &outputIndex,
 		ItemID:         &toolUseID,
 		Arguments:      &argsJSON,
-		Item: &schemas.ResponsesMessage{
-			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				CallID: &toolUseID,
-				Name:   &part.FunctionCall.Name,
-			},
-		},
 	}
 
 	responses = append(responses, doneEvent)

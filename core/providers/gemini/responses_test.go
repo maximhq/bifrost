@@ -1400,6 +1400,127 @@ func BenchmarkGeminiResponsesResponseRoundTrip(b *testing.B) {
 	}
 }
 
+// response.function_call_arguments.done is {type, sequence_number, item_id, output_index,
+// arguments}. It used to carry a partial item with no type, and strict Responses clients
+// (opencode v2) validate item.type on every event, so every Gemini tool turn aborted. The
+// genai and anthropic subtests pin that the reverse converters still recover each call
+// from output_item.added once the done event stops carrying it.
+func TestGeminiResponsesStreamFunctionCallArgumentsDoneShape(t *testing.T) {
+	sig := []byte("gemini-thought-signature")
+	state := &GeminiResponsesStreamState{}
+	state.flush()
+	events, bErr := (&GenerateContentResponse{ModelVersion: "gemini-3-flash-preview", Candidates: []*Candidate{{
+		Content: &Content{Role: "model", Parts: []*Part{
+			{Text: "Writing the probe."},
+			{FunctionCall: &FunctionCall{ID: "call_a", Name: "write_file", Args: json.RawMessage(`{"path":"/tmp/probe.txt","content":"OK"}`)}, ThoughtSignature: sig},
+			{FunctionCall: &FunctionCall{ID: "call_b", Name: "read_file", Args: json.RawMessage(`{"path":"/tmp/probe.txt"}`)}},
+		}},
+		FinishReason: FinishReasonStop,
+	}}}).ToBifrostResponsesStream(0, state)
+	if bErr != nil {
+		t.Fatalf("ToBifrostResponsesStream: %v", bErr)
+	}
+	wantArgs := []string{`{"path":"/tmp/probe.txt","content":"OK"}`, `{"path":"/tmp/probe.txt"}`}
+
+	// /v1/responses marshals the event as is; /openai/v1/responses marshals WithDefaults().
+	for route, render := range map[string]func(*schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse{
+		"v1 responses":        func(ev *schemas.BifrostResponsesStreamResponse) *schemas.BifrostResponsesStreamResponse { return ev },
+		"openai v1 responses": (*schemas.BifrostResponsesStreamResponse).WithDefaults,
+	} {
+		t.Run(route, func(t *testing.T) {
+			addedIDs := map[int64]string{}
+			var doneArgs []string
+			for _, ev := range events {
+				wire, err := schemas.Marshal(render(ev))
+				if err != nil {
+					t.Fatalf("marshal %s: %v", ev.Type, err)
+				}
+				if item := gjson.GetBytes(wire, "item"); item.Exists() && (item.Get("type").Type != gjson.String || item.Get("type").Str == "") {
+					t.Fatalf("%s carries an item without a string type: %s", ev.Type, wire)
+				}
+				if ev.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded && gjson.GetBytes(wire, "item.type").Str == "function_call" {
+					addedIDs[gjson.GetBytes(wire, "output_index").Int()] = gjson.GetBytes(wire, "item.id").Str
+				}
+				if ev.Type != schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone {
+					continue
+				}
+				if gjson.GetBytes(wire, "item").Exists() {
+					t.Fatalf("function_call_arguments.done must not carry an item: %s", wire)
+				}
+				index := gjson.GetBytes(wire, "output_index")
+				if !index.Exists() || gjson.GetBytes(wire, "item_id").Str == "" || gjson.GetBytes(wire, "item_id").Str != addedIDs[index.Int()] {
+					t.Fatalf("done event does not point at its output_item.added (%v): %s", addedIDs, wire)
+				}
+				doneArgs = append(doneArgs, gjson.GetBytes(wire, "arguments").Str)
+			}
+			if !reflect.DeepEqual(doneArgs, wantArgs) {
+				t.Fatalf("done arguments = %q, want %q", doneArgs, wantArgs)
+			}
+		})
+	}
+
+	t.Run("genai", func(t *testing.T) {
+		out := NewBifrostToGeminiStreamState()
+		var calls []*Part
+		for _, ev := range events {
+			g := ToGeminiResponsesStreamResponse(ev, out)
+			if g == nil || len(g.Candidates) == 0 || g.Candidates[0].Content == nil {
+				continue
+			}
+			for _, p := range g.Candidates[0].Content.Parts {
+				if p.FunctionCall != nil {
+					calls = append(calls, p)
+				}
+			}
+		}
+		if len(calls) != 2 {
+			t.Fatalf("want two functionCall parts, got %+v", calls)
+		}
+		for i, want := range []struct {
+			name, id string
+			sig      []byte
+		}{{"write_file", "call_a", sig}, {"read_file", "call_b", nil}} {
+			fc := calls[i].FunctionCall
+			if fc.Name != want.name || !strings.HasPrefix(fc.ID, want.id) || string(fc.Args) != wantArgs[i] {
+				t.Fatalf("call %d = %s %s %s, want %s %s… %s", i, fc.Name, fc.ID, fc.Args, want.name, want.id, wantArgs[i])
+			}
+			if !bytes.Equal(calls[i].ThoughtSignature, want.sig) {
+				t.Fatalf("call %d thoughtSignature = %q, want %q", i, calls[i].ThoughtSignature, want.sig)
+			}
+		}
+	})
+
+	t.Run("anthropic", func(t *testing.T) {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+		defer cancel()
+		names := map[int]string{}
+		inputs := map[int]string{}
+		var order []int
+		for _, ev := range events {
+			for _, out := range anthropic.ToAnthropicResponsesStreamResponse(ctx, ev) {
+				if out.Index == nil {
+					continue
+				}
+				if out.ContentBlock != nil && out.ContentBlock.Type == anthropic.AnthropicContentBlockTypeToolUse && out.ContentBlock.Name != nil {
+					names[*out.Index] = *out.ContentBlock.Name
+					order = append(order, *out.Index)
+				}
+				if out.Delta != nil && out.Delta.PartialJSON != nil {
+					inputs[*out.Index] += *out.Delta.PartialJSON
+				}
+			}
+		}
+		if len(order) != 2 {
+			t.Fatalf("want two tool_use blocks, got %v", names)
+		}
+		for i, want := range []string{"write_file", "read_file"} {
+			if names[order[i]] != want || inputs[order[i]] != wantArgs[i] {
+				t.Fatalf("tool_use %d = %s %s, want %s %s", i, names[order[i]], inputs[order[i]], want, wantArgs[i])
+			}
+		}
+	})
+}
+
 // A native tool decoded from a request re-emits its ingress bytes, so an edit to a typed
 // field after decoding does not reach the wire until raw is cleared (the nativeToolJSON
 // contract); a value whose raw is cleared marshals from its fields again.

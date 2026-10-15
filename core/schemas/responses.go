@@ -324,10 +324,13 @@ func (r *BifrostResponsesResponse) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON sends tool_usage top-level only, as OpenAI's Responses API does. r is a copy, so
-// clearing usage's copy leaves the caller's response intact.
+// MarshalJSON sends tool_usage top-level only, as OpenAI's Responses API does, and output as
+// [] when nil (a required array clients iterate). r is a copy, so the caller's response is intact.
 func (r BifrostResponsesResponse) MarshalJSON() ([]byte, error) {
 	type alias BifrostResponsesResponse
+	if r.Output == nil {
+		r.Output = []ResponsesMessage{}
+	}
 	if r.Usage != nil && r.Usage.ToolUsage != nil {
 		if r.ToolUsage == nil {
 			r.ToolUsage = r.Usage.ToolUsage
