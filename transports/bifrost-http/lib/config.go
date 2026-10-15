@@ -1131,6 +1131,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 		}
 		logger.Info("loading configuration from: %s", absConfigFilePath)
+		warnMultiUnitCalendarConfig(data, logger.Warn)
 		// Promote deprecated per-budget / per-rate-limit calendar_aligned to the
 		// owning VK / Team. Independent of config version — the deprecation
 		// predates the v1/v2 allow-list split.

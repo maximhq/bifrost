@@ -917,6 +917,14 @@ func (s *ClickHouseLogStore) FlushMCPToolLogs(ctx context.Context, since time.Ti
 	return nil
 }
 
+// FlushAgentLogs removes stale processing A2A log rows. See Flush.
+func (s *ClickHouseLogStore) FlushAgentLogs(ctx context.Context, since time.Time) error {
+	if err := s.chFlushProcessing(ctx, "agent_logs", since); err != nil {
+		return fmt.Errorf("failed to cleanup old processing A2A logs: %w", err)
+	}
+	return nil
+}
+
 // DeleteExpiredAsyncJobs deletes async jobs whose expiry has passed with one
 // lightweight delete; the count is selected first because mutations never
 // report rows affected.

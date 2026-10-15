@@ -276,3 +276,10 @@ describe("actionDisabledReason", () => {
 		expect(actionDisabledReason(true, "delete", "virtual keys", managed)).toBe(managed);
 	});
 });
+// Multi-unit overrides must preview the rolling schedule used by the backend.
+describe("multi-unit override expiry", () => {
+	it.each(["7d", "2w", "3M", "2Q", "2Y"])("uses rolling expiry for %s despite calendar alignment", (duration) => {
+		const budget = { max_limit: 100, last_reset: "2026-03-10T12:30:00Z", reset_duration: duration };
+		expect(getBudgetOverrideValidUntil(budget, 2, true)).toEqual(getBudgetOverrideValidUntil(budget, 2, false));
+	});
+});
