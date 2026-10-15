@@ -182,11 +182,12 @@ func ResolveProviderFromCatalog(ctx *schemas.BifrostContext, catalog *modelcatal
 	}
 
 	// Respect the routing-allowlist set by an earlier plugin (e.g., governance VK config):
-	// intersect catalog candidates with the allowlist so the VK's provider restrictions hold
-	// even when no earlier routing plugin set req.Provider. Emit observability logs for both
-	// the partial-prune and all-pruned cases — the two-level enforcement (cooperative here +
-	// hard core enforcement) is only useful if the cooperative pruning is visible in routing
-	// engine logs when it fires.
+	// intersect catalog candidates with the allowlist so the resolver does not pick a provider
+	// the VK disallows when no earlier routing plugin set req.Provider. Core does not check the
+	// allowlist; governance's PreLLMHook refuses a disallowed provider on every routed LLM
+	// attempt, so pruning here is what keeps the pick valid. Emit observability logs for both the
+	// partial-prune and all-pruned cases, so the pruning is visible in routing engine logs when it
+	// fires.
 	if allowlistSet {
 		preFilterCount := len(providers)
 		preFilterStrs := make([]string, preFilterCount)

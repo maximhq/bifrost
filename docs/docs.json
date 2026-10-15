@@ -192,6 +192,7 @@
               "providers/self-hosted-decision-models",
               "providers/custom-pricing",
               "providers/request-options",
+              "providers/response-headers",
               "providers/test-harness-coverage"
             ]
           },
@@ -406,7 +407,15 @@
               "enterprise/secret-management",
               "enterprise/log-exports",
               "enterprise/clustering",
-              "enterprise/adaptive-load-balancing",
+              {
+                "group": "Adaptive Routing",
+                "icon": "brain",
+                "pages": [
+                  "enterprise/adaptive-routing/overview",
+                  "enterprise/adaptive-routing/how-it-works",
+                  "enterprise/adaptive-routing/incidents-and-monitoring"
+                ]
+              },
               "enterprise/circuit-breaker",
               "enterprise/invpc-deployments"
             ]
@@ -1372,17 +1381,6 @@
                 ]
               },
               {
-                "group": "Circuit Breaker",
-                "expanded": false,
-                "pages": [
-                  "GET /api/circuit-breaker/policies",
-                  "POST /api/circuit-breaker/policies",
-                  "PUT /api/circuit-breaker/policies/{name}",
-                  "DELETE /api/circuit-breaker/policies/{name}",
-                  "GET /api/circuit-breaker/state"
-                ]
-              },
-              {
                 "group": "Logging",
                 "expanded": false,
                 "pages": [
@@ -1780,6 +1778,25 @@
                   "GET /api/routing/complexity-analyzer-status",
                   "POST /api/routing/complexity-analyzer-status/retry"
                 ]
+              },
+              {
+                "group": "Adaptive Routing",
+                "expanded": false,
+                "pages": [
+                  "GET /api/adaptive-routing/config",
+                  "PUT /api/adaptive-routing/config"
+                ]
+              },
+              {
+                "group": "Circuit Breaker",
+                "expanded": false,
+                "pages": [
+                  "GET /api/circuit-breaker/policies",
+                  "POST /api/circuit-breaker/policies",
+                  "PUT /api/circuit-breaker/policies/{name}",
+                  "DELETE /api/circuit-breaker/policies/{name}",
+                  "GET /api/circuit-breaker/state"
+                ]
               }
             ]
           },
@@ -1894,6 +1911,14 @@
                   "GET /api/audit-logs/export",
                   "GET /api/audit-logs/{id}",
                   "GET /api/audit-logs/{id}/verify"
+                ]
+              },
+              {
+                "group": "Adaptive Routing",
+                "expanded": false,
+                "pages": [
+                  "GET /api/load-balancer-config",
+                  "PUT /api/load-balancer-config"
                 ]
               }
             ]
@@ -2594,7 +2619,11 @@
     },
     {
       "source": "/enterprise/intelligent-load-balancing",
-      "destination": "/enterprise/adaptive-load-balancing"
+      "destination": "/enterprise/adaptive-routing/overview"
+    },
+    {
+      "source": "/enterprise/adaptive-load-balancing",
+      "destination": "/enterprise/adaptive-routing/overview"
     },
     {
       "source": "/enterprise/setting-up-okta",
