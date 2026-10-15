@@ -971,6 +971,9 @@ export default function LogsPage() {
 								columnLabels={COLUMN_LABELS}
 								onToggleColumnVisibility={toggleColumnVisibility}
 								onResetColumns={resetColumns}
+								currentPageLogs={logs}
+								sortBy={urlState.sort_by}
+								order={urlState.order}
 							/>
 						</div>
 						{/* The four queries resolve independently, so `data` can hold the
