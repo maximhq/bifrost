@@ -11,6 +11,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/fasthttp/router"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/oauth2/idjag"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
@@ -112,6 +113,14 @@ func (h *OAuth2DiscoveryHandler) handleASMetadata(ctx *fasthttp.RequestCtx) {
 		"scopes_supported":                      []string{"mcp"},
 		// RFC 9207: we include iss in authorization responses.
 		"authorization_response_iss_parameter_supported": true,
+	}
+	// MCP clients (Claude) offer enterprise-managed auth only when the jwt-bearer
+	// grant is listed. "none" stays first so DCR/CIMD public clients are unaffected;
+	// the secret methods serve confidential managed clients.
+	if oauth2ServerCfg(h.store).IsManagedAuthEnabled() {
+		doc["grant_types_supported"] = []string{"authorization_code", "refresh_token", idjag.GrantTypeJWTBearer}
+		doc["authorization_grant_profiles_supported"] = []string{idjag.GrantProfileIDJAG}
+		doc["token_endpoint_auth_methods_supported"] = []string{"none", "client_secret_basic", "client_secret_post"}
 	}
 	data, err := sonic.Marshal(doc)
 	if err != nil {

@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/bytedance/sonic"
@@ -23,6 +24,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/oauth2/idjag"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
@@ -32,7 +34,8 @@ import (
 //
 //   - POST /oauth2/register   — RFC 7591 Dynamic Client Registration
 //   - GET  /oauth2/authorize  — Authorization endpoint (PKCE-S256, RFC 8707)
-//   - POST /oauth2/token      — Token endpoint (auth-code + refresh grants)
+//   - POST /oauth2/token      — Token endpoint (auth-code, refresh and, with
+//     managed auth on, jwt-bearer ID-JAG grants)
 type OAuth2IssuanceHandler struct {
 	store      *lib.Config
 	tempTokens *temptoken.Service // optional; nil = no consent temp-token minted
@@ -41,6 +44,7 @@ type OAuth2IssuanceHandler struct {
 	// when user identity is available). May be nil — VK refresh is never blocked
 	// then, matching availableModes which keeps offering vk without a resolver.
 	identityResolver OAuth2IdentityResolver
+	idjagVerifier    atomic.Pointer[idjag.Verifier] // rebuilt when managed-auth trust settings change
 }
 
 // NewOAuth2IssuanceHandler creates a new issuance handler. identityResolver may
@@ -381,6 +385,15 @@ func (h *OAuth2IssuanceHandler) handleToken(ctx *fasthttp.RequestCtx) {
 		h.handleTokenAuthCode(ctx)
 	case "refresh_token":
 		h.handleTokenRefresh(ctx)
+	case idjag.GrantTypeJWTBearer:
+		// One snapshot for the whole request: a save swaps the config pointer, so
+		// re-reading could see the block removed after this check.
+		serverCfg := oauth2ServerCfg(h.store)
+		if !serverCfg.IsManagedAuthEnabled() {
+			sendOAuthError(ctx, fasthttp.StatusBadRequest, "unsupported_grant_type", fmt.Sprintf("grant_type %q not supported", grantType))
+			return
+		}
+		h.handleTokenAssertion(ctx, serverCfg)
 	default:
 		sendOAuthError(ctx, fasthttp.StatusBadRequest, "unsupported_grant_type", fmt.Sprintf("grant_type %q not supported", grantType))
 	}
@@ -599,43 +612,12 @@ func (h *OAuth2IssuanceHandler) issueTokenPair(
 	ctx *fasthttp.RequestCtx,
 	familyID, clientID, bfMode, bfSub, scope, resource string,
 ) (accessToken, refreshTokenPlain string, rt *configtables.TableOAuth2RefreshToken, err error) {
-	cfg := oauth2ServerCfg(h.store)
-	accessTokenTTL := cfg.AccessTokenTTL
-	if accessTokenTTL <= 0 {
-		accessTokenTTL = configtables.DefaultAccessTokenTTL
-	}
-
-	signingKey, err := h.store.GetOAuth2SigningKey(ctx)
+	accessToken, err = h.signAccessToken(ctx, bfMode, bfSub, scope, resource, oauth2ServerCfg(h.store).AccessTokenTTL)
 	if err != nil {
-		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "signing key unavailable")
-		return
-	}
-	privKey, err := parseRSAPrivateKeyPEM(signingKey.PrivateKeyPEM)
-	if err != nil {
-		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "invalid signing key")
 		return
 	}
 
-	issuer := oauth2IssuerURL(ctx, h.store)
 	now := time.Now()
-	claims := jwt.MapClaims{
-		"iss":     issuer,
-		"aud":     jwt.ClaimStrings{resource},
-		"sub":     bfSub,
-		"bf_mode": bfMode,
-		"scope":   scope,
-		"iat":     now.Unix(),
-		"nbf":     now.Unix(),
-		"exp":     now.Add(time.Duration(accessTokenTTL) * time.Second).Unix(),
-	}
-	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	tok.Header["kid"] = signingKey.KID
-	accessToken, err = tok.SignedString(privKey)
-	if err != nil {
-		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to sign access token")
-		return
-	}
-
 	refreshTokenPlain, err = generateSecureToken(32)
 	if err != nil {
 		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to generate refresh token")
@@ -655,7 +637,46 @@ func (h *OAuth2IssuanceHandler) issueTokenPair(
 	return
 }
 
-// sendTokenResponse writes the RFC 6749 token response to ctx.
+// signAccessToken mints the RS256 /mcp access token shared by every grant. A
+// non-positive ttl falls back to DefaultAccessTokenTTL. On error it writes an
+// OAuth error response to ctx and returns a non-nil error.
+func (h *OAuth2IssuanceHandler) signAccessToken(ctx *fasthttp.RequestCtx, bfMode, bfSub, scope, resource string, ttl int) (string, error) {
+	if ttl <= 0 {
+		ttl = configtables.DefaultAccessTokenTTL
+	}
+	signingKey, err := h.store.GetOAuth2SigningKey(ctx)
+	if err != nil {
+		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "signing key unavailable")
+		return "", err
+	}
+	privKey, err := parseRSAPrivateKeyPEM(signingKey.PrivateKeyPEM)
+	if err != nil {
+		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "invalid signing key")
+		return "", err
+	}
+	now := time.Now()
+	claims := jwt.MapClaims{
+		"iss":     oauth2IssuerURL(ctx, h.store),
+		"aud":     jwt.ClaimStrings{resource},
+		"sub":     bfSub,
+		"bf_mode": bfMode,
+		"scope":   scope,
+		"iat":     now.Unix(),
+		"nbf":     now.Unix(),
+		"exp":     now.Add(time.Duration(ttl) * time.Second).Unix(),
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok.Header["kid"] = signingKey.KID
+	signed, err := tok.SignedString(privKey)
+	if err != nil {
+		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to sign access token")
+		return "", err
+	}
+	return signed, nil
+}
+
+// sendTokenResponse writes the RFC 6749 token response to ctx. refresh_token is
+// omitted when empty, as for the jwt-bearer grant.
 func sendTokenResponse(ctx *fasthttp.RequestCtx, accessToken, refreshToken, scope string, accessTokenTTL int) {
 	if accessTokenTTL <= 0 {
 		accessTokenTTL = configtables.DefaultAccessTokenTTL
@@ -664,13 +685,16 @@ func sendTokenResponse(ctx *fasthttp.RequestCtx, accessToken, refreshToken, scop
 	ctx.SetContentType("application/json")
 	ctx.Response.Header.Set("Cache-Control", "no-store")
 	ctx.Response.Header.Set("Pragma", "no-cache")
-	data, err := sonic.Marshal(map[string]any{
-		"access_token":  accessToken,
-		"token_type":    "Bearer",
-		"expires_in":    accessTokenTTL,
-		"refresh_token": refreshToken,
-		"scope":         scope,
-	})
+	body := map[string]any{
+		"access_token": accessToken,
+		"token_type":   "Bearer",
+		"expires_in":   accessTokenTTL,
+		"scope":        scope,
+	}
+	if refreshToken != "" {
+		body["refresh_token"] = refreshToken
+	}
+	data, err := sonic.Marshal(body)
 	if err != nil {
 		sendOAuthError(ctx, fasthttp.StatusInternalServerError, "server_error", "failed to marshal token response")
 		return

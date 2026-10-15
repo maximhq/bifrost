@@ -103,3 +103,28 @@ func TestDiscovery_ResponsesAreNotCacheable(t *testing.T) {
 		assert.Equal(t, "no-store", string(ctx.Response.Header.Peek("Cache-Control")), "document %d", i)
 	}
 }
+
+// TestDiscovery_ManagedAuthMetadata checks the jwt-bearer grant and ID-JAG profile
+// are advertised only while managed auth is enabled, with "none" kept first.
+func TestDiscovery_ManagedAuthMetadata(t *testing.T) {
+	cfg := newTestOAuth2Config(&mockOAuth2Store{}, configtables.MCPServerAuthModeOAuth, false)
+	h := NewOAuth2DiscoveryHandler(cfg)
+	read := func() map[string]any {
+		ctx := &fasthttp.RequestCtx{}
+		h.handleASMetadata(ctx)
+		var doc map[string]any
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &doc))
+		return doc
+	}
+
+	doc := read()
+	assert.Equal(t, []any{"authorization_code", "refresh_token"}, doc["grant_types_supported"])
+	assert.NotContains(t, doc, "authorization_grant_profiles_supported")
+	assert.Equal(t, []any{"none"}, doc["token_endpoint_auth_methods_supported"])
+
+	cfg.ClientConfig.OAuth2ServerConfig.ManagedAuth = &configtables.ManagedAuthConfig{Enabled: true, TrustedIssuer: "https://acme.okta.com"}
+	doc = read()
+	assert.Equal(t, []any{"authorization_code", "refresh_token", "urn:ietf:params:oauth:grant-type:jwt-bearer"}, doc["grant_types_supported"])
+	assert.Equal(t, []any{"urn:ietf:params:oauth:grant-profile:id-jag"}, doc["authorization_grant_profiles_supported"])
+	assert.Equal(t, []any{"none", "client_secret_basic", "client_secret_post"}, doc["token_endpoint_auth_methods_supported"])
+}
