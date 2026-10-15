@@ -272242,6 +272242,352 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "248. MCP library installed flag survives a client rename (mcp library installed) (#8548)",
+      "description": "Regression for #8548. The MCP Library page decided which catalog entries were installed in the browser, from one page (100) of MCP clients, matching only by connection URL or by a client name equal to the sanitized entry name. Clients past the first 100 were never considered, and a client renamed after install (or a stdio entry, which has no URL) showed as not installed.\n\nGET /api/mcp/library now returns `installed` on every entry, computed server-side over every MCP client row. A client matches by the proposed install name, by its endpoint slug (derived from that name at create and immutable, so it survives a rename), by the http/sse URL, or by stdio command plus args.\n\nThe cases publish a custom library entry, create an openapi-type client (no upstream MCP server needed) under the name the install flow proposes, rename it, and assert the entry still reports installed. After the client is deleted the entry must report not installed. Pre-fix the field is absent, so the rename assertion fails.",
+      "item": [
+        {
+          "name": "openai mcp-library-installed publish a custom library entry - #8548",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Run-unique identity (timestamp plus a random suffix): parallel runs never collide.",
+                  "var run = Date.now() + '-' + Math.random().toString(36).slice(2, 8);",
+                  "pm.collectionVariables.set('libInstalledEntryName', 'harness-lib-installed-' + run);",
+                  "// The install flow proposes the entry name with every run of characters outside [A-Za-z0-9_] turned into '_'.",
+                  "pm.collectionVariables.set('libInstalledClientName', 'harness_lib_installed_' + run.replace('-', '_'));",
+                  "pm.collectionVariables.set('libInstalledRenamed', 'harness_lib_renamed_' + run.replace('-', '_'));",
+                  "pm.collectionVariables.set('libInstalledClientId', 'harness-lib-installed-' + run);",
+                  "// A run that stopped before its cleanup leaves rows behind. Remove this folder's own leftovers once they are over an hour old.",
+                  "var cutoff = Date.now() - 3600000;",
+                  "var base = pm.variables.get('baseUrl');",
+                  "pm.sendRequest({ url: base + '/api/mcp/library?search=harness-lib-installed-&limit=100', method: 'GET' }, function (err, res) {",
+                  "  pm.test('leftover library entries listed', function () {",
+                  "    pm.expect(err, String(err)).to.equal(null);",
+                  "    pm.expect(res.code, res.text()).to.eql(200);",
+                  "  });",
+                  "  if (err || res.code !== 200) { return; }",
+                  "  (res.json().servers || []).forEach(function (s) {",
+                  "    var m = /^harness-lib-installed-(\\d{13})-/.exec(s.name || '');",
+                  "    if (!m || Number(m[1]) >= cutoff) { return; }",
+                  "    pm.sendRequest({ url: base + '/api/mcp/library/' + s.id, method: 'DELETE' }, function (derr, dres) {",
+                  "      pm.test('leftover library entry ' + s.name + ' removed', function () {",
+                  "        pm.expect(derr, String(derr)).to.equal(null);",
+                  "        pm.expect(dres.code === 200 || dres.code === 404, 'status ' + dres.code + ': ' + dres.text()).to.equal(true);",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});",
+                  "['harness_lib_installed_', 'harness_lib_renamed_'].forEach(function (prefix) {",
+                  "  pm.sendRequest({ url: base + '/api/mcp/clients?search=' + prefix + '&limit=100', method: 'GET' }, function (err, res) {",
+                  "    pm.test('leftover ' + prefix + ' clients listed', function () {",
+                  "      pm.expect(err, String(err)).to.equal(null);",
+                  "      pm.expect(res.code, res.text()).to.eql(200);",
+                  "    });",
+                  "    if (err || res.code !== 200) { return; }",
+                  "    (res.json().clients || []).forEach(function (c) {",
+                  "      var name = (c.config && c.config.name) || '';",
+                  "      var m = new RegExp('^' + prefix + '(\\\\d{13})_').exec(name);",
+                  "      if (!m || Number(m[1]) >= cutoff) { return; }",
+                  "      pm.sendRequest({ url: base + '/api/mcp/client/' + encodeURIComponent(c.config.client_id), method: 'DELETE' }, function (derr, dres) {",
+                  "        pm.test('leftover client ' + name + ' removed', function () {",
+                  "          pm.expect(derr, String(derr)).to.equal(null);",
+                  "          var gone = dres.code === 500 && dres.text().indexOf('not found') !== -1;",
+                  "          pm.expect(dres.code === 200 || gone, 'status ' + dres.code + ': ' + dres.text()).to.equal(true);",
+                  "        });",
+                  "      });",
+                  "    });",
+                  "  });",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('custom library entry is published', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  var entry = (pm.response.json() || {}).entry || {};",
+                  "  pm.expect(entry.id, pm.response.text()).to.be.a('number');",
+                  "  pm.collectionVariables.set('libInstalledEntryId', String(entry.id));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{libInstalledEntryName}}\",\n  \"description\": \"Harness fixture for the installed flag\",\n  \"connection_type\": \"http\",\n  \"connection_url\": \"https://harness-lib-installed.invalid/mcp\",\n  \"auth_type\": \"none\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/library",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "library"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-library-installed create a client under the proposed install name - #8548",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('client is created', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"client_id\": \"{{libInstalledClientId}}\",\n  \"name\": \"{{libInstalledClientName}}\",\n  \"connection_type\": \"openapi\",\n  \"auth_type\": \"none\",\n  \"tools_to_execute\": [\n    \"listPets\"\n  ],\n  \"openapi_config\": {\n    \"spec\": \"{\\\"openapi\\\":\\\"3.0.3\\\",\\\"info\\\":{\\\"title\\\":\\\"Harness Library Installed\\\",\\\"version\\\":\\\"1.0.0\\\"},\\\"servers\\\":[{\\\"url\\\":\\\"https://petstore3.swagger.io/api/v3\\\"}],\\\"paths\\\":{\\\"/pet/findByStatus\\\":{\\\"get\\\":{\\\"operationId\\\":\\\"listPets\\\",\\\"responses\\\":{\\\"200\\\":{\\\"description\\\":\\\"ok\\\"}}}}}}\",\n    \"base_url\": \"https://petstore3.swagger.io/api/v3\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-library-installed rename the client - #8548",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('client is renamed', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{libInstalledRenamed}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{libInstalledClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{libInstalledClientId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-library-installed entry still reports installed after the rename - #8548",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('library list is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var entryId = Number(pm.collectionVariables.get('libInstalledEntryId'));",
+                  "var servers = (pm.response.json() || {}).servers || [];",
+                  "var entry = servers.filter(function (s) { return s.id === entryId; })[0];",
+                  "pm.test('the renamed client still marks the entry installed', function () {",
+                  "  pm.expect(entry, 'entry missing from ' + pm.response.text().slice(0, 500)).to.be.an('object');",
+                  "  pm.expect(entry.installed, JSON.stringify(entry)).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/library?search={{libInstalledEntryName}}&limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "library"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "{{libInstalledEntryName}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-library-installed delete the client - #8548",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('client is deleted', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{libInstalledClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{libInstalledClientId}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-library-installed entry reports not installed once the client is gone - #8548",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('library list is a 200', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});",
+                  "var entryId = Number(pm.collectionVariables.get('libInstalledEntryId'));",
+                  "var servers = (pm.response.json() || {}).servers || [];",
+                  "var entry = servers.filter(function (s) { return s.id === entryId; })[0];",
+                  "pm.test('with no client left the entry is not installed', function () {",
+                  "  pm.expect(entry, 'entry missing from ' + pm.response.text().slice(0, 500)).to.be.an('object');",
+                  "  pm.expect(entry.installed, JSON.stringify(entry)).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/library?search={{libInstalledEntryName}}&limit=100",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "library"
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "{{libInstalledEntryName}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai mcp-library-installed cleanup removes the library entry - #8548",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('library entry is removed', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/library/{{libInstalledEntryId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "library",
+                "{{libInstalledEntryId}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
