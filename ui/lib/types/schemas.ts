@@ -1781,6 +1781,16 @@ export const mcpClientUpdateSchema = z
 						message: "Authorization Server URL must start with http:// or https://",
 					}),
 				scopes: z.array(z.string()).optional(),
+				profile: z.enum(["", "id_jag"]).optional(),
+				resource: z.string().optional(),
+				resource_token_endpoint: z
+					.string()
+					.optional()
+					.refine((val) => !val || isHTTPSOrLoopbackURL(val), {
+						message: "Token endpoint must be an https URL (http is allowed only for localhost)",
+					}),
+				resource_client_id: secretVarSchema.optional(),
+				resource_client_secret: secretVarSchema.optional(),
 			})
 			.optional(),
 		tls_config: z

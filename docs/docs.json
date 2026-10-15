@@ -215,7 +215,8 @@
                   "mcp/auth/per-user-headers",
                   "mcp/auth/oauth",
                   "mcp/auth/per-user-oauth",
-                  "mcp/auth/token-exchange"
+                  "mcp/auth/token-exchange",
+                  "mcp/auth/cross-app-access"
                 ]
               },
               "mcp/sessions",

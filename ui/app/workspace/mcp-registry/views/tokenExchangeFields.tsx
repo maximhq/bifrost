@@ -4,9 +4,39 @@ import { Input } from "@/components/ui/input";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import type { MCPTokenExchangeConfig } from "@/lib/types/mcp";
 import { Info, TriangleAlert } from "lucide-react";
 import type { Control } from "react-hook-form";
 import { useWatch } from "react-hook-form";
+
+/**
+ * tokenExchangeProfilePayload returns the Cross App Access (id_jag) fields of a
+ * token_exchange create/update payload. The backend replaces the block
+ * wholesale, so every form that submits token_exchange must spread this in or
+ * an id_jag client would silently fall back to the direct profile.
+ */
+export function tokenExchangeProfilePayload(te?: Partial<MCPTokenExchangeConfig>): Partial<MCPTokenExchangeConfig> {
+	if (te?.profile !== "id_jag") return {};
+	const secret = te.resource_client_secret;
+	return {
+		profile: "id_jag",
+		resource: te.resource?.trim() || undefined,
+		resource_token_endpoint: te.resource_token_endpoint?.trim() || undefined,
+		resource_client_id: te.resource_client_id,
+		resource_client_secret: secret?.value || secret?.type === "env" || secret?.type === "vault" ? secret : undefined,
+	};
+}
+
+/** tokenExchangeProfileFormValues seeds the id_jag fields of a form from a stored config. */
+export function tokenExchangeProfileFormValues(te?: Partial<MCPTokenExchangeConfig>): Partial<MCPTokenExchangeConfig> {
+	return {
+		profile: te?.profile ?? "",
+		resource: te?.resource,
+		resource_token_endpoint: te?.resource_token_endpoint,
+		resource_client_id: te?.resource_client_id,
+		resource_client_secret: te?.resource_client_secret,
+	};
+}
 
 interface TokenExchangeScopesFieldProps {
 	variant: "input" | "textarea";
@@ -106,12 +136,61 @@ export function TokenExchangeFields({
 	gridClassName = "grid grid-cols-1 gap-4 md:grid-cols-2",
 }: TokenExchangeFieldsProps) {
 	const useIdPCredentials = useWatch({ control, name: "token_exchange.use_idp_credentials" });
+	const profile = useWatch({ control, name: "token_exchange.profile" });
+	const isIDJAG = profile === "id_jag";
 	const credentialFieldsDisabled = disabled || !!useIdPCredentials;
+	const fullRow = gridClassName.includes("grid-cols") ? "md:col-span-2" : "";
 
 	return (
 		<>
 			{beforeFields}
 			<div className={gridClassName}>
+				<FormField
+					control={control}
+					name="token_exchange.profile"
+					render={({ field }) => (
+						<FormItem className={`flex flex-col gap-2 ${fullRow}`}>
+							<FormLabel>How the upstream token is obtained</FormLabel>
+							<FormControl>
+								<div className="bg-muted inline-flex w-fit gap-0.5 rounded-md p-0.5" role="radiogroup" aria-label="Token exchange profile">
+									{(
+										[
+											["", "Identity provider issues it"],
+											["id_jag", "Cross App Access (ID-JAG)"],
+										] as const
+									).map(([value, label]) => {
+										const selected = (field.value ?? "") === value;
+										return (
+											<Button
+												key={value || "direct"}
+												type="button"
+												size="sm"
+												variant="ghost"
+												className={
+													selected
+														? "bg-background dark:bg-input/30 text-foreground hover:bg-background dark:hover:bg-input/30 shadow-sm"
+														: "text-muted-foreground hover:text-foreground"
+												}
+												disabled={disabled}
+												onClick={() => field.onChange(value)}
+												role="radio"
+												aria-checked={selected}
+												data-testid={`token-exchange-profile-${value || "direct"}`}
+											>
+												{label}
+											</Button>
+										);
+									})}
+								</div>
+							</FormControl>
+							<p className="text-muted-foreground text-xs">
+								{isIDJAG
+									? "Cross App Access (ID-JAG), for example Okta XAA: the identity provider issues an identity assertion (ID-JAG) for the upstream authorization server named in Audience, and that server exchanges it for its own token. Users must have signed in to Bifrost through the identity provider. The exchange application is usually the identity provider application, since the identity provider only accepts the user's sign-in token from the app it was issued to."
+									: "The identity provider exchanges the caller's token for one scoped to the audience. Use this for internal servers that trust your identity provider."}
+							</p>
+						</FormItem>
+					)}
+				/>
 				{useIdPCredentialsLabel && (
 					<FormField
 						control={control}
@@ -312,6 +391,91 @@ export function TokenExchangeFields({
 						</FormItem>
 					)}
 				/>
+				{isIDJAG && (
+					<>
+						<FormField
+							control={control}
+							name="token_exchange.resource_client_id"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-2">
+									<FormLabel>Client ID at the upstream server</FormLabel>
+									<FormControl>
+										<SecretVarInput
+											data-testid="token-exchange-resource-client-id-input"
+											placeholder="Bifrost's client ID registered with the MCP server's authorization server"
+											disabled={disabled}
+											redactNonEnvValue={clientIdRedactNonEnvValue}
+											value={field.value}
+											onChange={field.onChange}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={control}
+							name="token_exchange.resource_client_secret"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-2">
+									<FormLabel>Client secret at the upstream server</FormLabel>
+									<FormControl>
+										<SecretVarInput
+											data-testid="token-exchange-resource-client-secret-input"
+											placeholder="Leave empty for a public client"
+											disabled={disabled}
+											hideValueWhenEnv={clientSecretHideValueWhenEnv}
+											maskNonEnvValue={clientSecretMaskNonEnvValue}
+											redactNonEnvValue={clientSecretRedactNonEnvValue}
+											value={field.value}
+											onChange={field.onChange}
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={control}
+							name="token_exchange.resource_token_endpoint"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-2">
+									<FormLabel>Upstream token endpoint (optional)</FormLabel>
+									<FormControl>
+										<Input
+											{...field}
+											value={field.value ?? ""}
+											disabled={disabled}
+											placeholder="Discovered from the MCP server"
+											data-testid="token-exchange-resource-token-endpoint-input"
+										/>
+									</FormControl>
+									<p className="text-muted-foreground text-xs">Leave empty to discover it; the server must support the jwt-bearer grant.</p>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+						<FormField
+							control={control}
+							name="token_exchange.resource"
+							render={({ field }) => (
+								<FormItem className="flex flex-col gap-2">
+									<FormLabel>Resource (optional)</FormLabel>
+									<FormControl>
+										<Input
+											{...field}
+											value={field.value ?? ""}
+											disabled={disabled}
+											placeholder="Only if your IdP connection defines one"
+											data-testid="token-exchange-resource-input"
+										/>
+									</FormControl>
+									<FormMessage />
+								</FormItem>
+							)}
+						/>
+					</>
+				)}
 				{scopes.variant === "input" ? (
 					<FormItem className="flex flex-col gap-2">
 						<FormLabel htmlFor="mcp-token-exchange-scopes-field">{scopes.label}</FormLabel>

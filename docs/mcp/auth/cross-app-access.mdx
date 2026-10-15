@@ -1,0 +1,124 @@
+---
+title: "Cross App Access (ID-JAG)"
+sidebarTitle: "Cross App Access"
+description: "Reach SaaS MCP servers such as Linear or Notion as each user, through Okta Cross App Access, with no per-user consent and no shared admin credential."
+icon: "building-lock"
+---
+
+## Overview
+
+Cross App Access (XAA) lets an administrator approve "Bifrost may reach Linear for our users" once, in Okta. After that, every assigned user's agent can call the upstream MCP server **as that user**, with the user's own permissions there, without connecting anything.
+
+It is the `id_jag` profile of the [Token Exchange](./token-exchange) auth type. For each user, Bifrost:
+
+1. Exchanges the user's Okta ID token or refresh token, captured when they signed in to Bifrost, for an **ID-JAG**: an identity assertion addressed to the upstream server's authorization server. Okta applies its Cross App Access policy here.
+2. Presents the ID-JAG to the upstream authorization server with the `jwt-bearer` grant, authenticated as Bifrost's own client at that server, and receives the user's access token.
+
+The upstream token is cached in memory per user until shortly before it expires, and so is the ID-JAG: when the upstream token lapses, Bifrost re-presents the same ID-JAG while it is still valid instead of asking Okta for a new one. Neither is written to the database. The only stored credential is the admin's verification credential, described under [Token lifetime and revocation](#token-lifetime-and-revocation).
+
+| | Direct token exchange | Cross App Access (`id_jag`) |
+|---|---|---|
+| Who issues the upstream token | Your identity provider | The upstream service's own authorization server |
+| Works with | Internal servers that trust your identity provider | Services that accept ID-JAGs (for example the Okta Cross App Access launch partners) |
+| Subject sent to the identity provider | The caller's access token | The user's ID token or refresh token from their Bifrost SSO sign-in |
+
+<Note>
+Requires an enabled SCIM identity provider (enterprise). Okta is the identity provider that issues ID-JAGs today.
+</Note>
+
+---
+
+## Prerequisites
+
+- **Users sign in to Bifrost through Okta.** The subject of the exchange is the token Okta issued to Bifrost's SSO application, taken from the user's most recently refreshed SSO session. This works however the request identifies the user, including an identity-provider bearer token or a Bifrost-issued MCP token in user mode. A user with no SSO session gets an error asking them to sign in. Requests that identify no user, such as a plain virtual key, cannot use this profile. The upstream token is cached per user until shortly before it expires.
+- **Bifrost's SSO application is registered as an AI agent in Okta.** In Okta, go to **Directory → AI agents → Register AI agent**, and select the existing OIDC application Bifrost uses for SSO. Enable the **Token Exchange** grant on that application. Okta accepts a subject token only from the application it was issued to, so set `use_idp_credentials: true`. If the agent's status shows as **Staged**, choose **Actions → Activate** before adding a resource connection.
+- **A resource connection from Bifrost to the service.** On the AI agent, add a resource connection to the service's app in Okta, with the scopes Bifrost may request. Enter the client ID Bifrost has at the service.
+- **A client for Bifrost at the service's authorization server.** The service must let you register Bifrost as an OAuth client that may use the `jwt-bearer` grant. How this is done varies by service, and not every service offers it yet.
+
+---
+
+## Setup
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Add the MCP server and choose **Token exchange** as the auth type.
+2. Under **How the upstream token is obtained**, choose **Cross App Access (ID-JAG)**.
+3. Choose **Identity provider application** as the exchange application.
+4. Set **Audience** to the issuer of the service's authorization server, as configured in Okta's resource connection.
+5. Enter **Client ID at the upstream server**, and its secret if the client is confidential.
+6. Save, then verify the client as yourself. Bifrost runs both exchanges with your own SSO session and discovers the server's tools.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "mcp": {
+    "client_configs": [
+      {
+        "name": "linear",
+        "connection_type": "http",
+        "connection_string": "https://mcp.linear.app/mcp",
+        "auth_type": "token_exchange",
+        "token_exchange": {
+          "profile": "id_jag",
+          "audience": "https://mcp.linear.app",
+          "use_idp_credentials": true,
+          "scopes": ["read"],
+          "resource_client_id": "env.LINEAR_XAA_CLIENT_ID",
+          "resource_client_secret": "env.LINEAR_XAA_CLIENT_SECRET"
+        }
+      }
+    ]
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+<Note>
+The example uses Linear, which needs its own setup before it accepts ID-JAGs from Okta. In Linear, configure SAML through Okta's app catalog (OIN), turn on **MCP enterprise managed authentication** at the bottom of the Okta identity provider settings, and paste your Okta org's issuer, for example `https://your-org.okta.com`. See [Linear's MCP docs](https://linear.app/docs/mcp).
+</Note>
+
+| Field | Required | Description |
+|---|---|---|
+| `token_exchange.profile` | Yes | `id_jag`. |
+| `token_exchange.audience` | Yes | Issuer of the upstream authorization server. Okta writes it into the ID-JAG's `aud`. |
+| `token_exchange.use_idp_credentials` | Yes, for Okta | Request the ID-JAG as Bifrost's SSO application, which is the only application Okta accepts the user's token from. When `false`, `client_id` and `client_secret` name a separate exchange application instead. |
+| `token_exchange.scopes` | No | Scopes to request; Okta grants at most what the resource connection allows. |
+| `token_exchange.resource_client_id` | Yes | Bifrost's client ID at the upstream authorization server. Supports `env.` and `vault.` references. |
+| `token_exchange.resource_client_secret` | No | Secret for that client; omit for a public client. Sent with HTTP Basic, or in the request body when the server's metadata lists only `client_secret_post`. |
+| `token_exchange.resource_token_endpoint` | No | The upstream token endpoint. When empty, Bifrost discovers it from the MCP server's protected resource metadata and requires the server to list the `jwt-bearer` grant. |
+| `token_exchange.resource` | No | Resource indicator sent to Okta. Set it only when the resource connection in Okta defines a resource indicator; Okta rejects one it does not expect. Omitted by default. |
+| `token_exchange.authorization_server_url` | No | Overrides where the ID-JAG is requested. Okta issues ID-JAGs only from the org authorization server, `https://{yourOktaDomain}/oauth2/v1/token`. |
+
+---
+
+## Token lifetime and revocation
+
+- Okta limits Cross App Access to **250 ID-JAGs per user, per resource app, per month**. Bifrost asks Okta for a new ID-JAG only when the one it holds for that user and server has expired or was refused upstream; an expired upstream token is renewed by re-presenting the held ID-JAG. The ID-JAG's lifetime, not the upstream token's, sets how many Bifrost spends.
+- Removing a user's assignment in Okta stops new ID-JAGs immediately. An upstream token already issued keeps working until it expires, and a held ID-JAG until the upstream server refuses it or it expires.
+- When a tool call is rejected with `401`, Bifrost drops both the cached token and the held ID-JAG and runs both exchanges again before retrying once, so Okta re-evaluates its policy. Only tools the server marks as read-only, idempotent or non-destructive are retried. Any other tool, including one with no annotations, gets the `401` back, and the cached token is kept until it expires.
+- Verifying a client always runs both exchanges, so an admin can confirm Okta's current policy. Verification stores the admin's upstream token, and the Okta refresh token when there is one, so Bifrost can discover the server's tools. When that upstream token expires, Bifrost first re-presents the held ID-JAG while it is still valid. After that, it renews from the admin's live Bifrost SSO session, falling back to the retained refresh token only when the admin has no session. A failed session lookup is retried later rather than falling back. Identity providers that rotate refresh tokens invalidate that retained copy at the admin's next session refresh, which is why the live session comes first. If the admin has no session and verified with only an ID token, the credential cannot renew and the client asks to be verified again when it expires.
+
+---
+
+## Troubleshooting
+
+### "Sign in to Bifrost with your identity provider"
+
+The user has no SSO session Bifrost can use as the subject. Have them sign in to the Bifrost dashboard through Okta once.
+
+### The identity provider declined to issue a token
+
+Okta refused the ID-JAG. Check that the user is assigned to the service's app, that the AI agent has a resource connection to it, that the Token Exchange grant is enabled, and that `audience` matches the resource connection.
+
+### Upstream authorization server refused the ID-JAG
+
+The error names the server's reason. Common causes are a client ID mismatch between Okta's resource connection and `resource_client_id`, or a user with no linked account at the service.
+
+### "does not support the jwt-bearer grant"
+
+The MCP server's authorization server does not advertise `urn:ietf:params:oauth:grant-type:jwt-bearer`, so it cannot redeem an ID-JAG. If you know it does, set `resource_token_endpoint` explicitly.
