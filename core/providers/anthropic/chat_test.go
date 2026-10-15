@@ -597,6 +597,82 @@ func TestToAnthropicChatRequest_ToolResultCacheControlHoistedToBlock(t *testing.
 	}
 }
 
+func TestToAnthropicChatRequest_ToolCallCacheControlCarriedToToolUse(t *testing.T) {
+	toolCallID := "toolu_1"
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("what is the weather in nyc")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							ID:   schemas.Ptr(toolCallID),
+							Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("get_weather"),
+								Arguments: `{"city":"nyc"}`,
+							},
+							CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+						},
+						{
+							ID:   schemas.Ptr("toolu_2"),
+							Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("get_weather"),
+								Arguments: `{"city":"sf"}`,
+							},
+						},
+					},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(toolCallID)},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("68F, partly cloudy.")},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var toolUseBlocks []AnthropicContentBlock
+	for i := range result.Messages {
+		msg := result.Messages[i]
+		if msg.Role != "assistant" || msg.Content.ContentBlocks == nil {
+			continue
+		}
+		for j := range msg.Content.ContentBlocks {
+			if msg.Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolUse {
+				toolUseBlocks = append(toolUseBlocks, msg.Content.ContentBlocks[j])
+			}
+		}
+	}
+	if len(toolUseBlocks) != 2 {
+		t.Fatalf("expected 2 tool_use blocks in the converted request, got %d", len(toolUseBlocks))
+	}
+
+	if toolUseBlocks[0].CacheControl == nil {
+		t.Fatal("expected cache_control on the tool_calls entry to be carried onto its tool_use block")
+	}
+	if toolUseBlocks[0].CacheControl.Type != schemas.CacheControlTypeEphemeral {
+		t.Errorf("tool_use cache_control type = %q, want %q", toolUseBlocks[0].CacheControl.Type, schemas.CacheControlTypeEphemeral)
+	}
+	if toolUseBlocks[1].CacheControl != nil {
+		t.Error("tool_use block without a marker on its tool_calls entry must not gain cache_control")
+	}
+}
+
 func TestToAnthropicChatRequest_NestedProperties_Preserved(t *testing.T) {
 	params := &schemas.ToolFunctionParameters{
 		Type: "object",

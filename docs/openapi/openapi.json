@@ -110630,6 +110630,9 @@
                       "type": "string"
                     }
                   }
+                },
+                "cache_control": {
+                  "$ref": "#/components/schemas/CacheControl"
                 }
               }
             }
@@ -117609,6 +117612,9 @@
                       "type": "string"
                     }
                   }
+                },
+                "cache_control": {
+                  "$ref": "#/components/schemas/CacheControl"
                 }
               }
             }
