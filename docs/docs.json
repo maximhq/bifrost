@@ -223,6 +223,7 @@
               "mcp/agent-mode",
               "mcp/code-mode",
               "mcp/gateway-auth",
+              "mcp/enterprise-managed-auth",
               "mcp/tool-hosting",
               "mcp/filtering"
             ]

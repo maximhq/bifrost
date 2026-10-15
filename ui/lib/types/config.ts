@@ -869,7 +869,17 @@ export interface CoreConfig {
 		access_token_ttl?: number;
 		allowed_redirect_uris?: string[];
 		disable_vk_identity?: boolean;
+		managed_auth?: ManagedAuthConfig;
 	};
+}
+
+// Enterprise-managed authorization (jwt-bearer / ID-JAG grant) settings.
+export interface ManagedAuthConfig {
+	enabled?: boolean;
+	trusted_issuer?: string;
+	jwks_url?: string;
+	access_token_ttl?: number;
+	disable_user_provisioning?: boolean;
 }
 
 export const DefaultCoreConfig: CoreConfig = {

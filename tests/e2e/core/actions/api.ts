@@ -204,6 +204,26 @@ export const coreConfigApi = {
 }
 
 /**
+ * Managed clients for the jwt-bearer (ID-JAG) grant
+ */
+export const managedClientsApi = {
+  async list(request: APIRequestContext) {
+    const response = await request.get(`${API_BASE}/oauth2/managed-clients`)
+    return handleResponse<{ clients: { id: string; name: string; client_id: string }[] }>(response, 'List managed clients')
+  },
+
+  async create(request: APIRequestContext, data: unknown) {
+    const response = await request.post(`${API_BASE}/oauth2/managed-clients`, { data })
+    return handleResponse<{ id: string; client_id: string; client_secret?: string }>(response, 'Create managed client')
+  },
+
+  async delete(request: APIRequestContext, id: string) {
+    const response = await request.delete(`${API_BASE}/oauth2/managed-clients/${id}`)
+    return response.ok()
+  },
+}
+
+/**
  * Teams API helpers
  */
 export const teamsApi = {
