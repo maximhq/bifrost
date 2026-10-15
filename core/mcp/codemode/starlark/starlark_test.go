@@ -657,6 +657,97 @@ func TestFormatResultForLog(t *testing.T) {
 	})
 }
 
+// Some servers wrap their JSON payload in a JSON string. One extra decode unwraps an object or
+// array; anything else stays what the first decode produced.
+func TestDecodeToolResult(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want interface{}
+	}{
+		{name: "wrapped object", raw: `"{\"title\":\"Example Domain\"}"`, want: map[string]interface{}{"title": "Example Domain"}},
+		{name: "wrapped array", raw: `" [1, 2]"`, want: []interface{}{float64(1), float64(2)}},
+		{name: "quoted scalar stays a string", raw: `"123"`, want: "123"},
+		{name: "quoted invalid JSON stays a string", raw: `"{not json"`, want: "{not json"},
+		{name: "a second wrap is not unwrapped", raw: `"\"{\\\"a\\\":1}\""`, want: `"{\"a\":1}"`},
+		{name: "plain text stays as sent", raw: "not json at all", want: "not json at all"},
+		{name: "bare object", raw: `{"a":1}`, want: map[string]interface{}{"a": float64(1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decodeToolResult(tc.raw)
+			gotJSON, _ := sonic.Marshal(got)
+			wantJSON, _ := sonic.Marshal(tc.want)
+			if string(gotJSON) != string(wantJSON) {
+				t.Fatalf("decodeToolResult(%s) = %#v, want %#v", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestExtractTextFromMCPResponseResultShapes(t *testing.T) {
+	limit := schemas.DefaultCodeModeMaxValueBytes
+	for _, tc := range []struct {
+		name   string
+		result *mcp.CallToolResult
+		want   string
+	}{
+		{
+			name:   "several JSON blocks become one array",
+			result: &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent(`{"id":1}`), &mcp.TextContent{Type: "text", Text: `{"id":2}`}}},
+			want:   `[{"id":1},{"id":2}]`,
+		},
+		{
+			name:   "mixed blocks are joined with newlines",
+			result: &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent(`{"id":1}`), mcp.NewTextContent("Found 2 files")}},
+			want:   "{\"id\":1}\nFound 2 files",
+		},
+		{
+			name:   "text next to an image keeps its own line",
+			result: &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent("Found 2 files"), mcp.ImageContent{Data: "AAAA", MIMEType: "image/png"}}},
+			want:   "Found 2 files\n[Image Response: AAAA, MIME: image/png]",
+		},
+		{
+			name:   "a single block is passed through",
+			result: &mcp.CallToolResult{Content: []mcp.Content{mcp.NewTextContent(`{"id":1}`)}},
+			want:   `{"id":1}`,
+		},
+		{
+			name: "structured content wins over its text copy",
+			result: &mcp.CallToolResult{
+				Content:           []mcp.Content{mcp.NewTextContent(`{"title":"from text"}`)},
+				StructuredContent: map[string]any{"title": "from structured"},
+			},
+			want: `{"title":"from structured"}`,
+		},
+		{
+			name: "an error result keeps its text",
+			result: &mcp.CallToolResult{
+				Content:           []mcp.Content{mcp.NewTextContent("quota exhausted")},
+				StructuredContent: map[string]any{"code": 429},
+				IsError:           true,
+			},
+			want: "quota exhausted",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractTextFromMCPResponse(tc.result, "echo", limit)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("oversized structured content is rejected", func(t *testing.T) {
+		result := &mcp.CallToolResult{StructuredContent: map[string]any{"body": strings.Repeat("x", limit)}}
+		if _, err := extractTextFromMCPResponse(result, "echo", limit); err == nil {
+			t.Fatal("oversized structured content accepted")
+		}
+	})
+}
+
 // starlarkOpts returns the FileOptions used by the code mode executor.
 // Kept in sync with executecode.go to test the same dialect configuration.
 func starlarkOpts() *syntax.FileOptions {
@@ -1850,6 +1941,22 @@ func BenchmarkFormatPythonParams(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
 				_ = formatPythonParams(tc.params)
+			}
+		})
+	}
+}
+
+func BenchmarkExtractResultFromChatMessage(b *testing.B) {
+	for _, tc := range []struct{ name, text string }{
+		{"bare-object", `{"title":"Example Domain","url":"https://example.com","items":[1,2,3]}`},
+		{"wrapped-object", `"{\"title\":\"Example Domain\",\"url\":\"https://example.com\",\"items\":[1,2,3]}"`},
+		{"plain-text", "Found 3 results for the query, see the attached list"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			msg := &schemas.ChatMessage{Content: &schemas.ChatMessageContent{ContentStr: &tc.text}}
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = extractResultFromChatMessage(msg)
 			}
 		})
 	}

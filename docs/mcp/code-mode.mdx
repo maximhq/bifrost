@@ -587,6 +587,20 @@ youtube.delete_video(id="abc123")
 | Dict/List operations | Network access |
 | List comprehensions | `random`, `time` modules |
 
+### Tool Results Inside a Script
+
+A nested tool call hands the script a value, not text:
+
+| The server returns | The script receives |
+|--------------------|---------------------|
+| `structuredContent` | That object, as a dict. The text blocks beside it are ignored |
+| One text block holding JSON | The decoded dict, list or scalar |
+| Several text blocks, each holding JSON | A list with one element per block |
+| JSON wrapped in a JSON string (`"{\"a\": 1}"`) | The decoded object or array. A wrapped scalar such as `"123"` stays a str |
+| Any other text | A str |
+| `isError: true` | The error message, as a str. The script keeps running and decides what the failure means |
+| Text starting with `Error: ` | Nothing: the call raises, the script stops, and the error message is returned to the model |
+
 ### Runtime Environment Details
 
 **Engine:** Starlark interpreter (Python subset)
