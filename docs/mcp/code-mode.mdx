@@ -771,6 +771,17 @@ Bifrost provides detailed error messages with hints:
 # - Use one of the available server keys as the object name
 ```
 
+A runtime error also names the script lines that led to it, in the Python traceback layout, one frame per line. Deep recursion keeps only the outermost frame and the innermost five frames, and a `... N more frames ...` line stands in for the N frames left out between them:
+
+```
+Execution runtime error:
+
+Traceback (most recent call last):
+  code.star:4:14: in <toplevel>
+  code.star:3:13: in main
+Error: key "email" not in dict
+```
+
 ### Timeouts
 
 - Default: 30 seconds per tool call

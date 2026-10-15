@@ -1159,6 +1159,7 @@ func TestCodeMode_FailInScriptFailsTheRun(t *testing.T) {
 
 	assert.True(t, runFailed(msg), "a script that called fail() must mark the run failed:\n%s", text)
 	assert.Contains(t, text, "fail: lookup failed: quota exhausted for this key")
+	assert.Contains(t, text, "Traceback (most recent call last):\n  code.star:3:", "the error should name the line the script stopped on")
 	assert.Contains(t, text, "[TOOL] shapes.plain_error returned an error: quota exhausted for this key")
 	assert.Contains(t, text, "The script stopped itself with fail()")
 	assert.NotContains(t, text, "unreachable")
