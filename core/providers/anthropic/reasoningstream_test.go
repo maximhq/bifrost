@@ -219,3 +219,63 @@ func TestReasoningStream_ResumedReasoningNotEmittedPastStop(t *testing.T) {
 		t.Fatalf("block index misses: %v", misses)
 	}
 }
+
+// TestTextStream_ContentAfterToolStartNotEmittedPastStop guards the
+// text -> tool_call -> text ordering on the Chat -> Responses -> Anthropic SSE path.
+// Once a tool call closes the text block, a later delta.content (SGLang's
+// qwen3_coder parser emits "\n" next to the closing tool-call arguments) must not
+// emit a text_delta on the stopped text index while the tool_use block is open.
+// Claude Code rejects that with "The response stream was malformed".
+func TestTextStream_ContentAfterToolStartNotEmittedPastStop(t *testing.T) {
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+
+	state := schemas.AcquireChatToResponsesStreamState()
+	defer schemas.ReleaseChatToResponsesStreamState(state)
+
+	p := func(s string) *string { return &s }
+	toolCall := func(id *string, name *string, args string) []schemas.ChatAssistantMessageToolCall {
+		return []schemas.ChatAssistantMessageToolCall{{
+			Index:    0,
+			ID:       id,
+			Function: schemas.ChatAssistantMessageToolCallFunction{Name: name, Arguments: args},
+		}}
+	}
+	chunks := []*schemas.BifrostChatResponse{
+		reasoningStreamChunk("c1", &schemas.ChatStreamResponseChoiceDelta{Role: p("assistant"), Content: p("Running it.")}, nil),
+		reasoningStreamChunk("c1", &schemas.ChatStreamResponseChoiceDelta{ToolCalls: toolCall(p("call_1"), p("bash"), `{"command":`)}, nil),
+		reasoningStreamChunk("c1", &schemas.ChatStreamResponseChoiceDelta{Content: p("\n"), ToolCalls: toolCall(nil, nil, `"echo hi"}`)}, nil),
+		reasoningStreamChunk("c1", &schemas.ChatStreamResponseChoiceDelta{}, p("tool_calls")),
+	}
+
+	openBlocks := map[int]bool{}
+	var sawToolArgs bool
+	for _, c := range chunks {
+		for _, r := range c.ToBifrostResponsesStreamResponse(state) {
+			for _, e := range ToAnthropicResponsesStreamResponse(ctx, r) {
+				switch e.Type {
+				case AnthropicStreamEventTypeContentBlockStart:
+					openBlocks[*e.Index] = true
+				case AnthropicStreamEventTypeContentBlockDelta:
+					if !openBlocks[*e.Index] {
+						t.Fatalf("content_block_delta for index %d with no open block (delta past stop): %+v", *e.Index, e.Delta)
+					}
+					if e.Delta != nil && e.Delta.Type == AnthropicStreamDeltaTypeInputJSON && e.Delta.PartialJSON != nil && *e.Delta.PartialJSON == `"echo hi"}` {
+						sawToolArgs = true
+					}
+				case AnthropicStreamEventTypeContentBlockStop:
+					delete(openBlocks, *e.Index)
+				}
+			}
+		}
+	}
+	if !sawToolArgs {
+		t.Fatal("tool arguments carried alongside the trailing content were not emitted")
+	}
+	if len(openBlocks) != 0 {
+		t.Fatalf("blocks left open: %v", openBlocks)
+	}
+	if misses := getOrCreateAnthropicToResponsesStreamState(ctx).blockIndexMisses; len(misses) != 0 {
+		t.Fatalf("block index misses: %v", misses)
+	}
+}
