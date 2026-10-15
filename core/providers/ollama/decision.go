@@ -64,7 +64,7 @@ func extractOllamaDecisionImages(input schemas.DecisionInput) (schemas.DecisionI
 		}
 		parts := make([]schemas.DecisionInputPart, 0, len(message.Content.Parts))
 		for _, part := range message.Content.Parts {
-			if part.Type != schemas.DecisionInputPartTypeImage || part.IsAsset() {
+			if part.Type != schemas.DecisionInputPartTypeImage {
 				parts = append(parts, part)
 				continue
 			}
@@ -89,7 +89,7 @@ func extractOllamaDecisionImages(input schemas.DecisionInput) (schemas.DecisionI
 func hasOllamaDecisionImage(messages []schemas.DecisionInputMessage) bool {
 	for _, message := range messages {
 		for _, part := range message.Content.Parts {
-			if part.Type == schemas.DecisionInputPartTypeImage && !part.IsAsset() {
+			if part.Type == schemas.DecisionInputPartTypeImage {
 				return true
 			}
 		}

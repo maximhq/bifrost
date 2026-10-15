@@ -373,19 +373,6 @@ func TestToCloudflareDecisionRequest_KeepsStructuredInput(t *testing.T) {
 	}
 }
 
-// Images sent by reference are sent as Typesafe's assets, for Clef to accept or
-// reject, and never moved into Clef's images.
-func TestToCloudflareDecisionRequest_SendsAssets(t *testing.T) {
-	asset := schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: []byte("\x89PNG\r\n\x1a\n")}
-	native, err := cloudflare.ToCloudflareDecisionRequest(newDecisionRequest("clef-flash", schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{userMessage(textPart("Same as r-a?"), asset)}}))
-	if err != nil {
-		t.Fatalf("convert: %v", err)
-	}
-	if _, ok := native.Assets["r-a"]; !ok || len(native.Images) != 0 || native.State != "Same as r-a?" {
-		t.Errorf("assets = %v, images = %v, state = %#v", native.Assets, native.Images, native.State)
-	}
-}
-
 func TestToCloudflareDecisionRequest_RejectsUnreadableParts(t *testing.T) {
 	for name, part := range map[string]schemas.DecisionInputPart{
 		"image without url": {Type: schemas.DecisionInputPartTypeImage},

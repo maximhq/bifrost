@@ -56,7 +56,7 @@ func splitDecisionImages(input schemas.DecisionInput) (schemas.DecisionInput, []
 		}
 		parts := make([]schemas.DecisionInputPart, 0, len(message.Content.Parts))
 		for _, part := range message.Content.Parts {
-			if part.Type != schemas.DecisionInputPartTypeImage || part.IsAsset() {
+			if part.Type != schemas.DecisionInputPartTypeImage {
 				parts = append(parts, part)
 				continue
 			}

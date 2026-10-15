@@ -190,19 +190,6 @@ func TestToOllamaDecisionRequest_RejectsImageWithoutURL(t *testing.T) {
 	require.Error(t, err)
 }
 
-// Images sent by reference are sent as Typesafe's assets, for Ollama to accept or
-// reject, and never as inline images.
-func TestToOllamaDecisionRequest_SendsAssets(t *testing.T) {
-	t.Parallel()
-	native, err := ollama.ToOllamaDecisionRequest(newOllamaDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
-		ollamaUserMessage(ollamaTextPart("Same as r-a?"), schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: []byte("\x89PNG\r\n\x1a\n")}),
-	}}))
-	require.NoError(t, err)
-	require.Contains(t, native.Assets, "r-a")
-	require.Empty(t, native.Images)
-	require.Equal(t, "Same as r-a?", native.State)
-}
-
 // keep_alive and native images are Ollama's own fields, so they are lifted out
 // of extra params into typed fields without the passthrough flag, and native
 // images follow the ones taken from image parts. Raw JSON values, as the

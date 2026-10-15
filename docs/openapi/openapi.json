@@ -115978,7 +115978,7 @@
           },
           "id": {
             "type": "string",
-            "description": "Typesafe only. Sends the image by reference, as one of Typesafe's `assets`, placed wherever this ID is written in the input, instructions, or criteria instead of as evidence itself. The file goes in `data`. Other providers receive it as an asset too and accept or reject it themselves."
+            "description": "Typesafe only. Sends the image by reference, as one of Typesafe's `assets`, placed wherever this ID is written in the input, instructions, or criteria instead of as evidence itself. The file goes in `data`. Other providers do not read images sent by reference yet."
           },
           "data": {
             "type": "string",

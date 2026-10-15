@@ -5611,9 +5611,6 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 		for _, part := range message.Content.Parts {
 			switch part.Type {
 			case schemas.DecisionInputPartTypeImage:
-				if part.IsAsset() {
-					break
-				}
 				if part.ImageURL == nil || *part.ImageURL == "" {
 					return schemas.DecisionInput{}, nil, InvalidRequestErrorf("decision input carries an input_image part without an image_url")
 				}
@@ -5641,7 +5638,7 @@ func ExtractDecisionImages(input schemas.DecisionInput) (textOnly schemas.Decisi
 func hasDecisionImage(messages []schemas.DecisionInputMessage) bool {
 	for _, message := range messages {
 		for _, part := range message.Content.Parts {
-			if part.Type == schemas.DecisionInputPartTypeImage && !part.IsAsset() {
+			if part.Type == schemas.DecisionInputPartTypeImage {
 				return true
 			}
 		}

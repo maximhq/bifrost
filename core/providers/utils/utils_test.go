@@ -4131,24 +4131,6 @@ func TestExtractDecisionImages_LeavesImageFreeInputsAlone(t *testing.T) {
 // TestExtractDecisionImages_SendsPlainTextAndImageItems pins the state layout: text as
 // plain strings and images as image_url items, in their original order across messages,
 // with roles dropped. Message objects would reach the model as JSON text.
-// TestExtractDecisionImages_LeavesAssetParts pins that an image sent by ID stays in
-// the input for the Typesafe converter to send as an asset, and is never sent as an
-// inline image, which would make an example image part of the evidence.
-func TestExtractDecisionImages_LeavesAssetParts(t *testing.T) {
-	asset := schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), Data: []byte("\x89PNG\r\n\x1a\n")}
-	input := schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{decisionUserMessage(decisionTextPart("Same as r-a?"), asset)}}
-	textOnly, state, err := ExtractDecisionImages(input)
-	if err != nil || state != nil || !textOnly.HasAssetParts() {
-		t.Fatalf("textOnly = %+v, state = %v, err = %v; want the input unchanged", textOnly, state, err)
-	}
-
-	inline := decisionImagePart("data:image/png;base64,iVBORw0KGgo=", nil)
-	textOnly, state, err = ExtractDecisionImages(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{decisionUserMessage(decisionTextPart("Compare"), inline, asset)}})
-	if err != nil || len(state.([]interface{})) != 2 || !textOnly.HasAssetParts() {
-		t.Fatalf("textOnly = %+v, state = %v, err = %v; want the inline image as an item and the asset kept", textOnly, state, err)
-	}
-}
-
 func TestExtractDecisionImages_SendsPlainTextAndImageItems(t *testing.T) {
 	second := "data:image/jpeg;base64,/9j/4AAQ"
 	input := schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
