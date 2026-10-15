@@ -48,6 +48,33 @@ func IsLockNotAvailableError(err error) bool {
 	return strings.Contains(err.Error(), "SQLSTATE "+sqlStateLockNotAvailable)
 }
 
+// MigrationLockRetryOptions returns the step-level retry options a store's
+// config asks for: its migration_lock_retry_budget when set and valid, and
+// otherwise the package default. An invalid or non-positive value is logged and
+// ignored rather than failing boot. A nil config yields the default.
+func MigrationLockRetryOptions(config *Config, logger schemas.Logger) LockRetryOptions {
+	if config == nil || config.MigrationLockRetryBudget == "" {
+		return LockRetryOptions{}
+	}
+	d, err := time.ParseDuration(config.MigrationLockRetryBudget)
+	if err != nil || d <= 0 {
+		if logger != nil {
+			logger.Warn("postgres: invalid migration_lock_retry_budget %q; using default %s", config.MigrationLockRetryBudget, DefaultLockRetryBudget)
+		}
+		return LockRetryOptions{}
+	}
+	return LockRetryOptions{Budget: d}
+}
+
+// WithBudgetFallback returns opts with fallback's budget filled in where opts
+// has none, so a test or caller override keeps precedence over configuration.
+func (opts LockRetryOptions) WithBudgetFallback(fallback LockRetryOptions) LockRetryOptions {
+	if opts.Budget <= 0 {
+		opts.Budget = fallback.Budget
+	}
+	return opts
+}
+
 // LockRetryOptions tunes RunWithLockRetry. Zero values take the package defaults.
 type LockRetryOptions struct {
 	// Budget is the total time spent retrying; DefaultLockRetryBudget when zero.
@@ -56,8 +83,10 @@ type LockRetryOptions struct {
 	InitialBackoff time.Duration
 	// MaxBackoff caps the wait between attempts.
 	MaxBackoff time.Duration
-	// Describe, when set, is called once the budget is exhausted to add context
-	// (typically the sessions holding the contended lock) to the final error.
+	// Describe, when set, is called on the first lock timeout (logged with the
+	// retry warning, so operators see what is blocking while there is still time
+	// to act) and once the budget is exhausted to add context (typically the
+	// sessions holding the contended lock) to the final error.
 	Describe func(ctx context.Context) string
 }
 
@@ -103,6 +132,11 @@ func RunWithLockRetry(ctx context.Context, logger schemas.Logger, label string, 
 		if logger != nil {
 			logger.Warn("%s: lock timeout on attempt %d (%v); retrying in %s (%s of %s retry budget left)",
 				label, attempt, err, wait, remaining.Round(time.Second), budget)
+			if attempt == 1 && opts.Describe != nil {
+				if d := opts.Describe(context.WithoutCancel(ctx)); d != "" {
+					logger.Warn("%s: blocked by:\n%s", label, d)
+				}
+			}
 		}
 		select {
 		case <-ctx.Done():
