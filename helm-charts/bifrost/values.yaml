@@ -1758,7 +1758,7 @@ storage:
     # Resolves "vault.<path>" references in config fields at load time.
     # vaultStore:
     #   enabled: true
-    #   type: aws-secrets-manager  # Options: aws-secrets-manager, gcp-secret-manager, hashicorp-vault
+    #   type: aws-secrets-manager  # Options: aws-secrets-manager, gcp-secret-manager, hashicorp-vault, azure-key-vault
     #   prefix: bifrost             # Path prefix applied to every secret (default: bifrost)
     #   accessMode: read_only       # read_only or read_and_write
     #
@@ -1784,6 +1784,16 @@ storage:
     #     mountPath: secret         # KV v2 mount path
     #     roleId: ""                # AppRole role_id
     #     secretId: ""              # AppRole secret_id
+    #     kubernetesRole: ""        # Vault role for Kubernetes auth (from vault write auth/<mount>/role/<name>); setting it enables login with the pod's service account token
+    #     kubernetesMountPath: kubernetes  # Vault auth mount for Kubernetes (path from "vault auth list", without "auth/"); change only if enabled at a custom path
+    #     kubernetesTokenPath: ""   # Defaults to /var/run/secrets/kubernetes.io/serviceaccount/token
+    #
+    #   # Azure Key Vault
+    #   azure:
+    #     vaultUrl: https://my-vault.vault.azure.net
+    #     tenantId: ""              # Required with clientId/clientSecret
+    #     clientId: ""              # Service principal; omit to use DefaultAzureCredential
+    #     clientSecret: ""          # (workload identity / managed identity)
 
   # Logs store settings
   logsStore:

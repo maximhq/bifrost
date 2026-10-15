@@ -5445,7 +5445,7 @@
                 },
                 "type": {
                   "type": "string",
-                  "enum": ["aws-secrets-manager", "gcp-secret-manager", "hashicorp-vault"]
+                  "enum": ["aws-secrets-manager", "gcp-secret-manager", "hashicorp-vault", "azure-key-vault"]
                 },
                 "prefix": {
                   "type": "string"
@@ -5485,8 +5485,23 @@
                     "namespace": { "type": "string" },
                     "mountPath": { "type": "string" },
                     "roleId": { "type": "string" },
-                    "secretId": { "type": "string" }
+                    "secretId": { "type": "string" },
+                    "kubernetesRole": { "type": "string" },
+                    "kubernetesMountPath": { "type": "string" },
+                    "kubernetesTokenPath": { "type": "string" }
                   },
+                  "additionalProperties": false
+                },
+                "azure": {
+                  "type": "object",
+                  "description": "Azure Key Vault configuration",
+                  "properties": {
+                    "vaultUrl": { "type": "string", "minLength": 1 },
+                    "tenantId": { "type": "string" },
+                    "clientId": { "type": "string" },
+                    "clientSecret": { "type": "string" }
+                  },
+                  "required": ["vaultUrl"],
                   "additionalProperties": false
                 }
               },
