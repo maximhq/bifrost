@@ -24,6 +24,7 @@ func setupOAuth2TestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableOAuth2Client{},
 		&tables.TableOAuth2AuthorizeRequest{},
 		&tables.TableOAuth2RefreshToken{},
+		&tables.TableOAuth2ManagedClient{},
 	))
 	return s
 }
@@ -1042,4 +1043,62 @@ func assertTextColumn(t *testing.T, db *gorm.DB, model any, column string) {
 		return
 	}
 	t.Errorf("%s column not found", column)
+}
+
+// TestOAuth2ManagedClients_CRUD covers lookup by a URL-shaped client_id, the
+// duplicate guard, the hook-free update and last-used stamping.
+func TestOAuth2ManagedClients_CRUD(t *testing.T) {
+	s := setupOAuth2TestStore(t)
+	ctx := context.Background()
+	cimd := "https://claude.ai/oauth/claude-code-client-metadata"
+	client := &tables.TableOAuth2ManagedClient{
+		ID: "mc-1", ClientID: cimd, Name: "Claude Code", Identity: tables.ManagedClientIdentityVK,
+		VirtualKeyID: "vk-1", CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	require.NoError(t, s.CreateOAuth2ManagedClient(ctx, client))
+	assert.ErrorIs(t, s.CreateOAuth2ManagedClient(ctx, &tables.TableOAuth2ManagedClient{
+		ID: "mc-2", ClientID: cimd, Identity: tables.ManagedClientIdentityVK, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}), ErrAlreadyExists)
+
+	got, err := s.GetOAuth2ManagedClientByClientID(ctx, cimd)
+	require.NoError(t, err)
+	assert.Equal(t, "mc-1", got.ID)
+	assert.Equal(t, tables.ManagedClientIDHash(cimd), got.ClientIDHash)
+	assert.False(t, got.HasSecret())
+	_, err = s.GetOAuth2ManagedClientByClientID(ctx, "unknown")
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	renamed, disabled := "renamed", true
+	require.NoError(t, s.UpdateOAuth2ManagedClient(ctx, "mc-1", tables.OAuth2ManagedClientPatch{Name: &renamed, Disabled: &disabled}))
+	reloaded, err := s.GetOAuth2ManagedClientByID(ctx, "mc-1")
+	require.NoError(t, err)
+	assert.Equal(t, "renamed", reloaded.Name)
+	assert.True(t, reloaded.Disabled)
+	assert.False(t, reloaded.HasSecret())
+	assert.Equal(t, tables.ManagedClientIDHash(cimd), reloaded.ClientIDHash, "update must not rewrite the lookup hash")
+
+	// A secret-only patch leaves every other column alone, so a rotation that
+	// raced a disable cannot re-enable the client.
+	hash := "abc"
+	require.NoError(t, s.UpdateOAuth2ManagedClient(ctx, "mc-1", tables.OAuth2ManagedClientPatch{ClientSecretHash: &hash}))
+	reloaded, err = s.GetOAuth2ManagedClientByID(ctx, "mc-1")
+	require.NoError(t, err)
+	assert.True(t, reloaded.HasSecret())
+	assert.Equal(t, "renamed", reloaded.Name)
+	assert.True(t, reloaded.Disabled)
+
+	usedAt := time.Now().Truncate(time.Second)
+	require.NoError(t, s.TouchOAuth2ManagedClientLastUsed(ctx, "mc-1", usedAt))
+	reloaded, err = s.GetOAuth2ManagedClientByID(ctx, "mc-1")
+	require.NoError(t, err)
+	require.NotNil(t, reloaded.LastUsedAt)
+	assert.WithinDuration(t, usedAt, *reloaded.LastUsedAt, time.Second)
+
+	list, err := s.ListOAuth2ManagedClients(ctx)
+	require.NoError(t, err)
+	assert.Len(t, list, 1)
+
+	require.NoError(t, s.DeleteOAuth2ManagedClient(ctx, "mc-1"))
+	assert.ErrorIs(t, s.DeleteOAuth2ManagedClient(ctx, "mc-1"), ErrNotFound)
+	assert.ErrorIs(t, s.UpdateOAuth2ManagedClient(ctx, "mc-1", tables.OAuth2ManagedClientPatch{Name: &renamed}), ErrNotFound)
 }

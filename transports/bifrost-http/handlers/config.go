@@ -513,6 +513,11 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusForbidden, "changing allowed_redirect_uris requires an authenticated admin session")
 			return
 		}
+		// The trusted issuer decides who can mint /mcp tokens, so it gets the same guard.
+		if isAuthBypassed(ctx) && managedAuthTrustChanged(currentConfig.OAuth2ServerConfig, effectiveOAuth2Config) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing managed_auth requires an authenticated admin session")
+			return
+		}
 		for _, uri := range effectiveOAuth2Config.AllowedRedirectURIs {
 			if uri == configstoreTables.AllowAnyRedirectURI {
 				continue
@@ -551,6 +556,20 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		(effectiveOAuth2Config == nil || !effectiveOAuth2Config.IssuerURL.IsSet() || effectiveOAuth2Config.IssuerURL.GetValue() == "") {
 		SendError(ctx, fasthttp.StatusBadRequest, "oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
 		return
+	}
+
+	// Managed auth (jwt-bearer / ID-JAG) issues tokens from the same issuer, so it
+	// needs discovery on; disabled settings may still be stored for staging.
+	if effectiveOAuth2Config != nil && effectiveOAuth2Config.ManagedAuth != nil {
+		if err := effectiveOAuth2Config.ManagedAuth.Validate(); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		if effectiveOAuth2Config.ManagedAuth.Enabled &&
+			effectiveAuthMode != configstoreTables.MCPServerAuthModeOAuth && effectiveAuthMode != configstoreTables.MCPServerAuthModeBoth {
+			SendError(ctx, fasthttp.StatusBadRequest, "managed_auth requires mcp_server_auth_mode to be oauth or both")
+			return
+		}
 	}
 
 	// Cap auth_code_ttl so a leaked one-time code can't stay valid for long.
@@ -1683,4 +1702,18 @@ func globalProxyInterceptionChanges(old *configstoreTables.GlobalProxyConfig, ne
 		changed = append(changed, "skip_tls_verify")
 	}
 	return changed
+}
+
+// managedAuthTrustChanged reports whether an update changes who managed auth
+// trusts, or whether unknown subjects may be provisioned as users.
+func managedAuthTrustChanged(prev, next *configstoreTables.OAuth2ServerConfig) bool {
+	var p, n configstoreTables.ManagedAuthConfig
+	if prev != nil && prev.ManagedAuth != nil {
+		p = *prev.ManagedAuth
+	}
+	if next != nil && next.ManagedAuth != nil {
+		n = *next.ManagedAuth
+	}
+	return p.Enabled != n.Enabled || p.TrustedIssuer != n.TrustedIssuer || p.JWKSURL != n.JWKSURL ||
+		p.DisableUserProvisioning != n.DisableUserProvisioning
 }

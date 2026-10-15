@@ -1115,6 +1115,17 @@ type ConfigStore interface {
 	CreateOAuth2Client(ctx context.Context, client *tables.TableOAuth2Client) error
 	GetOAuth2ClientByClientID(ctx context.Context, clientID string) (*tables.TableOAuth2Client, error)
 
+	// OAuth2 managed clients (jwt-bearer / ID-JAG grant)
+	ListOAuth2ManagedClients(ctx context.Context) ([]tables.TableOAuth2ManagedClient, error)
+	GetOAuth2ManagedClientByID(ctx context.Context, id string) (*tables.TableOAuth2ManagedClient, error)
+	// GetOAuth2ManagedClientByClientID looks a client up by its client_id; ErrNotFound when unknown.
+	GetOAuth2ManagedClientByClientID(ctx context.Context, clientID string) (*tables.TableOAuth2ManagedClient, error)
+	CreateOAuth2ManagedClient(ctx context.Context, client *tables.TableOAuth2ManagedClient) error
+	// UpdateOAuth2ManagedClient writes only the patch's set fields; ErrNotFound when the id is unknown.
+	UpdateOAuth2ManagedClient(ctx context.Context, id string, patch tables.OAuth2ManagedClientPatch) error
+	DeleteOAuth2ManagedClient(ctx context.Context, id string) error
+	TouchOAuth2ManagedClientLastUsed(ctx context.Context, id string, usedAt time.Time) error
+
 	// OAuth2 authorize requests
 	CreateOAuth2AuthorizeRequest(ctx context.Context, req *tables.TableOAuth2AuthorizeRequest) error
 	GetOAuth2AuthorizeRequestByID(ctx context.Context, id string) (*tables.TableOAuth2AuthorizeRequest, error)

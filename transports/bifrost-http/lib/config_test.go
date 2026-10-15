@@ -2836,6 +2836,43 @@ func TestValidateClientConfig_AllowedRedirectURIsWildcard(t *testing.T) {
 	}
 }
 
+// TestValidateClientConfig_ManagedAuth covers the load-time managed_auth checks
+// that config.json and stored rows must pass, mirroring PUT /api/config.
+func TestValidateClientConfig_ManagedAuth(t *testing.T) {
+	withManaged := func(mode tables.MCPServerAuthMode, ma *tables.ManagedAuthConfig) *configstore.ClientConfig {
+		return &configstore.ClientConfig{MCPServerAuthMode: mode, OAuth2ServerConfig: &tables.OAuth2ServerConfig{
+			IssuerURL: schemas.NewSecretVar("https://bifrost.example.com"), ManagedAuth: ma,
+		}}
+	}
+	okta := "https://acme.okta.com"
+	tests := []struct {
+		name    string
+		cc      *configstore.ClientConfig
+		wantErr string
+	}{
+		{"enabled in both mode", withManaged(tables.MCPServerAuthModeBoth, &tables.ManagedAuthConfig{Enabled: true, TrustedIssuer: okta}), ""},
+		{"disabled without issuer is staged", withManaged(tables.MCPServerAuthModeHeaders, &tables.ManagedAuthConfig{}), ""},
+		{"enabled in headers mode", withManaged(tables.MCPServerAuthModeHeaders, &tables.ManagedAuthConfig{Enabled: true, TrustedIssuer: okta}), "mcp_server_auth_mode"},
+		{"enabled without issuer", withManaged(tables.MCPServerAuthModeOAuth, &tables.ManagedAuthConfig{Enabled: true}), "trusted_issuer"},
+		{"http issuer", withManaged(tables.MCPServerAuthModeOAuth, &tables.ManagedAuthConfig{Enabled: true, TrustedIssuer: "http://acme.okta.com"}), "trusted_issuer"},
+		{"loopback http issuer", withManaged(tables.MCPServerAuthModeOAuth, &tables.ManagedAuthConfig{Enabled: true, TrustedIssuer: "http://127.0.0.1:9000"}), ""},
+		{"http jwks", withManaged(tables.MCPServerAuthModeOAuth, &tables.ManagedAuthConfig{Enabled: true, TrustedIssuer: okta, JWKSURL: "http://keys.example.com"}), "jwks_url"},
+		{"ttl too short", withManaged(tables.MCPServerAuthModeOAuth, &tables.ManagedAuthConfig{Enabled: true, TrustedIssuer: okta, AccessTokenTTL: 10}), "access_token_ttl"},
+		{"ttl too long", withManaged(tables.MCPServerAuthModeOAuth, &tables.ManagedAuthConfig{Enabled: true, TrustedIssuer: okta, AccessTokenTTL: 90000}), "access_token_ttl"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateClientConfig(tc.cc)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
 // TestValidateClientConfig_IssuerURLRequiredForDiscovery locks in that OAuth
 // discovery (mode oauth|both) cannot be enabled without a pinned issuer_url -
 // left unset, every issuer reference would derive from the unauthenticated,

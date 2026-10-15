@@ -567,6 +567,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_a2a_private_allowlist_column"}, run: migrationAddA2APrivateAllowlistColumn},
 	{IDs: []string{"add_agent_destination_policy_columns"}, run: migrationAddAgentDestinationPolicyColumns},
 	{IDs: []string{"drop_agent_registration_options"}, run: migrationDropAgentRegistrationOptions},
+	{IDs: []string{"add_oauth2_managed_clients_table"}, run: migrationAddOAuth2ManagedClientsTable},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16275,6 +16276,31 @@ func migrationDropAgentRegistrationOptions(ctx context.Context, db *gorm.DB, log
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("drop_agent_registration_options is non-rollbackable: removed registration values cannot be recovered")
+		},
+	})
+}
+
+// migrationAddOAuth2ManagedClientsTable creates oauth2_managed_clients, the
+// administrator-registered clients allowed to use the jwt-bearer (ID-JAG) grant.
+func migrationAddOAuth2ManagedClientsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "add_oauth2_managed_clients_table",
+		Migrate: func(tx *gorm.DB) error {
+			mg := tx.WithContext(ctx).Migrator()
+			if mg.HasTable(&tables.TableOAuth2ManagedClient{}) {
+				return nil
+			}
+			if err := mg.CreateTable(&tables.TableOAuth2ManagedClient{}); err != nil {
+				return fmt.Errorf("create oauth2_managed_clients table: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			mg := tx.WithContext(ctx).Migrator()
+			if !mg.HasTable(&tables.TableOAuth2ManagedClient{}) {
+				return nil
+			}
+			return mg.DropTable(&tables.TableOAuth2ManagedClient{})
 		},
 	})
 }

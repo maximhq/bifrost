@@ -578,6 +578,38 @@
               "type": "boolean",
               "default": false,
               "description": "When true, the OAuth consent flow no longer offers or accepts virtual-key identity and existing virtual-key grants lose access immediately (rejected at request time and unable to refresh). Honored only when an identity provider is configured. Only valid when mcp_server_auth_mode is 'oauth'."
+            },
+            "managed_auth": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Accept the jwt-bearer grant with an IdP-issued ID-JAG at /oauth2/token (MCP Enterprise-Managed Authorization / Okta Cross App Access). Requires mcp_server_auth_mode 'both' or 'oauth' and a trusted_issuer. Clients are registered through /api/oauth2/managed-clients."
+                },
+                "trusted_issuer": {
+                  "type": "string",
+                  "description": "The only identity provider issuer whose ID-JAGs are accepted (for Okta, the org authorization server, e.g. https://acme.okta.com). Must be https."
+                },
+                "jwks_url": {
+                  "type": "string",
+                  "description": "Overrides the JWKS discovered from trusted_issuer. Must be https."
+                },
+                "access_token_ttl": {
+                  "type": "integer",
+                  "minimum": 60,
+                  "maximum": 86400,
+                  "default": 86400,
+                  "description": "Lifetime in seconds of access tokens minted from an ID-JAG (default 86400). No refresh token is issued; on expiry the client re-presents its ID-JAG or fetches a new one from the IdP. Okta limits ID-JAG issuance per user per month, so very short lifetimes can exhaust that quota."
+                },
+                "disable_user_provisioning": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "For managed clients whose tokens act as the signed-in user: refuse an assertion whose subject matches no existing Bifrost user instead of creating the user on first use. Enterprise only."
+                }
+              },
+              "additionalProperties": false,
+              "description": "Enterprise-managed authorization (ID-JAG) settings for /mcp."
             }
           },
           "additionalProperties": false,

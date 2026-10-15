@@ -1504,6 +1504,15 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 			return fmt.Errorf("oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
 		}
 	}
+	// Same checks PUT /api/config applies; config.json reaches the runtime only through here.
+	if oc := cc.OAuth2ServerConfig; oc != nil && oc.ManagedAuth != nil {
+		if err := oc.ManagedAuth.Validate(); err != nil {
+			return fmt.Errorf("oauth2_server_config.%w", err)
+		}
+		if oc.ManagedAuth.Enabled && !cc.IsMCPOAuthDiscoveryEnabled() {
+			return fmt.Errorf("oauth2_server_config.managed_auth requires mcp_server_auth_mode to be oauth or both")
+		}
+	}
 	// Entries match exactly, so a partial wildcard would silently approve nothing.
 	// PUT /api/config rejects one; config.json and older DB rows reach here.
 	if oc := cc.OAuth2ServerConfig; oc != nil {
