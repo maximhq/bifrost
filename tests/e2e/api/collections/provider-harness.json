@@ -60,7 +60,8 @@
           "// Otherwise newman reports it as passing (because of an early return) which is misleading next to a failing status.",
           "var __u = (pm.request && pm.request.url && pm.request.url.toString()) || '';",
           "// Management API (/api/...) and OAuth (/oauth2/...) responses carry no inference content, so the shape check does not apply to them; those rows assert their own bodies.",
-          "var __skipShape = __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
+          "// Rows tagged [NO-CONTENT] expect an empty reply (a provider refusal) and assert their own bodies.",
+          "var __skipShape = __rn.indexOf('[NO-CONTENT]') !== -1 || __u.indexOf('/health') !== -1 || __u.indexOf('/.well-known/') !== -1 || __u.indexOf('/api/') !== -1 || __u.indexOf('/oauth2/') !== -1 || (__u.indexOf('/files/') !== -1 && (__u.indexOf('/content?') !== -1 || __u.slice(-8) === '/content')) || __u.indexOf('storage.googleapis.com') !== -1 || __u.indexOf('batchPredictionJobs') !== -1 || (__u.indexOf('/genai/v1beta/batches/') !== -1 && __u.indexOf(':cancel') !== -1) || (__u.indexOf('cachedContents') !== -1 && (pm.request.method !== 'GET' || __u.indexOf('/cachedContents/') !== -1)) || __u.indexOf('/v1/containers') !== -1 || __u.indexOf('/upload/v1beta/files') !== -1 || (__u.indexOf('/genai/v1beta/files/') !== -1 && pm.request.method === 'DELETE') || (__u.indexOf('/model-invocation-job/') !== -1 && __u.slice(-5) === '/stop') || (__u.indexOf('/messages/batches/') !== -1 && __u.indexOf('/results') !== -1) || __u.indexOf('/tunedModels') !== -1 || __u.indexOf('/bedrock_passthrough/') !== -1 || (__u.indexOf('/interactions/') !== -1 && pm.request.method === 'DELETE');",
           "if (pm.response.code < 400 && !__skipShape && (pm.response.headers.get('content-type') || '').indexOf('text/event-stream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('vnd.amazon.eventstream') === -1 && (pm.response.headers.get('content-type') || '').indexOf('audio/') === -1) {",
           "  pm.test('Response has content (text or tool_use)', function () {",
           "    var j;",
@@ -271526,6 +271527,366 @@
                   "    pm.expect(fc.name, 'functionCall name lost: ' + JSON.stringify(fc)).to.eql('write_file');",
                   "    pm.expect(fc.args, 'functionCall args: ' + JSON.stringify(fc)).to.be.an('object');",
                   "  });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "246. Gemini blocked prompt reports failed, not an empty success (prompt block)",
+      "description": "When Gemini refuses the prompt itself it returns HTTP 200 with no candidates and the reason only in promptFeedback ({\"promptFeedback\":{\"blockReason\":\"SAFETY\",\"blockReasonMessage\":\"...\"}}). The Gemini converters (reused by Vertex) only read candidates, so on /v1/responses the turn normalized to status \"completed\" with empty output, no error and zero tokens, which clients read as the model saying nothing. The stream ended in response.incomplete with no reason, and /v1/chat/completions reported finish_reason \"stop\" with empty content.\n\nThe fix keeps the provider's HTTP 200 and converts the block: Responses reports status \"failed\" with error {code: invalid_prompt, message: blockReasonMessage} (invalid_prompt is OpenAI's ResponseError code for a refused prompt; content_filter is not in that enum) and keeps stop_reason content_filter, the stream closes on the block chunk with a response.failed event carrying that response (candidate-level blocks keep their existing response.completed terminal), and chat finishes with content_filter.\n\nCases: the reporter's Vertex gemini-4-argon repro (write_file tool, tool_choice auto) on /openai/v1/responses, /v1/responses and /v1/chat/completions, unary and streamed. Each case has a trigger check that fails loudly if Gemini stops refusing this prompt (the case then needs a new trigger, Bifrost is not at fault) and the conversion check, red before the fix.\n\n/genai and /anthropic render the same converter output and are not pinned here: unary /genai has no promptFeedback home on the Responses egress (unchanged by this fix), and on the stream their existing response.failed rendering applies (an Anthropic error event, a GenAI promptFeedback carrying the block message).",
+      "item": [
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses blocked prompt: prompt block reported, not an empty success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-4-argon\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Call the write_file tool to create /tmp/probe.txt with content OK.\"}]}],\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('prompt block vertex /openai/v1/responses: 200 (provider status kept)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var output = Array.isArray(body.output) ? body.output : [];",
+                  "var outTokens = body.usage && typeof body.usage.output_tokens === 'number' ? body.usage.output_tokens : 0;",
+                  "var blocked = output.length === 0 && outTokens === 0;",
+                  "pm.test('prompt block vertex /openai/v1/responses: Gemini blocked the prompt (trigger check: red here means Gemini stopped refusing this prompt, not a Bifrost bug)', function () {",
+                  "  pm.expect(blocked, 'upstream answered instead of blocking: ' + txt.slice(0, 1500)).to.eql(true);",
+                  "});",
+                  "pm.test('prompt block vertex /openai/v1/responses: blocked prompt is status failed with an invalid_prompt error carrying the reason, never an empty completed', function () {",
+                  "  if (!blocked) { return; }",
+                  "  pm.expect(body.status, 'status: ' + txt.slice(0, 1500)).to.eql('failed');",
+                  "  pm.expect(body.error, 'error: ' + txt.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(body.error.code, 'error.code: ' + txt.slice(0, 1500)).to.eql('invalid_prompt');",
+                  "  pm.expect(body.error.message, 'error.message carries the block reason: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-4-argon /openai/v1/responses stream blocked prompt: prompt block reported, not an empty success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-4-argon\",\"stream\":true,\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Call the write_file tool to create /tmp/probe.txt with content OK.\"}]}],\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('prompt block vertex /openai/v1/responses stream: 200 (provider status kept)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var terminal = null;",
+                  "events.forEach(function (e) { if (e.type === 'response.completed' || e.type === 'response.incomplete' || e.type === 'response.failed') { terminal = e; } });",
+                  "var resp = (terminal && terminal.response) || {};",
+                  "var itemsAdded = events.filter(function (e) { return e.type === 'response.output_item.added'; }).length;",
+                  "var outTokens = resp.usage && typeof resp.usage.output_tokens === 'number' ? resp.usage.output_tokens : 0;",
+                  "var blocked = itemsAdded === 0 && outTokens === 0;",
+                  "pm.test('prompt block vertex /openai/v1/responses stream: stream ends with a terminal response event', function () {",
+                  "  pm.expect(terminal, 'no response.completed/incomplete/failed: ' + txt.slice(0, 1500)).to.not.eql(null);",
+                  "});",
+                  "pm.test('prompt block vertex /openai/v1/responses stream: Gemini blocked the prompt (trigger check: red here means Gemini stopped refusing this prompt, not a Bifrost bug)', function () {",
+                  "  pm.expect(blocked, 'upstream answered instead of blocking: ' + txt.slice(0, 1500)).to.eql(true);",
+                  "});",
+                  "pm.test('prompt block vertex /openai/v1/responses stream: blocked prompt ends in response.failed with an invalid_prompt error carrying the reason, never an empty completed', function () {",
+                  "  if (!blocked) { return; }",
+                  "  pm.expect(terminal.type, 'terminal event: ' + txt.slice(0, 1500)).to.eql('response.failed');",
+                  "  pm.expect(resp.status, 'status: ' + txt.slice(0, 1500)).to.eql('failed');",
+                  "  pm.expect(resp.error, 'error: ' + txt.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(resp.error.code, 'error.code: ' + txt.slice(0, 1500)).to.eql('invalid_prompt');",
+                  "  pm.expect(resp.error.message, 'error.message carries the block reason: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-4-argon /v1/responses blocked prompt: prompt block reported, not an empty success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-4-argon\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Call the write_file tool to create /tmp/probe.txt with content OK.\"}]}],\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('prompt block vertex /v1/responses: 200 (provider status kept)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var output = Array.isArray(body.output) ? body.output : [];",
+                  "var outTokens = body.usage && typeof body.usage.output_tokens === 'number' ? body.usage.output_tokens : 0;",
+                  "var blocked = output.length === 0 && outTokens === 0;",
+                  "pm.test('prompt block vertex /v1/responses: Gemini blocked the prompt (trigger check: red here means Gemini stopped refusing this prompt, not a Bifrost bug)', function () {",
+                  "  pm.expect(blocked, 'upstream answered instead of blocking: ' + txt.slice(0, 1500)).to.eql(true);",
+                  "});",
+                  "pm.test('prompt block vertex /v1/responses: blocked prompt is status failed with an invalid_prompt error carrying the reason, never an empty completed', function () {",
+                  "  if (!blocked) { return; }",
+                  "  pm.expect(body.status, 'status: ' + txt.slice(0, 1500)).to.eql('failed');",
+                  "  pm.expect(body.error, 'error: ' + txt.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(body.error.code, 'error.code: ' + txt.slice(0, 1500)).to.eql('invalid_prompt');",
+                  "  pm.expect(body.error.message, 'error.message carries the block reason: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-4-argon /v1/responses stream blocked prompt: prompt block reported, not an empty success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-4-argon\",\"stream\":true,\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Call the write_file tool to create /tmp/probe.txt with content OK.\"}]}],\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"name\":\"write_file\",\"description\":\"Write content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('prompt block vertex /v1/responses stream: 200 (provider status kept)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var terminal = null;",
+                  "events.forEach(function (e) { if (e.type === 'response.completed' || e.type === 'response.incomplete' || e.type === 'response.failed') { terminal = e; } });",
+                  "var resp = (terminal && terminal.response) || {};",
+                  "var itemsAdded = events.filter(function (e) { return e.type === 'response.output_item.added'; }).length;",
+                  "var outTokens = resp.usage && typeof resp.usage.output_tokens === 'number' ? resp.usage.output_tokens : 0;",
+                  "var blocked = itemsAdded === 0 && outTokens === 0;",
+                  "pm.test('prompt block vertex /v1/responses stream: stream ends with a terminal response event', function () {",
+                  "  pm.expect(terminal, 'no response.completed/incomplete/failed: ' + txt.slice(0, 1500)).to.not.eql(null);",
+                  "});",
+                  "pm.test('prompt block vertex /v1/responses stream: Gemini blocked the prompt (trigger check: red here means Gemini stopped refusing this prompt, not a Bifrost bug)', function () {",
+                  "  pm.expect(blocked, 'upstream answered instead of blocking: ' + txt.slice(0, 1500)).to.eql(true);",
+                  "});",
+                  "pm.test('prompt block vertex /v1/responses stream: blocked prompt ends in response.failed with an invalid_prompt error carrying the reason, never an empty completed', function () {",
+                  "  if (!blocked) { return; }",
+                  "  pm.expect(terminal.type, 'terminal event: ' + txt.slice(0, 1500)).to.eql('response.failed');",
+                  "  pm.expect(resp.status, 'status: ' + txt.slice(0, 1500)).to.eql('failed');",
+                  "  pm.expect(resp.error, 'error: ' + txt.slice(0, 1500)).to.be.an('object');",
+                  "  pm.expect(resp.error.code, 'error.code: ' + txt.slice(0, 1500)).to.eql('invalid_prompt');",
+                  "  pm.expect(resp.error.message, 'error.message carries the block reason: ' + txt.slice(0, 1500)).to.be.a('string').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-4-argon /v1/chat/completions blocked prompt: prompt block reported, not an empty success [NO-CONTENT]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-4-argon\",\"messages\":[{\"role\":\"user\",\"content\":\"Call the write_file tool to create /tmp/probe.txt with content OK.\"}],\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"description\":\"Write content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('prompt block vertex /v1/chat/completions: 200 (provider status kept)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json(); } catch (e) {}",
+                  "var choice = (body.choices && body.choices[0]) || {};",
+                  "var msg = choice.message || {};",
+                  "var content = typeof msg.content === 'string' ? msg.content : (Array.isArray(msg.content) && msg.content.length ? JSON.stringify(msg.content) : '');",
+                  "var toolCalls = msg.tool_calls || [];",
+                  "var outTokens = body.usage && typeof body.usage.completion_tokens === 'number' ? body.usage.completion_tokens : 0;",
+                  "var blocked = !content && toolCalls.length === 0 && outTokens === 0;",
+                  "var finish = choice.finish_reason;",
+                  "pm.test('prompt block vertex /v1/chat/completions: Gemini blocked the prompt (trigger check: red here means Gemini stopped refusing this prompt, not a Bifrost bug)', function () {",
+                  "  pm.expect(blocked, 'upstream answered instead of blocking: ' + txt.slice(0, 1500)).to.eql(true);",
+                  "});",
+                  "pm.test('prompt block vertex /v1/chat/completions: blocked prompt finishes content_filter, never an empty stop', function () {",
+                  "  if (!blocked) { return; }",
+                  "  pm.expect(finish, 'finish_reason: ' + txt.slice(0, 1500)).to.eql('content_filter');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "vertex/gemini-4-argon /v1/chat/completions stream blocked prompt: prompt block reported, not an empty success",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"vertex/gemini-4-argon\",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"messages\":[{\"role\":\"user\",\"content\":\"Call the write_file tool to create /tmp/probe.txt with content OK.\"}],\"tool_choice\":\"auto\",\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"description\":\"Write content to a file\",\"parameters\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"}},\"required\":[\"path\",\"content\"]}}}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('prompt block vertex /v1/chat/completions stream: 200 (provider status kept)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var events = txt.split(/\\r?\\n/).filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { return l.slice(5).trim(); }).filter(function (d) { return d && d !== '[DONE]'; }).map(function (d) { try { return JSON.parse(d); } catch (e) { return { unparsed: d }; } });",
+                  "var content = '';",
+                  "var toolCalls = 0;",
+                  "var finish = null;",
+                  "var outTokens = 0;",
+                  "events.forEach(function (e) {",
+                  "  if (e.usage && typeof e.usage.completion_tokens === 'number') { outTokens = e.usage.completion_tokens; }",
+                  "  (e.choices || []).forEach(function (c) {",
+                  "    var d = c.delta || {};",
+                  "    if (typeof d.content === 'string') { content += d.content; }",
+                  "    if (d.tool_calls && d.tool_calls.length) { toolCalls += d.tool_calls.length; }",
+                  "    if (c.finish_reason) { finish = c.finish_reason; }",
+                  "  });",
+                  "});",
+                  "var blocked = !content && toolCalls === 0 && outTokens === 0;",
+                  "pm.test('prompt block vertex /v1/chat/completions stream: stream reports a finish_reason', function () {",
+                  "  pm.expect(finish, 'no finish_reason on any chunk: ' + txt.slice(0, 1500)).to.be.a('string');",
+                  "});",
+                  "pm.test('prompt block vertex /v1/chat/completions stream: Gemini blocked the prompt (trigger check: red here means Gemini stopped refusing this prompt, not a Bifrost bug)', function () {",
+                  "  pm.expect(blocked, 'upstream answered instead of blocking: ' + txt.slice(0, 1500)).to.eql(true);",
+                  "});",
+                  "pm.test('prompt block vertex /v1/chat/completions stream: blocked prompt finishes content_filter, never an empty stop', function () {",
+                  "  if (!blocked) { return; }",
+                  "  pm.expect(finish, 'finish_reason: ' + txt.slice(0, 1500)).to.eql('content_filter');",
                   "});"
                 ]
               }
