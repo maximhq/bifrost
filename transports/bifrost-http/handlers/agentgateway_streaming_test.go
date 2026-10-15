@@ -102,7 +102,7 @@ func TestAgentGatewaySSEStreamsIncrementallyOverFastHTTPRoute(t *testing.T) {
 
 	store := &agentAuthStore{}
 	config := &lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway"), EnforceAuthOnInference: false}}
-	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{AuthPolicy: AgentGatewayAuthPolicy(config)})
+	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }, AuthPolicy: AgentGatewayAuthPolicy(config)})
 	require.NoError(t, err)
 	closeManager := sync.OnceFunc(manager.Close)
 	defer closeManager()

@@ -146,11 +146,11 @@ func TestAgentGatewayPushIngressRoute(t *testing.T) {
 		nil,
 		"",
 		http.DefaultClient,
-		agent.ManagerConfig{ExternalURLProvider: func() string { return "http://gateway" }},
+		agent.ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }, ExternalURLProvider: func() string { return "http://gateway" }},
 	)
 	require.NoError(t, err)
 	defer manager.Close()
-	_, err = manager.Create(context.Background(), agent.CreateRequest{Name: "push-fixture", AgentCardURL: upstream.URL + a2asrv.WellKnownAgentCardPath})
+	_, err = manager.Create(context.Background(), agent.CreateRequest{Name: "push-fixture", CredentialOrigins: []string{"http://unused"}, AgentCardURL: upstream.URL + a2asrv.WellKnownAgentCardPath})
 	require.NoError(t, err)
 
 	h := NewAgentGatewayHandler(manager, nil, &lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway")}}, nil)

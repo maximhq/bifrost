@@ -433,8 +433,12 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
-	// Get current config with proper locking
-	currentConfig := h.store.ClientConfig
+	// Snapshot the live config under the same lock used by reloads and runtime readers.
+	h.store.Mu.RLock()
+	currentSnapshot := *h.store.ClientConfig
+	currentSnapshot.A2APrivateAllowlist = slices.Clone(currentSnapshot.A2APrivateAllowlist)
+	h.store.Mu.RUnlock()
+	currentConfig := &currentSnapshot
 	// Build the update on an independent copy: the live config must not
 	// change until persistence succeeds, or a failed store write would leave
 	// memory ahead of the database. A shallow copy is enough because every
@@ -619,6 +623,19 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	_, a2aAllowlistSent := clientConfigFields["a2a_private_allowlist"]
+	a2aAllowlistChanged := a2aAllowlistSent && !slices.Equal(payload.ClientConfig.A2APrivateAllowlist, currentConfig.A2APrivateAllowlist)
+	if a2aAllowlistChanged {
+		if isAuthBypassed(ctx) {
+			SendError(ctx, fasthttp.StatusForbidden, "changing a2a_private_allowlist requires an authenticated admin session; enable dashboard authentication first")
+			return
+		}
+		if _, err := network.ValidatePrivateTargetAllowlist(payload.ClientConfig.A2APrivateAllowlist); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("a2a_private_allowlist: %v", err))
+			return
+		}
+	}
+
 	var restartReasons []string
 
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {
@@ -687,6 +704,9 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	updatedConfig.MCPEnableTempTokenAuth = payload.ClientConfig.MCPEnableTempTokenAuth
 	if allowlistChanged {
 		updatedConfig.MCPOAuthPrivateAllowlist = payload.ClientConfig.MCPOAuthPrivateAllowlist
+	}
+	if a2aAllowlistChanged {
+		updatedConfig.A2APrivateAllowlist = slices.Clone(payload.ClientConfig.A2APrivateAllowlist)
 	}
 
 	if !slices.Equal(payload.ClientConfig.PrometheusLabels, currentConfig.PrometheusLabels) {

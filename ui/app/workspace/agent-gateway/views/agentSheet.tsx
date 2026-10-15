@@ -1,4 +1,5 @@
-import { mapAgentCard } from "@/lib/utils/agentCard";
+import { configuredAgentEndpointOrigin, mapAgentCard, suggestedAgentEndpoints } from "@/lib/utils/agentCard";
+import { Badge } from "@/components/ui/badge";
 import { getExternalBaseUrl } from "@/app/workspace/mcp-registry/views/mcpUsageGuide/utils";
 import { SectionHeader } from "@/app/workspace/mcp-registry/views/sectionHeader";
 import { VirtualKeySelector } from "@/components/entitySelectors/virtualKeySelector";
@@ -130,6 +131,7 @@ function SettingRow({
 // Collapsed by default; the trigger carries a one-line summary so the closed state still says what is configured.
 function OptionGroup({
 	title,
+	indicator,
 	tooltip,
 	summary,
 	open,
@@ -138,6 +140,7 @@ function OptionGroup({
 	children,
 }: {
 	title: string;
+	indicator?: React.ReactNode;
 	tooltip?: string;
 	summary: string;
 	open: boolean;
@@ -148,8 +151,9 @@ function OptionGroup({
 	return (
 		<Collapsible open={open} onOpenChange={onOpenChange} className="rounded-sm border">
 			<CollapsibleTrigger className="flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left" data-testid={testId}>
-				<span className="flex items-center gap-2 text-sm font-medium">
+				<span className="flex min-h-6 items-center gap-2 text-sm font-medium">
 					{title}
+					{indicator}
 					{tooltip && (
 						<TooltipProvider>
 							<Tooltip>
@@ -208,6 +212,26 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 	);
 	const [virtualKeyIds, setVirtualKeyIds] = useState(agent?.virtual_key_ids ?? []);
 	const [tenant, setTenant] = useState(agent?.tenant ?? "");
+	const [credentialOrigins, setCredentialOrigins] = useState(() => (agent?.credential_origins ?? []).map((value, id) => ({ id, value })));
+	let cardOrigin = "";
+	try {
+		const parsedCardURL = new URL(agentCardUrl);
+		if (parsedCardURL.protocol === "http:" || parsedCardURL.protocol === "https:") cardOrigin = parsedCardURL.origin;
+	} catch {
+		// An incomplete card URL has no allowed origin to display yet.
+	}
+	const nextCredentialOriginId = useRef(credentialOrigins.length);
+	const additionalEndpointCount = credentialOrigins.filter((origin) => origin.value.trim()).length;
+	const allowedEndpointOrigins = new Set(credentialOrigins.map((origin) => configuredAgentEndpointOrigin(origin.value)));
+	const advertisedEndpoints = suggestedAgentEndpoints(agentCardUrl, inspection?.interfaces, []).sort(
+		(left, right) => Number(allowedEndpointOrigins.has(left)) - Number(allowedEndpointOrigins.has(right)),
+	);
+	const suggestedEndpoints = suggestedAgentEndpoints(
+		agentCardUrl,
+		inspection?.interfaces,
+		credentialOrigins.map((origin) => origin.value.trim()),
+	);
+	const [credentialOriginsOpen, setCredentialOriginsOpen] = useState((agent?.credential_origins?.length ?? 0) > 0);
 	const [extensionUris, setExtensionUris] = useState(agent?.extension_uris ?? []);
 	const [advancedOpen, setAdvancedOpen] = useState(!!agent?.tenant || (agent?.extension_uris?.length ?? 0) > 0);
 	const { data: vksData } = useGetVirtualKeysQuery({ limit: 1000 });
@@ -314,6 +338,7 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 			discovery_auth: normalizeAuth(cardAuth),
 			runtime_auth: normalizeAuth({ ...runtimeAuth, advanced: manualMode }),
 			virtual_key_ids: virtualKeyIds,
+			credential_origins: credentialOrigins.map((origin) => origin.value.trim()).filter(Boolean),
 			extension_uris: extensionUris.map((uri) => uri.trim()).filter(Boolean),
 		};
 		try {
@@ -521,6 +546,125 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 						>
 							<TLSFields value={runtimeAuth.tls ?? {}} onChange={(tls) => setRuntimeAuth({ ...runtimeAuth, tls })} />
 						</OptionGroup>
+						<OptionGroup
+							title="Additional agent endpoints"
+							indicator={
+								suggestedEndpoints.length > 0 && (
+									<Badge variant="destructive" data-testid="agent-endpoints-approval-needed">
+										{suggestedEndpoints.length} {suggestedEndpoints.length === 1 ? "needs" : "need"} approval
+									</Badge>
+								)
+							}
+							tooltip="Use an HTTP(S) address with a scheme and optional port, without a path, credentials, query, or fragment. Bifrost may send agent credentials to these addresses. Private addresses also need permission in Agent Settings."
+							summary={additionalEndpointCount ? `${additionalEndpointCount} added` : "None added"}
+							open={credentialOriginsOpen}
+							onOpenChange={setCredentialOriginsOpen}
+							testId="agent-credential-origins-toggle"
+						>
+							<p className="text-muted-foreground text-xs">
+								Allow Bifrost to call this agent at another address. Only needed when its runtime endpoint differs from its agent card
+								address. Private addresses must also be in the Private Network Allowlist in{" "}
+								<a href="/workspace/config/agent-gateway" className="text-primary underline underline-offset-2">
+									Agent Settings
+								</a>
+								.
+							</p>
+							{cardOrigin && (
+								<div className="bg-muted/30 space-y-1 rounded-sm px-3 py-2">
+									<p className="text-muted-foreground text-xs">Allowed from agent card</p>
+									<p className="font-mono text-xs break-all" data-testid="agent-card-allowed-origin">
+										{cardOrigin}
+									</p>
+								</div>
+							)}
+							<div className="space-y-2">
+								{advertisedEndpoints.length > 0 && (
+									<div className="space-y-2" data-testid="agent-suggested-endpoints">
+										<p className="text-muted-foreground text-xs">Other addresses advertised by this agent</p>
+										{advertisedEndpoints.map((endpoint) => {
+											const allowed = allowedEndpointOrigins.has(endpoint);
+											return (
+												<div key={endpoint} className="flex items-center gap-2">
+													{allowed ? (
+														<span
+															className="bg-muted flex h-9 min-w-0 flex-1 items-center rounded-md border px-3 text-sm"
+															data-testid="agent-approved-endpoint"
+														>
+															<span className="truncate">{endpoint}</span>
+														</span>
+													) : (
+														<Input value={endpoint} readOnly aria-label="Suggested agent endpoint" className="bg-muted h-9" />
+													)}
+													<Button
+														type="button"
+														variant="outline"
+														size="sm"
+														className={allowed ? "text-destructive hover:text-destructive h-9 w-16 shrink-0" : "h-9 w-16 shrink-0"}
+														disabled={!allowed && credentialOrigins.length >= 32}
+														aria-label={`${allowed ? "Remove" : "Allow"} ${endpoint}`}
+														onClick={() => {
+															if (allowed) {
+																setCredentialOrigins((current) =>
+																	current.filter((origin) => configuredAgentEndpointOrigin(origin.value) !== endpoint),
+																);
+															} else {
+																const id = nextCredentialOriginId.current++;
+																setCredentialOrigins((current) => [...current, { id, value: endpoint }]);
+															}
+														}}
+													>
+														{allowed ? <Trash2 className="h-4 w-4" /> : "Allow"}
+													</Button>
+												</div>
+											);
+										})}
+									</div>
+								)}
+								{credentialOrigins.map((origin, index) =>
+									advertisedEndpoints.includes(configuredAgentEndpointOrigin(origin.value) ?? "") ? null : (
+										<div key={origin.id} className="flex items-center gap-2">
+											<Input
+												value={origin.value}
+												className="h-9"
+												placeholder="https://research.example.com:9000"
+												aria-label="Additional agent endpoint"
+												data-testid={`agent-credential-origin-${index}`}
+												onChange={(event) =>
+													setCredentialOrigins((current) =>
+														current.map((item) => (item.id === origin.id ? { ...item, value: event.target.value } : item)),
+													)
+												}
+											/>
+											<Button
+												type="button"
+												variant="outline"
+												size="icon"
+												className="text-destructive hover:text-destructive h-9 w-16 shrink-0"
+												aria-label="Remove agent endpoint"
+												onClick={() => setCredentialOrigins((current) => current.filter((item) => item.id !== origin.id))}
+											>
+												<Trash2 className="h-4 w-4" />
+											</Button>
+										</div>
+									),
+								)}
+							</div>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								data-testid="agent-add-credential-origin"
+								disabled={credentialOrigins.length >= 32}
+								onClick={() => {
+									const id = nextCredentialOriginId.current++;
+									setCredentialOrigins((current) => [...current, { id, value: "" }]);
+								}}
+							>
+								<Plus className="h-4 w-4" />
+								Add endpoint
+							</Button>
+						</OptionGroup>
+
 						<SettingRow
 							label="Forward Bifrost authentication"
 							description="Turn this on for agents that use Bifrost for LLM or MCP calls. You will need to configure the server to send this authentication with those calls so access and usage can stay attributed to the requester."

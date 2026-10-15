@@ -1,6 +1,7 @@
 import FullPageLoader from "@/components/fullPageLoader";
 import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
+import { TagInput } from "@/components/ui/tagInput";
 import { Switch } from "@/components/ui/switch";
 import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
@@ -12,6 +13,8 @@ import { toast } from "sonner";
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
+
+const stringListEquals = (a?: string[], b?: string[]) => (a ?? []).join("\n") === (b ?? []).join("\n");
 
 export default function AgentGatewayView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -32,7 +35,8 @@ export default function AgentGatewayView() {
 		if (!config) return false;
 		return (
 			!secretVarEquals(localConfig.a2a_external_client_url, config.a2a_external_client_url) ||
-			Boolean(localConfig.a2a_store_raw_request_response) !== Boolean(config.a2a_store_raw_request_response)
+			Boolean(localConfig.a2a_store_raw_request_response) !== Boolean(config.a2a_store_raw_request_response) ||
+			!stringListEquals(localConfig.a2a_private_allowlist, config.a2a_private_allowlist)
 		);
 	}, [config, localConfig]);
 
@@ -41,13 +45,14 @@ export default function AgentGatewayView() {
 			draftRevision.current += 1;
 			if (
 				secretVarEquals(value, config?.a2a_external_client_url) &&
-				Boolean(localConfig.a2a_store_raw_request_response) === Boolean(config?.a2a_store_raw_request_response)
+				Boolean(localConfig.a2a_store_raw_request_response) === Boolean(config?.a2a_store_raw_request_response) &&
+				stringListEquals(localConfig.a2a_private_allowlist, config?.a2a_private_allowlist)
 			) {
 				syncedRevision.current = draftRevision.current;
 			}
 			setLocalConfig((prev) => ({ ...prev, a2a_external_client_url: value }));
 		},
-		[config?.a2a_external_client_url, config?.a2a_store_raw_request_response, localConfig.a2a_store_raw_request_response],
+		[config, localConfig.a2a_store_raw_request_response, localConfig.a2a_private_allowlist],
 	);
 
 	const handleSave = useCallback(async () => {
@@ -63,6 +68,7 @@ export default function AgentGatewayView() {
 					...bifrostConfig.client_config,
 					a2a_external_client_url: localConfig.a2a_external_client_url,
 					a2a_store_raw_request_response: Boolean(localConfig.a2a_store_raw_request_response),
+					a2a_private_allowlist: localConfig.a2a_private_allowlist ?? [],
 				},
 			}).unwrap();
 			syncedRevision.current = savedRevision;
@@ -116,6 +122,34 @@ export default function AgentGatewayView() {
 					/>
 				</div>
 			</div>
+			<div className="space-y-2 rounded-sm border p-4">
+				<label htmlFor="a2a-private-allowlist" className="text-sm font-medium">
+					Private Network Allowlist
+				</label>
+				<p className="text-muted-foreground text-sm">
+					Hosts, IP addresses, or CIDR ranges without a scheme or port that Agent Gateway discovery, OAuth, and runtime requests may
+					reach when they resolve to a private or loopback address.
+					Link-local and cloud metadata addresses are always blocked.
+				</p>
+				<TagInput
+					id="a2a-private-allowlist"
+					data-testid="a2a-private-allowlist-input"
+					placeholder="Add host, IP, or CIDR (Enter or comma)"
+					value={localConfig.a2a_private_allowlist ?? []}
+					readOnly={!config || !hasSettingsUpdateAccess}
+					onValueChange={(value) => {
+						draftRevision.current += 1;
+						if (
+							stringListEquals(value, config?.a2a_private_allowlist) &&
+							secretVarEquals(localConfig.a2a_external_client_url, config?.a2a_external_client_url) &&
+							Boolean(localConfig.a2a_store_raw_request_response) === Boolean(config?.a2a_store_raw_request_response)
+						) {
+							syncedRevision.current = draftRevision.current;
+						}
+						setLocalConfig((prev) => ({ ...prev, a2a_private_allowlist: value }));
+					}}
+				/>
+			</div>
 			<div className="flex items-center justify-between gap-4 rounded-sm border p-4">
 				<div className="space-y-1">
 					<label htmlFor="a2a-raw-capture" className="text-sm font-medium">
@@ -135,7 +169,8 @@ export default function AgentGatewayView() {
 						draftRevision.current += 1;
 						if (
 							checked === Boolean(config?.a2a_store_raw_request_response) &&
-							secretVarEquals(localConfig.a2a_external_client_url, config?.a2a_external_client_url)
+							secretVarEquals(localConfig.a2a_external_client_url, config?.a2a_external_client_url) &&
+							stringListEquals(localConfig.a2a_private_allowlist, config?.a2a_private_allowlist)
 						) {
 							syncedRevision.current = draftRevision.current;
 						}

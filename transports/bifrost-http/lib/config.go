@@ -25,6 +25,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/mcp"
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/network"
@@ -376,6 +377,7 @@ type AgentRegistrationFileConfig struct {
 	ForwardAcceptedCredentialOverridesAuth bool                  `json:"forward_accepted_credential_overrides_auth,omitempty"`
 	DiscoveryAuth                          *schemas.UpstreamAuth `json:"discovery_auth,omitempty"`
 	RuntimeAuth                            *schemas.UpstreamAuth `json:"runtime_auth,omitempty"`
+	CredentialOrigins                      []string              `json:"credential_origins,omitempty"`
 	ExtensionURIs                          []string              `json:"extension_uris,omitempty"`
 	VirtualKeyIDs                          []string              `json:"virtual_key_ids,omitempty"`
 }
@@ -396,7 +398,8 @@ func (a *AgentRegistrationFileConfig) validate() error {
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
 		return errors.New("agent_card_url must be an absolute HTTP(S) URL without user info")
 	}
-	return nil
+	_, err = agent.ValidateCredentialOrigins(a.CredentialOrigins)
+	return err
 }
 
 // toRegistration converts a file declaration into the domain model the
@@ -411,6 +414,7 @@ func (a *AgentRegistrationFileConfig) toRegistration() *schemas.AgentRegistratio
 	sort.Strings(ids)
 	uris := slices.Clone(a.ExtensionURIs)
 	sort.Strings(uris)
+	origins, _ := agent.ValidateCredentialOrigins(a.CredentialOrigins)
 	now := time.Now().UTC()
 	return &schemas.AgentRegistration{
 		Name:                                   strings.TrimSpace(a.Name),
@@ -422,6 +426,7 @@ func (a *AgentRegistrationFileConfig) toRegistration() *schemas.AgentRegistratio
 		ForwardAcceptedCredentialOverridesAuth: a.ForwardAcceptedCredentialOverridesAuth,
 		DiscoveryAuth:                          a.DiscoveryAuth,
 		RuntimeAuth:                            a.RuntimeAuth,
+		CredentialOrigins:                      origins,
 		ExtensionURIs:                          uris,
 		VirtualKeyIDs:                          ids,
 		CreatedAt:                              now,
@@ -1496,6 +1501,9 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	// than leave an entry that silently matches nothing.
 	if _, err := network.ValidatePrivateTargetAllowlist(cc.MCPOAuthPrivateAllowlist); err != nil {
 		return fmt.Errorf("mcp_oauth_private_allowlist: %w", err)
+	}
+	if _, err := network.ValidatePrivateTargetAllowlist(cc.A2APrivateAllowlist); err != nil {
+		return fmt.Errorf("a2a_private_allowlist: %w", err)
 	}
 	return nil
 }
@@ -10647,4 +10655,14 @@ func (c *Config) GetSkillsExternalClientURL() string {
 		return ""
 	}
 	return strings.TrimRight(value, "/")
+}
+
+// GetA2APrivateAllowlist returns a copy of the permitted private Agent Gateway destinations.
+func (c *Config) GetA2APrivateAllowlist() []string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return nil
+	}
+	return slices.Clone(c.ClientConfig.A2APrivateAllowlist)
 }

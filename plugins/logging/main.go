@@ -3092,11 +3092,13 @@ func a2aPendingKey(requestID string, requestType schemas.A2ARequestType) string 
 	return requestID + "\x00" + string(requestType)
 }
 
+// optionalBoundedA2AValue owns correlation strings retained beyond the request,
+// including REST path values backed by the FastHTTP adaptor's reusable buffer.
 func optionalBoundedA2AValue(value string, max int) *string {
 	if value == "" {
 		return nil
 	}
-	bounded := clampString(value, max)
+	bounded := strings.Clone(clampString(value, max))
 	return &bounded
 }
 

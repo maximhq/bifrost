@@ -5031,3 +5031,21 @@ func TestMigrationSkillsURLSkipsPrivateComponents(t *testing.T) {
 	}
 	require.Equal(t, "https://safe.example/path", rows[4].SkillsExternalClientURL)
 }
+
+// TestMigrationAddAgentDestinationPolicyColumns preserves registrations when upgrading the old table.
+func TestMigrationAddAgentDestinationPolicyColumns(t *testing.T) {
+	db := setupTestDB(t)
+	require.NoError(t, db.Exec("CREATE TABLE config_agent_registrations (name TEXT PRIMARY KEY, agent_card_url TEXT NOT NULL)").Error)
+	require.NoError(t, db.Exec("INSERT INTO config_agent_registrations (name, agent_card_url) VALUES (?, ?)", "existing", "https://cards.example.com").Error)
+	require.NoError(t, migrationAddAgentDestinationPolicyColumns(context.Background(), db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "credential_origins"))
+	require.True(t, db.Migrator().HasColumn(&tables.TableAgentRegistration{}, "require_public_target"))
+	var row struct {
+		Name                string
+		RequirePublicTarget bool
+	}
+	require.NoError(t, db.Table("config_agent_registrations").Select("name, require_public_target").First(&row).Error)
+	require.Equal(t, "existing", row.Name)
+	require.False(t, row.RequirePublicTarget)
+	require.NoError(t, migrationAddAgentDestinationPolicyColumns(context.Background(), db, testMigrationLogger))
+}

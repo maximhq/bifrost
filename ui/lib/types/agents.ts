@@ -112,6 +112,7 @@ export interface AgentRegistrationView {
 	forward_accepted_credential_overrides_auth: boolean;
 	discovery_auth?: AgentUpstreamAuth;
 	runtime_auth?: AgentUpstreamAuth;
+	credential_origins?: string[];
 	extension_uris?: string[];
 	virtual_key_ids?: string[];
 	created_at: string;
@@ -162,6 +163,7 @@ export interface CreateAgentRequest {
 	discovery_auth?: AgentUpstreamAuth;
 	runtime_auth?: AgentUpstreamAuth;
 	virtual_key_ids?: string[];
+	credential_origins?: string[];
 	extension_uris?: string[];
 }
 

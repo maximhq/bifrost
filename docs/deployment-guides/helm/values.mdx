@@ -801,3 +801,8 @@ helm install bifrost bifrost/bifrost -f secrets-only.yaml
 
 </Tab>
 </Tabs>
+
+
+## Agent Gateway
+
+Use `bifrost.client.a2aPrivateAllowlist` for private network destinations and `bifrost.agents[].credential_origins` for additional runtime origins. These are separate permissions. See [Agent Gateway destination permissions](/deployment-guides/helm/client#agent-gateway-destination-permissions) for a complete values example and the corresponding config.json fields.

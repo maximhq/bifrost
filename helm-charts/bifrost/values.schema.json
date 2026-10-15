@@ -754,6 +754,13 @@
               ],
               "description": "Public base URL for Skills Repository marketplaces. Required to enable Claude Code and Codex marketplace serving; skill management and downloads remain available when unset. Supports env var and vault references. Maps to client.skills_external_client_url."
             },
+            "a2aPrivateAllowlist": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Private hosts, IP addresses, or CIDR ranges Agent Gateway discovery, OAuth, and runtime requests may reach. Link-local and cloud metadata addresses are always blocked."
+            },
             "a2aExternalClientUrl": {
               "anyOf": [
                 {
@@ -4964,6 +4971,13 @@
               "runtime_auth": {
                 "$ref": "#/properties/bifrost/properties/agents/$defs/upstreamAuth",
                 "description": "Authentication attached to proxied upstream agent requests."
+              },
+              "credential_origins": {
+                "type": "array",
+                "maxItems": 32,
+                "uniqueItems": true,
+                "items": { "type": "string", "pattern": "^https?://[^@/?#\\s]+$" },
+                "description": "Additional HTTP(S) origins permitted to receive runtime credentials and client certificates. The card origin is permitted automatically."
               },
               "extension_uris": {
                 "type": "array",

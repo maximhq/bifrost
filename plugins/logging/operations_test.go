@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +21,8 @@ import (
 	"github.com/maximhq/bifrost/framework/streaming"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
+	"github.com/valyala/fasthttp/fasthttpadaptor"
 )
 
 type testLogger struct{}
@@ -4608,6 +4612,61 @@ func TestObserveA2AEventAppliesContentPolicy(t *testing.T) {
 	entry := (<-plugin.writeQueue).agentLog
 	require.Nil(t, entry.EventBody)
 	require.False(t, entry.ContentHidden)
+}
+
+// TestA2ASubscriptionLogOwnsRESTTaskID reproduces reuse of the adaptor's borrowed URL buffer before the queued log is written.
+func TestA2ASubscriptionLogOwnsRESTTaskID(t *testing.T) {
+	plugin := policyTestPlugin(nil, nil, true)
+	plugin.writeQueue = make(chan *writeQueueEntry, 1)
+	ctx := policyCtx(false, nil)
+	ctx.SetValue(schemas.BifrostContextKeyRequestID, "rest-subscription")
+	var fastCtx fasthttp.RequestCtx
+	fastCtx.Request.SetRequestURI("/tasks/task-original:subscribe")
+	fastCtx.Request.Header.SetMethod(http.MethodGet)
+	var request http.Request
+	require.NoError(t, fasthttpadaptor.ConvertRequest(&fastCtx, &request, true))
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /tasks/{idAndAction}", func(w http.ResponseWriter, r *http.Request) {
+		taskID, ok := strings.CutSuffix(r.PathValue("idAndAction"), ":subscribe")
+		require.True(t, ok)
+		_, _, err := plugin.PreA2AHook(ctx, &schemas.BifrostA2ARequest{
+			RequestType:           schemas.A2ARequestTypeSubscribeToTask,
+			BifrostA2ATaskRequest: &schemas.BifrostA2ATaskRequest{TaskID: taskID},
+		})
+		require.NoError(t, err)
+		_, _, err = plugin.PostA2AHook(ctx, &schemas.BifrostA2AResponse{
+			ExtraFields: schemas.BifrostA2AResponseExtraFields{A2ARequestType: schemas.A2ARequestTypeSubscribeToTask},
+		}, nil)
+		require.NoError(t, err)
+	})
+	mux.ServeHTTP(httptest.NewRecorder(), &request)
+	// Reuse the same bytes after the request ends, while the log is still queued.
+	copy(fastCtx.RequestURI(), "/tasks/task-replaced:subscribe")
+	entry := (<-plugin.writeQueue).agentLog
+	require.NotNil(t, entry.TaskID)
+	require.Equal(t, "task-original", *entry.TaskID)
+}
+
+// BenchmarkA2ACorrelationOwnership compares retaining a borrowed value with owning its bytes.
+func BenchmarkA2ACorrelationOwnership(b *testing.B) {
+	value := "12345678-1234-1234-1234-123456789abc"
+	for _, owned := range []bool{false, true} {
+		b.Run(fmt.Sprintf("owned=%t", owned), func(b *testing.B) {
+			b.ReportAllocs()
+			var retained *string
+			for b.Loop() {
+				if owned {
+					retained = optionalBoundedA2AValue(value, 255)
+				} else {
+					bounded := clampString(value, 255)
+					retained = &bounded
+				}
+			}
+			if *retained != value {
+				b.Fatal("correlation value changed")
+			}
+		})
+	}
 }
 
 func TestA2AResponseCorrelationPreservesRequestValuesWhenResponseOmitsThem(t *testing.T) {
