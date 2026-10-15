@@ -77,6 +77,7 @@ import LogEntryDetailsView from "../views/logEntryDetailsView";
 import LogLevelTabs from "../views/logLevelTabs";
 import OCRView from "../views/ocrView";
 import PassthroughBodyBox from "../views/passthroughBodyBox";
+import PassthroughTag from "../views/passthroughTag";
 import PluginLogsView from "../views/pluginLogsView";
 import SpeechView from "../views/speechView";
 import TranscriptionView from "../views/transcriptionView";
@@ -91,8 +92,9 @@ import {
 	pickNextSessionLog,
 	resolveRawJsonNoticeState,
 	isParsedPassthroughLog,
-	isPassthroughOperation,
+	isPassthroughLog,
 	passthroughLogParams,
+	showsPassthroughTag,
 } from "./logDetailView.utils";
 import LiveSessionView from "../views/liveSessionView";
 import {
@@ -828,7 +830,7 @@ export function LogDetailView({
 	const complexityRouting = deriveComplexityRouting(log);
 	// A downstream build can draw its own routing record at the top of the Routing tab.
 	const RoutingPanel = getLogRoutingPanel();
-	const isPassthrough = isPassthroughOperation(log.object);
+	const isPassthrough = isPassthroughLog(log);
 	const isRealtimeTurn = log.object === "realtime.turn";
 	const isRealtimeTranscription =
 		isRealtimeTurn && log.metadata?.realtime_event_type === "conversation.item.input_audio_transcription.completed";
@@ -1141,6 +1143,7 @@ export function LogDetailView({
 								>
 									{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object}
 								</Badge>
+								{showsPassthroughTag(log) && <PassthroughTag testId="logdetails-passthrough-tag" />}
 								<StatusPill status={log.status as Status} />
 								{statusCode != null && (
 									<Badge
@@ -1476,10 +1479,13 @@ export function LogDetailView({
 									className="w-full"
 									label="Type"
 									value={
-										<div
-											className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"} rounded-sm px-3 py-1`}
-										>
-											{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
+										<div className="flex flex-wrap items-center gap-2">
+											<div
+												className={`${RequestTypeColors[log.object as keyof typeof RequestTypeColors] ?? "bg-gray-100 text-gray-800"} rounded-sm px-3 py-1`}
+											>
+												{RequestTypeLabels[log.object as keyof typeof RequestTypeLabels] ?? log.object ?? "unknown"}
+											</div>
+											{showsPassthroughTag(log) && <PassthroughTag />}
 										</div>
 									}
 								/>

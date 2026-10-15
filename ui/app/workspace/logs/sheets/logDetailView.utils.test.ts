@@ -7,7 +7,9 @@ import {
 	hasNoToolArguments,
 	isClientToolCallItem,
 	isParsedPassthroughLog,
+	isPassthroughLog,
 	passthroughLogParams,
+	showsPassthroughTag,
 	nextSessionLookupStart,
 	isResponsesToolCallItem,
 	isShownMetadataKey,
@@ -384,5 +386,39 @@ describe("passthroughLogParams", () => {
 		expect(passthroughLogParams({ object: "passthrough_stream", params: { path: "/v1/messages" } as any })?.path).toBe("/v1/messages");
 		expect(passthroughLogParams({ object: "passthrough" })).toEqual({});
 		expect(passthroughLogParams({ object: "responses", params: {} })).toBeNull();
+	});
+});
+describe("passthrough tagging", () => {
+	it("treats a tagged row stored under its inferred type as passthrough, and tags its badge", () => {
+		const row = { object: "chat_completion", is_passthrough: true };
+		expect(isPassthroughLog(row)).toBe(true);
+		expect(showsPassthroughTag(row)).toBe(true);
+	});
+
+	it("does not tag a row whose badge already says passthrough", () => {
+		expect(isPassthroughLog({ object: "passthrough", is_passthrough: true })).toBe(true);
+		expect(showsPassthroughTag({ object: "passthrough", is_passthrough: true })).toBe(false);
+		// Rows written before the tag existed.
+		expect(isPassthroughLog({ object: "passthrough_stream" })).toBe(true);
+		expect(showsPassthroughTag({ object: "passthrough_stream" })).toBe(false);
+	});
+
+	it("leaves typed rows alone", () => {
+		expect(isPassthroughLog({ object: "chat_completion" })).toBe(false);
+		expect(showsPassthroughTag({ object: "chat_completion", is_passthrough: false })).toBe(false);
+	});
+
+	it("reads passthrough params from a tagged row stored under its inferred type", () => {
+		expect(passthroughLogParams({ object: "responses", is_passthrough: true, params: { path: "/v1/messages" } as any })?.path).toBe(
+			"/v1/messages",
+		);
+		expect(
+			isParsedPassthroughLog({
+				object: "responses",
+				is_passthrough: true,
+				params: { parsed_type: "responses" } as any,
+				responses_output: [{ type: "message" }] as any,
+			}),
+		).toBe(true);
 	});
 });
