@@ -272588,6 +272588,247 @@
           }
         }
       ]
+    },
+    {
+      "name": "249. Chat Completions tool-result cache_control becomes a Converse cachePoint after the toolResult (tool-result-cache-point)",
+      "description": "Converse has no cachePoint member inside toolResult content (ToolResultContentBlock is document | image | json | searchResult | text | video). On /v1/chat/completions a cache_control on a tool message's content block was emitted as a cachePoint nested inside toolResult.content; Bedrock accepts that with 200 and silently ignores it, so the conversation history up to a tool result was never cached (only system and tools markers took effect). The converter now emits one standalone cachePoint directly after the toolResult block, the shape the Responses route already used. 249.1 and 249.2 echo the outgoing Converse body via x-bf-send-back-raw-request and pin [toolResult, cachePoint, toolResult] with nothing nested, on the unified route and the /openai drop-in. 249.3/249.4 pin the user-visible effect: a tool result carrying {{cachePrefix}} with a marker writes the cache on the first call and reads it back on the identical second call (both were 0 before the fix). Streaming shares the same request converter, so it is not repeated. Not reached by this change: /v1/responses and /anthropic (Responses converter, already sibling), Bedrock Mantle (Anthropic converter, native cache_control), and the /bedrock invoke route (covered by folder 40).",
+      "item": [
+        {
+          "name": "249.1 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /v1/chat/completions tool-result cache_control becomes a Converse cachePoint after toolResult - tool-result-cache-point",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('bedrock converse: tool conversation with cache_control on a tool message block succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('bedrock converse: tool-result cache_control becomes a cachePoint directly after its toolResult, not nested inside toolResult.content (which Converse silently ignores)', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var turn = (raw.messages || []).filter(function (m) { return (m.content || []).some(function (b) { return !!b.toolResult; }); })[0];",
+                  "  pm.expect(turn, 'no toolResult message in raw_request: ' + JSON.stringify(raw)).to.not.equal(undefined);",
+                  "  var kinds = turn.content.map(function (b) { return b.toolResult ? 'toolResult' : (b.cachePoint ? 'cachePoint' : 'other'); });",
+                  "  pm.expect(kinds, 'expected [toolResult, cachePoint, toolResult], raw turn=' + JSON.stringify(turn)).to.eql(['toolResult', 'cachePoint', 'toolResult']);",
+                  "  pm.expect(turn.content[1].cachePoint.type, 'cachePoint type').to.equal('default');",
+                  "  turn.content.forEach(function (b) {",
+                  "    if (!b.toolResult) { return; }",
+                  "    var nested = (b.toolResult.content || []).filter(function (x) { return !!x.cachePoint; });",
+                  "    pm.expect(nested.length, 'nested cachePoint inside toolResult.content: ' + JSON.stringify(b.toolResult)).to.equal(0);",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant. Answer in one short sentence.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris and Berlin?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Berlin\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\n      \"content\": \"15C, cloudy\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "249.2 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /openai/v1/chat/completions drop-in tool-result cache_control becomes a Converse cachePoint after toolResult - tool-result-cache-point",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('bedrock converse openai drop-in: tool conversation with cache_control on a tool message block succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('bedrock converse openai drop-in: tool-result cache_control becomes a cachePoint directly after its toolResult, not nested inside toolResult.content (which Converse silently ignores)', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var turn = (raw.messages || []).filter(function (m) { return (m.content || []).some(function (b) { return !!b.toolResult; }); })[0];",
+                  "  pm.expect(turn, 'no toolResult message in raw_request: ' + JSON.stringify(raw)).to.not.equal(undefined);",
+                  "  var kinds = turn.content.map(function (b) { return b.toolResult ? 'toolResult' : (b.cachePoint ? 'cachePoint' : 'other'); });",
+                  "  pm.expect(kinds, 'expected [toolResult, cachePoint, toolResult], raw turn=' + JSON.stringify(turn)).to.eql(['toolResult', 'cachePoint', 'toolResult']);",
+                  "  pm.expect(turn.content[1].cachePoint.type, 'cachePoint type').to.equal('default');",
+                  "  turn.content.forEach(function (b) {",
+                  "    if (!b.toolResult) { return; }",
+                  "    var nested = (b.toolResult.content || []).filter(function (x) { return !!x.cachePoint; });",
+                  "    pm.expect(nested.length, 'nested cachePoint inside toolResult.content: ' + JSON.stringify(b.toolResult)).to.equal(0);",
+                  "  });",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant. Answer in one short sentence.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris and Berlin?\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        },\n        {\n          \"id\": \"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Berlin\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01A1B2C3D4E5F6G7H8J9K0L1\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01B2C3D4E5F6G7H8J9K0L1M2\",\n      \"content\": \"15C, cloudy\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "249.3 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /v1/chat/completions tool-result cache_control writes the cache [write] - tool-result-cache-point",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('bedrock converse tool-result cache [write]: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "  var j = pm.response.json();",
+                  "  function det(u){ return (u && u.prompt_tokens_details) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; }",
+                  "  pm.test('bedrock converse tool-result cache [write]: the tool-result breakpoint writes the prefix to cache (0 before the fix)', function () {",
+                  "    pm.expect(NUM(det(j.usage).cached_write_tokens), 'usage=' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "  });",
+                  "  // Publish the chained variable the [read] consumes, so a sliced or --rerun-failed selection keeps the pair together.",
+                  "  pm.collectionVariables.set('cacheChain_bedrock_converse_tool_result_cache_point', 'sent');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"List the weather report for Paris.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} tool-result-cache-point]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "249.4 bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0 /v1/chat/completions tool-result cache_control reads the cache back [read] - tool-result-cache-point",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "exec": [
+                  "// Give the paired [write] a moment to land before this [read].",
+                  "var __t = Date.now(); while (Date.now() - __t < 1500) { /* busy-wait ~1.5s */ }"
+                ],
+                "type": "text/javascript"
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('bedrock converse tool-result cache [read]: request succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "  var j = pm.response.json();",
+                  "  function det(u){ return (u && u.prompt_tokens_details) || {}; } function NUM(v){ return (typeof v === 'number') ? v : 0; }",
+                  "  pm.test('bedrock converse tool-result cache [read]: the identical prefix ending at the tool result is read back from cache', function () {",
+                  "    var d = det(j.usage);",
+                  "    var read = NUM(d.cached_read_tokens) || NUM(d.cached_tokens);",
+                  "    pm.expect(read, 'usage=' + JSON.stringify(j.usage)).to.be.above(0);",
+                  "  });",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-4-5-20251001-v1:0\",\n  \"max_tokens\": 16,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"List the weather report for Paris.\"\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"toolu_01C3D4E5F6G7H8J9K0L1M2N3\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"{{cachePrefix}} [pc-session {{pcNonce}} tool-result-cache-point]\",\n          \"cache_control\": {\n            \"type\": \"ephemeral\"\n          }\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions?_chain={{cacheChain_bedrock_converse_tool_result_cache_point}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ],
+              "query": [
+                {
+                  "key": "_chain",
+                  "value": "{{cacheChain_bedrock_converse_tool_result_cache_point}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
