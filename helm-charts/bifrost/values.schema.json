@@ -7085,6 +7085,11 @@
           "default": 1,
           "description": "Routing weight for this key. Optional; defaults to 1 when omitted."
         },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether this key is used for routing. Set to false to keep the key configured but skip it during key selection. Optional; defaults to true when omitted."
+        },
         "use_for_batch_api": {
           "type": "boolean"
         },

@@ -29,6 +29,19 @@ bifrost:
       envVar: "OPENAI_API_KEY"          # injected into the pod
 ```
 
+**Disabling a key** - set `enabled: false` to keep a key configured but skip it during key selection. This is the same setting as the **Enabled** toggle on the provider's key list in the UI. Omitted means `true`.
+
+```yaml
+bifrost:
+  providers:
+    bedrock:
+      keys:
+        - name: "prod-account"
+          weight: 1
+          enabled: false        # configured, but never selected
+          bedrock_key_config: { ... }
+```
+
 ---
 
 <Tabs>

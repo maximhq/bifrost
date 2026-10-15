@@ -911,9 +911,11 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 
 			if result.Error == nil {
 				// Update existing key with new data
-				dbKey.ID = existingKey.ID                             // Keep the same database ID
-				dbKey.ProviderID = existingKey.ProviderID             // Preserve the existing ProviderID
-				dbKey.Enabled = existingKey.Enabled                   // Preserve the existing Enabled status
+				dbKey.ID = existingKey.ID                 // Keep the same database ID
+				dbKey.ProviderID = existingKey.ProviderID // Preserve the existing ProviderID
+				if dbKey.Enabled == nil {
+					dbKey.Enabled = existingKey.Enabled // Keep the stored value unless the file sets enabled
+				}
 				dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 				dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 				dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status
@@ -926,10 +928,12 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				result = txDB.WithContext(ctx).Where("name = ?", dbKey.Name).First(&existingKey)
 				if result.Error == nil {
 					// Found by name - update existing key, preserve original KeyID
-					dbKey.ID = existingKey.ID                             // Keep the same database ID
-					dbKey.KeyID = existingKey.KeyID                       // Preserve original KeyID
-					dbKey.ProviderID = existingKey.ProviderID             // Preserve the existing ProviderID
-					dbKey.Enabled = existingKey.Enabled                   // Preserve the existing Enabled status
+					dbKey.ID = existingKey.ID                 // Keep the same database ID
+					dbKey.KeyID = existingKey.KeyID           // Preserve original KeyID
+					dbKey.ProviderID = existingKey.ProviderID // Preserve the existing ProviderID
+					if dbKey.Enabled == nil {
+						dbKey.Enabled = existingKey.Enabled // Keep the stored value unless the file sets enabled
+					}
 					dbKey.Status = existingKey.Status                     // Preserve status (UI-managed)
 					dbKey.Description = existingKey.Description           // Preserve description (UI-managed)
 					dbKey.EncryptionStatus = existingKey.EncryptionStatus // Preserve encryption status

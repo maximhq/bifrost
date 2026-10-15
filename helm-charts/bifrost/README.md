@@ -951,6 +951,8 @@ vectorStore:
 Configure AI provider API keys:
 
 > **Note:** `keys[].weight` is optional in Helm values. If omitted, the chart renders it as `1`.
+>
+> **Note:** `keys[].enabled` is optional and defaults to `true`. Set it to `false` to keep a key configured but skip it during key selection (the **Enabled** toggle in the UI).
 
 ```yaml
 bifrost:
