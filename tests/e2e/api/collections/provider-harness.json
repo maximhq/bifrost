@@ -272829,6 +272829,457 @@
           }
         }
       ]
+    },
+    {
+      "name": "250. Typesafe images and box (typesafe-images)",
+      "description": "Typesafe images and box questions. Images are listed once in the request's assets map and placed by reference wherever their key is written: in the state, inside a question's instructions, or in choice, score, and noul criteria. Box answers where something is in an image, and needs Jev 1.14 (jev-preview or jev-1.14.0). Bifrost adds the TypeSafe-Danger-Zone-Images header whenever a request carries assets or a box question, so no case here sends it. On /typesafe/v1/systemone the native body reaches Typesafe as sent, as JSON with base64 assets or as multipart with each image in its own file part. On /v1/decisions an image sent by reference is an input_image part with an id and its file base64-encoded in data, or in a multipart request a file part its name points at, its format read from the bytes; a single message holding one input_text part plus such parts is sent as that text for the state, so a structured state stays structured. Typesafe judges the images itself (a GIF is its own 400), Bifrost rejects only what it cannot build the request from (a part no asset names), and other providers receive the assets too and give their own verdict (Azure rejects the field today).",
+      "item": [
+        {
+          "name": "/typesafe/v1/systemone - base64 images in state, instructions and criteria - typesafe jev-latest",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('every placement reaches Typesafe as an image', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  pm.expect(a.color.choice, 'the example images define the options: ' + pm.response.text()).to.eql('red');",
+                  "  pm.expect(a.same_as_blue.noul, 'the image in the instructions is compared: ' + pm.response.text()).to.be.below(0.5);",
+                  "  pm.expect(a.size.legend['1'], 'the legend echoes the reference, not the image').to.include('r-redex-003');",
+                  "  pm.expect(pm.response.json().usage.input_tokens, 'images are billed as input tokens').to.be.above(1000);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"jev-latest\",\n  \"state\": {\n    \"photo\": \"r-red-0001\"\n  },\n  \"assets\": {\n    \"r-red-0001\": {\n      \"type\": \"image\",\n      \"format\": \"png\",\n      \"data_base64\": \"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\"\n    },\n    \"r-blue-0002\": {\n      \"type\": \"image\",\n      \"format\": \"png\",\n      \"data_base64\": \"iVBORw0KGgoAAAANSUhEUgAAAZAAAAEsCAIAAABi1XKVAAAFnUlEQVR4nO3UUQkCABBEQZOYxP4p7KIV9GvvwQwb4ODgPT4AEY/1AQC/EiwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyJgF6/l6249b/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hmFiyAfwkWkCFYQIZgARmCBWQIFpAhWECGYAEZggVkCBaQIVhAhmABGYIFZAgWkCFYQIZgARmCBWQIFpAhWECGYAEZggVkCBaQIVhAhmABGYIFZAgWkCFYQIZgARmCBWQIFpDxBU6VvszK9aydAAAAAElFTkSuQmCC\"\n    },\n    \"r-redex-003\": {\n      \"format\": \"png\",\n      \"data_base64\": \"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\"\n    }\n  },\n  \"questions\": {\n    \"same_as_blue\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Does `photo` look the same as this picture: r-blue-0002?\"\n    },\n    \"color\": {\n      \"type\": \"choice\",\n      \"instructions\": \"Which example matches the square in `photo`?\",\n      \"criteria\": {\n        \"red\": {\n          \"description\": \"a red square\",\n          \"examples\": [\n            \"r-redex-003\"\n          ]\n        },\n        \"blue\": \"r-blue-0002\",\n        \"none\": \"No square.\"\n      }\n    },\n    \"size\": {\n      \"type\": \"score\",\n      \"instructions\": \"How large is the square in `photo`?\",\n      \"criteria\": [\n        \"tiny\",\n        \"medium like r-redex-003\",\n        \"fills the image\"\n      ]\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/typesafe/v1/systemone - multipart image in its own file part - typesafe jev-latest",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the file part reaches Typesafe as the image', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().answers.dog.noul, 'the puppy photo is seen: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "request",
+                  "value": "{\"model\":\"jev-latest\",\"state\":{\"photo\":\"r-dog-0001\"},\"assets\":{\"r-dog-0001\":{\"type\":\"image\",\"part\":\"photo-part\"}},\"questions\":{\"dog\":{\"type\":\"noul\",\"instructions\":\"Is there a dog in `photo`?\"}}}",
+                  "type": "text",
+                  "contentType": "application/json"
+                },
+                {
+                  "key": "photo-part",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file",
+                  "contentType": "image/png"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/typesafe/v1/systemone - box question finds the target - typesafe jev-preview",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a box answer holds the edges of the target', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var a = pm.response.json().answers;",
+                  "  var box = a.square.box;",
+                  "  pm.expect(a.square.type).to.eql('box');",
+                  "  pm.expect(box, 'box: ' + pm.response.text()).to.be.an('object');",
+                  "  pm.expect(box.left).to.be.below(box.right);",
+                  "  pm.expect(box.top).to.be.below(box.bottom);",
+                  "  pm.expect(box.left, 'the square sits in the right half of the image: ' + pm.response.text()).to.be.above(0.4);",
+                  "  pm.expect(a.square.confidence).to.be.within(0, 1);",
+                  "  pm.expect(a.visible.noul).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"jev-preview\",\n  \"state\": {\n    \"photo\": \"r-red-0001\"\n  },\n  \"assets\": {\n    \"r-red-0001\": {\n      \"type\": \"image\",\n      \"format\": \"png\",\n      \"data_base64\": \"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\"\n    }\n  },\n  \"questions\": {\n    \"square\": {\n      \"type\": \"box\",\n      \"instructions\": \"the red square in `photo`\"\n    },\n    \"visible\": {\n      \"type\": \"noul\",\n      \"instructions\": \"Is there a red square in `photo`?\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - input parts with an id keep the structured state - typesafe/jev-latest",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the parts become assets and the text part the state', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var body = pm.response.json();",
+                  "  pm.expect(body.answers[0].choice, 'answers: ' + pm.response.text()).to.eql('red');",
+                  "  var rr = body.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { rr = JSON.parse(rr); }",
+                  "  pm.expect(rr.state, 'the state stays an object').to.eql({ photo: 'r-red-0001' });",
+                  "  pm.expect(Object.keys(rr.assets).sort()).to.eql(['r-blue-0002', 'r-red-0001']);",
+                  "  pm.expect(rr.assets['r-red-0001'].format).to.eql('png');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-latest\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": {\n            \"photo\": \"r-red-0001\"\n          }\n        },\n        {\n          \"type\": \"input_image\",\n          \"id\": \"r-red-0001\",\n          \"data\": \"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\"\n        },\n        {\n          \"type\": \"input_image\",\n          \"id\": \"r-blue-0002\",\n          \"data\": \"iVBORw0KGgoAAAANSUhEUgAAAZAAAAEsCAIAAABi1XKVAAAFnUlEQVR4nO3UUQkCABBEQZOYxP4p7KIV9GvvwQwb4ODgPT4AEY/1AQC/EiwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyBAsIEOwgAzBAjIEC8gQLCBDsIAMwQIyBAvIECwgQ7CADMECMgQLyJgF6/l6249b/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hGsAJb/QiuEazAVj+CawQrsNWP4BrBCmz1I7hmFiyAfwkWkCFYQIZgARmCBWQIFpAhWECGYAEZggVkCBaQIVhAhmABGYIFZAgWkCFYQIZgARmCBWQIFpAhWECGYAEZggVkCBaQIVhAhmABGYIFZAgWkCFYQIZgARmCBWQIFpDxBU6VvszK9aydAAAAAElFTkSuQmCC\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"choice\",\n      \"name\": \"color\",\n      \"instructions\": \"Which picture matches the square in `photo`?\",\n      \"choices\": [\n        {\n          \"value\": \"red\",\n          \"description\": \"a red square\"\n        },\n        {\n          \"value\": \"blue\",\n          \"description\": \"r-blue-0002\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - box answer in the decisions shape - typesafe/jev-preview",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the box answer carries its edges', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var answer = pm.response.json().answers[0];",
+                  "  pm.expect(answer.type, 'answer: ' + pm.response.text()).to.eql('box');",
+                  "  pm.expect(answer.name).to.eql('square');",
+                  "  pm.expect(answer.box.left).to.be.below(answer.box.right);",
+                  "  pm.expect(answer.box.top).to.be.below(answer.box.bottom);",
+                  "  pm.expect(answer.confidence).to.be.within(0, 1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-preview\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": {\n            \"photo\": \"r-red-0001\"\n          }\n        },\n        {\n          \"type\": \"input_image\",\n          \"id\": \"r-red-0001\",\n          \"data\": \"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\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"box\",\n      \"name\": \"square\",\n      \"instructions\": \"the red square in `photo`\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/decisions - multipart image part named by its file part - typesafe/jev-1.14.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the file part reaches Typesafe as the image', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  pm.expect(pm.response.json().answers[0].probability, 'the puppy photo is seen: ' + pm.response.text()).to.be.above(0.5);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "request",
+                  "value": "{\"model\":\"typesafe/jev-1.14.0\",\"input\":[{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":{\"photo\":\"r-dog-0001\"}},{\"type\":\"input_image\",\"id\":\"r-dog-0001\",\"name\":\"photo-part\"}]}],\"questions\":[{\"type\":\"predicate\",\"name\":\"dog\",\"instructions\":\"Is there a dog in `photo`?\"}]}",
+                  "type": "text",
+                  "contentType": "application/json"
+                },
+                {
+                  "key": "photo-part",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file",
+                  "contentType": "image/png"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - image part name in a JSON request - typesafe/jev-1.14.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a name needs a file part, so a JSON request is a local 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('needs a multipart request');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-1.14.0\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": {\n            \"photo\": \"r-dog-0001\"\n          }\n        },\n        {\n          \"type\": \"input_image\",\n          \"id\": \"r-dog-0001\",\n          \"name\": \"photo-part\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"dog\",\n      \"instructions\": \"Is there a dog in `photo`?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - GIF asset judged by Typesafe - typesafe/jev-latest",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Bifrost sends the image on and relays Typesafe\\'s own 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('format must be png, jpg or jpeg');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"typesafe/jev-latest\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": {\n            \"photo\": \"r-gif-0001\"\n          }\n        },\n        {\n          \"type\": \"input_image\",\n          \"id\": \"r-gif-0001\",\n          \"data\": \"R0lGODlhAQABAAAAACw=\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"q\",\n      \"instructions\": \"Is there a red square in `photo`?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/decisions - images sent by reference reach Azure, which rejects them - azure/Microsoft-Decision-1",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Bifrost sends the assets on and relays the provider\\'s own verdict', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('Unrecognized request argument supplied: assets');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"azure/Microsoft-Decision-1\",\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_text\",\n          \"text\": {\n            \"photo\": \"r-red-0001\"\n          }\n        },\n        {\n          \"type\": \"input_image\",\n          \"id\": \"r-red-0001\",\n          \"data\": \"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\"\n        }\n      ]\n    }\n  ],\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"q\",\n      \"instructions\": \"Is there a red square in `photo`?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /typesafe/v1/systemone - asset naming a missing file part - typesafe jev-latest",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('a request that cannot be built is a local 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('which the request does not carry');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "request",
+                  "value": "{\"model\":\"jev-latest\",\"state\":{\"photo\":\"r-dog-0001\"},\"assets\":{\"r-dog-0001\":{\"type\":\"image\",\"part\":\"missing-part\"}},\"questions\":{\"dog\":{\"type\":\"noul\",\"instructions\":\"Is there a dog in `photo`?\"}}}",
+                  "type": "text",
+                  "contentType": "application/json"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/typesafe/v1/systemone",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "typesafe",
+                "v1",
+                "systemone"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

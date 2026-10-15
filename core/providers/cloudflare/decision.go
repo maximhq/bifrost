@@ -44,6 +44,9 @@ func ToCloudflareDecisionRequest(request *schemas.BifrostDecisionRequest) (*Clou
 // messages becomes empty text, since Clef rejects a null state. Text and structured
 // inputs are returned unchanged.
 func splitDecisionImages(input schemas.DecisionInput) (schemas.DecisionInput, []string, error) {
+	if input.HasAssetParts() {
+		return schemas.DecisionInput{}, nil, providerUtils.DecisionAssetsUnsupportedError()
+	}
 	if input.Messages == nil {
 		return input, nil, nil
 	}

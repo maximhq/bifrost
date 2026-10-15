@@ -1632,6 +1632,8 @@ func toDecisionMapFormResponse(resp *schemas.BifrostDecisionResponse) *DecisionM
 			answer.Value = *native.Choice
 		case native.Score != nil:
 			answer.Value = *native.Score
+		case native.Box != nil:
+			answer.Value = *native.Box
 		}
 		answers[name] = answer
 	}

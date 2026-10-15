@@ -6582,7 +6582,7 @@
           "additionalProperties": {
             "type": "boolean"
           },
-          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+          "description": "Override default beta header support per provider. For Anthropic-family providers, keys are anthropic-beta prefixes (e.g. 'redact-thinking-'); for TypeSafe-based providers, 'typesafe-danger-zone-images' controls the TypeSafe-Danger-Zone-Images header sent with image and box requests. Values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
         },
         "allow_private_network": {
           "type": "boolean",
@@ -6663,7 +6663,7 @@
           "additionalProperties": {
             "type": "boolean"
           },
-          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+          "description": "Override default beta header support per provider. For Anthropic-family providers, keys are anthropic-beta prefixes (e.g. 'redact-thinking-'); for TypeSafe-based providers, 'typesafe-danger-zone-images' controls the TypeSafe-Danger-Zone-Images header sent with image and box requests. Values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
         },
         "allow_private_network": {
           "type": "boolean",

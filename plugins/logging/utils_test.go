@@ -39,17 +39,21 @@ func TestExtractInputHistoryDecisionInput(t *testing.T) {
 	messages := history(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
 		{Role: "user", Content: schemas.DecisionInputContent{Text: schemas.Ptr("first")}},
 		{Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
-			{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr("look")},
+			{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("look")},
 			{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
 			unknownPart,
+			{Type: schemas.DecisionInputPartTypeText, Text: &schemas.DecisionText{Structured: map[string]any{"camera": "r-cam"}}},
+			{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-cam"), Data: []byte("\x89PNG\r\n\x1a\nCAM")},
 		}}},
 	}})
 	require.Len(t, messages, 2)
 	assert.Equal(t, "first", *messages[0].Content.ContentStr)
 	assert.Equal(t, schemas.ChatMessageRoleUser, messages[1].Role, "a message without a role is logged as the user's")
 	blocks := messages[1].Content.ContentBlocks
-	require.Len(t, blocks, 3)
+	require.Len(t, blocks, 5)
 	assert.Equal(t, "look", *blocks[0].Text)
 	assert.Equal(t, "data:image/png;base64,AAAA", blocks[1].ImageURLStruct.URL)
 	assert.Equal(t, "[input_audio]", *blocks[2].Text)
+	assert.Equal(t, `{"camera":"r-cam"}`, *blocks[3].Text, "a structured text part is logged as JSON")
+	assert.Equal(t, "data:image/png;base64,iVBORw0KGgpDQU0=", blocks[4].ImageURLStruct.URL, "an image sent by reference is logged as an image")
 }

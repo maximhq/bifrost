@@ -127,7 +127,7 @@ func ollamaUserMessage(parts ...schemas.DecisionInputPart) schemas.DecisionInput
 }
 
 func ollamaTextPart(text string) schemas.DecisionInputPart {
-	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr(text)}
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(text)}
 }
 
 func ollamaImagePart(url string) schemas.DecisionInputPart {
@@ -188,6 +188,14 @@ func TestToOllamaDecisionRequest_RejectsImageWithoutURL(t *testing.T) {
 		ollamaUserMessage(ollamaTextPart("hi"), schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage}),
 	}}))
 	require.Error(t, err)
+}
+
+func TestToOllamaDecisionRequest_RejectsAssetParts(t *testing.T) {
+	t.Parallel()
+	_, err := ollama.ToOllamaDecisionRequest(newOllamaDecisionRequest(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{
+		ollamaUserMessage(ollamaTextPart("Same as r-a?"), schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), ImageURL: schemas.Ptr("data:image/png;base64,AAAA")}),
+	}}))
+	require.ErrorContains(t, err, "only Typesafe reads")
 }
 
 // keep_alive and native images are Ollama's own fields, so they are lifted out

@@ -75,22 +75,35 @@ DecisionInputText:
       type: string
       enum: [input_text]
     text:
-      type: string
+      description: A string, or structured data that Typesafe-based models read as is and OpenAI receives as JSON text
+      oneOf:
+        - type: string
+        - type: object
+          additionalProperties: true
+        - type: array
+          items: {}
 
 DecisionInputImage:
   type: object
-  required: [type, image_url]
+  required: [type]
   properties:
     type:
       type: string
       enum: [input_image]
     image_url:
       type: string
-      description: A base64 data URL or an HTTP(S) URL
+      description: A base64 data URL or an HTTP(S) URL. Required unless the part has an `id`
     detail:
       type: string
       enum: [low, high, auto, original]
       description: Image detail level, forwarded to models that read images (OpenAI's defaults to `auto`)
+    id:
+      type: string
+      description: Typesafe only. Sends the image by reference, as one of Typesafe's `assets`, placed wherever this ID is written in the input, instructions, or criteria instead of as evidence itself. The file goes in `data`. Other providers reject a part with an `id`.
+    data:
+      type: string
+      format: byte
+      description: With `id`. The image file, base64-encoded, without a `data:` prefix; its format is read from the bytes
 
 DecisionQuestion:
   type: object
@@ -99,8 +112,8 @@ DecisionQuestion:
   properties:
     type:
       type: string
-      enum: [predicate, choice, score]
-      description: How the question is decided. `predicate` yields the probability a condition is true (Typesafe's `noul`), `choice` one of the choices, `score` a probability-weighted level index that may fall between levels.
+      enum: [predicate, choice, score, box]
+      description: How the question is decided. `predicate` yields the probability a condition is true (Typesafe's `noul`), `choice` one of the choices, `score` a probability-weighted level index that may fall between levels, `box` the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14).
     name:
       type: string
       description: Optional name; the answer carries it back
@@ -195,6 +208,8 @@ DecisionAnswer:
     score:
       type: number
       description: Score answers. Probability-weighted level index
+    box:
+      $ref: '#/DecisionBox'
     probabilities:
       type: array
       description: Distribution over choices or levels, in question order, when supplied
@@ -235,6 +250,20 @@ DecisionAnswer:
     low_confidence:
       type: boolean
       description: Laya only, when `min_confidence` is set
+
+DecisionBox:
+  type: object
+  description: Box answers. Each edge is a fraction from 0 to 1 of the image's height (`top`, `bottom`) or width (`left`, `right`), measured from its top-left
+  required: [top, bottom, left, right]
+  properties:
+    top:
+      type: number
+    bottom:
+      type: number
+    left:
+      type: number
+    right:
+      type: number
 
 DecisionMapFormRequest:
   type: object

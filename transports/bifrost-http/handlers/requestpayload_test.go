@@ -896,6 +896,7 @@ func TestDecisionMapFormResponseWire(t *testing.T) {
 					{Value: schemas.DecisionScalar{Num: schemas.Ptr(2.0)}, Label: schemas.Ptr("2"), Probability: 0.5},
 				}, Legend: map[string]any{"0": "low", "2": "high"}},
 			{Type: schemas.DecisionTypeRefusal, Name: schemas.Ptr("declined")},
+			{Type: schemas.DecisionTypeBox, Name: schemas.Ptr("mug"), Box: &schemas.DecisionBox{Top: 0.25, Bottom: 0.82, Left: 0.44, Right: 0.84}, Confidence: schemas.Ptr(0.92)},
 		},
 		Usage: &schemas.BifrostLLMUsage{PromptTokens: 3, TotalTokens: 3},
 	}
@@ -910,6 +911,7 @@ func TestDecisionMapFormResponseWire(t *testing.T) {
 		"category": map[string]any{"kind": "choice", "value": "billing", "confidence": 0.8, "probabilities": map[string]any{"billing": 0.9, "bug": 0.1}, "answer_confidence": 0.97},
 		"urgency":  map[string]any{"kind": "score", "value": 1.5, "probabilities": map[string]any{"0": 0.5, "2": 0.5}, "legend": map[string]any{"0": "low", "2": "high"}},
 		"declined": map[string]any{"kind": "refusal", "value": nil},
+		"mug":      map[string]any{"kind": "box", "value": map[string]any{"top": 0.25, "bottom": 0.82, "left": 0.44, "right": 0.84}, "confidence": 0.92},
 	}, wire["answers"])
 	assert.False(t, strings.Contains(string(encoded), `"type":"noul"`), "the map form reports kind, not Typesafe's type")
 	assert.Nil(t, toDecisionMapFormResponse(nil))

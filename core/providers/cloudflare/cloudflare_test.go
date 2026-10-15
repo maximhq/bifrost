@@ -271,7 +271,7 @@ func newDecisionRequest(model string, input schemas.DecisionInput) *schemas.Bifr
 }
 
 func textPart(text string) schemas.DecisionInputPart {
-	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr(text)}
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(text)}
 }
 
 func imagePart(url string) schemas.DecisionInputPart {
@@ -376,6 +376,7 @@ func TestToCloudflareDecisionRequest_KeepsStructuredInput(t *testing.T) {
 func TestToCloudflareDecisionRequest_RejectsUnreadableParts(t *testing.T) {
 	for name, part := range map[string]schemas.DecisionInputPart{
 		"image without url": {Type: schemas.DecisionInputPartTypeImage},
+		"asset":             {Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-a"), ImageURL: schemas.Ptr("data:image/png;base64,AAAA")},
 		"audio":             {Type: "input_audio"},
 		"untyped":           {},
 	} {

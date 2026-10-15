@@ -4097,7 +4097,7 @@ func decisionUserMessage(parts ...schemas.DecisionInputPart) schemas.DecisionInp
 }
 
 func decisionTextPart(text string) schemas.DecisionInputPart {
-	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr(text)}
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(text)}
 }
 
 func decisionImagePart(url string, detail *string) schemas.DecisionInputPart {
@@ -4131,6 +4131,18 @@ func TestExtractDecisionImages_LeavesImageFreeInputsAlone(t *testing.T) {
 // TestExtractDecisionImages_SendsPlainTextAndImageItems pins the state layout: text as
 // plain strings and images as image_url items, in their original order across messages,
 // with roles dropped. Message objects would reach the model as JSON text.
+// TestExtractDecisionImages_RejectsAssetParts pins that an image sent by ID is
+// refused rather than sent as an inline image, which would make an example image
+// part of the evidence.
+func TestExtractDecisionImages_RejectsAssetParts(t *testing.T) {
+	asset := decisionImagePart("data:image/png;base64,iVBORw0KGgo=", nil)
+	asset.ID = schemas.Ptr("r-a")
+	_, _, err := ExtractDecisionImages(schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{decisionUserMessage(decisionTextPart("Same as r-a?"), asset)}})
+	if err == nil || !strings.Contains(err.Error(), "only Typesafe reads") {
+		t.Fatalf("err = %v, want the asset refusal", err)
+	}
+}
+
 func TestExtractDecisionImages_SendsPlainTextAndImageItems(t *testing.T) {
 	second := "data:image/jpeg;base64,/9j/4AAQ"
 	input := schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{

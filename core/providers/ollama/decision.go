@@ -52,6 +52,9 @@ func ToOllamaDecisionRequest(request *schemas.BifrostDecisionRequest) (*OllamaDe
 // not kept, since Ollama shares the images across the whole request. A message
 // left with no parts is dropped.
 func extractOllamaDecisionImages(input schemas.DecisionInput) (schemas.DecisionInput, []string, error) {
+	if input.HasAssetParts() {
+		return schemas.DecisionInput{}, nil, providerUtils.DecisionAssetsUnsupportedError()
+	}
 	if !hasOllamaDecisionImage(input.Messages) {
 		return input, nil, nil
 	}
