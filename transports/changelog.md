@@ -5,6 +5,10 @@
 - **Virtual Key Metadata API** - Create and update virtual keys with a `metadata` object (on update, omit to keep, `{}` to clear); invalid metadata returns a 400 naming the key. The virtual key list accepts `metadata_<key>=<value>` filters (AND-ed) and `search` also matches metadata [@jimseiwert](https://github.com/jimseiwert)
 - **Virtual Key Metadata in the UI** - The virtual key sheet has a Metadata editor (validated like the API, editable on access-profile-managed keys too), the details sheet lists entries with a "View spend" link to the filtered logs, and the virtual keys table has a metadata filter [@jimseiwert](https://github.com/jimseiwert)
 
+## 🐞 Fixed
+
+- **Cloudflare R2 Object Storage** - Accept `type: "r2"` for log and audit object storage, with required endpoint and access credentials. R2 handles tagging and checksum compatibility automatically (#8076).
+
 ## 🗄️ Database Migrations
 
 - `add_virtual_key_metadata_column` - adds the nullable `metadata` column to `governance_virtual_keys`. Existing keys keep NULL. Non-rollbackable: dropping the column would delete every key's metadata; older binaries ignore it.

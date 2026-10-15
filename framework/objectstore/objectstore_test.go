@@ -3,15 +3,20 @@ package objectstore
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bytedance/sonic"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 func TestGzipRoundTrip(t *testing.T) {
@@ -562,5 +567,197 @@ func BenchmarkGunzipJSONBaseline(b *testing.B) {
 		if _, err := gzipDecompress(compressed); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestR2DeleteBatchObjectErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response string
+		want     string
+	}{
+		{
+			name:     "failure details",
+			response: `<Error><Key>logs/failed.json</Key><Code>AccessDenied</Code><Message>Access denied</Message></Error><Error><Key>logs/other.json</Key><Code>InternalError</Code></Error>`,
+			want:     "objectstore: r2 2 objects failed to delete in batch starting at index 1000 (first: key=logs/failed.json code=AccessDenied message=Access denied)",
+		},
+		{
+			name:     "missing optional details",
+			response: `<Error><Key>logs/failed.json</Key></Error>`,
+			want:     "objectstore: r2 1 objects failed to delete in batch starting at index 1000 (first: key=logs/failed.json code= message=)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				calls++
+				if req.Method != http.MethodPost || !req.URL.Query().Has("delete") {
+					t.Errorf("unexpected request: %s %s", req.Method, req.URL)
+				}
+				w.Header().Set("Content-Type", "application/xml")
+				failures := ""
+				if calls == 2 {
+					failures = tc.response
+				}
+				fmt.Fprintf(w, `<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">%s</DeleteResult>`, failures)
+			}))
+			defer server.Close()
+			store := &R2ObjectStore{
+				client: s3.New(s3.Options{
+					Region:                     "auto",
+					BaseEndpoint:               aws.String(server.URL),
+					Credentials:                aws.AnonymousCredentials{},
+					UsePathStyle:               true,
+					RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
+				}),
+				bucket: "test-bucket",
+			}
+			keys := make([]string, 1002)
+			for i := range keys {
+				keys[i] = fmt.Sprintf("logs/%d.json", i)
+			}
+			keys[1000], keys[1001] = "logs/failed.json", "logs/other.json"
+			err := store.DeleteBatch(context.Background(), keys)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("DeleteBatch error: got %v, want %s", err, tc.want)
+			}
+			if calls != 2 {
+				t.Fatalf("got %d requests, want 2", calls)
+			}
+		})
+	}
+}
+
+// TestObjectStoreEndpointSecurity ensures R2 requires HTTPS while S3 retains
+// HTTP support for local and internal S3-compatible services.
+func TestObjectStoreEndpointSecurity(t *testing.T) {
+	t.Setenv("AWS_CONFIG_FILE", t.TempDir()+"/config")
+	t.Setenv("BIFROST_TEST_R2_ENDPOINT", "http://account.r2.cloudflarestorage.com")
+	for _, tc := range []struct {
+		name     string
+		backend  StoreType
+		endpoint string
+		valid    bool
+	}{
+		{"r2 https", StoreTypeR2, "https://account.r2.cloudflarestorage.com", true},
+		{"r2 jurisdiction https", StoreTypeR2, "https://account.eu.r2.cloudflarestorage.com", true},
+		{"r2 http", StoreTypeR2, "http://account.r2.cloudflarestorage.com", false},
+		{"r2 local http", StoreTypeR2, "http://localhost:9000", false},
+		{"r2 http from environment", StoreTypeR2, "env.BIFROST_TEST_R2_ENDPOINT", false},
+		{"s3 local http", StoreTypeS3, "http://localhost:9000", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				Type:            tc.backend,
+				Bucket:          *schemas.NewSecretVar("test-bucket"),
+				Region:          schemas.NewSecretVar("auto"),
+				Endpoint:        schemas.NewSecretVar(tc.endpoint),
+				AccessKeyID:     schemas.NewSecretVar("test-key"),
+				SecretAccessKey: schemas.NewSecretVar("test-secret"),
+			}
+			store, err := NewObjectStore(context.Background(), cfg, nil)
+			if tc.valid {
+				if err != nil {
+					t.Fatalf("valid endpoint rejected: %v", err)
+				}
+				if err := store.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "HTTPS") {
+				t.Fatalf("expected HTTPS validation error, got %v", err)
+			}
+		})
+	}
+}
+
+// TestR2StorageContract covers the shared write options and error contract used
+// by HybridLogStore after the format/compression migration.
+func TestR2StorageContract(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		compress    bool
+		compression string
+		opts        PutOptions
+		wantGzip    bool
+	}{
+		{name: "default JSON"},
+		{name: "legacy gzip", compress: true, wantGzip: true},
+		{name: "explicit gzip", compression: CompressionGzip, wantGzip: true},
+		{name: "explicit none", compress: true, compression: CompressionNone},
+		{name: "parquet skips outer gzip", compress: true, opts: PutOptions{ContentType: ContentTypeParquet, SkipCompression: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(`{"message":"hello"}`)
+			if tc.opts.ContentType == ContentTypeParquet {
+				var err error
+				data, err = EncodeJSONObjectToParquet(data, CompressionSnappy)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Method == http.MethodPut {
+					body, err := io.ReadAll(req.Body)
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					if got := req.Header.Get("Content-Encoding"); (got == "gzip") != tc.wantGzip {
+						t.Errorf("Content-Encoding = %q, want gzip %v", got, tc.wantGzip)
+					}
+					if tc.wantGzip {
+						body, err = gzipDecompress(body)
+						if err != nil {
+							t.Error(err)
+							return
+						}
+					}
+					if !bytes.Equal(body, data) {
+						t.Error("stored bytes differ")
+					}
+					wantType := tc.opts.ContentType
+					if wantType == "" {
+						wantType = ContentTypeJSON
+					}
+					if got := req.Header.Get("Content-Type"); got != wantType {
+						t.Errorf("Content-Type = %q, want %q", got, wantType)
+					}
+					if req.Header.Get("X-Amz-Tagging") != "" {
+						t.Error("R2 request contains unsupported tags")
+					}
+					return
+				}
+				w.Header().Set("Content-Type", "application/xml")
+				if strings.HasSuffix(req.URL.Path, "/denied") {
+					w.WriteHeader(http.StatusForbidden)
+					fmt.Fprint(w, `<Error><Code>AccessDenied</Code><Message>Denied</Message></Error>`)
+				} else {
+					w.WriteHeader(http.StatusNotFound)
+					fmt.Fprint(w, `<Error><Code>NoSuchKey</Code><Message>Missing</Message></Error>`)
+				}
+			}))
+			defer server.Close()
+			store, err := NewR2ObjectStore(context.Background(), &Config{
+				Type: StoreTypeR2, Bucket: *schemas.NewSecretVar("bucket"), Endpoint: schemas.NewSecretVar(server.URL),
+				AccessKeyID: schemas.NewSecretVar("test-key"), SecretAccessKey: schemas.NewSecretVar("test-secret"),
+				Compress: tc.compress, Compression: tc.compression,
+			}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := store.client.Options()
+			opts.HTTPClient = server.Client()
+			opts.UsePathStyle = true
+			store.client = s3.New(opts)
+			if err := PutWith(context.Background(), store, "object", data, map[string]string{"test": "tag"}, tc.opts); err != nil {
+				t.Fatal(err)
+			}
+			for _, key := range []string{"missing", "denied"} {
+				_, err := store.Get(context.Background(), key)
+				if err == nil || errors.Is(err, ErrNotFound) != (key == "missing") {
+					t.Errorf("Get(%q): unexpected error classification: %v", key, err)
+				}
+			}
+		})
 	}
 }

@@ -172,7 +172,7 @@ spec:
             {{- end }}
             {{- /* Object storage credentials from existing secret */ -}}
             {{- if and .Values.storage.logsStore.enabled .Values.storage.logsStore.objectStorage .Values.storage.logsStore.objectStorage.enabled .Values.storage.logsStore.objectStorage.existingSecret }}
-            {{- if eq .Values.storage.logsStore.objectStorage.type "s3" }}
+            {{- if or (eq .Values.storage.logsStore.objectStorage.type "s3") (eq .Values.storage.logsStore.objectStorage.type "r2") }}
             - name: BIFROST_OBJECT_STORAGE_ACCESS_KEY_ID
               valueFrom:
                 secretKeyRef:
