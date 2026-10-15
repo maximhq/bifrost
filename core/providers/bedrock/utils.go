@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"mime"
 	"net/url"
 	"path/filepath"
@@ -901,7 +902,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	bedrockReq.ServiceTier = bedrockServiceTierForModel(caps, bifrostReq.Params.ServiceTier)
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
-		bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
+		bedrockReq.ExtraParams = withoutTopLevelCacheControl(bifrostReq.Params.ExtraParams)
 		if err := applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq); err != nil {
 			return err
 		}
@@ -1834,6 +1835,136 @@ func decodeRedactedContentFromConverse(blob string) (*string, string) {
 		return id, rest
 	}
 	return nil, token
+}
+
+// bedrockTopLevelCacheControl reads Anthropic's request-level cache_control (automatic caching)
+// out of ExtraParams. The value arrives as *schemas.CacheControl from the Anthropic ingress, as
+// json.RawMessage from the InvokeModel ingress and as a decoded map from the /v1 routes. Returns
+// nil when the field is absent, unparseable or not an ephemeral marker.
+func bedrockTopLevelCacheControl(extraParams map[string]interface{}) *schemas.CacheControl {
+	raw, ok := extraParams["cache_control"]
+	if !ok || raw == nil {
+		return nil
+	}
+	var cc *schemas.CacheControl
+	switch v := raw.(type) {
+	case *schemas.CacheControl:
+		cc = v
+	case schemas.CacheControl:
+		cc = &v
+	default:
+		var data []byte
+		switch b := v.(type) {
+		case json.RawMessage:
+			data = b
+		case []byte:
+			data = b
+		default:
+			var err error
+			if data, err = providerUtils.MarshalSorted(v); err != nil {
+				return nil
+			}
+		}
+		var parsed schemas.CacheControl
+		if sonic.Unmarshal(data, &parsed) != nil {
+			return nil
+		}
+		cc = &parsed
+	}
+	if cc == nil || cc.Type != schemas.CacheControlTypeEphemeral {
+		return nil
+	}
+	return cc
+}
+
+// withoutTopLevelCacheControl returns extraParams minus "cache_control", cloning only when the key
+// is present. The map belongs to the Bifrost request, which fallbacks reuse, so it is never written.
+func withoutTopLevelCacheControl(extraParams map[string]interface{}) map[string]interface{} {
+	if _, ok := extraParams["cache_control"]; !ok {
+		return extraParams
+	}
+	out := maps.Clone(extraParams)
+	delete(out, "cache_control")
+	return out
+}
+
+// applyBedrockAutomaticCachePoint translates Anthropic automatic caching (a top-level
+// cache_control) into the Converse cachePoint Bedrock understands. Converse has no request-level
+// marker, so the breakpoint goes where the Claude API puts it: after the last cacheable block,
+// walking backward past blocks that cannot carry one (reasoning, empty text, existing markers),
+// across messages and then the system prompt. When that block already ends in an explicit marker,
+// a matching TTL is a no-op and a different one is a caller error, matching the Claude API (which
+// answers both with a 400 rather than silently picking one retention). Runs before the
+// cache-point gate and clamp so unsupported models still have it stripped and the 4-marker cap
+// still applies.
+func applyBedrockAutomaticCachePoint(req *BedrockConverseRequest, cc *schemas.CacheControl) error {
+	if req == nil || cc == nil {
+		return nil
+	}
+	// Unlike block-level markers, which newBedrockCachePoint normalizes to the default, an
+	// automatic marker with a TTL Bedrock cannot honour is rejected, as on the Claude API.
+	if cc.TTL != nil && *cc.TTL != "" && *cc.TTL != "5m" && *cc.TTL != "1h" {
+		return providerUtils.InvalidRequestErrorf("top-level cache_control ttl %q is not supported: Bedrock accepts \"5m\" or \"1h\"", *cc.TTL)
+	}
+	marker := newBedrockCachePoint(cc.TTL)
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		content := req.Messages[i].Content
+		for j := len(content) - 1; j >= 0; j-- {
+			if !isBedrockCacheableBlock(&content[j]) {
+				continue
+			}
+			if j+1 < len(content) && content[j+1].CachePoint != nil {
+				return checkAutomaticCachePointTTL(content[j+1].CachePoint, marker)
+			}
+			if tr := content[j].ToolResult; tr != nil && len(tr.Content) > 0 && tr.Content[len(tr.Content)-1].CachePoint != nil {
+				return checkAutomaticCachePointTTL(tr.Content[len(tr.Content)-1].CachePoint, marker)
+			}
+			req.Messages[i].Content = slices.Insert(content, j+1, BedrockContentBlock{CachePoint: marker})
+			return nil
+		}
+	}
+	for i := len(req.System) - 1; i >= 0; i-- {
+		if req.System[i].Text == nil || *req.System[i].Text == "" {
+			continue
+		}
+		if req.System[i].CachePoint != nil {
+			return checkAutomaticCachePointTTL(req.System[i].CachePoint, marker)
+		}
+		if i+1 < len(req.System) && req.System[i+1].CachePoint != nil {
+			return checkAutomaticCachePointTTL(req.System[i+1].CachePoint, marker)
+		}
+		req.System = slices.Insert(req.System, i+1, BedrockSystemMessage{CachePoint: marker})
+		return nil
+	}
+	return nil
+}
+
+// checkAutomaticCachePointTTL compares an explicit marker with the automatic one that would have
+// landed on the same block. An absent TTL is Bedrock's 5m default on both sides.
+func checkAutomaticCachePointTTL(explicit, automatic *BedrockCachePoint) error {
+	explicitTTL, automaticTTL := bedrockCachePointTTL(explicit), bedrockCachePointTTL(automatic)
+	if explicitTTL == automaticTTL {
+		return nil
+	}
+	return providerUtils.InvalidRequestErrorf("top-level cache_control ttl %q conflicts with the explicit cache_control ttl %q on the last cacheable block", automaticTTL, explicitTTL)
+}
+
+func bedrockCachePointTTL(cp *BedrockCachePoint) string {
+	if cp.TTL == nil {
+		return "5m"
+	}
+	return *cp.TTL
+}
+
+// isBedrockCacheableBlock reports whether a cachePoint may follow this message block.
+func isBedrockCacheableBlock(block *BedrockContentBlock) bool {
+	switch {
+	case block.CachePoint != nil, block.ReasoningContent != nil:
+		return false
+	case block.Text != nil:
+		return *block.Text != ""
+	}
+	return true
 }
 
 // newBedrockCachePoint builds a default cache point, attaching the TTL only for the values
