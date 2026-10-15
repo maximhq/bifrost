@@ -395,7 +395,7 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 		baseQuery = baseQuery.Where("agent_correlation_id = ?", filters.AgentCorrelationID)
 	}
 	if len(filters.Objects) > 0 {
-		baseQuery = baseQuery.Where("object_type IN ?", filters.Objects)
+		baseQuery = applyObjectsFilter(baseQuery, filters.Objects)
 	}
 	if filters.ParentRequestID != "" {
 		// A row is never its own child: parent_request_id is client-settable, and
@@ -1585,7 +1585,7 @@ func normalizeAggregateTimestamp(value any) string {
 // combined Tool/User/Assistant summary and needs the full turn context.
 func (s *RDBLogStore) listSelectColumns() string {
 	baseCols := strings.Join([]string{
-		"id", "parent_request_id", "timestamp", "object_type", "provider", "model", "alias",
+		"id", "parent_request_id", "timestamp", "object_type", "is_passthrough", "provider", "model", "alias",
 		"canonical_model_name", "alias_model_family", "server_side_fallback_model", "served_model",
 		"number_of_retries", "fallback_index",
 		"selected_key_id", "selected_key_name",
@@ -1777,6 +1777,21 @@ func billingScalarSelectColumns() string {
 // from a modality payload column (audio, image, video, OCR output). Such a row
 // read with PaginationOptions.OmitBillingPayloads must be re-read with the full
 // billing projection before it is priced.
+// applyObjectsFilter narrows to the requested request types. A passthrough row is stored under its
+// inferred type and tagged is_passthrough, so the passthrough types also match on the tag:
+// passthrough matches every passthrough call (streamed or not, and rows written as
+// passthrough_stream before the tag existed), while passthrough_stream on its own matches only the
+// streamed ones.
+func applyObjectsFilter(q *gorm.DB, objects []string) *gorm.DB {
+	switch {
+	case slices.Contains(objects, "passthrough"):
+		return q.Where("(object_type IN ? OR object_type = ? OR is_passthrough = ?)", objects, "passthrough_stream", true)
+	case slices.Contains(objects, "passthrough_stream"):
+		return q.Where("(object_type IN ? OR (is_passthrough = ? AND stream = ?))", objects, true, true)
+	}
+	return q.Where("object_type IN ?", objects)
+}
+
 func BillingPayloadRequired(objectType string) bool {
 	return billingPayloadColumnFor(objectType) != ""
 }
