@@ -11,12 +11,19 @@ import (
 	"time"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 )
 
 const (
 	urlFetchMaxRetries = 3                // retries after first attempt (4 attempts total)
 	urlFetchMaxBackoff = 10 * time.Second // cap for exponential backoff (steps start at 1s)
+)
+
+// Total budget for fetching a datasheet across all retries; vars so tests can shorten them.
+var (
+	pricingFetchTimeout = DefaultPricingTimeout
+	paramsFetchTimeout  = DefaultModelParametersTimeout
 )
 
 // SyncFromURL fetches the upstream pricing datasheet, persists it to the DB
@@ -28,15 +35,18 @@ const (
 // gossip hook — none of that lives here. SyncFromURL is the pure
 // "URL → DB → memory" step.
 func (s *Store) SyncFromURL(ctx context.Context) error {
-	pricingData, err := withRetries(ctx, urlFetchMaxRetries, urlFetchMaxBackoff, func() (map[string]Entry, error) {
-		return s.loadPricingFromURL(ctx)
+	// Only the fetch is bounded so a hung URL cannot starve the DB fallback below.
+	fetchCtx, cancel := context.WithTimeout(ctx, pricingFetchTimeout)
+	pricingData, err := withRetries(fetchCtx, urlFetchMaxRetries, urlFetchMaxBackoff, func() (map[string]Entry, error) {
+		return s.loadPricingFromURL(fetchCtx)
 	})
+	cancel()
 	if err != nil {
 		// URL failed — fall back to existing DB records when we have them.
 		if s.configStore != nil {
 			records, dbErr := s.configStore.GetModelPrices(ctx)
 			if dbErr != nil {
-				return fmt.Errorf("failed to get pricing records: %w", dbErr)
+				return fmt.Errorf("failed to load pricing data from URL (%v) and failed to get pricing records: %w", err, dbErr)
 			}
 			if len(records) > 0 {
 				if s.logger != nil {
@@ -184,7 +194,9 @@ func (s *Store) loadPricingFromURL(ctx context.Context) (map[string]Entry, error
 		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
 			return nil, fmt.Errorf("pricing URL validation failed: %w", err)
 		}
-		client := &http.Client{Timeout: DefaultPricingTimeout}
+		// ValidateExternalURL screens the configured host once; the guarded
+		// client holds every connection and redirect hop to the same policy.
+		client := network.NewPrivateNetworkHTTPClient(DefaultPricingTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL(), nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)

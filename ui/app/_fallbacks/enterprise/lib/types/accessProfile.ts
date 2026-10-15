@@ -42,3 +42,32 @@ export interface UserAccessProfile {
 export interface GetUserAccessProfilesResponse {
 	access_profiles: UserAccessProfile[];
 }
+
+export interface VKCreationPolicyResponse {
+	has_access_profile: boolean;
+	profile_name?: string;
+}
+
+/** The entity kinds an access profile can be attached to. Mirrors the enterprise type so the
+ * fallback component stubs can carry the same signature. */
+export type AccessProfileEntityKind = "team" | "business_unit" | "customer";
+
+/**
+ * The shape OSS consumers read off the entity-profile query.
+ *
+ * Only the fields the OSS build actually touches: the budget editors and the virtual key sheet ask
+ * whether a profile governs the entity, and which one. Typed rather than left as `undefined` so those consumers
+ * compile against the same property they read in the enterprise build.
+ */
+export interface EntityAccessProfile {
+	id: number;
+	entity_type: AccessProfileEntityKind;
+	entity_id: string;
+	name: string;
+	is_active: boolean;
+}
+
+export interface GetEntityAccessProfileResponse {
+	access_profile: EntityAccessProfile;
+	virtual_keys: Array<{ id: string; name: string; is_active: boolean }>;
+}

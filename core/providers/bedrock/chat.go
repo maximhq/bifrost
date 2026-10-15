@@ -69,6 +69,21 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 	// Ensure tool config is present when needed
 	ensureChatToolConfigForConversation(ctx, bifrostReq, bedrockReq)
 
+	// After the history rebuild, so the flag also covers tools rebuilt from it.
+	if bifrostReq.Params != nil && bifrostReq.Params.ParallelToolCalls != nil && !*bifrostReq.Params.ParallelToolCalls &&
+		schemas.IsAnthropicModelFamily(ctx, bifrostReq.Model) {
+		tc := bifrostReq.Params.ToolChoice
+		none := tc != nil && ((tc.ChatToolChoiceStr != nil && *tc.ChatToolChoiceStr == string(schemas.ChatToolChoiceTypeNone)) ||
+			(tc.ChatToolChoiceStruct != nil && tc.ChatToolChoiceStruct.Type == schemas.ChatToolChoiceTypeNone))
+		if !none {
+			applyBedrockParallelToolUse(bedrockReq)
+		}
+	}
+
+	if !caps.SupportsConverseToolResultImages(schemas.BedrockModelSupportsToolResultImages(capModel)) {
+		hoistToolResultImages(bedrockReq)
+	}
+
 	if !caps.SupportsCachePoint(schemas.BedrockModelSupportsCachePoints(capModel)) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
 	} else {
@@ -149,17 +164,24 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 
 			// Handle reasoning content
 			if contentBlock.ReasoningContent != nil {
-				if contentBlock.ReasoningContent.ReasoningText == nil {
-					continue
-				}
-				reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
-					Index:     len(reasoningDetails),
-					Type:      schemas.BifrostReasoningDetailsTypeText,
-					Text:      contentBlock.ReasoningContent.ReasoningText.Text,
-					Signature: contentBlock.ReasoningContent.ReasoningText.Signature,
-				})
-				if contentBlock.ReasoningContent.ReasoningText.Text != nil {
-					reasoningText += *contentBlock.ReasoningContent.ReasoningText.Text + "\n"
+				switch {
+				case contentBlock.ReasoningContent.ReasoningText != nil:
+					reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+						Index:     len(reasoningDetails),
+						Type:      schemas.BifrostReasoningDetailsTypeText,
+						Text:      contentBlock.ReasoningContent.ReasoningText.Text,
+						Signature: contentBlock.ReasoningContent.ReasoningText.Signature,
+					})
+					if contentBlock.ReasoningContent.ReasoningText.Text != nil {
+						reasoningText += *contentBlock.ReasoningContent.ReasoningText.Text + "\n"
+					}
+				case contentBlock.ReasoningContent.RedactedContent != nil:
+					// Opaque blob: no prose to surface, only the replay token.
+					reasoningDetails = append(reasoningDetails, schemas.ChatReasoningDetails{
+						Index: len(reasoningDetails),
+						Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
+						Data:  contentBlock.ReasoningContent.RedactedContent,
+					})
 				}
 			}
 
@@ -491,8 +513,9 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream(state *BedrockStr
 			// Handle reasoning content delta
 			reasoningContentDelta := chunk.Delta.ReasoningContent
 
-			// Only construct and return a response when either Text or Signature is set
-			if (reasoningContentDelta.Text == nil || *reasoningContentDelta.Text == "") && reasoningContentDelta.Signature == nil {
+			// Only construct and return a response when the delta carries something
+			if (reasoningContentDelta.Text == nil || *reasoningContentDelta.Text == "") &&
+				reasoningContentDelta.Signature == nil && reasoningContentDelta.RedactedContent == nil {
 				return nil, nil, false
 			}
 
@@ -531,6 +554,27 @@ func (chunk *BedrockStreamEvent) ToBifrostChatCompletionStream(state *BedrockStr
 											Index:     0,
 											Type:      schemas.BifrostReasoningDetailsTypeText,
 											Signature: reasoningContentDelta.Signature,
+										},
+									},
+								},
+							},
+						},
+					},
+				}
+			} else if reasoningContentDelta.RedactedContent != nil {
+				// Arrives whole in a single delta, so no accumulation is needed.
+				streamResponse = &schemas.BifrostChatResponse{
+					Object: "chat.completion.chunk",
+					Choices: []schemas.BifrostResponseChoice{
+						{
+							Index: 0,
+							ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{
+								Delta: &schemas.ChatStreamResponseChoiceDelta{
+									ReasoningDetails: []schemas.ChatReasoningDetails{
+										{
+											Index: 0,
+											Type:  schemas.BifrostReasoningDetailsTypeEncrypted,
+											Data:  reasoningContentDelta.RedactedContent,
 										},
 									},
 								},

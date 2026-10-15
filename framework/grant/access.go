@@ -123,6 +123,46 @@ func (a *Access) IsModelAllowed(provider string, model string) bool {
 	return a.compose(base, a.permitAllowsModel(a.scoping, provider, model))
 }
 
+// AllowsEveryModel implements schemas.Access.
+func (a *Access) AllowsEveryModel(provider string) bool {
+	if a == nil {
+		return false
+	}
+	base := a.anyBase(func(p schemas.Permit) bool { return permitAllowsEveryModel(p, provider) })
+	if a.scoping == nil {
+		return base
+	}
+	return a.compose(base, permitAllowsEveryModel(a.scoping, provider))
+}
+
+// permitAllowsEveryModel reports whether the permit permits every model on provider. Its provider
+// permits for the provider are read as a union, as permitAllowsModel reads them: one unrestricted
+// entry is enough, while a blacklist on any entry is decisive (blacklistsModel blocks the model
+// whatever another entry allows). A provider the permit lists no permit for is every-model only
+// under allow-all, as in permitAllowsModel.
+func permitAllowsEveryModel(p schemas.Permit, provider string) bool {
+	if isNilPermit(p) {
+		return false
+	}
+	found, unrestricted := false, false
+	for _, pp := range p.ProviderPermits() {
+		if pp.Provider != provider {
+			continue
+		}
+		found = true
+		if len(pp.BlacklistedModels) > 0 {
+			return false
+		}
+		if pp.AllowedModels.IsUnrestricted() {
+			unrestricted = true
+		}
+	}
+	if !found {
+		return p.AllowsAllProviders()
+	}
+	return unrestricted
+}
+
 // IsMCPToolAllowed implements schemas.Access.
 func (a *Access) IsMCPToolAllowed(toolPattern string) bool {
 	if a == nil || toolPattern == "" {
@@ -133,6 +173,18 @@ func (a *Access) IsMCPToolAllowed(toolPattern string) bool {
 		return base
 	}
 	return a.compose(base, allowsTool(a.scoping, toolPattern))
+}
+
+// IsAgentAllowed implements schemas.Access.
+func (a *Access) IsAgentAllowed(agentName string) bool {
+	if a == nil || agentName == "" {
+		return false
+	}
+	base := a.anyBase(func(p schemas.Permit) bool { return allowsAgent(p, agentName) })
+	if a.scoping == nil {
+		return base
+	}
+	return a.compose(base, allowsAgent(a.scoping, agentName))
 }
 
 // PermitsForModel implements schemas.Access.
@@ -171,12 +223,12 @@ func (a *Access) KeysForModel(provider string, model string) (keyIDs []string, r
 		return nil, false
 	}
 	callerKeys, callerHolds := a.unionKeysHeldBy(a.bases, provider, model)
-	var scopeKeys []string
+	var scopeKeys schemas.WhiteList
 	scopeHolds := false
 	if a.scoping != nil {
 		scopeKeys, scopeHolds = a.unionKeysHeldBy([]schemas.Permit{a.scoping}, provider, model)
 	}
-	var granted []string
+	var granted schemas.WhiteList
 	switch {
 	case callerHolds && scopeHolds:
 		granted = composeKeyIDs(callerKeys, scopeKeys, a.mode)
@@ -192,7 +244,7 @@ func (a *Access) KeysForModel(provider string, model string) (keyIDs []string, r
 		// found at all, rather than on whether the list came back empty.
 		return nil, false
 	}
-	if listIsUnrestricted(granted) {
+	if granted.IsUnrestricted() {
 		return nil, false
 	}
 	// A copy, and always non-nil: a consumer must not be able to edit the permit through the answer,
@@ -205,7 +257,7 @@ func (a *Access) KeysForModel(provider string, model string) (keyIDs []string, r
 // unionKeysHeldBy is the union of the key restrictions that permits which authorize model on
 // provider hold for that provider, and whether any of them holds one at all. A permit that does not
 // authorize the pair has no say.
-func (a *Access) unionKeysHeldBy(permits []schemas.Permit, provider string, model string) (keys []string, holds bool) {
+func (a *Access) unionKeysHeldBy(permits []schemas.Permit, provider string, model string) (keys schemas.WhiteList, holds bool) {
 	for _, permit := range permits {
 		if !a.permitAllowsModel(permit, provider, model) {
 			continue
@@ -501,6 +553,14 @@ func (a *Access) DeniedPermitsForModel(provider string, model string) []schemas.
 	return a.deniedBy(func(p schemas.Permit) bool { return a.permitAllowsModel(p, provider, model) })
 }
 
+// DeniedPermitsForAgent implements schemas.Access.
+func (a *Access) DeniedPermitsForAgent(agentName string) []schemas.Permit {
+	if a == nil {
+		return nil
+	}
+	return a.deniedBy(func(p schemas.Permit) bool { return allowsAgent(p, agentName) })
+}
+
 // DeniedPermitsForMCPTool implements schemas.Access.
 func (a *Access) DeniedPermitsForMCPTool(toolPattern string) []schemas.Permit {
 	if a == nil {
@@ -566,21 +626,22 @@ func (a *Access) compose(baseAllows, scopingAllows bool) bool {
 }
 
 // composeKeyIDs folds two key restrictions under a composition mode. Order follows the first
-// argument, so the result is stable.
+// argument, so the result is stable. Key IDs are identifiers, so membership here is exact rather
+// than through the list type's case-folding methods; only the wildcard is read off the type.
 //
 // The wildcard is the universe rather than an entry: it stands for every key the provider has, so
 // intersecting with it yields the other side untouched and unioning with it is unrestricted. An
 // unrecognized mode permits nothing, as everywhere else.
-func composeKeyIDs(first, second []string, mode CompositionMode) []string {
+func composeKeyIDs(first, second schemas.WhiteList, mode CompositionMode) schemas.WhiteList {
 	switch mode {
 	case Intersect:
-		if listIsUnrestricted(first) {
+		if first.IsUnrestricted() {
 			return second
 		}
-		if listIsUnrestricted(second) {
+		if second.IsUnrestricted() {
 			return first
 		}
-		shared := make([]string, 0, len(first))
+		shared := make(schemas.WhiteList, 0, len(first))
 		for _, keyID := range first {
 			if slices.Contains(second, keyID) {
 				shared = append(shared, keyID)
@@ -588,10 +649,10 @@ func composeKeyIDs(first, second []string, mode CompositionMode) []string {
 		}
 		return shared
 	case Union:
-		if listIsUnrestricted(first) || listIsUnrestricted(second) {
-			return []string{Wildcard}
+		if first.IsUnrestricted() || second.IsUnrestricted() {
+			return schemas.WhiteList{Wildcard}
 		}
-		merged := make([]string, 0, len(first)+len(second))
+		merged := make(schemas.WhiteList, 0, len(first)+len(second))
 		merged = append(merged, first...)
 		for _, keyID := range second {
 			if !slices.Contains(merged, keyID) {
@@ -617,14 +678,21 @@ func (a *Access) permitAllowsModel(p schemas.Permit, provider string, model stri
 		return false
 	}
 	pps := p.ProviderPermits()
+	found := false
 	for i := range pps {
 		pp := &pps[i]
 		if pp.Provider != provider {
 			continue
 		}
+		found = true
 		if a.permitsModel(pp, model) {
 			return true
 		}
+	}
+	// A provider the permit lists keeps its own model rules even under allow-all; only a provider it
+	// lists no permit for is opened up by allow-all, and then every model of it is allowed.
+	if !found && p.AllowsAllProviders() {
+		return true
 	}
 	return false
 }
@@ -633,7 +701,7 @@ func (a *Access) permitAllowsModel(p schemas.Permit, provider string, model stri
 // one and by name otherwise.
 func (a *Access) permitsModel(pp *schemas.ProviderPermit, model string) bool {
 	if a.matcher == nil {
-		return listAllows(pp.AllowedModels, model)
+		return pp.AllowedModels.IsAllowed(model)
 	}
 	return a.matcher(pp.Provider, model, pp.AllowedModels)
 }

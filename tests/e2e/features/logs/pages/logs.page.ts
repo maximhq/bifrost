@@ -50,7 +50,9 @@ export class LogsPage extends BasePage {
     this.statusFilter = page.locator('[data-testid="filter-status"]').or(
       page.locator('button').filter({ hasText: /Status/i })
     )
-    this.searchInput = page.locator('[data-testid="filter-search"]').or(
+    this.searchInput = page.locator('[data-testid="logs-search-input"]').or(
+      page.locator('[data-testid="filter-search"]')
+    ).or(
       page.getByPlaceholder('Search logs')
     )
     this.dateRangePicker = page.locator('[data-testid="filter-date-range"]').or(
@@ -61,7 +63,7 @@ export class LogsPage extends BasePage {
     )
 
     // Table elements - exclude the "Listening for logs" row which is not a data row
-    this.tableRows = this.logsTable.locator('tbody tr').filter({ hasNot: page.locator('text=Listening for logs') }).filter({ hasNot: page.locator('text=Live updates paused') }).filter({ hasNot: page.locator('text=Not connected') }).filter({ hasNot: page.locator('text=No results found') })
+    this.tableRows = this.logsTable.locator('tbody tr').filter({ hasNot: page.getByTestId('logs-table-status-row') }).filter({ hasNot: page.locator('text=Listening for logs') }).filter({ hasNot: page.locator('text=Live updates paused') }).filter({ hasNot: page.locator('text=Not connected') }).filter({ hasNot: page.locator('text=No results found') })
     // LLM logs pagination (data-testid added to logsTable.tsx)
     this.paginationControls = page.getByTestId('pagination')
     this.nextPageBtn = page.getByTestId('next-page')
@@ -142,21 +144,47 @@ export class LogsPage extends BasePage {
   /**
    * Filter by status. Opens the Filters popover and toggles the given status option (Status group uses lowercase: success, error, etc.).
    */
-  async filterByStatus(status: 'success' | 'error' | 'pending'): Promise<void> {
+  /**
+   * Filter logs by a function name the response called. The sidebar renders
+   * open at desktop widths, so the "Tool Calls" toggle is located first and
+   * the sidebar is only expanded when the toggle is not visible. An existing
+   * name is selected through its checkbox; an unknown one goes through the
+   * custom-entry flow, so the filter applies even when no logged response has
+   * called that tool yet.
+   */
+  async filterByToolCallName(name: string): Promise<void> {
     await this.dismissToasts()
-    await this.filtersButton.first().waitFor({ state: 'visible' })
-    await this.filtersButton.first().click()
-    await this.page.waitForSelector('[role="listbox"], [data-slot="command-list"]', { timeout: 5000 }).catch(() => {})
 
-    const option = this.page.getByRole('option', { name: new RegExp(status, 'i') })
-    if (await option.count() > 0) {
-      await option.first().click()
+    const toggle = this.page.locator('[data-testid="tool-calls-filter-toggle"]')
+    if (!(await toggle.isVisible().catch(() => false))) {
+      await this.filtersButton.first().waitFor({ state: 'visible' })
+      await this.filtersButton.first().click()
+      await toggle.waitFor({ state: 'visible', timeout: 5000 })
+    }
+    await toggle.click()
+
+    const search = this.page.locator('[data-testid="tool-calls-filter-search"]')
+    await search.waitFor({ state: 'visible', timeout: 5000 })
+    await search.fill(name)
+
+    const checkbox = this.page.locator(`[data-testid="tool-calls-filter-checkbox-${name}"]`)
+    if (await checkbox.isVisible().catch(() => false)) {
+      await checkbox.click()
     } else {
-      await this.page.keyboard.press('Escape')
+      const addCustom = this.page.locator('[data-testid="tool-calls-filter-add-custom"]')
+      await addCustom.waitFor({ state: 'visible', timeout: 5000 })
+      await addCustom.click()
     }
 
-    await this.page.waitForSelector('[role="listbox"]', { state: 'hidden', timeout: 5000 }).catch(() => {})
     await waitForNetworkIdle(this.page)
+  }
+
+  async filterByStatus(status: 'success' | 'error' | 'processing'): Promise<void> {
+    await this.dismissToasts()
+    // Status is a checkbox group in the filter sidebar.
+    const checkbox = this.page.getByTestId(`status-filter-checkbox-${status}`)
+    await checkbox.click()
+    await expect(this.page).toHaveURL(new RegExp(`status=${status}`))
   }
 
   /**

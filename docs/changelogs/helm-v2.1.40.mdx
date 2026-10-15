@@ -1,0 +1,12 @@
+---
+title: "v2.1.40"
+description: "Helm v2.1.40 changelog - 2026-09-09"
+---
+
+<Update label="Bifrost Helm" description="v2.1.40">
+
+## Changelog
+
+- Added `bifrost.governance.roles[].entity_dac` — per-entity Data Access Control overrides keyed by resource name, each set to `own-data`, `team-data`, or `all-data`. Lets a role narrow or widen its global `dac` for one entity — e.g. `dac: team-data` with `entity_dac: {VirtualKeys: own-data}` gives team-wide visibility everywhere except virtual keys, where the user sees only their own. Entities not listed follow `dac`. Config is authoritative: the role's whole override set is replaced on each sync and omitting `entity_dac` clears it. Resources accepting an override today: `Logs`, `MCPLogs`, `AuditLogs`, `VirtualKeys`, `Users`, `Teams`, `Customers`, `BusinessUnits`, `RBAC`, `APIKeys`, `AccessProfiles`, `PromptRepository`, `RoutingRules`, `GuardrailsConfig`, `MCPGateway`, `VirtualMCPs`, `Projects` — the schema documents rather than enumerates them, so a resource added by a newer Bifrost is usable without a chart upgrade; an unrecognised name is logged and skipped at startup with the rest of the role still applied. DAC *values* are still validated at install time. Previously the role schema rejected the key outright (`additionalProperties: false`), so the runtime feature was unreachable from Helm. Renders into `governance.roles[].entity_dac`.
+
+</Update>

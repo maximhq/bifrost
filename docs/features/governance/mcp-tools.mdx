@@ -10,6 +10,10 @@ MCP Tool Filtering allows you to control which tools are available to AI models 
 
 Make sure you have at least one MCP client set up. Read more about it [here](../../mcp/overview).
 
+<Note>
+To bundle tools from one or more MCP servers into a single addressable endpoint served at `/mcp/<slug>`, see [Virtual MCPs](/mcp/virtual-mcps). The per-key allow-list described here also applies to the tools a Virtual MCP exposes.
+</Note>
+
 ## How It Works
 
 The filtering logic is determined by the Virtual Key's configuration:
@@ -32,6 +36,26 @@ For each MCP client associated with a Virtual Key, you can specify the allowed t
 <Note>
 Inactive or [expired](./virtual-keys#key-expiry) Virtual Keys are rejected at MCP tool execution time with a `403`, regardless of their tool configuration.
 </Note>
+
+### Disabled MCP clients
+
+A Virtual Key's allow-list does not enable an MCP client. If the client is disabled, Bifrost does not connect to it and offers none of its tools, even if the key lists them or uses `*`. The key's settings stay as they are, and the tools come back when the client is enabled.
+
+Each entry in `mcp_configs` shows the client's `disabled` value on its `mcp_client` object, so you can see why a tool is missing:
+
+```json
+{
+  "mcp_configs": [
+    {
+      "mcp_client_id": 3,
+      "tools_to_execute": ["*"],
+      "mcp_client": { "name": "billing-client", "disabled": true }
+    }
+  ]
+}
+```
+
+The flag is set on the MCP client, not the key. Use the **Disabled** switch in the client's settings, or `disabled` on `PUT /api/mcp/client/{id}`.
 
 ## Setting MCP Tool Restrictions
 

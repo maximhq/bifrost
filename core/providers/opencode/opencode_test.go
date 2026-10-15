@@ -296,14 +296,36 @@ func TestOpencodeUnsupportedOperations(t *testing.T) {
 	}
 }
 
-// TestOpencodeResponsesRouting verifies that Zen and Go providers forward both
-// regular and streaming Responses calls to their native OpenAI-compatible endpoint.
+// TestOpencodeResponsesRouting verifies the Responses routing split between the
+// two gateways: Go forwards Responses calls to its native /v1/responses endpoint,
+// while Zen falls back to /v1/chat/completions because its upstream does not
+// implement the Responses API (see https://github.com/maximhq/bifrost/issues/6778).
 func TestOpencodeResponsesRouting(t *testing.T) {
 	const (
 		model     = "opencode-test-model"
 		apiKey    = "opencode-test-key"
-		inputText = "exercise native responses routing"
+		inputText = "exercise responses routing"
 	)
+
+	// chatResponse is the OpenAI chat-completions payload served to Zen. Its id
+	// flows through ToBifrostResponsesResponse, so the provider surfaces it as the
+	// Responses response id.
+	chatResponse := `{"id":"chatcmpl-regular","object":"chat.completion","model":"opencode-test-model",` +
+		`"choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`
+
+	// chatStream emits a minimal SSE stream: a role-bearing delta triggers the
+	// created/in_progress lifecycle, then a content delta and a terminal chunk.
+	chatStream := "" +
+		`data: {"id":"chatcmpl-stream","object":"chat.completion.chunk","model":"opencode-test-model",` +
+		`"choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-stream","object":"chat.completion.chunk","model":"opencode-test-model",` +
+		`"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}` + "\n\n" +
+		`data: {"id":"chatcmpl-stream","object":"chat.completion.chunk","model":"opencode-test-model",` +
+		`"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}` + "\n\n" +
+		"data: [DONE]\n\n"
+
+	responsesResponse := `{"id":"resp_regular","object":"response","model":"opencode-test-model","output":[]}`
+	responsesStream := `data: {"type":"response.completed","sequence_number":1,"response":{"id":"resp_stream","object":"response","model":"opencode-test-model","output":[]}}` + "\n\n"
 
 	for _, tc := range []struct {
 		name        string
@@ -318,6 +340,12 @@ func TestOpencodeResponsesRouting(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			zen := tc.providerKey == schemas.OpencodeZen
+			expectedPath := "/v1/chat/completions"
+			if !zen {
+				expectedPath = "/v1/responses"
+			}
+
 			type capturedRequest struct {
 				method        string
 				path          string
@@ -351,17 +379,28 @@ func TestOpencodeResponsesRouting(t *testing.T) {
 				})
 				mu.Unlock()
 
-				if streaming, _ := payload["stream"].(bool); streaming {
-					w.Header().Set("Content-Type", "text/event-stream")
-					_, _ = fmt.Fprint(w, "data: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"resp_stream\",\"object\":\"response\",\"model\":\"opencode-test-model\",\"output\":[]}}\n\n")
-					if flusher, ok := w.(http.Flusher); ok {
-						flusher.Flush()
+				streaming, _ := payload["stream"].(bool)
+				if zen {
+					// Chat-completions wire format, as the fallback routes through
+					// the OpenAI chat handler.
+					w.Header().Set("Content-Type", "application/json")
+					if streaming {
+						w.Header().Set("Content-Type", "text/event-stream")
+						_, _ = fmt.Fprint(w, chatStream)
+					} else {
+						_, _ = fmt.Fprint(w, chatResponse)
 					}
 					return
 				}
 
+				// Native responses wire format.
+				if streaming {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprint(w, responsesStream)
+					return
+				}
 				w.Header().Set("Content-Type", "application/json")
-				_, _ = fmt.Fprint(w, `{"id":"resp_regular","object":"response","model":"opencode-test-model","output":[]}`)
+				_, _ = fmt.Fprint(w, responsesResponse)
 			}))
 			defer server.Close()
 
@@ -393,8 +432,8 @@ func TestOpencodeResponsesRouting(t *testing.T) {
 			if bifrostErr != nil {
 				t.Fatalf("Responses: %v", bifrostErr)
 			}
-			if response == nil || response.ID == nil || *response.ID != "resp_regular" {
-				t.Fatalf("Responses returned %#v, want response id resp_regular", response)
+			if response == nil || response.ID == nil || *response.ID == "" {
+				t.Fatalf("Responses returned %#v, want a response id", response)
 			}
 
 			streamCtx, streamCancel := schemas.NewBifrostContextWithTimeout(context.Background(), 10*time.Second)
@@ -426,8 +465,8 @@ func TestOpencodeResponsesRouting(t *testing.T) {
 				if capture.method != http.MethodPost {
 					t.Errorf("request method = %q, want %q", capture.method, http.MethodPost)
 				}
-				if capture.path != "/v1/responses" {
-					t.Errorf("request path = %q, want /v1/responses", capture.path)
+				if capture.path != expectedPath {
+					t.Errorf("request path = %q, want %q", capture.path, expectedPath)
 				}
 				if capture.authorization != "Bearer "+apiKey {
 					t.Errorf("Authorization = %q, want %q", capture.authorization, "Bearer "+apiKey)
@@ -435,9 +474,14 @@ func TestOpencodeResponsesRouting(t *testing.T) {
 				if gotModel, _ := capture.body["model"].(string); gotModel != model {
 					t.Errorf("request model = %q, want %q", gotModel, model)
 				}
-				input, ok := capture.body["input"].([]any)
-				if !ok || len(input) != 1 {
-					t.Errorf("request input = %#v, want one message", capture.body["input"])
+
+				bodyField := "messages"
+				if !zen {
+					bodyField = "input"
+				}
+				messages, ok := capture.body[bodyField].([]any)
+				if !ok || len(messages) != 1 {
+					t.Errorf("request %s = %#v, want one message", bodyField, capture.body[bodyField])
 				}
 
 				if streaming, _ := capture.body["stream"].(bool); streaming {

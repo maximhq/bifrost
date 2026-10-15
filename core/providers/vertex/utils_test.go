@@ -2,12 +2,21 @@ package vertex
 
 import (
 	"context"
+	"crypto/tls"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
+	"golang.org/x/oauth2"
 )
 
 func TestGetVertexAPIHost(t *testing.T) {
@@ -956,4 +965,253 @@ func TestVertexServiceTierReadsDatasheet(t *testing.T) {
 			t.Fatalf("service tiers are global-endpoint only, got %q", got)
 		}
 	})
+}
+
+func TestIsAnthropicPassthroughPath(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/v1/projects/p/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:streamRawPredict", true},
+		{"/v1/projects/p/locations/us-east5/publishers/anthropic/models/claude-opus-4-5:rawPredict", true},
+		{"/projects/p/locations/global/publishers/ANTHROPIC/models/claude-sonnet-4-5:rawPredict", true},
+		{"/v1/projects/p/locations/global/publishers/anthropic/models/claude-sonnet-4-5:streamRawPredict?alt=sse", true},
+		{"/v1beta/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-flash:streamGenerateContent", false},
+		{"/v1beta/models/gemini-2.5-flash:generateContent", false},
+		{"", false},
+	}
+
+	for _, tc := range cases {
+		if got := isAnthropicPassthroughPath(tc.path); got != tc.want {
+			t.Errorf("isAnthropicPassthroughPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+// The Anthropic-on-Vertex stream carries usage in Messages events, which the Gemini parser
+// drops — the empty token/cost half of issue #6073.
+func TestVertexAnthropicPassthroughStreamUsage(t *testing.T) {
+	t.Parallel()
+
+	messageStart := []byte(`{"type":"message_start","message":{"usage":{"input_tokens":522,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1}}}`)
+	messageDelta := []byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":522,"output_tokens":13,"output_tokens_details":{"thinking_tokens":0}}}`)
+
+	path := "/v1/projects/p/locations/global/publishers/anthropic/models/claude-sonnet-4-5@20250929:streamRawPredict"
+	if u := gemini.ExtractGeminiPassthroughUsage(path, nil, messageDelta); u != nil {
+		t.Fatalf("gemini parser unexpectedly produced usage for an anthropic event: %+v", u)
+	}
+
+	acc := &anthropic.AnthropicPassthroughStreamUsage{}
+	acc.ObserveEvent(messageStart)
+	usage := acc.ObserveEvent(messageDelta)
+	if usage == nil || usage.LLMUsage == nil {
+		t.Fatalf("expected usage from anthropic accumulator, got %+v", usage)
+	}
+	if usage.LLMUsage.PromptTokens != 522 || usage.LLMUsage.CompletionTokens != 13 || usage.LLMUsage.TotalTokens != 535 {
+		t.Fatalf("unexpected usage: %+v", usage.LLMUsage)
+	}
+}
+func TestVertexResourceNamesStayOnExpectedEndpoint(t *testing.T) {
+	t.Parallel()
+
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("proj"), Region: *schemas.NewSecretVar("us-central1")}}
+	validBatch := map[string]string{
+		"123": "https://us-central1-aiplatform.googleapis.com/v1/projects/proj/locations/us-central1/batchPredictionJobs/123",
+		// Vertex returns the project number, and the job may live in another region.
+		"projects/987654321/locations/europe-west4/batchPredictionJobs/123": "https://europe-west4-aiplatform.googleapis.com/v1/projects/987654321/locations/europe-west4/batchPredictionJobs/123",
+	}
+	for id, want := range validBatch {
+		got, bifrostErr := vertexBatchJobURL(key, id)
+		if bifrostErr != nil || got != want {
+			t.Fatalf("vertexBatchJobURL(%q) = %q, %v; want %q", id, got, bifrostErr, want)
+		}
+	}
+	for _, id := range []string{
+		"../endpoints",
+		"123?x=1",
+		"projects/p/locations/attacker.example#/batchPredictionJobs/1",
+		"projects/p/locations/us-central1/endpoints/1",
+		"projects/p/locations/us-central1/batchPredictionJobs/../endpoints",
+		"projects/p/locations/us-central1/batchPredictionJobs/1/extra",
+	} {
+		if got, bifrostErr := vertexBatchJobURL(key, id); bifrostErr == nil {
+			t.Fatalf("vertexBatchJobURL(%q) = %q, want error", id, got)
+		}
+	}
+
+	operation := "projects/proj/locations/europe-west4/publishers/google/models/veo-3/operations/op-1"
+	if got, bifrostErr := vertexVideoOperationURL(operation); bifrostErr != nil || got != "https://europe-west4-aiplatform.googleapis.com/v1/projects/proj/locations/europe-west4/publishers/google/models/veo-3:fetchPredictOperation" {
+		t.Fatalf("vertexVideoOperationURL = %q, %v", got, bifrostErr)
+	}
+	for _, id := range []string{
+		"projects/proj/locations/us-central1/../../endpoints/operations/op-1",
+		"projects/proj/locations/attacker.example#/publishers/google/models/veo-3/operations/op-1",
+	} {
+		if got, bifrostErr := vertexVideoOperationURL(id); bifrostErr == nil {
+			t.Fatalf("vertexVideoOperationURL(%q) = %q, want error", id, got)
+		}
+	}
+
+	if got, bifrostErr := expandVertexCachedContentName("cachedContents/abc", "proj", "us-central1"); bifrostErr != nil || got != "projects/proj/locations/us-central1/cachedContents/abc" {
+		t.Fatalf("expandVertexCachedContentName = %q, %v", got, bifrostErr)
+	}
+	if got, bifrostErr := expandVertexCachedContentName("projects/proj/locations/us-central1/cachedContents/../endpoints", "proj", "us-central1"); bifrostErr == nil {
+		t.Fatalf("expandVertexCachedContentName accepted a traversal: %q", got)
+	}
+}
+
+// A Veo operation lives in the region that created it, so polls must go there whatever region
+// the selected key is configured for.
+func TestVertexVideoPollUsesOperationRegion(t *testing.T) {
+	var mu sync.Mutex
+	var dialed []string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		dialed = append(dialed, r.Host)
+		mu.Unlock()
+		http.Error(w, "recorded", http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+
+	config := &schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10},
+		ProxyConfig:   &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)},
+	}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+
+	key := schemas.Key{
+		Value:           *schemas.NewSecretVar("api-key"),
+		VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("proj"), Region: *schemas.NewSecretVar("us-east5")},
+	}
+	videoID := providerUtils.AddVideoIDProviderSuffix("projects/proj/locations/us-central1/publishers/google/models/veo-3.0-generate-001/operations/op-1", schemas.Vertex)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	if _, bifrostErr := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: schemas.Vertex, ID: videoID}); bifrostErr == nil {
+		t.Fatal("VideoRetrieve succeeded against the recording proxy")
+	}
+	if _, bifrostErr := provider.VideoDownload(ctx, key, &schemas.BifrostVideoDownloadRequest{Provider: schemas.Vertex, ID: videoID}); bifrostErr == nil {
+		t.Fatal("VideoDownload succeeded against the recording proxy")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{"us-central1-aiplatform.googleapis.com:443", "us-central1-aiplatform.googleapis.com:443"}
+	if !reflect.DeepEqual(dialed, want) {
+		t.Fatalf("video polls dialed %v, want %v", dialed, want)
+	}
+}
+
+// The /genai_passthrough router strips the API version with its prefix, so Vertex must build
+// the upstream URL from the version the client addressed: Interactions exists only under v1beta1.
+// Model calls keep the v1 they have always used.
+func TestVertexPassthroughUsesClientAPIVersion(t *testing.T) {
+	var mu sync.Mutex
+	var paths []string
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"i-1"}`))
+	}))
+	defer upstream.Close()
+
+	config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+	config.CheckAndSetDefaults()
+	provider, err := NewVertexProvider(config, nil)
+	if err != nil {
+		t.Fatalf("NewVertexProvider: %v", err)
+	}
+	for _, client := range []*fasthttp.Client{provider.client, provider.streamingClient} {
+		client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+		client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+	}
+	key := schemas.Key{VertexKeyConfig: &schemas.VertexKeyConfig{
+		ProjectID:       *schemas.NewSecretVar("proj"),
+		Region:          *schemas.NewSecretVar("global"),
+		AuthCredentials: *schemas.NewSecretVar("test-credentials"),
+	}}
+	provider.tokenSources.Store(getClientKey(vertexCredentialIdentity(key)), oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "test-token"}))
+	noHooks := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, err
+	}
+
+	interactions := "/projects/client-proj/locations/global/interactions"
+	claudeStream := "/projects/client-proj/locations/global/publishers/anthropic/models/claude-sonnet-4-6:streamRawPredict"
+	geminiGenerate := "/projects/client-proj/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"
+	for _, tc := range []struct {
+		apiVersion string
+		path       string
+		want       string
+	}{
+		{"v1beta1", interactions, "/v1beta1/projects/proj/locations/global/interactions"},
+		{"v1", interactions, "/v1/projects/proj/locations/global/interactions"},
+		{"", interactions, "/v1/projects/proj/locations/global/interactions"},
+		{"v1beta", interactions, "/v1/projects/proj/locations/global/interactions"}, // Gemini-only version; Vertex has no v1beta
+		{"v2", interactions, "/v2/projects/proj/locations/global/interactions"},     // any other version is forwarded as sent
+		// Model calls keep v1: Google's v1beta1 streamRawPredict answers 500 for Claude.
+		{"v1beta1", claudeStream, "/v1/projects/proj/locations/global/publishers/anthropic/models/claude-sonnet-4-6:streamRawPredict"},
+		{"v1beta1", geminiGenerate, "/v1/projects/proj/locations/global/publishers/google/models/gemini-2.5-flash:generateContent"},
+	} {
+		mu.Lock()
+		paths = nil
+		mu.Unlock()
+		req := &schemas.BifrostPassthroughRequest{
+			Method:      http.MethodPost,
+			Path:        tc.path,
+			APIVersion:  tc.apiVersion,
+			Body:        []byte(`{"model":"gemini-3-flash","input":"hi"}`),
+			SafeHeaders: map[string]string{"content-type": "application/json"},
+		}
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		if _, bifrostErr := provider.Passthrough(ctx, key, req); bifrostErr != nil {
+			t.Fatalf("Passthrough(%q, %s): %s", tc.apiVersion, tc.path, bifrostErr.GetErrorString())
+		}
+		stream, bifrostErr := provider.PassthroughStream(ctx, noHooks, nil, key, req)
+		if bifrostErr != nil {
+			t.Fatalf("PassthroughStream(%q, %s): %s", tc.apiVersion, tc.path, bifrostErr.GetErrorString())
+		}
+		for drained := false; !drained; {
+			select {
+			case _, ok := <-stream:
+				drained = !ok
+			case <-time.After(5 * time.Second):
+				t.Fatalf("PassthroughStream(%q) did not finish", tc.apiVersion)
+			}
+		}
+
+		mu.Lock()
+		got := paths
+		mu.Unlock()
+		if want := []string{tc.want, tc.want}; !reflect.DeepEqual(got, want) {
+			t.Errorf("APIVersion %q %s: upstream paths %v, want %v (unary and stream)", tc.apiVersion, tc.path, got, want)
+		}
+	}
+}
+
+func TestPassthroughWireFormat(t *testing.T) {
+	tests := []struct {
+		path string
+		want schemas.ModelProvider
+	}{
+		{"/projects/p/locations/us-east5/publishers/anthropic/models/claude-sonnet-4-5:rawPredict", schemas.Anthropic},
+		{"/projects/p/locations/us-east5/publishers/Anthropic/models/claude-sonnet-4-5:streamRawPredict?alt=sse", schemas.Anthropic},
+		{"/projects/p/locations/us-central1/publishers/mistralai/models/mistral-large:rawPredict", schemas.Mistral},
+		{"/projects/p/locations/us-central1/endpoints/openapi/chat/completions", schemas.OpenAI},
+		{"/projects/p/locations/us-central1/publishers/google/models/gemini-2.5-pro:generateContent", schemas.Gemini},
+		{"/models/gemini-2.5-flash:streamGenerateContent", schemas.Gemini},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := PassthroughWireFormat(tt.path); got != tt.want {
+				t.Fatalf("PassthroughWireFormat(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
+	}
 }

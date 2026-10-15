@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -971,4 +972,502 @@ func TestBedrockCapabilityGatesReadDatasheet(t *testing.T) {
 			}
 		}
 	})
+}
+
+// codexRootOneOfSchema is the Codex automation_update shape: a tool whose
+// input_schema is a root-level oneOf, which Claude rejects on Converse.
+const codexRootOneOfSchema = `{"type":"object","oneOf":[{"type":"object","properties":{"mode":{"const":"create"},"name":{"type":"string"}},"required":["mode","name"],"additionalProperties":false},{"type":"object","properties":{"mode":{"const":"update"},"id":{"type":"string"}},"required":["mode","id"],"additionalProperties":false}]}`
+
+func mustToolSchema(t testing.TB, raw string) *schemas.ToolFunctionParameters {
+	t.Helper()
+	var params schemas.ToolFunctionParameters
+	if err := schemas.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatalf("unmarshal tool schema: %v", err)
+	}
+	return &params
+}
+
+// tooManyBranchesSchema exceeds the Anthropic normalizer's branch bound.
+func tooManyBranchesSchema(t testing.TB) *schemas.ToolFunctionParameters {
+	branches := make([]string, 0, 65)
+	for i := range 65 {
+		branches = append(branches, fmt.Sprintf(`{"type":"object","properties":{"p%d":{"type":"string"}}}`, i))
+	}
+	return mustToolSchema(t, `{"type":"object","oneOf":[`+strings.Join(branches, ",")+`]}`)
+}
+
+func bedrockChatToolSchemaRequest(model string, params *schemas.ToolFunctionParameters) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    model,
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}},
+		},
+		Params: &schemas.ChatParameters{
+			Tools: []schemas.ChatTool{{
+				Type:     schemas.ChatToolTypeFunction,
+				Function: &schemas.ChatToolFunction{Name: "automation_update", Parameters: params},
+			}},
+		},
+	}
+}
+
+func bedrockResponsesToolSchemaRequest(model string, params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    model,
+		Input:    []schemas.ResponsesMessage{glmUserMessage("hi")},
+		Params: &schemas.ResponsesParameters{
+			Tools: []schemas.ResponsesTool{{
+				Type:                  schemas.ResponsesToolTypeFunction,
+				Name:                  schemas.Ptr("automation_update"),
+				ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: params},
+			}},
+		},
+	}
+}
+
+// convertBedrockToolSchema runs one Converse builder and returns the decoded
+// inputSchema of its single function tool.
+func convertBedrockToolSchema(t *testing.T, path string, ctx *schemas.BifrostContext, model string, params *schemas.ToolFunctionParameters) (map[string]any, error) {
+	t.Helper()
+	var toolConfig *BedrockToolConfig
+	switch path {
+	case "chat":
+		req, err := ToBedrockChatCompletionRequest(ctx, bedrockChatToolSchemaRequest(model, params))
+		if err != nil {
+			return nil, err
+		}
+		toolConfig = req.ToolConfig
+	case "responses":
+		req, err := ToBedrockResponsesRequest(ctx, bedrockResponsesToolSchemaRequest(model, params))
+		if err != nil {
+			return nil, err
+		}
+		toolConfig = req.ToolConfig
+	}
+	if toolConfig == nil || len(toolConfig.Tools) == 0 || toolConfig.Tools[0].ToolSpec == nil {
+		t.Fatalf("expected a function toolSpec, got %+v", toolConfig)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(toolConfig.Tools[0].ToolSpec.InputSchema.JSON, &schema); err != nil {
+		t.Fatalf("decode inputSchema: %v", err)
+	}
+	return schema, nil
+}
+
+// TestConverseToolSchemaRootCompositionClaude pins the Converse fix for Claude:
+// Bedrock forwards toolSpec.inputSchema to Claude, which rejects oneOf/anyOf/allOf
+// at the root ("input_schema does not support oneOf, allOf, or anyOf at the top
+// level"), so the Chat and Responses builders flatten it the way the Anthropic
+// provider does. Non-Claude Converse models accept root compositions and keep them.
+func TestConverseToolSchemaRootCompositionClaude(t *testing.T) {
+	for _, path := range []string{"chat", "responses"} {
+		t.Run(path+"/claude_root_oneOf_flattened", func(t *testing.T) {
+			params := mustToolSchema(t, codexRootOneOfSchema)
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			schema, err := convertBedrockToolSchema(t, path, ctx, "global.anthropic.claude-sonnet-4-6", params)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, keyword := range []string{"oneOf", "anyOf", "allOf"} {
+				if _, ok := schema[keyword]; ok {
+					t.Fatalf("root %s must be flattened for Claude, got %v", keyword, schema)
+				}
+			}
+			properties, _ := schema["properties"].(map[string]any)
+			for _, name := range []string{"mode", "name", "id"} {
+				if _, ok := properties[name]; !ok {
+					t.Fatalf("expected merged property %q, got %v", name, properties)
+				}
+			}
+			if required, _ := schema["required"].([]any); len(required) != 1 || required[0] != "mode" {
+				t.Fatalf("required = %v, want [mode] (intersection of the alternatives)", schema["required"])
+			}
+			if len(params.OneOf) != 2 {
+				t.Fatalf("caller-owned schema was mutated: oneOf has %d branches", len(params.OneOf))
+			}
+		})
+
+		t.Run(path+"/claude_alias_root_anyOf_flattened", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
+				Key:    "my-claude-profile",
+				Config: &schemas.AliasConfig{ModelID: "45xnvsodrshx", ModelFamily: new(schemas.ModelFamilyAnthropic)},
+			})
+			params := mustToolSchema(t, strings.Replace(codexRootOneOfSchema, `"oneOf"`, `"anyOf"`, 1))
+			schema, err := convertBedrockToolSchema(t, path, ctx, "my-claude-profile", params)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, ok := schema["anyOf"]; ok {
+				t.Fatalf("root anyOf must be flattened for an Anthropic-family alias, got %v", schema)
+			}
+		})
+
+		t.Run(path+"/claude_root_allOf_flattened", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			params := mustToolSchema(t, `{"type":"object","allOf":[{"type":"object","properties":{"left":{"type":"string"}},"required":["left"]},{"type":"object","properties":{"right":{"type":"string"}},"required":["right"]}]}`)
+			schema, err := convertBedrockToolSchema(t, path, ctx, "us.anthropic.claude-opus-4-8", params)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if _, ok := schema["allOf"]; ok {
+				t.Fatalf("root allOf must be flattened for Claude, got %v", schema)
+			}
+			if required, _ := schema["required"].([]any); len(required) != 2 {
+				t.Fatalf("required = %v, want [left right] (union of allOf members)", schema["required"])
+			}
+		})
+
+		for _, model := range []string{"us.amazon.nova-pro-v1:0", "us.meta.llama4-maverick-17b-instruct-v1:0", "qwen.qwen3-32b-v1:0"} {
+			t.Run(path+"/non_claude_keeps_root_oneOf/"+model, func(t *testing.T) {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				schema, err := convertBedrockToolSchema(t, path, ctx, model, mustToolSchema(t, codexRootOneOfSchema))
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if branches, _ := schema["oneOf"].([]any); len(branches) != 2 {
+					t.Fatalf("non-Claude model must receive the root oneOf unchanged, got %v", schema)
+				}
+			})
+		}
+
+		t.Run(path+"/claude_too_complex_is_bad_request", func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, err := convertBedrockToolSchema(t, path, ctx, "global.anthropic.claude-sonnet-4-6", tooManyBranchesSchema(t))
+			if err == nil || !providerUtils.IsInvalidRequestError(err) {
+				t.Fatalf("expected a caller-facing invalid request error, got %v", err)
+			}
+		})
+	}
+}
+
+// BenchmarkConverseToolSchemaClaude measures Claude Chat conversion with a plain
+// object tool schema (the common case) and with a root oneOf that gets flattened.
+func BenchmarkConverseToolSchemaClaude(b *testing.B) {
+	for _, bc := range []struct {
+		name string
+		raw  string
+	}{
+		{"plain_object", `{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`},
+		{"root_oneOf", codexRootOneOfSchema},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			params := mustToolSchema(b, bc.raw)
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				if _, err := ToBedrockChatCompletionRequest(ctx, bedrockChatToolSchemaRequest("global.anthropic.claude-sonnet-4-6", params)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// converseToolChoiceField decodes additionalModelRequestFields.tool_choice, whatever Go type carries it.
+func converseToolChoiceField(t *testing.T, req *BedrockConverseRequest) map[string]any {
+	t.Helper()
+	v, ok := req.AdditionalModelRequestFields.Get("tool_choice")
+	if !ok {
+		return nil
+	}
+	raw, err := providerUtils.MarshalSorted(v)
+	if err != nil {
+		t.Fatalf("marshal tool_choice: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode tool_choice %s: %v", raw, err)
+	}
+	return out
+}
+
+func parallelChatTools(names ...string) []schemas.ChatTool {
+	tools := make([]schemas.ChatTool, 0, len(names))
+	for _, n := range names {
+		tools = append(tools, schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: n}})
+	}
+	return tools
+}
+
+// parallel_tool_calls: false reaches Claude on Converse only as a typeless
+// additionalModelRequestFields.tool_choice.disable_parallel_tool_use next to
+// toolConfig.toolChoice; a type there conflicts with the typed choice (ValidationException).
+func TestToBedrockChatCompletionRequest_ParallelToolCalls(t *testing.T) {
+	str := func(s schemas.ChatToolChoiceType) *schemas.ChatToolChoice {
+		return &schemas.ChatToolChoice{ChatToolChoiceStr: schemas.Ptr(string(s))}
+	}
+	bash := schemas.ChatTool{Type: schemas.ChatToolType("bash_20250124"), Name: "bash"}
+	computer := schemas.ChatTool{Type: schemas.ChatToolType("computer_20251124"), Name: "computer", DisplayWidthPx: schemas.Ptr(1280)}
+
+	tests := []struct {
+		name      string
+		model     string
+		tools     []schemas.ChatTool
+		choice    *schemas.ChatToolChoice
+		parallel  *bool
+		wantTyped string // "auto", "any", "tool" or "" for no typed toolChoice
+		wantField map[string]any
+	}{
+		{"false with no tool choice adds typed auto", "global.anthropic.claude-sonnet-4-6", parallelChatTools("get_weather", "get_time"), nil, schemas.Ptr(false),
+			"auto", map[string]any{"disable_parallel_tool_use": true}},
+		{"false with auto", "global.anthropic.claude-sonnet-4-6", parallelChatTools("get_weather"), str(schemas.ChatToolChoiceTypeAuto), schemas.Ptr(false),
+			"auto", map[string]any{"disable_parallel_tool_use": true}},
+		{"false with required keeps typed any", "global.anthropic.claude-sonnet-4-6", parallelChatTools("get_weather"), str(schemas.ChatToolChoiceTypeRequired), schemas.Ptr(false),
+			"any", map[string]any{"disable_parallel_tool_use": true}},
+		{"false with none sends nothing", "global.anthropic.claude-sonnet-4-6", parallelChatTools("get_weather"), str(schemas.ChatToolChoiceTypeNone), schemas.Ptr(false),
+			"", nil},
+		{"true sends nothing", "global.anthropic.claude-sonnet-4-6", parallelChatTools("get_weather"), nil, schemas.Ptr(true),
+			"", nil},
+		{"non-Anthropic model sends nothing", "amazon.nova-pro-v1:0", parallelChatTools("get_weather"), nil, schemas.Ptr(false),
+			"", nil},
+		{"server tools only carry the type themselves", "global.anthropic.claude-sonnet-4-6", []schemas.ChatTool{bash}, nil, schemas.Ptr(false),
+			"", map[string]any{"type": "auto", "disable_parallel_tool_use": true}},
+		{"pinned server tool carries the flag in the tunneled choice", "global.anthropic.claude-sonnet-4-6", []schemas.ChatTool{computer},
+			&schemas.ChatToolChoice{ChatToolChoiceStruct: &schemas.ChatToolChoiceStruct{Type: schemas.ChatToolChoiceTypeFunction, Function: &schemas.ChatToolChoiceFunction{Name: "computer"}}},
+			schemas.Ptr(false), "", map[string]any{"type": "tool", "name": "computer", "disable_parallel_tool_use": true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := &schemas.BifrostChatRequest{
+				Provider: schemas.Bedrock,
+				Model:    tt.model,
+				Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Weather in Tokyo, Paris and Lima?")}}},
+				Params:   &schemas.ChatParameters{Tools: tt.tools, ToolChoice: tt.choice, ParallelToolCalls: tt.parallel},
+			}
+			out, err := ToBedrockChatCompletionRequest(ctx, req)
+			if err != nil {
+				t.Fatalf("ToBedrockChatCompletionRequest failed: %v", err)
+			}
+			assertConverseParallelToolUse(t, out, tt.wantTyped, tt.wantField)
+		})
+	}
+}
+
+func TestToBedrockResponsesRequest_ParallelToolCalls(t *testing.T) {
+	str := func(s schemas.ResponsesToolChoiceType) *schemas.ResponsesToolChoice {
+		return &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: schemas.Ptr(string(s))}
+	}
+	tests := []struct {
+		name      string
+		model     string
+		choice    *schemas.ResponsesToolChoice
+		parallel  *bool
+		wantTyped string
+		wantField map[string]any
+	}{
+		{"false with no tool choice adds typed auto", "global.anthropic.claude-sonnet-4-6", nil, schemas.Ptr(false), "auto", map[string]any{"disable_parallel_tool_use": true}},
+		{"false with required keeps typed any", "global.anthropic.claude-sonnet-4-6", str(schemas.ResponsesToolChoiceTypeRequired), schemas.Ptr(false), "any", map[string]any{"disable_parallel_tool_use": true}},
+		{"false with none sends nothing", "global.anthropic.claude-sonnet-4-6", str(schemas.ResponsesToolChoiceTypeNone), schemas.Ptr(false), "", nil},
+		{"true sends nothing", "global.anthropic.claude-sonnet-4-6", nil, schemas.Ptr(true), "", nil},
+		{"non-Anthropic model sends nothing", "amazon.nova-pro-v1:0", nil, schemas.Ptr(false), "", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			tool := func(name string) schemas.ResponsesTool {
+				return schemas.ResponsesTool{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr(name), ResponsesToolFunction: &schemas.ResponsesToolFunction{}}
+			}
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Bedrock,
+				Model:    tt.model,
+				Input: []schemas.ResponsesMessage{{
+					Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+					Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Tokyo, Paris and Lima?")},
+				}},
+				Params: &schemas.ResponsesParameters{
+					Tools:             []schemas.ResponsesTool{tool("get_weather"), tool("get_time")},
+					ToolChoice:        tt.choice,
+					ParallelToolCalls: tt.parallel,
+				},
+			}
+			out, err := ToBedrockResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+			}
+			assertConverseParallelToolUse(t, out, tt.wantTyped, tt.wantField)
+		})
+	}
+}
+
+// With no declared tools, Converse needs tools rebuilt from the history's tool calls;
+// parallel_tool_calls=false must still cover those, so it is applied after the rebuild.
+func TestConverseParallelToolCalls_ToolsRebuiltFromHistory(t *testing.T) {
+	const model = "global.anthropic.claude-sonnet-4-6"
+	text := func(s string) *schemas.ChatMessageContent {
+		return &schemas.ChatMessageContent{ContentStr: schemas.Ptr(s)}
+	}
+
+	t.Run("chat", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req := &schemas.BifrostChatRequest{
+			Provider: schemas.Bedrock,
+			Model:    model,
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: text("Weather in Tokyo?")},
+				{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					ID:       schemas.Ptr("call_1"),
+					Type:     schemas.Ptr("function"),
+					Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_weather"), Arguments: `{"city":"Tokyo"}`},
+				}}}},
+				{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")}, Content: text("sunny")},
+				{Role: schemas.ChatMessageRoleUser, Content: text("Now Paris and Lima.")},
+			},
+			Params: &schemas.ChatParameters{ParallelToolCalls: schemas.Ptr(false)},
+		}
+		out, err := ToBedrockChatCompletionRequest(ctx, req)
+		if err != nil {
+			t.Fatalf("ToBedrockChatCompletionRequest failed: %v", err)
+		}
+		if out.ToolConfig == nil || len(out.ToolConfig.Tools) == 0 {
+			t.Fatalf("expected tools rebuilt from history")
+		}
+		assertConverseParallelToolUse(t, out, "auto", map[string]any{"disable_parallel_tool_use": true})
+	})
+
+	t.Run("responses", func(t *testing.T) {
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		user := func(s string) schemas.ResponsesMessage {
+			return schemas.ResponsesMessage{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr(s)}}
+		}
+		req := &schemas.BifrostResponsesRequest{
+			Provider: schemas.Bedrock,
+			Model:    model,
+			Input: []schemas.ResponsesMessage{
+				user("Weather in Tokyo?"),
+				{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("get_weather"), Arguments: schemas.Ptr(`{"city":"Tokyo"}`),
+				}},
+				{Type: schemas.Ptr(schemas.ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					CallID: schemas.Ptr("call_1"), Output: &schemas.ResponsesToolMessageOutputStruct{ResponsesToolCallOutputStr: schemas.Ptr("sunny")},
+				}},
+				user("Now Paris and Lima."),
+			},
+			Params: &schemas.ResponsesParameters{ParallelToolCalls: schemas.Ptr(false)},
+		}
+		out, err := ToBedrockResponsesRequest(ctx, req)
+		if err != nil {
+			t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+		}
+		if out.ToolConfig == nil || len(out.ToolConfig.Tools) == 0 {
+			t.Fatalf("expected tools rebuilt from history")
+		}
+		assertConverseParallelToolUse(t, out, "auto", map[string]any{"disable_parallel_tool_use": true})
+	})
+}
+
+// A /bedrock Converse caller spells the flag the way AWS accepts it; it must become
+// ParallelToolCalls (so InvokeModel and other providers see it) and go out exactly once.
+func TestBedrockConverseIngress_ParallelToolUseRoundTrip(t *testing.T) {
+	body := `{
+		"messages": [{"role": "user", "content": [{"text": "Weather in Tokyo, Paris and Lima?"}]}],
+		"toolConfig": {
+			"tools": [{"toolSpec": {"name": "get_weather", "inputSchema": {"json": {"type": "object"}}}}],
+			"toolChoice": {"auto": {}}
+		},
+		"additionalModelRequestFields": {"tool_choice": {"disable_parallel_tool_use": true}, "top_k": 5}
+	}`
+	var converseReq BedrockConverseRequest
+	if err := json.Unmarshal([]byte(body), &converseReq); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	converseReq.ModelID = "bedrock/global.anthropic.claude-sonnet-4-6"
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+	if err != nil {
+		t.Fatalf("ingress: %v", err)
+	}
+	if p := bifrostReq.Params.ParallelToolCalls; p == nil || *p {
+		t.Fatalf("ParallelToolCalls = %v, want false", p)
+	}
+	if fwd, ok := bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"].(*schemas.OrderedMap); !ok {
+		t.Fatalf("expected top_k to keep forwarding, got %#v", bifrostReq.Params.ExtraParams["additionalModelRequestFieldPaths"])
+	} else if _, ok := fwd.Get("tool_choice"); ok {
+		t.Errorf("tool_choice must be consumed, not forwarded verbatim next to the re-synthesized one")
+	}
+
+	bifrostReq.Provider = schemas.Bedrock
+	out, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	if err != nil {
+		t.Fatalf("egress: %v", err)
+	}
+	assertConverseParallelToolUse(t, out, "auto", map[string]any{"disable_parallel_tool_use": true})
+	if v, ok := out.AdditionalModelRequestFields.Get("top_k"); !ok || fmt.Sprint(v) != "5" {
+		t.Errorf("top_k = %v, want 5", v)
+	}
+}
+
+func assertConverseParallelToolUse(t *testing.T, out *BedrockConverseRequest, wantTyped string, wantField map[string]any) {
+	t.Helper()
+	gotTyped := ""
+	if out.ToolConfig != nil && out.ToolConfig.ToolChoice != nil {
+		switch tc := out.ToolConfig.ToolChoice; {
+		case tc.Auto != nil:
+			gotTyped = "auto"
+		case tc.Any != nil:
+			gotTyped = "any"
+		case tc.Tool != nil:
+			gotTyped = "tool"
+		}
+	}
+	if gotTyped != wantTyped {
+		t.Errorf("toolConfig.toolChoice = %q, want %q", gotTyped, wantTyped)
+	}
+	gotField := converseToolChoiceField(t, out)
+	if (gotField == nil) != (wantField == nil) || fmt.Sprint(gotField) != fmt.Sprint(wantField) {
+		t.Errorf("additionalModelRequestFields.tool_choice = %v, want %v", gotField, wantField)
+	}
+}
+
+// BenchmarkConverseParallelToolCalls measures Claude Converse conversion with
+// parallel_tool_calls unset (the common case) and false, on Chat and Responses.
+func BenchmarkConverseParallelToolCalls(b *testing.B) {
+	for _, bc := range []struct {
+		name     string
+		parallel *bool
+	}{
+		{"unset", nil},
+		{"false", schemas.Ptr(false)},
+	} {
+		b.Run("chat_"+bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				req := &schemas.BifrostChatRequest{
+					Provider: schemas.Bedrock,
+					Model:    "global.anthropic.claude-sonnet-4-6",
+					Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Weather in Tokyo?")}}},
+					Params:   &schemas.ChatParameters{Tools: parallelChatTools("get_weather", "get_time"), ParallelToolCalls: bc.parallel},
+				}
+				if _, err := ToBedrockChatCompletionRequest(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+		b.Run("responses_"+bc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+				req := &schemas.BifrostResponsesRequest{
+					Provider: schemas.Bedrock,
+					Model:    "global.anthropic.claude-sonnet-4-6",
+					Input: []schemas.ResponsesMessage{{
+						Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Tokyo?")},
+					}},
+					Params: &schemas.ResponsesParameters{
+						Tools:             []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("get_weather"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}}},
+						ParallelToolCalls: bc.parallel,
+					},
+				}
+				if _, err := ToBedrockResponsesRequest(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

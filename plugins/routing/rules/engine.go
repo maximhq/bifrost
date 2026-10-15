@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -28,12 +29,22 @@ type ScopeLevel struct {
 // Decision is the output of routing rule evaluation
 // Represents which provider/model to route to and fallback chain
 type Decision struct {
-	Provider        string   // Primary provider (e.g., "openai", "azure")
-	Model           string   // Model to use (or empty to use original)
-	KeyID           string   // Optional: pin a specific API key by UUID ("" = no pin)
-	Fallbacks       []string // Fallback chain: ["provider/model", ...]
-	MatchedRuleID   string   // ID of the rule that matched
-	MatchedRuleName string   // Name of the rule that matched
+	Provider        string                              // Primary provider (e.g., "openai", "azure")
+	Model           string                              // Model to use (or empty to use original)
+	KeyID           string                              // Optional: pin a specific API key by UUID ("" = no pin)
+	Fallbacks       []configstoreTables.RoutingFallback // Fallback chain, each optionally pinning a provider key
+	TTFTTimeout     time.Duration                       // TTFT deadline for streaming attempts (0 = none); comes from the selected target
+	MatchedRuleID   string                              // ID of the rule that matched
+	MatchedRuleName string                              // Name of the rule that matched
+}
+
+// targetTTFTTimeout converts a target's ttft_timeout_ms into a duration; unset or
+// non-positive means no deadline.
+func targetTTFTTimeout(target configstoreTables.TableRoutingTarget) time.Duration {
+	if target.TTFTTimeoutMs == nil || *target.TTFTTimeoutMs <= 0 {
+		return 0
+	}
+	return time.Duration(*target.TTFTTimeoutMs) * time.Millisecond
 }
 
 // GovernanceScope is who a request is governed as: the identifiers the access it carries was resolved
@@ -60,7 +71,7 @@ type EvaluationContext struct {
 	Provider                 schemas.ModelProvider                // Current provider
 	Model                    string                               // Current model
 	RequestType              string                               // Request type (e.g., "chat_completion", "embedding"); streaming requests carry a distinct "_stream" suffix (e.g., "chat_completion_stream")
-	Fallbacks                []string                             // Fallback chain: ["provider/model", ...]
+	Fallbacks                []configstoreTables.RoutingFallback  // Fallback chain, each optionally pinning a provider key
 	Headers                  map[string]string                    // Request headers for dynamic routing
 	QueryParams              map[string]string                    // Query parameters for dynamic routing
 	BudgetAndRateLimitStatus *governance.BudgetAndRateLimitStatus // Budget and rate limit status by provider/model
@@ -289,6 +300,7 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 					Model:           model,
 					KeyID:           keyID,
 					Fallbacks:       rule.ParsedFallbacks,
+					TTFTTimeout:     targetTTFTTimeout(target),
 					MatchedRuleID:   rule.ID,
 					MatchedRuleName: rule.Name,
 				}
@@ -308,12 +320,16 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleID, stepDecision.MatchedRuleID)
 		ctx.SetValue(schemas.BifrostContextKeyGovernanceRoutingRuleName, stepDecision.MatchedRuleName)
 
+		ttftSuffix := ""
+		if stepDecision.TTFTTimeout > 0 {
+			ttftSuffix = fmt.Sprintf(", ttft_timeout=%s", stepDecision.TTFTTimeout)
+		}
 		chainSuffix := ""
 		if matchedRule.ChainRule {
 			chainSuffix = " [chain_rule=true, continuing]"
 		}
-		re.logger.Debug("[Engine] Rule matched! Selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v%s", matchedTargetWeight, stepDecision.Provider, stepDecision.Model, stepDecision.Fallbacks, chainSuffix)
-		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Rule '%s' [%s] → matched, selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v%s", matchedRule.Name, matchedRule.CelExpression, matchedTargetWeight, stepDecision.Provider, stepDecision.Model, stepDecision.Fallbacks, chainSuffix))
+		re.logger.Debug("[Engine] Rule matched! Selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v%s", matchedTargetWeight, stepDecision.Provider, stepDecision.Model, configstoreTables.RoutingFallbackStrings(stepDecision.Fallbacks), chainSuffix)
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Rule '%s' [%s] → matched, selected target (weight=%.2f): provider=%s, model=%s, fallbacks=%v%s%s", matchedRule.Name, matchedRule.CelExpression, matchedTargetWeight, stepDecision.Provider, stepDecision.Model, configstoreTables.RoutingFallbackStrings(stepDecision.Fallbacks), ttftSuffix, chainSuffix))
 
 		// TERMINATION 2: Rule is terminal (chain_rule=false, the default).
 		if !matchedRule.ChainRule {

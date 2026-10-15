@@ -391,7 +391,7 @@ When a tool call reaches the upstream MCP server but comes back with a clean aut
 - **Shared clients** (`oauth`, `headers`): Bifrost immediately force-refreshes the credential and starts reconnecting in the background. The failing call waits briefly for that reconnect (capped by its own deadline) and retries once on the healed connection; the caller usually sees a normal success. If the reconnect doesn't finish in time, the original error surfaces and later calls succeed once the background reconnect completes.
 - **Safety opt-out**: tools annotated as destructive and not idempotent are never retried; the reconnect still happens, but the original error always surfaces so a side effect cannot run twice.
 
-This applies to `POST /v1/mcp/tool/execute`, [Agent Mode](./agent-mode) tool calls, and tool calls over the [MCP Gateway](./gateway) alike.
+This applies to `POST /v1/mcp/tool/execute`, [Agent Mode](./agent-mode) tool calls, and tool calls over the [MCP Gateway](./overview#bifrost-as-an-mcp-gateway) alike.
 
 ---
 

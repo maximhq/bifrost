@@ -31,13 +31,13 @@ func TestSetClientTools_FiresToolsChangeCallback(t *testing.T) {
 	m.mu.Unlock()
 
 	var calls []toolsChangeCall
-	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, _ string) {
 		calls = append(calls, toolsChangeCall{clientID, name, tools, toolNameMapping})
 	})
 
 	tools := map[string]schemas.ChatTool{"echo": {Type: "function"}}
 	mapping := map[string]string{"echo": "echo-server"}
-	m.SetClientTools(config.ID, tools, mapping)
+	m.SetClientTools(config.ID, tools, mapping, "")
 
 	require.Len(t, calls, 1)
 	assert.Equal(t, config.ID, calls[0].clientID)
@@ -54,11 +54,11 @@ func TestSetClientTools_UnknownClient_DoesNotFireCallback(t *testing.T) {
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 
 	fired := false
-	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, _ string) {
 		fired = true
 	})
 
-	m.SetClientTools("does-not-exist", map[string]schemas.ChatTool{}, map[string]string{})
+	m.SetClientTools("does-not-exist", map[string]schemas.ChatTool{}, map[string]string{}, "")
 
 	assert.False(t, fired)
 }
@@ -76,7 +76,7 @@ func TestConnectToMCPClient_SuccessfulDial_FiresToolsChangeCallback(t *testing.T
 	toolName := config.Name + "-echo"
 
 	var calls []toolsChangeCall
-	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, _ string) {
 		calls = append(calls, toolsChangeCall{clientID, name, tools, toolNameMapping})
 	})
 
@@ -108,7 +108,7 @@ func TestPerformCheck_PerCall_SuccessfulDiscovery_FiresToolsChangeCallback(t *te
 	manager.clientMap[config.ID] = state
 
 	var calls []toolsChangeCall
-	manager.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	manager.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, _ string) {
 		calls = append(calls, toolsChangeCall{clientID, name, tools, toolNameMapping})
 	})
 
@@ -130,7 +130,7 @@ func TestAddClient_RestoreFromConfig_DoesNotFireToolsChangeCallback(t *testing.T
 	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
 
 	fired := false
-	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string) {
+	m.SetToolsChangeCallback(func(clientID, name string, tools map[string]schemas.ChatTool, toolNameMapping map[string]string, _ string) {
 		fired = true
 	})
 

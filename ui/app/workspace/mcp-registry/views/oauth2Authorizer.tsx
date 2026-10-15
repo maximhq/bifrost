@@ -14,6 +14,16 @@ interface OAuth2AuthorizerProps {
 	onConflict?: (error: string) => void;
 	authorizeUrl: string;
 	oauthConfigId: string;
+	// Flow row behind a reauthorize consent (from POST /reauthorize). Status
+	// polls send it so the server answers from the flow's own state: the
+	// config's bootstrap status has been "authorized" since the client was
+	// first verified and never regresses, so polling it alone reads
+	// "authorized" on the first tick, before the admin has signed in.
+	flowId?: string;
+	// The flow's deadline (from the same response). Polling stops with a
+	// timeout once it passes instead of waiting on a flow row that the
+	// server may already have swept.
+	expiresAt?: string;
 	mcpClientId: string;
 	isPerUserOauth?: boolean;
 	// A popup the caller already opened synchronously (before any await), to
@@ -26,6 +36,13 @@ interface OAuth2AuthorizerProps {
 	// (the "Refresh admin credential" action), as opposed to the first-time
 	// bootstrap verification. Only affects the confirm-step copy.
 	isReauthorize?: boolean;
+	// Runs when the admin clicks Retry after a failure, before the confirm
+	// step reappears. A timed-out or denied flow is dead server-side (its
+	// state is no longer honoured, its deadline has passed), so reopening the
+	// popup on the same authorizeUrl can only fail again. The caller starts a
+	// fresh flow here and swaps in the new authorizeUrl / flowId / expiresAt
+	// through its own state. Without it Retry only resets local state.
+	onRetry?: () => Promise<void>;
 }
 
 type Status = "confirm" | "polling" | "blocked" | "success" | "failed";
@@ -48,9 +65,12 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	onConflict,
 	authorizeUrl,
 	oauthConfigId,
+	flowId,
+	expiresAt,
 	isPerUserOauth,
 	initialPopup,
 	isReauthorize,
+	onRetry,
 }) => {
 	// Both auth types start on the confirm step and only open the popup from a
 	// direct onClick: window.open() called from anywhere else (e.g. an effect
@@ -58,6 +78,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 	// activation" and gets silently popup-blocked.
 	const [status, setStatus] = useState<Status>("confirm");
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
+	const [isRetrying, setIsRetrying] = useState(false);
 	const popupRef = useRef<Window | null>(null);
 	const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 	const isCompletingRef = useRef(false);
@@ -122,10 +143,20 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		[stopPolling, onError],
 	);
 
+	const isPastDeadline = useCallback(() => {
+		if (!expiresAt) return false;
+		const deadline = Date.parse(expiresAt);
+		return !Number.isNaN(deadline) && Date.now() > deadline;
+	}, [expiresAt]);
+
 	const checkOAuthStatus = useCallback(async () => {
 		if (cancelledRef.current) return;
+		if (isPastDeadline()) {
+			handleOAuthFailed("Authorization timed out before the provider redirected back. Retry to start a new flow.");
+			return;
+		}
 		try {
-			const result = await getOAuthStatus(oauthConfigId).unwrap();
+			const result = await getOAuthStatus({ oauthConfigId, flowId }).unwrap();
 			if (cancelledRef.current) return;
 			if (result.status === "authorized") {
 				stopPolling();
@@ -136,14 +167,18 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		} catch (error) {
 			console.error("Error checking OAuth status:", error);
 		}
-	}, [oauthConfigId, getOAuthStatus, stopPolling, handleOAuthComplete, handleOAuthFailed]);
+	}, [oauthConfigId, flowId, getOAuthStatus, stopPolling, handleOAuthComplete, handleOAuthFailed, isPastDeadline]);
 
 	const startPolling = useCallback(() => {
 		if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
 		pollIntervalRef.current = setInterval(async () => {
 			if (popupRef.current && popupRef.current.closed) {
+				if (isPastDeadline()) {
+					handleOAuthFailed("Authorization timed out before the provider redirected back. Retry to start a new flow.");
+					return;
+				}
 				try {
-					const result = await getOAuthStatus(oauthConfigId).unwrap();
+					const result = await getOAuthStatus({ oauthConfigId, flowId }).unwrap();
 					if (result.status === "authorized") {
 						stopPolling();
 						await handleOAuthComplete();
@@ -158,7 +193,7 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 			}
 			await checkOAuthStatus();
 		}, 2000);
-	}, [checkOAuthStatus, getOAuthStatus, handleOAuthComplete, handleOAuthFailed, oauthConfigId, stopPolling]);
+	}, [checkOAuthStatus, getOAuthStatus, handleOAuthComplete, handleOAuthFailed, isPastDeadline, oauthConfigId, flowId, stopPolling]);
 
 	const openPopup = useCallback(() => {
 		isCompletingRef.current = false;
@@ -220,7 +255,21 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 		};
 	}, [stopPolling]);
 
-	const handleRetry = () => {
+	const handleRetry = async () => {
+		if (onRetry) {
+			setIsRetrying(true);
+			try {
+				await onRetry();
+			} catch (error) {
+				// Stay on the failed step with the new reason; the old flow is
+				// still dead, so falling through to confirm would just replay it.
+				setErrorMessage(getErrorMessage(error));
+				return;
+			} finally {
+				setIsRetrying(false);
+			}
+			if (cancelledRef.current) return;
+		}
 		setErrorMessage(null);
 		isCompletingRef.current = false;
 		setStatus("confirm");
@@ -365,8 +414,8 @@ export const OAuth2Authorizer: React.FC<OAuth2AuthorizerProps> = ({
 								<Button size="sm" variant="outline" onClick={handleCancel} data-testid="oauth-failed-close-btn">
 									Close
 								</Button>
-								<Button size="sm" onClick={handleRetry} data-testid="oauth-failed-retry-btn">
-									<RefreshCw className="size-3.5" />
+								<Button size="sm" onClick={() => void handleRetry()} disabled={isRetrying} data-testid="oauth-failed-retry-btn">
+									{isRetrying ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
 									Retry
 								</Button>
 							</div>

@@ -24,6 +24,7 @@ export const PROVIDER_KEYWORDS = {
   azure: ["azure", "deployments"],
   passthrough: ["_passthrough", "passthrough"],
   openrouter: ["openrouter"],
+  huggingface: ["huggingface", "hugging face"],
   replicate: ["replicate", "/replicate", "flux", "black-forest-labs"],
 };
 
@@ -35,6 +36,7 @@ export const PROVIDER_KEYWORDS = {
 export const MATCH_ORDER = [
   "passthrough",
   "openrouter",
+  "huggingface",
   "replicate",
   "vertex",
   "azure",
@@ -43,6 +45,12 @@ export const MATCH_ORDER = [
   "gemini",
   "anthropic",
   "openai",
+  // Last, so a row that also names an earlier provider keeps its existing owner.
+  "groq",
+  "xai",
+  "mistral",
+  "cohere",
+  "deepseek",
 ];
 
 // Long base64 runs are media payloads, not searchable text; a 2-char keyword like

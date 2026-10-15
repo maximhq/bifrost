@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"slices"
 	"sort"
@@ -63,7 +64,6 @@ func defaultCanDisableReasoning(model string) bool {
 	return !strings.Contains(strings.ToLower(model), "gemini-2.5-pro")
 }
 
-
 // defaultEffortControl is the thinkingLevel surface for Gemini 3+, taken from
 // the per-model rung table below. nil for models that take a budget instead,
 // which is what tells callers to convert an effort into thinkingBudget.
@@ -77,29 +77,6 @@ func defaultEffortControl(model string) *schemas.EffortControl {
 	return &schemas.EffortControl{Levels: supportedThinkingLevels(model)}
 }
 
-// geminiBudgetRanges are the published thinking-budget limits. Longest prefix
-// first, since "gemini-2.5-flash" also prefixes "gemini-2.5-flash-lite".
-var geminiBudgetRanges = []struct {
-	prefix   string
-	min, max int
-}{
-	{"gemini-2.5-flash-lite", 512, 24576},
-	{"gemini-2.5-pro", 128, 32768},
-	{"gemini-2.5-flash", 0, 24576},
-}
-
-// defaultBudgetControl returns the published thinking-budget range, or nil when
-// the model publishes none and validation should be skipped.
-func defaultBudgetControl(model string) *schemas.BudgetControl {
-	modelLower := strings.ToLower(model)
-	for _, entry := range geminiBudgetRanges {
-		if strings.Contains(modelLower, entry.prefix) {
-			return &schemas.BudgetControl{Min: new(entry.min), Max: new(entry.max)}
-		}
-	}
-	return nil
-}
-
 // NormalizeRawGenerateContentRequestForCompatibility applies the same
 // provider-compatibility cleanup expected by the typed conversion path, while
 // preserving JSON key order with gjson/sjson-style byte edits.
@@ -108,10 +85,12 @@ func NormalizeRawGenerateContentRequestForCompatibility(jsonBody []byte) []byte 
 		return jsonBody
 	}
 
+	// responseLogprobs/logprobs are forwarded as sent, as the typed path does: Google
+	// validates the range and returns logprobsResult. The penalties are still stripped:
+	// the typed path lets compat's drop-params remove them per model from the catalog,
+	// and this raw path has no such check. "fallbacks" is Bifrost's own key.
 	out := jsonBody
 	for _, path := range []string{
-		"generationConfig.responseLogprobs",
-		"generationConfig.logprobs",
 		"generationConfig.presencePenalty",
 		"generationConfig.frequencyPenalty",
 		"fallbacks",
@@ -216,6 +195,7 @@ var geminiThinkingLevelSupport = []struct {
 	levels []string
 }{
 	{"gemini-3.1-flash-lite-image", []string{"minimal", "high"}},
+	{"gemini-3.1-flash-lite", []string{"minimal", "low", "medium", "high"}},
 	{"gemini-3.7-flash", []string{"low", "medium", "high"}},
 	{"gemini-3.6-flash", []string{"minimal", "low", "medium", "high"}},
 	{"gemini-3.5-flash-lite", []string{"minimal", "low", "medium", "high"}},
@@ -338,7 +318,7 @@ func effortToThinkingLevel(caps schemas.ModelCaps, effort string) string {
 }
 
 func getThinkingBudgetRange(caps schemas.ModelCaps, defaultMaxTokens int) thinkingBudgetRange {
-	min, max, _ := caps.ReasoningBudgetRange(defaultMaxTokens, defaultBudgetControl(caps.Model()))
+	min, max, _ := caps.ReasoningBudgetRange(defaultMaxTokens, providerUtils.KnownGeminiReasoningBudget(caps.Model()))
 	return thinkingBudgetRange{Min: min, Max: max}
 }
 
@@ -359,7 +339,7 @@ func validateThinkingBudget(caps schemas.ModelCaps, budget int) error {
 	if budget < 0 {
 		return fmt.Errorf("thinking budget %d is invalid; only 0 and -1 are supported special values", budget)
 	}
-	min, max, ok := caps.ReasoningBudgetRange(0, defaultBudgetControl(caps.Model()))
+	min, max, ok := caps.ReasoningBudgetRange(0, providerUtils.KnownGeminiReasoningBudget(caps.Model()))
 	if !ok {
 		return nil // skip validation
 	}
@@ -870,6 +850,18 @@ func ConvertGeminiFinishReasonToBifrost(providerReason FinishReason) string {
 	return string(providerReason)
 }
 
+// geminiResponsesStatus derives the Responses status and incomplete_details from a
+// stop reason already converted by ConvertGeminiFinishReasonToBifrost. Error finish
+// reasons are handled by the callers (status "failed") before this is consulted.
+func geminiResponsesStatus(stopReason string) (*string, *schemas.ResponsesResponseIncompleteDetails) {
+	status, details, mapped := schemas.ResponsesStatusFromFinishReason(stopReason)
+	if !mapped {
+		// A finish reason with no Responses equivalent is not a confirmed clean finish.
+		return schemas.Ptr(schemas.ResponsesResponseStatusIncomplete), nil
+	}
+	return &status, details
+}
+
 // ConvertBifrostFinishReasonToGemini converts Bifrost canonical finish reasons back to Gemini format.
 func ConvertBifrostFinishReasonToGemini(bifrostReason string) FinishReason {
 	if geminiReason, ok := bifrostToGeminiFinishReason[bifrostReason]; ok {
@@ -1290,6 +1282,12 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 	}
 
 	// Map standard parameters
+	if params.N != nil {
+		if *params.N < 1 || *params.N > math.MaxInt32 {
+			return config, fmt.Errorf("n must be between 1 and %d for Gemini candidateCount, got %d", math.MaxInt32, *params.N)
+		}
+		config.CandidateCount = int32(*params.N)
+	}
 	if params.Stop != nil {
 		config.StopSequences = params.Stop
 	}
@@ -1412,18 +1410,26 @@ func convertParamsToGenerationConfig(params *schemas.ChatParameters, responseMod
 			config.Logprobs = schemas.Ptr(int32(topLogProbs))
 		}
 	}
-	// Gemini 2.5 and earlier reject function declarations sent together with
-	// responseMimeType "application/json" (structured output / JSON mode). That
-	// pairing is only supported on Gemini 3.x. Keep function calling working by
-	// dropping the JSON response-format hint for older models.
-	// Docs: https://ai.google.dev/gemini-api/docs/structured-output
-	if len(params.Tools) > 0 &&
-		config.ResponseMIMEType == "application/json" &&
-		!caps.SupportsResponseSchemaWithTools(isGemini3Plus(model)) {
-		config.ResponseMIMEType = ""
-		config.ResponseJSONSchema = nil
-	}
+	dropJSONResponseFormatWithToolsIfUnsupported(&config, len(params.Tools) > 0, caps, model)
 	return config, nil
+}
+
+// dropJSONResponseFormatWithToolsIfUnsupported clears the JSON response format when
+// tools ride along on a model that cannot combine them. Gemini 2.5 and earlier reject
+// function declarations sent together with responseMimeType "application/json"
+// (structured output / JSON mode); the pairing is only supported on Gemini 3.x. Function
+// calling is kept working by dropping the JSON response-format hint for older models.
+// Shared by the chat and Responses converters so the two paths cannot drift.
+// Docs: https://ai.google.dev/gemini-api/docs/structured-output
+func dropJSONResponseFormatWithToolsIfUnsupported(config *GenerationConfig, hasTools bool, caps schemas.ModelCaps, model string) {
+	if !hasTools || config.ResponseMIMEType != "application/json" {
+		return
+	}
+	if caps.SupportsResponseSchemaWithTools(isGemini3Plus(model)) {
+		return
+	}
+	config.ResponseMIMEType = ""
+	config.ResponseJSONSchema = nil
 }
 
 // mapBifrostServiceTierToGemini converts a BifrostServiceTier to a Gemini ServiceTier.
@@ -1943,6 +1949,7 @@ func applyGeminiSearchQueryChatUsage(usage *schemas.BifrostLLMUsage, metadata *G
 		usage.CompletionTokensDetails = &schemas.ChatCompletionTokensDetails{}
 	}
 	usage.CompletionTokensDetails.NumSearchQueries = count
+	usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *count}}
 }
 
 // applyGeminiSearchQueryResponsesUsage is the Responses-shaped counterpart of
@@ -1956,6 +1963,7 @@ func applyGeminiSearchQueryResponsesUsage(usage *schemas.ResponsesResponseUsage,
 		usage.OutputTokensDetails = &schemas.ResponsesResponseOutputTokens{}
 	}
 	usage.OutputTokensDetails.NumSearchQueries = count
+	usage.ToolUsage = &schemas.ToolUsage{WebSearch: &schemas.WebSearchToolUsage{NumRequests: *count}}
 }
 
 // applyServerSideToolInvocations opts the request into Gemini's tool combination mode,
@@ -2013,6 +2021,35 @@ func addSpeechConfigToGenerationConfig(config *GenerationConfig, voiceConfig *sc
 	config.SpeechConfig = &speechConfig
 }
 
+// inlineGeminiChatSystemReminder is the Chat Completions twin of inlineGeminiSystemReminder: a
+// mid-conversation role:"system" chat message rendered as a user turn, each text wrapped in the
+// <system-reminder> envelope, kept at its original position. Text-only, like the systemInstruction
+// branch it replaces for these messages. Returns nil when the message yields no text.
+func inlineGeminiChatSystemReminder(message schemas.ChatMessage) *Content {
+	if message.Content == nil {
+		return nil
+	}
+	wrap := func(text string) *Part {
+		return &Part{Text: "<system-reminder>\n" + text + "\n</system-reminder>\n"}
+	}
+	content := &Content{Role: "user"}
+	if message.Content.ContentStr != nil {
+		if *message.Content.ContentStr != "" {
+			content.Parts = append(content.Parts, wrap(*message.Content.ContentStr))
+		}
+	} else if message.Content.ContentBlocks != nil {
+		for _, block := range message.Content.ContentBlocks {
+			if block.Text != nil && *block.Text != "" {
+				content.Parts = append(content.Parts, wrap(*block.Text))
+			}
+		}
+	}
+	if len(content.Parts) == 0 {
+		return nil
+	}
+	return content
+}
+
 // convertBifrostMessagesToGemini converts Bifrost messages to Gemini format
 func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImageURLSchemes ...string) ([]Content, *Content, error) {
 	if len(allowedImageURLSchemes) == 0 {
@@ -2036,10 +2073,34 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 	// Map callID to function name for correlating tool responses with function declarations
 	callIDToFunctionName := make(map[string]string)
 
+	// Set once the leading system prompt ends (first non-system message). A system/developer
+	// message after that point is a mid-conversation reminder and is inlined in place as a
+	// user turn (see inlineGeminiChatSystemReminder) rather than hoisted into systemInstruction,
+	// which renders ahead of every message and, when it grows by one reminder per turn,
+	// invalidates Gemini's prefix-based implicit cache for the whole conversation behind it.
+	// Same rule as the Responses path (inlineGeminiSystemReminder).
+	seenNonSystemMessage := false
+
 	for i, message := range messages {
+		isSystemMessage := message.Role == schemas.ChatMessageRoleSystem || message.Role == schemas.ChatMessageRoleDeveloper
+		if !isSystemMessage {
+			seenNonSystemMessage = true
+		}
+		if isSystemMessage && seenNonSystemMessage {
+			// Flush first: the reminder is a user turn of its own and must not be filed
+			// behind function responses that precede it.
+			if len(pendingToolResponseParts) > 0 {
+				contents = append(contents, Content{Parts: pendingToolResponseParts, Role: "user"})
+				pendingToolResponseParts = nil
+			}
+			if inlined := inlineGeminiChatSystemReminder(message); inlined != nil {
+				contents = append(contents, *inlined)
+			}
+			continue
+		}
 		// Handle system messages separately - Gemini requires them in SystemInstruction field
 		// Gemini has no support for role "developer", so we treat it as "system"
-		if message.Role == schemas.ChatMessageRoleSystem || message.Role == schemas.ChatMessageRoleDeveloper {
+		if isSystemMessage {
 			if systemInstruction == nil {
 				systemInstruction = &Content{}
 			}
@@ -2102,14 +2163,15 @@ func convertBifrostMessagesToGemini(messages []schemas.ChatMessage, allowedImage
 				}
 			}
 
-			// Try to use raw JSON if it's a valid JSON object (Gemini requires Struct/object)
+			// Try to use raw JSON if it's a valid JSON object (Gemini requires Struct/object).
+			// An object carrying a "$ref" key anywhere is wrapped instead: see containsJSONRefKey.
 			if contentStr != "" {
 				var buf bytes.Buffer
-				if err := json.Compact(&buf, []byte(contentStr)); err == nil && buf.Len() > 0 && buf.Bytes()[0] == '{' {
-					// Valid JSON object — use raw bytes directly
+				if err := json.Compact(&buf, []byte(contentStr)); err == nil && buf.Len() > 0 && buf.Bytes()[0] == '{' && !containsJSONRefKey(buf.Bytes()) {
+					// Valid JSON object without reserved keys — use raw bytes directly
 					responseData = json.RawMessage(buf.Bytes())
 				} else {
-					// Not valid JSON or not an object — wrap to preserve content
+					// Not valid JSON, not an object, or holds "$ref" — wrap to preserve content
 					responseData, _ = providerUtils.MarshalSorted(map[string]any{
 						"content": contentStr,
 					})
@@ -2973,6 +3035,45 @@ func extractSchemaMapFromResponseFormat(responseFormat *interface{}) interface{}
 	return nil
 }
 
+// containsJSONRefKey reports whether any object nested anywhere in raw carries a "$ref" key.
+//
+// Gemini reads {"$ref": "<displayName>"} inside function_response.response as a pointer to a
+// multimodal part in function_response.parts and rejects the whole request with 400 ("does not
+// match to a display_name") when no such part exists. Tool output uses "$ref" for ordinary
+// reasons (JSON Schema, OpenAPI), so the converters send such a result as opaque text instead of
+// a structured object (#7694). There is deliberately no byte-level pre-check: JSON lets any
+// character of a key be written as a \uXXXX escape, and only the parser walk, which compares the
+// unescaped key, catches every spelling.
+func containsJSONRefKey(raw []byte) bool {
+	found := false
+	var walk func(v gjson.Result)
+	walk = func(v gjson.Result) {
+		isObject := v.IsObject()
+		v.ForEach(func(key, value gjson.Result) bool {
+			if isObject && key.String() == "$ref" {
+				found = true
+				return false
+			}
+			if value.IsObject() || value.IsArray() {
+				walk(value)
+			}
+			return !found
+		})
+	}
+	walk(gjson.ParseBytes(raw))
+	return found
+}
+
+// geminiFunctionOutputValue returns a function result for embedding under a key of
+// function_response.response: raw JSON when output is valid JSON with no "$ref" key at any
+// depth, otherwise the string itself so Gemini treats it as opaque text (#7694).
+func geminiFunctionOutputValue(output string) any {
+	if json.Valid([]byte(output)) && !containsJSONRefKey([]byte(output)) {
+		return json.RawMessage(output)
+	}
+	return output
+}
+
 // extractFunctionResponseOutput extracts the output text from a FunctionResponse.
 // It first tries to extract the "output" field if present, otherwise marshals the entire response.
 // Returns an empty string if the response is nil or extraction fails.
@@ -3252,4 +3353,8 @@ func resultNeedsGeminiNormalization(result gjson.Result) bool {
 		})
 	}
 	return needs
+}
+
+func ptrEqual[T comparable](a, b *T) bool {
+	return a == b || (a != nil && b != nil && *a == *b)
 }

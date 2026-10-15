@@ -1,0 +1,31 @@
+---
+title: "v0.8.0"
+description: "Edge v0.8.0 changelog - 2026-09-17"
+---
+
+<Update label="Bifrost Edge" description="v0.8.0">
+
+## Changelog
+
+v0.8.0 makes macOS TRP capture safe to run under MDM. A new `configuration_owner` setting tells Edge who owns the saved proxy service, so a Jamf-deployed profile is detected and used as-is instead of being rewritten. The macOS helper now reports its result back to the daemon over a local callback socket, which turns activation into its own diagnostics check with a state-specific remedy. Extension removal during upgrades is rebuilt around a validated recovery cache, and a closing network flow now drains its queued response bytes before the write side is closed.
+
+## ✨ Features
+
+- **MDM-Owned Proxy Configuration** - A new `capture.trp.configuration_owner` setting in `config.json` declares who may create and modify the saved macOS proxy service. Set it to `mdm` and Edge requires exactly one enabled matching configuration delivered by your device management profile, and never calls `saveToPreferences` or `removeFromPreferences` on it. Set it to `app` and Edge creates its own service and stamps it with an ownership marker, so it will only ever modify configurations carrying that marker. An unknown value is rejected at daemon startup before any capture configuration is touched.
+- **Legacy and Duplicate Configuration Safety** - Configuration selection now matches only on the provider bundle identifier and never infers ownership from a display name or picks an arbitrary duplicate. More than one Bifrost configuration, a missing managed configuration, an incomplete saved protocol, or a disabled configuration Edge does not own each fail with a specific administrator-facing message instead of a silent overwrite. An omitted owner keeps an existing unmarked service read-only and creates a standalone service only when none exists. There is no automatic migration.
+- **TRP Activation Reporting and Diagnostics Check** - The macOS helper now reports back to the daemon over a bounded, UID-checked local socket carrying newline-delimited JSON. Application launch, extension approval, required reboot, proxy connection, and failure are separate results, each carrying the request ID, owner, error domain and code. Diagnostics gains a "TRP configuration and activation" check with its own remedy per state, and exported diagnostics now include a `trp_activation` section. Connection observations are historical and are reported separately from live relay health and verified interception.
+- **Capture Mode Changes Stop the Proxy Instead of Removing the Extension** - Turning TRP capture off now issues a `stopproxy` request rather than a full extension removal. Under MDM ownership the service and extension stay under your profile's control and the provider simply declines new flows while the daemon is not in TRP mode. `deactivate` remains an explicit uninstall operation, so switching capture modes no longer costs an extension reinstall and re-approval.
+- **Validated Installer Recovery for Registered Extensions** - The extension component now runs `removemacosne.sh --prepare-upgrade` before its containing app is replaced, saving the signed app that matches the single registered version and build into a root-only recovery directory. Removal prefers the installed app, then that cache, then the installer's bundled app, and verifies the app and extension signatures, the expected Bifrost identifiers and team, and the exact registered version and build before restoring or launching anything. Unknown or multiple registrations fail closed, and the app, receipt, cache and pending marker are deleted only after macOS confirms deactivation.
+- **Rewritten Jamf Onboarding Guide** - The Edge setup templates are restructured around the real deployment order: prerequisite profiles first, a profile-signing certificate for Jamf Pro, then the proxy profile, then the network-extension component. The text is rewritten in plain language with defined terms, and new troubleshooting entries cover an approved extension whose `startproxy` still reports a launch error and activation logs that mention `saveToPreferences` or permission denied.
+
+## 🐞 Fixed
+
+- **Streaming Responses Truncated When a Flow Closed** - The relay now holds a closing flow's write queue until its queued response bytes finish writing, and closes the write side exactly once. A write failure, an XPC disconnect, or a ten-second drain timeout aborts the queue instead of leaving the flow open, and the system log records the flow ID, close reason and pending buffered bytes.
+- **Helper Launched With Root Credentials in the User Session** - `launchctl asuser` changes the bootstrap context but not the UID, GID or HOME. Activation and removal now also drop to the logged-in user, so LaunchServices and the helper run as that user rather than as root inside their session.
+- **Helper Launched Into a Logged-Out Account** - The session user is now read from the console owner instead of the first account found on disk, so the containing app's GUI launch targets an account that can actually host it.
+- **Extension Status Notifications Blocked the Network Extension Queue** - Proxy status changes are now delivered asynchronously, so the Network Extension posting queue no longer waits on the queue that may be reading the connection's status.
+- **Serialized Activation Requests Recorded as Failures** - A request skipped because another one was already in progress is no longer stored as an activation error, which had erased the real launch-failure reason shown to the user.
+- **Recovery App Staged With Unreadable Permissions** - A staged recovery app kept `mktemp`'s 0700 directory mode, so the signed-in user could not launch the helper. The published directory is now explicitly set to 0755, and 0700 folders left by older recovery attempts are repaired after validation.
+- **Misleading Relay Diagnostics Remedies** - The relay-disconnected remedies no longer suggest removing and reinstalling the network extension as an early step. They now point to TRP activation and diagnostics export first, and state plainly that approving the extension does not by itself start the proxy.
+
+</Update>

@@ -178,6 +178,8 @@ type OAuth2Config struct {
 	ServerURL       string     `json:"server_url"`                 // MCP server URL for OAuth discovery (required if URLs not provided)
 	Resource        string     `json:"resource,omitempty"`         // Optional OAuth resource indicator (RFC 8707); omitted when empty
 	UseDiscovery    bool       `json:"use_discovery,omitempty"`    // Deprecated: Discovery now happens automatically when URLs are missing
+
+	RequirePublicTarget bool `json:"-"` // Server-set from the owning MCP client: OAuth requests may reach only public addresses
 }
 
 // OauthToken represents OAuth access and refresh tokens

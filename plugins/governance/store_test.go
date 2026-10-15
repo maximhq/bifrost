@@ -2,6 +2,7 @@ package governance
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,7 +24,7 @@ func TestLocalGovernanceStore_GetGovernanceUsageDataExcludesUnrelatedState(t *te
 		},
 		Budgets:    []configstoreTables.TableBudget{{ID: "budget1"}},
 		RateLimits: []configstoreTables.TableRateLimit{{ID: "rate-limit1"}},
-	}, nil)
+	}, nil, nil)
 	require.NoError(t, err)
 
 	data := store.GetGovernanceUsageData(context.Background())
@@ -588,6 +589,87 @@ func TestGovernanceStore_MultiBudget_CalendarAligned(t *testing.T) {
 	// Both under limit — should pass
 	_, err = checkGrantBudgets(store, emptyCtx(), vk, schemas.OpenAI, "", nil)
 	assert.NoError(t, err)
+}
+
+func TestGovernanceStore_TeamCalendarAlignmentSurvivesColdLoad(t *testing.T) {
+	logger := NewMockLogger()
+	now := time.Now().UTC()
+	lastReset := configstoreTables.GetCalendarPeriodStart("1w", now, configstoreTables.QuarterStartNotApplicable)
+	createdAt := now.Add(-time.Minute)
+	teamID := "team-calendar-aligned"
+	weeklyBudget := configstoreTables.TableBudget{
+		ID:            "team-weekly-calendar-aligned",
+		TeamID:        &teamID,
+		MaxLimit:      100,
+		CurrentUsage:  42,
+		ResetDuration: "1w",
+		LastReset:     lastReset,
+		CreatedAt:     createdAt,
+	}
+	dailyBudget := configstoreTables.TableBudget{
+		ID:                "team-daily-calendar-aligned",
+		TeamID:            &teamID,
+		MaxLimit:          25,
+		ResetDuration:     "1d",
+		LastReset:         configstoreTables.GetCalendarPeriodStart("1d", now, configstoreTables.QuarterStartNotApplicable),
+		CreatedAt:         createdAt,
+		IsCalendarAligned: true,
+	}
+	rateLimit := buildRateLimit("team-calendar-aligned-rate-limit", 100, 100)
+	staleRateLimit := *rateLimit
+	staleRateLimit.TokenCurrentUsage = 1
+	staleRateLimit.RequestCurrentUsage = 1
+	staleRateLimit.TokenLastReset = rateLimit.TokenLastReset.Add(-24 * time.Hour)
+	staleRateLimit.RequestLastReset = rateLimit.RequestLastReset.Add(-24 * time.Hour)
+	staleDailyReset := dailyBudget.LastReset.Add(-24 * time.Hour)
+	staleDailyBudget := dailyBudget
+	staleDailyBudget.CurrentUsage = 1
+	staleDailyBudget.LastReset = staleDailyReset
+	team := configstoreTables.TableTeam{
+		ID:              teamID,
+		Name:            "Calendar aligned team",
+		CalendarAligned: true,
+		Budgets:         []configstoreTables.TableBudget{staleDailyBudget},
+		RateLimitID:     &rateLimit.ID,
+		RateLimit:       &staleRateLimit,
+	}
+
+	store, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+		Teams:      []configstoreTables.TableTeam{team},
+		Budgets:    []configstoreTables.TableBudget{dailyBudget, weeklyBudget},
+		RateLimits: []configstoreTables.TableRateLimit{*rateLimit},
+	}, nil, nil)
+	require.NoError(t, err)
+
+	for _, budget := range []configstoreTables.TableBudget{dailyBudget, weeklyBudget} {
+		loadedBudget := store.LoadBudget(context.Background(), budget.ID)
+		require.NotNil(t, loadedBudget)
+		assert.True(t, loadedBudget.IsCalendarAligned)
+	}
+
+	loadedDailyBudget := store.LoadBudget(context.Background(), dailyBudget.ID)
+	require.NotNil(t, loadedDailyBudget)
+	assert.Equal(t, dailyBudget.CurrentUsage, loadedDailyBudget.CurrentUsage)
+	assert.Equal(t, dailyBudget.LastReset, loadedDailyBudget.LastReset)
+
+	loadedWeeklyBudget := store.LoadBudget(context.Background(), weeklyBudget.ID)
+	assert.Equal(t, 42.0, loadedWeeklyBudget.CurrentUsage)
+	assert.Equal(t, lastReset, loadedWeeklyBudget.LastReset)
+	assert.Empty(t, store.ResetExpiredBudgetsInMemory(context.Background(), false, weeklyBudget.ID),
+		"cold-loaded calendar budget must not reset on its creation-time rolling window")
+
+	collectedBudgets := store.CollectTeamBudgets(context.Background(), teamID)
+	require.Len(t, collectedBudgets, 2)
+	collectedIDs := []string{collectedBudgets[0].ID, collectedBudgets[1].ID}
+	assert.ElementsMatch(t, []string{dailyBudget.ID, weeklyBudget.ID}, collectedIDs)
+
+	loadedRateLimit := store.LoadRateLimit(context.Background(), rateLimit.ID)
+	require.NotNil(t, loadedRateLimit)
+	assert.True(t, loadedRateLimit.IsCalendarAligned)
+	assert.Equal(t, rateLimit.TokenCurrentUsage, loadedRateLimit.TokenCurrentUsage)
+	assert.Equal(t, rateLimit.RequestCurrentUsage, loadedRateLimit.RequestCurrentUsage)
+	assert.Equal(t, rateLimit.TokenLastReset, loadedRateLimit.TokenLastReset)
+	assert.Equal(t, rateLimit.RequestLastReset, loadedRateLimit.RequestLastReset)
 }
 
 // TestGovernanceStore_MultiBudget_InMemoryCreateAndDelete tests CreateVirtualKeyInMemory and DeleteVirtualKeyInMemory
@@ -1451,7 +1533,7 @@ func TestCollectApplicableGovernanceIDs_VKWildcardBudget_NoModel(t *testing.T) {
 	// Settled the way the funnel settles it: the grant carries the attempt's limits, and the
 	// accounted set is read from there.
 	ctx := resolverCtx(store, vkValue)
-	limits := resolveLimits(ctx, store, schemas.ModelProvider("anthropic"), "")
+	limits := settleAttemptLimits(ctx, store, schemas.ModelProvider("anthropic"), "")
 	require.NotNil(t, limits)
 	budgetIDs := limitIDsOf(limits.Budgets())
 
@@ -1620,26 +1702,26 @@ func ptrInt64(i int64) *int64 {
 	return &i
 }
 
-// An access profile's per-model budgets materialise as user-scoped model configs
-// naming one model and provider. A batch create carries no top-level model, so the
-// in-flight collection matches only the wildcard tiers and those per-model budgets
-// are invisible to it — which is why batch spend never reached them. Settlement
-// knows the models and asks for them by name.
+// A downstream consumer's (e.g. an access profile's) per-model budgets materialise
+// as virtual-key-scoped model configs naming one model and provider. A batch create
+// carries no top-level model, so the in-flight collection matches only the wildcard
+// tiers and those per-model budgets are invisible to it — which is why batch spend
+// never reached them. Settlement knows the models and asks for them by name.
 func TestCollectModelScopedGovernanceIDs_FindsExactModelConfigMissedAtCreateTime(t *testing.T) {
 	logger := NewMockLogger()
 	ctx := context.Background()
 	providerName := "openai"
-	userID := "user-alice"
+	vkID := "vk-alice"
 
 	perModel := buildBudgetWithUsage("ap-model-budget", 100.0, 0.0, "1M")
-	perModelMC := buildModelConfig("mc-user-gpt5", "gpt-5", &providerName, perModel, nil)
-	perModelMC.Scope = configstoreTables.ModelConfigScopeUser
-	perModelMC.ScopeID = &userID
+	perModelMC := buildModelConfig("mc-vk-gpt5", "gpt-5", &providerName, perModel, nil)
+	perModelMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	perModelMC.ScopeID = &vkID
 
 	wildcard := buildBudgetWithUsage("ap-wildcard-budget", 100.0, 0.0, "1M")
-	wildcardMC := buildModelConfig("mc-user-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
-	wildcardMC.Scope = configstoreTables.ModelConfigScopeUser
-	wildcardMC.ScopeID = &userID
+	wildcardMC := buildModelConfig("mc-vk-all", configstoreTables.ModelConfigAllModels, &providerName, wildcard, nil)
+	wildcardMC.Scope = configstoreTables.ModelConfigScopeVirtualKey
+	wildcardMC.ScopeID = &vkID
 
 	store, err := NewLocalGovernanceStore(ctx, logger, nil, &configstore.GovernanceConfig{
 		ModelConfigs: []configstoreTables.TableModelConfig{*perModelMC, *wildcardMC},
@@ -1647,31 +1729,21 @@ func TestCollectModelScopedGovernanceIDs_FindsExactModelConfigMissedAtCreateTime
 	}, nil, nil)
 	require.NoError(t, err)
 
-	// What batch create settles onto the request: no model, so only the wildcard is gathered. The
-	// user is a scope of its own, read off the request rather than off a permit, so no access is
-	// needed to reach it.
-	inFlightCtx := grantedCtx(ctx)
-	inFlightCtx.SetValue(schemas.BifrostContextKeyUserID, userID)
-	inFlightBudgets, _ := gatherLimits(inFlightCtx, store, nil, schemas.ModelProvider(providerName), "")
-	inFlight := limitIDsOf(inFlightBudgets)
-	assert.Contains(t, inFlight, wildcard.ID)
-	assert.NotContains(t, inFlight, perModel.ID, "the per-model budget cannot be matched without a model")
-
 	// What settlement sees: the model is known, so the per-model budget is reachable.
-	atSettlement, _ := store.CollectModelScopedGovernanceIDs(ctx, "", userID, schemas.ModelProvider(providerName), "gpt-5")
+	atSettlement, _ := store.CollectModelScopedGovernanceIDs(ctx, vkID, "", schemas.ModelProvider(providerName), "gpt-5")
 	assert.Contains(t, atSettlement, perModel.ID)
 	// The wildcard is returned too and overlaps the in-flight set by design; callers
 	// subtract what they already charged rather than relying on it being absent.
 	assert.Contains(t, atSettlement, wildcard.ID)
 
 	// A model with no config of its own still finds the wildcard and nothing else.
-	otherModel, _ := store.CollectModelScopedGovernanceIDs(ctx, "", userID, schemas.ModelProvider(providerName), "gpt-4o")
+	otherModel, _ := store.CollectModelScopedGovernanceIDs(ctx, vkID, "", schemas.ModelProvider(providerName), "gpt-4o")
 	assert.NotContains(t, otherModel, perModel.ID)
 	assert.Contains(t, otherModel, wildcard.ID)
 
-	// Scope isolation: another user's id must not reach these configs.
-	otherUser, _ := store.CollectModelScopedGovernanceIDs(ctx, "", "user-bob", schemas.ModelProvider(providerName), "gpt-5")
-	assert.Empty(t, otherUser)
+	// Scope isolation: another virtual key's id must not reach these configs.
+	otherVK, _ := store.CollectModelScopedGovernanceIDs(ctx, "vk-bob", "", schemas.ModelProvider(providerName), "gpt-5")
+	assert.Empty(t, otherVK)
 }
 
 // What a request is billed to and what is recorded on its log row are the limits settled on its
@@ -1714,7 +1786,7 @@ func TestSettledLimitsAreWhatIsAccounted(t *testing.T) {
 	// afterwards reads them from there rather than working out a second answer.
 	settle := func(t *testing.T, provider schemas.ModelProvider, model string) schemas.Limits {
 		t.Helper()
-		limits := resolveLimits(resolverCtx(store, "sk-bf-collect"), store, provider, model)
+		limits := settleAttemptLimits(resolverCtx(store, "sk-bf-collect"), store, provider, model)
 		require.NotNil(t, limits)
 		return limits
 	}
@@ -1801,8 +1873,8 @@ func TestResolveLimits(t *testing.T) {
 		require.NotNil(t, access)
 		require.Len(t, access.Bases(), 1)
 
-		openaiBudgets, _ := store.ProviderLimits(ctx, access.Bases()[0], schemas.OpenAI)
-		bedrockBudgets, _ := store.ProviderLimits(ctx, access.Bases()[0], schemas.Bedrock)
+		openaiBudgets, _ := store.PermitProviderLimits(ctx, access.Bases()[0], schemas.OpenAI)
+		bedrockBudgets, _ := store.PermitProviderLimits(ctx, access.Bases()[0], schemas.Bedrock)
 		assert.Equal(t, []string{"b-key-openai"}, limitIDsOf(openaiBudgets))
 		assert.Equal(t, []string{"b-key-bedrock"}, limitIDsOf(bedrockBudgets))
 		assert.Nil(t, ctx.Grant().Limits(), "nothing is settled yet, which is not the same as nothing applying")
@@ -1811,7 +1883,7 @@ func TestResolveLimits(t *testing.T) {
 	t.Run("after it runs, the grant carries exactly what this pair answers to", func(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-resolve")
 
-		settled := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		settled := settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o")
 
 		require.NotNil(t, settled)
 		assert.ElementsMatch(t,
@@ -1824,7 +1896,7 @@ func TestResolveLimits(t *testing.T) {
 	t.Run("the settled limits are what everything downstream reads", func(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-resolve")
 
-		settled := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		settled := settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o")
 
 		assert.Same(t, settled, ctx.Grant().Limits(),
 			"recorded, or the check and the charge would each resolve their own")
@@ -1836,8 +1908,8 @@ func TestResolveLimits(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-resolve")
 		access := ctx.Grant().Access()
 
-		first := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
-		second := resolveLimits(ctx, store, schemas.Bedrock, "claude-sonnet-4")
+		first := settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		second := settleAttemptLimits(ctx, store, schemas.Bedrock, "claude-sonnet-4")
 
 		assert.Same(t, access, ctx.Grant().Access(), "what the request may reach is unchanged")
 		assert.NotSame(t, first, second)
@@ -1851,7 +1923,7 @@ func TestResolveLimits(t *testing.T) {
 		// all the same, and they are settled on its grant like anyone else's.
 		ctx := emptyCtx()
 
-		settled := resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o")
+		settled := settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o")
 
 		require.NotNil(t, settled)
 		assert.ElementsMatch(t, []string{"b-provider", "b-model"}, limitIDsOf(settled.Budgets()))
@@ -1863,14 +1935,14 @@ func TestResolveLimits(t *testing.T) {
 		// and nothing here papers over it.
 		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-		assert.Nil(t, resolveLimits(ctx, store, schemas.OpenAI, "gpt-4o"))
+		assert.Nil(t, settleAttemptLimits(ctx, store, schemas.OpenAI, "gpt-4o"))
 		assert.Nil(t, ctx.Grant())
 	})
 
 	t.Run("a modelless attempt still answers to its provider", func(t *testing.T) {
 		ctx := resolverCtx(store, "sk-bf-resolve")
 
-		settled := resolveLimits(ctx, store, schemas.OpenAI, "")
+		settled := settleAttemptLimits(ctx, store, schemas.OpenAI, "")
 
 		ids := limitIDsOf(settled.Budgets())
 		assert.Contains(t, ids, "b-provider")
@@ -2009,4 +2081,300 @@ func TestGetBudgetAndRateLimitStatusReachesEverySource(t *testing.T) {
 
 		assert.Equal(t, 90.0, status.BudgetPercentUsed)
 	})
+}
+
+// TestModelConfigScopesForIgnoresExtraScopedIDsResolvers pins #6724's contract: one permit selects
+// exactly one scope, and registered resolvers are not folded in here. Callers wanting an extra
+// scope enforced ask for it by name via ScopedModelLimits / ProviderScopedModelLimitsInScope.
+func TestModelConfigScopesForIgnoresExtraScopedIDsResolvers(t *testing.T) {
+	extraScopedIDsResolversMu.Lock()
+	saved := extraScopedIDsResolvers
+	extraScopedIDsResolvers = nil
+	extraScopedIDsResolversMu.Unlock()
+	t.Cleanup(func() {
+		extraScopedIDsResolversMu.Lock()
+		extraScopedIDsResolvers = saved
+		extraScopedIDsResolversMu.Unlock()
+	})
+
+	RegisterExtraScopedIDsResolver(func(_ context.Context, _, _ string) []ScopedID {
+		return []ScopedID{
+			{Scope: "batch_only", ScopeID: "b-1"}, // Kind deliberately empty
+			{Scope: "with_kind", ScopeID: "w-1", Kind: grant.LimitHolderModelConfig},
+		}
+	})
+
+	scopes := modelConfigScopesFor(nil)
+
+	require.Len(t, scopes, 1, "a nil permit selects the deployment's global scope and nothing else")
+	assert.Equal(t, configstoreTables.ModelConfigScopeGlobal, scopes[0].name)
+	assert.Equal(t, grant.LimitHolderModelConfig, scopes[0].kind)
+	for _, s := range scopes {
+		assert.NotEqual(t, "batch_only", s.name, "a resolver-supplied scope must not reach request-time enforcement here")
+		assert.NotEqual(t, "with_kind", s.name, "a resolver-supplied scope must not reach request-time enforcement here")
+	}
+}
+
+// With no guard registered - every OSS build - nothing is governed and nothing is refused, whatever
+// is asked about.
+func TestLegacyLimitsGovernedByAnswersNothingWhenUnregistered(t *testing.T) {
+	governedBy, err := LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderTeam, "team-1")
+	require.NoError(t, err)
+	assert.Empty(t, governedBy)
+}
+
+// A registered guard is asked about the entity in hand, and its answer - a name, nothing, or a
+// failure - is what callers act on.
+func TestLegacyLimitsGovernedByUsesTheRegisteredGuard(t *testing.T) {
+	t.Cleanup(func() { RegisterLegacyLimitGuard(nil) })
+
+	var askedKind, askedID string
+	RegisterLegacyLimitGuard(func(_ context.Context, holderKind, holderID string) (string, error) {
+		askedKind, askedID = holderKind, holderID
+		if holderID == "customer-governed" {
+			return "platform-access", nil
+		}
+		if holderID == "customer-unknowable" {
+			return "", errors.New("database unavailable")
+		}
+		return "", nil
+	})
+
+	governedBy, err := LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderCustomer, "customer-governed")
+	require.NoError(t, err)
+	assert.Equal(t, "platform-access", governedBy)
+	assert.Equal(t, LegacyLimitHolderCustomer, askedKind)
+	assert.Equal(t, "customer-governed", askedID)
+
+	governedBy, err = LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderTeam, "team-free")
+	require.NoError(t, err)
+	assert.Empty(t, governedBy, "an entity nothing governs keeps its own budgets")
+
+	_, err = LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderCustomer, "customer-unknowable")
+	require.Error(t, err, "an unanswerable question is an error, not a silent yes")
+
+	// An empty id is nobody: the guard is not asked, so a caller with no owner in hand writes as usual.
+	askedID = ""
+	governedBy, err = LegacyLimitsGovernedBy(context.Background(), LegacyLimitHolderTeam, "")
+	require.NoError(t, err)
+	assert.Empty(t, governedBy)
+	assert.Empty(t, askedID, "the guard must not be asked about an entity with no id")
+}
+
+// modelKeyStore builds a store over the given model configs with the offline pricing catalog, so
+// base-model aliasing ("gpt-4o-2024-08-06" is a "gpt-4o") is live the way it is in a deployment.
+func modelKeyStore(t *testing.T, mcs ...*configstoreTables.TableModelConfig) *LocalGovernanceStore {
+	t.Helper()
+	cfg := &configstore.GovernanceConfig{}
+	for _, mc := range mcs {
+		cfg.ModelConfigs = append(cfg.ModelConfigs, *mc)
+		cfg.Budgets = append(cfg.Budgets, mc.Budgets...)
+	}
+	store, err := NewLocalGovernanceStore(context.Background(), NewMockLogger(), nil, cfg, newOfflinePricingCatalog(t), nil)
+	require.NoError(t, err)
+	return store
+}
+
+// Every spelling of a model the gateway accepts lands on the same provider-scoped (model, provider)
+// limit: a budget on (gpt-4o, openai) governs the dated alias, the prefixed form, the re-cased form
+// and the padded form alike. A sibling model and another provider stay out of it.
+func TestGovernanceStore_ProviderScopedModelLimitMatchesEverySpelling(t *testing.T) {
+	ctx := context.Background()
+	providerName := "openai"
+	exhausted := buildBudgetWithUsage("b-gpt4o-openai", 100.0, 100.0, "1d")
+	store := modelKeyStore(t, buildModelConfig("mc-gpt4o-openai", "gpt-4o", &providerName, exhausted, nil))
+
+	for _, model := range []string{
+		"gpt-4o",
+		"openai/gpt-4o",
+		"GPT-4O",
+		" gpt-4o ",
+		"gpt-4o-2024-08-06",
+		"openai/GPT-4o-2024-08-06 ",
+	} {
+		t.Run(model, func(t *testing.T) {
+			_, err := checkDeploymentBudgets(store, ctx, schemas.OpenAI, model, nil)
+			require.Error(t, err, "request for %q must be governed by the (gpt-4o, openai) budget", model)
+			assert.Contains(t, err.Error(), "budget exceeded")
+		})
+	}
+
+	for _, model := range []string{"gpt-4o-mini", "gpt-4o-mini-2024-07-18", "gpt-4"} {
+		_, err := checkDeploymentBudgets(store, ctx, schemas.OpenAI, model, nil)
+		assert.NoError(t, err, "sibling %q must not be charged to the gpt-4o budget", model)
+	}
+	_, err := checkDeploymentBudgets(store, ctx, schemas.Anthropic, "gpt-4o-2024-08-06", nil)
+	assert.NoError(t, err, "another provider must not be governed by the openai-scoped budget")
+}
+
+// The spelling an operator stores a provider-scoped config under is canonicalised the same way a
+// request is, on both the load path and the in-memory create/update path, so existing rows keep
+// matching without a migration.
+func TestGovernanceStore_ProviderScopedModelConfigStoredUnderCanonicalKey(t *testing.T) {
+	ctx := context.Background()
+	providerName := "openai"
+	for _, stored := range []string{"gpt-4o", "openai/gpt-4o", "GPT-4O", " gpt-4o "} {
+		t.Run("loaded:"+stored, func(t *testing.T) {
+			exhausted := buildBudgetWithUsage("b-"+stored, 100.0, 100.0, "1d")
+			store := modelKeyStore(t, buildModelConfig("mc-"+stored, stored, &providerName, exhausted, nil))
+			_, err := checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o-2024-08-06", nil)
+			require.Error(t, err, "config stored as %q must govern gpt-4o-2024-08-06", stored)
+		})
+		t.Run("created:"+stored, func(t *testing.T) {
+			store := modelKeyStore(t)
+			exhausted := buildBudgetWithUsage("b-"+stored, 100.0, 100.0, "1d")
+			store.UpdateModelConfigInMemory(ctx, buildModelConfig("mc-"+stored, stored, &providerName, exhausted, nil))
+			_, err := checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o-2024-08-06", nil)
+			require.Error(t, err, "config created as %q must govern gpt-4o-2024-08-06", stored)
+		})
+	}
+}
+
+// Renaming or re-scoping a config in memory must leave no entry behind under its previous key:
+// a request for the old model would otherwise keep consuming the moved config's budget.
+func TestGovernanceStore_UpdateModelConfigInMemoryEvictsPreviousKey(t *testing.T) {
+	ctx := context.Background()
+	openai := "openai"
+	exhausted := buildBudgetWithUsage("b-moved", 100.0, 100.0, "1d")
+	store := modelKeyStore(t, buildModelConfig("mc-moved", "gpt-4o", &openai, exhausted, nil))
+	_, err := checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o", nil)
+	require.Error(t, err, "precondition: the config governs gpt-4o before the rename")
+
+	moved := buildModelConfig("mc-moved", "gpt-4o-mini", &openai, exhausted, nil)
+	store.UpdateModelConfigInMemory(ctx, moved)
+
+	_, err = checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o-mini", nil)
+	require.Error(t, err, "the renamed config must govern gpt-4o-mini")
+	_, err = checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o", nil)
+	require.NoError(t, err, "the previous key must no longer resolve to the moved config")
+
+	azure := "azure"
+	store.UpdateModelConfigInMemory(ctx, buildModelConfig("mc-moved", "gpt-4o-mini", &azure, exhausted, nil))
+	_, err = checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o-mini", nil)
+	require.NoError(t, err, "re-scoping to another provider must evict the openai entry")
+	_, err = checkDeploymentBudgets(store, ctx, schemas.Azure, "gpt-4o-mini", nil)
+	require.Error(t, err, "the re-scoped config must govern azure")
+}
+
+// A provider-less config keeps matching the same set of spellings it did before, now with the
+// prefixed and re-cased forms included.
+func TestGovernanceStore_ProviderlessModelLimitMatchesEverySpelling(t *testing.T) {
+	ctx := context.Background()
+	exhausted := buildBudgetWithUsage("b-gpt4o-any", 100.0, 100.0, "1d")
+	store := modelKeyStore(t, buildModelConfig("mc-gpt4o-any", "gpt-4o", nil, exhausted, nil))
+
+	for _, model := range []string{"gpt-4o", "openai/gpt-4o", "GPT-4O", "gpt-4o-2024-08-06"} {
+		for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Azure} {
+			_, err := checkDeploymentBudgets(store, ctx, provider, model, nil)
+			require.Error(t, err, "%q on %s must be governed by the provider-less gpt-4o budget", model, provider)
+		}
+	}
+	_, err := checkDeploymentBudgets(store, ctx, schemas.OpenAI, "gpt-4o-mini", nil)
+	assert.NoError(t, err)
+}
+
+// collectModelConfigsFor returns every applicable config most specific first: the exact pair, the
+// base-model pair, the exact model on any provider, the base model on any provider, then the two
+// wildcards. A request never satisfies a looser bucket while a tighter one exists for it.
+func TestGovernanceStore_CollectModelConfigsForPrecedence(t *testing.T) {
+	ctx := context.Background()
+	providerName := "openai"
+	mk := func(id, model string, provider *string) *configstoreTables.TableModelConfig {
+		return buildModelConfig(id, model, provider, buildBudget("b-"+id, 100.0, "1d"), nil)
+	}
+	store := modelKeyStore(t,
+		mk("exact-pair", "gpt-4o-2024-08-06", &providerName),
+		mk("base-pair", "gpt-4o", &providerName),
+		mk("exact-any", "gpt-4o-2024-08-06", nil),
+		mk("base-any", "gpt-4o", nil),
+		mk("all-openai", configstoreTables.ModelConfigAllModels, &providerName),
+		mk("all-any", configstoreTables.ModelConfigAllModels, nil),
+	)
+	ids := func(mcs []*configstoreTables.TableModelConfig) []string {
+		out := make([]string, 0, len(mcs))
+		for _, mc := range mcs {
+			out = append(out, mc.ID)
+		}
+		return out
+	}
+	global := configstoreTables.ModelConfigScopeGlobal
+
+	// The dated alias on openai reaches every tier. "exact-any" shares its key with "base-any"
+	// (provider-less configs collapse to the base model), so whichever was indexed last answers.
+	got := ids(store.collectModelConfigsFor(ctx, global, "", "openai/GPT-4o-2024-08-06", &providerName))
+	require.Len(t, got, 5)
+	assert.Equal(t, []string{"exact-pair", "base-pair"}, got[:2])
+	assert.Contains(t, []string{"exact-any", "base-any"}, got[2])
+	assert.Equal(t, []string{"all-openai", "all-any"}, got[3:])
+
+	// The base name skips the dated pair but still finds its own.
+	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o", &providerName))
+	require.Len(t, got, 4)
+	assert.Equal(t, "base-pair", got[0])
+	assert.Equal(t, []string{"all-openai", "all-any"}, got[2:])
+
+	// A sibling model only reaches the wildcards.
+	assert.Equal(t, []string{"all-openai", "all-any"}, ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-mini", &providerName)))
+
+	// Another provider skips the openai-scoped tiers entirely.
+	anthropic := "anthropic"
+	got = ids(store.collectModelConfigsFor(ctx, global, "", "gpt-4o-2024-08-06", &anthropic))
+	assert.NotContains(t, got, "exact-pair")
+	assert.NotContains(t, got, "base-pair")
+	assert.NotContains(t, got, "all-openai")
+	assert.Contains(t, got, "all-any")
+}
+
+// TestResolveAccessStampsVirtualKeyMetadata checks that resolving access publishes the key's
+// metadata for the logging plugin, as a copy: a request that changes its copy must not reach the key
+// every other request shares. A key without metadata stamps nothing.
+func TestResolveAccessStampsVirtualKeyMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		metadata map[string]string
+	}{
+		{name: "no metadata stamps nothing", metadata: nil},
+		{name: "metadata is stamped", metadata: map[string]string{"cost_center": "cc-42", "owner": "a@example.com"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			vk := buildVKForMCPStamping(nil)
+			vk.Metadata = tc.metadata
+
+			logger := NewMockLogger()
+			local, err := NewLocalGovernanceStore(context.Background(), logger, nil, &configstore.GovernanceConfig{
+				VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+			}, nil, &mockInMemoryStore{})
+			require.NoError(t, err)
+			plugin, err := InitFromStore(context.Background(), &Config{IsVkMandatory: boolPtr(false)}, logger, local, nil, nil, nil, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, plugin.Cleanup()) })
+
+			ctx := emptyCtx()
+			ctx.Grant().SetIdentity(grant.NewIdentity(grant.NewCredential(grant.CredentialVirtualKey, mcpTestVKValue), nil, nil, nil, nil, nil, nil))
+			_, err = plugin.ResolveAccess(ctx)
+			require.NoError(t, err)
+			require.Equal(t, vk.ID, ctx.Value(schemas.BifrostContextKeyGovernanceVirtualKeyID), "the key resolved")
+
+			stamped := ctx.Value(VirtualKeyMetadataContextKey)
+			if tc.metadata == nil {
+				assert.Nil(t, stamped, "a key without metadata must leave the context key absent")
+				return
+			}
+			got, ok := stamped.(map[string]string)
+			require.True(t, ok, "stamped metadata must be a map[string]string, got %T", stamped)
+			assert.Equal(t, tc.metadata, got)
+
+			got["cost_center"] = "tampered"
+			stored, ok := local.GetVirtualKey(ctx, mcpTestVKValue)
+			require.True(t, ok)
+			assert.Equal(t, "cc-42", stored.Metadata["cost_center"], "the stamped map must be a copy, not the stored key's map")
+		})
+	}
+}
+
+// TestVirtualKeyMetadataContextKeyValue pins the context key's wire string. The logging plugin and
+// the HTTP transport declare their own copy of it, so changing it here alone would silently stop
+// virtual key metadata from reaching the logs.
+func TestVirtualKeyMetadataContextKeyValue(t *testing.T) {
+	assert.Equal(t, schemas.BifrostContextKey("bifrost-governance-virtual-key-metadata"), VirtualKeyMetadataContextKey)
 }

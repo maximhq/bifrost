@@ -1876,7 +1876,7 @@ func TestPreLLMHook_ModelProviderPass_VirtualKeyModelBlocked(t *testing.T) {
 	assert.Contains(t, shortCircuit.Error.Error.Message, "not allowed")
 }
 
-func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelProviderLimits(t *testing.T) {
+func TestPreLLMHook_ModelProviderPass_VirtualKeyBudgetExceeded_WithModelPermitProviderLimits(t *testing.T) {
 	logger := NewMockLogger()
 	// Model/provider checks pass (within limits)
 	providerBudget := buildBudget("provider-budget1", 200.0, "1h")
@@ -2186,7 +2186,9 @@ func TestPostMCPHook_TracksVirtualKeyUsageWhenUserIDPresent(t *testing.T) {
 	// Evaluating the tool call settles the limits it answers to, and billing reads them from there.
 	// Tool execution names no provider and no model, so what it answers to is whatever funds the
 	// holder.
-	require.NotNil(t, resolveLimits(ctx, store, "", ""))
+	settled, settleErr := resolveLimits(ctx, store, "", "")
+	require.NoError(t, settleErr)
+	require.NotNil(t, settled)
 	resp := &schemas.BifrostMCPResponse{
 		ExtraFields: schemas.BifrostMCPResponseExtraFields{
 			MCPRequestType: schemas.MCPRequestTypeExecuteTool,
@@ -2224,7 +2226,9 @@ func TestPostMCPHook_SkipVirtualKeyUsageTrackingFlag(t *testing.T) {
 	ctx := resolverCtx(store, "sk-bf-test")
 	ctx.SetValue(schemas.BifrostContextKeyUserID, "user1")
 	ctx.SetValue(schemas.BifrostContextKeySkipVirtualKeyUsageTracking, true)
-	require.NotNil(t, resolveLimits(ctx, store, "", ""))
+	settled, settleErr := resolveLimits(ctx, store, "", "")
+	require.NoError(t, settleErr)
+	require.NotNil(t, settled)
 	resp := &schemas.BifrostMCPResponse{
 		ExtraFields: schemas.BifrostMCPResponseExtraFields{
 			MCPRequestType: schemas.MCPRequestTypeExecuteTool,
@@ -2519,8 +2523,9 @@ func TestStore_CheckModelBudget_ModelWithProvider_ExactMatchOnly(t *testing.T) {
 	assert.NoError(t, err, "Different provider should not match provider-specific config")
 }
 
-// TestStore_CheckModelBudget_NoCatalog_NoMatch tests that without a model catalog,
-// cross-provider matching does not happen (graceful degradation).
+// TestStore_CheckModelBudget_NoCatalog_NoMatch tests that without a model catalog, base-model
+// aliasing does not happen (graceful degradation), while the catalog-free parts of the canonical
+// spelling (whitespace, case, a known-provider prefix) still match.
 func TestStore_CheckModelBudget_NoCatalog_NoMatch(t *testing.T) {
 	logger := NewMockLogger()
 	budget := buildBudgetWithUsage("budget1", 100.0, 100.0, "1h") // At limit
@@ -2533,9 +2538,13 @@ func TestStore_CheckModelBudget_NoCatalog_NoMatch(t *testing.T) {
 	}, nil, nil)
 	require.NoError(t, err)
 
-	// Without catalog, "openai/gpt-4o" won't match "gpt-4o" config
+	// Without catalog, the dated alias of "gpt-4o" is not resolved to its base model
+	_, err = checkDeploymentBudgets(store, context.Background(), schemas.OpenRouter, "gpt-4o-2024-08-06", nil)
+	assert.NoError(t, err, "Without model catalog, base-model aliasing should not happen")
+
+	// A known-provider prefix needs no catalog to strip, so "openai/gpt-4o" is "gpt-4o"
 	_, err = checkDeploymentBudgets(store, context.Background(), schemas.OpenRouter, "openai/gpt-4o", nil)
-	assert.NoError(t, err, "Without model catalog, cross-provider matching should not happen")
+	assert.Error(t, err, "A provider-prefixed spelling must match the provider-less config without a catalog")
 
 	// Direct match should still work
 	_, err = checkDeploymentBudgets(store, context.Background(), schemas.OpenAI, "gpt-4o", nil)
@@ -2701,8 +2710,10 @@ func TestStore_ScopedAndGlobalModelBudgetsBothApply(t *testing.T) {
 	require.NoError(t, err)
 
 	// The holder has no model config of its own, so only the deployment's applies, and it refuses.
-	budgets, _ := store.ProviderAndModelLimits(context.Background(), grant.NewPermit(grant.PermitVirtualKey, vk.ID, "", true, false, nil, nil), schemas.OpenAI, "gpt-4")
-	require.Len(t, budgets, 1, "the deployment's model budget, and nothing of the holder's")
+	holderBudgets, _ := store.PermitModelLimits(context.Background(), grant.NewPermit(grant.PermitVirtualKey, vk.ID, "", true, false, nil, nil), schemas.OpenAI, "gpt-4")
+	require.Empty(t, holderBudgets, "nothing of the holder's")
+	budgets, _ := store.GlobalModelLimits(context.Background(), schemas.OpenAI, "gpt-4")
+	require.Len(t, budgets, 1, "the deployment's model budget")
 	assert.Equal(t, string(grant.LimitHolderModelConfig), budgets[0].HolderKind)
 
 	_, err = store.CheckBudgets(context.Background(), budgets, nil)

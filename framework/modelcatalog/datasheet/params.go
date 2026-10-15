@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
@@ -60,13 +61,19 @@ func (s *Store) SyncModelParamsFromURL(ctx context.Context) error {
 		s.logger.Debug("starting model parameters synchronization")
 	}
 
-	paramsData, err := withRetries(ctx, urlFetchMaxRetries, urlFetchMaxBackoff, func() (map[string]json.RawMessage, error) {
-		return s.loadModelParametersFromURL(ctx)
+	// Only the fetch is bounded so a hung URL cannot starve the DB fallback below.
+	fetchCtx, cancel := context.WithTimeout(ctx, paramsFetchTimeout)
+	paramsData, err := withRetries(fetchCtx, urlFetchMaxRetries, urlFetchMaxBackoff, func() (map[string]json.RawMessage, error) {
+		return s.loadModelParametersFromURL(fetchCtx)
 	})
+	cancel()
 	if err != nil {
 		if s.configStore != nil {
 			rows, dbErr := s.configStore.GetModelParameters(ctx)
-			if dbErr == nil && len(rows) > 0 {
+			if dbErr != nil {
+				return fmt.Errorf("failed to load model parameters from URL (%v) and failed to get model parameters records: %w", err, dbErr)
+			}
+			if len(rows) > 0 {
 				if s.logger != nil {
 					s.logger.Error("failed to load model parameters from URL, falling back to existing database records: %v", err)
 				}
@@ -132,7 +139,7 @@ func (s *Store) loadModelParametersFromURL(ctx context.Context) (map[string]json
 		if err := bifrost.ValidateExternalURL(rawURL, true); err != nil {
 			return nil, fmt.Errorf("model parameters URL validation failed: %w", err)
 		}
-		client := &http.Client{Timeout: DefaultModelParametersTimeout}
+		client := network.NewPrivateNetworkHTTPClient(DefaultModelParametersTimeout)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create HTTP request: %w", err)
@@ -296,7 +303,9 @@ func (s *Store) LoadModelCapabilities(ctx context.Context, provider schemas.Mode
 			continue
 		}
 		rowProvider := gjson.Get(row.Data, "provider").String()
-		if rowProvider == "" || normalizeProvider(rowProvider) != string(provider) {
+		// Exact match first: normalizeProvider folds every row that contains
+		// "bedrock" (like "bedrock_mantle") onto "bedrock".
+		if rowProvider == "" || (rowProvider != string(provider) && normalizeProvider(rowProvider) != string(provider)) {
 			continue
 		}
 		var caps schemas.ModelCapabilities

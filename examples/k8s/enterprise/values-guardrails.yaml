@@ -57,6 +57,7 @@ bifrost:
         apply_to: "output"
         sampling_rate: 90
         timeout: 1800
+        send_all_conversation_turns: false
         max_turns_to_send: 8
         evaluation_mode: "per_turn"
         stream_replay_event_interval_ms: 25

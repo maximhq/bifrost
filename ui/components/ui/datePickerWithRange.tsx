@@ -66,6 +66,8 @@ interface DateTimePickerWithRangeProps extends DatePickerWithRangeProps {
 	timezone?: string;
 	/** Fired when the user picks a new timezone from the dropdown. */
 	onTimezoneChange?: (timezone: string) => void;
+	/** Disables the trigger, so the range can be shown but not changed. */
+	disabled?: boolean;
 }
 
 export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
@@ -177,6 +179,7 @@ export function DateTimePickerWithRange(props: DateTimePickerWithRangeProps) {
 					<Button
 						id="date"
 						variant="outline"
+						disabled={props.disabled}
 						data-testid={props.triggerTestId}
 						className={cn(
 							"justify-start text-left font-normal",

@@ -30,6 +30,7 @@ Azure is a cloud provider offering access to OpenAI and Anthropic models through
 | Image Edit       | ✅            | ✅        | `/openai/v1/images/edits`       |
 | Video Generation | ✅            | -         | `/openai/v1/videos`             |
 | Context Compaction | ✅          | -         | `/openai/v1/responses/compact`  |
+| Decisions        | ✅            | -         | `/providers/microsoft/v1/systemone` |
 | Image Variation  | ❌            | ❌        | -                               |
 | Batch            | ❌            | ❌        | -                               |
 | Text Completions | ❌            | ❌        | -                               |
@@ -793,8 +794,8 @@ curl -X POST http://localhost:8080/v1/embeddings \
 resp, err := client.EmbeddingRequest(schemas.NewBifrostContext(ctx, schemas.NoDeadline), &schemas.BifrostEmbeddingRequest{
     Provider: schemas.Azure,
     Model:    "text-embedding-3-small",
-    Input: &schemas.EmbeddingInput{
-        Texts: []string{"text to embed"},
+    Input: []schemas.EmbeddingContent{
+        {{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr("text to embed")}},
     },
 })
 ```
@@ -1004,6 +1005,39 @@ Context compaction is supported for OpenAI models on Azure. It follows the same 
 **Endpoint**: `POST /openai/v1/responses/compact`
 
 Bifrost routes the request to `{endpoint}/openai/v1/responses/compact` using the configured Azure deployment. Deployment mapping and authentication (API key, Entra ID, or managed identity) are applied automatically, identical to the Responses API.
+
+---
+
+# 10. Decisions
+
+A [`Microsoft-Decision-1`](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-microsoft-decision) deployment answers [`/v1/decisions`](/quickstart/gateway/decisions). Azure sends the deployment name as the model, so map the model name to your deployment with a key alias:
+
+```json
+{ "aliases": { "Microsoft-Decision-1": "my-decision-deployment" } }
+```
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "azure/Microsoft-Decision-1",
+    "input": "Customer message: I was double charged and nobody replied to my two emails.",
+    "questions": [
+      { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" }
+    ]
+  }'
+```
+
+Bifrost calls `POST {endpoint}/providers/microsoft/v1/systemone`, which uses TypeSafe's System One format, so questions are converted as on [TypeSafe](/providers/supported-providers/typesafe#field-mapping-reference). Authentication (API key, Entra ID, or managed identity) is applied as for every other Azure call, and no `api-version` is sent. Differences from TypeSafe:
+
+- **Text only.** An `input_image` part is rejected by Bifrost with a `400`; the model would otherwise read it as text.
+- **Strict top-level fields.** An extra field forwarded with `x-bf-passthrough-extra-params` comes back as Azure's `400` (`Unrecognized request argument supplied`).
+- **Limits.** Choice questions take 2-255 options and score questions 2-10 levels; the context window is 32,768 tokens.
+- **No response `id`.** Azure's `x-request-id` is in `extra_fields.provider_response_headers`.
+
+Azure does not gate decisions by model name: a deployment that does not serve decisions returns Azure's own error. With [`convert_decision_to_responses`](/features/compat-plugin#4-decision-to-responses-emulation) on, `Microsoft-Decision-1` is still served natively. The [complexity router](/features/complexity-router#choosing-the-decision-model) can use it as its classifier.
+
+Until the model catalog lists its rates, a decision on Azure is priced at $0; add a [pricing override](/providers/custom-pricing) for the Decisions request type to bill it.
 
 ---
 

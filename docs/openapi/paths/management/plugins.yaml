@@ -1,6 +1,15 @@
 plugins-builtins:
   get:
     operationId: listBuiltinPlugins
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List built-in plugin names
     description: |
       Returns the canonical list of built-in plugin names available in this Bifrost build.
@@ -9,6 +18,7 @@ plugins-builtins:
       - Plugins
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Built-in plugin names retrieved successfully
@@ -28,6 +38,15 @@ plugins-builtins:
 plugins:
   get:
     operationId: listPlugins
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: List all plugins
     description: |
       Returns a list of all plugins with their configurations and status.
@@ -38,6 +57,7 @@ plugins:
       - Plugins
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -50,6 +70,15 @@ plugins:
 
   post:
     operationId: createPlugin
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create a new plugin
     description: |
       Creates a new plugin with the specified configuration.
@@ -71,6 +100,7 @@ plugins:
             $ref: '../../schemas/management/plugins.yaml#/CreatePluginRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '201':
         description: Plugin created successfully
@@ -96,6 +126,15 @@ plugins:
 /plugins/{name}:
   get:
     operationId: getPlugin
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Get a specific plugin
     description: |
       Returns the configuration for a specific plugin.
@@ -113,6 +152,7 @@ plugins:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Successful response
@@ -133,6 +173,15 @@ plugins:
 
   put:
     operationId: updatePlugin
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:Update` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Update a plugin
     description: |
       Updates a plugin's configuration. Will reload or stop the plugin based on enabled status.
@@ -163,6 +212,7 @@ plugins:
             $ref: '../../schemas/management/plugins.yaml#/UpdatePluginRequest'
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Plugin updated successfully
@@ -187,8 +237,18 @@ plugins:
 
   delete:
     operationId: deletePlugin
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Plugins:Delete` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Delete a plugin
-    description: Removes a plugin from the configuration and stops it if running.
+    description: |
+      Removes a plugin from the configuration and stops it if running.
     tags:
       - Plugins
     parameters:
@@ -200,6 +260,7 @@ plugins:
           type: string
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Plugin deleted successfully

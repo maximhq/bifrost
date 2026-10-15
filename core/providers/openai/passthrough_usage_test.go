@@ -3,6 +3,7 @@ package openai_test
 import (
 	"bytes"
 	"mime/multipart"
+	"strings"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -288,5 +289,96 @@ func mustLLM(t *testing.T, u *schemas.BifrostPassthroughUsage, prompt, completio
 	if u.LLMUsage.PromptTokens != prompt || u.LLMUsage.CompletionTokens != completion || u.LLMUsage.TotalTokens != total {
 		t.Fatalf("LLMUsage = {prompt:%d completion:%d total:%d}, want {%d %d %d}",
 			u.LLMUsage.PromptTokens, u.LLMUsage.CompletionTokens, u.LLMUsage.TotalTokens, prompt, completion, total)
+	}
+}
+
+func TestExtractOpenAIPassthroughUsage_ResponsesTopLevelToolUsage(t *testing.T) {
+	for name, body := range map[string]string{
+		"non-streaming":      `{"tool_usage":{"web_search":{"num_requests":3}},"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}`,
+		"response.completed": `{"type":"response.completed","response":{"tool_usage":{"web_search":{"num_requests":3}},"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			u := openai.ExtractOpenAIPassthroughUsage("POST", "/v1/responses", nil, []byte(body))
+			if u == nil || u.LLMUsage == nil || u.LLMUsage.ToolUsage == nil || u.LLMUsage.ToolUsage.WebSearch == nil || u.LLMUsage.ToolUsage.WebSearch.NumRequests != 3 {
+				t.Fatalf("tool_usage web search = %+v, want 3", u)
+			}
+		})
+	}
+}
+
+func TestClassifyPassthroughPath(t *testing.T) {
+	tests := []struct {
+		method string
+		path   string
+		want   schemas.RequestType
+	}{
+		{"POST", "/v1/chat/completions", schemas.ChatCompletionRequest},
+		{"POST", "/openai/deployments/gpt-4o/chat/completions?api-version=2024-10-21", schemas.ChatCompletionRequest},
+		{"POST", "/v1/completions", schemas.TextCompletionRequest},
+		{"POST", "/v1/responses", schemas.ResponsesRequest},
+		{"POST", "/backend-api/codex/responses", schemas.ResponsesRequest},
+		{"POST", "/v1/embeddings", schemas.EmbeddingRequest},
+		{"POST", "/v1/audio/speech", schemas.SpeechRequest},
+		{"POST", "/v1/audio/transcriptions", schemas.TranscriptionRequest},
+		{"POST", "/v1/audio/translations", schemas.TranscriptionRequest},
+		{"POST", "/v1/images/generations", schemas.ImageGenerationRequest},
+		{"POST", "/v1/images/edits", schemas.ImageEditRequest},
+		{"POST", "/v1/images/variations", schemas.ImageVariationRequest},
+		{"POST", "/v1/videos", schemas.VideoGenerationRequest},
+		{"GET", "/v1/videos/video_123", ""},
+		{"POST", "/v1/containers", schemas.ContainerCreateRequest},
+		{"GET", "/v1/containers", schemas.ContainerListRequest},
+		{"GET", "/v1/containers/cntr_1", ""},
+		{"GET", "/v1/models", ""},
+		{"POST", "/v1/responses/resp_1/cancel", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
+			if got := openai.ClassifyPassthroughPath(tt.method, tt.path); got != tt.want {
+				t.Fatalf("ClassifyPassthroughPath(%q, %q) = %q, want %q", tt.method, tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClassifyPassthroughPathMethods pins the classification of every route under every HTTP method.
+// Only POST generates: GET /v1/chat/completions lists stored completions, GET on /videos or
+// /containers reads, and DELETE/PUT/PATCH never create, so none of them is the typed request.
+// The one method-dependent collection, /containers, is a create on POST and a list on GET.
+func TestClassifyPassthroughPathMethods(t *testing.T) {
+	methods := []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "post"}
+	routes := []struct {
+		path   string
+		onPost schemas.RequestType
+	}{
+		{"/v1/chat/completions", schemas.ChatCompletionRequest},
+		{"/v1/completions", schemas.TextCompletionRequest},
+		{"/v1/responses", schemas.ResponsesRequest},
+		{"/v1/embeddings", schemas.EmbeddingRequest},
+		{"/v1/audio/speech", schemas.SpeechRequest},
+		{"/v1/audio/transcriptions", schemas.TranscriptionRequest},
+		{"/v1/audio/translations", schemas.TranscriptionRequest},
+		{"/v1/images/generations", schemas.ImageGenerationRequest},
+		{"/v1/images/edits", schemas.ImageEditRequest},
+		{"/v1/images/variations", schemas.ImageVariationRequest},
+		{"/v1/videos", schemas.VideoGenerationRequest},
+		{"/v1/containers", schemas.ContainerCreateRequest},
+		{"/v1/models", ""},
+	}
+	for _, route := range routes {
+		for _, method := range methods {
+			want := schemas.RequestType("")
+			switch {
+			case strings.EqualFold(method, "POST"):
+				want = route.onPost
+			case method == "GET" && route.path == "/v1/containers":
+				want = schemas.ContainerListRequest
+			}
+			t.Run(method+" "+route.path, func(t *testing.T) {
+				if got := openai.ClassifyPassthroughPath(method, route.path); got != want {
+					t.Fatalf("ClassifyPassthroughPath(%q, %q) = %q, want %q", method, route.path, got, want)
+				}
+			})
+		}
 	}
 }

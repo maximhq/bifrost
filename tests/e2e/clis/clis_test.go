@@ -419,8 +419,12 @@ var rateLimitWaitRE = regexp.MustCompile(`(?i)(?:please\s+wait|try\s+again\s+in|
 // limited, and any scenario where a model reads this repo can quote any marker,
 // so widening ErrorIgnore per scenario would be endless whack-a-mole.
 //
-// 429 and "too many requests" stay unqualified: they are unambiguous on their
-// own, and both are what a CLI prints when it really is throttled.
+// "too many requests" stays unqualified: it is unambiguous on its own. A bare
+// \b429\b is not: opencode's step-finish JSON carries raw token counts, and a
+// prompt that tokenizes to exactly 429 input tokens ("input":429) looped a
+// cell through rate-limit retries and then failed it outright. 429 needs an
+// error word beside it, which every real throttle print has ("Error: 429",
+// "status 429", "statusCode":429, "429 Too Many Requests").
 var rateLimitSignalRE = regexp.MustCompile(
 	`(?i)\brate[ _-]?limits?\b[^\n]{0,40}\b(?:exceed|reach|hit|error|throttl|retry|wait)` +
 		// "error" belongs in the reverse-order branch too: "API Error: rate
@@ -428,7 +432,10 @@ var rateLimitSignalRE = regexp.MustCompile(
 		// the phrase where the forward branch cannot see it. Without it a real
 		// throttle skipped the retry path and failed the cell outright.
 		`|(?i)\b(?:exceeded|hit|reached|throttled|error)\b[^\n]{0,40}\brate[ _-]?limit` +
-		`|\b429\b` +
+		// The left-context branch matches substrings on purpose, so
+		// "statusCode":429 is caught without word boundaries.
+		`|(?i)(?:status|code|error|http)[^\n]{0,20}\b429\b` +
+		`|\b429\b[^\n]{0,20}(?i)(?:error|status|too many)` +
 		`|(?i)too many requests` +
 		`|(?i)rate_limit_error`)
 

@@ -3,6 +3,7 @@ package schemas
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -809,5 +810,135 @@ func TestSecretVar_MarshalJSON(t *testing.T) {
 				t.Errorf("MarshalJSON() = %s, want %s", b, tt.want)
 			}
 		})
+	}
+}
+
+func TestSecretVar_RedactedIfSecret(t *testing.T) {
+	t.Run("nil receiver", func(t *testing.T) {
+		var ev *SecretVar
+		if got := ev.RedactedIfSecret(); got != nil {
+			t.Fatalf("expected nil, got %+v", got)
+		}
+	})
+
+	t.Run("literal value is surfaced in plaintext", func(t *testing.T) {
+		for _, val := range []string{"", "us-east-1", "https://vllm.internal.example.com:8000"} {
+			e := &SecretVar{Val: val, SecretType: SecretTypePlainText}
+			got := e.RedactedIfSecret()
+			if got.GetValue() != val {
+				t.Errorf("RedactedIfSecret().GetValue() = %q, want %q", got.GetValue(), val)
+			}
+		}
+	})
+
+	t.Run("env-backed value is masked and keeps its reference", func(t *testing.T) {
+		e := &SecretVar{Val: "us-east-1", ref: "env.AWS_REGION", SecretType: SecretTypeEnv}
+		got := e.RedactedIfSecret()
+		if got.GetValue() == "us-east-1" {
+			t.Error("RedactedIfSecret() surfaced the resolved value of an env reference")
+		}
+		if !got.IsRedacted() {
+			t.Errorf("RedactedIfSecret().IsRedacted() = false for %q", got.GetValue())
+		}
+		if got.GetRawRef() != "env.AWS_REGION" {
+			t.Errorf("RedactedIfSecret().GetRawRef() = %q, want %q", got.GetRawRef(), "env.AWS_REGION")
+		}
+	})
+
+	t.Run("vault-backed value is masked and keeps its reference", func(t *testing.T) {
+		e := &SecretVar{Val: "https://mcp.internal.example.com/mcp", ref: "vault.bifrost/mcp-url", SecretType: SecretTypeVault}
+		got := e.RedactedIfSecret()
+		if got.GetValue() == e.Val {
+			t.Error("RedactedIfSecret() surfaced the resolved value of a vault reference")
+		}
+		if got.GetRawRef() != "vault.bifrost/mcp-url" {
+			t.Errorf("RedactedIfSecret().GetRawRef() = %q, want %q", got.GetRawRef(), "vault.bifrost/mcp-url")
+		}
+	})
+
+	t.Run("returns a fresh pointer so callers cannot reach the original", func(t *testing.T) {
+		e := &SecretVar{Val: "us-east-1", SecretType: SecretTypePlainText}
+		got := e.RedactedIfSecret()
+		if got == e {
+			t.Fatal("RedactedIfSecret() aliased the original SecretVar")
+		}
+		got.Val = "eu-west-1"
+		if e.Val != "us-east-1" {
+			t.Errorf("mutating the copy changed the original to %q", e.Val)
+		}
+	})
+
+	t.Run("does not mutate the original", func(t *testing.T) {
+		e := &SecretVar{Val: "actual-secret-value", ref: "env.SOME_URL", SecretType: SecretTypeEnv}
+		_ = e.RedactedIfSecret()
+		if e.Val != "actual-secret-value" {
+			t.Errorf("original Val mutated to %q", e.Val)
+		}
+	})
+}
+
+// TestSecretVar_VertexAWSWorkloadIdentityRoundTrip pins the nested aws_workload_identity block:
+// env.-prefixed references resolve on unmarshal, plain identifiers stay literal, and marshaling
+// back keeps the field names the config schema and UI rely on.
+func TestSecretVar_VertexAWSWorkloadIdentityRoundTrip(t *testing.T) {
+	os.Setenv("TEST_WIF_ROLE_ARN", "arn:aws:iam::123456789012:role/VertexHop")
+	defer os.Unsetenv("TEST_WIF_ROLE_ARN")
+
+	jsonInput := `{
+		"project_id": "my-project",
+		"region": "us-central1",
+		"aws_workload_identity": {
+			"audience": "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aws",
+			"service_account_email": "caller@my-project.iam.gserviceaccount.com",
+			"token_lifetime_seconds": 1800,
+			"aws_region": "us-east-1",
+			"aws_role_arn": "env.TEST_WIF_ROLE_ARN"
+		}
+	}`
+
+	var config VertexKeyConfig
+	if err := json.Unmarshal([]byte(jsonInput), &config); err != nil {
+		t.Fatalf("Failed to unmarshal: %v", err)
+	}
+	wi := config.AWSWorkloadIdentity
+	if !wi.IsSet() {
+		t.Fatal("expected aws_workload_identity to be set")
+	}
+	if got := wi.Audience.GetValue(); got != "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aws" {
+		t.Errorf("unexpected audience %q", got)
+	}
+	if got := wi.ServiceAccountEmail.GetValue(); got != "caller@my-project.iam.gserviceaccount.com" {
+		t.Errorf("unexpected service_account_email %q", got)
+	}
+	if wi.TokenLifetimeSeconds != 1800 {
+		t.Errorf("unexpected token_lifetime_seconds %d", wi.TokenLifetimeSeconds)
+	}
+	if got := wi.AWSRegion.GetValue(); got != "us-east-1" {
+		t.Errorf("unexpected aws_region %q", got)
+	}
+	if got := wi.AWSRoleARN.GetValue(); got != "arn:aws:iam::123456789012:role/VertexHop" {
+		t.Errorf("expected aws_role_arn to resolve from env, got %q", got)
+	}
+	if !wi.AWSRoleARN.IsFromEnv() {
+		t.Error("expected aws_role_arn.IsFromEnv()=true")
+	}
+
+	out, err := json.Marshal(config)
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	for _, want := range []string{`"aws_workload_identity":{`, `"audience":`, `"service_account_email":`, `"token_lifetime_seconds":1800`, `"aws_region":`, `"aws_role_arn":`} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("marshaled config missing %s: %s", want, out)
+		}
+	}
+
+	// A key without the block must not emit it, so existing configs serialize byte-for-byte as before.
+	plain, err := json.Marshal(VertexKeyConfig{ProjectID: *NewSecretVar("p"), Region: *NewSecretVar("r")})
+	if err != nil {
+		t.Fatalf("Failed to marshal: %v", err)
+	}
+	if strings.Contains(string(plain), "aws_workload_identity") {
+		t.Errorf("aws_workload_identity must be omitted when unset: %s", plain)
 	}
 }

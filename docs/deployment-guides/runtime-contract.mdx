@@ -28,7 +28,7 @@ Keep the supplied entrypoint unless your own wrapper prepares `/app/data`, forwa
 
 ## Choose storage
 
-OSS Bifrost can store application configuration and request logs in SQLite or PostgreSQL. Bifrost Enterprise requires PostgreSQL 16 or later for both stores and does not support SQLite.
+OSS Bifrost can store application configuration in SQLite or PostgreSQL, and request logs in SQLite, PostgreSQL, or ClickHouse. Bifrost Enterprise requires PostgreSQL 16 or later for the config store and does not support SQLite; the logs store may use PostgreSQL 16+ or ClickHouse.
 
 <Note>
 Persistent `/app/data` storage is used only when the configuration store or log store uses SQLite. When both stores use PostgreSQL, Bifrost does not create or use the SQLite databases and the Helm chart does not create the Bifrost data PVC. The container still needs access to its application directory and `config.json` during startup.
@@ -44,7 +44,7 @@ Keep one Bifrost process attached to each SQLite database. A shared SQLite file 
 
 **Bifrost requires PostgreSQL 16 or later.** Startup fails when the configured PostgreSQL server is older than version 16. Use PostgreSQL when Bifrost runs on ephemeral compute, when you prefer an external database, or for every Enterprise deployment.
 
-Configure both `config_store` and `logs_store` as PostgreSQL to remove SQLite from the deployment. Enterprise deployments must use PostgreSQL for both stores. With Helm, `storage.mode: postgres` makes both enabled stores inherit PostgreSQL unless a per-store `type` override selects another backend.
+Configure both `config_store` and `logs_store` as PostgreSQL to remove SQLite from the deployment. Enterprise deployments must use PostgreSQL for the config store; the logs store may use PostgreSQL or ClickHouse. With Helm, `storage.mode: postgres` makes both enabled stores inherit PostgreSQL unless a per-store `type` override selects another backend.
 
 The database may be hosted anywhere that Bifrost can reach. Common choices include an existing PostgreSQL server, Amazon RDS or Aurora PostgreSQL, Google Cloud SQL, Azure Database for PostgreSQL, and provider-hosted PostgreSQL services.
 
@@ -205,7 +205,7 @@ The HTTP frontend should:
 - Allow requests to remain open for the expected duration of streamed responses.
 - Support WebSocket upgrades when the Realtime or WebSocket APIs are used.
 - Preserve `Host`, `X-Forwarded-For`, and `X-Forwarded-Proto` when it terminates TLS.
-- Accept the configured request size. `client.max_request_body_size_mb` defaults to `100` MB.
+- Accept the configured request size. `client.max_request_body_size_mb` defaults to `100` MB. Compressed request bodies are decompressed by Bifrost itself, bounded to 100 times their compressed size (1 MiB floor, the cap as ceiling) and to four times the cap of decompressed bytes in flight across the process (each body counts what it actually inflates to, not its ceiling), so a proxy does not need to inflate them first.
 
 Bifrost serves HTTP inside the container. Terminate TLS at the platform endpoint, ingress, gateway, or reverse proxy before exposing it to users.
 

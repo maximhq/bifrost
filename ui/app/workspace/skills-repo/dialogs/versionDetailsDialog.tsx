@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { getErrorMessage } from "@/lib/store/apis/baseApi";
@@ -29,6 +30,7 @@ export function VersionDetailDialog({
 }) {
 	const { data: versionData, isLoading, isError } = useGetSkillQuery({ id: skillId, version }, { skip: !open });
 	const [shiftVersion, { isLoading: isShifting }] = useShiftSkillVersionMutation();
+	const hasEditAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.Update);
 
 	const skill = versionData?.skill;
 
@@ -144,7 +146,7 @@ export function VersionDetailDialog({
 										</>
 									}
 									actions={
-										!isServingVersion ? (
+										!isServingVersion && hasEditAccess ? (
 											<Button size="sm" data-testid="skill-version-shift-btn" onClick={handleShiftVersion} disabled={isShifting}>
 												{isShifting ? (
 													<>

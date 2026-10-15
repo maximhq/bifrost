@@ -30,12 +30,26 @@ export const KnownProvidersNames = [
 	"fireworks",
 	"sarvam",
 	"wafer",
+	"databricks",
+	"cloudflare",
+	"github-copilot",
+	"typesafe",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
 export type ProviderName = (typeof KnownProvidersNames)[number];
 
 export const ProviderNames: readonly ProviderName[] = KnownProvidersNames;
+
+// Providers that exist in code but are not yet released. They are kept out of the
+// "Add Provider" picker and the first-party-integration nudge so users cannot configure
+// them from the UI. Everything else (types, schemas, icons, labels) still resolves, so a
+// provider configured via config.json continues to render correctly.
+// TODO: remove "github-copilot" once the integration has been tested and released.
+export const HiddenProviders: ReadonlySet<ProviderName> = new Set<ProviderName>(["github-copilot"]);
+
+// Known providers that users can add from the UI.
+export const VisibleProviderNames: readonly ProviderName[] = KnownProvidersNames.filter((name) => !HiddenProviders.has(name));
 
 // Built-in providers whose Bifrost implementation supports embedding requests.
 // Custom providers must instead be checked via custom_provider_config.allowed_requests.embedding.
@@ -51,15 +65,19 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"ollama",
 	"openai",
 	"openrouter",
+	"parasail",
 	"sgl",
 	"vertex",
 	"vllm",
+	"databricks",
+	"cloudflare",
 ] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
 
 export const RequestTypes = [
 	"list_models",
+	"model_retrieve",
 	"text_completion",
 	"text_completion_stream",
 	"chat_completion",
@@ -73,6 +91,7 @@ export const RequestTypes = [
 	"responses_input_items",
 	"embedding",
 	"rerank",
+	"decisions",
 	"speech",
 	"speech_stream",
 	"transcription",
@@ -123,6 +142,11 @@ export const RequestTypes = [
 	"websocket_responses",
 	"realtime",
 	"realtime.turn",
+	// GPT Live: one row per session, delegations inside it; a recording download is its own row
+	"live",
+	"live.session",
+	"live_content",
+	"live_sideband",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -156,6 +180,10 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	fireworks: "Fireworks AI",
 	sarvam: "Sarvam AI",
 	wafer: "Wafer",
+	databricks: "Databricks",
+	cloudflare: "Cloudflare",
+	"github-copilot": "GitHub Copilot",
+	typesafe: "TypeSafe",
 } as const;
 
 // Helper function to get provider label, supporting custom providers
@@ -186,9 +214,11 @@ export interface ClientApp {
 // every release, so never match on an exact string. Identifiers are best-effort
 // and meant to be extended as new clients appear.
 const userAgentAppMatchers: { identifiers: string[]; app: ClientApp }[] = [
+	{ identifiers: ["bifrost-warp"], app: { name: "Warp", icon: "/images/warp.svg" } },
 	{ identifiers: ["chatgpt-web"], app: { name: "ChatGPT Web", icon: "/images/openai.png" } },
 	{ identifiers: ["claude-chat-web", "claude-web"], app: { name: "Claude Chat Web", icon: "/images/claude-desktop.png" } },
 	{ identifiers: ["claude-desktop"], app: { name: "Claude Desktop", icon: "/images/claude-desktop.png" } },
+	{ identifiers: ["claude-cowork"], app: { name: "Claude Cowork", icon: "/images/claude-desktop.png" } },
 	{ identifiers: ["claude-code", "claude-cli", "claude-vscode"], app: { name: "Claude Code", icon: "/images/claude-code.png" } },
 	{ identifiers: ["codex-cli", "codex-tui"], app: { name: "Codex CLI", icon: "/images/codex.png" } },
 	{ identifiers: ["codex-desktop"], app: { name: "Codex Desktop", icon: "/images/codex.png" } },
@@ -199,6 +229,8 @@ const userAgentAppMatchers: { identifiers: string[]; app: ClientApp }[] = [
 	{ identifiers: ["cline"], app: { name: "Cline", icon: "/images/cline.png" } },
 	{ identifiers: ["opencode"], app: { name: "OpenCode", icon: "/images/opencode.png" } },
 	{ identifiers: ["windsurf"], app: { name: "Windsurf", icon: "/images/windsurf.png" } },
+	{ identifiers: ["antigravity-cli"], app: { name: "Antigravity CLI", icon: "/images/harness/antigravity.svg" } },
+	{ identifiers: ["antigravity-desktop", "antigravity/"], app: { name: "Antigravity Desktop", icon: "/images/harness/antigravity.svg" } },
 	{ identifiers: ["gemini", "geminicli"], app: { name: "Gemini CLI", icon: "/images/gemini-cli.png" } },
 	{ identifiers: ["qwencode", "qwen"], app: { name: "Qwen Code" } },
 ];
@@ -209,7 +241,10 @@ export const mapAppToClientApp = (app?: string | null): ClientApp => {
 	if (!app || app.trim() === "") {
 		return { name: "Unknown" };
 	}
-	return appByName.get(app) || { name: app };
+	return (
+		appByName.get(app) ||
+		userAgentAppMatchers.find((matcher) => matcher.identifiers.includes(app.trim().toLowerCase()))?.app || { name: app }
+	);
 };
 
 // mapUserAgentToApp resolves a raw User-Agent string to a client app for display.
@@ -236,15 +271,15 @@ export const logAppDisplayName = (app: ClientApp, userAgent?: string | null): st
 };
 
 export const StatusColors = {
-	success: "bg-green-100 text-green-800",
-	error: "bg-red-100 text-red-800",
+	success: "bg-chart-success/15 text-chart-success-ink",
+	error: "bg-chart-error/15 text-chart-error-ink",
 	processing: "bg-blue-100 text-blue-800",
 	cancelled: "bg-gray-100 text-gray-800",
 } as const;
 
 export const StatusBarColors = {
-	success: "bg-green-500",
-	error: "bg-red-500",
+	success: "bg-chart-success",
+	error: "bg-chart-error",
 	processing: "bg-blue-500",
 	cancelled: "bg-gray-400",
 } as const;
@@ -264,6 +299,7 @@ export const RequestTypeLabels = {
 
 	// Request Types
 	list_models: "List Models",
+	model_retrieve: "Retrieve Model",
 	text_completion: "Text",
 	text_completion_stream: "Text Stream",
 	chat_completion: "Chat",
@@ -278,6 +314,7 @@ export const RequestTypeLabels = {
 
 	embedding: "Embedding",
 	rerank: "Rerank",
+	decisions: "Decisions",
 
 	speech: "Speech",
 	speech_stream: "Speech Stream",
@@ -334,6 +371,10 @@ export const RequestTypeLabels = {
 	websocket_responses: "WebSocket Responses",
 	realtime: "Realtime",
 	"realtime.turn": "Realtime Turn",
+	live: "Live",
+	"live.session": "Live Session",
+	live_content: "Live Recording",
+	live_sideband: "Live Sideband",
 } as const;
 
 export const RequestTypeColors = {
@@ -351,6 +392,7 @@ export const RequestTypeColors = {
 
 	// Request Types
 	list_models: "bg-green-100 text-green-800",
+	model_retrieve: "bg-green-100 text-green-800",
 	text_completion: "bg-green-100 text-green-800",
 	text_completion_stream: "bg-amber-100 text-amber-800",
 
@@ -367,6 +409,7 @@ export const RequestTypeColors = {
 
 	embedding: "bg-red-100 text-red-800",
 	rerank: "bg-fuchsia-100 text-fuchsia-800",
+	decisions: "bg-cyan-100 text-cyan-800",
 
 	speech: "bg-purple-100 text-purple-800",
 	speech_stream: "bg-pink-100 text-pink-800",
@@ -424,6 +467,10 @@ export const RequestTypeColors = {
 	websocket_responses: "bg-teal-100 text-teal-800",
 	realtime: "bg-indigo-100 text-indigo-800",
 	"realtime.turn": "bg-cyan-100 text-cyan-800",
+	live: "bg-violet-100 text-violet-800",
+	"live.session": "bg-violet-100 text-violet-800",
+	live_content: "bg-blue-100 text-blue-800",
+	live_sideband: "bg-blue-100 text-blue-800",
 } as const;
 
 export const RoutingEngineUsedLabels = {
@@ -431,6 +478,7 @@ export const RoutingEngineUsedLabels = {
 	governance: "Governance",
 	loadbalancing: "Loadbalancing",
 	"model-catalog": "Model Catalog",
+	"session-affinity": "Session",
 	core: "Core",
 } as const;
 
@@ -439,7 +487,14 @@ export const RoutingEngineUsedColors = {
 	governance: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
 	loadbalancing: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-300",
 	"model-catalog": "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300",
+	"session-affinity": "bg-teal-100 text-teal-800 dark:bg-teal-900 dark:text-teal-300",
 	core: "bg-sky-100 text-sky-800 dark:bg-sky-900 dark:text-sky-300",
+} as const;
+
+export const ComplexityTierColors = {
+	SIMPLE: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-300",
+	MEDIUM: "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-300",
+	COMPLEX: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300",
 } as const;
 
 export type Status = (typeof Statuses)[number];

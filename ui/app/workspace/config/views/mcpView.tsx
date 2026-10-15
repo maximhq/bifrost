@@ -2,22 +2,28 @@ import PageTitle from "@/components/pageTitle";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Input } from "@/components/ui/input";
+import { SecretVarInput } from "@/components/ui/secretVarInput";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { TagInput } from "@/components/ui/tagInput";
+import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
-import { CoreConfig, DefaultCoreConfig } from "@/lib/types/config";
+import { CoreConfig, DefaultCoreConfig, MCPCodeModeLimits } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
+import { isSecretVarSet } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { useGetSCIMProvidersQuery } from "@enterprise/lib/store/apis/scimApi";
-import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { AlertTriangle } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { codeModeLimitsEqual, validateCodeModeLimits } from "./codeModeLimits.utils";
+import { CodeModeLimitsSection } from "./codeModeLimitsSection";
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
+
+const stringListEquals = (a?: string[], b?: string[]) => (a ?? []).join("\n") === (b ?? []).join("\n");
 
 export default function MCPView() {
 	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
@@ -38,6 +44,8 @@ export default function MCPView() {
 		mcp_tool_execution_timeout: string;
 		mcp_code_mode_binding_level: string;
 		mcp_tool_sync_interval: string;
+		mcp_max_instructions_per_client: string;
+		mcp_max_instructions_total: string;
 		oauth2_auth_code_ttl: string;
 		oauth2_access_token_ttl: string;
 	}>({
@@ -45,6 +53,8 @@ export default function MCPView() {
 		mcp_tool_execution_timeout: "30",
 		mcp_code_mode_binding_level: "server",
 		mcp_tool_sync_interval: "10",
+		mcp_max_instructions_per_client: "0",
+		mcp_max_instructions_total: "0",
 		oauth2_auth_code_ttl: "300",
 		oauth2_access_token_ttl: "600",
 	});
@@ -57,6 +67,8 @@ export default function MCPView() {
 				mcp_tool_execution_timeout: config?.mcp_tool_execution_timeout?.toString() || "30",
 				mcp_code_mode_binding_level: config?.mcp_code_mode_binding_level || "server",
 				mcp_tool_sync_interval: config?.mcp_tool_sync_interval?.toString() || "10",
+				mcp_max_instructions_per_client: (config?.mcp_max_instructions_per_client ?? 0).toString(),
+				mcp_max_instructions_total: (config?.mcp_max_instructions_total ?? 0).toString(),
 				// Coerce a stored 0 (which the backend treats as "use default") to the
 				// displayed default so the inputs never show a confusing 0.
 				oauth2_auth_code_ttl: (config?.oauth2_server_config?.auth_code_ttl || 300).toString(),
@@ -74,14 +86,19 @@ export default function MCPView() {
 			localConfig.mcp_tool_execution_timeout !== config.mcp_tool_execution_timeout ||
 			localConfig.mcp_code_mode_binding_level !== (config.mcp_code_mode_binding_level || "server") ||
 			localConfig.mcp_tool_sync_interval !== (config.mcp_tool_sync_interval ?? 10) ||
+			localConfig.mcp_max_instructions_per_client !== (config.mcp_max_instructions_per_client ?? 0) ||
+			localConfig.mcp_max_instructions_total !== (config.mcp_max_instructions_total ?? 0) ||
+			!codeModeLimitsEqual(localConfig.mcp_code_mode_limits, config.mcp_code_mode_limits) ||
 			localConfig.mcp_disable_auto_tool_inject !== (config.mcp_disable_auto_tool_inject ?? false) ||
 			localConfig.mcp_enable_temp_token_auth !== (config.mcp_enable_temp_token_auth ?? false) ||
+			!stringListEquals(localConfig.mcp_oauth_private_allowlist, config.mcp_oauth_private_allowlist) ||
 			clientURLChanged ||
 			(localConfig.mcp_server_auth_mode ?? "headers") !== (config.mcp_server_auth_mode ?? "headers") ||
 			issuerURLChanged ||
 			(localConfig.oauth2_server_config?.auth_code_ttl ?? 300) !== (config.oauth2_server_config?.auth_code_ttl ?? 300) ||
 			(localConfig.oauth2_server_config?.access_token_ttl ?? 600) !== (config.oauth2_server_config?.access_token_ttl ?? 600) ||
-			(localConfig.oauth2_server_config?.disable_vk_identity ?? false) !== (config.oauth2_server_config?.disable_vk_identity ?? false)
+			(localConfig.oauth2_server_config?.disable_vk_identity ?? false) !== (config.oauth2_server_config?.disable_vk_identity ?? false) ||
+			!stringListEquals(localConfig.oauth2_server_config?.allowed_redirect_uris, config.oauth2_server_config?.allowed_redirect_uris)
 		);
 	}, [config, localConfig]);
 
@@ -122,6 +139,26 @@ export default function MCPView() {
 		}
 	}, []);
 
+	const handleMaxInstructionsPerClientChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, mcp_max_instructions_per_client: value }));
+		const numValue = Number.parseInt(value);
+		if (!isNaN(numValue) && numValue >= 0) {
+			setLocalConfig((prev) => ({ ...prev, mcp_max_instructions_per_client: numValue }));
+		}
+	}, []);
+
+	const handleMaxInstructionsTotalChange = useCallback((value: string) => {
+		setLocalValues((prev) => ({ ...prev, mcp_max_instructions_total: value }));
+		const numValue = Number.parseInt(value);
+		if (!isNaN(numValue) && numValue >= 0) {
+			setLocalConfig((prev) => ({ ...prev, mcp_max_instructions_total: numValue }));
+		}
+	}, []);
+
+	const handleCodeModeLimitsChange = useCallback((limits: MCPCodeModeLimits) => {
+		setLocalConfig((prev) => ({ ...prev, mcp_code_mode_limits: limits }));
+	}, []);
+
 	const handleDisableAutoToolInjectChange = useCallback((checked: boolean) => {
 		setLocalConfig((prev) => ({
 			...prev,
@@ -134,6 +171,10 @@ export default function MCPView() {
 			...prev,
 			mcp_enable_temp_token_auth: checked,
 		}));
+	}, []);
+
+	const handleOAuthPrivateAllowlistChange = useCallback((value: string[]) => {
+		setLocalConfig((prev) => ({ ...prev, mcp_oauth_private_allowlist: value }));
 	}, []);
 
 	const handleClientURLChange = useCallback((value: SecretVar) => {
@@ -189,6 +230,13 @@ export default function MCPView() {
 		}));
 	}, []);
 
+	const handleAllowedRedirectURIsChange = useCallback((value: string[]) => {
+		setLocalConfig((prev) => ({
+			...prev,
+			oauth2_server_config: { ...prev.oauth2_server_config, allowed_redirect_uris: value },
+		}));
+	}, []);
+
 	const handleSave = useCallback(async () => {
 		try {
 			const agentDepth = Number.parseInt(localValues.mcp_agent_depth);
@@ -201,6 +249,33 @@ export default function MCPView() {
 
 			if (isNaN(toolTimeout) || toolTimeout <= 0) {
 				toast.error("Tool execution timeout must be a positive number.");
+				return;
+			}
+
+			// These three write through to localConfig only on a valid parse, so a cleared
+			// field leaves the previous value staged and would save silently.
+			const syncInterval = Number.parseInt(localValues.mcp_tool_sync_interval);
+			const perClientCap = Number.parseInt(localValues.mcp_max_instructions_per_client);
+			const totalCap = Number.parseInt(localValues.mcp_max_instructions_total);
+
+			if (isNaN(syncInterval) || syncInterval < 0) {
+				toast.error("Tool sync interval must be zero or a positive number.");
+				return;
+			}
+
+			if (isNaN(perClientCap) || perClientCap < 0) {
+				toast.error("Max instruction length per server must be zero or a positive number.");
+				return;
+			}
+
+			if (isNaN(totalCap) || totalCap < 0) {
+				toast.error("Max instruction length total must be zero or a positive number.");
+				return;
+			}
+
+			const limitsError = validateCodeModeLimits(localConfig.mcp_code_mode_limits);
+			if (limitsError) {
+				toast.error(limitsError);
 				return;
 			}
 
@@ -220,6 +295,11 @@ export default function MCPView() {
 
 			if (oauthModeActive && (isNaN(accessTokenTTL) || accessTokenTTL < 60)) {
 				toast.error("Access token TTL must be at least 60 seconds.");
+				return;
+			}
+
+			if (oauthModeActive && !isSecretVarSet(localConfig.oauth2_server_config?.issuer_url)) {
+				toast.error("Issuer URL is required when MCP auth mode is OAuth or Both.");
 				return;
 			}
 
@@ -256,7 +336,7 @@ export default function MCPView() {
 	}, [bifrostConfig, localConfig, localValues, updateCoreConfig]);
 
 	return (
-		<div className="mx-auto w-full max-w-4xl space-y-4 px-4 py-6 md:px-0" data-testid="mcp-settings-view">
+		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="mcp-settings-view">
 			<PageTitle title="MCP Settings">Configure MCP (Model Context Protocol) agent and tool settings.</PageTitle>
 			<div className="space-y-4">
 				{/* Max Agent Depth */}
@@ -359,6 +439,72 @@ export default function MCPView() {
 					/>
 				</div>
 
+				{/* OAuth Private Network Allowlist */}
+				<div className="space-y-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-oauth-private-allowlist" className="text-sm font-medium">
+							OAuth Private Network Allowlist
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Hosts, IP addresses, or CIDR ranges (no scheme or port) that OAuth discovery, client registration, and token requests for MCP
+							servers may reach when they resolve to a loopback or private address, e.g. <code className="text-xs">localhost</code>,{" "}
+							<code className="text-xs">127.0.0.1</code>, or <code className="text-xs">10.20.0.0/16</code>. Applies to MCP servers added
+							with dashboard authentication enabled; changing it requires dashboard authentication. Link-local and cloud metadata addresses
+							are always blocked.
+						</p>
+					</div>
+					<TagInput
+						id="mcp-oauth-private-allowlist"
+						data-testid="mcp-oauth-private-allowlist-input"
+						placeholder="Add host, IP, or CIDR (Enter or comma)"
+						value={localConfig.mcp_oauth_private_allowlist ?? []}
+						onValueChange={handleOAuthPrivateAllowlistChange}
+						readOnly={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				{/* Instruction Size Bounds */}
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-max-instructions-per-client" className="text-sm font-medium">
+							Max Instruction Length Per Server (bytes)
+						</label>
+						<p className="text-muted-foreground text-sm">Longer text is truncated with a notice. Set to 0 to use the default of 4096.</p>
+					</div>
+					<Input
+						id="mcp-max-instructions-per-client"
+						data-testid="mcp-max-instructions-per-client-input"
+						type="number"
+						className="w-24"
+						value={localValues.mcp_max_instructions_per_client}
+						onChange={(e) => handleMaxInstructionsPerClientChange(e.target.value)}
+						min="0"
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
+				<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+					<div className="space-y-0.5">
+						<label htmlFor="mcp-max-instructions-total" className="text-sm font-medium">
+							Max Instruction Length Total (bytes)
+						</label>
+						<p className="text-muted-foreground text-sm">
+							Ceiling across every server a caller can see. At <code className="text-xs">Gateway and LLM requests</code> this rides on every
+							MCP-bearing request, so raising it raises per-request tokens. Set to 0 to use the default of 16384.
+						</p>
+					</div>
+					<Input
+						id="mcp-max-instructions-total"
+						data-testid="mcp-max-instructions-total-input"
+						type="number"
+						className="w-24"
+						value={localValues.mcp_max_instructions_total}
+						onChange={(e) => handleMaxInstructionsTotalChange(e.target.value)}
+						min="0"
+						disabled={!hasSettingsUpdateAccess}
+					/>
+				</div>
+
 				{/* Code Mode Binding Level */}
 				<div className="space-y-4 rounded-sm border p-4">
 					<div className="space-y-0.5">
@@ -411,6 +557,12 @@ export default function MCPView() {
 						)}
 					</div>
 				</div>
+
+				<CodeModeLimitsSection
+					value={localConfig.mcp_code_mode_limits}
+					onChange={handleCodeModeLimitsChange}
+					disabled={!hasSettingsUpdateAccess}
+				/>
 				{/* Advanced Settings — collapsed by default so people don't accidentally
 				    edit the redirect_uri, which would break already-authorized MCP clients. */}
 				<Accordion type="single" collapsible className="rounded-sm border px-4">
@@ -518,12 +670,12 @@ export default function MCPView() {
 									{/* Issuer URL */}
 									<div className="space-y-1.5">
 										<label htmlFor="oauth2-issuer-url" className="text-sm font-medium">
-											Issuer URL
+											Issuer URL <span className="text-destructive">*</span>
 										</label>
 										<p className="text-muted-foreground text-sm">
 											Stable public URL advertised in discovery documents and embedded as the <code className="text-xs">iss</code> claim in
-											every JWT. Leave blank to derive it from the request <code className="text-xs">Host</code> header (sufficient for most
-											deployments). Multi-host or reverse-proxy deployments might need this. Supports env var syntax (e.g.{" "}
+											every JWT. Required in OAuth and Both modes: Bifrost never derives the issuer from the request{" "}
+											<code className="text-xs">Host</code> header, because that header is caller-controlled. Supports env var syntax (e.g.{" "}
 											<code className="text-xs">env.BIFROST_ISSUER_URL</code>).
 										</p>
 										<SecretVarInput
@@ -579,6 +731,39 @@ export default function MCPView() {
 										</div>
 									</div>
 
+									{/* Allowed redirect URIs */}
+									<div className="space-y-1.5">
+										<label htmlFor="oauth2-allowed-redirect-uris" className="text-sm font-medium">
+											Allowed redirect URIs
+										</label>
+										<p className="text-muted-foreground text-sm">
+											Exact callback URIs remote MCP clients may use, e.g.{" "}
+											<code className="text-xs">https://www.cursor.com/agents/mcp/oauth/callback</code>. Add{" "}
+											<code className="text-xs">*</code> to allow any https callback; partial wildcards are not supported. Loopback
+											callbacks and <code className="text-xs">cursor://anysphere.cursor-mcp</code> are always allowed. Changing this list
+											requires dashboard authentication.
+										</p>
+										<TagInput
+											id="oauth2-allowed-redirect-uris"
+											data-testid="oauth2-allowed-redirect-uris-input"
+											placeholder="Add callback URI (Enter)"
+											submitOnComma={false}
+											value={localConfig.oauth2_server_config?.allowed_redirect_uris ?? []}
+											onValueChange={handleAllowedRedirectURIsChange}
+											readOnly={!hasSettingsUpdateAccess}
+										/>
+										{localConfig.oauth2_server_config?.allowed_redirect_uris?.includes("*") && (
+											<Alert variant="warning" data-testid="oauth2-allowed-redirect-uris-wildcard-warning">
+												<AlertTriangle className="size-4" />
+												<AlertTitle>Any callback is allowed</AlertTitle>
+												<AlertDescription>
+													Any MCP client can register with a callback on any host, so the consent page is the only check against a client
+													that sends authorization codes to an attacker. Prefer listing exact callback URIs.
+												</AlertDescription>
+											</Alert>
+										)}
+									</div>
+
 									{/* Require identity-provider login. Enterprise-only and only
                       meaningful in oauth mode with an IdP configured. Stays visible
                       when the setting is already enabled so it is never silently lost. */}
@@ -623,7 +808,7 @@ export default function MCPView() {
 					</AccordionItem>
 				</Accordion>
 			</div>
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess} data-testid="mcp-settings-save-btn">
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>

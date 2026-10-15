@@ -7,11 +7,14 @@ import {
 	GetMCPLibraryResponse,
 	MCPLibraryEntry,
 	MCPLibraryFilterData,
+	MCPOpenAPIPreviewRequest,
+	MCPOpenAPIPreviewResponse,
 	OAuthFlowResponse,
 	OAuthStatusResponse,
 	UpdateMCPClientRequest,
 } from "@/lib/types/mcp";
 import { baseApi } from "./baseApi";
+import { textOrJSONError } from "./responseHandlers";
 
 type CreateMCPClientResponse = { status: "success"; message: string } | OAuthFlowResponse;
 type UpdateMCPClientResponse = { status: "success"; message: string };
@@ -23,6 +26,10 @@ type InitiateMCPClientVerificationResponse = Omit<OAuthFlowResponse, "message"> 
 	status_url?: string;
 	complete_url?: string;
 	next_steps?: string[];
+	// Set only by /reregister, so the caller can report which
+	// client the consent it is about to run belongs to.
+	registered_client_id?: string;
+	previous_client_id?: string;
 };
 
 export const mcpApi = baseApi.injectEndpoints({
@@ -150,6 +157,26 @@ export const mcpApi = baseApi.injectEndpoints({
 			},
 		}),
 
+		// Parse an OpenAPI/Swagger document into the tools Bifrost would synthesize.
+		// Nothing is persisted, so no cache tags are involved.
+		previewOpenAPISpec: builder.mutation<MCPOpenAPIPreviewResponse, MCPOpenAPIPreviewRequest>({
+			query: (body) => ({
+				url: "/mcp/openapi/preview",
+				method: "POST",
+				body,
+			}),
+		}),
+
+		// The stored document of an openapi client (client reads omit it).
+		getMCPClientOpenAPISpec: builder.query<string, string>({
+			query: (id) => ({
+				url: `/mcp/client/${id}/openapi-spec`,
+				responseHandler: textOrJSONError,
+			}),
+			// Per client: a replaced document or a deleted client refetches only this copy.
+			providesTags: (_result, _error, id) => [{ type: "MCPClientOpenAPISpec", id }],
+		}),
+
 		// Update existing MCP client
 		updateMCPClient: builder.mutation<UpdateMCPClientResponse, { id: string; data: UpdateMCPClientRequest }>({
 			query: ({ id, data }) => ({
@@ -160,6 +187,12 @@ export const mcpApi = baseApi.injectEndpoints({
 			async onQueryStarted({ id, data }, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
+					// A replaced OpenAPI document changes the tool list, which the
+					// field-by-field patch below cannot reconstruct: refetch instead.
+					if (data.openapi_config !== undefined) {
+						dispatch(mcpApi.util.invalidateTags(["MCPClients", { type: "MCPClientOpenAPISpec", id }]));
+						return;
+					}
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getMCPClients" || entry?.status !== "fulfilled") continue;
@@ -208,6 +241,8 @@ export const mcpApi = baseApi.injectEndpoints({
 			async onQueryStarted(id, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
+					// A deleted client's stored document is gone; drop the cached copy.
+					dispatch(mcpApi.util.invalidateTags([{ type: "MCPClientOpenAPISpec", id }]));
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getMCPClients" || entry?.status !== "fulfilled") continue;
@@ -236,10 +271,30 @@ export const mcpApi = baseApi.injectEndpoints({
 			invalidatesTags: ["MCPClients"],
 		}),
 
-		// Get OAuth config status (for polling)
-		getOAuthConfigStatus: builder.query<OAuthStatusResponse, string>({
-			query: (oauthConfigId) => `/oauth/config/${oauthConfigId}/status`,
-			providesTags: (result, error, id) => [{ type: "OAuth2Config", id }],
+		// Re-discover an MCP client's tools from its upstream server now, rather
+		// than waiting out the tool sync interval (10 minutes by default). Applies
+		// to every client type, including the per-call ones Reconnect cannot act on.
+		refreshMCPClientTools: builder.mutation<{ status: string; message: string; tool_count: number }, string>({
+			query: (id) => ({
+				url: `/mcp/client/${id}/refresh-tools`,
+				method: "POST",
+			}),
+			invalidatesTags: ["MCPClients"],
+		}),
+
+		// Get OAuth config status (for polling). Pass flowId for a reauthorize
+		// flow: the config's own status never leaves "authorized" once a client
+		// has been verified, so only the flow row can say whether this consent
+		// has actually completed.
+		getOAuthConfigStatus: builder.query<OAuthStatusResponse, string | { oauthConfigId: string; flowId?: string }>({
+			query: (arg) => {
+				const { oauthConfigId, flowId } = typeof arg === "string" ? { oauthConfigId: arg, flowId: undefined } : arg;
+				return {
+					url: `/oauth/config/${oauthConfigId}/status`,
+					...(flowId && { params: { flow_id: flowId } }),
+				};
+			},
+			providesTags: (result, error, arg) => [{ type: "OAuth2Config", id: typeof arg === "string" ? arg : arg.oauthConfigId }],
 		}),
 
 		// Complete OAuth flow for MCP client
@@ -270,6 +325,22 @@ export const mcpApi = baseApi.injectEndpoints({
 				url: `/mcp/client/${mcpClientId}/reauthorize`,
 				method: "POST",
 			}),
+		}),
+
+		// reauthorizeMCPClient's counterpart for a provider that no longer
+		// recognises the client_id it issued through dynamic registration:
+		// registers a replacement client, then runs the same consent flow
+		// against it. Separate endpoint rather than a flag, because it
+		// invalidates every token bound to the config — on a per_user_oauth
+		// server, every end user's — and that is not something to hide in a
+		// request body. Same response shape, so the caller drives the same
+		// OAuth2Authorizer dialog.
+		reregisterMCPClient: builder.mutation<InitiateMCPClientVerificationResponse, string>({
+			query: (mcpClientId) => ({
+				url: `/mcp/client/${mcpClientId}/reregister`,
+				method: "POST",
+			}),
+			invalidatesTags: ["MCPClients"],
 		}),
 
 		// Verify a pending_verification per_user_headers MCP client by submitting
@@ -309,14 +380,18 @@ export const {
 	useCreateMCPLibraryEntryMutation,
 	useDeleteMCPLibraryEntryMutation,
 	useCreateMCPClientMutation,
+	usePreviewOpenAPISpecMutation,
+	useLazyGetMCPClientOpenAPISpecQuery,
 	useUpdateMCPClientMutation,
 	useDeleteMCPClientMutation,
 	useReconnectMCPClientMutation,
+	useRefreshMCPClientToolsMutation,
 	useLazyGetMCPClientsQuery,
 	useLazyGetOAuthConfigStatusQuery,
 	useCompleteOAuthFlowMutation,
 	useInitiateMCPClientVerificationMutation,
 	useReauthorizeMCPClientMutation,
+	useReregisterMCPClientMutation,
 	useVerifyMCPClientHeadersMutation,
 	useVerifyMCPClientExchangeMutation,
 } = mcpApi;

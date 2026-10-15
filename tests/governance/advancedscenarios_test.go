@@ -1684,3 +1684,236 @@ func TestCustomerDeletionSetsVKCustomerIDToNil(t *testing.T) {
 	t.Logf("VK customer_id is now nil ✓")
 	t.Logf("Customer deletion sets VK customer_id to nil verified ✓")
 }
+
+// ============================================================================
+// SCENARIO: allow_all_providers on a virtual key
+// ============================================================================
+
+// TestVKAllowAllProvidersOpensUnlistedProviders verifies that allow_all_providers grants
+// access to a provider the VK does not list in provider_configs, while a listed provider
+// keeps its own rules and still serves.
+func TestVKAllowAllProvidersOpensUnlistedProviders(t *testing.T) {
+	t.Parallel()
+	testData := NewGlobalTestData()
+	defer testData.Cleanup(t)
+
+	// Only openai is listed; anthropic is deliberately unlisted, so it is reachable
+	// only because allow_all_providers is on.
+	createVKResp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/api/governance/virtual-keys",
+		Body: CreateVirtualKeyRequest{
+			Name:              "test-vk-allow-all-" + generateRandomID(),
+			AllowAllProviders: true,
+			ProviderConfigs: []ProviderConfigRequest{{
+				Provider:      "openai",
+				Weight:        float64Ptr(1.0),
+				AllowedModels: []string{"*"},
+				KeyIDs:        []string{"*"},
+			}},
+		},
+	})
+	if createVKResp.StatusCode != 200 {
+		t.Fatalf("Failed to create VK: status %d, body %v", createVKResp.StatusCode, createVKResp.Body)
+	}
+	testData.AddVirtualKey(ExtractIDFromResponse(t, createVKResp))
+	vkValue := createVKResp.Body["virtual_key"].(map[string]interface{})["value"].(string)
+
+	// Poll the listed provider until the VK config is live in the governance store,
+	// with a bounded timeout, instead of a fixed sleep — keeps the test deterministic.
+	var listedResp *APIResponse
+	for i := 0; i < 20; i++ {
+		listedResp = MakeRequest(t, APIRequest{
+			Method: "POST",
+			Path:   "/v1/chat/completions",
+			Body: ChatCompletionRequest{
+				Model:    "openai/gpt-4o",
+				Messages: []ChatMessage{{Role: "user", Content: "allow-all probe"}},
+			},
+			VKHeader: &vkValue,
+		})
+		if listedResp.StatusCode == 200 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if listedResp.StatusCode != 200 {
+		t.Fatalf("listed provider (openai) should serve once the VK is live, got %d: %v", listedResp.StatusCode, listedResp.Body)
+	}
+
+	// The unlisted provider is reachable only because allow_all_providers is on.
+	unlistedResp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/v1/chat/completions",
+		Body: ChatCompletionRequest{
+			Model:    "anthropic/claude-sonnet-4-5",
+			Messages: []ChatMessage{{Role: "user", Content: "allow-all probe"}},
+		},
+		VKHeader: &vkValue,
+	})
+	if unlistedResp.StatusCode != 200 {
+		t.Fatalf("allow_all_providers should permit the unlisted provider (anthropic), got %d: %v", unlistedResp.StatusCode, unlistedResp.Body)
+	}
+	t.Logf("allow_all_providers permitted the unlisted provider ✓")
+}
+
+// TestVKWithoutAllowAllProvidersDeniesUnlisted is the negative control: with the flag off
+// (the default), a provider not in provider_configs is denied while the listed one serves.
+func TestVKWithoutAllowAllProvidersDeniesUnlisted(t *testing.T) {
+	t.Parallel()
+	testData := NewGlobalTestData()
+	defer testData.Cleanup(t)
+
+	// allow_all_providers defaults to false, so only openai is permitted.
+	createVKResp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/api/governance/virtual-keys",
+		Body: CreateVirtualKeyRequest{
+			Name: "test-vk-deny-unlisted-" + generateRandomID(),
+			ProviderConfigs: []ProviderConfigRequest{{
+				Provider:      "openai",
+				Weight:        float64Ptr(1.0),
+				AllowedModels: []string{"*"},
+				KeyIDs:        []string{"*"},
+			}},
+		},
+	})
+	if createVKResp.StatusCode != 200 {
+		t.Fatalf("Failed to create VK: status %d, body %v", createVKResp.StatusCode, createVKResp.Body)
+	}
+	testData.AddVirtualKey(ExtractIDFromResponse(t, createVKResp))
+	vkValue := createVKResp.Body["virtual_key"].(map[string]interface{})["value"].(string)
+
+	// Poll the listed provider until the VK config is live, with a bounded timeout,
+	// instead of a fixed sleep — keeps the test deterministic.
+	var listedResp *APIResponse
+	for i := 0; i < 20; i++ {
+		listedResp = MakeRequest(t, APIRequest{
+			Method: "POST",
+			Path:   "/v1/chat/completions",
+			Body: ChatCompletionRequest{
+				Model:    "openai/gpt-4o",
+				Messages: []ChatMessage{{Role: "user", Content: "deny probe"}},
+			},
+			VKHeader: &vkValue,
+		})
+		if listedResp.StatusCode == 200 {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if listedResp.StatusCode != 200 {
+		t.Fatalf("listed provider (openai) should serve once the VK is live, got %d: %v", listedResp.StatusCode, listedResp.Body)
+	}
+
+	// The unlisted provider is denied by deny-by-default.
+	unlistedResp := MakeRequest(t, APIRequest{
+		Method: "POST",
+		Path:   "/v1/chat/completions",
+		Body: ChatCompletionRequest{
+			Model:    "anthropic/claude-sonnet-4-5",
+			Messages: []ChatMessage{{Role: "user", Content: "deny probe"}},
+		},
+		VKHeader: &vkValue,
+	})
+	// Require a 4xx denial specifically; a 5xx would be a backend failure, not a
+	// governance denial, and must not pass this negative control.
+	if unlistedResp.StatusCode < 400 || unlistedResp.StatusCode >= 500 {
+		t.Fatalf("unlisted provider (anthropic) should be denied with a 4xx without allow_all_providers, got %d: %v", unlistedResp.StatusCode, unlistedResp.Body)
+	}
+	t.Logf("deny-by-default denied the unlisted provider ✓")
+}
+
+// TestVKContentLoggingOffHidesLogContent creates a key with disable_content_logging via the
+// management API, sends a request through it, and reads the request's log row back: the row must
+// be content_hidden with no input_history, while a key that inherits keeps its content. This is the
+// end-to-end pin for the whole path (API -> store -> governance stamp -> logging plugin).
+func TestVKContentLoggingOffHidesLogContent(t *testing.T) {
+	t.Parallel()
+	testData := NewGlobalTestData()
+	defer testData.Cleanup(t)
+
+	createVK := func(t *testing.T, name string, decision *bool) string {
+		t.Helper()
+		resp := MakeRequest(t, APIRequest{
+			Method: "POST",
+			Path:   "/api/governance/virtual-keys",
+			Body: CreateVirtualKeyRequest{
+				Name:                  name + "-" + generateRandomID(),
+				DisableContentLogging: decision,
+				ProviderConfigs: []ProviderConfigRequest{{
+					Provider:      "openai",
+					Weight:        float64Ptr(1.0),
+					AllowedModels: []string{"*"},
+					KeyIDs:        []string{"*"},
+				}},
+			},
+		})
+		if resp.StatusCode != 200 {
+			t.Fatalf("Failed to create VK: status %d, body %v", resp.StatusCode, resp.Body)
+		}
+		testData.AddVirtualKey(ExtractIDFromResponse(t, resp))
+		return resp.Body["virtual_key"].(map[string]interface{})["value"].(string)
+	}
+
+	// Poll the chat route until the key is live in the governance store, then keep the request id
+	// of the first successful call: that is the log row we read back.
+	chatThrough := func(t *testing.T, vkValue string) string {
+		t.Helper()
+		for i := 0; i < 20; i++ {
+			resp := MakeRequest(t, APIRequest{
+				Method: "POST",
+				Path:   "/v1/chat/completions",
+				Body: ChatCompletionRequest{
+					Model:    "openai/gpt-4o-mini",
+					Messages: []ChatMessage{{Role: "user", Content: "content logging probe"}},
+				},
+				VKHeader: &vkValue,
+			})
+			if resp.StatusCode == 200 {
+				requestID := resp.Headers.Get("x-request-id")
+				if requestID == "" {
+					t.Fatalf("chat response carried no x-request-id header")
+				}
+				return requestID
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		t.Fatalf("chat through the VK never succeeded")
+		return ""
+	}
+
+	// The log row is written by the batching writer, so poll for it.
+	readLog := func(t *testing.T, requestID string) map[string]interface{} {
+		t.Helper()
+		for i := 0; i < 20; i++ {
+			resp := MakeRequest(t, APIRequest{Method: "GET", Path: "/api/logs/" + requestID})
+			if resp.StatusCode == 200 {
+				return resp.Body
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		t.Fatalf("log %s never appeared", requestID)
+		return nil
+	}
+
+	offKey := createVK(t, "test-vk-content-off", new(true))
+	offLog := readLog(t, chatThrough(t, offKey))
+	if hidden, _ := offLog["content_hidden"].(bool); !hidden {
+		t.Fatalf("expected content_hidden=true for the content-off key, got %v", offLog)
+	}
+	if history, ok := offLog["input_history"].([]interface{}); ok && len(history) > 0 {
+		t.Fatalf("expected no input_history for the content-off key, got %v", history)
+	}
+	t.Logf("content-off key hid the log content ✓")
+
+	inheritKey := createVK(t, "test-vk-content-inherit", nil)
+	inheritLog := readLog(t, chatThrough(t, inheritKey))
+	if hidden, _ := inheritLog["content_hidden"].(bool); hidden {
+		t.Fatalf("expected content_hidden=false for the inheriting key, got %v", inheritLog)
+	}
+	if history, _ := inheritLog["input_history"].([]interface{}); len(history) == 0 {
+		t.Fatalf("expected input_history for the inheriting key, got %v", inheritLog)
+	}
+	t.Logf("inheriting key kept the log content ✓")
+}

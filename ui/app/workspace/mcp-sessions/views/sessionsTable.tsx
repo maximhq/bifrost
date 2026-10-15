@@ -19,6 +19,8 @@
 
 import PageTitle from "@/components/pageTitle";
 import { Badge } from "@/components/ui/badge";
+import { MCP_CREDENTIAL_STATUS_COLORS } from "@/lib/constants/config";
+import { titleCaseFromSnakeCase } from "@/lib/utils/strings";
 import { Button } from "@/components/ui/button";
 import {
 	AlertDialog,
@@ -39,6 +41,9 @@ import { ChevronLeft, ChevronRight, Info, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getErrorMessage, useReauthMCPSessionMutation, useRevokeMCPSessionMutation } from "@/lib/store";
 import { MCPSessionRow } from "@/lib/types/mcpSessions";
+import { formatRelativePast, formatTokenExpiry } from "@/lib/utils/mcpCredential";
+import { RefreshTokenStatus } from "@/components/refreshTokenStatus";
+import { ScopeChips } from "@/components/scopeChips";
 import { ExternalLink, Fingerprint, KeyRound, Loader2, MoreHorizontal, Pencil, RefreshCcw, Trash2, UserRound } from "lucide-react";
 import { useState } from "react";
 
@@ -179,8 +184,20 @@ export default function SessionsTable({
 								</TableHead>
 								<TableHead>
 									<HeaderWithTooltip
+										label="Scopes"
+										tooltip="Scopes the provider granted at sign-in, as reported in its token response. Shown as a dash when the provider did not report them. Header submissions and pending sign-ins have no scopes."
+									/>
+								</TableHead>
+								<TableHead>
+									<HeaderWithTooltip
 										label="Access token expiry"
-										tooltip="When the current access token expires. Bifrost auto-refreshes using the refresh token on the next request, so an active row past its expiry will silently mint a new token at use time. Header rows do not have an upstream expiry; their values stay valid until revoked or the schema changes."
+										tooltip="When the current access token expires. With a refresh token, Bifrost renews it on the next request, so an active row past its expiry silently mints a new token at use time. Without one, a past expiry means the row must be re-authenticated. Header rows do not have an upstream expiry; their values stay valid until revoked or the schema changes."
+									/>
+								</TableHead>
+								<TableHead>
+									<HeaderWithTooltip
+										label="Refresh token"
+										tooltip="Whether the provider issued a refresh token. Present: Bifrost renews the access token automatically at use time. Not issued: the row must be re-authenticated once the access token expires. Rejected upstream: the provider refused the last refresh, so the row needs re-auth. Header rows and pending sign-ins have no token."
 									/>
 								</TableHead>
 								<TableHead>Created</TableHead>
@@ -190,7 +207,7 @@ export default function SessionsTable({
 						<TableBody>
 							{sessions.length === 0 ? (
 								<TableRow>
-									<TableCell colSpan={7} className="h-24 text-center">
+									<TableCell colSpan={9} className="h-24 text-center">
 										{hasActiveFilters ? (
 											<div className="text-muted-foreground text-sm">No sessions match these filters.</div>
 										) : (
@@ -214,11 +231,17 @@ export default function SessionsTable({
 										<TableCell>
 											<StatusBadge status={row.status} />
 										</TableCell>
+										<TableCell>
+											<ScopesCell row={row} />
+										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">
 											<div className="flex flex-col">
 												<span>{formatAccessExpiry(row)}</span>
 												{row.last_refreshed_at && <span className="text-xs">refreshed {formatRelativePast(row.last_refreshed_at)}</span>}
 											</div>
+										</TableCell>
+										<TableCell className="text-sm">
+											<RefreshTokenCell row={row} />
 										</TableCell>
 										<TableCell className="text-muted-foreground text-sm">{formatRelativePast(row.created_at)}</TableCell>
 										<TableCell
@@ -328,6 +351,24 @@ function BindingCell({ row }: { row: MCPSessionRow }) {
 	return <span className="text-muted-foreground text-sm">Session-bound</span>;
 }
 
+// Granted scopes on token rows. A dash when the provider reported none, and
+// for header rows and pending sign-ins, which have no token.
+function ScopesCell({ row }: { row: MCPSessionRow }) {
+	if (row.kind !== "token" || !row.scopes?.length) {
+		return <span className="text-muted-foreground text-sm">-</span>;
+	}
+	return <ScopeChips scopes={row.scopes} />;
+}
+
+// Refresh token presence on token rows; a dash for header rows and pending
+// sign-ins, which have no token.
+function RefreshTokenCell({ row }: { row: MCPSessionRow }) {
+	if (row.kind !== "token" || row.has_refresh_token === undefined) {
+		return <span className="text-muted-foreground text-sm">-</span>;
+	}
+	return <RefreshTokenStatus hasRefreshToken={row.has_refresh_token} status={row.status} />;
+}
+
 function TypeBadge({ authKind }: { authKind: string }) {
 	if (authKind === "headers") {
 		return <Badge variant="outline">Headers</Badge>;
@@ -335,34 +376,24 @@ function TypeBadge({ authKind }: { authKind: string }) {
 	return <Badge variant="outline">OAuth</Badge>;
 }
 
+// Colors come from the shared credential palette so a session's status reads
+// the same as the credential block in the server sheet and the server state
+// badge in the registry: green for usable, red for "a human must act", amber
+// and gray for informational.
+const SESSION_STATUS_LABELS: Record<string, string> = {
+	pending: "Pending",
+	orphaned: "Orphaned",
+	needs_reauth: "Needs re-auth",
+	needs_update: "Needs update",
+	active: "Active",
+};
+
 function StatusBadge({ status }: { status: string }) {
-	if (status === "pending") {
-		return <Badge variant="secondary">Pending</Badge>;
-	}
-	if (status === "orphaned") {
-		// Muted amber: distinct from destructive (red, action-required) and
-		// secondary (gray, in-progress). Signals "informational, no action
-		// needed from you" — the auto-restore cascade handles it.
-		return (
-			<Badge variant="outline" className="border-amber-500 bg-amber-100 text-amber-900 dark:bg-amber-900/30 dark:text-amber-200">
-				Orphaned
-			</Badge>
-		);
-	}
-	if (status === "needs_reauth") {
-		return <Badge variant="destructive">Needs re-auth</Badge>;
-	}
-	if (status === "needs_update") {
-		// Outlined red: signals user action required, but visually distinct from
-		// needs_reauth's solid destructive badge (which represents a hard auth failure).
-		// Distinct copy so the row affordance ("Update values") matches.
-		return (
-			<Badge variant="outline" className="border-red-500 bg-red-100 text-red-900 dark:bg-red-900/30 dark:text-red-200">
-				Needs update
-			</Badge>
-		);
-	}
-	return <Badge>Active</Badge>;
+	return (
+		<Badge className={MCP_CREDENTIAL_STATUS_COLORS[status] ?? MCP_CREDENTIAL_STATUS_COLORS.unknown}>
+			{SESSION_STATUS_LABELS[status] ?? titleCaseFromSnakeCase(status)}
+		</Badge>
+	);
 }
 
 interface RowActionsProps {
@@ -496,23 +527,6 @@ function RowActions({ row, reauthing, revoking, isPendingRow, onReauth, onRevoke
 	);
 }
 
-function formatRelativePast(iso: string): string {
-	try {
-		const t = new Date(iso).getTime();
-		if (Number.isNaN(t)) return iso;
-		const diffMs = Date.now() - t;
-		if (diffMs < 60_000) return "just now";
-		const mins = Math.floor(diffMs / 60_000);
-		if (mins < 60) return `${mins} min ago`;
-		const hours = Math.floor(diffMs / 3_600_000);
-		if (hours < 48) return `${hours}h ago`;
-		const days = Math.floor(diffMs / 86_400_000);
-		return `${days}d ago`;
-	} catch {
-		return iso;
-	}
-}
-
 function formatAccessExpiry(row: MCPSessionRow): string {
 	// Header rows don't have an upstream-side expiry — the submitted values
 	// are durable until the user revokes or the schema changes. The status
@@ -521,33 +535,5 @@ function formatAccessExpiry(row: MCPSessionRow): string {
 	if (row.kind === "header") {
 		return "-";
 	}
-	if (!row.expires_at) return "-";
-	try {
-		const t = new Date(row.expires_at).getTime();
-		if (Number.isNaN(t)) return row.expires_at;
-		const diffMs = t - Date.now();
-		if (diffMs < 0) {
-			// Active rows auto-refresh on next use via the refresh token.
-			// Orphaned rows still hold a valid upstream credential — the past
-			// expiry just means the cached access token is stale; if access
-			// is restored, refresh kicks in. Only 'needs_reauth' is genuinely
-			// expired (the refresh token itself is dead).
-			switch (row.status) {
-				case "active":
-					return "Refreshes on next use";
-				case "orphaned":
-					return "Refreshes when access is restored";
-				default:
-					return "expired";
-			}
-		}
-		const days = Math.floor(diffMs / 86_400_000);
-		if (days > 1) return `in ${days} days`;
-		const hours = Math.floor(diffMs / 3_600_000);
-		if (hours > 1) return `in ${hours} hours`;
-		const mins = Math.floor(diffMs / 60_000);
-		return `in ${Math.max(mins, 1)} min`;
-	} catch {
-		return row.expires_at;
-	}
+	return formatTokenExpiry(row.expires_at, row.status, row.has_refresh_token);
 }

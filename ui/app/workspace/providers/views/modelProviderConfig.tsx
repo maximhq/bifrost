@@ -6,7 +6,6 @@ import { SettingsIcon, Trash } from "lucide-react";
 import { useMemo, useState } from "react";
 import ProviderConfigSheet from "../dialogs/providerConfigSheet";
 import ModelProviderKeysTableView from "./modelProviderKeysTableView";
-import ProviderGovernanceTable from "./providerGovernanceTable";
 
 interface Props {
 	provider: ModelProvider;
@@ -15,7 +14,6 @@ interface Props {
 
 export default function ModelProviderConfig({ provider, onRequestDelete }: Props) {
 	const [showConfigSheet, setShowConfigSheet] = useState(false);
-	const hasGovernanceAccess = useRbac(RbacResource.Governance, RbacOperation.View);
 	const hasDeleteProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Delete);
 	const hasUpdateProviderAccess = useRbac(RbacResource.ModelProvider, RbacOperation.Update);
 
@@ -43,15 +41,15 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 				<TooltipTrigger asChild>
 					<Button
 						variant="outline"
-						className="size-9 px-0 xl:h-9 xl:w-auto xl:px-4"
+						className="size-9 px-0 @3xl/card-header:h-9 @3xl/card-header:w-auto @3xl/card-header:px-4"
 						onClick={() => setShowConfigSheet(true)}
 						aria-label={hasUpdateProviderAccess ? "Edit provider configuration" : "View provider configuration"}
 					>
 						<SettingsIcon className="h-4 w-4" />
-						<span className="hidden xl:inline">{hasUpdateProviderAccess ? "Edit Provider Config" : "View Provider Config"}</span>
+						<span className="hidden @3xl/card-header:inline">{hasUpdateProviderAccess ? "Edit Provider Config" : "View Provider Config"}</span>
 					</Button>
 				</TooltipTrigger>
-				<TooltipContent className="xl:hidden">{hasUpdateProviderAccess ? "Edit Provider Config" : "View Provider Config"}</TooltipContent>
+				<TooltipContent>{hasUpdateProviderAccess ? "Edit Provider Config" : "View Provider Config"}</TooltipContent>
 			</Tooltip>
 		</div>
 	);
@@ -60,7 +58,6 @@ export default function ModelProviderConfig({ provider, onRequestDelete }: Props
 		<div className="flex w-full flex-col gap-2">
 			<ProviderConfigSheet show={showConfigSheet} onCancel={() => setShowConfigSheet(false)} provider={provider} />
 			<ModelProviderKeysTableView provider={provider} headerActions={editConfigButton} isKeyless={!showApiKeys} />
-			{hasGovernanceAccess ? <ProviderGovernanceTable className="mt-4" provider={provider} /> : null}
 		</div>
 	);
 }

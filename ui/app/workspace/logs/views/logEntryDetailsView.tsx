@@ -41,7 +41,7 @@ export default function LogEntryDetailsView(props: Props) {
 								<TooltipTrigger asChild>
 									<Info className="text-muted-foreground/60 hover:text-muted-foreground h-3 w-3 cursor-help" />
 								</TooltipTrigger>
-								<TooltipContent sideOffset={6} className="max-w-xs">
+								<TooltipContent sideOffset={6} className="max-w-xs whitespace-pre-line">
 									{props.tooltip}
 								</TooltipContent>
 							</Tooltip>

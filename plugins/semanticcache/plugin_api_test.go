@@ -19,6 +19,7 @@ type observableStore struct {
 	mu               sync.Mutex
 	chunks           map[string]vectorstore.SearchResult
 	addIDs           []string
+	addEmbeddings    [][]float32
 	deleteIDs        []string
 	deleteAllQueries [][]vectorstore.Query
 	namespaceDeletes int
@@ -35,6 +36,10 @@ func (s *observableStore) Ping(ctx context.Context) error { return nil }
 func (s *observableStore) CreateNamespace(ctx context.Context, ns string, dim int, props map[string]vectorstore.VectorStoreProperties) error {
 	return nil
 }
+func (s *observableStore) ListNamespaces(ctx context.Context, prefix string) ([]string, error) {
+	return nil, nil
+}
+
 func (s *observableStore) DeleteNamespace(ctx context.Context, ns string) error {
 	s.mu.Lock()
 	s.namespaceDeletes++
@@ -63,6 +68,7 @@ func (s *observableStore) RequiresVectors() bool { return false }
 func (s *observableStore) Add(ctx context.Context, ns string, id string, e []float32, m map[string]interface{}) error {
 	s.mu.Lock()
 	s.addIDs = append(s.addIDs, id)
+	s.addEmbeddings = append(s.addEmbeddings, e)
 	s.chunks[id] = vectorstore.SearchResult{ID: id, Properties: m}
 	s.mu.Unlock()
 	return nil
@@ -157,18 +163,18 @@ func TestClearCacheForKey_FiltersByCacheKeyAndPluginMarker(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// stampCacheDebugForMiss
+// stampCacheMetadataForMiss
 // -----------------------------------------------------------------------------
 
-func TestStampCacheDebugForMiss_AlwaysSetsCacheID(t *testing.T) {
+func TestStampCacheMetadataForMiss_AlwaysSetsCacheID(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 	state := &cacheState{}
 	extra := &schemas.BifrostResponseExtraFields{}
 
-	plugin.stampCacheDebugForMiss(state, extra, "stored-id-123", false, false)
+	plugin.stampCacheMetadataForMiss(state, extra, "stored-id-123", false, false)
 
 	if extra.CacheDebug == nil {
-		t.Fatal("expected CacheDebug to be stamped on miss")
+		t.Fatal("expected cache metadata to be stamped on miss")
 	}
 	if extra.CacheDebug.CacheHit {
 		t.Fatal("expected CacheHit=false on miss")
@@ -182,12 +188,12 @@ func TestStampCacheDebugForMiss_AlwaysSetsCacheID(t *testing.T) {
 	}
 }
 
-func TestStampCacheDebugForMiss_AddsTelemetryWhenSemanticRan(t *testing.T) {
+func TestStampCacheMetadataForMiss_AddsTelemetryWhenSemanticRan(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 	state := &cacheState{EmbeddingsInputTokens: 42}
 	extra := &schemas.BifrostResponseExtraFields{}
 
-	plugin.stampCacheDebugForMiss(state, extra, "id-x", false, false)
+	plugin.stampCacheMetadataForMiss(state, extra, "id-x", false, false)
 
 	if extra.CacheDebug.InputTokens == nil || *extra.CacheDebug.InputTokens != 42 {
 		t.Fatalf("expected InputTokens=42, got %v", extra.CacheDebug.InputTokens)
@@ -197,12 +203,12 @@ func TestStampCacheDebugForMiss_AddsTelemetryWhenSemanticRan(t *testing.T) {
 	}
 }
 
-func TestStampCacheDebugForMiss_StreamSkipsNonFinalChunks(t *testing.T) {
+func TestStampCacheMetadataForMiss_StreamSkipsNonFinalChunks(t *testing.T) {
 	plugin := newTestPlugin(t, newObservableStore())
 	state := &cacheState{}
 	extra := &schemas.BifrostResponseExtraFields{}
 
-	plugin.stampCacheDebugForMiss(state, extra, "id-y", true, false) // mid-stream
+	plugin.stampCacheMetadataForMiss(state, extra, "id-y", true, false) // mid-stream
 
 	if extra.CacheDebug != nil {
 		t.Fatal("expected mid-stream chunk to NOT be stamped")

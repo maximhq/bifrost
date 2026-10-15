@@ -1,0 +1,171 @@
+# Typesafe Integration - System One Endpoint
+
+systemone:
+  post:
+    operationId: typesafeSystemOne
+    summary: Evaluate state (Typesafe format)
+    description: |
+      Evaluates state against a map of named questions using Typesafe's native
+      System One API. The request body matches Typesafe's native format; question
+      identifiers become result field names.
+    tags:
+    - Typesafe Integration
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required:
+            - state
+            - model
+            - questions
+            properties:
+              state:
+                description: A plain string, or structured data (object or array) to evaluate.
+                oneOf:
+                - type: string
+                - type: object
+                  additionalProperties: true
+                - type: array
+                  items: {}
+              model:
+                type: string
+                description: Typesafe model identifier (e.g. `jev-1.13.0`, `jev-latest`).
+              questions:
+                type: object
+                minProperties: 1
+                description: Map of named questions.
+                additionalProperties:
+                  type: object
+                  required:
+                  - type
+                  - instructions
+                  properties:
+                    type:
+                      type: string
+                      enum: [noul, choice, score]
+                      description: Question type. `noul` returns a probability from 0 to 1, `choice` a selection with probabilities, `score` a probability-weighted rubric value.
+                    instructions:
+                      description: Question instructions. A string, or structured data.
+                      oneOf:
+                      - type: string
+                      - type: object
+                        additionalProperties: true
+                      - type: array
+                        items: {}
+                    criteria:
+                      description: |
+                        Optional `true`/`false` descriptions for `noul`; a map of option
+                        to description for `choice` (at most 255 options); an ordered
+                        array of 2-10 level descriptions for `score`.
+                      oneOf:
+                      - type: object
+                        additionalProperties:
+                          type: string
+                      - type: array
+                        items:
+                          type: string
+    responses:
+      '200':
+        description: Successful response in Typesafe's native shape
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - model
+              - answers
+              properties:
+                model:
+                  type: string
+                  description: Model version that performed the evaluation
+                answers:
+                  type: object
+                  description: Map matching question identifiers to answers
+                  additionalProperties:
+                    type: object
+                    required:
+                    - type
+                    properties:
+                      type:
+                        type: string
+                        enum: [noul, choice, score]
+                      noul:
+                        type: number
+                        description: Probability from 0 to 1 (noul answers)
+                      choice:
+                        type: string
+                        description: Selected option (choice answers)
+                      score:
+                        type: number
+                        description: Probability-weighted value (score answers)
+                      probabilities:
+                        type: object
+                        additionalProperties:
+                          type: number
+                      legend:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      confidence:
+                        type: number
+                usage:
+                  type: object
+                  properties:
+                    input_tokens:
+                      type: integer
+                    output_tokens:
+                      type: integer
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+models:
+  get:
+    operationId: typesafeListModels
+    summary: List models (Typesafe format)
+    description: |
+      Lists available Typesafe models in the native shape. Typesafe documents no
+      upstream listing endpoint, so the catalog is served from Bifrost's model
+      datasheet.
+    tags:
+    - Typesafe Integration
+    responses:
+      '200':
+        description: Successful response
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - models
+              properties:
+                models:
+                  type: array
+                  items:
+                    type: object
+                    required:
+                    - name
+                    properties:
+                      name:
+                        type: string
+                        example: jev-latest
+                      description:
+                        type: string
+                      release_date:
+                        type: string
+                        format: date-time
+      '400':
+        $ref: '../../../openapi.yaml#/components/responses/BadRequest'
+      '500':
+        $ref: '../../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []

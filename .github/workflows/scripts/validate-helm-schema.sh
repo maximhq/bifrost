@@ -124,8 +124,10 @@ fi
 echo ""
 echo '🔍 Checking required fields in $defs...'
 
-# Check base_key required fields
-CONFIG_BASEKEY_REQUIRED=$(jq -r '."$defs".base_key.required // [] | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
+# Check base_key required fields. weight is left out on the config side: config.json must set
+# it (the loader reads a missing weight as 0), but the chart template defaults it to 1, so the
+# Helm schema does not require it.
+CONFIG_BASEKEY_REQUIRED=$(jq -r '."$defs".base_key.required // [] | map(select(. != "weight")) | sort | join(",")' "$CONFIG_SCHEMA" 2>/dev/null || echo "")
 HELM_BASEKEY_REQUIRED=$(jq -r '."$defs".providerKey.required // [] | sort | join(",")' "$HELM_SCHEMA" 2>/dev/null || echo "")
 
 if [ "$CONFIG_BASEKEY_REQUIRED" != "$HELM_BASEKEY_REQUIRED" ]; then

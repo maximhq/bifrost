@@ -30,8 +30,9 @@ import {
 } from "@/lib/store/apis/skillsApi";
 import { AllSkillsVersionBump, SkillListItem } from "@/lib/types/skills";
 import { cn } from "@/lib/utils";
-import { getApiBaseUrl, getExampleBaseUrl } from "@/lib/utils/port";
+import { getApiBaseUrl } from "@/lib/utils/port";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { Link } from "@tanstack/react-router";
 import {
 	ArrowDown,
 	ArrowUp,
@@ -61,21 +62,29 @@ const SKILLS_REPOSITORY_DOCS_URL = "https://docs.getbifrost.ai/features/skills-r
 
 // ---------- MarketplacePopover ----------
 
-function MarketplacePopover() {
+function MarketplacePopover({ baseUrl }: { baseUrl: string }) {
 	const [copiedKey, setCopiedKey] = useState<string | null>(null);
 	const [open, setOpen] = useState(false);
-	const marketplaceBaseUrl = `${getExampleBaseUrl()}/api`;
+	const marketplaceBaseUrl = `${baseUrl}/api`;
 
 	const items = [
 		{
+			key: "claude-desktop",
+			label: "Claude Desktop / Cowork",
+			value: `${marketplaceBaseUrl}/skills/serve/claude-code.git`,
+			ariaLabel: "Copy Claude Desktop and Cowork marketplace Git URL",
+		},
+		{
 			key: "claude",
 			label: "Claude Code",
-			command: `claude plugin marketplace add ${marketplaceBaseUrl}/skills/serve/claude-code/.claude-plugin/marketplace.json`,
+			value: `claude plugin marketplace add ${marketplaceBaseUrl}/skills/serve/claude-code/.claude-plugin/marketplace.json`,
+			ariaLabel: "Copy Claude Code command",
 		},
 		{
 			key: "codex",
 			label: "Codex",
-			command: `codex plugin marketplace add ${marketplaceBaseUrl}/skills/serve/codex`,
+			value: `codex plugin marketplace add ${marketplaceBaseUrl}/skills/serve/codex`,
+			ariaLabel: "Copy Codex command",
 		},
 	];
 
@@ -96,14 +105,20 @@ function MarketplacePopover() {
 	return (
 		<Popover open={open} onOpenChange={setOpen}>
 			<PopoverTrigger asChild>
-				<Button variant="outline" size="sm" title="Register as Marketplace" aria-label="Register as Marketplace">
+				<Button
+					data-testid="skill-marketplace-register-btn"
+					variant="outline"
+					size="sm"
+					title="Register as Marketplace"
+					aria-label="Register as Marketplace"
+				>
 					<Package className="h-3.5 w-3.5" />
 					<span className="hidden md:inline">Register as Marketplace</span>
 				</Button>
 			</PopoverTrigger>
 			<PopoverContent align="end" className="w-[calc(100vw-2rem)] max-w-md p-0 md:w-auto">
 				<div className="border-b px-3 py-2">
-					<p className="text-muted-foreground text-xs font-medium">Copy CLI command to register this repository</p>
+					<p className="text-muted-foreground text-xs font-medium">Copy a marketplace URL or CLI command</p>
 				</div>
 				<div className="py-1">
 					{items.map((item) => (
@@ -111,12 +126,12 @@ function MarketplacePopover() {
 							key={item.key}
 							data-testid={`skill-copy-marketplace-${item.key}`}
 							className="hover:bg-muted/50 flex w-full cursor-pointer items-center gap-3 px-3 py-2 text-left transition-colors"
-							aria-label={`Copy ${item.label} command`}
-							onClick={() => handleCopy(item.key, item.command)}
+							aria-label={item.ariaLabel}
+							onClick={() => handleCopy(item.key, item.value)}
 						>
 							<div className="min-w-0 flex-1">
 								<p className="text-xs font-medium">{item.label}</p>
-								<p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">{item.command}</p>
+								<p className="text-muted-foreground mt-0.5 truncate font-mono text-xs">{item.value}</p>
 							</div>
 							{copiedKey === item.key ? (
 								<Check className="h-3.5 w-3.5 shrink-0 text-green-500" />
@@ -295,6 +310,7 @@ export function SkillsListView({
 	const hasDeleteAccess = useRbac(RbacResource.SkillsRepository, RbacOperation.Delete);
 	const { data: bifrostConfig } = useGetCoreConfigQuery({});
 	const isGitAvailable = bifrostConfig?.is_git_available ?? false;
+	const marketplaceBaseUrl = bifrostConfig?.skills_marketplace_base_url ?? "";
 	const [deleteSkill, { isLoading: isDeleting }] = useDeleteSkillMutation();
 	const { data: allSkillsVersionData, refetch: refetchAllSkillsVersion } = useGetAllSkillsVersionQuery();
 	const [bumpAllSkillsVersion, { isLoading: isBumpingAllSkillsVersion }] = useBumpAllSkillsVersionMutation();
@@ -399,8 +415,9 @@ export function SkillsListView({
 							Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 						</Button>
 						{hasCreateAccess && (
-							<Button aria-label="Create your first skill" data-testid="skill-create-btn" onClick={onCreateNew}>
-								Create Skill
+							<Button data-testid="skill-create-btn" onClick={onCreateNew}>
+								<Plus className="h-4 w-4" />
+								Add Skill
 							</Button>
 						)}
 					</div>
@@ -483,13 +500,20 @@ export function SkillsListView({
 				</div>
 				<div className="flex shrink-0 items-center gap-2 md:ml-auto">
 					<div className="grid grid-cols-3 items-center gap-2 md:flex">
-						{isGitAvailable ? (
-							<MarketplacePopover />
+						{isGitAvailable && marketplaceBaseUrl ? (
+							<MarketplacePopover baseUrl={marketplaceBaseUrl} />
 						) : (
 							<Tooltip>
 								<TooltipTrigger asChild>
-									<span tabIndex={0}>
-										<Button variant="outline" size="sm" disabled title="Register as Marketplace" aria-label="Register as Marketplace">
+									<span tabIndex={0} data-testid="skill-marketplace-disabled-trigger">
+										<Button
+											data-testid="skill-marketplace-register-btn"
+											variant="outline"
+											size="sm"
+											disabled
+											title="Register as Marketplace"
+											aria-label="Register as Marketplace"
+										>
 											<Package className="h-3.5 w-3.5" />
 											<span className="hidden md:inline">Register as Marketplace</span>
 										</Button>
@@ -497,8 +521,21 @@ export function SkillsListView({
 								</TooltipTrigger>
 								<TooltipContent side="bottom">
 									<p className="max-w-xs text-xs">
-										Git is not available on the server. Install git and restart Bifrost to enable marketplace registration for Claude Code
-										and Codex.
+										{isGitAvailable ? (
+											<>
+												Set the External Client URL in{" "}
+												<Link
+													to="/workspace/config/skills"
+													data-testid="skill-marketplace-settings-link"
+													className="underline underline-offset-2"
+												>
+													Skills Settings
+												</Link>{" "}
+												to enable marketplace registration.
+											</>
+										) : (
+											"Git is not available on the server. Install git and restart Bifrost to enable marketplace registration for Claude Code and Codex."
+										)}
 									</p>
 								</TooltipContent>
 							</Tooltip>
@@ -535,9 +572,9 @@ export function SkillsListView({
 							<span className="hidden md:inline">{isDownloadingAll ? "Downloading..." : "Download All Skills"}</span>
 						</Button>
 						{hasCreateAccess && (
-							<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm" title="New skill" aria-label="New skill">
+							<Button data-testid="skill-create-btn" onClick={onCreateNew} size="sm" title="Add skill" aria-label="Add skill">
 								<Plus className="h-4 w-4" />
-								<span className="hidden md:inline">New Skill</span>
+								<span className="hidden md:inline">Add Skill</span>
 							</Button>
 						)}
 					</div>

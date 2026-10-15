@@ -3,9 +3,11 @@ package oauth2
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"slices"
 	"sync"
 	"testing"
@@ -20,6 +22,18 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"gorm.io/gorm"
 )
+
+// TestMain points the OAuth discovery/token-exchange HTTP client at an
+// unguarded dialer for the whole package. Every test here talks to a
+// loopback-bound httptest.Server standing in for a remote OAuth provider,
+// which the production SSRF guard (newOAuthDiscoveryHTTPClient) correctly
+// refuses to dial. TestNewOAuthDiscoveryHTTPClientBlocksLoopback clears this
+// override for its own scope to exercise the guard directly; the dialer itself
+// has its own unit coverage in core/network.
+func TestMain(m *testing.M) {
+	testDialContextOverride = (&net.Dialer{}).DialContext
+	os.Exit(m.Run())
+}
 
 // testConfigStore is a minimal in-memory implementation of configstore.ConfigStore
 // for use in oauth2 tests. Embeds the interface so unneeded methods panic if called.
@@ -130,7 +144,7 @@ func (s *testConfigStore) RefreshOauthTokenFieldsIfActive(_ context.Context, id 
 // the test-double equivalent of the real store's method of the same name —
 // which, despite the historical "UserToken" naming, is not scoped away from
 // auth_mode='shared' (see its doc comment on the real ConfigStore interface).
-func (s *testConfigStore) MarkOauthUserTokenNeedsReauthByID(_ context.Context, tokenID string) error {
+func (s *testConfigStore) MarkOauthUserTokenNeedsReauthByID(_ context.Context, tokenID string, reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	token := s.oauthTokens[tokenID]
@@ -138,12 +152,13 @@ func (s *testConfigStore) MarkOauthUserTokenNeedsReauthByID(_ context.Context, t
 		return nil
 	}
 	token.Status = "needs_reauth"
+	token.StatusReason = reason
 	return nil
 }
 
 // MarkTokensNeedsReauthByConfigID is the test-double equivalent of the real
 // store's bulk, auth_mode-agnostic cascade used by OAuth credential rotation.
-func (s *testConfigStore) MarkTokensNeedsReauthByConfigID(_ context.Context, oauthConfigID string, _ ...*gorm.DB) error {
+func (s *testConfigStore) MarkTokensNeedsReauthByConfigID(_ context.Context, oauthConfigID string, _ string, _ ...*gorm.DB) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, token := range s.oauthTokens {
@@ -679,6 +694,8 @@ func TestTokenRefreshWorker_PermanentError_MarksNeedsReauth(t *testing.T) {
 	token, err := store.GetOauthTokenByID(context.Background(), tokenID)
 	require.NoError(t, err)
 	assert.Equal(t, "needs_reauth", token.Status, "permanent auth rejection must mark token needs_reauth")
+	assert.Equal(t, "provider rejected the refresh (HTTP 401, invalid_grant: Refresh token expired or revoked)", token.StatusReason,
+		"the provider's rejection must be recorded on the row so the UI can say what failed")
 }
 
 func TestTokenRefreshWorker_SuccessfulRefresh_UpdatesToken(t *testing.T) {
@@ -742,7 +759,7 @@ func TestTokenRefreshWorker_ConcurrentReauth_DoesNotOverwriteStaleRefresh(t *tes
 	}()
 
 	<-started
-	require.NoError(t, store.MarkOauthUserTokenNeedsReauthByID(context.Background(), tokenID))
+	require.NoError(t, store.MarkOauthUserTokenNeedsReauthByID(context.Background(), tokenID, "test"))
 	close(unblock)
 	wg.Wait()
 

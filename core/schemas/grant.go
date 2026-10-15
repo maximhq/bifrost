@@ -116,6 +116,15 @@ type Permit interface {
 	ProviderPermits() []ProviderPermit
 	// MCPPermits is every MCP client the permit allows tools of.
 	MCPPermits() []MCPPermit
+
+	// AgentPermits is every Agent Gateway registration the permit allows.
+	AgentPermits() []string
+
+	// AllowsAllProviders reports whether the permit grants every provider, including ones it holds no
+	// provider permit for. It coexists with ProviderPermits: a provider the permit lists still has
+	// that permit's model, key, and weight rules applied; a provider it lists none for is allowed with
+	// all models and all keys. False is the default, deny-by-default behaviour.
+	AllowsAllProviders() bool
 }
 
 // Access is an attempt's resolved access: the permits the caller holds, the permit scoping the
@@ -146,11 +155,20 @@ type Access interface {
 	// lose to nothing: a permit that blacklists the model does not permit it, whatever its
 	// allowed-models list says. An empty model asks about the provider alone.
 	IsModelAllowed(provider string, model string) bool
+	// AllowsEveryModel reports whether the request may use any model at all on provider: every
+	// permit deciding for the provider allows all of its models and blacklists none. It is the
+	// question to ask when a request will run models it does not name, such as a batch defined by
+	// an uploaded file: an access for which this is false has a model restriction that only a
+	// named model lets it apply.
+	AllowsEveryModel(provider string) bool
 	// IsMCPToolAllowed reports whether the request may execute toolPattern, which is either
 	// "<client>-<tool>" or the "<client>-*" wildcard standing for every tool of a client. A
 	// wildcard is permitted when the client is granted any tool at all; narrowing a wildcard down
 	// to the tools actually granted is MCPToolIncludeList's job.
 	IsMCPToolAllowed(toolPattern string) bool
+
+	// IsAgentAllowed reports whether the request may call the named Agent Gateway registration.
+	IsAgentAllowed(agentName string) bool
 
 	// PermitsForModel returns the permits the request answers to for model on provider: every one
 	// of the caller's permits that permits the pair, then the scoping permit whenever the request
@@ -196,6 +214,8 @@ type Access interface {
 	// DeniedPermitsForModel returns the permits that refused model on provider, so the refusal can name them.
 	// An empty model asks about the provider alone. Nil when the request is allowed.
 	DeniedPermitsForModel(provider string, model string) []Permit
+	// DeniedPermitsForAgent is DeniedPermitsForModel for an Agent Gateway registration.
+	DeniedPermitsForAgent(agentName string) []Permit
 	// DeniedPermitsForMCPTool is DeniedPermitsForModel for an MCP tool pattern.
 	DeniedPermitsForMCPTool(toolPattern string) []Permit
 }
@@ -214,14 +234,15 @@ type Limits interface {
 // with it. It mirrors the semantics of a virtual key's provider config, expressed independently of
 // any particular source.
 //
-// The lists have the semantics of the configuration lists they are built from: a list holding only
-// "*" is unrestricted, an empty list holds nothing, and membership ignores case. Key IDs are the
-// exception, matched exactly by whoever selects a key.
+// The lists are the same types the configuration lists are, and carry their semantics with them: a
+// list holding only "*" is unrestricted, an empty list holds nothing. Key IDs are identifiers
+// rather than names, so whoever selects a key matches them exactly; the case-folding membership
+// methods are for the model and tool lists.
 type ProviderPermit struct {
-	Provider          string   // provider name, as configured
-	AllowedModels     []string // ["*"] allows all models; empty allows none (deny by default)
-	BlacklistedModels []string // blocked models; wins over AllowedModels
-	KeyIDs            []string // ["*"] allows all keys of the provider; empty allows none.
+	Provider          string    // provider name, as configured
+	AllowedModels     WhiteList // ["*"] allows all models; empty allows none (deny by default)
+	BlacklistedModels BlackList // blocked models; wins over AllowedModels
+	KeyIDs            WhiteList // ["*"] allows all keys of the provider; empty allows none.
 	//                             Composes with the other side's list, but only where that side also
 	//                             authorizes the request for the provider: a permit the request is not
 	//                             proceeding on does not get to say which keys serve it.
@@ -235,8 +256,9 @@ type ProviderPermit struct {
 type MCPPermit struct {
 	Client string // stable client identifier; identifies the client across renames and
 	//                decides which permit applies to a client
-	ClientName string   // client name, as used in "<client>-<tool>" tool patterns
-	Tools      []string // ["*"] allows every tool of the client; empty allows none
+	ClientName string    // client name, as used in "<client>-<tool>" tool patterns
+	Tools      WhiteList // ["*"] allows every tool of the client; empty allows none. Matched
+	//                       against the tool's own name, after the "<client>-" prefix is trimmed.
 }
 
 // ProviderCandidate is one way a request could be served: a provider, with the weight and keys it
@@ -248,11 +270,11 @@ type MCPPermit struct {
 // candidate costs is gathered against Access.PermitsForModel, given its provider and the model.
 type ProviderCandidate struct {
 	Provider string
-	Weight   *float64 // nil means the candidate has no weight assigned
-	KeyIDs   []string // ["*"] allows all keys of the provider; per candidate, so two permits for
-	//                   one provider can carry different keys. Consumers stamping a key restriction
-	//                   for the request use Access.KeysForModel instead: it answers for the request, not
-	//                   per candidate.
+	Weight   *float64  // nil means the candidate has no weight assigned
+	KeyIDs   WhiteList // ["*"] allows all keys of the provider; per candidate, so two permits for
+	//                    one provider can carry different keys. Consumers stamping a key restriction
+	//                    for the request use Access.KeysForModel instead: it answers for the request,
+	//                    not per candidate.
 }
 
 // Limit is one budget or one rate limit a request answers to: what to load when enforcing it, and

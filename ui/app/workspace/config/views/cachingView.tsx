@@ -2,12 +2,12 @@ import PageTitle from "@/components/pageTitle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ModelMultiselect } from "@/components/ui/modelMultiselect";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { ModelSelector } from "@/components/ui/modelSelector";
+import { ProviderSelector } from "@/components/ui/providerSelector";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ProviderIconType, RenderProviderIcon } from "@/lib/constants/icons";
-import { EmbeddingSupportedProviders, getProviderLabel } from "@/lib/constants/logs";
+import { EmbeddingSupportedProviders } from "@/lib/constants/logs";
 import {
 	getErrorMessage,
 	useCreatePluginMutation,
@@ -19,6 +19,7 @@ import {
 import { CacheConfig, EditorCacheConfig, ModelProvider, ModelProviderName } from "@/lib/types/config";
 import { SEMANTIC_CACHE_PLUGIN } from "@/lib/types/plugins";
 import { cn } from "@/lib/utils";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -47,6 +48,7 @@ const defaultDirectConfig: EditorCacheConfig = {
 	exclude_system_prompt: false,
 	cache_by_model: true,
 	cache_by_provider: true,
+	disable_identity_scoping: false,
 };
 
 // Configs we treat as "the user has nothing saved": both API responses
@@ -72,8 +74,9 @@ const inferMode = (config: EditorCacheConfig): CacheMode => {
 	return "direct";
 };
 
-// Strip semantic-only fields when persisting a direct-only payload so the
-// server validator doesn't reject a stale provider choice.
+// Clear semantic-only fields when persisting a direct-only payload so the
+// server validator doesn't reject a stale provider choice. An update merges
+// over the saved config, so they are sent empty rather than left out.
 const buildPayload = (config: EditorCacheConfig, mode: CacheMode): CacheConfig => {
 	const base = {
 		ttl: config.ttl ?? 0,
@@ -82,11 +85,12 @@ const buildPayload = (config: EditorCacheConfig, mode: CacheMode): CacheConfig =
 		exclude_system_prompt: config.exclude_system_prompt,
 		cache_by_model: config.cache_by_model,
 		cache_by_provider: config.cache_by_provider,
+		disable_identity_scoping: config.disable_identity_scoping ?? false,
 		vector_store_namespace: config.vector_store_namespace?.trim() || undefined,
 		default_cache_key: config.default_cache_key?.trim() || undefined,
 	};
 	if (mode === "direct") {
-		return { ...base, dimension: 1 } as CacheConfig;
+		return { ...base, provider: "", embedding_model: "", dimension: 1 } as CacheConfig;
 	}
 	return {
 		...base,
@@ -133,6 +137,7 @@ export default function CachingView() {
 	const embeddingProviders = useMemo(() => providers.filter(supportsEmbedding), [providers]);
 
 	const [updatePlugin, { isLoading: isUpdating }] = useUpdatePluginMutation();
+	const hasSettingsUpdateAccess = useRbac(RbacResource.Settings, RbacOperation.Update);
 	const [createPlugin, { isLoading: isCreating }] = useCreatePluginMutation();
 	const isSaving = isUpdating || isCreating;
 
@@ -183,6 +188,7 @@ export default function CachingView() {
 			"exclude_system_prompt",
 			"cache_by_model",
 			"cache_by_provider",
+			"disable_identity_scoping",
 			"vector_store_namespace",
 			"default_cache_key",
 		];
@@ -305,14 +311,21 @@ export default function CachingView() {
 								place, no redeploy needed.{" "}
 							</p>
 						</div>
-						<Switch
-							id="enable-caching"
-							data-testid="caching-enable-switch"
-							size="md"
-							checked={cachingActive}
-							disabled={!isVectorStoreEnabled || isSaving}
-							onCheckedChange={handleToggle}
-						/>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<span tabIndex={!hasSettingsUpdateAccess ? 0 : undefined}>
+									<Switch
+										id="enable-caching"
+										data-testid="caching-enable-switch"
+										size="md"
+										checked={cachingActive}
+										disabled={!isVectorStoreEnabled || isSaving || !hasSettingsUpdateAccess}
+										onCheckedChange={handleToggle}
+									/>
+								</span>
+							</TooltipTrigger>
+							{!hasSettingsUpdateAccess && <TooltipContent>You don't have permission to update settings</TooltipContent>}
+						</Tooltip>
 					</div>
 
 					{providersLoading ? (
@@ -327,12 +340,14 @@ export default function CachingView() {
 									<Label className="text-sm font-medium">Cache Mode</Label>
 									<Tabs value={mode} onValueChange={(v) => setMode(v as CacheMode)}>
 										<TabsList className="flex w-full justify-start">
-											<TabsTrigger value="direct" data-testid="caching-mode-direct-tab">
+											{/* Panels live outside <Tabs>, so drop the dangling aria-controls Radix would add. */}
+											<TabsTrigger value="direct" data-testid="caching-mode-direct-tab" aria-controls={undefined}>
 												Direct only
 											</TabsTrigger>
 											<TabsTrigger
 												value="semantic"
 												data-testid="caching-mode-semantic-tab"
+												aria-controls={undefined}
 												disabled={embeddingProviders.length === 0}
 												title={
 													embeddingProviders.length === 0 ? "Configure an embedding-capable provider to enable semantic mode." : undefined
@@ -382,41 +397,28 @@ export default function CachingView() {
 											<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 												<div className="space-y-2">
 													<Label htmlFor="provider">Configured Providers</Label>
-													<Select
-														value={cacheConfig.provider}
-														onValueChange={(value: ModelProviderName) =>
+													<ProviderSelector
+														inputId="provider"
+														data-testid="caching-provider-select"
+														filter={supportsEmbedding}
+														value={cacheConfig.provider ?? ""}
+														onChange={(value: string) =>
 															updateLocal({
-																provider: value,
+																provider: value as ModelProviderName,
 																embedding_model: value === cacheConfig.provider ? cacheConfig.embedding_model : "",
 															})
 														}
-													>
-														<SelectTrigger className="w-full" data-testid="caching-provider-select">
-															<SelectValue placeholder="Select provider" />
-														</SelectTrigger>
-														<SelectContent>
-															{embeddingProviders
-																.filter((provider) => provider.name)
-																.map((provider) => (
-																	<SelectItem key={provider.name} value={provider.name}>
-																		<div className="flex items-center gap-2">
-																			<RenderProviderIcon provider={provider.name as ProviderIconType} size="sm" className="h-4 w-4" />
-																			<span>{getProviderLabel(provider.name)}</span>
-																		</div>
-																	</SelectItem>
-																))}
-														</SelectContent>
-													</Select>
+													/>
 												</div>
 												<div className="space-y-2">
 													<Label htmlFor="embedding_model">Embedding Model*</Label>
-													<ModelMultiselect
+													<ModelSelector
 														inputId="embedding_model"
 														data-testid="caching-embedding-model-select"
-														isSingleSelect
 														provider={cacheConfig.provider || undefined}
 														value={cacheConfig.embedding_model ?? ""}
 														onChange={(model) => updateLocal({ embedding_model: model })}
+														allowCustomModel
 														placeholder={cacheConfig.provider ? "Search or type an embedding model..." : "Select a provider first"}
 														disabled={!cacheConfig.provider}
 													/>
@@ -596,6 +598,7 @@ export default function CachingView() {
 												<p className="text-muted-foreground text-xs">Strip system messages from the cache key.</p>
 											</div>
 											<Switch
+												aria-label="Exclude system prompt"
 												data-testid="caching-exclude-system-prompt-switch"
 												checked={cacheConfig.exclude_system_prompt || false}
 												onCheckedChange={(checked) => updateLocal({ exclude_system_prompt: checked })}
@@ -617,6 +620,7 @@ export default function CachingView() {
 												</p>
 											</div>
 											<Switch
+												aria-label="Cache by model"
 												data-testid="caching-cache-by-model-switch"
 												checked={cacheConfig.cache_by_model}
 												onCheckedChange={(checked) => updateLocal({ cache_by_model: checked })}
@@ -631,9 +635,26 @@ export default function CachingView() {
 												</p>
 											</div>
 											<Switch
+												aria-label="Cache by provider"
 												data-testid="caching-cache-by-provider-switch"
 												checked={cacheConfig.cache_by_provider}
 												onCheckedChange={(checked) => updateLocal({ cache_by_provider: checked })}
+												size="md"
+											/>
+										</div>
+										<div className="flex items-center justify-between space-x-2 rounded-sm border p-3">
+											<div className="space-y-0.5">
+												<Label className="text-sm font-medium">Scope Cache by Identity</Label>
+												<p className="text-muted-foreground text-xs">
+													Serve a cached response only to the virtual key and user that wrote it. Turn off to share entries across
+													identities that send the same cache key.
+												</p>
+											</div>
+											<Switch
+												aria-label="Scope cache by identity"
+												data-testid="caching-identity-scoping-switch"
+												checked={!cacheConfig.disable_identity_scoping}
+												onCheckedChange={(checked) => updateLocal({ disable_identity_scoping: !checked })}
 												size="md"
 											/>
 										</div>
@@ -662,14 +683,21 @@ export default function CachingView() {
 								</div>
 							</div>
 
-							<div className="flex justify-end pt-2">
-								<Button
-									data-testid="caching-save-button"
-									onClick={handleSave}
-									disabled={!hasUnsavedConfigChanges || isSaving || Boolean(validationError)}
-								>
-									{isSaving ? "Saving..." : "Save Changes"}
-								</Button>
+							<div className="bg-card sticky bottom-0 flex justify-end py-2">
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span tabIndex={!hasSettingsUpdateAccess ? 0 : undefined}>
+											<Button
+												data-testid="caching-save-button"
+												onClick={handleSave}
+												disabled={!hasUnsavedConfigChanges || isSaving || Boolean(validationError) || !hasSettingsUpdateAccess}
+											>
+												{isSaving ? "Saving..." : "Save Changes"}
+											</Button>
+										</span>
+									</TooltipTrigger>
+									{!hasSettingsUpdateAccess && <TooltipContent>You don't have permission to update settings</TooltipContent>}
+								</Tooltip>
 							</div>
 						</>
 					)}

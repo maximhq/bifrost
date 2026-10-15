@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib/contexts/rbacContext";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,7 +9,7 @@ import { Message, MessageType } from "@/lib/message";
 import { getErrorMessage } from "@/lib/store";
 import { useCommitSessionMutation } from "@/lib/store/apis/promptsApi";
 import { PromptSession, PromptSessionMessage } from "@/lib/types/prompts";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useState, type ComponentProps } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
@@ -40,6 +41,7 @@ function MessagePreview({
 	selected: boolean;
 	onToggle: () => void;
 }) {
+	const checkboxId = useId();
 	const msg = useMemo(() => Message.deserialize(sessionMessage.message), [sessionMessage.message]);
 	const role = msg.role;
 	const content = msg.content;
@@ -47,12 +49,13 @@ function MessagePreview({
 
 	return (
 		<label
+			htmlFor={checkboxId}
 			className={cn(
 				"group flex items-start gap-3 rounded-md border px-3 py-2.5 cursor-pointer transition-colors",
 				selected ? "border-border" : "border-transparent",
 			)}
 		>
-			<Checkbox checked={selected} onCheckedChange={onToggle} className="mt-1 shrink-0" />
+			<Checkbox id={checkboxId} checked={selected} onCheckedChange={onToggle} className="mt-1 shrink-0" />
 			<div className="min-w-0 flex-1">
 				<span className="text-xs font-medium uppercase">{role}</span>
 				<div className="text-muted-foreground mt-1 line-clamp-3 text-sm">
@@ -71,6 +74,7 @@ function MessagePreview({
 
 export function CommitVersionSheet({ open, onOpenChange, session, onCommitted }: CommitVersionSheetProps) {
 	const [commitSession, { isLoading }] = useCommitSessionMutation();
+	const canCommit = useRbac(RbacResource.PromptRepository, RbacOperation.Update);
 	const [selectedIndices, setSelectedIndices] = useState<Set<number>>(new Set());
 
 	const {
@@ -211,7 +215,8 @@ export function CommitVersionSheet({ open, onOpenChange, session, onCommitted }:
 							<Button
 								type="submit"
 								data-testid="commit-version-submit"
-								disabled={isLoading || selectedIndices.size === 0}
+								disabled={isLoading || selectedIndices.size === 0 || !canCommit}
+								title={canCommit ? undefined : "You do not have permission to change prompts"}
 								className={selectedIndices.size === 0 ? "opacity-50" : ""}
 							>
 								{isLoading ? "Committing..." : "Commit Version"}

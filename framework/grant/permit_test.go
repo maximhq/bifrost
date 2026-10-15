@@ -66,13 +66,13 @@ func TestNewPermit(t *testing.T) {
 		weight = 999
 
 		gotProvider := permit.ProviderPermits()[0]
-		assert.Equal(t, []string{"gpt-4o"}, gotProvider.AllowedModels)
-		assert.Equal(t, []string{"o3"}, gotProvider.BlacklistedModels)
-		assert.Equal(t, []string{"key-1"}, gotProvider.KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"gpt-4o"}, gotProvider.AllowedModels)
+		assert.Equal(t, schemas.BlackList{"o3"}, gotProvider.BlacklistedModels)
+		assert.Equal(t, schemas.WhiteList{"key-1"}, gotProvider.KeyIDs)
 		require.NotNil(t, gotProvider.Weight)
 		assert.Equal(t, 0.4, *gotProvider.Weight)
 
-		assert.Equal(t, []string{"read_file"}, permit.MCPPermits()[0].Tools)
+		assert.Equal(t, schemas.WhiteList{"read_file"}, permit.MCPPermits()[0].Tools)
 	})
 
 	t.Run("mutating what a getter returned does not alter what a later reader sees", func(t *testing.T) {
@@ -98,12 +98,12 @@ func TestNewPermit(t *testing.T) {
 
 		again := permit.ProviderPermits()[0]
 		assert.Equal(t, "openai", again.Provider)
-		assert.Equal(t, []string{"gpt-4o"}, again.AllowedModels)
+		assert.Equal(t, schemas.WhiteList{"gpt-4o"}, again.AllowedModels)
 		require.NotNil(t, again.Weight)
 		assert.Equal(t, 0.4, *again.Weight)
 
 		assert.Equal(t, "github-id", permit.MCPPermits()[0].Client)
-		assert.Equal(t, []string{"read_file"}, permit.MCPPermits()[0].Tools)
+		assert.Equal(t, schemas.WhiteList{"read_file"}, permit.MCPPermits()[0].Tools)
 	})
 
 	t.Run("no lists is no lists", func(t *testing.T) {
@@ -223,14 +223,14 @@ func TestProviderPermitFor(t *testing.T) {
 	t.Run("the first provider permit for the provider", func(t *testing.T) {
 		found := providerPermitFor(permit, "openai")
 		require.NotNil(t, found)
-		assert.Equal(t, []string{"key-a"}, found.KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"key-a"}, found.KeyIDs)
 		assert.Nil(t, providerPermitFor(permit, "cohere"))
 	})
 
 	t.Run("the first that sets a weight", func(t *testing.T) {
 		found := weightedProviderPermitFor(permit, "openai")
 		require.NotNil(t, found)
-		assert.Equal(t, []string{"key-b"}, found.KeyIDs)
+		assert.Equal(t, schemas.WhiteList{"key-b"}, found.KeyIDs)
 		assert.Nil(t, weightedProviderPermitFor(permit, "bedrock"), "held, and unweighted")
 		assert.Nil(t, weightedProviderPermitFor(permit, "cohere"))
 	})
@@ -388,28 +388,29 @@ func TestAllowsTool(t *testing.T) {
 	})
 }
 
-// A refusal is read by whoever made the request, so no kind this package declares may render as a
-// machine identifier. The switch translates the ones whose value does not read as prose; the rest
-// fall through to their own value, which is fine only while that value is a word.
+// A refusal names the permit kind in words rather than by identifier - "your team's access profile",
+// not "team_access_profile" - so every kind declared here is named here.
 //
-// The assertion that carries this is the underscore one: it is what fails if a kind is declared
-// with an underscored value and nobody adds it to the switch, which is the way this actually goes
-// wrong.
-func TestPermitTypePrettyStringNeverRendersAnIdentifier(t *testing.T) {
+// The assertion that carries this is the underscore one: it fails as soon as a kind is added with an
+// underscored value and no case in PrettyString.
+func TestPermitTypePrettyStringNamesEveryKind(t *testing.T) {
 	for _, tc := range []struct {
 		kind PermitType
 		want string
 	}{
 		{PermitVirtualKey, "virtual key"},
 		{PermitAccessProfile, "access profile"},
-		// Served by the default, because "project" is already the word a refusal should say.
+		{PermitTeamAccessProfile, "team access profile"},
+		{PermitBusinessUnitAccessProfile, "business unit access profile"},
+		{PermitCustomerAccessProfile, "customer access profile"},
+		// Unlabelled on purpose: "project" is already the word a refusal should say.
 		{PermitProject, "project"},
 	} {
 		assert.Equal(t, tc.want, tc.kind.PrettyString())
 		assert.NotContains(t, tc.kind.PrettyString(), "_", "a refusal must not read as an identifier")
 	}
 
-	// A kind nobody declared still renders, because a refusal that loses its subject cannot be
-	// acted on at all.
+	// A kind with no case of its own still renders: a refusal that loses its subject cannot be acted
+	// on at all, so the identifier is better than nothing.
 	assert.Equal(t, "something_else", PermitType("something_else").PrettyString())
 }
