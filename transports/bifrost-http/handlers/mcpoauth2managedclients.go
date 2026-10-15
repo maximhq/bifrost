@@ -90,7 +90,13 @@ func (h *OAuth2ManagedClientsHandler) list(ctx *fasthttp.RequestCtx) {
 	for _, c := range clients {
 		views = append(views, managedClientView{TableOAuth2ManagedClient: c, HasSecret: c.HasSecret()})
 	}
-	SendJSON(ctx, map[string]any{"clients": views, "user_identity_available": h.userIdentityAvailable()})
+	resp := map[string]any{"clients": views, "user_identity_available": h.userIdentityAvailable()}
+	if suggester, ok := h.identityResolver.(ManagedAuthIssuerSuggester); ok {
+		if issuer := suggester.SuggestedManagedAuthIssuer(ctx); issuer != "" {
+			resp["suggested_trusted_issuer"] = issuer
+		}
+	}
+	SendJSON(ctx, resp)
 }
 
 // create registers a managed client, returning its secret once for confidential clients.

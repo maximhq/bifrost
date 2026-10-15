@@ -47,6 +47,13 @@ type ManagedAuthAuditor interface {
 	RecordManagedAuthOutcome(ctx context.Context, outcome ManagedAuthOutcome)
 }
 
+// ManagedAuthIssuerSuggester is optionally implemented by the OAuth2IdentityResolver
+// to prefill the trusted issuer from the configured identity provider (for Okta,
+// its org authorization server). It is a UI hint only; the stored setting rules.
+type ManagedAuthIssuerSuggester interface {
+	SuggestedManagedAuthIssuer(ctx context.Context) string
+}
+
 // ManagedAuthOutcome describes one jwt-bearer grant attempt. Reason is internal
 // and never sent to the client; the assertion itself is never recorded.
 type ManagedAuthOutcome struct {

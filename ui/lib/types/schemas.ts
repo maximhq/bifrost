@@ -454,14 +454,16 @@ const literalURLCarriesForbiddenParts = (v: { value?: string; ref?: string; type
 	const u = parseLiteralURL(v);
 	return !!u && (u.username !== "" || u.password !== "" || u.search !== "" || u.hash !== "");
 };
-const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
-	if (!isSecretVarSet(v)) return true;
-	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
-	const raw = (v?.value ?? "").trim();
+// isHTTPSOrLoopbackURL accepts https URLs, and plain http only on a loopback host, for local
+// testing. Same loopback rule as the server (net.IP.IsLoopback): any 127.x.x.x, ::1, or localhost.
+// The server re-checks every URL and refuses private targets when it connects; this only lets the
+// form reject a value the server would refuse.
+export const isHTTPSOrLoopbackURL = (raw: string): boolean => {
 	try {
-		const u = new URL(raw);
-		if (u.protocol === "https:") return true;
-		// Same loopback rule as the server (net.IP.IsLoopback): any 127.x.x.x, ::1, or localhost.
+		const u = new URL(raw.trim());
+		// The server refuses credentials or a fragment in a URL, so the form does too.
+		if (u.username !== "" || u.password !== "" || u.hash !== "") return false;
+		if (u.protocol === "https:") return u.hostname !== "";
 		const host = u.hostname.toLowerCase();
 		return (
 			u.protocol === "http:" &&
@@ -470,6 +472,11 @@ const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: s
 	} catch {
 		return false;
 	}
+};
+const isLiteralHTTPSOrLoopbackURL = (v: { value?: string; ref?: string; type?: string } | undefined): boolean => {
+	if (!isSecretVarSet(v)) return true;
+	if (isSecretVarRef(v) || isSecretVarMasked(v)) return true;
+	return isHTTPSOrLoopbackURL(v?.value ?? "");
 };
 
 // OAuth key config schema. Honoured by openai-based providers: the key value may be empty
@@ -510,14 +517,14 @@ export const oauthKeyConfigSchema = z
 		}
 		if (!isSecretVarSet(data.token_url)) {
 			ctx.addIssue({ code: "custom", path: ["token_url"], message: "Token URL is required" });
-		} else if (!isLiteralHTTPSOrLoopbackURL(data.token_url)) {
-			ctx.addIssue({ code: "custom", path: ["token_url"], message: "Token URL must be an https URL" });
 		} else if (literalURLCarriesForbiddenParts(data.token_url)) {
 			ctx.addIssue({
 				code: "custom",
 				path: ["token_url"],
 				message: "Token URL must not carry userinfo, a query or a fragment; send extra parameters through extra_params",
 			});
+		} else if (!isLiteralHTTPSOrLoopbackURL(data.token_url)) {
+			ctx.addIssue({ code: "custom", path: ["token_url"], message: "Token URL must be an https URL" });
 		}
 		if (data.grant_type === "client_credentials") {
 			if (!isSecretVarSet(data.client_id)) {

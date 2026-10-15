@@ -152,3 +152,23 @@ func TestManagedClients_WritesRefusedWhenAuthBypassed(t *testing.T) {
 	h.create(ctx)
 	assert.Equal(t, fasthttp.StatusForbidden, ctx.Response.StatusCode())
 }
+
+// suggestingResolver offers a trusted-issuer hint, as the enterprise resolver does.
+type suggestingResolver struct{ fakeResolver }
+
+// SuggestedManagedAuthIssuer returns a fixed Okta org issuer.
+func (suggestingResolver) SuggestedManagedAuthIssuer(context.Context) string { return "https://acme.okta.com" }
+
+func TestManagedClients_ListCarriesIssuerSuggestion(t *testing.T) {
+	h, _ := newManagedClientsHandler(t, &suggestingResolver{})
+	ctx := jsonCtx("GET", "", "")
+	h.list(ctx)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+	assert.Equal(t, "https://acme.okta.com", body["suggested_trusted_issuer"])
+
+	plain, _ := newManagedClientsHandler(t, nil)
+	ctx = jsonCtx("GET", "", "")
+	plain.list(ctx)
+	assert.NotContains(t, string(ctx.Response.Body()), "suggested_trusted_issuer")
+}
