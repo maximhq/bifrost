@@ -18,6 +18,12 @@
           "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
           "default": 65536
         },
+        "body_buffer_pool_limit_bytes": {
+          "type": "integer",
+          "minimum": -1,
+          "description": "Largest request-body buffer (in bytes) a pooled keep-alive connection keeps for reuse between requests. Larger buffers are released after each request so connections do not pin their largest-ever body in memory; larger bodies are still accepted up to the max request body size. 0 or unset uses the default (4 MiB); -1 disables the limit and keeps every buffer. Process-wide: also applies to outbound fasthttp request buffers. Deploy-time only.",
+          "default": 4194304
+        },
         "plugin_download_private_allowlist": {
           "type": "array",
           "items": {
