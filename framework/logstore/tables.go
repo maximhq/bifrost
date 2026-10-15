@@ -433,6 +433,7 @@ type Log struct {
 	SessionTotalTokens int64   `gorm:"-" json:"session_total_tokens,omitempty"`
 
 	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
+	PassthroughParseFormat schemas.ModelProvider         `gorm:"-" json:"-"`                           // Transient: base provider whose wire format the log writer parses passthrough bodies with; empty skips parsing
 	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
 	RevealRedactionMapping *schemas.RedactionMapsByPhase `gorm:"-" json:"redaction_mapping,omitempty"` // Virtual field populated only on permitted log-detail reads
 
