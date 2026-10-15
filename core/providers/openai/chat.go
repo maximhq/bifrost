@@ -349,6 +349,13 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 			req.Reasoning.Effort = schemas.Ptr("high")
 		}
 	}
+
+	// Mistral rejects unknown assistant fields with 422 extra_forbidden, reasoning_content included
+	for i := range req.Messages {
+		if assistantMessage := req.Messages[i].OpenAIChatAssistantMessage; assistantMessage != nil {
+			assistantMessage.Reasoning = nil
+		}
+	}
 }
 
 // stripReasoningDetailsExceptToolCalls strips reasoning_content from assistant messages that
