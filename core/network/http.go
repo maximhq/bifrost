@@ -355,6 +355,25 @@ func NewDialPolicy(dial func(ctx context.Context, netw, addr string) (net.Conn, 
 	return &DialPolicy{dial: dial, resolveTarget: resolveTarget}
 }
 
+// DialContext connects under the policy, tunneling to a validated IP when a
+// proxy is configured. The proxy never resolves the destination itself.
+func (p *DialPolicy) DialContext(ctx context.Context, netw, addr string, proxyURL *url.URL) (net.Conn, error) {
+	if proxyURL == nil {
+		return p.dial(ctx, netw, addr)
+	}
+	if factory := defaultFactory.Load(); factory != nil {
+		factory.mu.RLock()
+		configuredURL := factory.proxyURLForPurpose(ClientPurposeAPI)
+		if configuredURL != nil && configuredURL.String() == proxyURL.String() {
+			config := *factory.proxyConfig
+			factory.mu.RUnlock()
+			return policyProxyDial(p, proxyURL, &config, config.proxyTLS())(ctx, netw, addr)
+		}
+		factory.mu.RUnlock()
+	}
+	return policyProxyDial(p, proxyURL, &GlobalProxyConfig{}, nil)(ctx, netw, addr)
+}
+
 // SSRFPolicy is the standard policy for user-controlled URLs: public targets only,
 // plus the hosts in allow (nil permits none). Direct connections go through
 // SSRFSafeDialContextWithAllowlist, which checks every resolved address at dial time;

@@ -1269,6 +1269,7 @@ export const coreConfigSchema = z.object({
 	hide_deleted_virtual_keys_in_filters: z.boolean().default(false),
 	delete_expired_virtual_keys: z.boolean().default(false),
 	enforce_vk_object_ownership: z.boolean().default(true),
+	extra_fields_placement: z.enum(["body", "headers"]).default("body"),
 	hidden_request_types: z.array(z.string()).default([]),
 	allowed_origins: z.array(z.string()).default(["*"]),
 	max_request_body_size_mb: z.number().min(1).default(100),
@@ -1295,6 +1296,8 @@ export const coreConfigSchema = z.object({
 		.optional(),
 	mcp_enable_temp_token_auth: z.boolean().default(false),
 	mcp_oauth_private_allowlist: z.array(z.string()).optional(),
+	a2a_private_allowlist: z.array(z.string()).optional(),
+	skills_external_client_url: secretVarSchema.optional(),
 });
 
 // Bifrost config schema
@@ -1304,6 +1307,7 @@ export const bifrostConfigSchema = z.object({
 	is_cache_connected: z.boolean(),
 	is_logs_connected: z.boolean(),
 	is_git_available: z.boolean().optional().default(false),
+	skills_marketplace_base_url: z.string().optional(),
 });
 
 // Network and proxy form schema - combined for the NetworkFormFragment

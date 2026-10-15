@@ -242,6 +242,9 @@ func ToGeminiResponsesRequestWithImageURLSchemes(ctx *schemas.BifrostContext, bi
 						{Text: *bifrostReq.Params.Instructions},
 					},
 				}
+			} else if *bifrostReq.Params.Instructions != "" {
+				// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
+				geminiReq.SystemInstruction.Parts = append([]*Part{{Text: *bifrostReq.Params.Instructions}}, geminiReq.SystemInstruction.Parts...)
 			}
 		}
 
@@ -1464,6 +1467,18 @@ func releaseGeminiResponsesStreamState(state *GeminiResponsesStreamState) {
 		state.flush()
 		geminiResponsesStreamStatePool.Put(state)
 	}
+}
+
+// AcquireGeminiResponsesStreamState gets a pooled Responses stream state for driving
+// ToBifrostResponsesStream outside the provider's own stream loop (e.g. rebuilding a recorded
+// passthrough stream). Pair every call with ReleaseGeminiResponsesStreamState.
+func AcquireGeminiResponsesStreamState() *GeminiResponsesStreamState {
+	return acquireGeminiResponsesStreamState()
+}
+
+// ReleaseGeminiResponsesStreamState returns a state obtained from AcquireGeminiResponsesStreamState.
+func ReleaseGeminiResponsesStreamState(state *GeminiResponsesStreamState) {
+	releaseGeminiResponsesStreamState(state)
 }
 
 func (state *GeminiResponsesStreamState) flush() {

@@ -324,6 +324,9 @@ func TestDecisionToResponsesEmulationOptIn(t *testing.T) {
 		{name: "microsoft decision model on azure is native", enabled: true, req: decision(schemas.Azure, "Microsoft-Decision-1")},
 		{name: "chat model on azure marked", enabled: true, req: decision(schemas.Azure, "gpt-4o"), wantConverted: true},
 		{name: "microsoft decision model on openai marked", enabled: true, req: decision(schemas.OpenAI, "Microsoft-Decision-1"), wantConverted: true},
+		{name: "ai_decide on databricks is native", enabled: true, req: decision(schemas.Databricks, "ai_decide")},
+		{name: "serving endpoint model on databricks marked", enabled: true, req: decision(schemas.Databricks, "databricks-claude-sonnet-4"), wantConverted: true},
+		{name: "ai_decide on openai marked", enabled: true, req: decision(schemas.OpenAI, "ai_decide"), wantConverted: true},
 		{name: "typesafe provider never marked", enabled: true, req: decision(schemas.Typesafe, "jev-latest")},
 		{name: "chat request untouched", enabled: true, req: chat},
 	}

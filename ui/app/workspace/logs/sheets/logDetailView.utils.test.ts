@@ -6,6 +6,8 @@ import {
 	findLastPendingClientCallIndex,
 	hasNoToolArguments,
 	isClientToolCallItem,
+	isParsedPassthroughLog,
+	passthroughLogParams,
 	nextSessionLookupStart,
 	isResponsesToolCallItem,
 	isShownMetadataKey,
@@ -344,5 +346,43 @@ describe("decisionQuestions", () => {
 		expect(decisionQuestions("decisions", [])).toBeNull();
 		expect(decisionQuestions("decisions", undefined)).toBeNull();
 		expect(decisionQuestions("decisions", "x")).toBeNull();
+	});
+});
+
+describe("isParsedPassthroughLog", () => {
+	const passthrough = { object: "passthrough", params: { method: "POST", path: "/v1/chat/completions", status_code: 200 } };
+
+	it("is false for a raw-only passthrough row", () => {
+		expect(isParsedPassthroughLog(passthrough)).toBe(false);
+	});
+
+	it("is false when parsed_type is set but nothing decoded into conversation fields", () => {
+		expect(isParsedPassthroughLog({ ...passthrough, params: { ...passthrough.params, parsed_type: "chat_completion" } })).toBe(false);
+	});
+
+	it("is true for a parsed chat or Responses passthrough row, streamed or not", () => {
+		const params = { ...passthrough.params, parsed_type: "chat_completion" };
+		expect(isParsedPassthroughLog({ ...passthrough, params, input_history: [{ role: "user", content: "hi" }] as any })).toBe(true);
+		expect(
+			isParsedPassthroughLog({
+				object: "passthrough_stream",
+				params: { ...params, parsed_type: "responses" },
+				responses_output: [{ type: "message" }] as any,
+			}),
+		).toBe(true);
+	});
+
+	it("is false for typed rows whatever their params say", () => {
+		expect(isParsedPassthroughLog({ object: "chat_completion", params: { parsed_type: "x" } as any, input_history: [{}] as any })).toBe(
+			false,
+		);
+	});
+});
+
+describe("passthroughLogParams", () => {
+	it("returns the params of a passthrough row and null otherwise", () => {
+		expect(passthroughLogParams({ object: "passthrough_stream", params: { path: "/v1/messages" } as any })?.path).toBe("/v1/messages");
+		expect(passthroughLogParams({ object: "passthrough" })).toEqual({});
+		expect(passthroughLogParams({ object: "responses", params: {} })).toBeNull();
 	});
 });

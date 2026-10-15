@@ -26,6 +26,8 @@ type TableAgentRegistration struct {
 	ForwardAcceptedCredential              bool                  `gorm:"column:forward_accepted_credential;not null;default:false"`
 	ForwardAcceptedCredentialOverridesAuth bool                  `gorm:"column:forward_accepted_credential_overrides_auth;not null;default:false"`
 	DiscoveryAuth                          *schemas.UpstreamAuth `gorm:"serializer:json;type:text"`
+	CredentialOrigins                      []string              `gorm:"serializer:json;type:text"`
+	RequirePublicTarget                    bool                  `gorm:"not null;default:false"`
 	ExtensionURIs                          []string              `gorm:"serializer:json;type:text"`
 	RuntimeAuth                            *schemas.UpstreamAuth `gorm:"serializer:json;type:text"`
 	// EncryptionStatus records whether the persisted secrets are ciphertext, so

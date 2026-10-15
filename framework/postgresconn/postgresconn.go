@@ -409,7 +409,10 @@ const (
 
 	// Migration pools run strictly serial DDL, so they need almost nothing. Left
 	// untuned they inherit database/sql's defaults, where MaxOpenConns is unlimited.
-	migrationMaxOpenConns = 2
+	// Three covers the dedicated migration-lock connection, the dedicated
+	// connection that pauses matview refreshes for the run (see
+	// logstore.PauseMatViewMaintenance), and the one the DDL itself runs on.
+	migrationMaxOpenConns = 3
 	migrationMaxIdleConns = 1
 )
 

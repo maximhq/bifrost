@@ -445,6 +445,22 @@ func isOpenAICompatPassthroughPath(path string) bool {
 	return strings.Contains(strings.ToLower(path), "/endpoints/openapi/")
 }
 
+// PassthroughWireFormat reports which provider's wire shape a Vertex passthrough path speaks:
+// Anthropic for /publishers/anthropic/, Mistral (OpenAI chat shapes) for /publishers/mistralai/,
+// OpenAI for the /endpoints/openapi/ MaaS endpoint, and Gemini for everything else. Usage
+// extraction and passthrough log parsing both dispatch on this.
+func PassthroughWireFormat(path string) schemas.ModelProvider {
+	switch {
+	case isAnthropicPassthroughPath(path):
+		return schemas.Anthropic
+	case isMistralPassthroughPath(path):
+		return schemas.Mistral
+	case isOpenAICompatPassthroughPath(path):
+		return schemas.OpenAI
+	}
+	return schemas.Gemini
+}
+
 var (
 	vertexBodyProjectsLit = []byte("projects/")
 	vertexLocationsLit    = []byte("/locations/")

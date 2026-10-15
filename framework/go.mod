@@ -13,9 +13,9 @@ require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
-	github.com/maximhq/bifrost/core v1.12.0
 	github.com/mark3labs/mcp-go v0.43.2
 	github.com/parquet-go/parquet-go v0.32.0
+	github.com/maximhq/bifrost/core v1.12.0
 	github.com/philippgille/chromem-go v0.7.0
 	github.com/pinecone-io/go-pinecone/v5 v5.3.0
 	github.com/qdrant/go-client v1.16.2
@@ -26,6 +26,7 @@ require (
 	github.com/valyala/fasthttp v1.74.0
 	github.com/weaviate/weaviate v1.38.0
 	github.com/weaviate/weaviate-go-client/v5 v5.7.1
+	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.55.0
 	golang.org/x/sync v0.22.0
 	google.golang.org/api v0.282.0
@@ -35,7 +36,6 @@ require (
 	gorm.io/driver/postgres v1.6.0
 	gorm.io/driver/sqlite v1.6.0
 	gorm.io/gorm v1.31.1
-	go.yaml.in/yaml/v3 v3.0.5
 )
 
 require (
@@ -163,8 +163,6 @@ require (
 	go.opentelemetry.io/otel/sdk v1.45.0 // indirect
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	go.starlark.net v0.0.0-20260102030733-3fee463870c9 // indirect
 	golang.org/x/arch v0.23.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect

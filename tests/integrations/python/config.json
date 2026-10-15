@@ -478,6 +478,22 @@
         "ttl": "1h"
       }
     },
+    "databricks": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Databricks PAT",
+          "value": "env.DATABRICKS_TOKEN",
+          "weight": 1,
+          "models": ["ai_decide"],
+          "databricks_key_config": {
+            "workspace_url": "env.DATABRICKS_WORKSPACE_URL"
+          }
+        }
+      ]
+    },
     "bedrock": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,

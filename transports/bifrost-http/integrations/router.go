@@ -2938,6 +2938,9 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 	// Router path has no transport post-hook phase, so we always pass nil.
 	traceCompleter, _ := ctx.UserValue(schemas.BifrostContextKeyTraceCompleter).(func([]schemas.PluginLogEntry))
 
+	// Read here for the same reason: in headers mode every chunk drops extra_fields.
+	stripExtraFields := lib.ExtraFieldsInHeaders(ctx)
+
 	// Get stream chunk interceptor for plugin hooks
 	interceptor := g.handlerStore.GetStreamChunkInterceptor()
 	var httpReq *schemas.HTTPRequest
@@ -3082,6 +3085,9 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					}
 				}
 
+				if stripExtraFields {
+					errorJSON = lib.StripExtraFields(errorJSON)
+				}
 				// Send error as SSE data, typed for routes whose frames carry an event line
 				reader.SendEvent(streamErrorEventType(config, bifrostErr, streamRequestType), errorJSON)
 			}
@@ -3271,6 +3277,9 @@ func (g *GenericRouter) handleStreaming(ctx *fasthttp.RequestCtx, bifrostCtx *sc
 					if err != nil {
 						g.logger.Warn("Failed to marshal streaming response: %v", err)
 						continue
+					}
+					if stripExtraFields {
+						responseJSON = lib.StripExtraFields(responseJSON)
 					}
 					sent = reader.SendEvent(eventType, responseJSON)
 				}

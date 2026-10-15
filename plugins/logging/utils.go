@@ -635,6 +635,27 @@ func retryOnNotFound(ctx context.Context, operation func() error) error {
 	return lastErr
 }
 
+// textRequestParamsAndTools returns the logged params and tools of a text completion, chat or
+// Responses request: the request's own params, plus its tools in chat shape (Responses tools are
+// converted with ToChatTool). It returns nil for every other request kind. The request for the
+// type must be set with non-nil Params, as every converter guarantees. PreLLMHook and passthrough log
+// parsing both use it, so a parsed passthrough row records the same fields as a typed request.
+func textRequestParamsAndTools(request *schemas.BifrostRequest) (interface{}, []schemas.ChatTool) {
+	switch request.RequestType {
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
+		return request.TextCompletionRequest.Params, nil
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		return request.ChatRequest.Params, request.ChatRequest.Params.Tools
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+		var tools []schemas.ChatTool
+		for _, tool := range request.ResponsesRequest.Params.Tools {
+			tools = append(tools, *tool.ToChatTool())
+		}
+		return request.ResponsesRequest.Params, tools
+	}
+	return nil, nil
+}
+
 // extractInputHistory extracts input history from request input
 func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]schemas.ChatMessage, []schemas.ResponsesMessage) {
 	if request.ChatRequest != nil {
@@ -1009,6 +1030,38 @@ func mergeLoadBalancerMetadata(metadata map[string]interface{}, ctx *schemas.Bif
 		}
 		if metadata == nil {
 			metadata = make(map[string]interface{}, len(attempt))
+		}
+		metadata[key] = value
+	}
+	return metadata
+}
+
+// virtualKeyMetadataContextKey is the context key under which the governance plugin publishes the
+// resolved virtual key's metadata (governance.VirtualKeyMetadataContextKey). This module cannot
+// import the governance plugin, and the key is kept out of core so both plugins build against
+// published core; the string must stay identical to governance's.
+const virtualKeyMetadataContextKey schemas.BifrostContextKey = "bifrost-governance-virtual-key-metadata"
+
+// mergeVirtualKeyMetadata snapshots the resolved virtual key's metadata onto a log row's metadata,
+// so spend stays filterable by it (cost center, owner, ...) even after the key's metadata changes.
+// It is applied after every request-supplied source (logging headers, x-bf-lh-* and x-bf-dim-*), so
+// on a key collision the virtual key's value wins: attribution an operator set on the key cannot be
+// spoofed by a caller sending a header of the same name. Keys under schemas.LoadBalancerMetadataPrefix
+// are skipped, as for headers; config validation already refuses them.
+func mergeVirtualKeyMetadata(metadata map[string]interface{}, ctx *schemas.BifrostContext) map[string]interface{} {
+	if ctx == nil {
+		return metadata
+	}
+	vkMetadata, ok := ctx.Value(virtualKeyMetadataContextKey).(map[string]string)
+	if !ok || len(vkMetadata) == 0 {
+		return metadata
+	}
+	for key, value := range vkMetadata {
+		if strings.HasPrefix(key, schemas.LoadBalancerMetadataPrefix) {
+			continue
+		}
+		if metadata == nil {
+			metadata = make(map[string]interface{}, len(vkMetadata))
 		}
 		metadata[key] = value
 	}

@@ -28,6 +28,8 @@ Write models as `provider/model` to pick the provider explicitly. Switching prov
 | [Cloudflare](/providers/supported-providers/cloudflare#4-decisions) | `cloudflare/clef`, `cloudflare/clef-flash`, `cloudflare/clef-omni` | `/v1/decisions` | Yes |
 | [Perplexity](/providers/supported-providers/perplexity#3-decisions) | `perplexity/pplx-decider-v1.1-27b`, `perplexity/pplx-decider-v1-27b` | `/v1/decisions` | Yes |
 | [Ollama](/providers/supported-providers/ollama#6-decisions) | `ollama/nimble`, `ollama/clef-flash`, `ollama/tev1:0.8b` | `/v1/decisions` | Yes, base64 only |
+| [Azure](/providers/supported-providers/azure#10-decisions) | `azure/Microsoft-Decision-1` (a key alias maps it to your deployment) | `/v1/decisions` | No |
+| [Databricks](/providers/supported-providers/databricks#decisions) | `databricks/ai_decide` | `/v1/decisions` | No |
 | [Laya, Nimble](/providers/self-hosted-decision-models) | `laya/english`, `nimble/nimble-latest` | `/v1/decisions` | No |
 
 Every provider also answers on `/openai/v1/decisions` and `/typesafe/v1/systemone` when you send a `provider/model` name, so an OpenAI or TypeSafe SDK can reach any of them. Each provider page covers its setup.
@@ -94,9 +96,9 @@ curl --location 'http://localhost:8080/v1/decisions' \
 
 - `image_url` is a base64 data URL or an `https` URL. Ollama reads base64 only.
 - `detail` is optional: `low`, `high`, `auto`, or `original`.
-- Only `input_text` and `input_image` parts are accepted. A provider that reads text only (TypeSafe, Laya, Nimble) rejects an image with a `400`, which lets a [fallback](#fallbacks) that reads images take the request.
+- Only `input_text` and `input_image` parts are accepted. A provider that reads text only (TypeSafe, Azure, Databricks, Laya, Nimble) rejects an image with a `400`, which lets a [fallback](#fallbacks) that reads images take the request.
 
-**Structured data**: an object, sent to System One models (TypeSafe, Clef, Perplexity, Ollama, Laya, Nimble) as is, and to OpenAI as JSON text.
+**Structured data**: an object, sent to System One models (TypeSafe, Clef, Perplexity, Ollama, Azure, Databricks, Laya, Nimble) as is, and to OpenAI as JSON text.
 
 ```json
 "input": { "ticket_id": 4812, "message": "I was double charged.", "plan": "pro" }
@@ -190,7 +192,7 @@ Bifrost rejects these with a `400` before calling any provider:
 - A `choice` question with no `choices`
 - Two questions with the same `name`
 
-The number of score levels is checked by each provider (TypeSafe accepts 2-10, Perplexity 1-10).
+The number of score levels is checked by each provider (TypeSafe, Azure and Databricks accept 2-10, Perplexity 1-10).
 
 An input part one model cannot read fails only that attempt, so a fallback can still serve it. If every attempt fails, you get the first attempt's error.
 

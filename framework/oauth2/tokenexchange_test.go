@@ -384,6 +384,28 @@ func TestGetExchangedAccessTokenRejected(t *testing.T) {
 	}
 }
 
+// A form-encoded rejection keeps its error and description in Detail, the
+// same as a JSON one.
+func TestGetExchangedAccessTokenRejected_FormEncodedBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-www-form-urlencoded")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`error=invalid_grant&error_description=subject+token+revoked`))
+	}))
+	defer server.Close()
+
+	p := newExchangeProvider(t, server.URL, schemas.TokenExchangeGrantRFC8693)
+	_, err := p.GetExchangedAccessToken(userExchangeContext("subject-jwt"), exchangeTestClientConfig())
+
+	var rejected *schemas.TokenExchangeRejectedError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("expected *TokenExchangeRejectedError, got %T: %v", err, err)
+	}
+	if want := "invalid_grant: subject token revoked"; rejected.Detail != want {
+		t.Fatalf("expected sanitized Detail %q, got %q", want, rejected.Detail)
+	}
+}
+
 // TestGetExchangedAccessTokenRejected_NonStandardBodyNotLeaked pins the
 // security-relevant behavior: TokenExchangeRejectedError.Detail is
 // externally serialized (MCPAuthRequiredError.ExchangeError) and appears in

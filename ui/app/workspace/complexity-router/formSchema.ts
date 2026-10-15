@@ -7,6 +7,7 @@ import {
 	DecisionTier,
 	AZURE_DECISION_MODEL,
 	CLOUDFLARE_DECISION_MODEL,
+	DATABRICKS_DECISION_MODEL,
 	OPENAI_DECISION_MODEL,
 	OPENROUTER_DECISION_MODEL,
 	PERPLEXITY_DECISION_MODEL,
@@ -533,7 +534,7 @@ export type DecisionProviderState = "missing" | "failing" | "no-enabled-key" | "
 
 // isDecisionProvider reports a provider that answers /v1/decisions natively:
 // Typesafe, OpenRouter, Cloudflare (Clef), Perplexity, Ollama, Azure
-// (Microsoft-Decision-1), OpenAI or a custom provider built on it (their decision
+// (Microsoft-Decision-1), Databricks (ai_decide), OpenAI or a custom provider built on it (their decision
 // models, such as gpt-6-luna), or a custom provider built on
 // the Typesafe base (Laya, Nimble, Clef). Other providers would only emulate
 // decisions through chat, which is what the LLM classifier is for.
@@ -545,6 +546,7 @@ export function isDecisionProvider(provider: ModelProvider): boolean {
 		provider.name === "perplexity" ||
 		provider.name === "ollama" ||
 		provider.name === "azure" ||
+		provider.name === "databricks" ||
 		isOpenAIDecisionProvider(provider) ||
 		provider.custom_provider_config?.base_provider_type === "typesafe"
 	);
@@ -578,6 +580,7 @@ export function defaultDecisionModel(provider: ModelProvider | undefined): strin
 	if (provider?.name === "perplexity") return PERPLEXITY_DECISION_MODEL;
 	if (provider?.name === "ollama") return "";
 	if (provider?.name === "azure") return AZURE_DECISION_MODEL;
+	if (provider?.name === "databricks") return DATABRICKS_DECISION_MODEL;
 	if (provider?.name === "openai") return OPENAI_DECISION_MODEL;
 	if (isOpenAIDecisionProvider(provider)) return "";
 	return clefModelFromProvider(provider) ?? namedSelfHostedGroup(provider?.name ?? "")?.models[0] ?? "";

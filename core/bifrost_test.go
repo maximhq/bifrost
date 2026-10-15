@@ -23,6 +23,7 @@ import (
 	"github.com/maximhq/bifrost/core/mcp"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -7869,5 +7870,85 @@ func TestSetMCPInProcessServerFactory_RacesLazyManagerCreation(t *testing.T) {
 			t.Fatalf("iteration %d: the manager lost the registered factory: %v", i, err)
 		}
 		b.Shutdown()
+	}
+}
+
+// A Responses request that defers tools on a model with no tool search of its own
+// (gpt-4o) goes through the gateway-run search: the upstream first sees only the
+// eager tools plus bifrost_tool_search, the model searches, and the second upstream
+// call carries the loaded tool and the search turn. The caller sees one response.
+func TestResponsesRequest_GatewayToolSearch(t *testing.T) {
+	searchCall := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4o","output":[` +
+		`{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_s1","name":"bifrost_tool_search","arguments":"{\"query\":\"weather\"}"}],` +
+		`"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}`
+	weatherCall := `{"id":"resp_2","object":"response","created_at":1,"status":"completed","model":"gpt-4o","output":[` +
+		`{"id":"fc_2","type":"function_call","status":"completed","call_id":"call_w1","name":"get_weather","arguments":"{\"city\":\"Tokyo\"}"}],` +
+		`"usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}}`
+	upstream := newRecordingServer(func(attempt int, w http.ResponseWriter) {
+		if attempt == 1 {
+			writeJSON(w, http.StatusOK, searchCall)
+			return
+		}
+		writeJSON(w, http.StatusOK, weatherCall)
+	})
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	configureUpstream(account, schemas.OpenAI, "openai-key", upstream.URL, 0)
+	client := newStreamTestClient(t, account)
+
+	tool := func(name string, deferred bool) schemas.ResponsesTool {
+		t := schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr(name), Description: schemas.Ptr(name + " tool"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+		}
+		if deferred {
+			t.DeferLoading = schemas.Ptr(true)
+		}
+		return t
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	resp, bifrostErr := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("weather in Tokyo?")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{tool("lookup_city", false), tool("get_weather", true)}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %v", bifrostErr.Error)
+	}
+
+	bodies := upstream.snapshot()
+	if len(bodies) != 2 {
+		t.Fatalf("want 2 upstream calls, got %d", len(bodies))
+	}
+	names := func(body string) []string {
+		var out []string
+		for _, tool := range gjson.Get(body, "tools").Array() {
+			out = append(out, tool.Get("name").String())
+		}
+		return out
+	}
+	if got := names(bodies[0]); !slices.Equal(got, []string{"lookup_city", "bifrost_tool_search"}) {
+		t.Errorf("first call tools = %v, want the eager tool plus the search", got)
+	}
+	if strings.Contains(bodies[0], "defer_loading") {
+		t.Errorf("defer_loading must not reach a model without tool search: %s", bodies[0])
+	}
+	if got := names(bodies[1]); !slices.Equal(got, []string{"lookup_city", "get_weather", "bifrost_tool_search"}) {
+		t.Errorf("second call tools = %v, want the loaded tool too", got)
+	}
+	if out := gjson.Get(bodies[1], `input.#(type=="function_call_output").output`).String(); !strings.Contains(out, "get_weather") {
+		t.Errorf("second call must carry the search result, got input %s", gjson.Get(bodies[1], "input").Raw)
+	}
+
+	if len(resp.Output) != 1 || resp.Output[0].Name == nil || *resp.Output[0].Name != "get_weather" {
+		t.Fatalf("want only the get_weather call in the response, got %+v", resp.Output)
+	}
+	if resp.Usage == nil || resp.Usage.InputTokens != 30 || resp.Usage.OutputTokens != 5 {
+		t.Errorf("want usage summed across both calls, got %+v", resp.Usage)
 	}
 }

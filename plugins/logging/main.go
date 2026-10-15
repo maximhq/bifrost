@@ -1698,7 +1698,8 @@ func userAgentFromContext(ctx *schemas.BifrostContext) string {
 // captureLoggingHeaders extracts configured logging headers and x-bf-lh-* prefixed headers
 // from the request context, dropping any key under schemas.LoadBalancerMetadataPrefix.
 // Returns a new metadata map, or nil if no headers were captured.
-// System entries (e.g. isAsyncRequest) should be set AFTER calling this so they take precedence.
+// System entries (e.g. isAsyncRequest) and the virtual key's metadata (mergeVirtualKeyMetadata)
+// should be applied AFTER calling this so they take precedence.
 func (p *LoggerPlugin) captureLoggingHeaders(ctx *schemas.BifrostContext) map[string]interface{} {
 	allHeaders, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
 	if allHeaders == nil {
@@ -1838,168 +1839,11 @@ func (p *LoggerPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	captureProvisional := virtualKeyStampPending(ctx)
 	requestContentPolicy := p.resolveContentPolicy(ctx)
 	if requestContentPolicy.storeContent || captureProvisional {
-		inputHistory, responsesInputHistory := p.extractInputHistory(req)
-		initialData.InputHistory = inputHistory
-		initialData.ResponsesInputHistory = responsesInputHistory
-
-		switch req.RequestType {
-		case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
-			initialData.Params = req.TextCompletionRequest.Params
-		case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
-			initialData.Params = req.ChatRequest.Params
-			initialData.Tools = req.ChatRequest.Params.Tools
-		case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
-			initialData.Params = req.ResponsesRequest.Params
-
-			var tools []schemas.ChatTool
-			for _, tool := range req.ResponsesRequest.Params.Tools {
-				tools = append(tools, *tool.ToChatTool())
-			}
-			initialData.Tools = tools
-		case schemas.RealtimeRequest:
-			if req.ResponsesRequest != nil {
-				initialData.Params = req.ResponsesRequest.Params
-				if req.ResponsesRequest.Params != nil {
-					var tools []schemas.ChatTool
-					for _, tool := range req.ResponsesRequest.Params.Tools {
-						tools = append(tools, *tool.ToChatTool())
-					}
-					initialData.Tools = tools
-				}
-			}
-		case schemas.EmbeddingRequest:
-			initialData.Params = req.EmbeddingRequest.Params
-			items := extractEmbeddingInput(req)
-			reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
-			if reqThreshold > 0 && embeddingMediaDataSize(items) > reqThreshold {
-				items = redactEmbeddingMediaData(items)
-			}
-			initialData.EmbeddingInput = items
-		case schemas.RerankRequest:
-			initialData.Params = req.RerankRequest.Params
-		case schemas.DecisionRequest:
-			initialData.Params = req.DecisionRequest.Questions
-		case schemas.OCRRequest:
-			initialData.Params = req.OCRRequest.Params
-			initialData.OCRInput = &req.OCRRequest.Document
-		case schemas.SpeechRequest, schemas.SpeechStreamRequest:
-			initialData.Params = req.SpeechRequest.Params
-			initialData.SpeechInput = req.SpeechRequest.Input
-		case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
-			initialData.Params = req.TranscriptionRequest.Params
-			input := req.TranscriptionRequest.Input
-			if input != nil {
-				reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
-				if reqThreshold > 0 && int64(len(input.File)) > reqThreshold {
-					// Strip binary file content when it exceeds the large payload threshold
-					// to avoid serializing multi-MB audio into the log database.
-					logInput := *input
-					logInput.File = nil
-					initialData.TranscriptionInput = &logInput
-				} else {
-					initialData.TranscriptionInput = input
-				}
-			}
-		case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
-			initialData.Params = req.ImageGenerationRequest.Params
-			initialData.ImageGenerationInput = req.ImageGenerationRequest.Input
-		case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
-			params := req.ImageEditRequest.Params
-			input := req.ImageEditRequest.Input
-			if input != nil {
-				reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
-				if reqThreshold > 0 {
-					var totalSize int64
-					for _, img := range input.Images {
-						totalSize += int64(len(img.Image))
-					}
-					if totalSize > reqThreshold {
-						logInput := *input
-						logInput.Images = nil
-						initialData.ImageEditInput = &logInput
-					} else {
-						initialData.ImageEditInput = input
-					}
-					if params != nil && int64(len(params.Mask)) > reqThreshold {
-						logParams := *params
-						logParams.Mask = nil
-						initialData.Params = &logParams
-					} else {
-						initialData.Params = params
-					}
-				} else {
-					initialData.ImageEditInput = input
-					initialData.Params = params
-				}
-			} else {
-				initialData.Params = params
-			}
-		case schemas.ImageVariationRequest:
-			initialData.Params = req.ImageVariationRequest.Params
-			input := req.ImageVariationRequest.Input
-			if input != nil {
-				reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
-				if reqThreshold > 0 && int64(len(input.Image.Image)) > reqThreshold {
-					logInput := *input
-					logInput.Image = schemas.ImageInput{}
-					initialData.ImageVariationInput = &logInput
-				} else {
-					initialData.ImageVariationInput = input
-				}
-			}
-		case schemas.VideoGenerationRequest:
-			initialData.Params = req.VideoGenerationRequest.Params
-			initialData.VideoGenerationInput = req.VideoGenerationRequest.Input
-		case schemas.VideoEditRequest:
-			initialData.Params = req.VideoEditRequest.Params
-			input := req.VideoEditRequest.Input
-			if input != nil {
-				// An uploaded source video is the largest thing in the request by far, so drop the
-				// bytes past the threshold and keep the prompt and any reference.
-				reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
-				if reqThreshold > 0 && int64(len(input.Video.Video)) > reqThreshold {
-					logInput := *input
-					logInput.Video.Video = nil
-					initialData.VideoEditInput = &logInput
-				} else {
-					initialData.VideoEditInput = input
-				}
-			}
-		case schemas.VideoRemixRequest:
-			initialData.Params = &schemas.VideoLogParams{
-				VideoID: req.VideoRemixRequest.ID,
-			}
-			initialData.VideoGenerationInput = req.VideoRemixRequest.Input
-		case schemas.VideoRetrieveRequest:
-			initialData.Params = &schemas.VideoLogParams{
-				VideoID: req.VideoRetrieveRequest.ID,
-			}
-		case schemas.VideoDownloadRequest:
-			initialData.Params = &schemas.VideoLogParams{
-				VideoID: req.VideoDownloadRequest.ID,
-			}
-		case schemas.VideoDeleteRequest:
-			initialData.Params = &schemas.VideoLogParams{
-				VideoID: req.VideoDeleteRequest.ID,
-			}
-		case schemas.PassthroughRequest, schemas.PassthroughStreamRequest:
-			initialData.Params = &schemas.PassthroughLogParams{
-				Method:   req.PassthroughRequest.Method,
-				Path:     req.PassthroughRequest.Path,
-				RawQuery: req.PassthroughRequest.RawQuery,
-				Model:    req.PassthroughRequest.Model,
-			}
-			if len(req.PassthroughRequest.Body) > 0 {
-				ct := strings.ToLower(req.PassthroughRequest.SafeHeaders["content-type"])
-				if strings.Contains(ct, "application/json") {
-					initialData.PassthroughRequestBody = string(req.PassthroughRequest.Body)
-				}
-			}
-		}
+		p.captureRequestInput(ctx, req, initialData)
 	}
 
 	// Capture configured logging headers and x-bf-lh-* headers into metadata first
-	initialData.Metadata = mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx)
+	initialData.Metadata = mergeVirtualKeyMetadata(mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx), ctx)
 
 	// System entries are set after so they take precedence over dynamic header values
 	if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
@@ -2215,7 +2059,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 					entry.App = &app
 				}
 			}
-			entry.MetadataParsed = mergeLoadBalancerMetadata(mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx), ctx)
+			entry.MetadataParsed = mergeVirtualKeyMetadata(mergeLoadBalancerMetadata(mergeRealtimeMetadata(p.captureLoggingHeaders(ctx), ctx), ctx), ctx)
 			if isAsync, ok := ctx.Value(schemas.BifrostIsAsyncRequest).(bool); ok && isAsync {
 				if entry.MetadataParsed == nil {
 					entry.MetadataParsed = make(map[string]interface{})
@@ -2352,6 +2196,7 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 		// stamped after our PreLLMHook, as on the passthrough path): take them back out.
 		dropCapturedInput(entry)
 	}
+	markPassthroughForParsing(ctx, entry, contentLoggingEnabled)
 	entry.GuardrailDebugParsed = guardrailMetadata
 	entry.RoutingMetadataParsed = routingMetadata
 	// Apply common output fields. For cache hits, prefer the cache-serve
@@ -2428,6 +2273,9 @@ func (p *LoggerPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *schemas.
 	entry.MetadataParsed = pending.InitialData.Metadata
 	entry.MetadataParsed = mergeRealtimeMetadata(entry.MetadataParsed, ctx)
 	entry.MetadataParsed = mergeLoadBalancerMetadata(entry.MetadataParsed, ctx)
+	// Merged again here, not only in PreLLMHook: on the passthrough path governance stamps the key
+	// after our PreLLMHook has run.
+	entry.MetadataParsed = mergeVirtualKeyMetadata(entry.MetadataParsed, ctx)
 	if pending.EvictedPartial {
 		// The stub carries no request metadata; the merges above can still produce
 		// a small map, which would replace the partial row's metadata column.
@@ -3088,11 +2936,13 @@ func a2aPendingKey(requestID string, requestType schemas.A2ARequestType) string 
 	return requestID + "\x00" + string(requestType)
 }
 
+// optionalBoundedA2AValue owns correlation strings retained beyond the request,
+// including REST path values backed by the FastHTTP adaptor's reusable buffer.
 func optionalBoundedA2AValue(value string, max int) *string {
 	if value == "" {
 		return nil
 	}
-	bounded := clampString(value, max)
+	bounded := strings.Clone(clampString(value, max))
 	return &bounded
 }
 
@@ -3553,7 +3403,7 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 	}
 
 	// Capture configured logging headers and x-bf-lh-* headers into metadata
-	entry.MetadataParsed = p.captureLoggingHeaders(ctx)
+	entry.MetadataParsed = mergeVirtualKeyMetadata(p.captureLoggingHeaders(ctx), ctx)
 
 	p.pendingMCPLogsToInject.Store(mcpLogID, entry)
 
@@ -3631,6 +3481,8 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	}
 
 	applyMCPGovernanceFieldsToEntry(ctx, entry)
+	// Governance's PreMCPHook, which stamps the virtual key, runs after ours.
+	entry.MetadataParsed = mergeVirtualKeyMetadata(entry.MetadataParsed, ctx)
 	// Resolved once here, after every pre-hook has run. PreMCPHook captured the arguments with
 	// whatever the context said at the time, and governance's PreMCPHook, which stamps the virtual
 	// key's content decision, runs after ours; a key that turns content off must take the
@@ -3704,4 +3556,171 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	p.enqueueMCPToolLogEntry(entry, callback)
 
 	return resp, bifrostErr, nil
+}
+
+// captureRequestInput records a request's loggable input on data: the conversation (input history
+// or Responses input), params, tools and the per-kind inputs (embedding, speech, transcription,
+// OCR, image and video), trimming media past the large-payload request threshold. PreLLMHook runs
+// it for typed requests; passthrough log parsing runs it for the typed request decoded from a
+// passthrough body, so both rows record the same fields. ctx may be nil (no threshold).
+func (p *LoggerPlugin) captureRequestInput(ctx *schemas.BifrostContext, req *schemas.BifrostRequest, initialData *InitialLogData) {
+	inputHistory, responsesInputHistory := p.extractInputHistory(req)
+	initialData.InputHistory = inputHistory
+	initialData.ResponsesInputHistory = responsesInputHistory
+
+	switch req.RequestType {
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest,
+		schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest,
+		schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+		initialData.Params, initialData.Tools = textRequestParamsAndTools(req)
+	case schemas.RealtimeRequest:
+		if req.ResponsesRequest != nil {
+			initialData.Params = req.ResponsesRequest.Params
+			if req.ResponsesRequest.Params != nil {
+				var tools []schemas.ChatTool
+				for _, tool := range req.ResponsesRequest.Params.Tools {
+					tools = append(tools, *tool.ToChatTool())
+				}
+				initialData.Tools = tools
+			}
+		}
+	case schemas.EmbeddingRequest:
+		initialData.Params = req.EmbeddingRequest.Params
+		items := extractEmbeddingInput(req)
+		reqThreshold := largePayloadRequestThreshold(ctx)
+		if reqThreshold > 0 && embeddingMediaDataSize(items) > reqThreshold {
+			items = redactEmbeddingMediaData(items)
+		}
+		initialData.EmbeddingInput = items
+	case schemas.RerankRequest:
+		initialData.Params = req.RerankRequest.Params
+	case schemas.DecisionRequest:
+		initialData.Params = req.DecisionRequest.Questions
+	case schemas.OCRRequest:
+		initialData.Params = req.OCRRequest.Params
+		initialData.OCRInput = &req.OCRRequest.Document
+	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
+		initialData.Params = req.SpeechRequest.Params
+		initialData.SpeechInput = req.SpeechRequest.Input
+	case schemas.TranscriptionRequest, schemas.TranscriptionStreamRequest:
+		initialData.Params = req.TranscriptionRequest.Params
+		input := req.TranscriptionRequest.Input
+		if input != nil {
+			reqThreshold := largePayloadRequestThreshold(ctx)
+			if reqThreshold > 0 && int64(len(input.File)) > reqThreshold {
+				// Strip binary file content when it exceeds the large payload threshold
+				// to avoid serializing multi-MB audio into the log database.
+				logInput := *input
+				logInput.File = nil
+				initialData.TranscriptionInput = &logInput
+			} else {
+				initialData.TranscriptionInput = input
+			}
+		}
+	case schemas.ImageGenerationRequest, schemas.ImageGenerationStreamRequest:
+		initialData.Params = req.ImageGenerationRequest.Params
+		initialData.ImageGenerationInput = req.ImageGenerationRequest.Input
+	case schemas.ImageEditRequest, schemas.ImageEditStreamRequest:
+		params := req.ImageEditRequest.Params
+		input := req.ImageEditRequest.Input
+		if input != nil {
+			reqThreshold := largePayloadRequestThreshold(ctx)
+			if reqThreshold > 0 {
+				var totalSize int64
+				for _, img := range input.Images {
+					totalSize += int64(len(img.Image))
+				}
+				if totalSize > reqThreshold {
+					logInput := *input
+					logInput.Images = nil
+					initialData.ImageEditInput = &logInput
+				} else {
+					initialData.ImageEditInput = input
+				}
+				if params != nil && int64(len(params.Mask)) > reqThreshold {
+					logParams := *params
+					logParams.Mask = nil
+					initialData.Params = &logParams
+				} else {
+					initialData.Params = params
+				}
+			} else {
+				initialData.ImageEditInput = input
+				initialData.Params = params
+			}
+		} else {
+			initialData.Params = params
+		}
+	case schemas.ImageVariationRequest:
+		initialData.Params = req.ImageVariationRequest.Params
+		input := req.ImageVariationRequest.Input
+		if input != nil {
+			reqThreshold := largePayloadRequestThreshold(ctx)
+			if reqThreshold > 0 && int64(len(input.Image.Image)) > reqThreshold {
+				logInput := *input
+				logInput.Image = schemas.ImageInput{}
+				initialData.ImageVariationInput = &logInput
+			} else {
+				initialData.ImageVariationInput = input
+			}
+		}
+	case schemas.VideoGenerationRequest:
+		initialData.Params = req.VideoGenerationRequest.Params
+		initialData.VideoGenerationInput = req.VideoGenerationRequest.Input
+	case schemas.VideoEditRequest:
+		initialData.Params = req.VideoEditRequest.Params
+		input := req.VideoEditRequest.Input
+		if input != nil {
+			// An uploaded source video is the largest thing in the request by far, so drop the
+			// bytes past the threshold and keep the prompt and any reference.
+			reqThreshold := largePayloadRequestThreshold(ctx)
+			if reqThreshold > 0 && int64(len(input.Video.Video)) > reqThreshold {
+				logInput := *input
+				logInput.Video.Video = nil
+				initialData.VideoEditInput = &logInput
+			} else {
+				initialData.VideoEditInput = input
+			}
+		}
+	case schemas.VideoRemixRequest:
+		initialData.Params = &schemas.VideoLogParams{
+			VideoID: req.VideoRemixRequest.ID,
+		}
+		initialData.VideoGenerationInput = req.VideoRemixRequest.Input
+	case schemas.VideoRetrieveRequest:
+		initialData.Params = &schemas.VideoLogParams{
+			VideoID: req.VideoRetrieveRequest.ID,
+		}
+	case schemas.VideoDownloadRequest:
+		initialData.Params = &schemas.VideoLogParams{
+			VideoID: req.VideoDownloadRequest.ID,
+		}
+	case schemas.VideoDeleteRequest:
+		initialData.Params = &schemas.VideoLogParams{
+			VideoID: req.VideoDeleteRequest.ID,
+		}
+	case schemas.PassthroughRequest, schemas.PassthroughStreamRequest:
+		initialData.Params = &schemas.PassthroughLogParams{
+			Method:   req.PassthroughRequest.Method,
+			Path:     req.PassthroughRequest.Path,
+			RawQuery: req.PassthroughRequest.RawQuery,
+			Model:    req.PassthroughRequest.Model,
+		}
+		if len(req.PassthroughRequest.Body) > 0 {
+			ct := strings.ToLower(req.PassthroughRequest.SafeHeaders["content-type"])
+			if strings.Contains(ct, "application/json") {
+				initialData.PassthroughRequestBody = string(req.PassthroughRequest.Body)
+			}
+		}
+	}
+}
+
+// largePayloadRequestThreshold returns the request size past which captured media is trimmed, or
+// 0 when ctx is nil or carries none.
+func largePayloadRequestThreshold(ctx *schemas.BifrostContext) int64 {
+	if ctx == nil {
+		return 0
+	}
+	reqThreshold, _ := ctx.Value(schemas.BifrostContextKeyLargePayloadRequestThreshold).(int64)
+	return reqThreshold
 }

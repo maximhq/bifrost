@@ -23,6 +23,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -42,6 +43,7 @@ import {
 import { VirtualKey } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
 import { actionDisabledReason, formatCurrency, getEffectiveBudgetLimit } from "@/lib/utils/governance";
+import { virtualKeyMetadataKeyError } from "@/lib/utils/virtualKeyMetadata";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { Link } from "@tanstack/react-router";
 import {
@@ -63,6 +65,7 @@ import {
 	ScrollText,
 	Search,
 	ShieldCheck,
+	Tag,
 	Trash2,
 	UserRound,
 	Users,
@@ -157,6 +160,88 @@ function FilterClearButton({
 		>
 			<X className="h-3.5 w-3.5" />
 		</Button>
+	);
+}
+
+// MetadataFilter narrows the list to keys whose metadata has one key set to exactly one value. The
+// key is checked against the server's rule before it is applied, since the API refuses a bad key.
+function MetadataFilter({
+	metadataKey,
+	metadataValue,
+	onChange,
+}: {
+	metadataKey: string;
+	metadataValue: string;
+	onChange: (key: string, value: string) => void;
+}) {
+	const [open, setOpen] = useState(false);
+	const [draftKey, setDraftKey] = useState(metadataKey);
+	const [draftValue, setDraftValue] = useState(metadataValue);
+	const keyError = draftKey ? virtualKeyMetadataKeyError(draftKey) : undefined;
+	const active = !!metadataKey;
+	const apply = () => {
+		if (!draftKey || keyError) return;
+		onChange(draftKey, draftValue);
+		setOpen(false);
+	};
+	return (
+		<Popover
+			open={open}
+			onOpenChange={(next) => {
+				if (next) {
+					setDraftKey(metadataKey);
+					setDraftValue(metadataValue);
+				}
+				setOpen(next);
+			}}
+		>
+			<PopoverTrigger asChild>
+				<Button
+					type="button"
+					variant="outline"
+					className="h-9 max-w-[250px] gap-2 px-3"
+					aria-label={active ? `Metadata filter ${metadataKey}=${metadataValue}` : "Filter by metadata"}
+					data-testid="vk-metadata-filter-trigger"
+				>
+					<Tag className="size-4 shrink-0" />
+					<span className="truncate text-sm font-normal">{active ? `${metadataKey}=${metadataValue}` : "Metadata"}</span>
+				</Button>
+			</PopoverTrigger>
+			<PopoverContent className="w-72 space-y-3" align="start">
+				<form
+					className="space-y-3"
+					onSubmit={(e) => {
+						e.preventDefault();
+						apply();
+					}}
+				>
+					<div className="space-y-1.5">
+						<Label htmlFor="vk-metadata-filter-key">Key</Label>
+						<Input
+							id="vk-metadata-filter-key"
+							placeholder="e.g., cost_center"
+							value={draftKey}
+							onChange={(e) => setDraftKey(e.target.value)}
+							data-testid="vk-metadata-filter-key-input"
+						/>
+						{keyError && <p className="text-destructive text-xs">{keyError}</p>}
+					</div>
+					<div className="space-y-1.5">
+						<Label htmlFor="vk-metadata-filter-value">Value</Label>
+						<Input
+							id="vk-metadata-filter-value"
+							placeholder="Exact value"
+							value={draftValue}
+							onChange={(e) => setDraftValue(e.target.value)}
+							data-testid="vk-metadata-filter-value-input"
+						/>
+					</div>
+					<Button type="submit" size="sm" className="w-full" disabled={!draftKey || !!keyError} data-testid="vk-metadata-filter-apply-btn">
+						Apply
+					</Button>
+				</form>
+			</PopoverContent>
+		</Popover>
 	);
 }
 
@@ -337,6 +422,9 @@ interface VirtualKeysTableProps {
 	onTeamFilterChange: (value: string) => void;
 	userFilter: string;
 	onUserFilterChange: (value: string) => void;
+	metadataFilterKey: string;
+	metadataFilterValue: string;
+	onMetadataFilterChange: (key: string, value: string) => void;
 	offset: number;
 	limit: number;
 	onOffsetChange: (offset: number) => void;
@@ -359,6 +447,9 @@ export default function VirtualKeysTable({
 	onTeamFilterChange,
 	userFilter,
 	onUserFilterChange,
+	metadataFilterKey,
+	metadataFilterValue,
+	onMetadataFilterChange,
 	offset,
 	limit,
 	onOffsetChange,
@@ -368,6 +459,8 @@ export default function VirtualKeysTable({
 	selectedVkId,
 	onSelectedVkChange,
 }: VirtualKeysTableProps) {
+	// The metadata filter as the list endpoint takes it; one key/value pair in this UI.
+	const metadataFilterParam = metadataFilterKey ? { [metadataFilterKey]: metadataFilterValue } : undefined;
 	const [showVirtualKeySheet, setShowVirtualKeySheet] = useState(false);
 	const [editingVirtualKeyId, setEditingVirtualKeyId] = useState<string | null>(null);
 	// Keys without their own delete_after_expire follow this client-wide setting.
@@ -546,6 +639,7 @@ export default function VirtualKeysTable({
 					customer_id: customerFilter || undefined,
 					team_id: teamFilter || undefined,
 					user_id: userFilter || undefined,
+					metadata: metadataFilterParam,
 					sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
 					order: (order as "asc" | "desc") || undefined,
 				}).then((result) => {
@@ -570,6 +664,7 @@ export default function VirtualKeysTable({
 					customer_id: customerFilter || undefined,
 					team_id: teamFilter || undefined,
 					user_id: userFilter || undefined,
+					metadata: metadataFilterParam,
 					sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
 					order: (order as "asc" | "desc") || undefined,
 				}).then((result) => {
@@ -606,15 +701,15 @@ export default function VirtualKeysTable({
 
 	const { copy: copyToClipboard } = useCopyToClipboard();
 
-	const hasActiveFilters = debouncedSearch || customerFilter || teamFilter || userFilter;
+	const hasActiveFilters = debouncedSearch || customerFilter || teamFilter || userFilter || metadataFilterKey;
 
 	// Registered by the downstream build at module load; undefined in builds
 	// without a user directory, which hides the user filter entirely.
 	const UserPicker = getUserPicker();
-	// Server-side search matches the key name, its team and its customer, plus the
-	// assigned user where there is a user directory to match against. Same signal as
+	// Server-side search matches the key name, its team, its customer and its metadata, plus
+	// the assigned user where there is a user directory to match against. Same signal as
 	// the user filter below, so the placeholder never promises what OSS cannot do.
-	const searchHint = UserPicker ? "name, user, team, or customer" : "name, team, or customer";
+	const searchHint = UserPicker ? "name, user, team, customer, or metadata" : "name, team, customer, or metadata";
 
 	const toggleSort = (column: string) => {
 		if (sortBy === column) {
@@ -649,6 +744,7 @@ export default function VirtualKeysTable({
 				customer_id: customerFilter || undefined,
 				team_id: teamFilter || undefined,
 				user_id: userFilter || undefined,
+				metadata: metadataFilterParam,
 				sort_by: (sortBy as "name" | "budget_spent" | "created_at" | "status") || undefined,
 				order: (order as "asc" | "desc") || undefined,
 				export: true,
@@ -772,6 +868,7 @@ export default function VirtualKeysTable({
 									customerFilter && "customer filter",
 									teamFilter && "team filter",
 									userFilter && "user filter",
+									metadataFilterKey && "metadata filter",
 								]
 									.filter(Boolean)
 									.join(", ")}
@@ -901,6 +998,16 @@ export default function VirtualKeysTable({
 							/>
 						</div>
 					)}
+
+					<div className="flex shrink-0 items-center gap-1" data-testid="vk-metadata-filter">
+						<MetadataFilter metadataKey={metadataFilterKey} metadataValue={metadataFilterValue} onChange={onMetadataFilterChange} />
+						<FilterClearButton
+							show={!!metadataFilterKey}
+							label="Clear metadata filter"
+							onClear={() => onMetadataFilterChange("", "")}
+							data-testid="vk-metadata-filter-clear-btn"
+						/>
+					</div>
 
 					<div className="ml-auto flex shrink-0 items-center gap-2">
 						{selectedCount > 0 && (
