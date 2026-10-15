@@ -2218,6 +2218,20 @@ func (s *RDBLogStore) GetTokenHistogram(ctx context.Context, filters SearchFilte
 	}, nil
 }
 
+// throughputObjectTypes are the inference request types counted in tokens/sec; list_models polls and other zero-output calls would only dilute it.
+var throughputObjectTypes = []string{
+	string(schemas.TextCompletionRequest),
+	string(schemas.TextCompletionStreamRequest),
+	string(schemas.ChatCompletionRequest),
+	string(schemas.ChatCompletionStreamRequest),
+	string(schemas.ResponsesRequest),
+	string(schemas.ResponsesStreamRequest),
+	string(schemas.WebSocketResponsesRequest),
+}
+
+// throughputObjectTypesSQL is throughputObjectTypes as a SQL IN list for CASE expressions.
+var throughputObjectTypesSQL = "'" + strings.Join(throughputObjectTypes, "', '") + "'"
+
 // tokensPerSecond computes aggregate token-generation throughput for a bucket:
 // total completion tokens divided by total latency in seconds. latencyMs is the
 // sum of per-request latencies (milliseconds). Returns 0 when latency is absent.
@@ -2231,7 +2245,7 @@ func tokensPerSecond(completionTokens int64, latencyMs float64) float64 {
 // GetThroughputHistogram returns time-bucketed token-generation throughput
 // (tokens/sec) for the given filters. TokensPerSecond is the aggregate rate for
 // each bucket: SUM(completion_tokens) / (SUM(latency_ms)/1000), computed over
-// terminal rows that recorded a latency > 0.
+// successful inference rows (throughputObjectTypes) that recorded a latency > 0.
 func (s *RDBLogStore) GetThroughputHistogram(ctx context.Context, filters SearchFilters, bucketSizeSeconds int64) (*ThroughputHistogramResult, error) {
 	if bucketSizeSeconds <= 0 {
 		bucketSizeSeconds = 3600 // Default to 1 hour
@@ -2256,6 +2270,7 @@ func (s *RDBLogStore) GetThroughputHistogram(ctx context.Context, filters Search
 	baseQuery = baseQuery.Where("status = ?", "success")
 	// Only rows with a measured latency contribute to throughput.
 	baseQuery = baseQuery.Where("latency > 0")
+	baseQuery = baseQuery.Where("object_type IN ?", throughputObjectTypes)
 
 	var results []struct {
 		BucketTimestamp  int64   `gorm:"column:bucket_timestamp"`
@@ -2338,6 +2353,7 @@ func (s *RDBLogStore) GetProviderThroughputHistogram(ctx context.Context, filter
 	// Successful requests only — see GetThroughputHistogram.
 	baseQuery = baseQuery.Where("status = ?", "success")
 	baseQuery = baseQuery.Where("latency > 0")
+	baseQuery = baseQuery.Where("object_type IN ?", throughputObjectTypes)
 
 	var results []struct {
 		BucketTimestamp  int64   `gorm:"column:bucket_timestamp"`
@@ -2993,8 +3009,8 @@ func (s *RDBLogStore) GetModelRankings(ctx context.Context, filters SearchFilter
 		SUM(total_tokens) as total_tokens,
 		COALESCE(SUM(cost), 0) as total_cost,
 		AVG(latency) as avg_latency,
-		COALESCE(SUM(CASE WHEN status = 'success' AND latency > 0 THEN completion_tokens ELSE 0 END), 0) as tp_completion_tokens,
-		COALESCE(SUM(CASE WHEN status = 'success' AND latency > 0 THEN latency ELSE 0 END), 0) as tp_latency_ms
+		COALESCE(SUM(CASE WHEN status = 'success' AND latency > 0 AND object_type IN (` + throughputObjectTypesSQL + `) THEN completion_tokens ELSE 0 END), 0) as tp_completion_tokens,
+		COALESCE(SUM(CASE WHEN status = 'success' AND latency > 0 AND object_type IN (` + throughputObjectTypesSQL + `) THEN latency ELSE 0 END), 0) as tp_latency_ms
 	`
 	// Only the current-period query scans canonical_name and the per-category cost
 	// split; keeping them out of the shared clause spares the previous-period

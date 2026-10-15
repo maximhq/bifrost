@@ -2351,7 +2351,6 @@ func GenerateAgentRegistrationHash(r *schemas.AgentRegistration) (string, error)
 	hash := sha256.New()
 	writeHashField(hash, "name", r.Name)
 	writeHashField(hash, "agent_card_url", r.AgentCardURL)
-	writeHashField(hash, "tenant", r.Tenant)
 	writeHashField(hash, "enabled", strconv.FormatBool(r.Enabled))
 	writeHashField(hash, "allow_by_default", strconv.FormatBool(r.AllowByDefault))
 	writeHashField(hash, "forward_accepted_credential", strconv.FormatBool(r.ForwardAcceptedCredential))
@@ -2361,12 +2360,6 @@ func GenerateAgentRegistrationHash(r *schemas.AgentRegistration) (string, error)
 	sort.Strings(origins)
 	for _, origin := range origins {
 		writeHashField(hash, "credential_origin", origin)
-	}
-	uris := make([]string, len(r.ExtensionURIs))
-	copy(uris, r.ExtensionURIs)
-	sort.Strings(uris)
-	for _, uri := range uris {
-		writeHashField(hash, "extension_uri", uri)
 	}
 	ids := make([]string, len(r.VirtualKeyIDs))
 	copy(ids, r.VirtualKeyIDs)

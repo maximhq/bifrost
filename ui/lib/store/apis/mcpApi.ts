@@ -145,6 +145,8 @@ export const mcpApi = baseApi.injectEndpoints({
 			async onQueryStarted(arg, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
+					// Library entries carry a server-computed "installed" flag.
+					dispatch(mcpApi.util.invalidateTags(["MCPLibrary"]));
 					// MCP create may return an OAuth flow response, so we can't optimistically
 					// add the client — just invalidate to refetch
 					const queries = (getState() as any).api.queries;
@@ -187,6 +189,8 @@ export const mcpApi = baseApi.injectEndpoints({
 			async onQueryStarted({ id, data }, { dispatch, getState, queryFulfilled }) {
 				try {
 					await queryFulfilled;
+					// A rename or new target can change a library entry's "installed" flag.
+					dispatch(mcpApi.util.invalidateTags(["MCPLibrary"]));
 					// A replaced OpenAPI document changes the tool list, which the
 					// field-by-field patch below cannot reconstruct: refetch instead.
 					if (data.openapi_config !== undefined) {
@@ -242,7 +246,8 @@ export const mcpApi = baseApi.injectEndpoints({
 				try {
 					await queryFulfilled;
 					// A deleted client's stored document is gone; drop the cached copy.
-					dispatch(mcpApi.util.invalidateTags([{ type: "MCPClientOpenAPISpec", id }]));
+					// Library entries it installed are no longer "installed".
+					dispatch(mcpApi.util.invalidateTags([{ type: "MCPClientOpenAPISpec", id }, "MCPLibrary"]));
 					const queries = (getState() as any).api.queries;
 					for (const entry of Object.values(queries) as any[]) {
 						if (entry?.endpointName !== "getMCPClients" || entry?.status !== "fulfilled") continue;

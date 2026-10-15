@@ -490,6 +490,8 @@ export interface MCPLibraryEntry {
 	metadata?: Record<string, unknown>;
 	/** "remote" for synced rows, "custom" for org-published entries. */
 	source?: "remote" | "custom";
+	/** True when an existing MCP client was installed from this entry (computed server-side). */
+	installed?: boolean;
 	created_at: string;
 	updated_at: string;
 }

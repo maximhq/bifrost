@@ -223,6 +223,9 @@
         }
       }
     },
+    "startupProbe": {
+      "type": ["object", "null"]
+    },
     "livenessProbe": {
       "type": "object"
     },
@@ -5017,10 +5020,6 @@
                 "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
                 "description": "Absolute http(s) URL of the upstream agent's Agent Card (typically .../.well-known/agent-card.json)."
               },
-              "tenant": {
-                "type": "string",
-                "description": "Optional tenant label for the registration."
-              },
               "enabled": {
                 "type": "boolean",
                 "description": "Whether the agent is enabled (default: true when omitted)."
@@ -5051,11 +5050,6 @@
                 "uniqueItems": true,
                 "items": { "type": "string", "pattern": "^https?://[^@/?#\\s]+$" },
                 "description": "Additional HTTP(S) origins permitted to receive runtime credentials and client certificates. The card origin is permitted automatically."
-              },
-              "extension_uris": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "A2A extension URIs to activate for this agent."
               },
               "virtual_key_ids": {
                 "type": "array",
@@ -5525,6 +5519,11 @@
               "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default. Only applies when the store is postgres.",
               "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
             },
+            "migrationLockRetryBudget": {
+              "type": "string",
+              "description": "How long a schema migration step keeps retrying after lock timeouts before the pod exits (Go duration string, default 10m). Raise it on large deployments where older replicas' long queries hold the table during a rolling upgrade, and keep startupProbe at least as long. Only applies when the store is postgres.",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
+            },
             "vaultStore": {
               "type": "object",
               "description": "Vault store for external secret management",
@@ -5636,6 +5635,11 @@
               "type": "string",
               "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default. Only applies when the store is postgres.",
               "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+            },
+            "migrationLockRetryBudget": {
+              "type": "string",
+              "description": "How long a schema migration step keeps retrying after lock timeouts before the pod exits (Go duration string, default 10m). Raise it on large deployments where older replicas' long queries hold the table during a rolling upgrade, and keep startupProbe at least as long. Only applies when the store is postgres.",
+              "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$"
             },
             "postgres": {
               "type": "object",

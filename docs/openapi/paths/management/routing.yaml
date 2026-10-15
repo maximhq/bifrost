@@ -1,10 +1,10 @@
 # Routing rule and complexity analyzer endpoints.
 #
-# Every operation appears twice: once under its canonical /api/routing path, and once under
-# the /api/governance path it was served on while routing rules lived inside the governance
-# plugin. The *-legacy entries describe that second form. They are the same operations with
-# distinct operationIds, since OpenAPI requires operationIds to be unique, and are marked
-# deprecated so generated clients steer callers to the canonical paths.
+# Routing rules and the complexity analyzer config are also served on the /api/governance
+# paths they used while routing rules lived inside the governance plugin. The *-legacy entries
+# are aliases of the canonical operations: they $ref them with their own operationIds, since
+# OpenAPI requires operationIds to be unique, and x-bifrost-successor marks them deprecated
+# when the spec is bundled.
 
 rules:
   get:
@@ -26,12 +26,30 @@ rules:
     parameters:
       - name: scope
         in: query
-        description: Filter routing rules by scope (global, team, customer, virtual_key)
+        description: Filter by scope. Returns only enabled rules in that scope and ignores limit, offset and search. A scope other than global needs scope_id.
         schema:
           type: string
+          enum: [global, team, customer, virtual_key, user]
       - name: scope_id
         in: query
-        description: Filter routing rules by scope ID
+        description: Filter by scope ID. Required with a scope other than global.
+        schema:
+          type: string
+      - name: limit
+        in: query
+        description: Page size (default 25, maximum 100). Sending limit, offset or search returns one page. Ignored when scope is set.
+        schema:
+          type: integer
+          minimum: 0
+      - name: offset
+        in: query
+        description: Number of rules to skip.
+        schema:
+          type: integer
+          minimum: 0
+      - name: search
+        in: query
+        description: Case-insensitive match against the rule's name or CEL expression.
         schema:
           type: string
     security:
@@ -44,6 +62,8 @@ rules:
           application/json:
             schema:
               $ref: '../../schemas/management/governance.yaml#/ListRoutingRulesResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -60,7 +80,7 @@ rules:
         [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Create routing rule
     description: |
-      Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.
+      Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Only `name` and at least one target are required: `scope` defaults to `global`, `priority` to `0`, `enabled` to `true` and `chain_rule` to `false`, and an empty `cel_expression` matches every request.
     tags:
       - Routing
     requestBody:
@@ -81,6 +101,12 @@ rules:
               $ref: '../../schemas/management/governance.yaml#/RoutingRuleResponse'
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '409':
+        description: "Another rule in the same scope and scope_id already uses this priority, for example `routing rule with priority 5 already exists for scope 'global'; use a different priority`, or already has this name."
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -177,6 +203,12 @@ rules-by-id:
           application/json:
             schema:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
+      '409':
+        description: "Another rule in the same scope and scope_id already uses this priority, for example `routing rule with priority 5 already exists for scope 'global'; use a different priority`, or already has this name."
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
@@ -222,7 +254,7 @@ rules-by-id:
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
 
-# Model Configs CRUD
+# Complexity analyzer
 
 complexity:
   get:
@@ -327,226 +359,32 @@ complexity-reset:
 
 rules-legacy:
   get:
+    $ref: '#/rules/get'
     operationId: listRoutingRulesLegacy
-    x-mint:
-      content: |
-        **Required Permissions**
-
-        | Permission | Granted via |
-        | --- | --- |
-        | `RoutingRules:View` | RBAC role or API key scope |
-
-        [How permissions work](/api/procuring-api-keys#required-permissions)
-    deprecated: true
-    summary: List routing rules (deprecated path)
-    description: |
-      Returns a list of all routing rules configured for intelligent request routing across providers. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
-    tags:
-      - Routing
-    parameters:
-      - name: scope
-        in: query
-        description: Filter routing rules by scope (global, team, customer, virtual_key)
-        schema:
-          type: string
-      - name: scope_id
-        in: query
-        description: Filter routing rules by scope ID
-        schema:
-          type: string
-    security:
-      - ManagementBearerAuth: []
-      - BasicAuth: []
-    responses:
-      '200':
-        description: Successful response
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/governance.yaml#/ListRoutingRulesResponse'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
-
+    x-bifrost-successor: '/api/routing/rules'
+    x-bifrost-removal: following-major-release
   post:
+    $ref: '#/rules/post'
     operationId: createRoutingRuleLegacy
-    x-mint:
-      content: |
-        **Required Permissions**
-
-        | Permission | Granted via |
-        | --- | --- |
-        | `RoutingRules:Create` | RBAC role or API key scope |
-
-        [How permissions work](/api/procuring-api-keys#required-permissions)
-    deprecated: true
-    summary: Create routing rule (deprecated path)
-    description: |
-      Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.
-    tags:
-      - Routing
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '../../schemas/management/governance.yaml#/CreateRoutingRuleRequest'
-    security:
-      - ManagementBearerAuth: []
-      - BasicAuth: []
-    responses:
-      '200':
-        description: Routing rule created successfully
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/governance.yaml#/RoutingRuleResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    x-bifrost-successor: '/api/routing/rules'
+    x-bifrost-removal: following-major-release
 
 rules-by-id-legacy:
   get:
+    $ref: '#/rules-by-id/get'
     operationId: getRoutingRuleLegacy
-    x-mint:
-      content: |
-        **Required Permissions**
-
-        | Permission | Granted via |
-        | --- | --- |
-        | `RoutingRules:View` | RBAC role or API key scope |
-
-        [How permissions work](/api/procuring-api-keys#required-permissions)
-    deprecated: true
-    summary: Get routing rule (deprecated path)
-    description: |
-      Returns a specific routing rule by ID. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
-    tags:
-      - Routing
-    parameters:
-      - name: rule_id
-        in: path
-        required: true
-        description: Routing rule ID
-        schema:
-          type: string
-    security:
-      - ManagementBearerAuth: []
-      - BasicAuth: []
-    responses:
-      '200':
-        description: Successful response
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                rule:
-                  $ref: '../../schemas/management/governance.yaml#/RoutingRule'
-      '404':
-        description: Routing rule not found
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
-
+    x-bifrost-successor: '/api/routing/rules/{rule_id}'
+    x-bifrost-removal: following-major-release
   put:
+    $ref: '#/rules-by-id/put'
     operationId: updateRoutingRuleLegacy
-    x-mint:
-      content: |
-        **Required Permissions**
-
-        | Permission | Granted via |
-        | --- | --- |
-        | `RoutingRules:Update` | RBAC role or API key scope |
-
-        [How permissions work](/api/procuring-api-keys#required-permissions)
-    deprecated: true
-    summary: Update routing rule (deprecated path)
-    description: |
-      Updates an existing routing rule's configuration. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
-    tags:
-      - Routing
-    parameters:
-      - name: rule_id
-        in: path
-        required: true
-        description: Routing rule ID
-        schema:
-          type: string
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '../../schemas/management/governance.yaml#/UpdateRoutingRuleRequest'
-    security:
-      - ManagementBearerAuth: []
-      - BasicAuth: []
-    responses:
-      '200':
-        description: Routing rule updated successfully
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/governance.yaml#/RoutingRuleResponse'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '404':
-        description: Routing rule not found
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
-
+    x-bifrost-successor: '/api/routing/rules/{rule_id}'
+    x-bifrost-removal: following-major-release
   delete:
+    $ref: '#/rules-by-id/delete'
     operationId: deleteRoutingRuleLegacy
-    x-mint:
-      content: |
-        **Required Permissions**
-
-        | Permission | Granted via |
-        | --- | --- |
-        | `RoutingRules:Delete` | RBAC role or API key scope |
-
-        [How permissions work](/api/procuring-api-keys#required-permissions)
-    deprecated: true
-    summary: Delete routing rule (deprecated path)
-    description: |
-      Deletes a routing rule. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.
-    tags:
-      - Routing
-    parameters:
-      - name: rule_id
-        in: path
-        required: true
-        description: Routing rule ID
-        schema:
-          type: string
-    security:
-      - ManagementBearerAuth: []
-      - BasicAuth: []
-    responses:
-      '200':
-        description: Routing rule deleted successfully
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/common.yaml#/MessageResponse'
-      '404':
-        description: Routing rule not found
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/inference/common.yaml#/BifrostError'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
-
-# Model Configs CRUD
+    x-bifrost-successor: '/api/routing/rules/{rule_id}'
+    x-bifrost-removal: following-major-release
 
 complexity-status:
   get:
@@ -565,6 +403,9 @@ complexity-status:
       Returns the runtime status of the semantic complexity classifier (disabled, warming, ready, or failed), including warmup progress and whether a previous generation is still serving. When the llm fallback block is configured, also returns its readiness and the shipped default classification prompt.
     tags:
       - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Complexity classifier status retrieved successfully
@@ -594,6 +435,9 @@ complexity-status-retry:
       Restarts the saved semantic classifier warmup only when its current state is failed. The retry runs asynchronously and does not change the saved configuration.
     tags:
       - Routing
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '202':
         description: Semantic warmup retry accepted
@@ -629,6 +473,7 @@ complexity-generations:
       - Routing
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Generations retrieved successfully
@@ -704,106 +549,19 @@ complexity-generation-delete:
 
 complexity-legacy:
   get:
+    $ref: '#/complexity/get'
     operationId: getComplexityAnalyzerConfigLegacy
-    x-mint:
-      content: |
-        **Required Permissions**
-
-        | Permission | Granted via |
-        | --- | --- |
-        | `Governance:View` | RBAC role or API key scope |
-
-        [How permissions work](/api/procuring-api-keys#required-permissions)
-    deprecated: true
-    summary: Get complexity analyzer config (deprecated path)
-    description: |
-      Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
-    tags:
-      - Routing
-    security:
-      - ManagementBearerAuth: []
-      - BasicAuth: []
-    responses:
-      '200':
-        description: Complexity analyzer config retrieved successfully
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
-      '503':
-        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
-
+    x-bifrost-successor: '/api/routing/complexity-analyzer-config'
+    x-bifrost-removal: following-major-release
   put:
+    $ref: '#/complexity/put'
     operationId: updateComplexityAnalyzerConfigLegacy
-    x-mint:
-      content: |
-        **Required Permissions**
-
-        | Permission | Granted via |
-        | --- | --- |
-        | `Governance:Update` | RBAC role or API key scope |
-
-        [How permissions work](/api/procuring-api-keys#required-permissions)
-    deprecated: true
-    summary: Update complexity analyzer config (deprecated path)
-    description: |
-      Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.
-    tags:
-      - Routing
-    requestBody:
-      required: true
-      content:
-        application/json:
-          schema:
-            $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
-    security:
-      - ManagementBearerAuth: []
-      - BasicAuth: []
-    responses:
-      '200':
-        description: Complexity analyzer config updated successfully
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
-      '400':
-        $ref: '../../openapi.yaml#/components/responses/BadRequest'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
-      '503':
-        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    x-bifrost-successor: '/api/routing/complexity-analyzer-config'
+    x-bifrost-removal: following-major-release
 
 complexity-reset-legacy:
   post:
+    $ref: '#/complexity-reset/post'
     operationId: resetComplexityAnalyzerConfigLegacy
-    x-mint:
-      content: |
-        **Required Permissions**
-
-        | Permission | Granted via |
-        | --- | --- |
-        | `Governance:Create` | RBAC role or API key scope |
-
-        [How permissions work](/api/procuring-api-keys#required-permissions)
-    deprecated: true
-    summary: Reset complexity analyzer config (deprecated path)
-    description: |
-      Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, decision-model settings, semantic and LLM configuration, and session settings are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.
-    tags:
-      - Routing
-    security:
-      - ManagementBearerAuth: []
-      - BasicAuth: []
-    responses:
-      '200':
-        description: Complexity analyzer config reset successfully
-        content:
-          application/json:
-            schema:
-              $ref: '../../schemas/management/governance.yaml#/ComplexityAnalyzerConfig'
-      '500':
-        $ref: '../../openapi.yaml#/components/responses/InternalError'
-      '503':
-        $ref: '../../openapi.yaml#/components/responses/ConfigStoreUnavailable'
+    x-bifrost-successor: '/api/routing/complexity-analyzer-config/reset'
+    x-bifrost-removal: following-major-release

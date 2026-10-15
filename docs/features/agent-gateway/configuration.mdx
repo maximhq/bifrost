@@ -240,7 +240,7 @@ See [raw capture and timing](./observability#inspect-raw-capture) for how to rea
 
 ## Keep deployment and dashboard changes consistent
 
-Registrations can be declared in [config.json or Helm](./registration#register-from-deployment-configuration). Authentication, extensions, credential forwarding, and explicit virtual-key IDs are registration fields.
+Registrations can be declared in [config.json or Helm](./registration#register-from-deployment-configuration). Authentication, credential forwarding, and explicit virtual-key IDs are registration fields. Extension declarations are discovered from the upstream agent card.
 
 The [source of truth](/deployment-guides/config-json/source-of-truth) determines whether file declarations merge with stored configuration or replace it. Choose it deliberately before editing the same agent in both places.
 

@@ -3069,3 +3069,33 @@ func TestToBedrockConverseRequest_InvokeDisableParallelToolUse(t *testing.T) {
 		})
 	}
 }
+
+// TestInvokeIngressTopLevelCacheControlBecomesCachePoint covers the /bedrock/model/{id}/invoke
+// ingress for issue #8541: an Anthropic-dialect invoke body with a top-level cache_control is
+// served over Converse, so the automatic breakpoint must survive invoke -> Converse -> Bifrost
+// -> Converse and land as a trailing cachePoint on the last message.
+func TestInvokeIngressTopLevelCacheControlBecomesCachePoint(t *testing.T) {
+	body := []byte(`{"anthropic_version":"bedrock-2023-05-31","max_tokens":64,` +
+		`"cache_control":{"type":"ephemeral","ttl":"1h"},` +
+		`"system":"You are a helpful assistant.",` +
+		`"messages":[{"role":"user","content":[{"type":"text","text":"Say OK."}]}]}`)
+	var req BedrockInvokeRequest
+	require.NoError(t, sonic.Unmarshal(body, &req))
+	req.ModelID = "eu.anthropic.claude-sonnet-5-5"
+
+	converseReq := req.ToBedrockConverseRequest()
+	require.NotNil(t, converseReq)
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	bifrostReq, err := converseReq.ToBifrostResponsesRequest(ctx)
+	require.NoError(t, err)
+
+	out, err := ToBedrockResponsesRequest(ctx, bifrostReq)
+	require.NoError(t, err)
+	require.NotEmpty(t, out.Messages)
+	last := out.Messages[len(out.Messages)-1].Content
+	require.GreaterOrEqual(t, len(last), 2, "last message content: %+v", last)
+	cp := last[len(last)-1].CachePoint
+	require.NotNil(t, cp, "top-level cache_control on the invoke body must become a trailing cachePoint: %+v", last)
+	require.NotNil(t, cp.TTL)
+	assert.Equal(t, "1h", *cp.TTL)
+}

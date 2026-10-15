@@ -194,6 +194,7 @@ type PrometheusPlugin struct {
 	ActiveRequests                 *prometheus.GaugeVec
 	ProviderKeyUp                  *prometheus.GaugeVec
 	MCPToolDuration                *prometheus.HistogramVec
+	A2AOperationDuration           *prometheus.HistogramVec
 	customLabels                   []string
 
 	defaultHTTPLabels    []string
@@ -698,6 +699,12 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultMCPLabels, filteredCustomLabels...),
 	)
 
+	a2aDuration := factory.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "bifrost_a2a_client_operation_duration_seconds",
+		Help:    "Duration of an A2A operation as observed by Bifrost.",
+		Buckets: mcpOperationDurationBuckets,
+	}, a2aMetricLabelNames)
+
 	plugin := &PrometheusPlugin{
 		logger:                         logger,
 		pricingManager:                 pricingManager,
@@ -734,6 +741,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		ActiveRequests:                 bifrostActiveRequests,
 		ProviderKeyUp:                  bifrostProviderKeyUp,
 		MCPToolDuration:                bifrostMCPToolDuration,
+		A2AOperationDuration:           a2aDuration,
 		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,
@@ -900,6 +908,7 @@ func (p *PrometheusPlugin) Inject(_ context.Context, trace *schemas.Trace) error
 	if trace == nil {
 		return nil
 	}
+	p.recordA2AMetrics(trace)
 	// Always drain the handoff entry so a toggle flip mid-request can't leak it.
 	joinKey := trace.InternalID
 	if joinKey == "" {

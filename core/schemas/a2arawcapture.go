@@ -109,3 +109,17 @@ func (c *A2ARawCapture) Snapshot() (request, response *string) {
 	}
 	return
 }
+
+// Bodies copies complete HTTP captures as text for observability redaction.
+// Incomplete and oversized directions remain absent, matching Snapshot.
+func (c *A2ARawCapture) Bodies() (request, response string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.request != nil && !c.requestIncomplete {
+		request = string(c.request)
+	}
+	if c.response != nil && !c.responseIncomplete {
+		response = string(c.response)
+	}
+	return
+}

@@ -187,6 +187,12 @@ var migrationStepLockRetry postgresconn.LockRetryOptions
 // preflight read fails, every step runs and each one checks its own row. A step
 // that fails on a lock timeout is retried within postgresconn's retry budget.
 func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep) error {
+	return runMigrationStepsWithRetry(ctx, db, logger, steps, migrationStepLockRetry)
+}
+
+// runMigrationStepsWithRetry is runMigrationSteps with explicit lock-timeout
+// retry options; a zero budget takes postgresconn's default.
+func runMigrationStepsWithRetry(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep, retry postgresconn.LockRetryOptions) error {
 	pending, err := pendingMigrationStepIDs(ctx, db, steps)
 	var pendingSet map[string]struct{}
 	if err != nil {
@@ -197,6 +203,12 @@ func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, 
 			pendingSet[id] = struct{}{}
 		}
 	}
+	// On a lock timeout, log who holds the log tables: on a rolling upgrade the
+	// blocker is almost always an old replica's long read, which an operator can
+	// cancel to let the migration through.
+	retry.Describe = func(ctx context.Context) string {
+		return postgresconn.DescribeTableLockHolders(ctx, db, "logs", "mcp_tool_logs")
+	}
 	for _, step := range steps {
 		if pendingSet != nil && !stepHasPendingID(step, pendingSet) {
 			continue
@@ -206,7 +218,7 @@ func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, 
 		// with backoff instead of failing the boot. Steps are idempotent: the
 		// migrator records completed IDs and the DDL helpers use IF [NOT] EXISTS.
 		label := "[logstore] migration " + strings.Join(step.IDs, ",")
-		if err := postgresconn.RunWithLockRetry(ctx, logger, label, migrationStepLockRetry, func() error {
+		if err := postgresconn.RunWithLockRetry(ctx, logger, label, retry, func() error {
 			return step.run(ctx, db, logger)
 		}); err != nil {
 			return err
@@ -362,6 +374,14 @@ var pauseMatViewsForMigrations = PauseMatViewsForMigrations
 // long REFRESH from any replica (including an older release mid-rollout) cannot
 // hold the snapshot and table lock the DDL below needs.
 func triggerMigrationsWithPause(ctx context.Context, db *gorm.DB, logger schemas.Logger, pauseOpts MatViewPauseOptions) error {
+	return triggerMigrationsWithOptions(ctx, db, logger, pauseOpts, migrationStepLockRetry)
+}
+
+// triggerMigrationsWithOptions is triggerMigrationsWithPause with the lock-timeout
+// retry options too, so a configured migration_lock_retry_budget governs how
+// long a blocked step keeps retrying. A test override of migrationStepLockRetry
+// keeps precedence over the configured budget.
+func triggerMigrationsWithOptions(ctx context.Context, db *gorm.DB, logger schemas.Logger, pauseOpts MatViewPauseOptions, retry postgresconn.LockRetryOptions) error {
 	if !areThereAnyPendingMigrations(ctx, db, logger) {
 		logger.Info("[logstore] migrations already current; skipping migration lock")
 		return nil
@@ -384,7 +404,7 @@ func triggerMigrationsWithPause(ctx context.Context, db *gorm.DB, logger schemas
 	releasePause := pauseMatViewsForMigrations(ctx, db, logger, pauseOpts)
 	defer releasePause()
 
-	return runMigrationSteps(ctx, db, logger, logstoreMigrationSteps)
+	return runMigrationStepsWithRetry(ctx, db, logger, logstoreMigrationSteps, migrationStepLockRetry.WithBudgetFallback(retry))
 }
 
 // migrationInit creates the logs table if it does not exist.
@@ -5536,6 +5556,13 @@ func rollbackWarpMessageOutcomeColumns(tx *gorm.DB) error {
 	return nil
 }
 
+// smallTableForPlainIndex decides when a logstore migration builds an index
+// without CONCURRENTLY; see postgresconn.TableIsSmall. A variable only so tests
+// can force the concurrent path.
+var smallTableForPlainIndex = func(tx *gorm.DB, table string) (bool, error) {
+	return postgresconn.TableIsSmall(tx, table, postgresconn.DefaultSmallTableMaxBytes, postgresconn.DefaultSmallTableMaxRows)
+}
+
 // migrationAddWarpConversationsUpdatedAtIndex adds the index the retention
 // sweep needs.
 //
@@ -5571,13 +5598,14 @@ func migrationAddWarpConversationsUpdatedAtIndex(ctx context.Context, db *gorm.D
 				// how ensureMetadataGINIndex recovers the same situation.
 				indexValid := func() (bool, error) {
 					var valid bool
+					// Resolved through search_path, like every other statement here: a
+					// bare relname match would find a same-named index in another schema
+					// and skip the build for this one.
 					if err := tx.Raw(`
 						SELECT COALESCE(bool_and(pi.indisvalid), false)
-						FROM pg_class pc
-						JOIN pg_index pi ON pi.indrelid = pc.oid
-						JOIN pg_class ic ON ic.oid = pi.indexrelid
-						WHERE pc.relname = 'warp_conversations'
-						  AND ic.relname = 'idx_warp_conversations_updated_at'
+						FROM pg_index pi
+						WHERE pi.indexrelid = to_regclass('idx_warp_conversations_updated_at')
+						  AND pi.indrelid = to_regclass('warp_conversations')
 					`).Scan(&valid).Error; err != nil {
 						return false, fmt.Errorf("check warp_conversations updated_at index validity: %w", err)
 					}
@@ -5602,6 +5630,19 @@ func migrationAddWarpConversationsUpdatedAtIndex(ctx context.Context, db *gorm.D
 				}
 				if valid {
 					return nil
+				}
+				// A small table (always the case on an upgrade that just created it)
+				// gets a plain build under a bounded lock wait. CONCURRENTLY waits for
+				// every older transaction in the database, so on a rolling upgrade it
+				// would wait out each old replica's long logs query and stall boot.
+				small, err := smallTableForPlainIndex(tx, "warp_conversations")
+				if err != nil {
+					return fmt.Errorf("check size of warp_conversations: %w", err)
+				}
+				if small {
+					return postgresconn.ExecWithBoundedLock(tx, "index idx_warp_conversations_updated_at",
+						`DROP INDEX IF EXISTS idx_warp_conversations_updated_at`,
+						`CREATE INDEX IF NOT EXISTS idx_warp_conversations_updated_at ON warp_conversations (updated_at DESC)`)
 				}
 				// Safe when it does not exist; necessary when it exists but is invalid.
 				if err := tx.Exec(`DROP INDEX CONCURRENTLY IF EXISTS idx_warp_conversations_updated_at`).Error; err != nil {

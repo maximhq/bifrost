@@ -239,6 +239,12 @@ var migrationStepLockRetry postgresconn.LockRetryOptions
 // preflight read fails, every step runs and each one checks its own row. A step
 // that fails on a lock timeout is retried within postgresconn's retry budget.
 func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep) error {
+	return runMigrationStepsWithRetry(ctx, db, logger, steps, migrationStepLockRetry)
+}
+
+// runMigrationStepsWithRetry is runMigrationSteps with explicit lock-timeout
+// retry options; a zero budget takes postgresconn's default.
+func runMigrationStepsWithRetry(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep, retry postgresconn.LockRetryOptions) error {
 	pending, err := pendingMigrationStepIDs(ctx, db, steps)
 	var pendingSet map[string]struct{}
 	if err != nil {
@@ -258,7 +264,7 @@ func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, 
 		// with backoff instead of failing the boot. Steps are idempotent: the
 		// migrator records completed IDs and the DDL helpers use IF [NOT] EXISTS.
 		label := "[configstore] migration " + strings.Join(step.IDs, ",")
-		if err := postgresconn.RunWithLockRetry(ctx, logger, label, migrationStepLockRetry, func() error {
+		if err := postgresconn.RunWithLockRetry(ctx, logger, label, retry, func() error {
 			return step.run(ctx, db, logger)
 		}); err != nil {
 			return err
@@ -560,6 +566,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_key_metadata_column"}, run: migrationAddVirtualKeyMetadataColumn},
 	{IDs: []string{"add_a2a_private_allowlist_column"}, run: migrationAddA2APrivateAllowlistColumn},
 	{IDs: []string{"add_agent_destination_policy_columns"}, run: migrationAddAgentDestinationPolicyColumns},
+	{IDs: []string{"drop_agent_registration_options"}, run: migrationDropAgentRegistrationOptions},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1338,6 +1345,14 @@ func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) 
 // options, so a configured migration_matview_cancel_after (including "off")
 // governs config store migrations as well as log store ones.
 func triggerMigrationsWithPause(ctx context.Context, db *gorm.DB, logger schemas.Logger, pause logstore.MatViewPauseOptions) error {
+	return triggerMigrationsWithOptions(ctx, db, logger, pause, migrationStepLockRetry)
+}
+
+// triggerMigrationsWithOptions is triggerMigrationsWithPause with the lock-timeout
+// retry options too, so a configured migration_lock_retry_budget governs how
+// long a blocked step keeps retrying. A test override of migrationStepLockRetry
+// keeps precedence over the configured budget.
+func triggerMigrationsWithOptions(ctx context.Context, db *gorm.DB, logger schemas.Logger, pause logstore.MatViewPauseOptions, retry postgresconn.LockRetryOptions) error {
 	if !areThereAnyPendingMigrations(ctx, db, logger) {
 		logger.Info("[configstore] no pending migrations; skipping migration run")
 		return nil
@@ -1372,7 +1387,7 @@ func triggerMigrationsWithPause(ctx context.Context, db *gorm.DB, logger schemas
 	// the migration lock and released before it (defers run LIFO).
 	releasePause := pauseMatViewsForMigrations(ctx, db, logger, pause)
 	defer releasePause()
-	return runMigrationSteps(ctx, db, logger, configstoreMigrationSteps)
+	return runMigrationStepsWithRetry(ctx, db, logger, configstoreMigrationSteps, migrationStepLockRetry.WithBudgetFallback(retry))
 }
 
 // migrationAddClientConfigMetadataColumn adds the metadata_json column to
@@ -15224,76 +15239,25 @@ func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where 
 }
 
 // smallTableIndexMaxBytes and smallTableIndexMaxRows decide when an index is
-// built without CONCURRENTLY: below both, a plain build finishes in well under a
-// second, so blocking the table's writes for that long is cheaper than waiting on
-// every long transaction in the database. Variables only so tests can force the
-// concurrent path.
+// built without CONCURRENTLY (see postgresconn.TableIsSmall). Variables only so
+// tests can force the concurrent path.
 var (
-	smallTableIndexMaxBytes int64   = 256 << 20
-	smallTableIndexMaxRows  float64 = 100_000
-)
-
-const (
-	// boundedDDLLockTimeout caps each attempt's wait for the table lock, so a
-	// queued build never stalls the table's other readers and writers for long.
-	boundedDDLLockTimeout = "5s"
-	// boundedDDLStatementTimeout caps the plain build itself. The migration pool
-	// runs without a statement_timeout, and a small-table build that ran this
-	// long would mean the size estimate was badly wrong.
-	boundedDDLStatementTimeout = "120s"
-	// boundedDDLRetryBudget is how long lock timeouts are retried in place before
-	// the error surfaces to the step-level retry in runMigrationSteps.
-	boundedDDLRetryBudget = 2 * time.Minute
+	smallTableIndexMaxBytes = postgresconn.DefaultSmallTableMaxBytes
+	smallTableIndexMaxRows  = postgresconn.DefaultSmallTableMaxRows
 )
 
 // PostgresTableIsSmall reports whether table is small enough to index without
-// CONCURRENTLY. Exported so downstream migration helpers (bifrost-enterprise)
-// apply the same rule. Size comes from pg_total_relation_size; the row estimate from
-// pg_class.reltuples, which is -1 for a never-analyzed table, in which case the
-// byte size alone decides. A missing table reports small: there is nothing to
-// scan, and the build fails on its own with a clear error.
+// CONCURRENTLY, under this package's thresholds. Exported so downstream migration
+// helpers (bifrost-enterprise) apply the same rule; see postgresconn.TableIsSmall.
 func PostgresTableIsSmall(tx *gorm.DB, table string) (bool, error) {
-	var rows []struct {
-		Tuples float64
-		Bytes  int64
-	}
-	err := tx.Raw(`SELECT c.reltuples AS tuples, pg_total_relation_size(c.oid) AS bytes
-		FROM pg_catalog.pg_class c WHERE c.oid = to_regclass(?)`, table).Scan(&rows).Error
-	if err != nil {
-		return false, err
-	}
-	if len(rows) == 0 {
-		return true, nil
-	}
-	r := rows[0]
-	return r.Bytes < smallTableIndexMaxBytes && r.Tuples < smallTableIndexMaxRows, nil
+	return postgresconn.TableIsSmall(tx, table, smallTableIndexMaxBytes, smallTableIndexMaxRows)
 }
 
 // ExecWithBoundedLock runs stmts in one short transaction with a bounded lock
-// wait and statement time, retrying lock timeouts with backoff. It is for DDL on
-// small tables that would otherwise use CONCURRENTLY, and runs fine from a
-// migration with UseTransaction=false because it opens its own transaction.
+// wait and statement time, retrying lock timeouts. Kept exported for downstream
+// callers; see postgresconn.ExecWithBoundedLock.
 func ExecWithBoundedLock(tx *gorm.DB, label string, stmts ...string) error {
-	ctx := tx.Statement.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return postgresconn.RunWithLockRetry(ctx, nil, label, postgresconn.LockRetryOptions{Budget: boundedDDLRetryBudget}, func() error {
-		return tx.Transaction(func(t *gorm.DB) error {
-			if err := t.Exec("SET LOCAL lock_timeout = '" + boundedDDLLockTimeout + "'").Error; err != nil {
-				return err
-			}
-			if err := t.Exec("SET LOCAL statement_timeout = '" + boundedDDLStatementTimeout + "'").Error; err != nil {
-				return err
-			}
-			for _, stmt := range stmts {
-				if err := t.Exec(stmt).Error; err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-	})
+	return postgresconn.ExecWithBoundedLock(tx, label, stmts...)
 }
 
 // dropIndexConcurrently is the rollback counterpart of ensureIndexConcurrently: it
@@ -16283,6 +16247,34 @@ func migrationAddAgentDestinationPolicyColumns(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("add_agent_destination_policy_columns is non-rollbackable: removing destination permissions would discard security policy")
+		},
+	})
+}
+
+// migrationDropAgentRegistrationOptions removes unused tenant and manual extension configuration.
+func migrationDropAgentRegistrationOptions(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "drop_agent_registration_options",
+		Migrate: func(tx *gorm.DB) error {
+			for _, column := range []string{"tenant", "extension_uris"} {
+				// SQLite's GORM table reconstruction can silently retain legacy columns.
+				if tx.Dialector.Name() == "sqlite" {
+					if !tx.Migrator().HasColumn(&tables.TableAgentRegistration{}, column) {
+						continue
+					}
+					if err := tx.WithContext(ctx).Exec(dropColumnSQL(tx, "config_agent_registrations", column)).Error; err != nil {
+						return err
+					}
+					continue
+				}
+				if err := dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableAgentRegistration{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("drop_agent_registration_options is non-rollbackable: removed registration values cannot be recovered")
 		},
 	})
 }

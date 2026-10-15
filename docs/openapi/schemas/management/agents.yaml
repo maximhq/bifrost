@@ -44,11 +44,6 @@ AgentCreateRequest:
       items:
         type: string
       description: Virtual key IDs granted access to the agent. Empty and duplicate IDs are rejected.
-    extension_uris:
-      type: array
-      items:
-        type: string
-      description: A2A extension URIs enabled for upstream requests.
   required:
   - name
   - agent_card_url
@@ -157,11 +152,6 @@ AgentUpdateRequest:
       items:
         type: string
       description: Virtual key IDs granted access to the agent. Empty and duplicate IDs are rejected.
-    extension_uris:
-      type: array
-      items:
-        type: string
-      description: A2A extension URIs enabled for upstream requests.
   required:
   - agent_card_url
   - enabled
@@ -538,11 +528,6 @@ AgentRegistrationView:
       description: >
         Additional origins permitted for all runtime requests and their credentials.
         The card origin is permitted automatically.
-    extension_uris:
-      type: array
-      items:
-        type: string
-      description: A2A extension URIs enabled for upstream requests.
     virtual_key_ids:
       type: array
       items:
