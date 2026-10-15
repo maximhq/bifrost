@@ -4,6 +4,7 @@ package starlark
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strconv"
 	"strings"
@@ -1721,5 +1722,135 @@ func TestReadToolFileClientCapOverridesConfiguredGlobal(t *testing.T) {
 	}
 	if !strings.Contains(content, "Never retry a write") {
 		t.Fatalf("stub lost text the client's cap allows, got:\n%s", content)
+	}
+}
+
+// A per-call client (per-user OAuth, per-user headers, token exchange) gets its tools back from
+// the config store after a restart instead of from a live tools/list. That decode turns every
+// nested schema object into *OrderedMap, where live discovery keeps plain maps, and the stubs
+// must render both the same way.
+
+func searchToolSchema() schemas.ChatTool {
+	return schemas.ChatTool{
+		Type: schemas.ChatToolTypeFunction,
+		Function: &schemas.ChatToolFunction{
+			Name:        "codey-search",
+			Description: schemas.Ptr("Searches the index"),
+			Parameters: &schemas.ToolFunctionParameters{
+				Type: "object",
+				// A shallow wrap of plain maps, as live discovery builds it.
+				Properties: schemas.OrderedMapFromMap(map[string]interface{}{
+					"query": map[string]interface{}{"type": "string", "description": "Text to search for"},
+					"limit": map[string]interface{}{"type": "integer"},
+					"tags":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}},
+				}),
+				Required: []string{"query"},
+			},
+		},
+	}
+}
+
+// restoreDiscoveredTool round-trips a tool the way the config store persists DiscoveredTools:
+// json.Marshal on save, sonic.Unmarshal on load (framework/configstore/tables/mcp.go).
+func restoreDiscoveredTool(t *testing.T, tool schemas.ChatTool) schemas.ChatTool {
+	t.Helper()
+	data, err := json.Marshal(map[string]schemas.ChatTool{tool.Function.Name: tool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored map[string]schemas.ChatTool
+	if err := sonic.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	return restored[tool.Function.Name]
+}
+
+func newSearchCodeMode(tool schemas.ChatTool) *StarlarkCodeMode {
+	mode := NewStarlarkCodeMode(&codemcp.CodeModeConfig{
+		BindingLevel:         schemas.CodeModeBindingLevelServer,
+		ToolExecutionTimeout: time.Second,
+	}, nil)
+	mode.clientManager = &testClientManager{
+		clients: map[string]*schemas.MCPClientState{
+			"codey": {Name: "codey", ExecutionConfig: &schemas.MCPClientConfig{Name: "codey", IsCodeModeClient: true}},
+		},
+		tools: map[string][]schemas.ChatTool{"codey": {tool}},
+	}
+	return mode
+}
+
+func readSearchStubs(t *testing.T, mode *StarlarkCodeMode) (stub, docs string) {
+	t.Helper()
+	msg, err := mode.handleReadToolFile(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-1"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"fileName":"servers/codey.pyi"}`},
+	})
+	stub = instructionsToolResponse(t, msg, err)
+	msg, err = mode.handleGetToolDocs(context.Background(), schemas.ChatAssistantMessageToolCall{
+		ID:       schemas.Ptr("tool-call-2"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{Arguments: `{"server":"codey","tool":"search"}`},
+	})
+	docs = instructionsToolResponse(t, msg, err)
+	return stub, docs
+}
+
+func TestStubsKeepParametersOfRestoredTools(t *testing.T) {
+	restored := restoreDiscoveredTool(t, searchToolSchema())
+	// Guard the reproduction itself: the property must have the shape a restart produces.
+	prop, _ := restored.Function.Parameters.Properties.Get("tags")
+	if _, ok := prop.(*schemas.OrderedMap); !ok {
+		t.Fatalf("restore did not produce *OrderedMap property schemas, got %T", prop)
+	}
+
+	stub, docs := readSearchStubs(t, newSearchCodeMode(restored))
+
+	if !strings.Contains(stub, "def search(query: str, limit: int = None, tags: list[str] = None) -> dict") {
+		t.Fatalf("readToolFile lost the restored tool's parameters, got:\n%s", stub)
+	}
+	for _, want := range []string{
+		"def search(query: str, limit: int = None, tags: list[str] = None) -> dict:",
+		"query (str): Text to search for (required)",
+		"tags (list[str]): tags parameter (optional)",
+	} {
+		if !strings.Contains(docs, want) {
+			t.Fatalf("getToolDocs is missing %q for the restored tool, got:\n%s", want, docs)
+		}
+	}
+}
+
+func TestStubsRenderFreshAndRestoredToolsIdentically(t *testing.T) {
+	freshStub, freshDocs := readSearchStubs(t, newSearchCodeMode(searchToolSchema()))
+	restoredStub, restoredDocs := readSearchStubs(t, newSearchCodeMode(restoreDiscoveredTool(t, searchToolSchema())))
+
+	if freshStub != restoredStub {
+		t.Fatalf("readToolFile differs after a restore:\nfresh:\n%s\nrestored:\n%s", freshStub, restoredStub)
+	}
+	if freshDocs != restoredDocs {
+		t.Fatalf("getToolDocs differs after a restore:\nfresh:\n%s\nrestored:\n%s", freshDocs, restoredDocs)
+	}
+}
+
+func BenchmarkFormatPythonParams(b *testing.B) {
+	data, err := json.Marshal(map[string]schemas.ChatTool{"codey-search": searchToolSchema()})
+	if err != nil {
+		b.Fatal(err)
+	}
+	var restored map[string]schemas.ChatTool
+	if err := sonic.Unmarshal(data, &restored); err != nil {
+		b.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		params *schemas.ToolFunctionParameters
+	}{
+		{"fresh", searchToolSchema().Function.Parameters},
+		{"restored", restored["codey-search"].Function.Parameters},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = formatPythonParams(tc.params)
+			}
+		})
 	}
 }
