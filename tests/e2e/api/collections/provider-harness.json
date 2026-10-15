@@ -151791,6 +151791,139 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "bedrock/openai.gpt-oss-120b /anthropic/v1/messages replayed assistant item keeps status with its id (raw_request) - assistant output message status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('bedrock gpt-oss-120b anthropic ingress: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock gpt-oss-120b anthropic ingress: replayed assistant item keeps status with its id on the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var input = Array.isArray(rr.input) ? rr.input : [];",
+                  "  var asst = input.filter(function (it) { return it && it.role === 'assistant' && (it.type === 'message' || it.type === undefined); });",
+                  "  pm.expect(asst.length, 'no replayed assistant message in raw_request.input: ' + JSON.stringify(input).slice(0, 600)).to.be.above(0);",
+                  "  asst.forEach(function (it) {",
+                  "    if (it.id === undefined) { return; }",
+                  "    // An assistant item with an id is a ResponseOutputMessageParam: id AND status are required.",
+                  "    // The pre-fix sanitizer kept the id and dropped the status, which matches neither input shape.",
+                  "    pm.expect(it.status, 'assistant item has id but no status (pre-fix regression): ' + JSON.stringify(it).slice(0, 400)).to.eql('completed');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-oss-120b\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Hello\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Hello! How can I help you today?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word OK.\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-sol /v1/responses replayed output message keeps status with its id (raw_request) - assistant output message status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('bedrock_mantle gpt-5.6-sol responses ingress: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock_mantle gpt-5.6-sol responses ingress: replayed assistant item keeps status with its id on the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var input = Array.isArray(rr.input) ? rr.input : [];",
+                  "  var asst = input.filter(function (it) { return it && it.role === 'assistant' && (it.type === 'message' || it.type === undefined); });",
+                  "  pm.expect(asst.length, 'no replayed assistant message in raw_request.input: ' + JSON.stringify(input).slice(0, 600)).to.be.above(0);",
+                  "  asst.forEach(function (it) {",
+                  "    if (it.id === undefined) { return; }",
+                  "    // An assistant item with an id is a ResponseOutputMessageParam: id AND status are required.",
+                  "    // The pre-fix sanitizer kept the id and dropped the status, which matches neither input shape.",
+                  "    pm.expect(it.status, 'assistant item has id but no status (pre-fix regression): ' + JSON.stringify(it).slice(0, 400)).to.eql('completed');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"message\",\n      \"id\": \"msg_harness_replay_1\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Hello! How can I help you today?\",\n          \"annotations\": []\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
         }
       ]
     },
