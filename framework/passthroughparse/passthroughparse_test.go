@@ -314,6 +314,150 @@ func TestParseKeepsTheSideThatDecoded(t *testing.T) {
 	require.Nil(t, r)
 }
 
+func TestParseMedia(t *testing.T) {
+	tests := []struct {
+		name     string
+		in       Input
+		wantType schemas.RequestType
+		check    func(t *testing.T, r *Result)
+	}{
+		{
+			name:     "openai embeddings",
+			in:       Input{Provider: schemas.OpenAI, Model: "text-embedding-3-small", Method: "POST", Path: "/v1/embeddings", StatusCode: 200, RequestBody: []byte(`{"model":"text-embedding-3-small","input":["hello","world"]}`), ResponseBody: []byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]},{"object":"embedding","index":1,"embedding":[0.3,0.4]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":2,"total_tokens":2}}`)},
+			wantType: schemas.EmbeddingRequest,
+			check: func(t *testing.T, r *Result) {
+				require.NotNil(t, r.Request.EmbeddingRequest)
+				require.Len(t, r.Request.EmbeddingRequest.Input, 2)
+				require.NotNil(t, r.Response.EmbeddingResponse)
+				require.Len(t, r.Response.EmbeddingResponse.Data, 2)
+			},
+		},
+		{
+			name:     "openai speech parses the input text; the audio response is binary",
+			in:       Input{Provider: schemas.OpenAI, Model: "gpt-4o-mini-tts", Method: "POST", Path: "/v1/audio/speech", StatusCode: 200, RequestBody: []byte(`{"model":"gpt-4o-mini-tts","input":"Hi there","voice":"alloy"}`), ResponseBody: []byte("<binary content omitted: 1234 bytes>")},
+			wantType: schemas.SpeechRequest,
+			check: func(t *testing.T, r *Result) {
+				require.NotNil(t, r.Request.SpeechRequest)
+				require.NotNil(t, r.Request.SpeechRequest.Input)
+				require.Equal(t, "Hi there", r.Request.SpeechRequest.Input.Input)
+				require.Nil(t, r.Response)
+			},
+		},
+		{
+			name:     "openai image generation",
+			in:       Input{Provider: schemas.OpenAI, Model: "gpt-image-1", Method: "POST", Path: "/v1/images/generations", StatusCode: 200, RequestBody: []byte(`{"model":"gpt-image-1","prompt":"a red fox","size":"1024x1024"}`), ResponseBody: []byte(`{"created":1,"data":[{"b64_json":"aGk="}]}`)},
+			wantType: schemas.ImageGenerationRequest,
+			check: func(t *testing.T, r *Result) {
+				require.NotNil(t, r.Request.ImageGenerationRequest)
+				require.Equal(t, "a red fox", r.Request.ImageGenerationRequest.Input.Prompt)
+				require.NotNil(t, r.Response.ImageGenerationResponse)
+				require.Len(t, r.Response.ImageGenerationResponse.Data, 1)
+			},
+		},
+		{
+			name:     "gemini embedContent",
+			in:       Input{Provider: schemas.Gemini, Model: "text-embedding-004", Method: "POST", Path: "/models/text-embedding-004:embedContent", StatusCode: 200, RequestBody: []byte(`{"content":{"parts":[{"text":"hello"}]}}`), ResponseBody: []byte(`{"embedding":{"values":[0.1,0.2,0.3]}}`)},
+			wantType: schemas.EmbeddingRequest,
+			check: func(t *testing.T, r *Result) {
+				require.NotNil(t, r.Request.EmbeddingRequest)
+				require.NotEmpty(t, r.Request.EmbeddingRequest.Input)
+				require.NotNil(t, r.Response.EmbeddingResponse)
+				require.Len(t, r.Response.EmbeddingResponse.Data, 1)
+			},
+		},
+		{
+			name:     "gemini batchEmbedContents",
+			in:       Input{Provider: schemas.Gemini, Model: "text-embedding-004", Method: "POST", Path: "/models/text-embedding-004:batchEmbedContents", StatusCode: 200, RequestBody: []byte(`{"requests":[{"model":"models/text-embedding-004","content":{"parts":[{"text":"a"}]}},{"model":"models/text-embedding-004","content":{"parts":[{"text":"b"}]}}]}`), ResponseBody: []byte(`{"embeddings":[{"values":[0.1]},{"values":[0.2]}]}`)},
+			wantType: schemas.EmbeddingRequest,
+			check: func(t *testing.T, r *Result) {
+				require.NotNil(t, r.Request.EmbeddingRequest)
+				require.Len(t, r.Request.EmbeddingRequest.Input, 2)
+				require.Len(t, r.Response.EmbeddingResponse.Data, 2)
+			},
+		},
+		{
+			name:     "vertex imagen predict",
+			in:       Input{Provider: schemas.Vertex, Model: "imagen-4.0-generate-001", Method: "POST", Path: "/projects/p/locations/us-central1/publishers/google/models/imagen-4.0-generate-001:predict", StatusCode: 200, RequestBody: []byte(`{"instances":[{"prompt":"a red fox"}],"parameters":{"sampleCount":1}}`), ResponseBody: []byte(`{"predictions":[{"bytesBase64Encoded":"aGk=","mimeType":"image/png"}]}`)},
+			wantType: schemas.ImageGenerationRequest,
+			check: func(t *testing.T, r *Result) {
+				require.NotNil(t, r.Request.ImageGenerationRequest)
+				require.Equal(t, "a red fox", r.Request.ImageGenerationRequest.Input.Prompt)
+				require.NotNil(t, r.Response.ImageGenerationResponse)
+				require.Len(t, r.Response.ImageGenerationResponse.Data, 1)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, err := Parse(tt.in)
+			require.NoError(t, err)
+			require.NotNil(t, r)
+			require.Equal(t, tt.wantType, r.RequestType)
+			require.NotNil(t, r.Request)
+			tt.check(t, r)
+		})
+	}
+}
+
+// TestParseGeminiEmbedContentMentioningRequests pins that a single :embedContent is told apart from
+// :batchEmbedContents by its top-level requests key, not by the word appearing anywhere in the body.
+func TestParseGeminiEmbedContentMentioningRequests(t *testing.T) {
+	r, err := Parse(Input{Provider: schemas.Gemini, Model: "text-embedding-004", Method: "POST", Path: "/models/text-embedding-004:embedContent", StatusCode: 200,
+		RequestBody:  []byte(`{"content":{"parts":[{"text":"requests"}]}}`),
+		ResponseBody: []byte(`{"embedding":{"values":[0.1,0.2]}}`)})
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	require.NotNil(t, r.Request.EmbeddingRequest)
+	require.Len(t, r.Request.EmbeddingRequest.Input, 1)
+	require.Equal(t, "requests", *r.Request.EmbeddingRequest.Input[0].Content[0].Text)
+}
+
+// TestParseMediaResponseOnly covers routes whose request is not JSON (multipart uploads) or whose
+// response is the only typed side: the response still parses on its own.
+func TestParseMediaResponseOnly(t *testing.T) {
+	r, err := Parse(Input{Provider: schemas.OpenAI, Model: "whisper-1", Method: "POST", Path: "/v1/audio/transcriptions", StatusCode: 200, ResponseBody: []byte(`{"text":"hello world"}`)})
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	require.Nil(t, r.Request)
+	require.NotNil(t, r.Response.TranscriptionResponse)
+	require.Equal(t, "hello world", r.Response.TranscriptionResponse.Text)
+
+	// response_format=text returns plain text: nothing to decode, and that is not a failure.
+	r, err = Parse(Input{Provider: schemas.OpenAI, Model: "whisper-1", Method: "POST", Path: "/v1/audio/transcriptions", StatusCode: 200, ResponseBody: []byte("hello world")})
+	require.NoError(t, err)
+	require.Nil(t, r)
+
+	// :predict on an Imagen model that returned no images is not an image response.
+	r, err = Parse(Input{Provider: schemas.Vertex, Model: "imagen-4.0-generate-001", Method: "POST", Path: "/projects/p/locations/l/publishers/google/models/imagen-4.0-generate-001:predict", StatusCode: 200, ResponseBody: []byte(`{"predictions":[]}`)})
+	require.NoError(t, err)
+	require.Nil(t, r)
+}
+
+// TestParseVertexPredictEmbeddings covers Vertex embedding models served on :predict: the
+// instances/predictions shape, for text-embedding-* (content) and multimodalembedding@* (text).
+func TestParseVertexPredictEmbeddings(t *testing.T) {
+	r, err := Parse(Input{Provider: schemas.Vertex, Model: "text-embedding-005", Method: "POST", Path: "/projects/p/locations/l/publishers/google/models/text-embedding-005:predict", StatusCode: 200,
+		RequestBody:  []byte(`{"instances":[{"content":"hi","task_type":"RETRIEVAL_QUERY"},{"content":"there"}]}`),
+		ResponseBody: []byte(`{"predictions":[{"embeddings":{"values":[0.1,0.2],"statistics":{"token_count":1}}},{"embeddings":{"values":[0.3,0.4],"statistics":{"token_count":1}}}]}`)})
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	require.Equal(t, schemas.EmbeddingRequest, r.RequestType)
+	require.NotNil(t, r.Request.EmbeddingRequest)
+	require.Len(t, r.Request.EmbeddingRequest.Input, 2)
+	require.Equal(t, "hi", *r.Request.EmbeddingRequest.Input[0].Content[0].Text)
+	require.NotNil(t, r.Response.EmbeddingResponse)
+	require.Len(t, r.Response.EmbeddingResponse.Data, 2)
+
+	r, err = Parse(Input{Provider: schemas.Vertex, Model: "multimodalembedding@001", Method: "POST", Path: "/projects/p/locations/l/publishers/google/models/multimodalembedding@001:predict", StatusCode: 200,
+		RequestBody:  []byte(`{"instances":[{"text":"a red fox"}]}`),
+		ResponseBody: []byte(`{"predictions":[{"textEmbedding":[0.1,0.2]}]}`)})
+	require.NoError(t, err)
+	require.NotNil(t, r)
+	require.Equal(t, "a red fox", *r.Request.EmbeddingRequest.Input[0].Content[0].Text)
+	require.NotNil(t, r.Response.EmbeddingResponse)
+	require.NotEmpty(t, r.Response.EmbeddingResponse.Data)
+}
+
 // TestParseIsBestEffort pins that parsing never fails loudly: every known route, fed bodies that are
 // truncated, of the wrong shape, binary or empty, returns without panicking.
 func TestParseIsBestEffort(t *testing.T) {
@@ -327,10 +471,17 @@ func TestParseIsBestEffort(t *testing.T) {
 		{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Method: "POST", Path: "/models/gemini-2.5-flash:generateContent"},
 		{Provider: schemas.Gemini, Model: "gemini-2.5-flash", Method: "POST", Path: "/models/gemini-2.5-flash:countTokens"},
 		{Provider: schemas.Vertex, Model: "claude-sonnet-4-5", Method: "POST", Path: "/projects/p/locations/l/publishers/anthropic/models/claude-sonnet-4-5:rawPredict"},
+		{Provider: schemas.OpenAI, Model: "text-embedding-3-small", Method: "POST", Path: "/v1/embeddings"},
+		{Provider: schemas.OpenAI, Model: "gpt-4o-mini-tts", Method: "POST", Path: "/v1/audio/speech"},
+		{Provider: schemas.OpenAI, Model: "whisper-1", Method: "POST", Path: "/v1/audio/transcriptions"},
+		{Provider: schemas.OpenAI, Model: "gpt-image-1", Method: "POST", Path: "/v1/images/generations"},
+		{Provider: schemas.Gemini, Model: "text-embedding-004", Method: "POST", Path: "/models/text-embedding-004:embedContent"},
+		{Provider: schemas.Gemini, Model: "text-embedding-004", Method: "POST", Path: "/models/text-embedding-004:batchEmbedContents"},
+		{Provider: schemas.Vertex, Model: "imagen-4.0-generate-001", Method: "POST", Path: "/projects/p/locations/l/publishers/google/models/imagen-4.0-generate-001:predict"},
 	}
 	bodies := []string{
 		"", "{", "[]", "null", `"str"`, "42", `{"messages":"nope"}`, `{"contents":{}}`, `{"content":[{"type":"tool_use","input":"x"}]}`,
-		`{"choices":[{"message":null}]}`, `{"candidates":[null]}`, "\x00\xff\xfe", "data: {\n\n", "event: x\ndata: [1,2\n\n",
+		`{"choices":[{"message":null}]}`, `{"candidates":[null]}`, `{"predictions":[null]}`, `{"requests":[null]}`, `{"data":[null]}`, `{"instances":[]}`, "\x00\xff\xfe", "data: {\n\n", "event: x\ndata: [1,2\n\n",
 		anthropicStream[:len(anthropicStream)/2], openAIChatStream[:len(openAIChatStream)/3], openAIResponsesStream, geminiStreamChunk1,
 	}
 	for _, route := range routes {

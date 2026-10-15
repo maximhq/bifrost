@@ -1,6 +1,9 @@
 package logging
 
 import (
+	"context"
+	"reflect"
+
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/passthroughparse"
@@ -26,11 +29,13 @@ func markPassthroughForParsing(ctx *schemas.BifrostContext, entry *logstore.Log,
 		format = base
 	}
 	entry.PassthroughParseFormat = format
+	entry.PassthroughParseMaxBytes = largePayloadRequestThreshold(ctx)
 }
 
 // applyParsedPassthrough decodes a flagged passthrough row's raw bodies into the structured fields a
-// typed request fills (input history, tools, output, stop reason, tool calls), so the row renders and
-// searches like any other. It runs on the batch writer goroutine, never on the request path.
+// typed request fills (input history, tools, per-kind inputs and outputs, stop reason, tool calls),
+// through the same captureRequestInput / applyContentOutputToEntry the typed path uses, so the row
+// renders and searches like any other. It runs on the batch writer goroutine, never on the request path.
 //
 // Parsing is best-effort. A body that does not decode, a route with no typed equivalent, or a panic
 // anywhere in the conversion leaves the row exactly as it is without parsing: raw bodies only.
@@ -70,24 +75,21 @@ func (p *LoggerPlugin) applyParsedPassthrough(entry *logstore.Log) {
 		return
 	}
 
-	// Build every field first and assign at the end, so a panic part-way leaves the row untouched.
-	var (
-		inputHistory          []schemas.ChatMessage
-		responsesInputHistory []schemas.ResponsesMessage
-		modelParams           interface{}
-		tools                 []schemas.ChatTool
-	)
+	// Capture the input into scratch first: it is the step that can trip over an unexpected shape,
+	// and a panic there must leave the row untouched.
+	var captured InitialLogData
 	if req := result.Request; req != nil {
-		inputHistory, responsesInputHistory = p.extractInputHistory(req)
-		modelParams, tools = textRequestParamsAndTools(req)
+		var thresholdCtx *schemas.BifrostContext
+		if entry.PassthroughParseMaxBytes > 0 {
+			thresholdCtx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			thresholdCtx.SetValue(schemas.BifrostContextKeyLargePayloadRequestThreshold, entry.PassthroughParseMaxBytes)
+		}
+		p.captureRequestInput(thresholdCtx, req, &captured)
 	}
-
-	parsed := &logstore.Log{}
 	var stopReason *string
 	var toolCalls []schemas.ChatAssistantMessageToolCall
 	if resp := result.Response; resp != nil {
 		stopReason = responseStopReason(resp)
-		applyTextOutputToEntry(parsed, resp)
 		toolCalls = nonStreamingToolCalls(resp)
 	}
 
@@ -95,21 +97,12 @@ func (p *LoggerPlugin) applyParsedPassthrough(entry *logstore.Log) {
 	if format != schemas.ModelProvider(entry.Provider) {
 		params.BaseProvider = format
 	}
-	params.ModelParams = modelParams
-	if len(inputHistory) > 0 {
-		entry.InputHistoryParsed = inputHistory
+	if !isNilValue(captured.Params) {
+		params.ModelParams = captured.Params
 	}
-	if len(responsesInputHistory) > 0 {
-		entry.ResponsesInputHistoryParsed = responsesInputHistory
-	}
-	if len(tools) > 0 {
-		entry.ToolsParsed = tools
-	}
-	if parsed.OutputMessageParsed != nil {
-		entry.OutputMessageParsed = parsed.OutputMessageParsed
-	}
-	if len(parsed.ResponsesOutputParsed) > 0 {
-		entry.ResponsesOutputParsed = parsed.ResponsesOutputParsed
+	applyCapturedInputToEntry(entry, &captured)
+	if resp := result.Response; resp != nil {
+		applyContentOutputToEntry(entry, resp)
 	}
 	if entry.StopReason == nil && stopReason != nil {
 		entry.StopReason = stopReason
@@ -117,4 +110,58 @@ func (p *LoggerPlugin) applyParsedPassthrough(entry *logstore.Log) {
 	if len(toolCalls) > 0 {
 		applyToolCallsToEntry(entry, toolCalls, true)
 	}
+}
+
+// applyCapturedInputToEntry sets the input fields captureRequestInput recorded, leaving fields it
+// did not record (the passthrough row's own params and raw bodies) as they are.
+func applyCapturedInputToEntry(entry *logstore.Log, captured *InitialLogData) {
+	if len(captured.InputHistory) > 0 {
+		entry.InputHistoryParsed = captured.InputHistory
+	}
+	if len(captured.ResponsesInputHistory) > 0 {
+		entry.ResponsesInputHistoryParsed = captured.ResponsesInputHistory
+	}
+	if len(captured.Tools) > 0 {
+		entry.ToolsParsed = captured.Tools
+	}
+	if len(captured.EmbeddingInput) > 0 {
+		entry.EmbeddingInputParsed = captured.EmbeddingInput
+	}
+	if captured.SpeechInput != nil {
+		entry.SpeechInputParsed = captured.SpeechInput
+	}
+	if captured.TranscriptionInput != nil {
+		entry.TranscriptionInputParsed = captured.TranscriptionInput
+	}
+	if captured.OCRInput != nil {
+		entry.OCRInputParsed = captured.OCRInput
+	}
+	if captured.ImageGenerationInput != nil {
+		entry.ImageGenerationInputParsed = captured.ImageGenerationInput
+	}
+	if captured.ImageEditInput != nil {
+		entry.ImageEditInputParsed = captured.ImageEditInput
+	}
+	if captured.ImageVariationInput != nil {
+		entry.ImageVariationInputParsed = captured.ImageVariationInput
+	}
+	if captured.VideoGenerationInput != nil {
+		entry.VideoGenerationInputParsed = captured.VideoGenerationInput
+	}
+	if captured.VideoEditInput != nil {
+		entry.VideoEditInputParsed = captured.VideoEditInput
+	}
+}
+
+// isNilValue reports whether v is nil or a nil pointer/map/slice held in an interface, which would
+// otherwise serialize as an explicit null.
+func isNilValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	switch rv := reflect.ValueOf(v); rv.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Interface:
+		return rv.IsNil()
+	}
+	return false
 }

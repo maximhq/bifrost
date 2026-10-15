@@ -269817,6 +269817,731 @@
           }
         }
       ]
+    },
+    {
+      "name": "241. Passthrough bodies parsed into the logged conversation (passthrough parsed logs)",
+      "description": "Passthrough rows (/openai_passthrough, /anthropic_passthrough, /genai_passthrough) used to store only the raw request and response bodies, so the logs UI showed two JSON boxes and the list preview and search were empty. With content logging on, the logging plugin's batch writer now decodes both bodies with the provider's own native-to-Bifrost converters (framework/passthroughparse, routed by provider + path like the passthrough usage extractors) and fills the same fields a typed request does: input_history/output_message for OpenAI chat, responses_input_history/responses_output for Anthropic Messages and Gemini generateContent, plus tools, stop_reason, tool calls and params.parsed_type/model_params. The raw bodies are kept, and parsing is best-effort: a body that does not decode leaves the row raw. Each case calls a passthrough route with a real client's shape, then polls /api/logs/<x-bifrost-request-id> (the row and the parse are written by the async batch writer) and asserts the parsed fields alongside the raw bodies. Red before the change: params.parsed_type never appears, so every case fails on the poll. Content-logging-off behaviour (no parsing, no bodies) is pinned by Go tests in plugins/logging (TestPassthroughLogSkipsParsingWithoutContentLogging), since the harness profile logs content.",
+      "item": [
+        {
+          "name": "241.1 openai/gpt-4o-mini /openai_passthrough/v1/chat/completions logs a parsed conversation (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai chat parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('openai chat parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('openai chat parsed: row is passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('passthrough'); });",
+                  "      pm.test('openai chat parsed: parsed as chat completion', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('chat_completion'); });",
+                  "      pm.test('openai chat parsed: input_history parsed from the request body', function () { pm.expect(j.input_history, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); pm.expect(JSON.stringify(j.input_history[0].content)).to.include('passthrough parsing'); });",
+                  "      pm.test('openai chat parsed: output_message parsed from the response body', function () { pm.expect(j.output_message, JSON.stringify(j)).to.be.an('object'); pm.expect(j.output_message.role).to.eql('assistant'); pm.expect(JSON.stringify(j.output_message.content || '')).to.not.eql('\"\"'); });",
+                  "      pm.test('openai chat parsed: model params recorded', function () { pm.expect(j.params.model_params, JSON.stringify(j.params)).to.be.an('object'); });",
+                  "      pm.test('openai chat parsed: stop_reason recorded', function () { pm.expect(j.stop_reason, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('openai chat parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('openai chat parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('openai chat parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('openai chat parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one short sentence about passthrough parsing.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "241.2 openai/gpt-4o-mini /openai_passthrough/v1/chat/completions stream logs the reassembled conversation (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai chat stream parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('openai chat stream parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('openai chat stream parsed: row is passthrough_stream', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('passthrough_stream'); });",
+                  "      pm.test('openai chat stream parsed: parsed as chat completion', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('chat_completion'); });",
+                  "      pm.test('openai chat stream parsed: input_history parsed from the request body', function () { pm.expect(j.input_history, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); pm.expect(JSON.stringify(j.input_history[0].content)).to.include('passthrough parsing'); });",
+                  "      pm.test('openai chat stream parsed: output_message parsed from the response body', function () { pm.expect(j.output_message, JSON.stringify(j)).to.be.an('object'); pm.expect(j.output_message.role).to.eql('assistant'); pm.expect(JSON.stringify(j.output_message.content || '')).to.not.eql('\"\"'); });",
+                  "      pm.test('openai chat stream parsed: model params recorded', function () { pm.expect(j.params.model_params, JSON.stringify(j.params)).to.be.an('object'); });",
+                  "      pm.test('openai chat stream parsed: stop_reason recorded', function () { pm.expect(j.stop_reason, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('openai chat stream parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('openai chat stream parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('openai chat stream parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('openai chat stream parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one short sentence about passthrough parsing.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "241.3 anthropic/claude-haiku-4-5 /anthropic_passthrough/v1/messages logs parsed Responses input and output (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('anthropic messages parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('anthropic messages parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('anthropic messages parsed: parsed as responses', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('responses'); });",
+                  "      pm.test('anthropic messages parsed: responses_input_history parsed from the request body', function () { pm.expect(j.responses_input_history, JSON.stringify(j)).to.be.an('array').that.is.not.empty; pm.expect(JSON.stringify(j.responses_input_history)).to.include('passthrough parsing'); });",
+                  "      pm.test('anthropic messages parsed: responses_output parsed from the response body', function () { pm.expect(j.responses_output, JSON.stringify(j)).to.be.an('array').that.is.not.empty; });",
+                  "      pm.test('anthropic messages parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('anthropic messages parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('anthropic messages parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('anthropic messages parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one short sentence about passthrough parsing.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic_passthrough",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "241.4 gemini/gemini-2.5-flash /genai_passthrough/v1beta/models/gemini-2.5-flash:generateContent logs parsed Responses input and output (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini generateContent parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('gemini generateContent parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('gemini generateContent parsed: parsed as responses', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('responses'); });",
+                  "      pm.test('gemini generateContent parsed: responses_input_history parsed from the request body', function () { pm.expect(j.responses_input_history, JSON.stringify(j)).to.be.an('array').that.is.not.empty; pm.expect(JSON.stringify(j.responses_input_history)).to.include('passthrough parsing'); });",
+                  "      pm.test('gemini generateContent parsed: responses_output parsed from the response body', function () { pm.expect(j.responses_output, JSON.stringify(j)).to.be.an('array').that.is.not.empty; });",
+                  "      pm.test('gemini generateContent parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('gemini generateContent parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('gemini generateContent parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('gemini generateContent parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with one short sentence about passthrough parsing.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "242. Passthrough media bodies parsed into the dedicated log fields (passthrough parsed logs)",
+      "description": "Non-text passthrough routes are parsed into the same dedicated log fields a typed request fills, through the logging plugin's shared captureRequestInput / applyContentOutputToEntry helpers. OpenAI: /v1/embeddings fills embedding_input and embedding_output, /v1/audio/speech fills speech_input (the audio response stays a binary placeholder), and /v1/images/generations fills image_generation_input and image_generation_output. Gemini (/genai_passthrough/v1beta): :embedContent and :batchEmbedContents fill embedding_input and embedding_output (one entry per input), and Imagen :predict fills image_generation_input and image_generation_output. Vertex (/genai_passthrough/v1/projects/.../locations/...): an embedding model on :predict (text-embedding-005) fills embedding_input and embedding_output from the instances/predictions shape, and Imagen :predict fills image_generation_input and image_generation_output. Parsing is best-effort and runs only when content logging stores content. Each case polls /api/logs/<x-bifrost-request-id> until params.parsed_type appears. Red before the change: parsed_type never appears and the dedicated fields stay empty.",
+      "item": [
+        {
+          "name": "242.1 openai/text-embedding-3-small /openai_passthrough/v1/embeddings logs parsed embedding input and output (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai embeddings parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('openai embeddings parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('openai embeddings parsed: parsed as embedding', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('embedding'); });",
+                  "      pm.test('openai embeddings parsed: embedding_input recorded', function () { pm.expect(j.embedding_input, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      pm.test('openai embeddings parsed: embedding_output recorded', function () { pm.expect(j.embedding_output, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      pm.test('openai embeddings parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('openai embeddings parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('openai embeddings parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('openai embeddings parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"text-embedding-3-small\",\n  \"input\": \"passthrough parsing\",\n  \"dimensions\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "242.2 openai/gpt-4o-mini-tts /openai_passthrough/v1/audio/speech logs the parsed speech input (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai speech parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('openai speech parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('openai speech parsed: parsed as speech', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('speech'); });",
+                  "      pm.test('openai speech parsed: speech_input recorded', function () { pm.expect(j.speech_input && j.speech_input.input, JSON.stringify(j)).to.eql('Passthrough parsing.'); });",
+                  "      pm.test('openai speech parsed: audio response kept as a placeholder', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j.passthrough_response_body)).to.match(/^<binary content omitted: \\d+ bytes>$/); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('openai speech parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-4o-mini-tts\",\n  \"input\": \"Passthrough parsing.\",\n  \"voice\": \"alloy\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "242.3 openai/dall-e-2 /openai_passthrough/v1/images/generations logs parsed image input and output (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai image generation parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('openai image generation parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('openai image generation parsed: parsed as image generation', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('image_generation'); });",
+                  "      pm.test('openai image generation parsed: image_generation_input recorded', function () { pm.expect(j.image_generation_input && j.image_generation_input.prompt, JSON.stringify(j)).to.eql('a small red square'); });",
+                  "      pm.test('openai image generation parsed: image_generation_output recorded', function () { pm.expect(j.image_generation_output && j.image_generation_output.data, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      pm.test('openai image generation parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('openai image generation parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('openai image generation parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('openai image generation parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"dall-e-2\",\n  \"prompt\": \"a small red square\",\n  \"size\": \"256x256\",\n  \"n\": 1\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "242.4 gemini/gemini-embedding-001 /genai_passthrough/v1beta/models/gemini-embedding-001:embedContent logs parsed embedding input and output (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini embedContent parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('gemini embedContent parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('gemini embedContent parsed: parsed as embedding', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('embedding'); });",
+                  "      pm.test('gemini embedContent parsed: embedding_input recorded', function () { pm.expect(j.embedding_input, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      pm.test('gemini embedContent parsed: embedding_output recorded', function () { pm.expect(j.embedding_output, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      pm.test('gemini embedContent parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('gemini embedContent parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('gemini embedContent parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('gemini embedContent parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": {\n    \"parts\": [\n      {\n        \"text\": \"passthrough parsing\"\n      }\n    ]\n  },\n  \"outputDimensionality\": 8\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-embedding-001:embedContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-embedding-001:embedContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "242.5 gemini/gemini-embedding-001 /genai_passthrough/v1beta/models/gemini-embedding-001:batchEmbedContents logs every parsed input and output (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini batchEmbedContents parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('gemini batchEmbedContents parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('gemini batchEmbedContents parsed: parsed as embedding', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('embedding'); });",
+                  "      pm.test('gemini batchEmbedContents parsed: embedding_input recorded', function () { pm.expect(j.embedding_input, JSON.stringify(j)).to.be.an('array').with.lengthOf(2); });",
+                  "      pm.test('gemini batchEmbedContents parsed: embedding_output recorded', function () { pm.expect(j.embedding_output, JSON.stringify(j)).to.be.an('array').with.lengthOf(2); });",
+                  "      pm.test('gemini batchEmbedContents parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('gemini batchEmbedContents parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('gemini batchEmbedContents parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('gemini batchEmbedContents parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requests\": [\n    {\n      \"model\": \"models/gemini-embedding-001\",\n      \"content\": {\n        \"parts\": [\n          {\n            \"text\": \"passthrough\"\n          }\n        ]\n      },\n      \"outputDimensionality\": 8\n    },\n    {\n      \"model\": \"models/gemini-embedding-001\",\n      \"content\": {\n        \"parts\": [\n          {\n            \"text\": \"parsing\"\n          }\n        ]\n      },\n      \"outputDimensionality\": 8\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-embedding-001:batchEmbedContents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "gemini-embedding-001:batchEmbedContents"
+              ]
+            }
+          }
+        },
+        {
+          "name": "242.6 gemini/imagen-4.0-fast-generate-001 /genai_passthrough/v1beta/models/imagen-4.0-fast-generate-001:predict logs parsed image input and output (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('gemini imagen predict parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('gemini imagen predict parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('gemini imagen predict parsed: parsed as image generation', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('image_generation'); });",
+                  "      pm.test('gemini imagen predict parsed: image_generation_input recorded', function () { pm.expect(j.image_generation_input && j.image_generation_input.prompt, JSON.stringify(j)).to.eql('a small red square'); });",
+                  "      pm.test('gemini imagen predict parsed: image_generation_output recorded', function () { pm.expect(j.image_generation_output && j.image_generation_output.data, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      pm.test('gemini imagen predict parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('gemini imagen predict parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('gemini imagen predict parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('gemini imagen predict parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"instances\": [\n    {\n      \"prompt\": \"a small red square\"\n    }\n  ],\n  \"parameters\": {\n    \"sampleCount\": 1\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/imagen-4.0-fast-generate-001:predict",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1beta",
+                "models",
+                "imagen-4.0-fast-generate-001:predict"
+              ]
+            }
+          }
+        },
+        {
+          "name": "242.7 vertex/text-embedding-005 /genai_passthrough/v1/projects/.../models/text-embedding-005:predict logs parsed embedding input and output (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex embedding predict parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('vertex embedding predict parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('vertex embedding predict parsed: parsed as embedding', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('embedding'); });",
+                  "      pm.test('vertex embedding predict parsed: embedding_input recorded', function () { pm.expect(j.embedding_input, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      pm.test('vertex embedding predict parsed: embedding_output recorded', function () { pm.expect(j.embedding_output, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      pm.test('vertex embedding predict parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('vertex embedding predict parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('vertex embedding predict parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('vertex embedding predict parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"instances\": [\n    {\n      \"content\": \"passthrough parsing\"\n    }\n  ],\n  \"parameters\": {\n    \"outputDimensionality\": 8\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1/projects/{{vertexProject}}/locations/{{vertexLocation}}/publishers/google/models/text-embedding-005:predict",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "{{vertexLocation}}",
+                "publishers",
+                "google",
+                "models",
+                "text-embedding-005:predict"
+              ]
+            }
+          }
+        },
+        {
+          "name": "242.8 vertex/imagen-4.0-fast-generate-001 /genai_passthrough/v1/projects/.../models/imagen-4.0-fast-generate-001:predict logs parsed image input and output (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('vertex imagen predict parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('vertex imagen predict parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('vertex imagen predict parsed: parsed as image generation', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('image_generation'); });",
+                  "      pm.test('vertex imagen predict parsed: image_generation_input recorded', function () { pm.expect(j.image_generation_input && j.image_generation_input.prompt, JSON.stringify(j)).to.eql('a small red square'); });",
+                  "      pm.test('vertex imagen predict parsed: image_generation_output recorded', function () { pm.expect(j.image_generation_output && j.image_generation_output.data, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      pm.test('vertex imagen predict parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('vertex imagen predict parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      pm.test('vertex imagen predict parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('vertex imagen predict parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"instances\": [\n    {\n      \"prompt\": \"a small red square\"\n    }\n  ],\n  \"parameters\": {\n    \"sampleCount\": 1\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai_passthrough/v1/projects/{{vertexProject}}/locations/{{vertexLocation}}/publishers/google/models/imagen-4.0-fast-generate-001:predict",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai_passthrough",
+                "v1",
+                "projects",
+                "{{vertexProject}}",
+                "locations",
+                "{{vertexLocation}}",
+                "publishers",
+                "google",
+                "models",
+                "imagen-4.0-fast-generate-001:predict"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
