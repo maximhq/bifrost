@@ -707,7 +707,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 		}
 
 		// Gemini streaming sets status on all item types, but OpenAI rejects status on input.
-		// Strip it, with two exceptions. message is a value copy, so the caller's input is
+		// Strip it, with three exceptions. message is a value copy, so the caller's input is
 		// untouched.
 		switch {
 		case message.Type != nil && (*message.Type == schemas.ResponsesMessageTypeApplyPatchCall ||
@@ -720,6 +720,13 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// OpenAI wire, and `error` on an input item is rejected outright. Dropping
 			// it too would make a failed tool call indistinguishable from a successful
 			// one. Only this value is kept; any other status is still stripped.
+		case message.Type != nil && *message.Type == schemas.ResponsesMessageTypeMessage &&
+			message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleAssistant &&
+			message.ID != nil && *message.ID != "" && message.Status != nil &&
+			(*message.Status == "completed" || *message.Status == "in_progress" || *message.Status == "incomplete"):
+			// An assistant message that keeps its id is a ResponseOutputMessageParam, where
+			// id and status are both required. Dropping only the status leaves an item that
+			// matches neither input shape, and strict validators reject it.
 		default:
 			message.Status = nil
 		}
