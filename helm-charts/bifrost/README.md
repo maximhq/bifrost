@@ -10,6 +10,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 
 ### Upcoming
 
+- Added `bifrost.client.a2aPrivateAllowlist` (`client.a2a_private_allowlist`) for private hosts, IPs, or CIDRs used by Agent Gateway card discovery, OAuth, and runtime connections. Link-local and cloud metadata destinations remain blocked. Per-agent `bifrost.agents[].credential_origins` permits additional HTTP(S) origins for all runtime requests and their credentials; the card origin is permitted automatically.
 - Added `bifrost.client.skillsExternalClientUrl` (`client.skills_external_client_url`) for the public skills marketplace URL, including environment and vault references. When unset, marketplace serving is disabled; skill management and downloads remain available.
 - Updated `bifrost.client.a2aExternalClientUrl` (`client.a2a_external_client_url`) to accept secret-reference objects and document that an unset URL disables all Agent Gateway protocol endpoints while management remains available.
 

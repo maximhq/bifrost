@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/maximhq/bifrost/core/network"
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -352,8 +353,11 @@ func setA2AGovernanceSpanAttrs(tracer schemas.Tracer, handle schemas.SpanHandle,
 // post-hooks expect, keeping the original on ErrorField.Error (json:"-") so
 // callers can still classify it with errors.Is/As.
 func wrapA2AOpError(opErr error, reqType schemas.A2ARequestType, agentName string) *schemas.BifrostError {
+	var blocked *network.PrivateTargetNotAllowedError
+	var policyError gatewayPolicyError
+	isBifrostError := errors.As(opErr, &blocked) || errors.As(opErr, &policyError)
 	return &schemas.BifrostError{
-		IsBifrostError: false,
+		IsBifrostError: isBifrostError,
 		Error:          &schemas.ErrorField{Message: opErr.Error(), Error: opErr},
 		ExtraFields:    schemas.BifrostErrorExtraFields{A2ARequestType: reqType, A2AAgentName: agentName},
 	}

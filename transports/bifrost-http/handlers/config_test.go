@@ -1415,3 +1415,64 @@ func TestUpdateConfigRejectsPrivateSkillsURLComponents(t *testing.T) {
 		require.NotContains(t, string(ctx.Response.Body()), value)
 	}
 }
+
+// TestUpdateConfig_A2APrivateAllowlist pins how PUT /api/config handles
+// a2a_private_allowlist: an authenticated admin sets it and it is
+// persisted; an omitted field keeps it; a caller admitted with auth bypassed
+// may resend the current value (the dashboard saves the whole client config)
+// but not change it; entries the policy can never honor are refused.
+func TestUpdateConfig_A2APrivateAllowlist(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	persistedAllowlist := func() []string {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.A2APrivateAllowlist
+	}
+
+	set := putConfigCtx(`{"client_config":{"log_retention_days":8,"a2a_private_allowlist":["localhost","127.0.0.1","10.0.0.0/8"]}}`)
+	h.updateConfig(set)
+	require.Equal(t, fasthttp.StatusOK, set.Response.StatusCode(), string(set.Response.Body()))
+	want := []string{"localhost", "127.0.0.1", "10.0.0.0/8"}
+	assert.Equal(t, want, cfg.ClientConfig.A2APrivateAllowlist)
+	assert.Equal(t, want, persistedAllowlist())
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	omitted.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.Equal(t, want, persistedAllowlist(), "an omitted allowlist must be kept")
+
+	resent := putConfigCtx(`{"client_config":{"log_retention_days":8,"a2a_private_allowlist":["localhost","127.0.0.1","10.0.0.0/8"]}}`)
+	resent.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updateConfig(resent)
+	require.Equal(t, fasthttp.StatusOK, resent.Response.StatusCode(), string(resent.Response.Body()))
+
+	for _, body := range []string{
+		`{"client_config":{"log_retention_days":8,"a2a_private_allowlist":["localhost","192.168.0.0/16"]}}`,
+		`{"client_config":{"log_retention_days":8,"a2a_private_allowlist":[]}}`,
+	} {
+		changed := putConfigCtx(body)
+		changed.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		h.updateConfig(changed)
+		require.Equal(t, fasthttp.StatusForbidden, changed.Response.StatusCode(), string(changed.Response.Body()))
+		assert.Contains(t, string(changed.Response.Body()), "a2a_private_allowlist requires an authenticated admin session")
+		assert.Equal(t, want, persistedAllowlist(), "an auth-bypassed caller must not change the allowlist")
+	}
+
+	for _, entry := range []string{"169.254.169.254", "0.0.0.0/0", "metadata.google.internal", "http://localhost:3000"} {
+		invalid := putConfigCtx(`{"client_config":{"log_retention_days":8,"a2a_private_allowlist":["` + entry + `"]}}`)
+		h.updateConfig(invalid)
+		require.Equal(t, fasthttp.StatusBadRequest, invalid.Response.StatusCode(), entry+": "+string(invalid.Response.Body()))
+		assert.Equal(t, want, persistedAllowlist())
+	}
+
+	cleared := putConfigCtx(`{"client_config":{"log_retention_days":8,"a2a_private_allowlist":[]}}`)
+	h.updateConfig(cleared)
+	require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode(), string(cleared.Response.Body()))
+	assert.Empty(t, persistedAllowlist())
+}

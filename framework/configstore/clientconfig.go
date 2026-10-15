@@ -116,6 +116,7 @@ type ClientConfig struct {
 	MCPMaxInstructionsTotal               int                                   `json:"mcp_max_instructions_total"`                  // Byte bound on the whole forwarded aggregate; 0 is the default
 	MCPCodeModeLimits                     *schemas.MCPCodeModeLimits            `json:"mcp_code_mode_limits,omitempty"`              // Per-execution code mode limits; nil or zero fields use the defaults
 	MCPOAuthPrivateAllowlist              []string                              `json:"mcp_oauth_private_allowlist,omitempty"`       // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
+	A2APrivateAllowlist                   []string                              `json:"a2a_private_allowlist,omitempty"`             // Private hosts, IPs and CIDRs the Agent Gateway may reach for clients registered with admin auth
 	MCPToolExecutionTimeout               int                                   `json:"mcp_tool_execution_timeout"`                  // The timeout for individual tool execution in seconds
 	MCPCodeModeBindingLevel               string                                `json:"mcp_code_mode_binding_level"`                 // Code mode binding level: "server" or "tool"
 	MCPToolSyncInterval                   int                                   `json:"mcp_tool_sync_interval"`                      // Global tool sync interval in minutes (default: 10, 0 = built-in default)
@@ -365,6 +366,14 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 			return "", err
 		}
 		hash.Write([]byte("mcpOAuthPrivateAllowlist:"))
+		hash.Write(data)
+	}
+	if c.A2APrivateAllowlist != nil {
+		data, err := sortedStringsJSON(c.A2APrivateAllowlist)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("a2aPrivateAllowlist:"))
 		hash.Write(data)
 	}
 
@@ -2345,6 +2354,12 @@ func GenerateAgentRegistrationHash(r *schemas.AgentRegistration) (string, error)
 	writeHashField(hash, "allow_by_default", strconv.FormatBool(r.AllowByDefault))
 	writeHashField(hash, "forward_accepted_credential", strconv.FormatBool(r.ForwardAcceptedCredential))
 	writeHashField(hash, "forward_accepted_credential_overrides_auth", strconv.FormatBool(r.ForwardAcceptedCredentialOverridesAuth))
+	writeHashField(hash, "require_public_target", strconv.FormatBool(r.RequirePublicTarget))
+	origins := append([]string(nil), r.CredentialOrigins...)
+	sort.Strings(origins)
+	for _, origin := range origins {
+		writeHashField(hash, "credential_origin", origin)
+	}
 	uris := make([]string, len(r.ExtensionURIs))
 	copy(uris, r.ExtensionURIs)
 	sort.Strings(uris)

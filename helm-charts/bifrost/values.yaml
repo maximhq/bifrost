@@ -347,6 +347,7 @@ bifrost:
     # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
     # skillsExternalClientUrl: "https://bifrost.example.com" # Public base URL for skills marketplaces; unset disables marketplace serving, not skill management or downloads. Supports env.VAR_NAME and vault references
+    # a2aPrivateAllowlist: ["research.internal"] # Private hosts, IPs, or CIDRs permitted for Agent Gateway outbound requests
     # a2aExternalClientUrl: ""               # Public base URL for agent cards and push callbacks; unset disables all Agent Gateway protocol endpoints, not management. Supports env.VAR_NAME
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
@@ -1644,6 +1645,7 @@ bifrost:
   #     forward_accepted_credential: false             # Forward the accepted Bifrost credential upstream as x-bf-vk
   #     forward_accepted_credential_overrides_auth: false # Forward it as Authorization, replacing configured runtime auth
   #     tenant: ""                                     # Optional tenant label
+  #     credential_origins: ["https://research.internal:9000"] # Additional origins permitted for runtime requests; card origin is automatic
   #     extension_uris: []                             # A2A extension URIs to advertise
   #     virtual_key_ids: []                            # Virtual key IDs granted access to this agent
   #     discovery_auth:                                # Auth for fetching the agent card (types: none, headers, oauth)

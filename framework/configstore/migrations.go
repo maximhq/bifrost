@@ -577,6 +577,8 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_skills_external_client_url_column"}, run: migrationAddSkillsExternalClientURLColumn},
 	{IDs: []string{"backfill_skills_external_client_url"}, run: migrationBackfillSkillsExternalClientURL},
 	{IDs: []string{"add_virtual_key_metadata_column"}, run: migrationAddVirtualKeyMetadataColumn},
+	{IDs: []string{"add_a2a_private_allowlist_column"}, run: migrationAddA2APrivateAllowlistColumn},
+	{IDs: []string{"add_agent_destination_policy_columns"}, run: migrationAddAgentDestinationPolicyColumns},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16154,4 +16156,43 @@ func setMigrationLockTimeout(tx *gorm.DB) error {
 		return fmt.Errorf("set migration lock_timeout: %w", err)
 	}
 	return nil
+}
+
+// migrationAddA2APrivateAllowlistColumn adds the a2a_private_allowlist_json
+// column to config_client.
+func migrationAddA2APrivateAllowlistColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_a2a_private_allowlist_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "a2a_private_allowlist_json")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "a2a_private_allowlist_json")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running a2a private allowlist column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAgentDestinationPolicyColumns persists credential destinations and the server-owned network restriction.
+func migrationAddAgentDestinationPolicyColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "add_agent_destination_policy_columns",
+		Migrate: func(tx *gorm.DB) error {
+			for _, column := range []string{"credential_origins", "require_public_target"} {
+				if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableAgentRegistration{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("add_agent_destination_policy_columns is non-rollbackable: removing destination permissions would discard security policy")
+		},
+	})
 }

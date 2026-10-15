@@ -145,6 +145,19 @@ ClientConfig:
         config.json. Link-local and cloud metadata addresses are always refused
         and cannot be listed. Omit to keep the current list; send [] to clear it.
         Changing it requires an authenticated admin session.
+    a2a_private_allowlist:
+      type: array
+      items:
+        type: string
+      description: >
+        Hosts, IP addresses, or CIDR ranges without a scheme or port that Agent
+        Gateway card discovery, OAuth, and runtime HTTP or gRPC calls may reach
+        when they resolve to private or loopback addresses. Link-local and cloud
+        metadata addresses are always blocked. Applies to agents registered by
+        an authenticated administrator or declared in config.json. Registrations
+        created with dashboard authentication bypassed cannot use private permissions.
+        Omit to keep the current list; send [] to clear it. Changing this setting
+        requires dashboard authentication.
     mcp_code_mode_limits:
       type: object
       description: >

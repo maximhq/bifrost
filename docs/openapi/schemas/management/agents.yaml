@@ -24,6 +24,21 @@ AgentCreateRequest:
       $ref: '#/AgentUpstreamAuth'
     runtime_auth:
       $ref: '#/AgentUpstreamAuth'
+    credential_origins:
+      type: array
+      maxItems: 32
+      uniqueItems: true
+      items:
+        type: string
+        pattern: '^https?://[^@/?#\s]+$'
+      description: >
+        Additional HTTP(S) origins permitted for runtime requests, including
+        configured credentials, caller-provided upstream headers, forwarded
+        Bifrost credentials, and TLS client certificates. Every runtime endpoint
+        must pass this policy. The card origin is permitted automatically. Include scheme
+        and optional port; paths, userinfo, queries, and fragments are forbidden.
+        Private destinations also need permission in a2a_private_allowlist.
+        Nonempty values require dashboard authentication.
     virtual_key_ids:
       type: array
       items:
@@ -64,7 +79,10 @@ AgentUpstreamAuth:
   - type
   description: Shared upstream authentication. Header auth requires nonempty headers. OAuth uses client
     credentials and requires client_id, client_secret, and a token, discovery, or provider URL. Interactive
-    OAuth is not supported.
+    OAuth is not supported. Using environment or vault secret references requires
+    dashboard authentication for card inspection, creation, and updates. Operator
+    declarations in config.json may use these references. Preserving stored secrets
+    through masked placeholders on an update also requires dashboard authentication.
 AgentUpstreamOAuthConfig:
   type: object
   properties:
@@ -119,6 +137,21 @@ AgentUpdateRequest:
       $ref: '#/AgentUpstreamAuth'
     runtime_auth:
       $ref: '#/AgentUpstreamAuth'
+    credential_origins:
+      type: array
+      maxItems: 32
+      uniqueItems: true
+      items:
+        type: string
+        pattern: '^https?://[^@/?#\s]+$'
+      description: >
+        Additional HTTP(S) origins permitted for runtime requests, including
+        configured credentials, caller-provided upstream headers, forwarded
+        Bifrost credentials, and TLS client certificates. Every runtime endpoint
+        must pass this policy. The card origin is permitted automatically. Include scheme
+        and optional port; paths, userinfo, queries, and fragments are forbidden.
+        Private destinations also need permission in a2a_private_allowlist.
+        Nonempty values require dashboard authentication. Omit or send [] to clear.
     virtual_key_ids:
       type: array
       items:
@@ -495,6 +528,16 @@ AgentRegistrationView:
       $ref: '#/AgentUpstreamAuth'
     runtime_auth:
       $ref: '#/AgentUpstreamAuth'
+    credential_origins:
+      type: array
+      maxItems: 32
+      uniqueItems: true
+      items:
+        type: string
+        pattern: '^https?://[^@/?#\s]+$'
+      description: >
+        Additional origins permitted for all runtime requests and their credentials.
+        The card origin is permitted automatically.
     extension_uris:
       type: array
       items:

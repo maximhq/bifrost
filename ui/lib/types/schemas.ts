@@ -1296,6 +1296,7 @@ export const coreConfigSchema = z.object({
 		.optional(),
 	mcp_enable_temp_token_auth: z.boolean().default(false),
 	mcp_oauth_private_allowlist: z.array(z.string()).optional(),
+	a2a_private_allowlist: z.array(z.string()).optional(),
 	skills_external_client_url: secretVarSchema.optional(),
 });
 

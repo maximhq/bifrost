@@ -470,6 +470,9 @@ false
 {{- if hasKey .Values.bifrost.client "skillsExternalClientUrl" }}
 {{- $_ := set $client "skills_external_client_url" .Values.bifrost.client.skillsExternalClientUrl }}
 {{- end }}
+{{- if hasKey .Values.bifrost.client "a2aPrivateAllowlist" }}
+{{- $_ := set $client "a2a_private_allowlist" .Values.bifrost.client.a2aPrivateAllowlist }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "a2aExternalClientUrl" }}
 {{- $_ := set $client "a2a_external_client_url" .Values.bifrost.client.a2aExternalClientUrl }}
 {{- end }}

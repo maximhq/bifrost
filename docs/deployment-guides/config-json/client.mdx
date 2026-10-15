@@ -216,6 +216,24 @@ Without a resolved Agent Gateway URL, HTTP protocol endpoints return 503 and A2A
 
 Use **Agents → Agent Settings** or **Skills → Skills Settings** to update the corresponding URL in the dashboard. See [Agent Gateway configuration](/features/agent-gateway/configuration#set-the-public-base-url) and [Skills Repository marketplace access](/features/skills-repository#configure-marketplace-access).
 
+## Agent Gateway destination permissions
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `a2a_private_allowlist` | array of strings | `[]` | Private or loopback hosts, IP addresses, or CIDR ranges permitted for agent card discovery, OAuth, and runtime HTTP or gRPC connections. Entries have no scheme, port, or path. Link-local and cloud metadata addresses are always blocked. |
+
+```json
+{
+  "client": {
+    "a2a_private_allowlist": ["research.internal", "auth.internal"]
+  }
+}
+```
+
+Changing this setting through the dashboard or API requires dashboard authentication. Agents registered while dashboard authentication is bypassed cannot use these private permissions. Operator declarations in config.json can use them.
+
+Network permission does not authorize runtime calls to another service. Set `agents[].credential_origins` when the agent card advertises a runtime origin different from the card's origin. Every runtime endpoint needs origin approval, including requests without configured authentication, because callers can supply upstream credential headers. See [Additional agent endpoints](/features/agent-gateway/authentication#additional-agent-endpoints) for a complete example.
+
 ---
 
 ## MCP Agent Settings

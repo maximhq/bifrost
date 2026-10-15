@@ -473,6 +473,13 @@
           "default": false,
           "description": "Capture upstream A2A transport bodies before SDK conversion. HTTP bodies preserve JSON-RPC envelopes and SSE framing. Raw capture is unavailable for gRPC. Stored as base64, bounded to 1 MiB per direction, and subject to the shared content logging policy."
         },
+        "a2a_private_allowlist": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Private hosts, IP addresses, or CIDR ranges Agent Gateway discovery, OAuth, and runtime requests may reach. Link-local and cloud metadata addresses are always blocked."
+        },
         "a2a_external_client_url": {
           "anyOf": [
             {
@@ -2270,6 +2277,13 @@
           "runtime_auth": {
             "$ref": "#/$defs/agent_upstream_auth",
             "description": "Authentication attached to proxied upstream agent requests."
+          },
+          "credential_origins": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": { "type": "string", "pattern": "^https?://[^@/?#\\s]+$" },
+            "description": "Additional HTTP(S) origins permitted to receive runtime credentials and client certificates. Include scheme and optional port, without paths, queries, fragments, or userinfo. The agent card origin is permitted automatically."
           },
           "extension_uris": {
             "type": "array",
