@@ -321,8 +321,11 @@ OpenCode Go asks each client for a stable `x-opencode-session` per conversation,
 Bifrost resolves the value once per request and forwards it upstream on every inference call (chat, responses, streaming — but not `ListModels`):
 
 1. A client-sent `x-opencode-session` header is forwarded verbatim (preferred — e.g. Hermes past 0.21.0 sends this automatically).
-2. Otherwise the request's existing session identity is reused (`x-bf-session-id`, then harness headers such as `x-session-affinity` / `x-session-id`).
-3. Otherwise Bifrost synthesizes a one-off UUID so the request stays compliant (no cache benefit — multi-turn warmth requires the client to send a stable session).
+2. The escape-hatch form `x-bf-eh-x-opencode-session` is accepted next, for clients that cannot emit the header directly.
+3. Otherwise the request's existing session identity is reused (`x-bf-session-id`, then harness headers such as `x-session-affinity` / `x-session-id`).
+4. Otherwise Bifrost synthesizes a one-off UUID so the request stays compliant (no cache benefit — multi-turn warmth requires the client to send a stable session).
+
+If `client.header_filter_config` is configured, it must allow `x-opencode-session` for steps 1–4 to run at all: a denylist entry or allowlist omission suppresses every request-derived value, including the synthesized UUID. It does not suppress a static `x-opencode-session` already set in `network_config.extra_headers` — with nothing resolved, the configured map is forwarded unchanged.
 
 ```bash
 # One stable ID per conversation
@@ -335,8 +338,8 @@ curl http://localhost:8080/v1/chat/completions \
 
 Two details worth knowing:
 
-- **Per-tenant namespacing** — the upstream value is scoped to your virtual key (`sha256(vk, session)` prefix), so identical session strings from different tenants never share cache warmth or hotspot a backend. Without a virtual key the raw value is used.
-- **Opencode-only** — the header is never forwarded to other providers, even if you reuse a session ID across them. A static `x-opencode-session` in `network_config.extra_headers` is overridden by the resolved per-request value, since a fixed value would pin every conversation to one session and defeat affinity.
+- **Per-tenant namespacing** — the upstream value is prefixed with a hash of the tenant scope, so identical session strings from different tenants never share cache warmth or hotspot a backend. The scope is the settled virtual-key row ID, else the settled user ID (enterprise callers without a key), else — when no identity is settled — the presented virtual-key string. With no scope at all the raw session value is used.
+- **Opencode-only** — the header is never forwarded to other providers, even if you reuse a session ID across them. A static `x-opencode-session` in `network_config.extra_headers` loses to the resolved per-request value, since a fixed value would otherwise pin every conversation to one session and defeat affinity.
 
 ## Caveats
 
