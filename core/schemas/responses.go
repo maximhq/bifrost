@@ -1601,6 +1601,27 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 		if callID := gjson.GetBytes(data, "call_id"); callID.Type == gjson.String && callID.String() != "" {
 			m.ResponsesToolMessage = &ResponsesToolMessage{CallID: Ptr(callID.String())}
 		}
+		// Anthropic tool_search_call replays carry the search variant and discovered tools; OpenAI items carry neither.
+		if t == string(ResponsesMessageTypeToolSearchCall) {
+			if name := gjson.GetBytes(data, "name"); name.Type == gjson.String && name.String() != "" {
+				if m.ResponsesToolMessage == nil {
+					m.ResponsesToolMessage = &ResponsesToolMessage{}
+				}
+				m.Name = new(name.String())
+			}
+			var toolReferences []string
+			for _, ref := range gjson.GetBytes(data, "tool_references").Array() {
+				if ref.Type == gjson.String && ref.String() != "" {
+					toolReferences = append(toolReferences, ref.String())
+				}
+			}
+			if len(toolReferences) > 0 {
+				if m.ResponsesToolMessage == nil {
+					m.ResponsesToolMessage = &ResponsesToolMessage{}
+				}
+				m.ResponsesToolSearchCall = &ResponsesToolSearchCall{ToolReferences: toolReferences}
+			}
+		}
 		// Also surface `arguments` (a JSON object for tool_search_call) so downstream
 		// consumers that read Arguments keep working; MarshalJSON still re-emits the
 		// preserved bytes verbatim, so this is additive and does not affect round-trip.
