@@ -263,6 +263,53 @@ func TestGeminiResponsesStreamWithoutFinishReasonEndsIncomplete(t *testing.T) {
 	}
 }
 
+// The stream loop must treat a refused prompt's response.failed as the final chunk: sent with
+// the stream-end indicator (post-hooks finalize logging and the trace span on it) and followed
+// by nothing, since the finalizer has no terminal left to emit.
+func TestGeminiResponsesStreamPromptBlockedEndsOnFailed(t *testing.T) {
+	var finalTypes []schemas.ResponsesStreamResponseType
+	postHook := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final && result != nil && result.ResponsesStreamResponse != nil {
+			finalTypes = append(finalTypes, result.ResponsesStreamResponse.Type)
+		}
+		return result, err
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: " + geminiPromptBlockedBody + "\n\n"))
+	}))
+	defer ts.Close()
+
+	stream, bErr := HandleGeminiResponsesStream(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+		&fasthttp.Client{}, ts.URL+"/models/gemini-4-argon:streamGenerateContent?alt=sse", []byte(`{}`),
+		map[string]string{"Accept": "text/event-stream"}, nil, 30, false, false, schemas.Vertex, "gemini-4-argon",
+		postHook, nil, testNoopLogger{}, func(context.Context) {})
+	if bErr != nil {
+		t.Fatalf("stream setup failed: %v", bErr)
+	}
+	var got []schemas.ResponsesStreamResponseType
+	for chunk := range stream {
+		if chunk.BifrostError != nil {
+			t.Fatalf("unexpected stream error: %+v", chunk.BifrostError.Error)
+		}
+		if chunk.BifrostResponsesStreamResponse != nil {
+			got = append(got, chunk.BifrostResponsesStreamResponse.Type)
+		}
+	}
+	want := []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeInProgress,
+		schemas.ResponsesStreamResponseTypeFailed,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("event types = %v, want %v", got, want)
+	}
+	if !reflect.DeepEqual(finalTypes, []schemas.ResponsesStreamResponseType{schemas.ResponsesStreamResponseTypeFailed}) {
+		t.Fatalf("chunks sent with the stream-end indicator = %v, want only response.failed", finalTypes)
+	}
+}
+
 // Follow-up to #7601: OpenAI marks the output item that was being written when the
 // cap hit as status "incomplete". The response-level status was fixed, but the
 // truncated message item still reported "completed".
@@ -323,6 +370,88 @@ func TestGeminiResponsesStreamContentlessFinishReasonReachesTerminal(t *testing.
 	}
 	assertGeminiResponsesStatus(t, terminal.Response.Status, terminal.Response.IncompleteDetails,
 		schemas.ResponsesResponseStatusIncomplete, schemas.ResponsesResponseIncompleteReasonMaxOutputTokens)
+}
+
+// geminiPromptBlockedBody is the raw Vertex body for a prompt refused before generation:
+// no candidates, the reason carried only by promptFeedback.
+const geminiPromptBlockedBody = `{"promptFeedback":{"blockReason":"SAFETY","blockReasonMessage":"The prompt is blocked due to safety"},"usageMetadata":{"trafficType":"ON_DEMAND"},"modelVersion":"gemini-4-argon"}`
+
+// A blocked prompt used to normalize to status "completed" with empty output and no error,
+// indistinguishable from an empty answer. It reports failed with OpenAI's invalid_prompt code
+// (content_filter is not a valid ResponseError code) and keeps stop_reason content_filter.
+func TestGeminiResponsesPromptBlockedReportsFailed(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        string
+		wantStatus  string
+		wantMessage string
+	}{
+		{name: "message", body: geminiPromptBlockedBody, wantStatus: schemas.ResponsesResponseStatusFailed, wantMessage: "The prompt is blocked due to safety"},
+		{name: "reason only", body: `{"promptFeedback":{"blockReason":"PROHIBITED_CONTENT"},"modelVersion":"gemini-4-argon"}`, wantStatus: schemas.ResponsesResponseStatusFailed, wantMessage: "PROHIBITED_CONTENT"},
+		{name: "unspecified reason is not a block", body: `{"promptFeedback":{"blockReason":"BLOCK_REASON_UNSPECIFIED"},"modelVersion":"gemini-4-argon"}`, wantStatus: schemas.ResponsesResponseStatusCompleted},
+		{name: "feedback beside a candidate is not a block", body: `{"promptFeedback":{"safetyRatings":[{"category":"HARM_CATEGORY_HARASSMENT","probability":"NEGLIGIBLE"}]},"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"modelVersion":"gemini-4-argon"}`, wantStatus: schemas.ResponsesResponseStatusCompleted},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var geminiResp GenerateContentResponse
+			if err := sonic.Unmarshal([]byte(tt.body), &geminiResp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			resp := geminiResp.ToResponsesBifrostResponsesResponse().WithDefaults()
+			if resp.Status == nil || *resp.Status != tt.wantStatus {
+				t.Fatalf("status = %s, want %q", derefStatus(resp.Status), tt.wantStatus)
+			}
+			if tt.wantMessage == "" {
+				if resp.Error != nil {
+					t.Fatalf("error = %+v, want nil", resp.Error)
+				}
+				return
+			}
+			if resp.Error == nil || resp.Error.Code != "invalid_prompt" || resp.Error.Message != tt.wantMessage {
+				t.Fatalf("error = %+v, want code invalid_prompt message %q", resp.Error, tt.wantMessage)
+			}
+			if resp.StopReason == nil || *resp.StopReason != "content_filter" {
+				t.Fatalf("stop_reason = %s, want content_filter", derefStatus(resp.StopReason))
+			}
+			if len(resp.Output) != 0 {
+				t.Fatalf("output = %d items, want none", len(resp.Output))
+			}
+		})
+	}
+}
+
+// The streamed block chunk must close the stream itself with a response.failed terminal
+// carrying the reason, rather than leaving the finalizer to report an unexplained incomplete.
+func TestGeminiResponsesStreamPromptBlockedReportsFailed(t *testing.T) {
+	state := acquireGeminiResponsesStreamState()
+	defer releaseGeminiResponsesStreamState(state)
+	var chunk GenerateContentResponse
+	if err := sonic.Unmarshal([]byte(geminiPromptBlockedBody), &chunk); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	events, bErr := chunk.ToBifrostResponsesStream(0, state)
+	if bErr != nil {
+		t.Fatalf("ToBifrostResponsesStream error: %v", bErr)
+	}
+	if len(events) == 0 {
+		t.Fatal("no events emitted for the blocked chunk")
+	}
+	terminal := events[len(events)-1]
+	if terminal.Type != schemas.ResponsesStreamResponseTypeFailed {
+		t.Fatalf("terminal event type = %q, want %q", terminal.Type, schemas.ResponsesStreamResponseTypeFailed)
+	}
+	if terminal.Response == nil || terminal.Response.Status == nil || *terminal.Response.Status != schemas.ResponsesResponseStatusFailed {
+		t.Fatalf("terminal status = %+v, want failed", terminal.Response)
+	}
+	if terminal.Response.Error == nil || terminal.Response.Error.Code != "invalid_prompt" || terminal.Response.Error.Message != "The prompt is blocked due to safety" {
+		t.Fatalf("terminal error = %+v, want invalid_prompt with the block message", terminal.Response.Error)
+	}
+	if terminal.Response.StopReason == nil || *terminal.Response.StopReason != "content_filter" {
+		t.Fatalf("terminal stop_reason = %s, want content_filter", derefStatus(terminal.Response.StopReason))
+	}
+	if extra := FinalizeGeminiResponsesStream(state, chunk.UsageMetadata, len(events)); len(extra) != 0 {
+		t.Fatalf("finalize emitted %d events after the terminal, want none", len(extra))
+	}
 }
 
 // responsesToolOutputHasRefKey reports whether any object at any depth of raw has a "$ref"
