@@ -4732,12 +4732,12 @@ func (provider *VertexProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		switch {
-		case isAnthropicPassthroughPath(req.Path):
+		switch PassthroughWireFormat(req.Path) {
+		case schemas.Anthropic:
 			passthroughUsage = anthropic.ExtractAnthropicMessagesUsage(body)
-		case isMistralPassthroughPath(req.Path):
+		case schemas.Mistral:
 			passthroughUsage = openai.ExtractOAIChatUsage(body)
-		case isOpenAICompatPassthroughPath(req.Path):
+		case schemas.OpenAI:
 			passthroughUsage = openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, body)
 		default:
 			passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
@@ -4913,17 +4913,17 @@ func (provider *VertexProvider) PassthroughStream(
 	observe := func(event []byte) *schemas.BifrostPassthroughUsage {
 		return gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
 	}
-	switch {
-	case isAnthropicPassthroughPath(req.Path):
+	switch PassthroughWireFormat(req.Path) {
+	case schemas.Anthropic:
 		messagesUsage := &anthropic.AnthropicPassthroughStreamUsage{}
 		hasUsage = anthropic.HasAnthropicPassthroughUsage
 		observe = messagesUsage.ObserveEvent
-	case isMistralPassthroughPath(req.Path):
+	case schemas.Mistral:
 		hasUsage = openai.HasOpenAIPassthroughUsage
 		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
 			return openai.ExtractOAIChatUsage(event)
 		}
-	case isOpenAICompatPassthroughPath(req.Path):
+	case schemas.OpenAI:
 		hasUsage = openai.HasOpenAIPassthroughUsage
 		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
 			return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)

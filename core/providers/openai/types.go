@@ -541,7 +541,9 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 			// Copy message
 			processedMessages[i] = msg
 
-			// Strip the Bifrost-extension citation text from assistant annotations
+			// Strip the Bifrost-extension citation text from assistant annotations and
+			// the Anthropic cache_control marker from tool_calls entries (kept for OpenRouter,
+			// like the block and tool markers above).
 			if msg.OpenAIChatAssistantMessage != nil {
 				needsAnnotationStrip := false
 				for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
@@ -550,13 +552,30 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 						break
 					}
 				}
-				if needsAnnotationStrip {
+				needsToolCallStrip := false
+				if !keepCacheControl {
+					for _, toolCall := range msg.OpenAIChatAssistantMessage.ToolCalls {
+						if toolCall.CacheControl != nil {
+							needsToolCallStrip = true
+							break
+						}
+					}
+				}
+				if needsAnnotationStrip || needsToolCallStrip {
 					assistantCopy := *msg.OpenAIChatAssistantMessage
-					assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(msg.OpenAIChatAssistantMessage.Annotations))
-					for j, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
-						annotationCopy := annotation
-						annotationCopy.URLCitation.Text = nil
-						assistantCopy.Annotations[j] = annotationCopy
+					if needsAnnotationStrip {
+						assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(msg.OpenAIChatAssistantMessage.Annotations))
+						for j, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+							annotationCopy := annotation
+							annotationCopy.URLCitation.Text = nil
+							assistantCopy.Annotations[j] = annotationCopy
+						}
+					}
+					if needsToolCallStrip {
+						assistantCopy.ToolCalls = slices.Clone(msg.OpenAIChatAssistantMessage.ToolCalls)
+						for j := range assistantCopy.ToolCalls {
+							assistantCopy.ToolCalls[j].CacheControl = nil
+						}
 					}
 					processedMessages[i].OpenAIChatAssistantMessage = &assistantCopy
 				}
@@ -1147,6 +1166,13 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 		for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
 			if annotation.URLCitation.Text != nil {
 				return true
+			}
+		}
+		if !keepCacheControl {
+			for _, toolCall := range msg.OpenAIChatAssistantMessage.ToolCalls {
+				if toolCall.CacheControl != nil {
+					return true
+				}
 			}
 		}
 	}

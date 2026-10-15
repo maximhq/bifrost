@@ -17,6 +17,7 @@ import { useGetCoreConfigQuery } from "@/lib/store";
 import { useRemoveVirtualKeyBudgetOverrideMutation, useSetVirtualKeyBudgetOverrideMutation } from "@/lib/store/apis/governanceApi";
 import { BudgetOverrideRequest, VirtualKey, VirtualKeyProviderConfig } from "@/lib/types/governance";
 import { cn } from "@/lib/utils";
+import { virtualKeyMetadataLogsFilter } from "@/lib/utils/virtualKeyMetadata";
 import {
 	calculateUsagePercentage,
 	formatCurrency,
@@ -26,6 +27,7 @@ import {
 } from "@/lib/utils/governance";
 import ManagedVirtualKeyNotice from "@enterprise/components/access-profiles/managedVirtualKeyNotice";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
+import { Link } from "@tanstack/react-router";
 import { formatDistanceToNow } from "date-fns";
 import { Users } from "lucide-react";
 import { useVirtualKeyUsage } from "../hooks/useVirtualKeyUsage";
@@ -218,6 +220,32 @@ export default function VirtualKeyDetailSheet({
 										>
 											{virtualKey.disable_content_logging ? "Off for this key" : "On for this key"}
 										</Badge>
+									</div>
+								</div>
+							)}
+
+							{virtualKey.metadata && Object.keys(virtualKey.metadata).length > 0 && (
+								<div className="grid grid-cols-1 items-start gap-4 md:grid-cols-3">
+									<span className="text-muted-foreground text-sm">Metadata</span>
+									{/* Each entry is also on every log row the key produced, so it links to the logs filtered by it. */}
+									<div className="col-span-2 flex flex-col gap-1.5" data-testid="vk-details-metadata">
+										{Object.entries(virtualKey.metadata)
+											.sort(([a], [b]) => a.localeCompare(b))
+											.map(([key, value]) => (
+												<div key={key} className="flex flex-wrap items-center gap-2">
+													<Badge variant="outline" className="font-mono text-xs" data-testid={`vk-details-metadata-badge-${key}`}>
+														{key}: {value}
+													</Badge>
+													<Link
+														to="/workspace/logs"
+														search={{ metadata_filters: virtualKeyMetadataLogsFilter(key, value), period: "30d" }}
+														className="text-xs text-blue-600 hover:underline dark:text-blue-400"
+														data-testid={`vk-details-metadata-spend-link-${key}`}
+													>
+														View spend
+													</Link>
+												</div>
+											))}
 									</div>
 								</div>
 							)}

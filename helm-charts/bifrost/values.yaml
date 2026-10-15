@@ -314,6 +314,13 @@ bifrost:
     # access token and a virtual key (x-bf-vk). Options: "error" (reject with 400),
     # "prefer_vk" (drop IDP token, use VK), "prefer_idp" (default, IDP token wins for identity).
     # dualCredentialConflictBehavior: "prefer_idp"
+    # extraFieldsPlacement -- Where inference responses carry extra_fields metadata. Options:
+    # "body" (default, extra_fields in the JSON body) or "headers" (removed from the body and
+    # stream chunks, scalar fields sent as x-bifrost-* headers). In "headers" mode raw_request,
+    # raw_response, routing_metadata, guardrail_debug and parse_errors are dropped, and on errors
+    # key_statuses, billed_usage and mcp_auth_required too. Streams only carry fields known
+    # before the first chunk; per-chunk latency, chunk_index and final totals are dropped.
+    # extraFieldsPlacement: "body"
     maxRequestBodySizeMb: 100
     compat:
       convertTextToChat: false
@@ -339,7 +346,9 @@ bifrost:
     # allowDirectKeys: false                 # Allow callers to bypass the key pool via x-bf-direct-key + Authorization header
     # vkRotationCooldown: "5m"              # Grace period after a virtual key rotation during which the previous value still authenticates ("0" disables; max 30d)
     # mcpExternalClientUrl: ""               # Public base URL used as redirect_uri when Bifrost is an OAuth client to MCP servers
-    # a2aExternalClientUrl: ""               # Public base URL for served agent cards and A2A push-notification callback URLs (push is disabled when unset). Supports env.VAR_NAME
+    # skillsExternalClientUrl: "https://bifrost.example.com" # Public base URL for skills marketplaces; unset disables marketplace serving, not skill management or downloads. Supports env.VAR_NAME and vault references
+    # a2aPrivateAllowlist: ["research.internal"] # Private hosts, IPs, or CIDRs permitted for Agent Gateway outbound requests
+    # a2aExternalClientUrl: ""               # Public base URL for agent cards and push callbacks; unset disables all Agent Gateway protocol endpoints, not management. Supports env.VAR_NAME
 
     # How /mcp authenticates inbound MCP clients: headers (default), both, or oauth
     # mcpServerAuthMode: "headers"
@@ -1107,17 +1116,19 @@ bifrost:
       #   description: "Route GPT requests to Azure"
       #   enabled: true
       #   cel_expression: "model.startsWith('gpt-')"
+      #   chain_rule: false         # true re-evaluates the routing chain after this rule matches
       #   targets:
       #     - provider: "azure"
-      #       model: ""              # Empty means use original model
-      #       provider_key_name: ""  # Optional provider key name (resolved to internal key_id at load time)
-      #       weight: 1.0
+      #       # model: "gpt-4o"     # Omit to keep the incoming model
+      #       # provider_key_name: "azure-eu"  # Optional: pin a key by name (resolved to its key_id at load time)
+      #       # key_id: "<key-id>"  # Optional: pin a key by ID instead; never together with provider_key_name
+      #       weight: 1.0           # Weights across targets must sum to 1
       #       ttft_timeout_ms: 5000  # Optional: cut off a streaming attempt with no first token in 5s and run the next fallback
-      #   fallbacks: ["openai"]     # "provider/model" strings, or objects that pin a key:
+      #   fallbacks: ["openai/", "anthropic/claude-sonnet-4-5"]  # "provider/" keeps the incoming model; name one a provider lacks
       #   # fallbacks: [{ provider: "azure", model: "gpt-4o", provider_key_name: "azure-eu" }]
-      #   scope: "global"           # Options: global, team, customer, virtual_key
-      #   scope_id: ""              # Required for non-global scopes
-      #   priority: 0               # Lower = evaluated first
+      #   scope: "global"           # Options: global, team, customer, virtual_key (user-scoped rules are API/UI only)
+      #   # scope_id: "team-1"      # Required for team, customer, virtual_key: the entity's ID, not its name
+      #   priority: 0               # Lower = evaluated first. Must be unique within a scope
     pricingOverrides: []
       # - id: "override-1"
       #   name: "Provider key pricing override"
@@ -1451,14 +1462,17 @@ bifrost:
 
   # Load balancer configuration for intelligent request routing
   loadBalancer:
-    enabled: false
+    enabled: false   # Renders load_balancer_config from the keys below (Enterprise); they apply only when this is true.
+                     # Adaptive routing runs either way: to turn it off, set this to true and directionSelectionEnabled / routeSelectionEnabled to false.
     # directionSelectionEnabled: true   # Enable adaptive provider selection. Defaults to true; omit to leave on.
     # routeSelectionEnabled: true       # Enable adaptive per-key (route) selection. Defaults to true; omit to leave on.
     # appendFallbacksToPinned: false    # When a request already carries a provider, append the healthy providers eligible for its model as fallbacks behind any it configured. Defaults to false.
     # rerouteFailedDirections: false    # Re-route to a healthy provider when a pinned direction is unhealthy. Defaults to false.
     # pruneFailedFallbacks: false       # Drop unhealthy directions from a request's configured fallbacks. Defaults to false.
-    trackerConfig: {}
-    bootstrap: {}
+    # rerouteTarget: pool               # Where rerouteFailedDirections sends the request: "pool" (default) or "fallbacks".
+    # historyEnabled: true              # Record routing history. Defaults to true.
+    # historyRetentionDays: 7           # Days of routing history to keep (1 to 30). Read at startup. Defaults to 7.
+    # snapshotPersistIntervalSeconds: 300  # How often routing state is saved, in seconds (5 to 86400). Defaults to 300.
 
   # Guardrails configuration for content moderation and policy enforcement
   guardrails:
@@ -1515,6 +1529,8 @@ bifrost:
     #   is_active: true
     #   calendar_aligned: false  # Snap all budget/rate-limit resets to calendar boundaries
     #   allow_all_providers: false  # true grants access to every provider incl. ones added later; a provider with a provider_configs entry keeps its model/key/budget/rate-limit rules; false (default) is deny-by-default via provider_configs
+    #   auto_rotation_interval: "30d"  # Rotate the profile's managed virtual keys on a schedule ("30d", "12h"; 1h-365d; 0 or "" disables)
+    #   # next_rotation_at: "2026-11-01T00:00:00Z"  # Optional first run; defaults to now + interval
     #   tags: ["platform", "default"]
     #   budgets:
     #     - id: "ap-budget-1"
@@ -1636,6 +1652,7 @@ bifrost:
   #     forward_accepted_credential: false             # Forward the accepted Bifrost credential upstream as x-bf-vk
   #     forward_accepted_credential_overrides_auth: false # Forward it as Authorization, replacing configured runtime auth
   #     tenant: ""                                     # Optional tenant label
+  #     credential_origins: ["https://research.internal:9000"] # Additional origins permitted for runtime requests; card origin is automatic
   #     extension_uris: []                             # A2A extension URIs to advertise
   #     virtual_key_ids: []                            # Virtual key IDs granted access to this agent
   #     discovery_auth:                                # Auth for fetching the agent card (types: none, headers, oauth)
@@ -1748,7 +1765,7 @@ storage:
     # Resolves "vault.<path>" references in config fields at load time.
     # vaultStore:
     #   enabled: true
-    #   type: aws-secrets-manager  # Options: aws-secrets-manager, gcp-secret-manager, hashicorp-vault
+    #   type: aws-secrets-manager  # Options: aws-secrets-manager, gcp-secret-manager, hashicorp-vault, azure-key-vault
     #   prefix: bifrost             # Path prefix applied to every secret (default: bifrost)
     #   accessMode: read_only       # read_only or read_and_write
     #
@@ -1774,6 +1791,16 @@ storage:
     #     mountPath: secret         # KV v2 mount path
     #     roleId: ""                # AppRole role_id
     #     secretId: ""              # AppRole secret_id
+    #     kubernetesRole: ""        # Vault role for Kubernetes auth (from vault write auth/<mount>/role/<name>); setting it enables login with the pod's service account token
+    #     kubernetesMountPath: kubernetes  # Vault auth mount for Kubernetes (path from "vault auth list", without "auth/"); change only if enabled at a custom path
+    #     kubernetesTokenPath: ""   # Defaults to /var/run/secrets/kubernetes.io/serviceaccount/token
+    #
+    #   # Azure Key Vault
+    #   azure:
+    #     vaultUrl: https://my-vault.vault.azure.net
+    #     tenantId: ""              # Required with clientId/clientSecret
+    #     clientId: ""              # Service principal; omit to use DefaultAzureCredential
+    #     clientSecret: ""          # (workload identity / managed identity)
 
   # Logs store settings
   logsStore:
@@ -1823,6 +1850,7 @@ storage:
     #   passwordKey: "password"
     # matviewRefreshInterval: "30s"  # How often to refresh materialized views. Go duration string (e.g. '30s', '5m', '1h'). Minimum 5s.
     # matviewRefreshTimeout: "5m"  # Max time for one refresh pass (min 30s, max 30m; unset = 5x interval, min 5m). A timeout leaves views intact but staler.
+    # migrationMatviewCancelAfter: "60s"  # During schema migrations, cancel an in-flight matview refresh (any replica/version) after this long. Unset = 60s; "off" = wait only.
     # ClickHouse connection settings (only applies when type is clickhouse)
     # clickhouse:
     #   host: "clickhouse.default.svc.cluster.local"  # Required
@@ -2008,6 +2036,14 @@ vectorStore:
       ENABLE_MODULES: ""
       CLUSTER_HOSTNAME: "node1"
 
+    # Scheduling controls for the Weaviate pod. Useful for pinning it to dedicated
+    # or tainted nodes (e.g. non-spot capacity), away from other workloads.
+    nodeSelector: {}
+
+    tolerations: []
+
+    affinity: {}
+
   # Redis configuration
   redis:
     # Deploy Redis as part of this chart
@@ -2064,6 +2100,14 @@ vectorStore:
           cpu: 250m
           memory: 256Mi
 
+      # Scheduling controls for the Redis pod. Useful for pinning it to dedicated
+      # or tainted nodes (e.g. non-spot capacity), away from other workloads.
+      nodeSelector: {}
+
+      tolerations: []
+
+      affinity: {}
+
     metrics:
       enabled: false
 
@@ -2101,6 +2145,14 @@ vectorStore:
       requests:
         cpu: 500m
         memory: 1Gi
+
+    # Scheduling controls for the Qdrant pod. Useful for pinning it to dedicated
+    # or tainted nodes (e.g. non-spot capacity), away from other workloads.
+    nodeSelector: {}
+
+    tolerations: []
+
+    affinity: {}
 
   # Pinecone configuration (external only, no self-hosted option)
   pinecone:

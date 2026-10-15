@@ -3,6 +3,19 @@ import { describe, expect, it } from "vitest";
 import { mapAppToClientApp, mapUserAgentToApp, RequestTypeColors, RequestTypeLabels, RequestTypes } from "./logs";
 
 describe("logs constants", () => {
+	it.each([
+		["antigravity/2.23.0", "Antigravity Desktop"],
+		["Antigravity-Desktop/2.23.0", "Antigravity Desktop"],
+		["antigravity-cli/1.0", "Antigravity CLI"],
+		["antigravity/2.23.0 gemini/1.0", "Antigravity Desktop"],
+		["antigravity-cli/1.0 antigravity/2.23.0", "Antigravity CLI"],
+	])("classifies synthetic Antigravity agent %s", (userAgent, name) => {
+		expect(mapUserAgentToApp(userAgent)).toEqual({ name, icon: "/images/harness/antigravity.svg" });
+		expect(mapAppToClientApp(name)).toEqual(mapUserAgentToApp(userAgent));
+	});
+	it.each(["unrelated-antigravity-tool/1.0", "bifrost-edge/0.1.0"])("does not mislabel %s as Antigravity", (userAgent) => {
+		expect(mapUserAgentToApp(userAgent).name).toBe("Other");
+	});
 	it("recognizes Cowork independently of Claude Code", () => {
 		expect(mapUserAgentToApp("claude-cowork/1.49585.0").name).toBe("Claude Cowork");
 		expect(mapUserAgentToApp("Claude-Cowork/0.1").name).toBe("Claude Cowork");
@@ -19,7 +32,7 @@ describe("logs constants", () => {
 		expect(RequestTypeLabels.model_retrieve).toBe("Retrieve Model");
 		expect(RequestTypeColors.model_retrieve).toBeTruthy();
 	});
-	
+
 	it("registers live sessions as known request types", () => {
 		for (const type of ["live", "live.session", "live_content", "live_sideband"] as const) {
 			expect(RequestTypes).toContain(type);
@@ -44,7 +57,7 @@ describe("logs constants", () => {
 });
 // Edge reports stable app keys, while gateway logs may contain display names.
 describe("Edge app icon identity", () => {
-	it.each(["claude-code", "codex-cli", "codex-desktop", "cursor", "opencode"])(
+	it.each(["claude-code", "codex-cli", "codex-desktop", "cursor", "opencode", "antigravity-cli", "antigravity-desktop"])(
 		"resolves %s to the same icon as its display name",
 		(key) => {
 			const app = mapAppToClientApp(key);

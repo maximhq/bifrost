@@ -11,51 +11,76 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+// ClassifyPassthroughPath maps an OpenAI-shaped passthrough request to the Bifrost request type its
+// method and path address. path is the stripped request path (a query string is ignored). Only POST
+// generates: any other method on a generation route (GET /v1/chat/completions lists stored
+// completions, GET /videos reads a job) returns "", as do paths with no typed equivalent. The one
+// exception is the /containers collection, a create on POST and a list on GET. Usage extraction and
+// passthrough log parsing both dispatch on this, so they never disagree on what a request is.
+func ClassifyPassthroughPath(method, path string) schemas.RequestType {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	if !strings.EqualFold(method, "POST") {
+		if strings.EqualFold(method, "GET") && strings.HasSuffix(path, "/containers") {
+			return schemas.ContainerListRequest
+		}
+		return ""
+	}
+
+	switch {
+	case strings.HasSuffix(path, "/chat/completions"):
+		return schemas.ChatCompletionRequest
+	case strings.HasSuffix(path, "/completions"):
+		return schemas.TextCompletionRequest
+	case strings.HasSuffix(path, "/responses"):
+		return schemas.ResponsesRequest
+	case strings.HasSuffix(path, "/embeddings"):
+		return schemas.EmbeddingRequest
+	case strings.HasSuffix(path, "/audio/speech"):
+		return schemas.SpeechRequest
+	case strings.HasSuffix(path, "/audio/transcriptions"),
+		strings.HasSuffix(path, "/audio/translations"):
+		return schemas.TranscriptionRequest
+	case strings.HasSuffix(path, "/images/generations"):
+		return schemas.ImageGenerationRequest
+	case strings.HasSuffix(path, "/images/edits"):
+		return schemas.ImageEditRequest
+	case strings.HasSuffix(path, "/images/variations"):
+		return schemas.ImageVariationRequest
+	case strings.Contains(path, "/video"):
+		return schemas.VideoGenerationRequest
+	case strings.HasSuffix(path, "/containers"):
+		// Retrieve/delete use /containers/{id} and never match this suffix.
+		return schemas.ContainerCreateRequest
+	}
+	return ""
+}
+
 // ExtractOpenAIPassthroughUsage extracts usage from a passthrough response payload. method is the
 // HTTP method (used to bill only generation routes); path is the stripped request path; reqBody is
 // the original request body (needed for speech char count and image/video parameters); body is a
 // single SSE data event (streaming) or the full response body (non-streaming).
 func ExtractOpenAIPassthroughUsage(method, path string, reqBody, body []byte) *schemas.BifrostPassthroughUsage {
-	if idx := strings.IndexByte(path, '?'); idx >= 0 {
-		path = path[:idx]
-	}
-
-	switch {
-	case strings.HasSuffix(path, "/chat/completions"),
-		strings.HasSuffix(path, "/completions"):
+	switch ClassifyPassthroughPath(method, path) {
+	case schemas.ChatCompletionRequest, schemas.TextCompletionRequest:
 		return ExtractOAIChatUsage(body)
-
-	case strings.HasSuffix(path, "/responses"):
+	case schemas.ResponsesRequest:
 		return extractOAIResponsesUsage(body)
-
-	case strings.HasSuffix(path, "/embeddings"):
+	case schemas.EmbeddingRequest:
 		return extractOAIEmbeddingUsage(body)
-
-	case strings.HasSuffix(path, "/audio/speech"):
+	case schemas.SpeechRequest:
 		return extractOAISpeechUsage(reqBody)
-
-	case strings.HasSuffix(path, "/audio/transcriptions"),
-		strings.HasSuffix(path, "/audio/translations"):
+	case schemas.TranscriptionRequest:
 		return extractOAITranscriptionUsage(body)
-
-	case strings.HasSuffix(path, "/images/generations"),
-		strings.HasSuffix(path, "/images/edits"),
-		strings.HasSuffix(path, "/images/variations"):
+	case schemas.ImageGenerationRequest, schemas.ImageEditRequest, schemas.ImageVariationRequest:
 		return extractOAIImageUsage(reqBody, body)
-
-	case strings.Contains(path, "/video"):
-		if strings.EqualFold(method, "POST") {
-			return extractOAIVideoUsage(reqBody)
-		}
-		return nil
-
-	case strings.HasSuffix(path, "/containers"):
-		// Collection path serves both create (POST, billable) and list (GET, free);
-		// extractOAIContainerUsage disambiguates by response shape. Retrieve/delete use
-		// /containers/{id} and never match this suffix.
+	case schemas.VideoGenerationRequest:
+		return extractOAIVideoUsage(reqBody)
+	case schemas.ContainerCreateRequest, schemas.ContainerListRequest:
+		// extractOAIContainerUsage disambiguates create (billable) from list (free) by response shape.
 		return extractOAIContainerUsage(body)
 	}
-
 	return nil
 }
 

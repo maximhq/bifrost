@@ -1543,6 +1543,10 @@ func ConvertBifrostMessagesToCohereMessages(bifrostMessages []schemas.ResponsesM
 
 	// Prepend system messages if any
 	if len(systemContent) > 0 {
+		// Instructions lead the system prompt, ahead of any system/developer input (OpenAI semantics)
+		if params != nil && params.Instructions != nil && *params.Instructions != "" {
+			systemContent = append([]string{*params.Instructions}, systemContent...)
+		}
 		systemMsg := CohereMessage{
 			Role:    "system",
 			Content: NewStringContent(strings.Join(systemContent, "\n")),

@@ -120,3 +120,49 @@ func TestCohereModelRetrieve(t *testing.T) {
 	require.NotNil(t, bifrostErr)
 	require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
 }
+
+// TestToCohereResponsesRequest_InstructionsLeadSystemInput: top-level instructions and
+// system/developer input both reach the system turn, instructions first (OpenAI places
+// instructions ahead of input). Previously instructions were dropped whenever the input
+// carried system content.
+func TestToCohereResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
+	user := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+	developer := schemas.ResponsesMessage{
+		Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("DEVELOPER_MUST_SURVIVE")},
+	}
+
+	tests := []struct {
+		name         string
+		instructions *string
+		input        []schemas.ResponsesMessage
+		want         string
+	}{
+		{"instructions and developer input both reach system, instructions first", schemas.Ptr("BASE_MUST_SURVIVE"), []schemas.ResponsesMessage{developer, user}, "BASE_MUST_SURVIVE\nDEVELOPER_MUST_SURVIVE"},
+		{"instructions alone", schemas.Ptr("BASE_MUST_SURVIVE"), []schemas.ResponsesMessage{user}, "BASE_MUST_SURVIVE"},
+		{"developer input alone", nil, []schemas.ResponsesMessage{developer, user}, "DEVELOPER_MUST_SURVIVE"},
+		{"empty instructions add nothing", schemas.Ptr(""), []schemas.ResponsesMessage{developer, user}, "DEVELOPER_MUST_SURVIVE"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := cohere.ToCohereResponsesRequest(&schemas.BifrostResponsesRequest{
+				Provider: schemas.Cohere,
+				Model:    "command-a-03-2025",
+				Input:    tc.input,
+				Params:   &schemas.ResponsesParameters{Instructions: tc.instructions},
+			})
+			require.NoError(t, err)
+			require.Len(t, out.Messages, 2)
+			require.Equal(t, "system", out.Messages[0].Role)
+			require.NotNil(t, out.Messages[0].Content)
+			require.NotNil(t, out.Messages[0].Content.StringContent)
+			require.Equal(t, tc.want, *out.Messages[0].Content.StringContent)
+			require.Equal(t, "user", out.Messages[1].Role)
+		})
+	}
+}

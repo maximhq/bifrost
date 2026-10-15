@@ -362,6 +362,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -909,6 +910,7 @@ func (m *MockConfigStore) UpdateMCPClientConfig(ctx context.Context, id string, 
 			m.mcpConfig.ClientConfigs[i] = &schemas.MCPClientConfig{
 				ID:                  clientConfig.ClientID,
 				Name:                clientConfig.Name,
+				EndpointSlug:        m.mcpConfig.ClientConfigs[i].EndpointSlug, // immutable: the real store never updates it
 				IsCodeModeClient:    clientConfig.IsCodeModeClient,
 				ConnectionType:      schemas.MCPConnectionType(clientConfig.ConnectionType),
 				ConnectionString:    clientConfig.ConnectionString,
@@ -3534,6 +3536,7 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 	existing := &schemas.MCPClientConfig{
 		ID:             "mcp-existing",
 		Name:           "echo_http",
+		EndpointSlug:   "echo-http",
 		ConnectionType: schemas.MCPConnectionTypeHTTP,
 		ToolsToExecute: schemas.WhiteList{"read"},
 	}
@@ -3551,6 +3554,7 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 		ClientConfigs: []*schemas.MCPClientConfig{
 			{
 				Name:           "echo_http",
+				EndpointSlug:   "renamed-slug",
 				ConnectionType: schemas.MCPConnectionTypeHTTP,
 				ToolsToExecute: schemas.WhiteList{"*"},
 			},
@@ -3585,6 +3589,7 @@ func TestMergeMCPConfig_HashReconciliationUpdatesAndCreates(t *testing.T) {
 		byName[client.Name] = client
 	}
 	require.Equal(t, "mcp-existing", byName["echo_http"].ID, "updated client should preserve DB client_id")
+	require.Equal(t, "echo-http", byName["echo_http"].EndpointSlug, "endpoint_slug is immutable: the stored slug wins over the file's")
 	require.NotEmpty(t, byName["echo_http"].ConfigHash)
 	require.NotEmpty(t, byName["filesystem_tools"].ConfigHash)
 }
@@ -9724,6 +9729,11 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 		t.Errorf("Expected name 'original-name', got '%s'", dbVK1.Name)
 	}
 	originalHash := dbVK1.ConfigHash
+	// Metadata added through the API, which the file does not declare: the sync below must keep it.
+	dbVK1.Metadata = map[string]string{"cost_center": "cc-42"}
+	if err := config1.ConfigStore.UpdateVirtualKey(ctx, dbVK1); err != nil {
+		t.Fatalf("setting API metadata failed: %v", err)
+	}
 	config1.Close(ctx)
 
 	// Modify config.json - change VK name and description
@@ -9755,6 +9765,21 @@ func TestSQLite_VirtualKey_HashMismatch_FileSync(t *testing.T) {
 	// Verify hash changed
 	if dbVK2.ConfigHash == originalHash {
 		t.Error("Expected hash to change when VK is modified")
+	}
+
+	// The file entry has no metadata field, so the API-set metadata survives the sync, in the
+	// store and in the in-memory governance config.
+	if got := dbVK2.Metadata["cost_center"]; got != "cc-42" {
+		t.Errorf("Expected API-set metadata to survive the sync in the store, got %v", dbVK2.Metadata)
+	}
+	var memVK *tables.TableVirtualKey
+	for i := range config2.GovernanceConfig.VirtualKeys {
+		if config2.GovernanceConfig.VirtualKeys[i].ID == "vk-1" {
+			memVK = &config2.GovernanceConfig.VirtualKeys[i]
+		}
+	}
+	if memVK == nil || memVK.Metadata["cost_center"] != "cc-42" {
+		t.Errorf("Expected API-set metadata to survive the sync in memory, got %+v", memVK)
 	}
 }
 
@@ -23565,6 +23590,105 @@ func TestGetMCPClientBySlugSkipsDisabled(t *testing.T) {
 	require.False(t, ok, "a disabled client's slug must not resolve")
 }
 
+// TestPinMCPClientImmutableFields_EndpointSlug: the stored slug always wins, and only a declared slug that
+// normalises to something else is reported as an ignored change.
+func TestPinMCPClientImmutableFields_EndpointSlug(t *testing.T) {
+	existing := &schemas.MCPClientConfig{Name: "my_web_client", EndpointSlug: "my-web-client"}
+	cases := []struct {
+		name        string
+		fileSlug    string
+		wantChanged bool
+	}{
+		{name: "omitted", fileSlug: ""},
+		{name: "same slug", fileSlug: "my-web-client"},
+		{name: "same slug before normalising", fileSlug: "My Web_Client"},
+		{name: "different slug", fileSlug: "renamed", wantChanged: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			file := &schemas.MCPClientConfig{Name: "my_web_client", EndpointSlug: tc.fileSlug}
+			changed := pinMCPClientImmutableFields(file, existing)
+			assert.Equal(t, tc.wantChanged, slices.Contains(changed, "endpoint_slug"), "changed=%v", changed)
+			assert.Equal(t, "my-web-client", file.EndpointSlug)
+		})
+	}
+}
+
+// TestMergeMCPConfig_EndpointSlugOnlyEditIsReconciled: editing only endpoint_slug in config.json drifts
+// the hash, so the client is reconciled (and the immutable-field warning can fire) instead of the edit
+// being silently skipped; the stored slug still wins.
+func TestMergeMCPConfig_EndpointSlugOnlyEditIsReconciled(t *testing.T) {
+	ctx := context.Background()
+	initTestLogger()
+	store := NewMockConfigStore()
+
+	declared := func(slug string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			Name:           "echo_http",
+			EndpointSlug:   slug,
+			ConnectionType: schemas.MCPConnectionTypeHTTP,
+			ToolsToExecute: schemas.WhiteList{"*"},
+		}
+	}
+	// Stored as first declared (no slug), with the slug derived at create.
+	existing := declared("")
+	existing.ID = "mcp-existing"
+	row, err := mcpClientConfigToTable(existing)
+	require.NoError(t, err)
+	existing.ConfigHash, err = configstore.GenerateMCPClientHash(row)
+	require.NoError(t, err)
+	existing.EndpointSlug = "echo-http"
+	store.mcpConfig = &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{existing}}
+
+	cfg := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+	mergeMCPConfig(ctx, cfg, &ConfigData{MCP: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{declared("renamed")}}}, store.mcpConfig)
+
+	require.Len(t, store.mcpClientConfigUpdates, 1, "an endpoint_slug-only edit must be reconciled, not skipped")
+	require.Len(t, cfg.MCPConfig.ClientConfigs, 1)
+	require.Equal(t, "echo-http", cfg.MCPConfig.ClientConfigs[0].EndpointSlug, "the stored slug still wins")
+}
+
+// TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug: a config.json client with no endpoint_slug gets
+// one derived at create; a later boot that re-syncs the file must keep serving /mcp/<slug>.
+func TestLoadMCPConfig_FileReloadKeepsDerivedEndpointSlug(t *testing.T) {
+	initTestLogger()
+	ctx := context.Background()
+
+	fileMCP := func(tools schemas.WhiteList) *schemas.MCPConfig {
+		return &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{{
+			Name:             "my_web_client",
+			ConnectionType:   schemas.MCPConnectionTypeHTTP,
+			ConnectionString: schemas.NewSecretVar("http://localhost:3001/mcp"),
+			ToolsToExecute:   tools,
+		}}}
+	}
+
+	cases := []struct {
+		name        string
+		sot         string
+		secondTools schemas.WhiteList
+	}{
+		{name: "default mode, edited file", secondTools: schemas.WhiteList{"web_search"}},
+		{name: "config.json source of truth, unchanged file", sot: SourceOfTruthConfigJSON, secondTools: schemas.WhiteList{"*"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := createTestSQLiteConfigStore(t, createTempDir(t))
+
+			first := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, first, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(schemas.WhiteList{"*"})})
+			_, _, ok := first.GetMCPClientBySlug("my-web-client")
+			require.True(t, ok, "first boot should serve the derived slug")
+
+			second := &Config{ConfigStore: store, ClientConfig: &configstore.ClientConfig{}}
+			loadMCPConfig(ctx, second, &ConfigData{SourceOfTruth: tc.sot, MCP: fileMCP(tc.secondTools)})
+			_, name, ok := second.GetMCPClientBySlug("my-web-client")
+			require.True(t, ok, "reload dropped the stored endpoint_slug from the in-memory client")
+			require.Equal(t, "my_web_client", name)
+		})
+	}
+}
+
 // TestReconcileVirtualMCPsConfig covers the config.json → store reconciliation for
 // mcp.virtual_mcps: create (with explicit slug + name-resolved tool client + VK attach),
 // idempotent no-op on unchanged hash, update on change, and prune of absent entries.
@@ -25452,4 +25576,110 @@ func TestGetMCPClientOpenAPISpec_ReadsUnderLock(t *testing.T) {
 	c.MCPConfig.ClientConfigs = append([]*schemas.MCPClientConfig{nil}, c.MCPConfig.ClientConfigs...)
 	require.NotPanics(t, func() { _, _, found = c.GetMCPClientOpenAPISpec("oa") })
 	assert.True(t, found)
+}
+
+// TestLoadClientConfigExplicitEmptySkillsURL disables a stored marketplace URL while omission preserves dashboard edits.
+func TestLoadClientConfigExplicitEmptySkillsURL(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	start := func(raw string) *Config {
+		t.Helper()
+		cfg := &Config{ConfigStore: store}
+		require.NoError(t, loadClientConfig(ctx, cfg, parseConfigData(t, raw)))
+		return cfg
+	}
+	start(`{"client":{"log_retention_days":7}}`)
+	stored, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	stored.SkillsExternalClientURL = schemas.NewSecretVar("https://skills.example.com")
+	require.NoError(t, store.UpdateClientConfig(ctx, stored))
+	require.Equal(t, "https://skills.example.com", start(`{"client":{"log_retention_days":7}}`).GetSkillsExternalClientURL())
+	require.Empty(t, start(`{"client":{"log_retention_days":7,"skills_external_client_url":""}}`).GetSkillsExternalClientURL())
+	stored, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.Empty(t, stored.SkillsExternalClientURL.GetValue())
+	require.Empty(t, start(`{"client":{"log_retention_days":7,"skills_external_client_url":""}}`).GetSkillsExternalClientURL())
+}
+
+// TestLoadClientConfigExplicitEmptyA2AURL disables a stored Agent Gateway URL while omission preserves dashboard edits.
+func TestLoadClientConfigExplicitEmptyA2AURL(t *testing.T) {
+	initTestLogger()
+	store := createTestSQLiteConfigStore(t, t.TempDir())
+	ctx := context.Background()
+	start := func(raw string) *Config {
+		t.Helper()
+		cfg := &Config{ConfigStore: store}
+		require.NoError(t, loadClientConfig(ctx, cfg, parseConfigData(t, raw)))
+		return cfg
+	}
+	start(`{"client":{"log_retention_days":7}}`)
+	stored, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	stored.A2AExternalClientURL = schemas.NewSecretVar("https://agents.example.com")
+	require.NoError(t, store.UpdateClientConfig(ctx, stored))
+	require.Equal(t, "https://agents.example.com", start(`{"client":{"log_retention_days":7}}`).GetA2AExternalClientURL())
+	require.Empty(t, start(`{"client":{"log_retention_days":7,"a2a_external_client_url":""}}`).GetA2AExternalClientURL())
+	stored, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	require.Empty(t, stored.A2AExternalClientURL.GetValue())
+	require.Empty(t, start(`{"client":{"log_retention_days":7,"a2a_external_client_url":""}}`).GetA2AExternalClientURL())
+}
+
+// TestSkillsURLRejectsPrivateComponents blocks unsafe file and stored settings from public serving.
+func TestSkillsURLRejectsPrivateComponents(t *testing.T) {
+	initTestLogger()
+	for _, value := range []string{"https://user:password@example.com", "https://example.com?token=private", "https://example.com?"} {
+		client := &configstore.ClientConfig{SkillsExternalClientURL: schemas.NewSecretVar(value)}
+		require.Empty(t, (&Config{ClientConfig: client}).GetSkillsExternalClientURL())
+		sanitizeMCPExternalOAuthURLs(client)
+		require.Nil(t, client.SkillsExternalClientURL)
+	}
+}
+
+// BenchmarkGetSkillsExternalClientURL measures per-request public URL resolution and validation.
+func BenchmarkGetSkillsExternalClientURL(b *testing.B) {
+	for _, value := range []string{"", "https://skills.example/path"} {
+		b.Run(value, func(b *testing.B) {
+			cfg := &Config{ClientConfig: &configstore.ClientConfig{SkillsExternalClientURL: schemas.NewSecretVar(value)}}
+			b.ReportAllocs()
+			for b.Loop() {
+				cfg.GetSkillsExternalClientURL()
+			}
+		})
+	}
+}
+
+// TestPublicURLPolicyAppliesToMCPAndA2A prevents unsafe resolved overrides from bypassing startup checks.
+func TestPublicURLPolicyAppliesToMCPAndA2A(t *testing.T) {
+	initTestLogger()
+	for _, value := range []string{"https://user:password@example.com", "https://example.com?token=private", "https://example.com#private", "ftp://example.com"} {
+		client := &configstore.ClientConfig{MCPExternalClientURL: schemas.NewSecretVar(value), A2AExternalClientURL: schemas.NewSecretVar(value)}
+		cfg := &Config{ClientConfig: client}
+		require.Empty(t, cfg.GetMCPExternalClientURL())
+		require.Empty(t, cfg.GetA2AExternalClientURL())
+		sanitizeMCPExternalOAuthURLs(client)
+		require.Nil(t, client.MCPExternalClientURL)
+		require.Nil(t, client.A2AExternalClientURL)
+	}
+}
+
+// TestA2APrivateAllowlist validates configuration and prevents callers from mutating live permissions.
+func TestA2APrivateAllowlist(t *testing.T) {
+	cc := &configstore.ClientConfig{A2APrivateAllowlist: []string{"localhost", "10.0.0.0/8"}}
+	require.NoError(t, validateClientConfig(cc))
+	config := &Config{ClientConfig: cc}
+	result := config.GetA2APrivateAllowlist()
+	result[0] = "changed"
+	assert.Equal(t, "localhost", config.GetA2APrivateAllowlist()[0])
+	for _, entry := range []string{"169.254.169.254", "0.0.0.0/0", "http://localhost:3000"} {
+		err := validateClientConfig(&configstore.ClientConfig{A2APrivateAllowlist: []string{entry}})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "a2a_private_allowlist")
+	}
+	absent, err := (&configstore.ClientConfig{}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	empty, err := (&configstore.ClientConfig{A2APrivateAllowlist: []string{}}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, absent, empty)
 }

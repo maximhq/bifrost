@@ -6,6 +6,10 @@ icon: "plus"
 
 You need a running A2A agent and its agent card URL. Bifrost must be able to reach both the card and the endpoints advertised in it.
 
+For private-network agents, first add the required destinations in [Agent Settings → Private Network Allowlist](./configuration#permit-private-agent-destinations). If the card and runtime use different origins, configure [Additional agent endpoints](./authentication#additional-agent-endpoints) in the registration too.
+
+Before calling agents through Bifrost, set **Agents → Agent Settings → External Client URL** as described in [Gateway settings and transports](./configuration#set-the-public-base-url). You can register and manage agents while this setting is empty, but their gateway protocol endpoints remain disabled.
+
 We used our `library-research` agent, which answers questions about software libraries, for these screenshots. Follow the steps with your own A2A agent and replace the example name, domain, and credentials with yours.
 
 ## Register in the dashboard
@@ -48,6 +52,8 @@ The card's requirements select the request authentication fields. Fill in the cr
 - **Forward Bifrost authentication** passes the caller's credentials to agents that use Bifrost for LLM or MCP calls. Enable it and configure your agent to reuse those credentials on its model and tool requests to preserve caller attribution.
 
 The [authentication guide](./authentication) explains auto-selection, overrides, and what happens when two credentials use the same header.
+
+Under **Additional agent endpoints**, select **Allow** for trusted addresses discovered in the card, or **Add endpoint** to enter another runtime origin. The card's own origin is permitted automatically. Include the scheme and port, such as `https://research.internal:9000`. Private destinations also need permission in **Agent Settings → Private Network Allowlist**.
 
 <Frame>
   <img
