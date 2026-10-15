@@ -370,7 +370,6 @@ func (w *WebhookEndpointConfig) toTable() *configstoreTables.TableWebhookEndpoin
 type AgentRegistrationFileConfig struct {
 	Name                                   string                `json:"name"`
 	AgentCardURL                           string                `json:"agent_card_url"`
-	Tenant                                 string                `json:"tenant,omitempty"`
 	Enabled                                *bool                 `json:"enabled,omitempty"`
 	AllowByDefault                         bool                  `json:"allow_by_default,omitempty"`
 	ForwardAcceptedCredential              bool                  `json:"forward_accepted_credential,omitempty"`
@@ -378,7 +377,6 @@ type AgentRegistrationFileConfig struct {
 	DiscoveryAuth                          *schemas.UpstreamAuth `json:"discovery_auth,omitempty"`
 	RuntimeAuth                            *schemas.UpstreamAuth `json:"runtime_auth,omitempty"`
 	CredentialOrigins                      []string              `json:"credential_origins,omitempty"`
-	ExtensionURIs                          []string              `json:"extension_uris,omitempty"`
 	VirtualKeyIDs                          []string              `json:"virtual_key_ids,omitempty"`
 }
 
@@ -412,14 +410,11 @@ func (a *AgentRegistrationFileConfig) toRegistration() *schemas.AgentRegistratio
 	}
 	ids := slices.Clone(a.VirtualKeyIDs)
 	sort.Strings(ids)
-	uris := slices.Clone(a.ExtensionURIs)
-	sort.Strings(uris)
 	origins, _ := agent.ValidateCredentialOrigins(a.CredentialOrigins)
 	now := time.Now().UTC()
 	return &schemas.AgentRegistration{
 		Name:                                   strings.TrimSpace(a.Name),
 		AgentCardURL:                           a.AgentCardURL,
-		Tenant:                                 a.Tenant,
 		Enabled:                                enabled,
 		AllowByDefault:                         a.AllowByDefault,
 		ForwardAcceptedCredential:              a.ForwardAcceptedCredential,
@@ -427,7 +422,6 @@ func (a *AgentRegistrationFileConfig) toRegistration() *schemas.AgentRegistratio
 		DiscoveryAuth:                          a.DiscoveryAuth,
 		RuntimeAuth:                            a.RuntimeAuth,
 		CredentialOrigins:                      origins,
-		ExtensionURIs:                          uris,
 		VirtualKeyIDs:                          ids,
 		CreatedAt:                              now,
 		UpdatedAt:                              now,

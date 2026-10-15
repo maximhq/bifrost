@@ -107984,19 +107984,22 @@
           "runtime_auth": {
             "$ref": "#/components/schemas/AgentUpstreamAuth"
           },
+          "credential_origins": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^https?://[^@/?#\\s]+$"
+            },
+            "description": "Additional HTTP(S) origins permitted for runtime requests, including configured credentials, caller-provided upstream headers, forwarded Bifrost credentials, and TLS client certificates. Every runtime endpoint must pass this policy. The card origin is permitted automatically. Include scheme and optional port; paths, userinfo, queries, and fragments are forbidden. Private destinations also need permission in a2a_private_allowlist. Nonempty values require dashboard authentication.\n"
+          },
           "virtual_key_ids": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "description": "Virtual key IDs granted access to the agent. Empty and duplicate IDs are rejected."
-          },
-          "extension_uris": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "A2A extension URIs enabled for upstream requests."
           }
         },
         "required": [
@@ -108069,7 +108072,7 @@
         "required": [
           "type"
         ],
-        "description": "Shared upstream authentication. Header auth requires nonempty headers. OAuth uses client credentials and requires client_id, client_secret, and a token, discovery, or provider URL. Interactive OAuth is not supported."
+        "description": "Shared upstream authentication. Header auth requires nonempty headers. OAuth uses client credentials and requires client_id, client_secret, and a token, discovery, or provider URL. Interactive OAuth is not supported. Using environment or vault secret references requires dashboard authentication for card inspection, creation, and updates. Operator declarations in config.json may use these references. Preserving stored secrets through masked placeholders on an update also requires dashboard authentication."
       },
       "AgentUpstreamOAuthConfig": {
         "type": "object",
@@ -108294,19 +108297,22 @@
           "runtime_auth": {
             "$ref": "#/components/schemas/AgentUpstreamAuth"
           },
+          "credential_origins": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^https?://[^@/?#\\s]+$"
+            },
+            "description": "Additional HTTP(S) origins permitted for runtime requests, including configured credentials, caller-provided upstream headers, forwarded Bifrost credentials, and TLS client certificates. Every runtime endpoint must pass this policy. The card origin is permitted automatically. Include scheme and optional port; paths, userinfo, queries, and fragments are forbidden. Private destinations also need permission in a2a_private_allowlist. Nonempty values require dashboard authentication. Omit or send [] to clear.\n"
+          },
           "virtual_key_ids": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "description": "Virtual key IDs granted access to the agent. Empty and duplicate IDs are rejected."
-          },
-          "extension_uris": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "A2A extension URIs enabled for upstream requests."
           }
         },
         "required": [
@@ -108845,12 +108851,15 @@
           "runtime_auth": {
             "$ref": "#/components/schemas/AgentUpstreamAuth"
           },
-          "extension_uris": {
+          "credential_origins": {
             "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
             "items": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^https?://[^@/?#\\s]+$"
             },
-            "description": "A2A extension URIs enabled for upstream requests."
+            "description": "Additional origins permitted for all runtime requests and their credentials. The card origin is permitted automatically.\n"
           },
           "virtual_key_ids": {
             "type": "array",
@@ -124484,6 +124493,13 @@
                 },
                 "description": "Hostnames, IP addresses, or CIDR ranges (no scheme or port) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json. Link-local and cloud metadata addresses are always refused and cannot be listed. Omit to keep the current list; send [] to clear it. Changing it requires an authenticated admin session.\n"
               },
+              "a2a_private_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hosts, IP addresses, or CIDR ranges without a scheme or port that Agent Gateway card discovery, OAuth, and runtime HTTP or gRPC calls may reach when they resolve to private or loopback addresses. Link-local and cloud metadata addresses are always blocked. Applies to agents registered by an authenticated administrator or declared in config.json. Registrations created with dashboard authentication bypassed cannot use private permissions. Omit to keep the current list; send [] to clear it. Changing this setting requires dashboard authentication.\n"
+              },
               "mcp_code_mode_limits": {
                 "type": "object",
                 "description": "Limits applied to each code mode (executeToolCode) execution. Omit the object to keep the current limits; send {} to reset every limit to its default. Any field omitted or set to 0 uses its default. There is no limit on concurrent executions.\n",
@@ -125006,6 +125022,13 @@
                   "type": "string"
                 },
                 "description": "Hostnames, IP addresses, or CIDR ranges (no scheme or port) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json. Link-local and cloud metadata addresses are always refused and cannot be listed. Omit to keep the current list; send [] to clear it. Changing it requires an authenticated admin session.\n"
+              },
+              "a2a_private_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hosts, IP addresses, or CIDR ranges without a scheme or port that Agent Gateway card discovery, OAuth, and runtime HTTP or gRPC calls may reach when they resolve to private or loopback addresses. Link-local and cloud metadata addresses are always blocked. Applies to agents registered by an authenticated administrator or declared in config.json. Registrations created with dashboard authentication bypassed cannot use private permissions. Omit to keep the current list; send [] to clear it. Changing this setting requires dashboard authentication.\n"
               },
               "mcp_code_mode_limits": {
                 "type": "object",
@@ -129592,7 +129615,10 @@
             "type": "string"
           },
           "metadata": {
-            "type": ["object", "null"],
+            "type": [
+              "object",
+              "null"
+            ],
             "description": "Replaces the key's metadata as a whole. Omit (or send null) to leave it unchanged; send {} to clear it. Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
             "maxProperties": 50,
             "propertyNames": {

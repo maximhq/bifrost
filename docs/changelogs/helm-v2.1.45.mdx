@@ -7,6 +7,7 @@ description: "Helm v2.1.45 changelog - 2026-10-15"
 
 ## Changelog
 
+- Removed `bifrost.agents[].tenant` and `bifrost.agents[].extension_uris` from registration configuration; Agent Gateway discovers supported extensions from the upstream agent card.
 - Added `bifrost.client.a2aPrivateAllowlist`, rendered as `client.a2a_private_allowlist`, to permit private destinations for Agent Gateway card discovery, OAuth, and runtime connections. Link-local and cloud metadata destinations remain blocked.
 - Added `bifrost.agents[].credential_origins`, rendered as `agents[].credential_origins`, to permit additional HTTP(S) origins for agent runtime requests. The agent card origin is permitted automatically.
 - Added `bifrost.client.skillsExternalClientUrl` (`client.skills_external_client_url`) for the public skills marketplace URL, including environment and vault references. When unset, marketplace serving is disabled; skill management and downloads remain available.

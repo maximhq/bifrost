@@ -573,6 +573,12 @@ func redactSpanAttributes(span *Span, inputReplacements map[string]string, outpu
 	if span.LLM != nil {
 		span.LLM.redact(inputReplacements, outputReplacements)
 	}
+	if span.A2A != nil {
+		cp := *span.A2A
+		cp.RawRequest = ApplyLiteralReplacements(cp.RawRequest, inputReplacements)
+		cp.RawResponse = ApplyLiteralReplacements(cp.RawResponse, outputReplacements)
+		span.A2A = &cp
+	}
 }
 
 // Span represents a single operation within a trace
@@ -588,6 +594,7 @@ type Span struct {
 	StatusMsg  string          // Optional status message (for errors)
 	Attributes map[string]any  // Additional attributes for the span
 	LLM        *LLMSpanData    `json:"-"`
+	A2A        *A2ASpanData    `json:"-"`
 	Enrichment *SpanEnrichment // Governance/identity dimensions read off the request context
 	Events     []SpanEvent     // Events that occurred during the span
 	mu         sync.Mutex      // Mutex for thread-safe attribute operations
@@ -657,6 +664,7 @@ func (s *Span) snapshotForExport() *Span {
 	cp.Status = s.Status
 	cp.StatusMsg = s.StatusMsg
 	cp.LLM = s.LLM
+	cp.A2A = s.A2A
 	cp.Enrichment = s.Enrichment
 	clear(cp.Attributes)
 	for k, v := range s.Attributes {
@@ -844,6 +852,7 @@ func (s *Span) Reset() {
 	s.Status = SpanStatusUnset
 	s.StatusMsg = ""
 	s.LLM = nil
+	s.A2A = nil
 	s.Enrichment = nil
 	// Reuse the attribute map across pool cycles: tracing/store.go clears and
 	// refills it, so nil-ing here forced a fresh map alloc per pooled span every
@@ -853,6 +862,9 @@ func (s *Span) Reset() {
 	} else {
 		clear(s.Attributes)
 	}
+	// Events can hold bounded A2A bodies. Drop their references before pooling
+	// the backing array so an idle span cannot retain a previous request's content.
+	clear(s.Events)
 	s.Events = s.Events[:0]
 }
 
@@ -1155,6 +1167,9 @@ const (
 	AttrBifrostA2AOperationName = "bifrost.a2a.operation.name"
 	AttrA2AMethodName           = "a2a.method.name"
 	AttrA2ATaskID               = "a2a.task.id"
+	AttrA2ATaskState            = "a2a.task.state"
+	AttrA2AMessageID            = "a2a.message.id"
+	AttrA2AArtifactID           = "a2a.artifact.id"
 	AttrAgentName               = "gen_ai.agent.name"
 	AttrConversationID          = "gen_ai.conversation.id"
 

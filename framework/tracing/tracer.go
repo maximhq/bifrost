@@ -182,6 +182,13 @@ func (t *Tracer) spanBuildOptions() SpanBuildOptions {
 	return SpanBuildOptions{WantContent: d.Content, WantRawPayloads: d.RawPayloads}
 }
 
+// A2AContentDemand lets the core gateway avoid retaining content that no
+// connector consumes without depending on this framework package.
+func (t *Tracer) A2AContentDemand() (content, raw bool) {
+	d := t.Demand()
+	return d.Content, d.RawPayloads
+}
+
 // wantsSpanKind reports whether any connector consumes spans of this kind. A
 // plugin hook span is ~12 of the 14 spans a request creates and exists only to
 // be exported, so it is not worth creating when nothing reads it.
