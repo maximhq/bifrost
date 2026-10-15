@@ -29,7 +29,7 @@ Requires the `/mcp` gateway's own authentication mode — a separate, global set
 | Best for | Third-party SaaS (Notion, GitHub, Sentry) that runs its own OAuth | First-party/internal MCP servers that trust your organization's IdP |
 | Setup | Admin OAuth app registration per service | Audience + a dedicated IdP application per MCP server |
 
-If the upstream MCP server doesn't trust your SCIM identity provider's issuer — most third-party SaaS services — token exchange cannot work there. Use [Per-User OAuth](./per-user-oauth) instead.
+If the upstream MCP server doesn't trust your SCIM identity provider's issuer — most third-party SaaS services — direct token exchange cannot work there. If the service supports Okta Cross App Access, use the [Cross App Access (`id_jag`) profile](./cross-app-access); otherwise use [Per-User OAuth](./per-user-oauth).
 
 This auth type is only valid for **HTTP** and **SSE** connections.
 
