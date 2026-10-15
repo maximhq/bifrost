@@ -300,6 +300,7 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 	if jsonModuleAvailable {
 		sb.WriteString("# json.decode(s) parses a str that holds JSON; plain text raises.\n")
 	}
+	sb.WriteString("# A call that fails returns an error value: check hasattr(r, \"error\"); r.error holds the message, and fail(r.error) stops the run.\n")
 	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"tool_name\")\n", clientName))
 	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n")
 	if instructions != "" {

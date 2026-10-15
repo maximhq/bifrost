@@ -331,6 +331,7 @@ Reads a virtual `.pyi` file to get compact Python function signatures for tools.
 # Usage: youtube.tool_name(param=value)
 # Results: the decoded JSON when the server sends JSON (a dict or list, or a number, bool or None), otherwise a str.
 # json.decode(s) parses a str that holds JSON; plain text raises.
+# A call that fails returns an error value: check hasattr(r, "error"); r.error holds the message, and fail(r.error) stops the run.
 # For detailed docs: use getToolDocs(server="youtube", tool="tool_name")
 #
 # ---- server instructions (from the upstream handshake) ----
@@ -379,6 +380,10 @@ Get detailed documentation for a specific tool when the compact signature from `
 # 2. dict: r["key"] or r.get("key", default), never r.key. list: r[0].
 # 3. str holding JSON, often a field: data = json.decode(r["body"]); plain text raises.
 #
+# FAILED CALLS:
+# A call that fails returns an error value, not a result: hasattr(r, "error") is True and
+# r.error holds the message. Call fail(r.error) to stop the run, or skip it and carry on.
+#
 # Common errors: "key not found", "has no attribute", "string index"
 # Fix: check type(r) first, then index the shape you actually got
 # ============================================================================
@@ -417,6 +422,7 @@ Executes Python code in a sandboxed Starlark interpreter with access to all code
 - Tool calls are **synchronous** - no async/await needed
 - Use `print()` for logging (output captured in logs)
 - Assign to `result` variable to return a value
+- The model receives only what the script prints and the `result` value, never the raw tool responses (a nested call that failed is noted in one line)
 - Tool execution timeout applies (default 30s)
 
 **Syntax notes:**
@@ -609,8 +615,32 @@ A nested tool call hands the script a value, not text:
 | Several text blocks, each holding JSON | A list with one element per block |
 | JSON wrapped in a JSON string (`"{\"a\": 1}"`) | The decoded object or array. A wrapped scalar such as `"123"` stays a str |
 | Any other text | A str, as sent. `json.decode` parses a str that holds JSON and raises on plain text |
-| `isError: true` | The error message, as a str. The script keeps running and decides what the failure means |
-| Text starting with `Error: ` | Nothing: the call raises, the script stops, and the error message is returned to the model |
+| `isError: true` | An error value: `hasattr(r, "error")` is True and `r.error` holds the message, without a leading `Error: `. Returned as-is it becomes `{"error": "<message>"}`. The script keeps running and decides what the failure means |
+| Text starting with `Error: `, without `isError` | Nothing: the call raises, the script stops, and the error message is returned to the model |
+
+Responses stay inside the sandbox: the model sees only the script's print output and its `result`. A nested call that answered with `isError` is the exception: the reply notes it as `[TOOL] server.tool returned an error: <message>`, and a run that finishes ends with `Execution completed, but N nested tool calls failed.` rather than claiming a clean run.
+
+### Handling Failed Calls
+
+A run that finishes counts as a success, even when a nested call failed along the way. The script decides whether a failure matters: it can recover and carry on, or call `fail()` to stop the run, which marks the `executeToolCode` result as an error.
+
+```python
+# A failure the script can recover from: fall back, and the run still succeeds.
+r = crm.get_contact(id=7)
+if hasattr(r, "error"):
+    r = crm.search_contacts(query="id:7")
+result = r["contacts"][0]["email"]
+```
+
+```python
+# A failure that makes the whole run fail.
+r = crm.update_contact(id=7, email="new@acme.com")
+if hasattr(r, "error"):
+    fail("update failed: " + r.error)
+result = "updated"
+```
+
+A call that cannot complete at all (a dropped connection or a timeout) always stops the script.
 
 ### Runtime Environment Details
 
@@ -637,7 +667,7 @@ Every execution gets its own budget. The limits below are the defaults; each one
 | Submitted source code size | `max_source_bytes` | 64 KiB (65536) |
 | Computation steps, including work performed inside builtins | `max_steps` | 1,000,000 |
 | Estimated allocation budget, enforced by the interpreter and gateway value converters before allocating | `max_memory_bytes` | 64 MiB (67108864) |
-| Print and tool log output, including newlines | `max_log_bytes` | 64 KiB (65536) |
+| Print output (plus a one-line note per failed tool call), including newlines | `max_log_bytes` | 64 KiB (65536) |
 | Nested tool calls | `max_tool_calls` | 64 |
 | Size budget for each tool payload and converted result. Tool result strings count at their raw size; values leaving the interpreter (the `result` and tool arguments) count conservatively for JSON escaping, containers, and indentation | `max_value_bytes` | 1 MiB (1048576) |
 | Nesting depth of values crossing the tool boundary | `max_nesting_depth` | 64 |
