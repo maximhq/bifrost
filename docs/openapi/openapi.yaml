@@ -1528,7 +1528,76 @@ components:
     WebhookEndpointId:
       $ref: "./paths/management/webhooks.yaml#/components/parameters/WebhookEndpointId"
 
+  headers:
+    BifrostRequestId:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRequestId"
+    BifrostTraceId:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostTraceId"
+    RequestIdLegacy:
+      $ref: "./schemas/inference/responseheaders.yaml#/RequestIdLegacy"
+    BifrostRoutingInfoProvider:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoProvider"
+    BifrostRoutingInfoModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoModel"
+    BifrostRoutingInfoKey:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoKey"
+    BifrostRoutingInfoRequestedProvider:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoRequestedProvider"
+    BifrostRoutingInfoRequestedModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoRequestedModel"
+    BifrostRoutingInfoIsFallback:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoIsFallback"
+    BifrostRoutingInfoPrimaryProvider:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoPrimaryProvider"
+    BifrostRoutingInfoPrimaryModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoPrimaryModel"
+    BifrostRoutingInfoAliasModelId:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoAliasModelId"
+    BifrostRoutingInfoAliasModelName:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoAliasModelName"
+    BifrostRoutingInfoAliasModelFamily:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoAliasModelFamily"
+    BifrostRoutingInfoServerSideFallbackModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRoutingInfoServerSideFallbackModel"
+    BifrostRequestType:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostRequestType"
+    BifrostProvider:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostProvider"
+    BifrostOriginalModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostOriginalModel"
+    BifrostResolvedModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostResolvedModel"
+    BifrostFallbackIndex:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostFallbackIndex"
+    BifrostUpstreamLatencyMs:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostUpstreamLatencyMs"
+    BifrostCacheHit:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheHit"
+    BifrostCacheId:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheId"
+    BifrostCacheHitType:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheHitType"
+    BifrostCacheHitLatencyMs:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheHitLatencyMs"
+    BifrostCacheRequestedProvider:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheRequestedProvider"
+    BifrostCacheRequestedModel:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheRequestedModel"
+    BifrostCacheSimilarity:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheSimilarity"
+    BifrostCacheThreshold:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheThreshold"
+    BifrostCacheProviderUsed:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheProviderUsed"
+    BifrostCacheModelUsed:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheModelUsed"
+    BifrostCacheInputTokens:
+      $ref: "./schemas/inference/responseheaders.yaml#/BifrostCacheInputTokens"
   responses:
+    InferenceBadRequest:
+      $ref: "./schemas/inference/responseheaders.yaml#/InferenceBadRequest"
+    InferenceInternalError:
+      $ref: "./schemas/inference/responseheaders.yaml#/InferenceInternalError"
     BadRequest:
       description: Bad request
       content:
@@ -1705,6 +1774,10 @@ components:
       $ref: "./schemas/inference/common.yaml#/BifrostError"
     ErrorField:
       $ref: "./schemas/inference/common.yaml#/ErrorField"
+    RoutingInfo:
+      $ref: "./schemas/inference/common.yaml#/RoutingInfo"
+    ResolvedKeyAlias:
+      $ref: "./schemas/inference/common.yaml#/ResolvedKeyAlias"
     BifrostErrorExtraFields:
       $ref: "./schemas/inference/common.yaml#/BifrostErrorExtraFields"
     BifrostResponseExtraFields:
