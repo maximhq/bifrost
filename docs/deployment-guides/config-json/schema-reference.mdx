@@ -134,8 +134,6 @@ Declare A2A registrations in the top-level `agents` array. Registrations are rec
 | `runtime_auth` | object | None | Authentication and TLS settings for runtime requests. |
 | `forward_accepted_credential` | boolean | `false` | Forward the accepted caller credential to the agent. |
 | `forward_accepted_credential_overrides_auth` | boolean | `false` | Prefer the forwarded credential on a header collision. |
-| `tenant` | string | Empty | Optional tenant label. |
-| `extension_uris` | array of strings | `[]` | A2A extensions to activate. |
 | `virtual_key_ids` | array of strings | `[]` | Exact set of virtual keys granted access to this registration. |
 
 For a card at `https://cards.example.com/.well-known/agent-card.json` advertising `https://research.internal:9000`, configure both the network permission and the additional origin:

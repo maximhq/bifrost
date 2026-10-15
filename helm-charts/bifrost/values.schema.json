@@ -5017,10 +5017,6 @@
                 "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
                 "description": "Absolute http(s) URL of the upstream agent's Agent Card (typically .../.well-known/agent-card.json)."
               },
-              "tenant": {
-                "type": "string",
-                "description": "Optional tenant label for the registration."
-              },
               "enabled": {
                 "type": "boolean",
                 "description": "Whether the agent is enabled (default: true when omitted)."
@@ -5051,11 +5047,6 @@
                 "uniqueItems": true,
                 "items": { "type": "string", "pattern": "^https?://[^@/?#\\s]+$" },
                 "description": "Additional HTTP(S) origins permitted to receive runtime credentials and client certificates. The card origin is permitted automatically."
-              },
-              "extension_uris": {
-                "type": "array",
-                "items": { "type": "string" },
-                "description": "A2A extension URIs to activate for this agent."
               },
               "virtual_key_ids": {
                 "type": "array",

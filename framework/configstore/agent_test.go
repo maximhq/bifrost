@@ -16,12 +16,10 @@ func TestAgentRegistrationHashPreservesFieldBoundaries(t *testing.T) {
 	first := &schemas.AgentRegistration{
 		Name:         "fixture",
 		AgentCardURL: "https://example.com/tenant:b",
-		Tenant:       "c",
 	}
 	second := &schemas.AgentRegistration{
 		Name:         "fixture",
 		AgentCardURL: "https://example.com/",
-		Tenant:       "btenant:c",
 	}
 
 	firstHash, err := GenerateAgentRegistrationHash(first)
@@ -160,11 +158,10 @@ func TestUpdateAgentRegistrationReplacesMutableFieldsAndGrants(t *testing.T) {
 	created := time.Now().UTC().Add(-time.Hour)
 	require.NoError(t, store.CreateAgentRegistration(ctx, &schemas.AgentRegistration{Name: "fixture", AgentCardURL: "https://old.example", Enabled: true, ForwardAcceptedCredential: true, VirtualKeyIDs: []string{"old"}, CreatedAt: created, UpdatedAt: created}))
 	updated := time.Now().UTC()
-	require.NoError(t, store.UpdateAgentRegistration(ctx, &schemas.AgentRegistration{Name: "fixture", AgentCardURL: "https://new.example", Tenant: "new", Enabled: false, VirtualKeyIDs: []string{"new-1", "new-2"}, CreatedAt: updated, UpdatedAt: updated}))
+	require.NoError(t, store.UpdateAgentRegistration(ctx, &schemas.AgentRegistration{Name: "fixture", AgentCardURL: "https://new.example", Enabled: false, VirtualKeyIDs: []string{"new-1", "new-2"}, CreatedAt: updated, UpdatedAt: updated}))
 	got, err := store.GetAgentRegistration(ctx, "fixture")
 	require.NoError(t, err)
 	require.Equal(t, "https://new.example", got.AgentCardURL)
-	require.Equal(t, "new", got.Tenant)
 	require.False(t, got.Enabled)
 	require.False(t, got.ForwardAcceptedCredential)
 	require.False(t, got.ForwardAcceptedCredentialOverridesAuth)

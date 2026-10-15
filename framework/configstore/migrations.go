@@ -560,6 +560,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_virtual_key_metadata_column"}, run: migrationAddVirtualKeyMetadataColumn},
 	{IDs: []string{"add_a2a_private_allowlist_column"}, run: migrationAddA2APrivateAllowlistColumn},
 	{IDs: []string{"add_agent_destination_policy_columns"}, run: migrationAddAgentDestinationPolicyColumns},
+	{IDs: []string{"drop_agent_registration_options"}, run: migrationDropAgentRegistrationOptions},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16283,6 +16284,34 @@ func migrationAddAgentDestinationPolicyColumns(ctx context.Context, db *gorm.DB,
 		},
 		Rollback: func(*gorm.DB) error {
 			return fmt.Errorf("add_agent_destination_policy_columns is non-rollbackable: removing destination permissions would discard security policy")
+		},
+	})
+}
+
+// migrationDropAgentRegistrationOptions removes unused tenant and manual extension configuration.
+func migrationDropAgentRegistrationOptions(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "drop_agent_registration_options",
+		Migrate: func(tx *gorm.DB) error {
+			for _, column := range []string{"tenant", "extension_uris"} {
+				// SQLite's GORM table reconstruction can silently retain legacy columns.
+				if tx.Dialector.Name() == "sqlite" {
+					if !tx.Migrator().HasColumn(&tables.TableAgentRegistration{}, column) {
+						continue
+					}
+					if err := tx.WithContext(ctx).Exec(dropColumnSQL(tx, "config_agent_registrations", column)).Error; err != nil {
+						return err
+					}
+					continue
+				}
+				if err := dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableAgentRegistration{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("drop_agent_registration_options is non-rollbackable: removed registration values cannot be recovered")
 		},
 	})
 }
