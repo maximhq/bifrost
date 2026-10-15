@@ -1,5 +1,5 @@
-import { describe, expect, test } from "vitest";
-import { getLiveToggleState } from "./timeRange";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { getLiveToggleState, getRangeForPeriod, isCalendarPeriod, TIME_PERIODS, withResolvedCalendarPeriod } from "./timeRange";
 
 describe("getLiveToggleState", () => {
 	test("turning live on from an absolute range switches to the default period", () => {
@@ -14,5 +14,87 @@ describe("getLiveToggleState", () => {
 	test("turning live off never touches the time range", () => {
 		expect(getLiveToggleState(false, "")).toEqual({ polling: false });
 		expect(getLiveToggleState(false, "7d")).toEqual({ polling: false });
+	});
+});
+describe("calendar periods", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		// Thursday 2026-10-15 03:30 UTC, which is still Wednesday evening in New York.
+		vi.setSystemTime(new Date("2026-10-15T03:30:00Z"));
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test("are offered by the picker", () => {
+		const values = TIME_PERIODS.map((p) => p.value);
+		expect(values).toEqual(expect.arrayContaining(["today", "this_week", "this_month"]));
+	});
+
+	test("only calendar values are calendar periods", () => {
+		expect(isCalendarPeriod("today")).toBe(true);
+		expect(isCalendarPeriod("this_week")).toBe(true);
+		expect(isCalendarPeriod("this_month")).toBe(true);
+		expect(isCalendarPeriod("24h")).toBe(false);
+		expect(isCalendarPeriod("")).toBe(false);
+		expect(isCalendarPeriod(undefined)).toBe(false);
+	});
+
+	test("today starts at midnight in the given timezone and ends now", () => {
+		expect(getRangeForPeriod("today", "UTC")).toEqual({
+			from: new Date("2026-10-15T00:00:00Z"),
+			to: new Date("2026-10-15T03:30:00Z"),
+		});
+		// New York is UTC-4 in October, so its "today" is still the 14th.
+		expect(getRangeForPeriod("today", "America/New_York").from).toEqual(new Date("2026-10-14T04:00:00Z"));
+		// Kolkata is UTC+5:30, already 09:00 on the 15th.
+		expect(getRangeForPeriod("today", "Asia/Kolkata").from).toEqual(new Date("2026-10-14T18:30:00Z"));
+	});
+
+	test("this week starts on Monday", () => {
+		expect(getRangeForPeriod("this_week", "UTC").from).toEqual(new Date("2026-10-12T00:00:00Z"));
+		expect(getRangeForPeriod("this_week", "America/New_York").from).toEqual(new Date("2026-10-12T04:00:00Z"));
+	});
+
+	test("this month starts on the first", () => {
+		expect(getRangeForPeriod("this_month", "UTC").from).toEqual(new Date("2026-10-01T00:00:00Z"));
+		expect(getRangeForPeriod("this_month", "Asia/Kolkata").from).toEqual(new Date("2026-09-30T18:30:00Z"));
+	});
+
+	test("on the first of the month, this month starts today", () => {
+		vi.setSystemTime(new Date("2026-11-01T10:00:00Z"));
+		expect(getRangeForPeriod("this_month", "UTC").from).toEqual(new Date("2026-11-01T00:00:00Z"));
+		expect(getRangeForPeriod("today", "UTC").from).toEqual(new Date("2026-11-01T00:00:00Z"));
+	});
+
+	test("on a Sunday, this week still starts on the previous Monday", () => {
+		vi.setSystemTime(new Date("2026-10-18T12:00:00Z"));
+		expect(getRangeForPeriod("this_week", "UTC").from).toEqual(new Date("2026-10-12T00:00:00Z"));
+	});
+
+	test("sliding periods ignore the timezone", () => {
+		expect(getRangeForPeriod("24h", "Asia/Kolkata")).toEqual(getRangeForPeriod("24h", "UTC"));
+	});
+
+	test("withResolvedCalendarPeriod turns a calendar period into an absolute range", () => {
+		// The range is resolved in the timezone the user picked, persisted by useTimezonePreference.
+		vi.stubGlobal("localStorage", { getItem: (key: string) => (key === "bifrost.timezone" ? "Asia/Kolkata" : null) });
+		try {
+			expect(withResolvedCalendarPeriod({ period: "today", models: ["gpt-4o"] })).toEqual({
+				period: undefined,
+				models: ["gpt-4o"],
+				start_time: "2026-10-14T18:30:00.000Z",
+				end_time: "2026-10-15T03:30:00.000Z",
+			});
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	test("withResolvedCalendarPeriod leaves sliding periods and absolute ranges to the server", () => {
+		const sliding = { period: "24h" };
+		expect(withResolvedCalendarPeriod(sliding)).toBe(sliding);
+		const absolute = { start_time: "2026-10-01T00:00:00Z", end_time: "2026-10-02T00:00:00Z" };
+		expect(withResolvedCalendarPeriod(absolute)).toBe(absolute);
 	});
 });

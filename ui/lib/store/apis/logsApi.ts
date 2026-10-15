@@ -23,11 +23,13 @@ import {
 	ThroughputHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
+import { withResolvedCalendarPeriod } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
 import { RoutingRule } from "@/lib/types/routingRules";
 
 // Helper function to build filter params
-function buildFilterParams(filters: LogFilters): Record<string, string | number> {
+function buildFilterParams(rawFilters: LogFilters): Record<string, string | number> {
+	const filters = withResolvedCalendarPeriod(rawFilters);
 	const params: Record<string, string | number> = {};
 
 	if (filters.parent_request_id) {
@@ -454,7 +456,7 @@ export const logsApi = baseApi.injectEndpoints({
 			query: ({ filters, limit }) => ({
 				url: "/logs/recalculate-cost",
 				method: "POST",
-				body: { filters, limit },
+				body: { filters: withResolvedCalendarPeriod(filters), limit },
 			}),
 			invalidatesTags: ["Logs"],
 		}),

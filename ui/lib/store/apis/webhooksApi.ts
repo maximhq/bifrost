@@ -11,6 +11,7 @@ import {
 	WebhookEvent,
 	WebhookSecretResponse,
 } from "@/lib/types/webhooks";
+import { withResolvedCalendarPeriod } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
 
 // Shapes list params for the wire: empty values are dropped and the events
@@ -31,7 +32,8 @@ const buildWebhookEndpointsListParams = (params?: GetWebhookEndpointsParams): Re
 // serializer above: empty values are dropped and array filters are CSV-joined
 // after sorting, so RTK cache keys stay canonical regardless of the order the
 // user ticked the boxes in.
-const buildWebhookDeliveryParams = (params: SearchWebhookDeliveriesParams): Record<string, string | number> => {
+const buildWebhookDeliveryParams = (rawParams: SearchWebhookDeliveriesParams): Record<string, string | number> => {
+	const params = withResolvedCalendarPeriod(rawParams);
 	const out: Record<string, string | number> = {};
 	const csv = (key: string, values?: string[]) => {
 		if (values?.length) out[key] = [...values].sort().join(",");

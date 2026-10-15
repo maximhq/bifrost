@@ -89,6 +89,33 @@ test.describe('Dashboard', () => {
       const url = dashboardPage.page.url()
       expect(url).toMatch(/period=30d|start_time=\d+&end_time=\d+/)
     })
+
+    for (const [period, label] of [
+      ['today', 'Today'],
+      ['this_week', 'This week'],
+      ['this_month', 'This month'],
+    ] as const) {
+      test(`should change time period to ${label.toLowerCase()} and query an absolute range`, async ({ dashboardPage }) => {
+        // Calendar periods depend on the viewer's timezone, so the UI resolves them and
+        // sends start_time/end_time; the server never sees the period itself.
+        const requestPromise = dashboardPage.page.waitForRequest(
+          (req) => req.url().includes('/logs/histogram') && req.url().includes('start_time='),
+          { timeout: 15000 }
+        )
+
+        await dashboardPage.selectTimePeriod(period)
+
+        expect(await dashboardPage.getSelectedPeriodLabel()).toContain(label)
+        expect(dashboardPage.page.url()).toContain(`period=${period}`)
+
+        const histogramUrl = new URL((await requestPromise).url())
+        expect(histogramUrl.searchParams.get('period')).toBeNull()
+        const start = new Date(histogramUrl.searchParams.get('start_time') ?? '')
+        const end = new Date(histogramUrl.searchParams.get('end_time') ?? '')
+        expect(Number.isNaN(start.getTime())).toBe(false)
+        expect(end.getTime()).toBeGreaterThan(start.getTime())
+      })
+    }
   })
 
   test.describe('Chart Type Toggling', () => {
