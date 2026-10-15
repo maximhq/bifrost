@@ -46,9 +46,6 @@ const (
 	// topicsDiscoveryInterval is how often upkeep runs and discovery is
 	// considered.
 	topicsDiscoveryInterval = time.Hour
-	// topicsDiscoveryMinPool is how many pooled requests it takes before
-	// discovery is worth a run and its model calls.
-	topicsDiscoveryMinPool = 100
 	// topicsDiscoveryMinSize is how many requests a discovered cluster needs
 	// to be a topic. Below it the requests stay pooled: a cluster of three is
 	// three requests, not a pattern, and naming it would spend a model call
@@ -126,8 +123,10 @@ func (s *Service) RunDiscoveryJob(ctx context.Context, job tables.TableSidekiqJo
 		return snapshot(), fmt.Errorf("read pooled requests: %w", err)
 	}
 	meta.Scanned, meta.Total = len(pool), int64(len(pool))
-	if len(pool) < topicsDiscoveryMinPool {
-		meta.Message = fmt.Sprintf("%d request(s) are waiting for a topic; discovery runs once there are %d.", len(pool), topicsDiscoveryMinPool)
+	// How many have to be waiting is the operator's setting
+	// (topic_discovery_min_requests): enough to be worth a run's model calls.
+	if minPool := config.EffectiveTopicDiscoveryMinRequests(); len(pool) < minPool {
+		meta.Message = fmt.Sprintf("%d request(s) are waiting for a topic; discovery runs once there are %d.", len(pool), minPool)
 		return snapshot(), progress(snapshot())
 	}
 	if err := checkpoint(fmt.Sprintf("Clustering %d request(s) that matched no topic.", len(pool))); err != nil {
@@ -513,7 +512,7 @@ func (s *Service) retireAndMergeTopics(ctx context.Context, store logstore.WarpT
 	since := now.Add(-topicsRetireAfter)
 	counted, into, err := withMergedTopics(ctx, store, ids)
 	if err != nil {
-		return done, err
+		return err
 	}
 	recentCount, err := countTopicRequests(ctx, store, counted, into, &since)
 	if err != nil {
@@ -583,9 +582,10 @@ func (s *Service) retireAndMergeTopics(ctx context.Context, store logstore.WarpT
 // Retired rows are kept for a while rather than deleted at once so a run or
 // a reader in flight still finds the row an id names; after that nothing
 // reads them, since every read selects on active topics and follows
-// merged_into only to one.
+// merged_into only to one. A seed run that failed and could not retire what
+// it wrote leaves those rows seeding; they are deleted on the same schedule.
 func pruneRetiredTopics(ctx context.Context, store logstore.WarpTopicStore, now time.Time, grace time.Duration) (int, error) {
-	rows, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{Statuses: []string{logstore.WarpTopicStatusActive, logstore.WarpTopicStatusMerged, logstore.WarpTopicStatusRetired}, OmitCentroids: true})
+	rows, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{Statuses: []string{logstore.WarpTopicStatusActive, logstore.WarpTopicStatusMerged, logstore.WarpTopicStatusRetired, logstore.WarpTopicStatusSeeding}, OmitCentroids: true})
 	if err != nil {
 		return 0, fmt.Errorf("read topics for pruning: %w", err)
 	}
@@ -603,7 +603,7 @@ func pruneRetiredTopics(ctx context.Context, store logstore.WarpTopicStore, now 
 			if _, ok := active[row.MergedInto]; !ok {
 				orphaned = append(orphaned, row.ID)
 			}
-		case logstore.WarpTopicStatusRetired:
+		case logstore.WarpTopicStatusRetired, logstore.WarpTopicStatusSeeding:
 			if row.UpdatedAt.Before(now.Add(-grace)) {
 				expired = append(expired, row.ID)
 			}
@@ -967,6 +967,21 @@ func (s *Service) topicUpkeepTick(ctx context.Context) {
 	}
 }
 
+// TopicsJobKinds are the jobs queued in TopicsJobPartition.
+var TopicsJobKinds = []string{TopicsJobKind, TopicDiscoveryJobKind}
+
+// LockTopicsJobAdmission takes the lock a job is admitted to
+// TopicsJobPartition under, and returns its release. A caller holds it from
+// the in-flight lookup to the enqueue: the partition only runs its jobs one
+// after another, so two starts that both found nothing in flight would each
+// queue one. The lock is this process's; instances sharing a job store can
+// still each admit one, so the jobs check again when they start: a run finds
+// the topics already seeded and a discovery finds the pool already drained.
+func (s *Service) LockTopicsJobAdmission() (unlock func()) {
+	s.topicsAdmitMu.Lock()
+	return s.topicsAdmitMu.Unlock
+}
+
 // topicsJobInFlight reports whether a topics run or a discovery is pending or
 // running. Without a job store there are no jobs to wait for.
 func (s *Service) topicsJobInFlight(ctx context.Context) (bool, error) {
@@ -976,7 +991,7 @@ func (s *Service) topicsJobInFlight(ctx context.Context) (bool, error) {
 	if jobs == nil {
 		return false, nil
 	}
-	for _, kind := range []string{TopicsJobKind, TopicDiscoveryJobKind} {
+	for _, kind := range TopicsJobKinds {
 		inFlight, err := jobs.GetInFlightSidekiqJobByKind(ctx, kind)
 		if err != nil {
 			return false, fmt.Errorf("check for a running %s job: %w", kind, err)
@@ -1006,9 +1021,10 @@ func (s *Service) StartDiscoveryIfDue(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("count pooled requests: %w", err)
 	}
-	if pooled < topicsDiscoveryMinPool {
+	if pooled < int64(config.EffectiveTopicDiscoveryMinRequests()) {
 		return false, nil
 	}
+	defer s.LockTopicsJobAdmission()()
 	if busy, err := s.topicsJobInFlight(ctx); err != nil || busy {
 		return false, err
 	}

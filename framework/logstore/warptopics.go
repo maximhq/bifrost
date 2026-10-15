@@ -47,6 +47,10 @@ const (
 	// WarpTopicStatusRetired topics take nothing new: their traffic stopped, or
 	// the embedding model they were built with was replaced.
 	WarpTopicStatusRetired = "retired"
+	// WarpTopicStatusSeeding topics belong to a seed run still writing. The
+	// run makes them active once it has written all of them, so a seed that
+	// fails partway never reads as one that finished.
+	WarpTopicStatusSeeding = "seeding"
 )
 
 // warpTopicWriteBatch bounds one multi-row statement. The widest row here has
@@ -281,9 +285,8 @@ type WarpTopicStore interface {
 	// and AssignedAt left for the caller to fill. from and to bound the logs'
 	// timestamps when non-zero, which lets a time-ordered store skip the rest.
 	//
-	// It is not narrowed by any access scope. It exists for the background job
-	// that assigns every request, and must not be reachable from a request
-	// made on a user's behalf.
+	// It is narrowed by the caller's access scope, as every log read is. The
+	// jobs that file requests under topics carry none, so they read every log.
 	ListLogsForWarpTopics(ctx context.Context, logIDs []string, from, to time.Time) ([]WarpTopicAssignment, error)
 }
 
@@ -765,14 +768,12 @@ const warpTopicLogColumns = "id AS log_id, timestamp, created_at, " +
 	"COALESCE(latency, 0) AS latency, " +
 	"COALESCE(total_tokens, 0) AS total_tokens"
 
-// ListLogsForWarpTopics returns the assignment columns of the given logs.
-//
-// This reads through s.db, not ScopedDB, on purpose: the job that calls it
-// assigns every request, whoever owns it. See WarpTopicStore.
+// ListLogsForWarpTopics returns the assignment columns of the given logs,
+// within the caller's access scope.
 func (s *RDBLogStore) ListLogsForWarpTopics(ctx context.Context, logIDs []string, from, to time.Time) ([]WarpTopicAssignment, error) {
 	rows := make([]WarpTopicAssignment, 0, len(logIDs))
 	for chunk := range slices.Chunk(logIDs, warpTopicWriteBatch) {
-		query := s.db.WithContext(ctx).Table("logs").Select(warpTopicLogColumns).Where("id IN ?", chunk)
+		query := s.ScopedDB(ctx).Table("logs").Select(warpTopicLogColumns).Where("id IN ?", chunk)
 		if !from.IsZero() {
 			placeholder, arg := warpTopicTimeArg(s.db, from)
 			query = query.Where("timestamp >= "+placeholder, arg)

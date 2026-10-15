@@ -59,6 +59,8 @@ export interface WarpConfig {
 	log_vector_store_namespace: string;
 	semantic_search_threshold: number;
 	semantic_search_limit: number;
+	/** How many requests that matched no topic start a discovery of new topics. */
+	topic_discovery_min_requests: number;
 	vector_store_connected: boolean;
 }
 
@@ -84,6 +86,8 @@ export interface WarpConfigInput {
 	log_vector_store_namespace: string;
 	semantic_search_threshold?: number;
 	semantic_search_limit?: number;
+	/** 10 to 20000. Zero means "use the default"; omitted keeps the stored value. */
+	topic_discovery_min_requests?: number;
 }
 
 /**
@@ -227,4 +231,9 @@ export interface WarpLogIndexStatus {
 	backfill?: WarpBackfillStatus;
 	/** Present when the index is usable and the log store keeps topics. */
 	topics?: WarpTopicHealth;
+	/**
+	 * Whether anything is indexed to seed topics from. Only while the embedding
+	 * model has no topics; absent when the vector store cannot say.
+	 */
+	has_indexed_requests?: boolean;
 }
