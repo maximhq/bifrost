@@ -1153,6 +1153,9 @@ func validateMCPClientConfig(config *schemas.MCPClientConfig) error {
 		if config.OauthConfigID != nil && *config.OauthConfigID != "" {
 			return fmt.Errorf("oauth_config_id must not be set for token_exchange auth type in client '%s'", config.Name)
 		}
+		if err := config.TokenExchange.ValidateProfile(); err != nil {
+			return fmt.Errorf("%w in client '%s'", err, config.Name)
+		}
 	}
 	return nil
 }

@@ -519,3 +519,21 @@ func TestValidateMCPClientConfig_OpenAPI(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateMCPClientConfig_TokenExchangeIDJAG checks the id_jag profile needs
+// Bifrost's client at the upstream authorization server, at config load too.
+func TestValidateMCPClientConfig_TokenExchangeIDJAG(t *testing.T) {
+	cfg := &schemas.MCPClientConfig{
+		ID:               "client-xaa",
+		Name:             "linear",
+		ConnectionType:   schemas.MCPConnectionTypeHTTP,
+		ConnectionString: schemas.NewSecretVar("https://mcp.linear.app/mcp"),
+		AuthType:         schemas.MCPAuthTypeTokenExchange,
+		TokenExchange: &schemas.MCPTokenExchangeConfig{
+			Audience: "https://linear.app", UseIdPCredentials: true, Profile: schemas.TokenExchangeProfileIDJAG,
+		},
+	}
+	require.ErrorContains(t, validateMCPClientConfig(cfg), "resource_client_id")
+	cfg.TokenExchange.ResourceClientID = schemas.NewSecretVar("bifrost-at-linear")
+	require.NoError(t, validateMCPClientConfig(cfg))
+}

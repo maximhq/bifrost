@@ -13,6 +13,7 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -565,6 +566,74 @@ type MCPTokenExchangeConfig struct {
 	// correct for providers with a single tenant-wide token endpoint (Entra,
 	// Auth0).
 	AuthorizationServerURL *string `json:"authorization_server_url,omitempty"`
+
+	Profile               string     `json:"profile,omitempty"`                 // "" (direct) or "id_jag"; see IsIDJAG
+	Resource              string     `json:"resource,omitempty"`                // id_jag: resource indicator sent to the IdP; omitted when empty
+	ResourceTokenEndpoint *string    `json:"resource_token_endpoint,omitempty"` // id_jag: upstream AS token endpoint; default discovered
+	ResourceClientID      *SecretVar `json:"resource_client_id,omitempty"`      // id_jag: Bifrost's client at the upstream AS
+	ResourceClientSecret  *SecretVar `json:"resource_client_secret,omitempty"`  // id_jag: omit for a public client
+}
+
+// Token-exchange profiles (MCPTokenExchangeConfig.Profile).
+const (
+	TokenExchangeProfileDirect = ""
+	TokenExchangeProfileIDJAG  = "id_jag"
+)
+
+// IsIDJAG reports whether the config uses the Cross App Access (ID-JAG)
+// profile. The direct profile has the identity provider issue the upstream
+// token itself. With id_jag the identity provider issues an identity assertion
+// for Audience, which the upstream's own authorization server exchanges for
+// its token with the jwt-bearer grant.
+func (c *MCPTokenExchangeConfig) IsIDJAG() bool {
+	return c != nil && c.Profile == TokenExchangeProfileIDJAG
+}
+
+// ResourceTokenEndpointURL returns the trimmed resource_token_endpoint, or ""
+// when unset.
+func (c *MCPTokenExchangeConfig) ResourceTokenEndpointURL() string {
+	if c == nil || c.ResourceTokenEndpoint == nil {
+		return ""
+	}
+	return strings.TrimSpace(*c.ResourceTokenEndpoint)
+}
+
+// ValidateProfile checks the profile name and the fields the id_jag profile
+// needs. The direct profile's own requirements are validated by callers.
+func (c *MCPTokenExchangeConfig) ValidateProfile() error {
+	if c == nil {
+		return nil
+	}
+	switch c.Profile {
+	case TokenExchangeProfileDirect:
+		return nil
+	case TokenExchangeProfileIDJAG:
+		if strings.TrimSpace(c.ResourceClientID.GetValue()) == "" && !c.ResourceClientID.IsFromSecret() {
+			return fmt.Errorf("token_exchange.resource_client_id is required for the id_jag profile")
+		}
+		if endpoint := c.ResourceTokenEndpointURL(); endpoint != "" && !IsHTTPSOrLoopbackURL(endpoint) {
+			return fmt.Errorf("token_exchange.resource_token_endpoint must be an https URL")
+		}
+		return nil
+	}
+	return fmt.Errorf("token_exchange.profile must be empty or %q", TokenExchangeProfileIDJAG)
+}
+
+// IsHTTPSOrLoopbackURL reports whether raw is an https URL, or plain http on a
+// loopback host for local testing. It checks only the URL: whether the host may
+// be dialed is decided by the OAuth client's private-target guard.
+func IsHTTPSOrLoopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" || u.User != nil {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		return isLoopbackHost(u.Hostname())
+	}
+	return false
 }
 
 // DiffersFrom reports whether resolved's fields differ from c's, comparing
@@ -602,6 +671,11 @@ func (c *MCPTokenExchangeConfig) DiffersFrom(resolved *MCPTokenExchangeConfig) b
 		resolvedURL = *resolved.AuthorizationServerURL
 	}
 	if existingURL != resolvedURL {
+		return true
+	}
+	if c.Profile != resolved.Profile || c.Resource != resolved.Resource ||
+		!c.ResourceClientID.Equals(resolved.ResourceClientID) || !c.ResourceClientSecret.Equals(resolved.ResourceClientSecret) ||
+		c.ResourceTokenEndpointURL() != resolved.ResourceTokenEndpointURL() {
 		return true
 	}
 	existingScopes := slices.Clone(c.Scopes)

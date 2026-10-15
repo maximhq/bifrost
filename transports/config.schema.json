@@ -8736,6 +8736,27 @@
                 "type": "string"
               },
               "description": "Optional scopes to request on the exchanged token. Include 'offline_access' (where the identity provider supports it) so exchanges issue refresh tokens, keeping the retained admin discovery credential self-renewing."
+            },
+            "profile": {
+              "type": "string",
+              "enum": ["", "id_jag"],
+              "description": "Empty (default): the identity provider issues the upstream token directly. 'id_jag': Cross App Access (Okta XAA) — the identity provider issues an ID-JAG for `audience` (the upstream authorization server's issuer) from the caller's SSO ID or refresh token, and the upstream authorization server exchanges it for its own token with the jwt-bearer grant. Users must have signed in to Bifrost through the identity provider."
+            },
+            "resource": {
+              "type": "string",
+              "description": "id_jag only: resource indicator sent to the identity provider. Set it only when the identity provider's connection defines one; Okta rejects a resource it does not expect. Omitted when empty."
+            },
+            "resource_token_endpoint": {
+              "type": "string",
+              "description": "id_jag only: the upstream authorization server's token endpoint. Defaults to the endpoint discovered from the MCP server's protected resource metadata, which must list the jwt-bearer grant."
+            },
+            "resource_client_id": {
+              "type": "string",
+              "description": "id_jag only, required: Bifrost's client ID registered at the upstream authorization server. Can use env. or vault. prefix."
+            },
+            "resource_client_secret": {
+              "type": "string",
+              "description": "id_jag only: secret for resource_client_id; omit for a public client. Can use env. or vault. prefix."
             }
           },
           "required": [
@@ -8761,6 +8782,14 @@
                   "client_id"
                 ]
               }
+            },
+            {
+              "$comment": "The id_jag profile redeems the ID-JAG as a client of the upstream authorization server.",
+              "if": {
+                "properties": { "profile": { "const": "id_jag" } },
+                "required": ["profile"]
+              },
+              "then": { "required": ["resource_client_id"] }
             }
           ],
           "additionalProperties": false
