@@ -692,3 +692,87 @@ func TestTopLevelCacheControlUnsupportedTTL(t *testing.T) {
 		}
 	})
 }
+
+// TestToBedrockChatCompletionRequest_ToolResultCacheControlBecomesSiblingCachePoint — a
+// cache_control on a chat tool message's content block becomes one standalone cachePoint
+// directly after that toolResult. Converse has no cachePoint member inside toolResult content
+// and silently ignores one placed there, so nothing may be nested.
+func TestToBedrockChatCompletionRequest_ToolResultCacheControlBecomesSiblingCachePoint(t *testing.T) {
+	ttl1h, ttl5m := "1h", "5m"
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("weather in paris and berlin?")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							ID:       schemas.Ptr("toolu_paris"),
+							Type:     schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_weather"), Arguments: `{"city":"Paris"}`},
+						},
+						{
+							ID:       schemas.Ptr("toolu_berlin"),
+							Type:     schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_weather"), Arguments: `{"city":"Berlin"}`},
+						},
+					},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_paris")},
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("18C"), CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: &ttl1h}},
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("sunny"), CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral, TTL: &ttl5m}},
+				}},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_berlin")},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("15C")},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToBedrockChatCompletionRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	last := result.Messages[len(result.Messages)-1]
+	if last.Role != BedrockMessageRoleUser {
+		t.Fatalf("expected the tool results in a trailing user message, got role %q", last.Role)
+	}
+	blocks := last.Content
+	if len(blocks) != 3 {
+		t.Fatalf("expected [toolResult, cachePoint, toolResult], got %d blocks: %+v", len(blocks), blocks)
+	}
+	if blocks[0].ToolResult == nil || blocks[0].ToolResult.ToolUseID != "toolu_paris" {
+		t.Fatalf("block 0 must be the paris toolResult, got %+v", blocks[0])
+	}
+	for k, inner := range blocks[0].ToolResult.Content {
+		if inner.CachePoint != nil {
+			t.Errorf("toolResult content[%d] carries a nested cachePoint, which Converse ignores: %+v", k, inner)
+		}
+	}
+	if len(blocks[0].ToolResult.Content) != 2 {
+		t.Errorf("both paris text blocks must survive, got %+v", blocks[0].ToolResult.Content)
+	}
+	if blocks[1].CachePoint == nil {
+		t.Fatalf("expected a cachePoint directly after the marked toolResult, got %+v", blocks[1])
+	}
+	if blocks[1].CachePoint.TTL == nil || *blocks[1].CachePoint.TTL != ttl5m {
+		t.Errorf("one cachePoint carrying the last marker's 5m ttl expected, got %+v", blocks[1].CachePoint.TTL)
+	}
+	if blocks[2].ToolResult == nil || blocks[2].ToolResult.ToolUseID != "toolu_berlin" {
+		t.Fatalf("block 2 must be the unmarked berlin toolResult with no cachePoint after it, got %+v", blocks[2])
+	}
+}

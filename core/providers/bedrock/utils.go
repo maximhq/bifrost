@@ -2238,6 +2238,8 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 
 	for _, msg := range msgs {
 		var toolResultContent []BedrockContentBlock
+		// Converse ignores a cachePoint inside toolResult content, so the last marker trails the block.
+		var cacheControl *schemas.CacheControl
 		if msg.Content.ContentStr != nil {
 			// Bedrock expects JSON to be a parsed object, not a string. The helper
 			// validates, compacts, wraps arrays and primitives, falls back to a text
@@ -2252,11 +2254,8 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 						toolResultContent = append(toolResultContent, BedrockContentBlock{
 							Text: block.Text,
 						})
-						// Cache point must be in a separate block
 						if block.CacheControl != nil {
-							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
-							})
+							cacheControl = block.CacheControl
 						}
 					}
 				case schemas.ChatContentBlockTypeImage:
@@ -2268,11 +2267,8 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 						toolResultContent = append(toolResultContent, BedrockContentBlock{
 							Image: imageSource,
 						})
-						// Cache point must be in a separate block
 						if block.CacheControl != nil {
-							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
-							})
+							cacheControl = block.CacheControl
 						}
 					}
 				}
@@ -2301,6 +2297,11 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 		}
 
 		contentBlocks = append(contentBlocks, toolResultBlock)
+		if cacheControl != nil {
+			contentBlocks = append(contentBlocks, BedrockContentBlock{
+				CachePoint: newBedrockCachePoint(cacheControl.TTL),
+			})
+		}
 	}
 
 	bedrockMsg.Content = contentBlocks
@@ -3844,9 +3845,9 @@ func clampBedrockCachePoints(req *BedrockConverseRequest) int {
 				total++
 			}
 			// Nested tool-result markers count against the same per-request cap — AWS counts
-			// checkpoints across `messages` as a whole, and convertToolMessages emits a CachePoint
-			// inside ToolResult.Content whenever a client puts cache_control on a tool-result
-			// block. Both sibling passes (stripCachePointsFromBedrockRequest,
+			// checkpoints across `messages` as a whole, and injectContentBlockCachePoints (invoke.go) emits
+			// a CachePoint inside ToolResult.Content whenever a client puts cache_control on a block
+			// nested in a tool_result. Both sibling passes (stripCachePointsFromBedrockRequest,
 			// downgradeExtendedCacheTTLInBedrockRequest) already recurse here; missing it would
 			// let a request with 4 direct plus 1 nested marker reach Bedrock at 5 and be rejected
 			// by the very limit this clamp exists to respect.
