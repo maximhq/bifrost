@@ -268356,6 +268356,100 @@
           ]
         }
       ]
+    },
+    {
+      "name": "241. Client tool_use named web_search/web_fetch stays a function_call (#8078 / PR #8079)",
+      "description": "Regression for #8078 / PR #8079. A client (function) tool_use named web_search or web_fetch was converted to a web_search_call / web_fetch_call because the grouped Anthropic converter matched on name only, orphaning its tool_result. Bedrock rejected the replay with 'The number of toolResult blocks ... exceeds the number of toolUse blocks of previous turn'. Each case replays an assistant turn with client tool_use blocks named web_search and web_fetch plus the matching tool_results through /anthropic/v1/messages and expects a successful reply.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /anthropic/v1/messages replay of client tool_use named web_search/web_fetch keeps tool_result paired - #8078",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Client web_search/web_fetch tool_use replay is not orphaned - #8078', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'tool_result orphaned: client tool_use was converted to a server tool call').to.not.include('exceeds the number of toolUse blocks');",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.content, 'expected a content array').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_tokens\":64,\"tools\":[{\"name\":\"web_search\",\"description\":\"Client-defined search function\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}},{\"name\":\"web_fetch\",\"description\":\"Client-defined fetch function\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}}}}],\"messages\":[{\"role\":\"user\",\"content\":\"Search for bifrost and fetch https://example.com, then summarize in one word.\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_client_ws\",\"name\":\"web_search\",\"input\":{\"query\":\"bifrost\"}},{\"type\":\"tool_use\",\"id\":\"toolu_client_wf\",\"name\":\"web_fetch\",\"input\":{\"url\":\"https://example.com\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_client_ws\",\"content\":\"Bifrost is an AI gateway.\"},{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_client_wf\",\"content\":\"Example Domain\"}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-5 /anthropic/v1/messages replay of client tool_use named web_search/web_fetch keeps tool_result paired - #8078",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Client web_search/web_fetch tool_use replay is not orphaned - #8078', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(body, 'tool_result orphaned: client tool_use was converted to a server tool call').to.not.include('exceeds the number of toolUse blocks');",
+                  "  pm.expect(pm.response.code, 'replay failed: ' + body).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.content, 'expected a content array').to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-5\",\"max_tokens\":64,\"tools\":[{\"name\":\"web_search\",\"description\":\"Client-defined search function\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}},{\"name\":\"web_fetch\",\"description\":\"Client-defined fetch function\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\"}}}}],\"messages\":[{\"role\":\"user\",\"content\":\"Search for bifrost and fetch https://example.com, then summarize in one word.\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_client_ws\",\"name\":\"web_search\",\"input\":{\"query\":\"bifrost\"}},{\"type\":\"tool_use\",\"id\":\"toolu_client_wf\",\"name\":\"web_fetch\",\"input\":{\"url\":\"https://example.com\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_client_ws\",\"content\":\"Bifrost is an AI gateway.\"},{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_client_wf\",\"content\":\"Example Domain\"}]}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
