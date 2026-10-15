@@ -1878,6 +1878,8 @@ components:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputText"
     DecisionInputImage:
       $ref: "./schemas/inference/decisions.yaml#/DecisionInputImage"
+    DecisionInputImageAsset:
+      $ref: "./schemas/inference/decisions.yaml#/DecisionInputImageAsset"
     DecisionMapFormRequest:
       $ref: "./schemas/inference/decisions.yaml#/DecisionMapFormRequest"
     DecisionMapFormResponse:

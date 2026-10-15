@@ -2221,7 +2221,7 @@
       "post": {
         "operationId": "createDecision",
         "summary": "Evaluate a decision",
-        "description": "Asks a list of questions about some input and returns one typed answer\nper question, in order, with per-answer confidence and probabilities.\nServed by any decision model: Typesafe's jev models (and Laya, Nimble,\nand Clef), or any chat model through structured output.\n\nThe map form (a `state` plus questions keyed by name) is deprecated but\nstill served; a map-form request is answered in the map form.\n",
+        "description": "Asks a list of questions about some input and returns one typed answer\nper question, in order, with per-answer confidence and probabilities.\nServed by any decision model: Typesafe's jev models (and Laya, Nimble,\nand Clef), or any chat model through structured output.\n\nThe map form (a `state` plus questions keyed by name) is deprecated but\nstill served; a map-form request is answered in the map form.\n\nImages sent by reference to Typesafe can also come as a multipart request:\nthe JSON in a part named `request`, and each image in its own file part,\nnamed by the image part's `name`.\n",
         "tags": [
           "Decisions"
         ],
@@ -2238,6 +2238,25 @@
                     "$ref": "#/components/schemas/DecisionMapFormRequest"
                   }
                 ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "request"
+                ],
+                "properties": {
+                  "request": {
+                    "type": "string",
+                    "description": "The JSON request, as for `application/json` (not the map form), with each image part's `name` naming a file part of this request."
+                  }
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "An image file part, named by exactly one image part's `name`"
+                }
               }
             }
           }
@@ -28230,7 +28249,7 @@
       "post": {
         "operationId": "typesafeSystemOne",
         "summary": "Evaluate state (Typesafe format)",
-        "description": "Evaluates state against a map of named questions using Typesafe's native\nSystem One API. The request body matches Typesafe's native format; question\nidentifiers become result field names.\n",
+        "description": "Evaluates state against a map of named questions using Typesafe's native\nSystem One API. The request body matches Typesafe's native format; question\nidentifiers become result field names. Images are listed in `assets` and placed\nby reference; send them base64 in JSON, or as file parts of a multipart request\nwhose `request` part holds the JSON. Bifrost adds the\n`TypeSafe-Danger-Zone-Images` header Typesafe requires for images and box questions.\n",
         "tags": [
           "Typesafe Integration"
         ],
@@ -28264,7 +28283,39 @@
                   },
                   "model": {
                     "type": "string",
-                    "description": "Typesafe model identifier (e.g. `jev-1.13.0`, `jev-latest`)."
+                    "description": "Typesafe model identifier (e.g. `jev-1.14.0`, `jev-latest`)."
+                  },
+                  "assets": {
+                    "type": "object",
+                    "description": "Images keyed by the reference string written wherever each belongs in the state, instructions, or criteria.",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "image"
+                          ]
+                        },
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "png",
+                            "jpg",
+                            "jpeg"
+                          ],
+                          "description": "Required with `data_base64`"
+                        },
+                        "data_base64": {
+                          "type": "string",
+                          "description": "The image file, base64-encoded, without a `data:` prefix"
+                        },
+                        "part": {
+                          "type": "string",
+                          "description": "In a multipart request, the name of the file part holding the image"
+                        }
+                      }
+                    }
                   },
                   "questions": {
                     "type": "object",
@@ -28282,9 +28333,10 @@
                           "enum": [
                             "noul",
                             "choice",
-                            "score"
+                            "score",
+                            "box"
                           ],
-                          "description": "Question type. `noul` returns a probability from 0 to 1, `choice` a selection with probabilities, `score` a probability-weighted rubric value."
+                          "description": "Question type. `noul` returns a probability from 0 to 1, `choice` a selection with probabilities, `score` a probability-weighted rubric value, `box` the edges of a box around the instructions' subject in an image (Jev 1.14)."
                         },
                         "instructions": {
                           "description": "Question instructions. A string, or structured data.",
@@ -28324,6 +28376,25 @@
                   }
                 }
               }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "request"
+                ],
+                "properties": {
+                  "request": {
+                    "type": "string",
+                    "description": "The JSON request, as for `application/json`, with each multipart asset's `part` naming a file part of this request."
+                  }
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "An image file part, named by exactly one asset's `part`"
+                }
+              }
             }
           }
         },
@@ -28357,7 +28428,8 @@
                             "enum": [
                               "noul",
                               "choice",
-                              "score"
+                              "score",
+                              "box"
                             ]
                           },
                           "noul": {
@@ -28371,6 +28443,30 @@
                           "score": {
                             "type": "number",
                             "description": "Probability-weighted value (score answers)"
+                          },
+                          "box": {
+                            "type": "object",
+                            "description": "Box answers. Edges as fractions from 0 to 1 of the image, from its top-left",
+                            "required": [
+                              "top",
+                              "bottom",
+                              "left",
+                              "right"
+                            ],
+                            "properties": {
+                              "top": {
+                                "type": "number"
+                              },
+                              "bottom": {
+                                "type": "number"
+                              },
+                              "left": {
+                                "type": "number"
+                              },
+                              "right": {
+                                "type": "number"
+                              }
+                            }
                           },
                           "probabilities": {
                             "type": "object",
@@ -115592,9 +115688,10 @@
             "enum": [
               "predicate",
               "choice",
-              "score"
+              "score",
+              "box"
             ],
-            "description": "How the question is decided. `predicate` yields the probability a condition is true (Typesafe's `noul`), `choice` one of the choices, `score` a probability-weighted level index that may fall between levels."
+            "description": "How the question is decided. `predicate` yields the probability a condition is true (Typesafe's `noul`), `choice` one of the choices, `score` a probability-weighted level index that may fall between levels, `box` the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14)."
           },
           "name": {
             "type": "string",
@@ -115712,6 +115809,30 @@
             "type": "number",
             "description": "Score answers. Probability-weighted level index"
           },
+          "box": {
+            "type": "object",
+            "description": "Box answers. Each edge is a fraction from 0 to 1 of the image's height (`top`, `bottom`) or width (`left`, `right`), measured from its top-left",
+            "required": [
+              "top",
+              "bottom",
+              "left",
+              "right"
+            ],
+            "properties": {
+              "top": {
+                "type": "number"
+              },
+              "bottom": {
+                "type": "number"
+              },
+              "left": {
+                "type": "number"
+              },
+              "right": {
+                "type": "number"
+              }
+            }
+          },
           "probabilities": {
             "type": "array",
             "description": "Distribution over choices or levels, in question order, when supplied",
@@ -115820,6 +115941,9 @@
           },
           {
             "$ref": "#/components/schemas/DecisionInputImage"
+          },
+          {
+            "$ref": "#/components/schemas/DecisionInputImageAsset"
           }
         ]
       },
@@ -115837,12 +115961,26 @@
             ]
           },
           "text": {
-            "type": "string"
+            "description": "A string, or structured data that Typesafe-based models read as is and OpenAI receives as JSON text",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "array",
+                "items": {}
+              }
+            ]
           }
         }
       },
       "DecisionInputImage": {
         "type": "object",
+        "description": "An inline image, read as evidence",
         "required": [
           "type",
           "image_url"
@@ -115867,6 +116005,47 @@
               "original"
             ],
             "description": "Image detail level, forwarded to models that read images (OpenAI's defaults to `auto`)"
+          }
+        }
+      },
+      "DecisionInputImageAsset": {
+        "type": "object",
+        "description": "Typesafe only. An image sent by reference, as one of Typesafe's `assets`, placed wherever its ID is written in the input, instructions, or criteria instead of as evidence itself. Other providers reject it.",
+        "required": [
+          "type",
+          "id"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "data"
+            ]
+          },
+          {
+            "required": [
+              "name"
+            ]
+          }
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "input_image"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "The reference written where the image belongs"
+          },
+          "data": {
+            "type": "string",
+            "format": "byte",
+            "description": "The image file, base64-encoded, without a `data:` prefix; its format is read from the bytes"
+          },
+          "name": {
+            "type": "string",
+            "description": "In a multipart request, the name of the file part that holds the image. A JSON request cannot use it."
           }
         }
       },
@@ -115966,9 +116145,10 @@
             "enum": [
               "noul",
               "choice",
-              "score"
+              "score",
+              "box"
             ],
-            "description": "How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions."
+            "description": "How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions, `box` yields the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14)."
           },
           "instructions": {
             "description": "Instructions for this question. A string, or structured data preserved losslessly.",
@@ -115987,7 +116167,7 @@
             ]
           },
           "criteria": {
-            "description": "Applicable criteria. Optional `true`/`false` descriptions for `noul`; a\nrequired map of option to description for `choice` (at most 255 options);\na required ordered array of 2-10 level descriptions for `score`.\n",
+            "description": "Applicable criteria. Optional `true`/`false` descriptions for `noul`; a\nrequired map of option to description for `choice` (at most 255 options);\na required ordered array of 2-10 level descriptions for `score`; none\nfor `box`.\n",
             "oneOf": [
               {
                 "type": "object",
@@ -116017,18 +116197,43 @@
             "enum": [
               "noul",
               "choice",
-              "score"
+              "score",
+              "box"
             ],
             "description": "The question's decision kind"
           },
           "value": {
-            "description": "The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`.",
+            "description": "The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`, the box's edges for `box`.",
             "oneOf": [
               {
                 "type": "number"
               },
               {
                 "type": "string"
+              },
+              {
+                "type": "object",
+                "description": "Box answers. Each edge is a fraction from 0 to 1 of the image's height (`top`, `bottom`) or width (`left`, `right`), measured from its top-left",
+                "required": [
+                  "top",
+                  "bottom",
+                  "left",
+                  "right"
+                ],
+                "properties": {
+                  "top": {
+                    "type": "number"
+                  },
+                  "bottom": {
+                    "type": "number"
+                  },
+                  "left": {
+                    "type": "number"
+                  },
+                  "right": {
+                    "type": "number"
+                  }
+                }
               }
             ]
           },
