@@ -28428,6 +28428,12 @@
                           "box": {
                             "type": "object",
                             "description": "Box answers. Edges as fractions from 0 to 1 of the image, from its top-left",
+                            "required": [
+                              "top",
+                              "bottom",
+                              "left",
+                              "right"
+                            ],
                             "properties": {
                               "top": {
                                 "type": "number"
@@ -115916,6 +115922,9 @@
           },
           {
             "$ref": "#/components/schemas/DecisionInputImage"
+          },
+          {
+            "$ref": "#/components/schemas/DecisionInputImageAsset"
           }
         ]
       },
@@ -115952,8 +115961,10 @@
       },
       "DecisionInputImage": {
         "type": "object",
+        "description": "An inline image, read as evidence",
         "required": [
-          "type"
+          "type",
+          "image_url"
         ],
         "properties": {
           "type": {
@@ -115964,7 +115975,7 @@
           },
           "image_url": {
             "type": "string",
-            "description": "A base64 data URL or an HTTP(S) URL. Required unless the part has an `id`"
+            "description": "A base64 data URL or an HTTP(S) URL"
           },
           "detail": {
             "type": "string",
@@ -115975,15 +115986,32 @@
               "original"
             ],
             "description": "Image detail level, forwarded to models that read images (OpenAI's defaults to `auto`)"
+          }
+        }
+      },
+      "DecisionInputImageAsset": {
+        "type": "object",
+        "description": "Typesafe only. An image sent by reference, as one of Typesafe's `assets`, placed wherever its ID is written in the input, instructions, or criteria instead of as evidence itself. Other providers reject it.",
+        "required": [
+          "type",
+          "id",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "input_image"
+            ]
           },
           "id": {
             "type": "string",
-            "description": "Typesafe only. Sends the image by reference, as one of Typesafe's `assets`, placed wherever this ID is written in the input, instructions, or criteria instead of as evidence itself. The file goes in `data`. Other providers do not read images sent by reference yet."
+            "description": "The reference written where the image belongs"
           },
           "data": {
             "type": "string",
             "format": "byte",
-            "description": "With `id`. The image file, base64-encoded, without a `data:` prefix; its format is read from the bytes"
+            "description": "The image file, base64-encoded, without a `data:` prefix; its format is read from the bytes"
           }
         }
       },

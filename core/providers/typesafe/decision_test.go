@@ -2176,14 +2176,14 @@ func TestTypesafeImagesHeaderAndMultipart(t *testing.T) {
 		contentType string
 		body        []byte
 	}
-	var last sent
+	requests := make(chan sent, 1)
 	_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, body []byte) {
-		last = sent{header: r.Header.Get("TypeSafe-Danger-Zone-Images"), contentType: r.Header.Get("Content-Type"), body: body}
+		requests <- sent{header: r.Header.Get("TypeSafe-Danger-Zone-Images"), contentType: r.Header.Get("Content-Type"), body: body}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"model":"jev-1.14.0","answers":{"q":{"type":"noul","noul":0.5},"mug":{"type":"box","box":{"top":0.1,"bottom":0.5,"left":0.2,"right":0.6},"confidence":0.9}}}`))
 	})
-	decide := func(native string) {
+	decide := func(native string) sent {
 		t.Helper()
 		var req TypesafeDecisionRequest
 		if err := sonic.Unmarshal([]byte(native), &req); err != nil {
@@ -2200,24 +2200,25 @@ func TestTypesafeImagesHeaderAndMultipart(t *testing.T) {
 		if _, bifrostErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), fixtureKey(), shared); bifrostErr != nil {
 			t.Fatalf("decision: %v", bifrostErr.Error)
 		}
+		return <-requests
 	}
 
-	decide(`{"model":"jev-latest","state":"text","questions":{"q":{"type":"noul","instructions":"x"}}}`)
+	last := decide(`{"model":"jev-latest","state":"text","questions":{"q":{"type":"noul","instructions":"x"}}}`)
 	if last.header != "" || !strings.HasPrefix(last.contentType, "application/json") {
 		t.Errorf("text request: header %q, content type %q", last.header, last.contentType)
 	}
 
-	decide(`{"model":"jev-preview","state":"text","questions":{"mug":{"type":"box","instructions":"the mug"}}}`)
+	last = decide(`{"model":"jev-preview","state":"text","questions":{"mug":{"type":"box","instructions":"the mug"}}}`)
 	if last.header != "true" {
 		t.Errorf("box request: header %q, want true", last.header)
 	}
 
-	decide(`{"model":"jev-latest","state":"r-cam","assets":{"r-cam":{"format":"png","data_base64":"iVBORw0KGgo="}},"questions":{"q":{"type":"noul","instructions":"x"}}}`)
+	last = decide(`{"model":"jev-latest","state":"r-cam","assets":{"r-cam":{"format":"png","data_base64":"iVBORw0KGgo="}},"questions":{"q":{"type":"noul","instructions":"x"}}}`)
 	if last.header != "true" || !strings.HasPrefix(last.contentType, "application/json") || !strings.Contains(string(last.body), `"assets":{"r-cam":{"type":"image","format":"png","data_base64":"iVBORw0KGgo="}}`) {
 		t.Errorf("base64 request: header %q, content type %q, body %s", last.header, last.contentType, last.body)
 	}
 
-	decide(`{"model":"jev-latest","state":"r-cam","assets":{"r-cam":{"type":"image","part":"door"}},"questions":{"q":{"type":"noul","instructions":"x"}}}`)
+	last = decide(`{"model":"jev-latest","state":"r-cam","assets":{"r-cam":{"type":"image","part":"door"}},"questions":{"q":{"type":"noul","instructions":"x"}}}`)
 	if last.header != "true" {
 		t.Errorf("multipart request: header %q, want true", last.header)
 	}
@@ -2289,9 +2290,9 @@ func TestTypesafeImagesHeaderOverride(t *testing.T) {
 		"unsupported": {map[string]bool{"typesafe-danger-zone-images": false}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			var got string
+			headers := make(chan string, 1)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				got = r.Header.Get("TypeSafe-Danger-Zone-Images")
+				headers <- r.Header.Get("TypeSafe-Danger-Zone-Images")
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"model":"jev-1.14.0","answers":{"mug":{"type":"box","box":{"top":0.1,"bottom":0.5,"left":0.2,"right":0.6},"confidence":0.9}}}`))
 			}))
@@ -2307,9 +2308,30 @@ func TestTypesafeImagesHeaderOverride(t *testing.T) {
 			if _, bifrostErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), fixtureKey(), request); bifrostErr != nil {
 				t.Fatalf("decision: %v", bifrostErr.Error)
 			}
-			if got != tc.want {
+			if got := <-headers; got != tc.want {
 				t.Errorf("TypeSafe-Danger-Zone-Images = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestTypesafeMultipartBodyPartNames pins that a file part's name reaches Typesafe
+// exactly as the asset's part names it, including characters Go and MIME quote
+// differently, such as a newline or a quote.
+func TestTypesafeMultipartBodyPartNames(t *testing.T) {
+	for _, name := range []string{"door", "door photo", `door"photo`, "door\nphoto", "café"} {
+		body, contentType, err := typesafeMultipartBody([]byte(`{}`), []typesafeFilePart{{name: name, contentType: "image/png", data: []byte("x")}})
+		if err != nil {
+			t.Fatalf("%q: %v", name, err)
+		}
+		_, params, _ := mime.ParseMediaType(contentType)
+		reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+		if _, err := reader.NextPart(); err != nil {
+			t.Fatalf("%q: request part: %v", name, err)
+		}
+		file, err := reader.NextPart()
+		if err != nil || file.FormName() != name {
+			t.Errorf("part name = %q (%v), want %q", file.FormName(), err, name)
+		}
 	}
 }

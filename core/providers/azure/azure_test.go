@@ -490,9 +490,10 @@ func TestAzureDecisionRejectsImageInputLocally(t *testing.T) {
 // Typesafe's assets rather than being refused locally, and that Azure's own verdict
 // comes back: Microsoft-Decision-1 rejects the field today.
 func TestAzureDecisionForwardsAssets(t *testing.T) {
-	var body []byte
+	bodies := make(chan []byte, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ = io.ReadAll(r.Body)
+		body, _ := io.ReadAll(r.Body)
+		bodies <- body
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, `{"error":{"code":"unrecognized_request_argument","message":"Unrecognized request argument supplied: assets"}}`)
@@ -508,7 +509,7 @@ func TestAzureDecisionForwardsAssets(t *testing.T) {
 	}}})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	_, bifrostErr := newAzureDecisionProvider(t).Decision(ctx, newAzureDecisionKey(server.URL), request)
-	if !strings.Contains(string(body), `"assets":{"r-a":{"type":"image","format":"png"`) {
+	if body := <-bodies; !strings.Contains(string(body), `"assets":{"r-a":{"type":"image","format":"png"`) {
 		t.Errorf("body sent to Azure = %s, want the asset", body)
 	}
 	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Message != "Unrecognized request argument supplied: assets" {

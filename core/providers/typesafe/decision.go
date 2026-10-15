@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
@@ -1000,8 +1001,13 @@ func typesafeMultipartBody(jsonBody []byte, files []typesafeFilePart) ([]byte, s
 		return nil, "", err
 	}
 	for _, file := range files {
+		// MIME quoting, not Go's, so any name the client sent parses back unchanged.
+		disposition := mime.FormatMediaType("form-data", map[string]string{"name": file.name, "filename": file.name})
+		if disposition == "" {
+			return nil, "", fmt.Errorf("multipart part name %q cannot be encoded", file.name)
+		}
 		header := textproto.MIMEHeader{}
-		header.Set("Content-Disposition", fmt.Sprintf(`form-data; name=%q; filename=%q`, file.name, file.name))
+		header.Set("Content-Disposition", disposition)
 		header.Set("Content-Type", file.contentType)
 		part, err := writer.CreatePart(header)
 		if err != nil {

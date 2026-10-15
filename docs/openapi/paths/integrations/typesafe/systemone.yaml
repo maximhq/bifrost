@@ -138,6 +138,7 @@ systemone:
                       box:
                         type: object
                         description: Box answers. Edges as fractions from 0 to 1 of the image, from its top-left
+                        required: [top, bottom, left, right]
                         properties:
                           top:
                             type: number
