@@ -405,7 +405,15 @@
               "enterprise/secret-management",
               "enterprise/log-exports",
               "enterprise/clustering",
-              "enterprise/adaptive-load-balancing",
+              {
+                "group": "Adaptive Routing",
+                "icon": "brain",
+                "pages": [
+                  "enterprise/adaptive-routing/overview",
+                  "enterprise/adaptive-routing/how-it-works",
+                  "enterprise/adaptive-routing/incidents-and-monitoring"
+                ]
+              },
               "enterprise/circuit-breaker",
               "enterprise/invpc-deployments"
             ]
@@ -2592,7 +2600,11 @@
     },
     {
       "source": "/enterprise/intelligent-load-balancing",
-      "destination": "/enterprise/adaptive-load-balancing"
+      "destination": "/enterprise/adaptive-routing/overview"
+    },
+    {
+      "source": "/enterprise/adaptive-load-balancing",
+      "destination": "/enterprise/adaptive-routing/overview"
     },
     {
       "source": "/enterprise/setting-up-okta",

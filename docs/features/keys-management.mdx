@@ -29,7 +29,7 @@ Random selection ensures statistical distribution over time
 4. If selected key fails, automatic fallback to next available key
 
 <Note>
-In Bifrost Enterprise, [Adaptive Load Balancing](/enterprise/adaptive-load-balancing) replaces the static weights with measured ones while key selection is on. Either way, it holds a key the provider refused until one request checks it again, and editing a key releases every hold on it, since the provider's answers applied to the key as it was. See [Held Keys](/enterprise/adaptive-load-balancing#held-keys).
+In Bifrost Enterprise, [Adaptive Routing](/enterprise/adaptive-routing/overview) replaces the static weights with measured ones while key selection is on. Either way, it holds a key the provider refused until one request checks it again (sooner when every key is held), and editing a key releases every hold on it, since the provider's answers applied to the key as it was. See [Held keys](/enterprise/adaptive-routing/how-it-works#held-keys).
 </Note>
 
 ## Model Whitelisting and Filtering

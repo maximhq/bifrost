@@ -1105,7 +1105,7 @@ flowchart TB
    - **Error rate** — the primary, time-decayed signal
    - **Token-aware latency** — secondary, comparing the provider both to its peers for the model and to its own recent baseline
 4. **Smooth selection**: Concentrate traffic on the best-scoring providers while keeping a small exploration share for the rest, so a recovered provider keeps getting re-probed. A provider counts as failed for a model only when every configured key that can serve the model is failed; a key that has not been tried yet keeps it in rotation
-5. **Checking a held provider**: When the provider refused every key and one of them is due a check, one request is sent to that provider first with the healthy providers behind it as fallbacks (see [Held Keys](/enterprise/adaptive-load-balancing#held-keys))
+5. **Checking a held provider**: When the provider refused every key and one of them is due a check, one request is sent to that provider first with the healthy providers behind it as fallbacks (see [Held keys](/enterprise/adaptive-routing/how-it-works#held-keys))
 6. **Fallbacks created**: Remaining healthy providers sorted by performance score (descending) are appended as fallbacks after any the request already carries, deduplicated. With the prune toggle on, circuit-broken configured fallbacks are removed first and never re-added
 
 ### Level 2: Route (Key Selection)
@@ -1123,7 +1123,7 @@ flowchart TB
    - Current state (Healthy, Degraded, Failed, Recovering)
 4. **Smooth weighted selection**: Concentrate traffic on higher-weight keys, with a small dedicated probe budget reserved for recovering keys so they can prove recovery
 5. **Circuit breaker**: Skip keys with zero weight (TPM hits, repeated failures)
-6. **Held keys**: Skip keys the provider refused (rejected credential, exhausted quota, no model access, retired model, blocked region, rate limit) until their wait is over, then let one request through to check each. When every key is held the request is sent anyway. See [Held Keys](/enterprise/adaptive-load-balancing#held-keys)
+6. **Held keys**: Skip keys the provider refused (rejected credential, exhausted quota, no model access, retired model, blocked region, rate limit) until their wait is over, then let one request through to check each. When every key is held the request is sent anyway. See [Held keys](/enterprise/adaptive-routing/how-it-works#held-keys)
 
 ### Scoring
 
@@ -1190,8 +1190,8 @@ Monitor load balancing performance in real-time:
 
 <Frame>
   <img
-    src="/media/adaptive-load-balancing/ui-load-balancing-dashboard.png"
-    alt="Adaptive Load Balancing Dashboard"
+    src="/media/adaptive-routing/ui-dashboard.png"
+    alt="The Adaptive Routing dashboard with its figures and the Health over time timeline"
   />
 </Frame>
 
@@ -1203,7 +1203,7 @@ The dashboard shows:
 - Actual vs expected traffic distribution
 
 <Note>
-  **Scope & tuning**: Adaptive load balancing operates **per node** (each node routes on its own observed metrics; of the metric signals, only rate-limit/TPM backoffs are shared across nodes, and only within a region, while [held keys](/enterprise/adaptive-load-balancing#held-keys) are shared with every node) and adapts on a **~5-second cycle** — distinct from per-request fallback, which is immediate. Both levels can be toggled independently, and the scoring parameters ship pre-tuned. See [Adaptive Load Balancing](/enterprise/adaptive-load-balancing) for configuration and limitations.
+  **Scope & tuning**: Adaptive routing scores providers and keys **per node**, from each node's own traffic. Only [held keys](/enterprise/adaptive-routing/how-it-works#held-keys) are shared with every node. Health is recalculated every few seconds, while per-request retries and fallbacks act at once. Both levels can be turned on or off separately, and the scoring ships pre-tuned. See [Adaptive Routing](/enterprise/adaptive-routing/overview) for settings and limits.
 </Note>
 
 ---
@@ -1683,12 +1683,12 @@ For complete documentation, see [Routing Rules Documentation](/providers/routing
     conditions
   </Card>
   <Card
-    title="Adaptive Load Balancing"
+    title="Adaptive Routing"
     icon="brain"
-    href="/enterprise/adaptive-load-balancing"
+    href="/enterprise/adaptive-routing/overview"
   >
-    Technical implementation details: scoring algorithms, weight calculations,
-    and performance characteristics
+    How provider and key health drive routing, held keys, and the dashboard
+    and incidents
   </Card>
   <Card
     title="Virtual Keys"
