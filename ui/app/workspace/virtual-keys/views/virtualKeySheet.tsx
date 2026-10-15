@@ -1,3 +1,5 @@
+import { CalendarAlignmentNotice } from "@/components/calendarAlignmentNotice";
+import { calendarWindowDurations, isMultiUnitDuration } from "@/lib/constants/governance";
 import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
 import { MCPClientConfigsEditor } from "@/components/mcp/mcpClientConfigsEditor";
@@ -770,13 +772,23 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	const hasAnyAlignableBudget =
 		watchedBudgets &&
 		watchedBudgets.length > 0 &&
-		watchedBudgets.some((b) => b.max_limit !== undefined && b.max_limit !== null && supportsCalendarAlignment(b.reset_duration || "1M"));
+		watchedBudgets.some(
+			(b) =>
+				b.max_limit !== undefined &&
+				b.max_limit !== null &&
+				(supportsCalendarAlignment(b.reset_duration || "1M") || isMultiUnitDuration(b.reset_duration || "1M")),
+		);
 	const hasAnyAlignableRateLimit =
-		(watchedTokenMaxLimit !== undefined && watchedTokenMaxLimit !== null && supportsCalendarAlignment(watchedTokenResetDuration || "1h")) ||
+		(watchedTokenMaxLimit !== undefined &&
+			watchedTokenMaxLimit !== null &&
+			(supportsCalendarAlignment(watchedTokenResetDuration || "1h") || isMultiUnitDuration(watchedTokenResetDuration || "1h"))) ||
 		(watchedRequestMaxLimit !== undefined &&
 			watchedRequestMaxLimit !== null &&
-			supportsCalendarAlignment(watchedRequestResetDuration || "1h"));
-	const showCalendarAlignToggle = hasAnyAlignableBudget || hasAnyAlignableRateLimit;
+			(supportsCalendarAlignment(watchedRequestResetDuration || "1h") || isMultiUnitDuration(watchedRequestResetDuration || "1h")));
+	const showCalendarAlignToggle =
+		hasAnyAlignableBudget ||
+		hasAnyAlignableRateLimit ||
+		calendarWindowDurations(providerConfigs).some((duration) => supportsCalendarAlignment(duration) || isMultiUnitDuration(duration));
 
 	// Handle adding a new MCP client configuration
 	const handleAddMCPClient = (mcpClientName: string) => {
@@ -1741,6 +1753,23 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 												/>
 											</div>
 											{/* Calendar alignment: VK-wide setting that applies to both budgets and rate limits */}
+											<CalendarAlignmentNotice
+												enabled={watchedBudgetCalendarAligned}
+												durations={[
+													...calendarWindowDurations([
+														{
+															budgets: watchedBudgets,
+															rate_limit: {
+																token_max_limit: watchedTokenMaxLimit,
+																token_reset_duration: watchedTokenResetDuration,
+																request_max_limit: watchedRequestMaxLimit,
+																request_reset_duration: watchedRequestResetDuration,
+															},
+														},
+														...providerConfigs,
+													]),
+												]}
+											/>
 											{showCalendarAlignToggle && (
 												<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
 													<div className="space-y-0.5">
@@ -1749,7 +1778,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 														</Label>
 														<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
 															Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation
-															date. Quarterly budgets always align to fiscal quarter starts. Applies to durations of a day or longer.
+															date. Single-unit day, week, month, quarter and year windows align to calendar boundaries. Other durations
+															remain rolling.
 														</p>
 													</div>
 													<Switch

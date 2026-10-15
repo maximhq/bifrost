@@ -945,7 +945,7 @@ func TestClickHouseDeleteLogsBatchIsSingleLightweightMutation(t *testing.T) {
 }
 
 // TestClickHouseFlushIsLightweightAndSkipsWhenEmpty covers the minute sweep
-// from plugins/logging: Flush and FlushMCPToolLogs must use lightweight
+// from plugins/logging: LLM, MCP and A2A cleanup must use lightweight
 // deletes and must not issue any mutation when nothing is left to flush.
 func TestClickHouseFlushIsLightweightAndSkipsWhenEmpty(t *testing.T) {
 	store := trySetupClickHouseStore(t)
@@ -958,14 +958,28 @@ func TestClickHouseFlushIsLightweightAndSkipsWhenEmpty(t *testing.T) {
 	require.NoError(t, store.CreateIfNotExists(ctx, stuck))
 	require.NoError(t, store.CreateIfNotExists(ctx, done))
 	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, []*MCPToolLog{chTestMCPToolLog("ch-flush-mcp", old)}))
+	agents := []*AgentLog{
+		{ID: "ch-flush-agent", Timestamp: old, CreatedAt: old, Status: "processing"},
+		{ID: "ch-flush-agent-done", Timestamp: old, CreatedAt: old, Status: "success"},
+		{ID: "ch-flush-agent-fresh", Timestamp: time.Now().UTC(), CreatedAt: time.Now().UTC(), Status: "processing"},
+	}
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, agents)))
 
 	logsBefore := chMutationIDs(t, store.db, "logs")
 	mcpBefore := chMutationIDs(t, store.db, "mcp_tool_logs")
+	agentBefore := chMutationIDs(t, store.db, "agent_logs")
 	since := time.Now().UTC().Add(-30 * time.Minute)
 	require.NoError(t, store.Flush(ctx, since))
 	require.NoError(t, store.FlushMCPToolLogs(ctx, since))
+	require.NoError(t, store.FlushAgentLogs(ctx, since))
+	_, err := store.FindAgentLog(ctx, "ch-flush-agent")
+	assert.ErrorIs(t, err, ErrNotFound)
+	for _, id := range []string{"ch-flush-agent-done", "ch-flush-agent-fresh"} {
+		_, err := store.FindAgentLog(ctx, id)
+		assert.NoError(t, err, "completed and fresh A2A rows must survive")
+	}
 
-	_, err := store.FindByID(ctx, "ch-flush-stuck")
+	_, err = store.FindByID(ctx, "ch-flush-stuck")
 	assert.ErrorIs(t, err, ErrNotFound, "stale processing row must be flushed")
 	_, err = store.FindByID(ctx, "ch-flush-done")
 	assert.NoError(t, err, "completed rows must survive the flush")
@@ -978,15 +992,21 @@ func TestClickHouseFlushIsLightweightAndSkipsWhenEmpty(t *testing.T) {
 	mcpCmds := chNewMutationCommands(t, store.db, "mcp_tool_logs", mcpBefore)
 	require.Len(t, mcpCmds, 1, "mcp_tool_logs: one flush must issue exactly one mutation, got %v", mcpCmds)
 	assertLightweightMutations(t, "mcp_tool_logs", mcpCmds)
+	agentCmds := chNewMutationCommands(t, store.db, "agent_logs", agentBefore)
+	require.Len(t, agentCmds, 1)
+	assertLightweightMutations(t, "agent_logs", agentCmds)
 
 	// Nothing left to flush: the once-a-minute sweep must not touch the
 	// tables at all (the issue counted ~1,440 mutations per table per day).
 	logsBefore = chMutationIDs(t, store.db, "logs")
 	mcpBefore = chMutationIDs(t, store.db, "mcp_tool_logs")
+	agentBefore = chMutationIDs(t, store.db, "agent_logs")
 	require.NoError(t, store.Flush(ctx, since))
 	require.NoError(t, store.FlushMCPToolLogs(ctx, since))
+	require.NoError(t, store.FlushAgentLogs(ctx, since))
 	assert.Empty(t, chNewMutationCommands(t, store.db, "logs", logsBefore), "empty flush must not issue a mutation")
 	assert.Empty(t, chNewMutationCommands(t, store.db, "mcp_tool_logs", mcpBefore), "empty flush must not issue a mutation")
+	assert.Empty(t, chNewMutationCommands(t, store.db, "agent_logs", agentBefore), "empty A2A flush must not issue a mutation")
 }
 
 // TestClickHouseFlushSkipsSupersededProcessingRow: a log created as processing
