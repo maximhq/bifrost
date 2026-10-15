@@ -5730,7 +5730,6 @@ func migrationAddAgentRawPayloadColumns(ctx context.Context, db *gorm.DB, logger
 	return m.Migrate()
 }
 
-<<<<<<< HEAD
 // migrationAddMatViewRefreshStateTable creates matview_refresh_state, the
 // cluster-wide record of when each materialized view last refreshed successfully
 // (see matViewRefreshStateDDL). Materialized views exist only on Postgres, so on
@@ -5760,7 +5759,7 @@ func migrationAddMatViewRefreshStateTable(ctx context.Context, db *gorm.DB, logg
 	}
 	return nil
 }
-=======
+
 // migrationAddIsPassthroughColumn adds the is_passthrough column to the logs table. A passthrough
 // call is stored under the request type its route was inferred as (chat_completion, responses, ...)
 // and tagged with this flag; rows written before it keep object_type=passthrough. A constant
@@ -5797,4 +5796,3 @@ func isPassthroughColumnMigration(ctx context.Context, logger schemas.Logger) *m
 		},
 	}
 }
->>>>>>> 1b152dd7a (feat(logging): store passthrough calls under their inferred request type)
