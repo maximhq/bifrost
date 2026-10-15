@@ -270542,6 +270542,228 @@
           }
         }
       ]
+    },
+    {
+      "name": "243. Passthrough multipart uploads logged as form fields and parsed (passthrough parsed logs)",
+      "description": "A multipart/form-data passthrough upload (audio transcription, image edit) used to log no request body at all, since only JSON bodies were captured. With content logging on, PreLLMHook now stores a summary instead: the text form fields as sent and only the name, type and size of each file part (passthroughparse.SummarizeMultipart; the file bytes are never stored, params.multipart_summary marks it), and the batch writer parses that summary into the typed row (transcription_input with the filename, transcription_output from the JSON response). Red before the change: passthrough_request_body is empty and params.parsed_type never appears.",
+      "item": [
+        {
+          "name": "243.1 openai/whisper-1 /openai_passthrough/v1/audio/transcriptions multipart upload logged as a form summary and parsed (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai transcription multipart parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('openai transcription multipart parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('openai transcription multipart parsed: parsed as transcription', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('transcription'); });",
+                  "      pm.test('openai transcription multipart parsed: body logged as a form summary', function () { pm.expect(j.params.multipart_summary, JSON.stringify(j.params)).to.eql(true); var s = JSON.parse(j.passthrough_request_body); pm.expect(s.fields.model, j.passthrough_request_body).to.eql('whisper-1'); pm.expect(s.files, j.passthrough_request_body).to.be.an('array').with.lengthOf(1); pm.expect(s.files[0].filename).to.eql('sample.mp3'); pm.expect(s.files[0].bytes).to.be.above(1000); });",
+                  "      pm.test('openai transcription multipart parsed: audio bytes not stored', function () { pm.expect(j.passthrough_request_body.length, 'summary length').to.be.below(2000); });",
+                  "      pm.test('openai transcription multipart parsed: transcription_input names the file', function () { pm.expect(j.transcription_input && j.transcription_input.filename, JSON.stringify(j)).to.eql('sample.mp3'); });",
+                  "      pm.test('openai transcription multipart parsed: transcription_output parsed from the response body', function () { pm.expect(j.transcription_output && j.transcription_output.text, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('openai transcription multipart parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "whisper-1",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "json",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "243.2 openai/gpt-image-1 /openai_passthrough/v1/images/edits multipart upload logged as a form summary and parsed (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai image edit multipart parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('openai image edit multipart parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('openai image edit multipart parsed: parsed as image edit', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('image_edit'); });",
+                  "      pm.test('openai image edit multipart parsed: image_edit_input records the prompt and the image', function () { pm.expect(j.image_edit_input && j.image_edit_input.prompt, JSON.stringify(j)).to.eql('add a small red square'); pm.expect(j.image_edit_input.images, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      pm.test('openai image edit multipart parsed: body logged as a form summary', function () { pm.expect(j.params.multipart_summary, JSON.stringify(j.params)).to.eql(true); var s = JSON.parse(j.passthrough_request_body); pm.expect(s.fields.model, j.passthrough_request_body).to.eql('gpt-image-1'); var f = (s.files || []).filter(function (x) { return x.field === 'image'; }); pm.expect(f, j.passthrough_request_body).to.have.lengthOf(1); pm.expect(f[0].filename).to.eql('sample.png'); pm.expect(f[0].bytes).to.be.above(1000); });",
+                  "      pm.test('openai image edit multipart parsed: image bytes not stored', function () { pm.expect(j.passthrough_request_body.length, 'summary length').to.be.below(2000); });",
+                  "      pm.test('openai image edit multipart parsed: image_generation_output parsed from the response body', function () { pm.expect(j.image_generation_output && j.image_generation_output.data, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('openai image edit multipart parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "gpt-image-1",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "add a small red square",
+                  "type": "text"
+                },
+                {
+                  "key": "quality",
+                  "value": "low",
+                  "type": "text"
+                },
+                {
+                  "key": "size",
+                  "value": "1024x1024",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          }
+        },
+        {
+          "name": "243.3 openai/dall-e-2 /openai_passthrough/v1/images/variations multipart upload logged as a form summary and parsed (passthrough parsed logs)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('openai image variation multipart parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('openai image variation multipart parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var j = (!err && res.code === 200) ? res.json() : null;",
+                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
+                  "      pm.test('openai image variation multipart parsed: parsed as image variation', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('image_variation'); });",
+                  "      pm.test('openai image variation multipart parsed: params parsed from the form', function () { pm.expect(j.params.model_params && j.params.model_params.size, JSON.stringify(j.params)).to.eql('256x256'); });",
+                  "      pm.test('openai image variation multipart parsed: body logged as a form summary', function () { pm.expect(j.params.multipart_summary, JSON.stringify(j.params)).to.eql(true); var s = JSON.parse(j.passthrough_request_body); pm.expect(s.fields.model, j.passthrough_request_body).to.eql('dall-e-2'); var f = (s.files || []).filter(function (x) { return x.field === 'image'; }); pm.expect(f, j.passthrough_request_body).to.have.lengthOf(1); pm.expect(f[0].filename).to.eql('sample.png'); pm.expect(f[0].bytes).to.be.above(1000); });",
+                  "      pm.test('openai image variation multipart parsed: image bytes not stored', function () { pm.expect(j.passthrough_request_body.length, 'summary length').to.be.below(2000); });",
+                  "      pm.test('openai image variation multipart parsed: image_generation_output parsed from the response body', function () { pm.expect(j.image_generation_output && j.image_generation_output.data, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('openai image variation multipart parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "dall-e-2",
+                  "type": "text"
+                },
+                {
+                  "key": "n",
+                  "value": "1",
+                  "type": "text"
+                },
+                {
+                  "key": "size",
+                  "value": "256x256",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai_passthrough/v1/images/variations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai_passthrough",
+                "v1",
+                "images",
+                "variations"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

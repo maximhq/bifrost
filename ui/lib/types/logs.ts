@@ -729,6 +729,7 @@ export interface PassthroughLogParams {
 	parsed_type?: string; // typed request kind the bodies were parsed as, e.g. "chat_completion"
 	base_provider?: string; // wire format of a custom provider, when it differs from the row's provider
 	model_params?: ModelParameters; // model parameters parsed from the request body
+	multipart_summary?: boolean; // request body is a summary of the form fields and file sizes, not the raw upload
 }
 
 export interface LogEntry {
