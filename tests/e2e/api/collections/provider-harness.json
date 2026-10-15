@@ -268450,6 +268450,430 @@
           }
         }
       ]
+    },
+    {
+      "name": "242. Claude tool search replays its server blocks (tool search replay)",
+      "description": "Claude's server-side tool search returns a server_tool_use block paired with a tool_search_tool_result carrying the discovered tool_references, and Anthropic requires both to come back unchanged on the next turn (https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool).\n\nOn /v1/responses Bifrost returns the pair as a tool_search_call item (id/call_id srvtoolu_..., name tool_search_tool_bm25, tool_references). A client that sends that item back had it dropped: the JSON decoder kept only type/id/call_id/arguments/execution, and the request-path filter for OpenAI tool search items treated every JSON-decoded tool_search_call as OpenAI's and removed it. Upstream then saw only the tool_use/tool_result pair. The two /v1/responses pairs pin that fix.\n\nThe /anthropic/v1/messages pair pins the documented result shape end to end (#8502 moved tool_references into a tool_search_tool_search_result content object; the flat block with no content is rejected with 'tool_search_tool_result.content: Field required', #8291). Raw response echo is off so the reply goes through Bifrost's rebuild.\n\nEach pair is a chain: turn 1 searches and calls the deferred get_weather and saves its output; turn 2 sends that output back unchanged and asserts a 200 plus the exact upstream blocks via raw_request.",
+      "item": [
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses tool search replay turn 1: bm25 search finds and calls get_weather",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":256,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"What is the weather in Paris right now? Search your tools and use the right one.\"}],\"tools\":[{\"type\":\"tool_search\",\"name\":\"tool_search_tool_bm25\"},{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('tsReplayBedrockItems');",
+                  "pm.collectionVariables.unset('tsReplayBedrockSearchId');",
+                  "pm.collectionVariables.unset('tsReplayBedrockCallId');",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('tool search replay Bedrock turn 1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var output = body.output || [];",
+                  "var kinds = JSON.stringify(output.map(function (o) { return o.type + (o.name ? ':' + o.name : ''); }));",
+                  "var search = output.filter(function (o) { return o.type === 'tool_search_call'; })[0];",
+                  "var call = output.filter(function (o) { return o.type === 'function_call' && o.name === 'get_weather'; })[0];",
+                  "pm.test('tool search replay Bedrock turn 1: Claude ran its bm25 server search and it found get_weather', function () {",
+                  "  pm.expect(search, 'no tool_search_call in output: ' + kinds).to.be.an('object');",
+                  "  pm.expect(search.name, JSON.stringify(search)).to.eql('tool_search_tool_bm25');",
+                  "  pm.expect(String(search.call_id || ''), 'server search id: ' + JSON.stringify(search)).to.match(/^srvtoolu_/);",
+                  "  pm.expect(search.tool_references || [], 'discovered tools: ' + JSON.stringify(search)).to.include('get_weather');",
+                  "});",
+                  "pm.test('tool search replay Bedrock turn 1: the discovered get_weather was called', function () {",
+                  "  pm.expect(call, 'no function_call named get_weather: ' + kinds).to.be.an('object');",
+                  "});",
+                  "if (pm.response.code === 200 && search && search.name === 'tool_search_tool_bm25' && call) {",
+                  "  pm.collectionVariables.set('tsReplayBedrockItems', output.map(function (o) { return JSON.stringify(o); }).join(','));",
+                  "  pm.collectionVariables.set('tsReplayBedrockSearchId', search.call_id);",
+                  "  pm.collectionVariables.set('tsReplayBedrockCallId', call.call_id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "bedrock/global.anthropic.claude-sonnet-4-6 /v1/responses tool search replay turn 2: server_tool_use + tool_search_tool_result reach InvokeModel",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/global.anthropic.claude-sonnet-4-6\",\"max_output_tokens\":256,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"What is the weather in Paris right now? Search your tools and use the right one.\"},{{tsReplayBedrockItems}},{\"type\":\"function_call_output\",\"call_id\":\"{{tsReplayBedrockCallId}}\",\"output\":\"Sunny, 22 C\"}],\"tools\":[{\"type\":\"tool_search\",\"name\":\"tool_search_tool_bm25\"},{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('tool search replay Bedrock turn 2: 200 (Claude accepted the replayed server blocks)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "var searchId = pm.collectionVariables.get('tsReplayBedrockSearchId');",
+                  "pm.test('tool search replay Bedrock turn 2: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "var blocks = [];",
+                  "((rr && rr.messages) || []).forEach(function (m) { if (m.role === 'assistant' && Array.isArray(m.content)) { blocks = blocks.concat(m.content); } });",
+                  "var useIdx = -1;",
+                  "for (var i = 0; i < blocks.length; i++) { if (blocks[i].type === 'server_tool_use' && blocks[i].id === searchId) { useIdx = i; break; } }",
+                  "pm.test('tool search replay Bedrock turn 2: server_tool_use sent back with its id, bm25 variant and query', function () {",
+                  "  pm.expect(useIdx, 'server_tool_use ' + searchId + ' was dropped from the replayed assistant turn: ' + wire.slice(0, 1500)).to.be.at.least(0);",
+                  "  pm.expect(blocks[useIdx].name, JSON.stringify(blocks[useIdx])).to.eql('tool_search_tool_bm25');",
+                  "  pm.expect(blocks[useIdx].input, 'search query must be echoed unchanged: ' + JSON.stringify(blocks[useIdx])).to.be.an('object').that.is.not.empty;",
+                  "});",
+                  "pm.test('tool search replay Bedrock turn 2: tool_search_tool_result follows with tool_references nested in content', function () {",
+                  "  var result = useIdx >= 0 ? blocks[useIdx + 1] : null;",
+                  "  pm.expect(result && result.type, 'block after server_tool_use: ' + JSON.stringify(result) + ' wire=' + wire.slice(0, 1500)).to.eql('tool_search_tool_result');",
+                  "  pm.expect(result.tool_use_id, JSON.stringify(result)).to.eql(searchId);",
+                  "  pm.expect(result.content && result.content.type, 'content must be a tool_search_tool_search_result object (Anthropic: content Field required): ' + JSON.stringify(result)).to.eql('tool_search_tool_search_result');",
+                  "  var names = (result.content.tool_references || []).map(function (r) { return r.tool_name; });",
+                  "  pm.expect(names, 'discovered tools: ' + JSON.stringify(result)).to.include('get_weather');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses tool search replay turn 1: bm25 search finds and calls get_weather",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_output_tokens\":256,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"What is the weather in Paris right now? Search your tools and use the right one.\"}],\"tools\":[{\"type\":\"tool_search\",\"name\":\"tool_search_tool_bm25\"},{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('tsReplayAnthropicItems');",
+                  "pm.collectionVariables.unset('tsReplayAnthropicSearchId');",
+                  "pm.collectionVariables.unset('tsReplayAnthropicCallId');",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('tool search replay Anthropic turn 1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var output = body.output || [];",
+                  "var kinds = JSON.stringify(output.map(function (o) { return o.type + (o.name ? ':' + o.name : ''); }));",
+                  "var search = output.filter(function (o) { return o.type === 'tool_search_call'; })[0];",
+                  "var call = output.filter(function (o) { return o.type === 'function_call' && o.name === 'get_weather'; })[0];",
+                  "pm.test('tool search replay Anthropic turn 1: Claude ran its bm25 server search and it found get_weather', function () {",
+                  "  pm.expect(search, 'no tool_search_call in output: ' + kinds).to.be.an('object');",
+                  "  pm.expect(search.name, JSON.stringify(search)).to.eql('tool_search_tool_bm25');",
+                  "  pm.expect(String(search.call_id || ''), 'server search id: ' + JSON.stringify(search)).to.match(/^srvtoolu_/);",
+                  "  pm.expect(search.tool_references || [], 'discovered tools: ' + JSON.stringify(search)).to.include('get_weather');",
+                  "});",
+                  "pm.test('tool search replay Anthropic turn 1: the discovered get_weather was called', function () {",
+                  "  pm.expect(call, 'no function_call named get_weather: ' + kinds).to.be.an('object');",
+                  "});",
+                  "if (pm.response.code === 200 && search && search.name === 'tool_search_tool_bm25' && call) {",
+                  "  pm.collectionVariables.set('tsReplayAnthropicItems', output.map(function (o) { return JSON.stringify(o); }).join(','));",
+                  "  pm.collectionVariables.set('tsReplayAnthropicSearchId', search.call_id);",
+                  "  pm.collectionVariables.set('tsReplayAnthropicCallId', call.call_id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /v1/responses tool search replay turn 2: server_tool_use + tool_search_tool_result reach Anthropic",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_output_tokens\":256,\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":\"What is the weather in Paris right now? Search your tools and use the right one.\"},{{tsReplayAnthropicItems}},{\"type\":\"function_call_output\",\"call_id\":\"{{tsReplayAnthropicCallId}}\",\"output\":\"Sunny, 22 C\"}],\"tools\":[{\"type\":\"tool_search\",\"name\":\"tool_search_tool_bm25\"},{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"parameters\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('tool search replay Anthropic turn 2: 200 (Claude accepted the replayed server blocks)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "var searchId = pm.collectionVariables.get('tsReplayAnthropicSearchId');",
+                  "pm.test('tool search replay Anthropic turn 2: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "var blocks = [];",
+                  "((rr && rr.messages) || []).forEach(function (m) { if (m.role === 'assistant' && Array.isArray(m.content)) { blocks = blocks.concat(m.content); } });",
+                  "var useIdx = -1;",
+                  "for (var i = 0; i < blocks.length; i++) { if (blocks[i].type === 'server_tool_use' && blocks[i].id === searchId) { useIdx = i; break; } }",
+                  "pm.test('tool search replay Anthropic turn 2: server_tool_use sent back with its id, bm25 variant and query', function () {",
+                  "  pm.expect(useIdx, 'server_tool_use ' + searchId + ' was dropped from the replayed assistant turn: ' + wire.slice(0, 1500)).to.be.at.least(0);",
+                  "  pm.expect(blocks[useIdx].name, JSON.stringify(blocks[useIdx])).to.eql('tool_search_tool_bm25');",
+                  "  pm.expect(blocks[useIdx].input, 'search query must be echoed unchanged: ' + JSON.stringify(blocks[useIdx])).to.be.an('object').that.is.not.empty;",
+                  "});",
+                  "pm.test('tool search replay Anthropic turn 2: tool_search_tool_result follows with tool_references nested in content', function () {",
+                  "  var result = useIdx >= 0 ? blocks[useIdx + 1] : null;",
+                  "  pm.expect(result && result.type, 'block after server_tool_use: ' + JSON.stringify(result) + ' wire=' + wire.slice(0, 1500)).to.eql('tool_search_tool_result');",
+                  "  pm.expect(result.tool_use_id, JSON.stringify(result)).to.eql(searchId);",
+                  "  pm.expect(result.content && result.content.type, 'content must be a tool_search_tool_search_result object (Anthropic: content Field required): ' + JSON.stringify(result)).to.eql('tool_search_tool_search_result');",
+                  "  var names = (result.content.tool_references || []).map(function (r) { return r.tool_name; });",
+                  "  pm.expect(names, 'discovered tools: ' + JSON.stringify(result)).to.include('get_weather');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /anthropic/v1/messages tool search replay turn 1: tool_search_tool_result renders with content",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "tool-search-tool-2025-10-19"
+              },
+              {
+                "key": "x-bf-send-back-raw-response",
+                "value": "false"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris right now? Search your tools and use the right one.\"}],\"tools\":[{\"type\":\"tool_search_tool_bm25_20251119\",\"name\":\"tool_search_tool_bm25\"},{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('tsReplayMessagesContent');",
+                  "pm.collectionVariables.unset('tsReplayMessagesSearchId');",
+                  "pm.collectionVariables.unset('tsReplayMessagesToolUseId');",
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('tool search replay messages turn 1: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var content = body.content || [];",
+                  "var kinds = JSON.stringify(content.map(function (b) { return b.type + (b.name ? ':' + b.name : ''); }));",
+                  "var use = content.filter(function (b) { return b.type === 'server_tool_use' && b.name === 'tool_search_tool_bm25'; })[0];",
+                  "var result = content.filter(function (b) { return b.type === 'tool_search_tool_result'; })[0];",
+                  "var call = content.filter(function (b) { return b.type === 'tool_use' && b.name === 'get_weather'; })[0];",
+                  "pm.test('tool search replay messages turn 1: server_tool_use + tool_search_tool_result rendered', function () {",
+                  "  pm.expect(use, 'no bm25 server_tool_use: ' + kinds).to.be.an('object');",
+                  "  pm.expect(result, 'no tool_search_tool_result: ' + kinds).to.be.an('object');",
+                  "  pm.expect(result.tool_use_id).to.eql(use.id);",
+                  "});",
+                  "pm.test('tool search replay messages turn 1: tool_search_tool_result carries content with the discovered get_weather', function () {",
+                  "  pm.expect(result && result.content && result.content.type, 'content missing: the client cannot replay this block (Anthropic: content Field required): ' + JSON.stringify(result)).to.eql('tool_search_tool_search_result');",
+                  "  var names = (result.content.tool_references || []).map(function (r) { return r.tool_name; });",
+                  "  pm.expect(names, JSON.stringify(result)).to.include('get_weather');",
+                  "});",
+                  "pm.test('tool search replay messages turn 1: the discovered get_weather was called', function () {",
+                  "  pm.expect(call, 'no tool_use named get_weather: ' + kinds).to.be.an('object');",
+                  "});",
+                  "if (pm.response.code === 200 && use && result && call) {",
+                  "  pm.collectionVariables.set('tsReplayMessagesContent', JSON.stringify(content));",
+                  "  pm.collectionVariables.set('tsReplayMessagesSearchId', use.id);",
+                  "  pm.collectionVariables.set('tsReplayMessagesToolUseId', call.id);",
+                  "}"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "anthropic/claude-sonnet-4-6 /anthropic/v1/messages tool search replay turn 2: echoed assistant turn is accepted",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "tool-search-tool-2025-10-19"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"anthropic/claude-sonnet-4-6\",\"max_tokens\":256,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Paris right now? Search your tools and use the right one.\"},{\"role\":\"assistant\",\"content\":{{tsReplayMessagesContent}}},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"{{tsReplayMessagesToolUseId}}\",\"content\":\"Sunny, 22 C\"}]}],\"tools\":[{\"type\":\"tool_search_tool_bm25_20251119\",\"name\":\"tool_search_tool_bm25\"},{\"name\":\"get_weather\",\"description\":\"Get the current weather for a city\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]},\"defer_loading\":true}]}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "pm.test('tool search replay messages turn 2: 200 (Anthropic accepted the echoed server blocks)', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "var searchId = pm.collectionVariables.get('tsReplayMessagesSearchId');",
+                  "pm.test('tool search replay messages turn 2: raw_request captured', function () {",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "});",
+                  "var blocks = [];",
+                  "((rr && rr.messages) || []).forEach(function (m) { if (m.role === 'assistant' && Array.isArray(m.content)) { blocks = blocks.concat(m.content); } });",
+                  "var useIdx = -1;",
+                  "for (var i = 0; i < blocks.length; i++) { if (blocks[i].type === 'server_tool_use' && blocks[i].id === searchId) { useIdx = i; break; } }",
+                  "pm.test('tool search replay messages turn 2: server_tool_use sent back with its id, bm25 variant and query', function () {",
+                  "  pm.expect(useIdx, 'server_tool_use ' + searchId + ' was dropped from the replayed assistant turn: ' + wire.slice(0, 1500)).to.be.at.least(0);",
+                  "  pm.expect(blocks[useIdx].name, JSON.stringify(blocks[useIdx])).to.eql('tool_search_tool_bm25');",
+                  "  pm.expect(blocks[useIdx].input, 'search query must be echoed unchanged: ' + JSON.stringify(blocks[useIdx])).to.be.an('object').that.is.not.empty;",
+                  "});",
+                  "pm.test('tool search replay messages turn 2: tool_search_tool_result follows with tool_references nested in content', function () {",
+                  "  var result = useIdx >= 0 ? blocks[useIdx + 1] : null;",
+                  "  pm.expect(result && result.type, 'block after server_tool_use: ' + JSON.stringify(result) + ' wire=' + wire.slice(0, 1500)).to.eql('tool_search_tool_result');",
+                  "  pm.expect(result.tool_use_id, JSON.stringify(result)).to.eql(searchId);",
+                  "  pm.expect(result.content && result.content.type, 'content must be a tool_search_tool_search_result object (Anthropic: content Field required): ' + JSON.stringify(result)).to.eql('tool_search_tool_search_result');",
+                  "  var names = (result.content.tool_references || []).map(function (r) { return r.tool_name; });",
+                  "  pm.expect(names, 'discovered tools: ' + JSON.stringify(result)).to.include('get_weather');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }

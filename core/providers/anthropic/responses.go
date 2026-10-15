@@ -8668,7 +8668,8 @@ func convertBifrostToolSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage
 func normalizeOpenAIToolSearchItems(ctx *schemas.BifrostContext, msgs []schemas.ResponsesMessage, isRequestMessage bool) []schemas.ResponsesMessage {
 	isVerbatimToolSearch := func(m *schemas.ResponsesMessage) bool {
 		return m.Type != nil && (*m.Type == schemas.ResponsesMessageTypeToolSearchCall ||
-			*m.Type == schemas.ResponsesMessageTypeToolSearchOutput) && m.IsVerbatimItem()
+			*m.Type == schemas.ResponsesMessageTypeToolSearchOutput) && m.IsVerbatimItem() &&
+			!isAnthropicToolSearchReplay(m)
 	}
 	if !slices.ContainsFunc(msgs, func(m schemas.ResponsesMessage) bool { return isVerbatimToolSearch(&m) }) {
 		return msgs
@@ -8882,6 +8883,12 @@ func isAnthropicToolSearchToolName(name string) bool {
 	default:
 		return false
 	}
+}
+
+// isAnthropicToolSearchReplay reports whether a verbatim tool_search_call is a Claude
+// server search echoed back through /v1/responses; OpenAI search items carry no name.
+func isAnthropicToolSearchReplay(m *schemas.ResponsesMessage) bool {
+	return m.ResponsesToolMessage != nil && m.Name != nil && isAnthropicToolSearchToolName(*m.Name)
 }
 
 func isAnthropicCodeExecutionToolName(name string) bool {
