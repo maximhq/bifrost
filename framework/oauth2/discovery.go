@@ -249,6 +249,14 @@ func oauthAllowlistedProxySelector(next func(*http.Request) (*url.URL, error), a
 // newOAuthDiscoveryHTTPClient returns a client for the OAuth chain whose
 // transport applies the destination policy recorded on ctx (see
 // requirePublicTargetFrom).
+// NewAdminConfiguredHTTPClient returns a client for an endpoint an authenticated
+// administrator configured (such as a trusted identity provider's JWKS): the MCP
+// OAuth chain's proxy handling and SSRF guard, honoring the private-target
+// allowlist. Build one per request so allowlist changes apply immediately.
+func NewAdminConfiguredHTTPClient(timeout time.Duration) *http.Client {
+	return newOAuthDiscoveryHTTPClient(withRequirePublicTarget(context.Background(), false), timeout)
+}
+
 func newOAuthDiscoveryHTTPClient(ctx context.Context, timeout time.Duration) *http.Client {
 	transport := oauthDiscoveryTransport
 	if !requirePublicTargetFrom(ctx) {
