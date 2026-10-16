@@ -275115,6 +275115,131 @@
           }
         }
       ]
+    },
+    {
+      "name": "256. Logs calendar periods resolve server-side in the caller timezone (calendar periods)",
+      "description": "The date filter offers Today, This week and This month. They start at midnight in the viewer's timezone, so the server now resolves them in ResolvePeriod from period plus a timezone query param (or body field), next to the sliding 1h-30d periods. Before the change the server ignored any period it did not know and dropped the time filter. The histogram case pins the resolution through bucket_size_seconds: no window gives 3600, while today is always under 24 hours and gives 600 or 60. The recalculation case pins that an unknown period is a 400 rather than an unbounded window that recalculates every log (red before the change: the request starts a job over all logs). Neither case calls a provider.",
+      "item": [
+        {
+          "name": "calendar periods: histogram resolves period=today in the caller timezone into a window under a day",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('calendar periods: histogram answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('calendar periods: today is resolved to a window shorter than a day', function () {",
+                  "  // 3600 is the bucket for an unbounded window, which means the period was ignored.",
+                  "  pm.expect(body.bucket_size_seconds, 'bucket_size_seconds: ' + pm.response.text()).to.be.oneOf([60, 600]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/histogram?period=today&timezone=Asia/Kolkata",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram"
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "today"
+                },
+                {
+                  "key": "timezone",
+                  "value": "Asia/Kolkata"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] calendar periods: cost recalculation rejects an unknown period",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('calendar periods: an unknown period is rejected, not widened to every log', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('calendar periods: the error names the period', function () {",
+                  "  pm.expect(pm.response.text()).to.include('yesterday');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"filters\":{\"period\":\"yesterday\",\"timezone\":\"Asia/Kolkata\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/recalculate-cost",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "recalculate-cost"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
