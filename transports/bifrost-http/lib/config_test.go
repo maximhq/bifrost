@@ -25449,6 +25449,78 @@ func TestReconcileProviderKeys_LegacyAliasHashKeepsStoredEdits(t *testing.T) {
 	})
 }
 
+// TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys pins the upgrade path from the
+// unsorted request_path_overrides hash: a stored provider config_hash computed under any
+// override order still means "config.json unchanged", so keys added through the API survive
+// the first restart on the sorted encoding and the stored hash is rewritten to the sorted
+// form. A real file edit still syncs from the file.
+func TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys(t *testing.T) {
+	SetLogger(&testLogger{})
+	provider := schemas.ModelProvider("custom-openai")
+	fileKey := schemas.Key{ID: "file-key", Name: "file", Value: *schemas.NewSecretVar("sk"), Weight: 1}
+	build := func() configstore.ProviderConfig {
+		return configstore.ProviderConfig{
+			Keys: []schemas.Key{fileKey},
+			CustomProviderConfig: &schemas.CustomProviderConfig{
+				BaseProviderType: schemas.OpenAI,
+				RequestPathOverrides: map[schemas.RequestType]string{
+					schemas.ChatCompletionRequest: "/v1/chat",
+					schemas.EmbeddingRequest:      "/v1/embed",
+					schemas.TextCompletionRequest: "/v1/text",
+				},
+			},
+		}
+	}
+	stored := func(t *testing.T) configstore.ProviderConfig {
+		cfg := build()
+		legacy, err := cfg.LegacyOverrideOrderConfigHash(string(provider), []schemas.RequestType{
+			schemas.TextCompletionRequest, schemas.ChatCompletionRequest, schemas.EmbeddingRequest,
+		})
+		require.NoError(t, err)
+		fileKeyHash, err := configstore.GenerateKeyHash(fileKey)
+		require.NoError(t, err)
+		storedFileKey := fileKey
+		storedFileKey.ConfigHash = fileKeyHash
+		apiKey := schemas.Key{ID: "api-key", Name: "added-through-api", Value: *schemas.NewSecretVar("sk-api"), Weight: 1}
+		cfg.Keys = []schemas.Key{storedFileKey, apiKey}
+		cfg.ConfigHash = legacy
+		return cfg
+	}
+
+	t.Run("unchanged file keeps API-added keys", func(t *testing.T) {
+		fileCfg := build()
+		sorted, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = sorted
+		dbCfg := stored(t)
+		require.NotEqual(t, sorted, dbCfg.ConfigHash)
+
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: dbCfg}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		merged := providers[provider]
+		require.Equal(t, sorted, merged.ConfigHash, "the stored hash must be upgraded to the sorted form")
+		names := []string{}
+		for _, k := range merged.Keys {
+			names = append(names, k.Name)
+		}
+		require.ElementsMatch(t, []string{"file", "added-through-api"}, names, "the API-added key must survive the hash format change")
+	})
+
+	t.Run("edited file still syncs from the file", func(t *testing.T) {
+		fileCfg := build()
+		fileCfg.CustomProviderConfig.IsKeyLess = true
+		edited, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = edited
+
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		merged := providers[provider]
+		require.Equal(t, edited, merged.ConfigHash)
+		require.True(t, merged.CustomProviderConfig.IsKeyLess, "a changed config.json must still replace the stored provider")
+	})
+}
+
 // TestPrepareOpenAPIClientFromFile covers how an openapi client declared in
 // config.json is normalized at load: spec_file is read relative to the config
 // directory and inlined, the server-computed metadata is filled from a parse,

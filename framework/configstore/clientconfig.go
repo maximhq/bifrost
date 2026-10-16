@@ -924,6 +924,79 @@ func (p *ProviderConfig) Redacted() *ProviderConfig {
 // This is used to detect changes between config.json and database config.
 // Keys are excluded as they are hashed separately.
 func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error) {
+	var customProviderConfig []byte
+	if p.CustomProviderConfig != nil {
+		// RequestPathOverrides is a map, so the encoding must sort keys or the same provider
+		// hashes differently between restarts and is reconciled as edited.
+		data, err := providerUtils.MarshalSorted(p.CustomProviderConfig)
+		if err != nil {
+			return "", err
+		}
+		customProviderConfig = data
+	}
+	return p.generateConfigHash(providerName, customProviderConfig)
+}
+
+// LegacyOverrideOrderConfigHash returns the config_hash a provider had on builds that hashed
+// request_path_overrides with the unsorted encoder, with its overrides encoded in the given
+// order. Reconciliation uses it to recognise a hash stored by such a build; tests use it to
+// craft one.
+func (p *ProviderConfig) LegacyOverrideOrderConfigHash(providerName string, order []schemas.RequestType) (string, error) {
+	var customProviderConfig []byte
+	if p.CustomProviderConfig != nil {
+		data, err := legacyCustomProviderConfigBytes(p.CustomProviderConfig, order)
+		if err != nil {
+			return "", err
+		}
+		customProviderConfig = data
+	}
+	return p.generateConfigHash(providerName, customProviderConfig)
+}
+
+// ConfigHashMatchesLegacyOverrideOrder reports whether storedHash is this provider's hash
+// under the unsorted request_path_overrides encoding of older builds, in any override order.
+// GenerateConfigHash sorts them, so the first restart on a sorted build sees a mismatch for
+// every custom provider with two or more overrides even when config.json is untouched;
+// reconciliation calls this before treating that mismatch as a file edit, so keys added
+// through the API or dashboard survive the upgrade. It runs only after a direct compare
+// failed, never on the request path.
+func (p *ProviderConfig) ConfigHashMatchesLegacyOverrideOrder(providerName, storedHash string) (bool, error) {
+	if p.CustomProviderConfig == nil {
+		return false, nil
+	}
+	return hashMatchesAnyLegacyOrder(p.CustomProviderConfig.RequestPathOverrides, storedHash, func(order []schemas.RequestType) (string, error) {
+		return p.LegacyOverrideOrderConfigHash(providerName, order)
+	})
+}
+
+// legacyCustomProviderConfigBytes rebuilds the bytes the unsorted encoder fed the hasher for
+// cfg with its request_path_overrides in the given order. The struct's other fields hold no
+// map, so its sorted encoding differs from the legacy one only inside that field.
+func legacyCustomProviderConfigBytes(cfg *schemas.CustomProviderConfig, order []schemas.RequestType) ([]byte, error) {
+	data, err := providerUtils.MarshalSorted(cfg)
+	if err != nil || len(cfg.RequestPathOverrides) == 0 {
+		return data, err
+	}
+	sorted, err := providerUtils.MarshalSorted(cfg.RequestPathOverrides)
+	if err != nil {
+		return nil, err
+	}
+	legacy, err := legacyMapBytes(cfg.RequestPathOverrides, order)
+	if err != nil {
+		return nil, err
+	}
+	field := []byte(`"request_path_overrides":`)
+	sortedField := append(append([]byte{}, field...), sorted...)
+	if !bytes.Contains(data, sortedField) {
+		return nil, fmt.Errorf("request_path_overrides not found in the encoded custom provider config")
+	}
+	return bytes.Replace(data, sortedField, append(field, legacy...), 1), nil
+}
+
+// generateConfigHash composes the provider hash; customProviderConfig is the already-encoded
+// custom provider config (sorted for current hashes, in a given override order for legacy
+// ones) or nil when the provider has none.
+func (p *ProviderConfig) generateConfigHash(providerName string, customProviderConfig []byte) (string, error) {
 	hash := sha256.New()
 
 	// Hash provider name
@@ -956,13 +1029,9 @@ func (p *ProviderConfig) GenerateConfigHash(providerName string) (string, error)
 		hash.Write(data)
 	}
 
-	// Hash CustomProviderConfig
-	if p.CustomProviderConfig != nil {
-		data, err := sonic.Marshal(p.CustomProviderConfig)
-		if err != nil {
-			return "", err
-		}
-		hash.Write(data)
+	// Hash CustomProviderConfig (already encoded by the caller)
+	if customProviderConfig != nil {
+		hash.Write(customProviderConfig)
 	}
 
 	// Hash OpenAIConfig
@@ -1047,11 +1116,12 @@ func LegacyAliasOrderKeyHash(key schemas.Key, order []string) (string, error) {
 	return generateKeyHash(key, aliases)
 }
 
-// maxLegacyAliasPermutations bounds the upgrade search in KeyHashMatchesLegacyAliasOrder:
-// seven aliases is 5040 hashes, a few milliseconds once per mismatching key at startup. A key
-// with more aliases falls back to treating the mismatch as a file edit, which is what every
-// build before the sorted hash did at random.
-const maxLegacyAliasPermutations = 7
+// maxLegacyMapPermutations bounds the upgrade searches in KeyHashMatchesLegacyAliasOrder and
+// ProviderConfig.ConfigHashMatchesLegacyOverrideOrder: seven entries is 5040 hashes, a few
+// milliseconds once per mismatching row at startup. A row with more entries falls back to
+// treating the mismatch as a file edit, which is what every build before the sorted hash did
+// at random.
+const maxLegacyMapPermutations = 7
 
 // KeyHashMatchesLegacyAliasOrder reports whether storedHash is this key's hash under the
 // unsorted alias encoding of older builds, in any alias order. GenerateKeyHash sorts alias
@@ -1060,19 +1130,29 @@ const maxLegacyAliasPermutations = 7
 // that mismatch as a file edit, so API and dashboard edits survive the upgrade. It runs only
 // after a direct compare failed, never on the request path.
 func KeyHashMatchesLegacyAliasOrder(key schemas.Key, storedHash string) (bool, error) {
-	n := len(key.Aliases)
-	if storedHash == "" || n < 2 || n > maxLegacyAliasPermutations {
+	return hashMatchesAnyLegacyOrder(map[string]schemas.AliasConfig(key.Aliases), storedHash, func(order []string) (string, error) {
+		return LegacyAliasOrderKeyHash(key, order)
+	})
+}
+
+// hashMatchesAnyLegacyOrder reports whether legacyHash, called with every ordering of m's
+// keys, produces storedHash. It is the search behind the upgrade paths from unsorted map
+// encodings; a map with fewer than two entries has a single encoding, so a mismatch there is
+// a real change.
+func hashMatchesAnyLegacyOrder[K ~string, V any](m map[K]V, storedHash string, legacyHash func(order []K) (string, error)) (bool, error) {
+	n := len(m)
+	if storedHash == "" || n < 2 || n > maxLegacyMapPermutations {
 		return false, nil
 	}
-	names := make([]string, 0, n)
-	for name := range key.Aliases {
+	names := make([]K, 0, n)
+	for name := range m {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	sort.Slice(names, func(i, j int) bool { return names[i] < names[j] })
 	// Heap's algorithm visits every ordering once, swapping one pair per step.
 	counters := make([]int, n)
 	for i := 0; ; {
-		candidate, err := LegacyAliasOrderKeyHash(key, names)
+		candidate, err := legacyHash(names)
 		if err != nil {
 			return false, err
 		}
@@ -1095,18 +1175,24 @@ func KeyHashMatchesLegacyAliasOrder(key schemas.Key, storedHash string) (bool, e
 }
 
 // legacyAliasBytes rebuilds the bytes the unsorted encoder fed the hasher for aliases in the
-// given order: sonic's default map encoding, which is each quoted name, a colon and the
-// alias's own MarshalJSON output, comma-joined in map iteration order inside braces.
+// given order.
 func legacyAliasBytes(aliases schemas.KeyAliases, order []string) ([]byte, error) {
-	if len(order) != len(aliases) {
-		return nil, fmt.Errorf("alias order names %d aliases, key has %d", len(order), len(aliases))
+	return legacyMapBytes(map[string]schemas.AliasConfig(aliases), order)
+}
+
+// legacyMapBytes rebuilds sonic's default (unsorted) encoding of m with its entries in the
+// given order: each quoted key, a colon and the value's own encoding, comma-joined inside
+// braces.
+func legacyMapBytes[K ~string, V any](m map[K]V, order []K) ([]byte, error) {
+	if len(order) != len(m) {
+		return nil, fmt.Errorf("order names %d entries, map has %d", len(order), len(m))
 	}
 	var b bytes.Buffer
 	b.WriteByte('{')
 	for i, name := range order {
-		alias, ok := aliases[name]
+		value, ok := m[name]
 		if !ok {
-			return nil, fmt.Errorf("alias %q is not on the key", name)
+			return nil, fmt.Errorf("%q is not in the map", name)
 		}
 		if i > 0 {
 			b.WriteByte(',')
@@ -1117,7 +1203,7 @@ func legacyAliasBytes(aliases schemas.KeyAliases, order []string) ([]byte, error
 		}
 		b.Write(k)
 		b.WriteByte(':')
-		v, err := sonic.Marshal(alias)
+		v, err := sonic.Marshal(value)
 		if err != nil {
 			return nil, err
 		}
