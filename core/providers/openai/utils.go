@@ -160,16 +160,12 @@ func includeXHighInDefaultLadder(provider schemas.ModelProvider, model string) b
 	}
 }
 
-// normalizeReasoningEffort applies hosted-provider compatibility rules while
-// preserving xhigh for OpenAI-compatible destinations. Their model names and
-// capability records do not describe OpenAI's hosted effort enum.
+// normalizeReasoningEffort maps effort onto the levels the destination accepts.
+// A datasheet record for the provider wins; without one, the fallback ladder
+// keeps xhigh for OpenAI-compatible destinations (see includeXHighInDefaultLadder).
 func normalizeReasoningEffort(provider schemas.ModelProvider, caps schemas.ModelCaps, effort string) string {
 	if provider == "" {
 		provider = caps.Provider()
-	}
-	if effort == schemas.ReasoningEffortXHigh && provider != schemas.OpenAI &&
-		provider != schemas.Azure && provider != schemas.XAI {
-		return effort
 	}
 	return caps.NormalizeReasoningEffort(effort, defaultEffortControl(provider, caps.Model()))
 }

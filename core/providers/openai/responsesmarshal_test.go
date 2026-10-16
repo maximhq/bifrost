@@ -231,6 +231,19 @@ func TestNormalizeReasoningEffortPreservesXHighForOpenAICompatibleProviders(t *t
 	}
 }
 
+// A datasheet record is per provider, so a vLLM row that omits xhigh must
+// override the fallback ladder that otherwise keeps xhigh for vLLM.
+func TestNormalizeReasoningEffortHonorsProviderCapabilityRecord(t *testing.T) {
+	const model = "qwen/qwen3.8-27b"
+	installCapabilityRecord(t, model, &schemas.ModelCapabilities{
+		ReasoningEffortLevels: []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh},
+	})
+	caps := schemas.ResolveModelCaps(schemas.VLLM, model)
+	if got := normalizeReasoningEffort(schemas.VLLM, caps, schemas.ReasoningEffortXHigh); got != schemas.ReasoningEffortHigh {
+		t.Fatalf("normalizeReasoningEffort(vllm, xhigh) with record = %q, want high", got)
+	}
+}
+
 func TestOpenAIResponsesRequest_MarshalJSON_InputStringForm(t *testing.T) {
 	tests := []struct {
 		name        string
