@@ -20,6 +20,7 @@ The following table summarizes which operations are supported by each provider v
 | Azure (`azure/<model>`)              | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ✅     | ✅              | ✅         | ✅                  | ❌              | ✅         | ✅  | ✅           | ✅  | ❌           | ✅    | ✅    | ❌           | ❌     | ❌     | ❌  | ✅    | ❌          | ❌         | ✅          | ✅                   |
 | Bedrock (`bedrock/<model>`)          | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ✅     | ❌              | ✅         | ❌                  | ✅              | ✅         | ❌  | ❌           | ❌  | ❌           | ✅    | ✅    | ✅           | ✅     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | Bedrock Mantle (`bedrock_mantle/<model>`) | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ✅           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
+| BytePlus (`byteplus/<model>`)        | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ✅     | ❌              | ✅         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌        | ❌  | ✅    | ❌          | ❌         | ❌          | ❌                   |
 | Cerebras (`cerebras/<model>`)        | ✅     | ✅   | ✅            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ❌         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | Cloudflare (`cloudflare/<model>`)    | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ❌           | ❌     | ✅     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
 | Cohere (`cohere/<model>`)            | ✅     | ❌   | ❌            | ✅   | ✅            | ✅        | ✅                 | ❌     | ❌              | ❌         | ❌                  | ❌              | ✅         | ❌  | ❌           | ❌  | ❌           | ❌    | ❌    | ✅           | ✅     | ❌     | ❌  | ❌    | ❌          | ❌         | ❌          | ❌                   |
@@ -102,12 +103,13 @@ The "Embeddings" column above covers text. The `/v1/embeddings` endpoint also ac
 | Bedrock `amazon.nova-2-multimodal-embeddings-v1:0` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | inline, `s3://` |
 | OpenAI, Azure, Mistral, Parasail and other OpenAI-compatible | ✅ (+ tokens) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
 | Hugging Face | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ | — |
+| BytePlus `skylark-embedding-vision-251215` | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ (one call per entry) | ✅ | inline, `https://` |
 
 Notes:
 
 - All the parts in one `input` entry produce one vector. Vertex `multimodalembedding@001` and Nova are the exceptions: they return a separate vector per modality, labelled with a `modality` field, and `multimodalembedding@001` returns one vector per video segment.
 - A part the target model cannot carry returns a `400` naming the modality. Bifrost never drops a part silently.
-- "Per-item params" means each entry can carry its own `task_type` / `dimensions` / `title`. Only Gemini's `:batchEmbedContents` has a parameter block per entry; every other provider returns a `400` for per-item overrides.
+- "Per-item params" means each entry can carry its own `task_type` / `dimensions` / `title`. Gemini's `:batchEmbedContents` has a parameter block per entry, and BytePlus sends every entry as its own call; every other provider returns a `400` for per-item overrides.
 - Nova embeds one modality per request; Titan multimodal and Nova take one entry per request.
 
 See the [multimodal embeddings guide](../../quickstart/gateway/multimodal#multimodal-embeddings) for request shapes, per-model parameters and response fields.
