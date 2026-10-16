@@ -133,7 +133,8 @@ func omittedEffortReasons(caps schemas.ModelCaps, model string) bool {
 // datasheet's per-level booleans take precedence when a row exists.
 func defaultEffortControl(provider schemas.ModelProvider, model string) *schemas.EffortControl {
 	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
-	if acceptsMinimalEffort(model) {
+	// BytePlus Ark accepts minimal/low/medium/high on every reasoning model.
+	if acceptsMinimalEffort(model) || provider == schemas.BytePlus {
 		levels = append([]string{schemas.ReasoningEffortMinimal}, levels...)
 	}
 	if includeXHighInDefaultLadder(provider, model) {
@@ -156,6 +157,9 @@ func includeXHighInDefaultLadder(provider schemas.ModelProvider, model string) b
 	switch provider {
 	case schemas.OpenAI, schemas.Azure, schemas.XAI:
 		return acceptsXHighEffort(model)
+	case schemas.BytePlus:
+		// Ark's ladder tops out at high and rejects xhigh.
+		return false
 	default:
 		return true
 	}

@@ -1573,7 +1573,13 @@ func (resp *OpenAIResponsesRequest) MarshalJSON() ([]byte, error) {
 		}
 	}
 
-	return providerUtils.MarshalSorted(aux)
+	data, err := providerUtils.MarshalSorted(aux)
+	if err != nil || resp.Provider != schemas.BytePlus || resp.Reasoning == nil {
+		return data, err
+	}
+	// Ark's Responses decoder rejects reasoning.summary as an unknown field, even when it is null,
+	// and Summary has no omitempty, so the key is removed from the encoded body instead.
+	return providerUtils.DeleteJSONField(data, "reasoning.summary")
 }
 
 // IsStreamingRequested implements the StreamingRequest interface
