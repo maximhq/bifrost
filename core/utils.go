@@ -32,6 +32,7 @@ var dynamicallyConfigurableProviders = []schemas.ModelProvider{
 	schemas.Azure,
 	schemas.Bedrock,
 	schemas.BedrockMantle,
+	schemas.BytePlus,
 	schemas.Cerebras,
 	schemas.Cohere,
 	schemas.Databricks,
