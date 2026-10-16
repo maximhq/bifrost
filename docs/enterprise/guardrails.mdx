@@ -251,7 +251,7 @@ Set a rule's `output_mode` to `monitor` to see what its output guardrails would 
 Monitor mode applies to the output phase only: the rule needs `target` `llm` and `apply_to` `output` or `both`, and the input phase of a `both` rule is still enforced. When enforce and monitor rules match the same request, the enforce rules decide what the client receives and the monitor rules add their findings to the log.
 
 <Note>
-  At most 256 monitor evaluations run at once. A response that arrives while all are busy is not evaluated, and its plugin logs say `[output-monitor] skipped`.
+  Every monitored response is evaluated; there is no limit on how many evaluations run at once. Each one holds a copy of the response and its log entry until it finishes, for at most 90 seconds, so memory grows with monitored traffic multiplied by the guardrail provider's latency. Use the rule's sampling rate to monitor a share of high-volume traffic.
 </Note>
 
 ---
