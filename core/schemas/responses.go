@@ -4643,6 +4643,37 @@ func UnmarshalResponsesStreamObjectDelta(data []byte, resp *BifrostResponsesStre
 	return nil
 }
 
+// reasoningSummaryDeltaIsSignatureOnly reports whether resp is a
+// response.reasoning_summary_text.delta carrying only a thinking signature and no
+// text delta. Provider converters emit that shape to move a signature through a
+// stream that has no field of its own for one (see the signature branches in
+// core/providers/anthropic/responses.go and core/providers/bedrock/responses.go),
+// and Bifrost's own Anthropic and Bedrock output converters need the event to
+// rebuild signature_delta, so it cannot simply be dropped at the source.
+func reasoningSummaryDeltaIsSignatureOnly(resp *BifrostResponsesStreamResponse) bool {
+	return resp != nil &&
+		resp.Type == ResponsesStreamResponseTypeReasoningSummaryTextDelta &&
+		resp.Delta == nil
+}
+
+// WithOpenAIRequiredDelta returns resp carrying the `delta` string the OpenAI
+// Responses spec makes required on response.reasoning_summary_text.delta. Delta is
+// tagged omitempty, so a nil one drops the field entirely and strict clients
+// (openai-java: "`delta` is not set") abort the stream.
+//
+// resp is returned unchanged, with no copy, whenever nothing needs filling: only
+// one event per reasoning item is signature-only, so no other chunk on the stream
+// pays for this. The fill is made on a copy because the same pointer is shared with
+// the stream accumulator and any chunk interceptor.
+func (resp *BifrostResponsesStreamResponse) WithOpenAIRequiredDelta() *BifrostResponsesStreamResponse {
+	if !reasoningSummaryDeltaIsSignatureOnly(resp) {
+		return resp
+	}
+	filled := *resp
+	filled.Delta = Ptr("")
+	return &filled
+}
+
 func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStreamResponse {
 	if resp == nil {
 		return nil
@@ -4720,6 +4751,14 @@ func (resp *BifrostResponsesStreamResponse) WithDefaults() *BifrostResponsesStre
 		// Ensure logprobs array exists
 		if result.LogProbs == nil {
 			result.LogProbs = []ResponsesOutputMessageContentTextLogProb{}
+		}
+
+	case ResponsesStreamResponseTypeReasoningSummaryTextDelta:
+		// `delta` is required on this event; a signature-only one leaves it nil and
+		// omitempty then drops the field, which strict OpenAI SDKs reject. Signature
+		// is left in place -- it is additive to the spec, and clients already read it.
+		if reasoningSummaryDeltaIsSignatureOnly(result) {
+			result.Delta = Ptr("")
 		}
 
 	case ResponsesStreamResponseTypeContentPartAdded, ResponsesStreamResponseTypeContentPartDone:

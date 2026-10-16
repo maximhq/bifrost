@@ -2520,3 +2520,128 @@ func TestResponsesMCPItemsKeepServerLabel(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "deepwiki", gjson.GetBytes(out, "server_label").String(), string(out))
 }
+
+// Regression tests for issue #8536: on the OpenAI-shaped Responses stream, the
+// response.reasoning_summary_text.delta event that carries only a thinking signature
+// went out with no "delta" field at all.
+//
+// Provider converters reuse this event type to move a signature through a stream that
+// has no field of its own for one (the signature branches in
+// core/providers/{anthropic,bedrock}/responses.go), setting Signature and leaving Delta
+// nil. Delta is tagged `json:"delta,omitempty"`, so a nil Delta drops the key entirely.
+// The OpenAI Responses spec makes `delta` a required string on that event, and strict
+// clients abort the stream over it — openai-java raises "`delta` is not set".
+//
+// Dropping the event at the source is not available: Bifrost's own Anthropic and Bedrock
+// output converters consume it to rebuild signature_delta.
+
+func signatureOnlyReasoningDelta() *BifrostResponsesStreamResponse {
+	return &BifrostResponsesStreamResponse{
+		Type:           ResponsesStreamResponseTypeReasoningSummaryTextDelta,
+		SequenceNumber: 4,
+		OutputIndex:    Ptr(0),
+		SummaryIndex:   Ptr(0),
+		ContentIndex:   Ptr(0),
+		ItemID:         Ptr("msg_abc_reasoning_0"),
+		Signature:      Ptr("EtUCCnkIEhABGAIqQ"),
+	}
+}
+
+// TestSignatureOnlyReasoningDeltaSerializesWithoutDeltaField pins the defect itself, so
+// the tests below are not asserting against a shape that was never broken.
+func TestSignatureOnlyReasoningDeltaSerializesWithoutDeltaField(t *testing.T) {
+	encoded, err := json.Marshal(signatureOnlyReasoningDelta())
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), `"delta"`,
+		"a nil Delta is dropped by omitempty - this is what strict clients reject")
+	assert.Contains(t, string(encoded), `"signature"`)
+}
+
+func TestWithOpenAIRequiredDeltaFillsSignatureOnlyReasoningDelta(t *testing.T) {
+	resp := signatureOnlyReasoningDelta()
+
+	filled := resp.WithOpenAIRequiredDelta()
+	require.NotNil(t, filled)
+	require.NotNil(t, filled.Delta)
+	assert.Equal(t, "", *filled.Delta)
+
+	// The signature still travels: it is additive to the spec and clients already read
+	// it, so the fix must not trade one missing field for another.
+	require.NotNil(t, filled.Signature)
+	assert.Equal(t, "EtUCCnkIEhABGAIqQ", *filled.Signature)
+
+	// Asserted on the wire, since the whole defect is a serialization one.
+	encoded, err := json.Marshal(filled)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"delta":""`)
+
+	// The caller's value is shared with the stream accumulator and any chunk
+	// interceptor, so the fill has to be made on a copy.
+	assert.Nil(t, resp.Delta, "the source event must not be mutated")
+}
+
+func TestWithOpenAIRequiredDeltaLeavesEverythingElseAlone(t *testing.T) {
+	t.Run("a reasoning delta that already has text is returned unchanged", func(t *testing.T) {
+		resp := signatureOnlyReasoningDelta()
+		resp.Delta = Ptr("Thinking about it")
+
+		filled := resp.WithOpenAIRequiredDelta()
+		assert.Same(t, resp, filled, "no copy should be made when nothing needs filling")
+		assert.Equal(t, "Thinking about it", *filled.Delta)
+	})
+
+	t.Run("an empty string delta is already valid and is not replaced", func(t *testing.T) {
+		resp := signatureOnlyReasoningDelta()
+		resp.Delta = Ptr("")
+
+		assert.Same(t, resp, resp.WithOpenAIRequiredDelta())
+	})
+
+	t.Run("other event types with a nil delta are untouched", func(t *testing.T) {
+		// Only reasoning_summary_text.delta is reused to carry a signature, so this must
+		// not become a blanket "fill delta on every event" rule.
+		for _, typ := range []ResponsesStreamResponseType{
+			ResponsesStreamResponseTypeOutputTextDelta,
+			ResponsesStreamResponseTypeReasoningSummaryTextDone,
+			ResponsesStreamResponseTypeCompleted,
+		} {
+			resp := &BifrostResponsesStreamResponse{Type: typ}
+			filled := resp.WithOpenAIRequiredDelta()
+			assert.Same(t, resp, filled, "type %s should be returned unchanged", typ)
+			assert.Nil(t, filled.Delta, "type %s should keep a nil delta", typ)
+		}
+	})
+
+	t.Run("a nil receiver is handled", func(t *testing.T) {
+		var resp *BifrostResponsesStreamResponse
+		assert.Nil(t, resp.WithOpenAIRequiredDelta())
+	})
+}
+
+// TestWithDefaultsFillsSignatureOnlyReasoningDelta covers the other serialization path.
+// The OpenAI drop-in routes (/openai/v1/responses, the Azure deployments catch-all) and
+// the pydantic-ai integration all normalize through WithDefaults rather than marshalling
+// the chunk verbatim, so the same invariant has to hold there.
+func TestWithDefaultsFillsSignatureOnlyReasoningDelta(t *testing.T) {
+	out := signatureOnlyReasoningDelta().WithDefaults()
+	require.NotNil(t, out)
+	require.NotNil(t, out.Delta)
+	assert.Equal(t, "", *out.Delta)
+	require.NotNil(t, out.Signature)
+	assert.Equal(t, "EtUCCnkIEhABGAIqQ", *out.Signature)
+
+	encoded, err := json.Marshal(out)
+	require.NoError(t, err)
+	assert.Contains(t, string(encoded), `"delta":""`)
+}
+
+func TestWithDefaultsKeepsReasoningDeltaTextWhenPresent(t *testing.T) {
+	resp := signatureOnlyReasoningDelta()
+	resp.Signature = nil
+	resp.Delta = Ptr("Thinking about it")
+
+	out := resp.WithDefaults()
+	require.NotNil(t, out)
+	require.NotNil(t, out.Delta)
+	assert.Equal(t, "Thinking about it", *out.Delta)
+}

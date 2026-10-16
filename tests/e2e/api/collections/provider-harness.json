@@ -275115,6 +275115,167 @@
           }
         }
       ]
+    },
+    {
+      "name": "257. Signature-only reasoning deltas carry the required delta (#8536) (reasoning-signature-delta)",
+      "description": "A provider that emits a thinking signature reuses response.reasoning_summary_text.delta to carry it, because the Responses stream has no per-event signature field: the converter sets Signature and leaves Delta nil (the signature branches in core/providers/anthropic/responses.go and core/providers/bedrock/responses.go). Delta is tagged `json:\"delta,omitempty\"`, so the required `delta` key was dropped on the OpenAI-shaped wire and strict clients aborted the stream -- openai-java raises \"`delta` is not set\". It reproduces on every Claude model that thinks, on text and tool-call turns.\n\nBoth affected routes get a row, because they serialize differently and the fix lands in two places. The native /v1/responses route marshals the chunk verbatim and is filled in the transport writer; /openai/v1/responses normalizes through BifrostResponsesStreamResponse.WithDefaults. A fix to only one of them leaves the other broken, which is what these two rows pin.\n\nDropping the event at the source is not an option: Bifrost's own Anthropic and Bedrock output converters consume it to rebuild signature_delta, so it has to stay on the stream and carry a valid delta instead.\n\nEach row asserts the event was actually produced before asserting on it. Whether a given turn thinks is probabilistic, so without that guard a run where the model skipped thinking would pass green having checked nothing. The field is checked with hasOwnProperty, since a missing key and an empty-string delta are both falsy and only the first is the bug.",
+      "item": [
+        {
+          "name": "bedrock/claude-opus-5-5 /v1/responses streaming: signature-only reasoning delta has a delta field - reasoning-signature-delta",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The event under test is the one that carries only a thinking signature. Every",
+                  "// response.reasoning_summary_text.delta frame on the stream is checked, because",
+                  "// the text deltas and the signature-only one share a type and only the latter",
+                  "// was ever missing the field.",
+                  "var frames = (pm.response.text() || '').split('\\n');",
+                  "var deltas = [];",
+                  "for (var i = 0; i < frames.length; i++) {",
+                  "  var line = frames[i].trim();",
+                  "  if (line.indexOf('data: ') !== 0) { continue; }",
+                  "  var payload = line.slice(6);",
+                  "  if (payload === '[DONE]') { continue; }",
+                  "  try {",
+                  "    var ev = JSON.parse(payload);",
+                  "    if (ev && ev.type === 'response.reasoning_summary_text.delta') { deltas.push(ev); }",
+                  "  } catch (e) {}",
+                  "}",
+                  "pm.test('the model actually produced thinking', function () {",
+                  "  // Asserted, not assumed: whether a turn thinks is probabilistic, and without",
+                  "  // this the row passes green on a run that never emitted the event at all.",
+                  "  pm.expect(pm.response.code, 'request failed: ' + (pm.response.text() || '')).to.be.below(400);",
+                  "  pm.expect(deltas, 'no reasoning_summary_text.delta events on the stream')",
+                  "    .to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('every reasoning_summary_text.delta carries the required delta string', function () {",
+                  "  // The OpenAI Responses spec makes delta a required string on this event, and",
+                  "  // Delta is tagged omitempty, so a signature-only event used to drop the key",
+                  "  // entirely. Checked with hasOwnProperty rather than a value compare, since a",
+                  "  // missing key and an empty string both read as falsy.",
+                  "  for (var i = 0; i < deltas.length; i++) {",
+                  "    pm.expect(Object.prototype.hasOwnProperty.call(deltas[i], 'delta'),",
+                  "      'event ' + i + ' has no delta field: ' + JSON.stringify(deltas[i])).to.be.true;",
+                  "    pm.expect(deltas[i].delta, 'event ' + i + ' delta is not a string').to.be.a('string');",
+                  "  }",
+                  "});",
+                  "pm.test('the thinking signature still travels', function () {",
+                  "  // The fix must not trade one missing field for another: signature is additive",
+                  "  // to the spec and clients already read it.",
+                  "  var signed = deltas.filter(function (d) { return typeof d.signature === 'string' && d.signature.length; });",
+                  "  pm.expect(signed, 'no event carried a signature, so the signature-only shape was not exercised')",
+                  "    .to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"bedrock/claude-opus-5-5\", \"stream\": true, \"input\": \"What is 17*23? Think first, then answer with just the number.\", \"reasoning\": {\"effort\": \"medium\", \"summary\": \"auto\"}, \"max_output_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock/claude-opus-5-5 /openai/v1/responses streaming: signature-only reasoning delta has a delta field - reasoning-signature-delta",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The event under test is the one that carries only a thinking signature. Every",
+                  "// response.reasoning_summary_text.delta frame on the stream is checked, because",
+                  "// the text deltas and the signature-only one share a type and only the latter",
+                  "// was ever missing the field.",
+                  "var frames = (pm.response.text() || '').split('\\n');",
+                  "var deltas = [];",
+                  "for (var i = 0; i < frames.length; i++) {",
+                  "  var line = frames[i].trim();",
+                  "  if (line.indexOf('data: ') !== 0) { continue; }",
+                  "  var payload = line.slice(6);",
+                  "  if (payload === '[DONE]') { continue; }",
+                  "  try {",
+                  "    var ev = JSON.parse(payload);",
+                  "    if (ev && ev.type === 'response.reasoning_summary_text.delta') { deltas.push(ev); }",
+                  "  } catch (e) {}",
+                  "}",
+                  "pm.test('the model actually produced thinking', function () {",
+                  "  // Asserted, not assumed: whether a turn thinks is probabilistic, and without",
+                  "  // this the row passes green on a run that never emitted the event at all.",
+                  "  pm.expect(pm.response.code, 'request failed: ' + (pm.response.text() || '')).to.be.below(400);",
+                  "  pm.expect(deltas, 'no reasoning_summary_text.delta events on the stream')",
+                  "    .to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('every reasoning_summary_text.delta carries the required delta string', function () {",
+                  "  // The OpenAI Responses spec makes delta a required string on this event, and",
+                  "  // Delta is tagged omitempty, so a signature-only event used to drop the key",
+                  "  // entirely. Checked with hasOwnProperty rather than a value compare, since a",
+                  "  // missing key and an empty string both read as falsy.",
+                  "  for (var i = 0; i < deltas.length; i++) {",
+                  "    pm.expect(Object.prototype.hasOwnProperty.call(deltas[i], 'delta'),",
+                  "      'event ' + i + ' has no delta field: ' + JSON.stringify(deltas[i])).to.be.true;",
+                  "    pm.expect(deltas[i].delta, 'event ' + i + ' delta is not a string').to.be.a('string');",
+                  "  }",
+                  "});",
+                  "pm.test('the thinking signature still travels', function () {",
+                  "  // The fix must not trade one missing field for another: signature is additive",
+                  "  // to the spec and clients already read it.",
+                  "  var signed = deltas.filter(function (d) { return typeof d.signature === 'string' && d.signature.length; });",
+                  "  pm.expect(signed, 'no event carried a signature, so the signature-only shape was not exercised')",
+                  "    .to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"bedrock/claude-opus-5-5\", \"stream\": true, \"input\": \"What is 17*23? Think first, then answer with just the number.\", \"reasoning\": {\"effort\": \"medium\", \"summary\": \"auto\"}, \"max_output_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
