@@ -151791,6 +151791,139 @@
             }
           },
           "response": []
+        },
+        {
+          "name": "bedrock/openai.gpt-oss-120b /anthropic/v1/messages replayed assistant item keeps status with its id (raw_request) - assistant output message status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('bedrock gpt-oss-120b anthropic ingress: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock gpt-oss-120b anthropic ingress: replayed assistant item keeps status with its id on the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var input = Array.isArray(rr.input) ? rr.input : [];",
+                  "  var asst = input.filter(function (it) { return it && it.role === 'assistant' && (it.type === 'message' || it.type === undefined); });",
+                  "  pm.expect(asst.length, 'no replayed assistant message in raw_request.input: ' + JSON.stringify(input).slice(0, 600)).to.be.above(0);",
+                  "  asst.forEach(function (it) {",
+                  "    if (it.id === undefined) { return; }",
+                  "    // An assistant item with an id is a ResponseOutputMessageParam: id AND status are required.",
+                  "    // The pre-fix sanitizer kept the id and dropped the status, which matches neither input shape.",
+                  "    pm.expect(it.status, 'assistant item has id but no status (pre-fix regression): ' + JSON.stringify(it).slice(0, 400)).to.eql('completed');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/openai.gpt-oss-120b\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Hello\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Hello! How can I help you today?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"Reply with the single word OK.\"\n        }\n      ]\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-sol /v1/responses replayed output message keeps status with its id (raw_request) - assistant output message status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('bedrock_mantle gpt-5.6-sol responses ingress: 200', function () {",
+                  "  pm.expect(pm.response.code, 'want 200: ' + txt.slice(0, 600)).to.eql(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test('bedrock_mantle gpt-5.6-sol responses ingress: replayed assistant item keeps status with its id on the wire', function () {",
+                  "  pm.expect(rr, 'raw_request missing - x-bf-send-back-raw-request not honored: ' + txt.slice(0, 300)).to.be.an('object');",
+                  "  var input = Array.isArray(rr.input) ? rr.input : [];",
+                  "  var asst = input.filter(function (it) { return it && it.role === 'assistant' && (it.type === 'message' || it.type === undefined); });",
+                  "  pm.expect(asst.length, 'no replayed assistant message in raw_request.input: ' + JSON.stringify(input).slice(0, 600)).to.be.above(0);",
+                  "  asst.forEach(function (it) {",
+                  "    if (it.id === undefined) { return; }",
+                  "    // An assistant item with an id is a ResponseOutputMessageParam: id AND status are required.",
+                  "    // The pre-fix sanitizer kept the id and dropped the status, which matches neither input shape.",
+                  "    pm.expect(it.status, 'assistant item has id but no status (pre-fix regression): ' + JSON.stringify(it).slice(0, 400)).to.eql('completed');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock_mantle/openai.gpt-5.6-sol\",\n  \"max_output_tokens\": 256,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Hello\"\n    },\n    {\n      \"type\": \"message\",\n      \"id\": \"msg_harness_replay_1\",\n      \"role\": \"assistant\",\n      \"status\": \"completed\",\n      \"content\": [\n        {\n          \"type\": \"output_text\",\n          \"text\": \"Hello! How can I help you today?\",\n          \"annotations\": []\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "response": []
         }
       ]
     },
@@ -273276,6 +273409,114 @@
                 "v1",
                 "systemone"
               ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "251. Custom OpenAI base serves every model once decisions are allowed (decisions opt-in)",
+      "description": "A custom provider on the OpenAI base whose allowed_requests set decisions to true forwards every model to its upstream's /v1/decisions. Before the fix, OpenAIProvider.Decision checked the model first (a supports_decisions datasheet row, which custom providers never have, or the gpt-6-luna name) and refused anything else with 400 unsupported_operation, so the opt-in was never read and nothing reached the upstream. The profile's openai_decisions_optin provider allows decisions and maps the key alias kserve-decider (canonical name kserve-decider, wire model gpt-6-luna), so the gate sees a name it does not recognize while OpenAI still answers on /v1/decisions. Each case expects 200 with a predicate answer reported under the custom provider: red before the fix (400 unsupported_operation: decisions is not supported by openai_decisions_optin provider), green after. Covered routes: /v1/decisions and the OpenAI SDK route /openai/v1/decisions. The Go SDK enters at the same neutral request and is pinned by TestOpenAIProviderDecisionCustomProviderOptIn.",
+      "item": [
+        {
+          "name": "/v1/decisions - opted-in custom provider forwards an unrecognized model - openai_decisions_optin/kserve-decider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('opted-in custom provider forwards the decision upstream', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the gate did not refuse the unrecognized model name', function () {",
+                  "    pm.expect(body.error, 'refused before the upstream call: ' + pm.response.text()).to.be.undefined;",
+                  "});",
+                  "pm.test('one predicate answer from /v1/decisions', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});",
+                  "pm.test('served and reported by the custom provider', function () {",
+                  "    var extra = body.extra_fields || {};",
+                  "    var provider = (extra.routing_info && extra.routing_info.provider) || extra.provider;",
+                  "    pm.expect(provider, 'extra_fields: ' + JSON.stringify(extra)).to.eql('openai_decisions_optin');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_decisions_optin/kserve-decider\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          }
+        },
+        {
+          "name": "/openai/v1/decisions - opted-in custom provider forwards an unrecognized model in the OpenAI shape - openai_decisions_optin/kserve-decider",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('opted-in custom provider forwards the decision upstream', function () {",
+                  "    pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('the gate did not refuse the unrecognized model name', function () {",
+                  "    pm.expect(body.error, 'refused before the upstream call: ' + pm.response.text()).to.be.undefined;",
+                  "});",
+                  "pm.test('one predicate answer from /v1/decisions', function () {",
+                  "    pm.expect(body.answers, 'answers: ' + pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "    pm.expect(body.answers[0].type).to.eql('predicate');",
+                  "    pm.expect(body.answers[0].probability).to.be.within(0, 1);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/decisions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "decisions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai_decisions_optin/kserve-decider\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
             }
           }
         }

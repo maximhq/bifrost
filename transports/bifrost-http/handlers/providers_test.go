@@ -1545,6 +1545,38 @@ func TestListModels_DecisionsGPT6LunaOnlyOnOpenAIBase(t *testing.T) {
 	}
 }
 
+// TestListModels_DecisionsListsEveryModelOnOptedInOpenAIBase pins that a
+// custom provider on OpenAI's base whose allowed requests turn decisions on
+// lists every model under decisions=true, matching its Decision call, which
+// serves any model once the provider opts in.
+func TestListModels_DecisionsListsEveryModelOnOptedInOpenAIBase(t *testing.T) {
+	SetLogger(&mockLogger{})
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	models := []string{"my-decider", "gpt-6-luna"}
+	h := providerHandlerForTest("kserve", []schemas.Key{{ID: "key-a"}}, models, models)
+	config := h.inMemoryStore.Providers["kserve"]
+	config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
+	h.inMemoryStore.Providers["kserve"] = config
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetMethod("GET")
+	ctx.Request.SetRequestURI("/api/models?provider=kserve&decisions=true&limit=10")
+	h.listModels(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	var resp ListModelsResponse
+	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal response: %v", err)
+	}
+	if resp.Total != len(models) {
+		t.Fatalf("expected every model listed, got %#v", resp.Models)
+	}
+}
+
 // TestListModels_DecisionsSkipsProvidersDenyingDecisions pins that
 // decisions=true lists nothing from a custom provider whose allowed requests
 // exclude decisions, since its Decision call is denied rather than served:

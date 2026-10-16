@@ -271,6 +271,59 @@ func TestOpenAIProviderDecisionGating(t *testing.T) {
 	}
 }
 
+// TestOpenAIProviderDecisionCustomProviderOptIn pins that a custom provider on
+// the OpenAI base whose allowed requests explicitly turn decisions on serves
+// every model on /v1/decisions, since the catalog has no rows for it and its
+// models carry names of the user's choosing. Allowed requests left unset grant
+// every operation without saying the upstream serves /v1/decisions, so there
+// the model gate still applies, and decisions turned off is still denied.
+func TestOpenAIProviderDecisionCustomProviderOptIn(t *testing.T) {
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"dec_1","model":"m","answers":[{"type":"predicate","name":"q","probability":0.5}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}`))
+	}))
+	defer server.Close()
+
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+	decide := func(allowed *schemas.AllowedRequests, model string) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+		provider := NewOpenAIProvider(&schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+			CustomProviderConfig: &schemas.CustomProviderConfig{
+				CustomProviderKey: "kserve",
+				BaseProviderType:  schemas.OpenAI,
+				AllowedRequests:   allowed,
+			},
+		}, testNoopLogger{})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		return provider.Decision(ctx, key, &schemas.BifrostDecisionRequest{
+			Provider:  "kserve",
+			Model:     model,
+			Input:     schemas.DecisionInput{Text: schemas.Ptr("state")},
+			Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Q?")}},
+		})
+	}
+
+	resp, bifrostErr := decide(&schemas.AllowedRequests{Decision: true}, "my-decider")
+	if bifrostErr != nil {
+		t.Fatalf("decisions opted in on a custom provider must be served for any model, got %s", bifrostErr.Error.Message)
+	}
+	require.Len(t, resp.Answers, 1)
+	require.Equal(t, []string{"/v1/decisions"}, calls)
+
+	for name, allowed := range map[string]*schemas.AllowedRequests{"unset": nil, "decisions off": {ChatCompletion: true}} {
+		_, bifrostErr := decide(allowed, "my-decider")
+		require.NotNil(t, bifrostErr, name)
+		require.NotNil(t, bifrostErr.Error.Code, name)
+		assert.Equal(t, "unsupported_operation", *bifrostErr.Error.Code, name)
+	}
+	require.Len(t, calls, 1, "only the opted-in provider reaches the endpoint")
+}
+
 // TestOpenAIDecisionRequestKeepsUnknownFields pins that a top-level field the
 // request does not model is kept, compacted, for the provider wire, and that
 // the route's fallbacks stay off it.

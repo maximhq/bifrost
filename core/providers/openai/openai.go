@@ -4357,9 +4357,13 @@ func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 // with no row a known decisions family (DefaultSupportsDecisions, such as
 // gpt-6-luna) does. Any other model is reported as unsupported, so core
 // answers the request through emulation on the model's chat API instead.
+// A custom provider whose allowed requests turn decisions on serves every
+// model: the catalog has no rows for it, and its opt-in is the only statement
+// that its upstream serves /v1/decisions.
 func (provider *OpenAIProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
 	capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
-	if !schemas.ResolveModelCaps(request.Provider, capModel).SupportsDecisions(schemas.DefaultSupportsDecisions(capModel)) {
+	if !provider.customProviderConfig.IsOperationExplicitlyAllowed(schemas.DecisionRequest) &&
+		!schemas.ResolveModelCaps(request.Provider, capModel).SupportsDecisions(schemas.DefaultSupportsDecisions(capModel)) {
 		return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 	}
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.DecisionRequest); err != nil {
