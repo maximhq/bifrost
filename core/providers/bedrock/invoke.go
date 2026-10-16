@@ -2377,6 +2377,10 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 			default:
 				stopReason = resp.Response.IncompleteDetails.Reason
 			}
+		} else if resp.Response != nil && resp.Response.StopReason != nil {
+			// A completed turn carries its reason in StopReason (e.g. "tool_calls" when the
+			// model called a tool), matching the non-streaming converter's tool_use.
+			stopReason = string(anthropic.ConvertBifrostFinishReasonToAnthropic(*resp.Response.StopReason))
 		}
 
 		// Build message_delta event
