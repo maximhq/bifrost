@@ -1292,14 +1292,9 @@ func generateKeyHash(key schemas.Key, aliases []byte) (string, error) {
 		}
 		hash.Write(data)
 	}
-	// Hash Enabled: nil writes nothing so hashes stored before the field existed stay valid,
-	// and false is distinct from nil so disabling a key in config.json is detected on reload.
-	if key.Enabled != nil {
-		if *key.Enabled {
-			hash.Write([]byte("enabled:true"))
-		} else {
-			hash.Write([]byte("enabled:false"))
-		}
+	// Hash Enabled (nil = false, only true produces different hash)
+	if key.Enabled != nil && *key.Enabled {
+		hash.Write([]byte("enabled:true"))
 	}
 	// Hash UseForBatchAPI (nil = default false for new keys)
 	useForBatchAPI := false

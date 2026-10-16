@@ -168,7 +168,7 @@ Tests for key Enabled and UseForBatchAPI field handling.
 |--------------------------------------------------|----------------------------------------------|
 | TestGenerateKeyHash_EnabledField                 | Enabled field affects hash (true/false/nil)  |
 | TestSQLite_Key_EnabledChange_Detected            | Enabled change detected during sync          |
-| TestSQLite_Key_EnabledOmittedToFalse_Detected    | Omitted → enabled:false detected during sync |
+| TestSQLite_Key_EnabledUIToggleSurvivesUpgrade    | UI toggle kept after upgrade, file unchanged |
 | TestGenerateKeyHash_UseForBatchAPIField          | UseForBatchAPI field affects hash            |
 | TestSQLite_Key_UseForBatchAPIChange_Detected     | UseForBatchAPI change detected during sync   |
 
@@ -18331,7 +18331,7 @@ func TestGenerateKeyHash_EnabledField(t *testing.T) {
 			expectEqual: false,
 		},
 		{
-			name: "enabled_nil_vs_false_different_hash",
+			name: "enabled_nil_vs_false_same_hash",
 			key1: schemas.Key{
 				Name:    "test-key",
 				Value:   *schemas.NewSecretVar("sk-123"),
@@ -18344,7 +18344,7 @@ func TestGenerateKeyHash_EnabledField(t *testing.T) {
 				Weight:  1,
 				Enabled: &enabledFalse,
 			},
-			expectEqual: false,
+			expectEqual: true,
 		},
 		{
 			name: "same_enabled_true_same_hash",
@@ -18467,71 +18467,70 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	}
 }
 
-// TestSQLite_Key_EnabledOmittedToFalse_Detected verifies that adding enabled=false to a
-// key that was first loaded without the field disables it on the next load, instead of the
-// stored copy winning because both forms hashed the same.
-func TestSQLite_Key_EnabledOmittedToFalse_Detected(t *testing.T) {
+// TestSQLite_Key_EnabledUIToggleSurvivesUpgrade verifies that a key set to enabled=false in
+// config.json and then turned back on in the UI stays on after a restart on a newer build.
+// Older builds stored the hash of enabled=false as the hash of the key without enabled, so a
+// key hash that tells the two apart makes the unchanged file look edited and re-applies false.
+func TestSQLite_Key_EnabledUIToggleSurvivesUpgrade(t *testing.T) {
 	initTestLogger()
 	tempDir := createTempDir(t)
 
+	enabledTrue := true
 	enabledFalse := false
 	keyID := uuid.NewString()
+	makeKey := func(enabled *bool) schemas.Key {
+		return schemas.Key{
+			ID:      keyID,
+			Name:    "test-key",
+			Value:   *schemas.NewSecretVar("sk-test-123"),
+			Weight:  1,
+			Enabled: enabled,
+		}
+	}
+	writeConfig := func(enabled *bool) {
+		createConfigFile(t, tempDir, makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+			"openai": {Keys: []schemas.Key{makeKey(enabled)}},
+		}, tempDir))
+	}
 
-	initialConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
-		"openai": {
-			Keys: []schemas.Key{
-				{
-					ID:     keyID,
-					Name:   "test-key",
-					Value:  *schemas.NewSecretVar("sk-test-123"),
-					Weight: 1,
-				},
-			},
-		},
-	}, tempDir)
-
-	createConfigFile(t, tempDir, initialConfig)
+	// First load with Enabled=true, then the file changes to Enabled=false
+	writeConfig(&enabledTrue)
 	config1, err := LoadConfig(context.Background(), tempDir)
 	if err != nil {
 		t.Fatalf("First LoadConfig failed: %v", err)
 	}
-	if enabled := config1.Providers[schemas.OpenAI].Keys[0].Enabled; enabled != nil && !*enabled {
-		t.Fatal("Expected key to be enabled after first load")
-	}
 	config1.Close(context.Background())
 
-	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
-		"openai": {
-			Keys: []schemas.Key{
-				{
-					ID:      keyID,
-					Name:    "test-key",
-					Value:   *schemas.NewSecretVar("sk-test-123"),
-					Weight:  1,
-					Enabled: &enabledFalse,
-				},
-			},
-		},
-	}, tempDir)
-
-	createConfigFile(t, tempDir, updatedConfig)
+	writeConfig(&enabledFalse)
 	config2, err := LoadConfig(context.Background(), tempDir)
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	if enabled := config2.Providers[schemas.OpenAI].Keys[0].Enabled; enabled == nil || *enabled {
-		t.Error("Expected Enabled=false after second load, but got true or nil")
+
+	// Turn the key back on the way the UI does (ConfigHash is left as is), and store the hash an
+	// older build wrote for this file
+	key := config2.Providers[schemas.OpenAI].Keys[0]
+	key.Enabled = &enabledTrue
+	if err := config2.ConfigStore.UpdateProviderKey(context.Background(), schemas.OpenAI, key.ID, key); err != nil {
+		t.Fatalf("UpdateProviderKey failed: %v", err)
+	}
+	legacyHash, err := configstore.GenerateKeyHash(makeKey(nil))
+	if err != nil {
+		t.Fatalf("GenerateKeyHash failed: %v", err)
+	}
+	if err := config2.ConfigStore.DB().Model(&tables.TableKey{}).Where("key_id = ?", key.ID).Update("config_hash", legacyHash).Error; err != nil {
+		t.Fatalf("Failed to set stored config hash: %v", err)
 	}
 	config2.Close(context.Background())
 
-	// Third load with the file unchanged: the stored row is used, so it must hold false too
+	// Restart with the file unchanged: the UI value must win
 	config3, err := LoadConfig(context.Background(), tempDir)
 	if err != nil {
 		t.Fatalf("Third LoadConfig failed: %v", err)
 	}
 	defer config3.Close(context.Background())
-	if enabled := config3.Providers[schemas.OpenAI].Keys[0].Enabled; enabled == nil || *enabled {
-		t.Error("Expected Enabled=false to be persisted and survive a restart, but got true or nil")
+	if enabled := config3.Providers[schemas.OpenAI].Keys[0].Enabled; enabled == nil || !*enabled {
+		t.Error("Expected Enabled=true from the UI to survive a restart with config.json unchanged, but got false")
 	}
 }
 
