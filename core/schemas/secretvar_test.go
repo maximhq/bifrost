@@ -1037,30 +1037,151 @@ func TestNetworkConfigExtraHeaders_AcceptsSecretVarObjects(t *testing.T) {
 	}
 }
 
-// TestNetworkConfigRedacted_ExtraHeaders checks that a redacted copy masks the resolved
-// value of env/vault headers while keeping their references and literal values, and
-// never aliases the live map.
+// TestNetworkConfigRedacted_ExtraHeaders checks that a redacted copy fully masks every
+// literal header value (a nine-byte credential must not leak its prefix or suffix),
+// keeps env references visible as references, leaks no resolved secret, and never
+// aliases or mutates the live map.
 func TestNetworkConfigRedacted_ExtraHeaders(t *testing.T) {
 	t.Setenv("BF_TEST_HEADER_TOKEN", "token-from-env-value")
+	const secret = "oauth-client-secret-value"
 	nc := &NetworkConfig{ExtraHeaders: map[string]SecretVar{
-		"X-Plain": *NewSecretVar("literal"),
-		"X-Env":   *NewSecretVar("env.BF_TEST_HEADER_TOKEN"),
+		"X-Client-Secret": *NewSecretVar(secret),
+		"X-Nine-Byte":     *NewSecretVar("abc123xyz"),
+		"X-Short":         *NewSecretVar("abc"),
+		"X-Env":           *NewSecretVar("env.BF_TEST_HEADER_TOKEN"),
 	}}
 	redacted := nc.Redacted()
-	if got := redacted.ExtraHeaders["X-Plain"]; got.GetValue() != "literal" {
-		t.Errorf("literal header changed: %q", got.GetValue())
+	data, err := json.Marshal(redacted)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
 	}
-	env := redacted.ExtraHeaders["X-Env"]
-	if !env.IsRedacted() || env.GetValue() == "token-from-env-value" || env.GetRawRef() != "env.BF_TEST_HEADER_TOKEN" {
-		t.Errorf("env header not redacted with ref kept: %+v", env)
+	var out struct {
+		ExtraHeaders map[string]string `json:"extra_headers"`
 	}
-	if live := nc.ExtraHeaders["X-Env"]; live.GetValue() != "token-from-env-value" {
+	if err := json.Unmarshal(data, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, name := range []string{"X-Client-Secret", "X-Nine-Byte", "X-Short"} {
+		if got := out.ExtraHeaders[name]; got != "<REDACTED>" {
+			t.Errorf("%s: got %q, want <REDACTED>", name, got)
+		}
+	}
+	if got := out.ExtraHeaders["X-Env"]; got != "env.BF_TEST_HEADER_TOKEN" {
+		t.Errorf("env header should show its reference, got %q", got)
+	}
+	for _, leaked := range []string{secret, "abc1", "3xyz", "token-from-env-value"} {
+		if strings.Contains(string(data), leaked) {
+			t.Errorf("redacted JSON leaks %q: %s", leaked, data)
+		}
+	}
+	if live := nc.ExtraHeaders["X-Client-Secret"]; live.GetValue() != secret {
 		t.Fatal("live config mutated by Redacted")
 	}
 	redacted.ExtraHeaders["X-New"] = *NewSecretVar("x")
 	if _, aliased := nc.ExtraHeaders["X-New"]; aliased {
 		t.Fatal("redacted copy aliases the live map")
 	}
+}
+
+// echoRedacted replays what the UI sends back: the redacted config as JSON, decoded again.
+func echoRedacted(t *testing.T, stored map[string]SecretVar) map[string]SecretVar {
+	t.Helper()
+	sent, err := json.Marshal((&NetworkConfig{ExtraHeaders: stored}).Redacted())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var echoed NetworkConfig
+	if err := json.Unmarshal(sent, &echoed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return echoed.ExtraHeaders
+}
+
+// TestRestoreRedactedExtraHeaders replays the UI save flow: the redacted config goes out
+// as JSON and comes back unchanged or edited. Untouched headers restore to their stored
+// values, edits and references are kept, and a mask with no stored header of the same
+// name is rejected.
+func TestRestoreRedactedExtraHeaders(t *testing.T) {
+	t.Setenv("BF_TEST_HEADER_TOKEN", "token-from-env-value")
+	stored := map[string]SecretVar{
+		"Authorization":   *NewSecretVar("Bearer dapi-token"),
+		"X-Client-Secret": *NewSecretVar("oauth-client-secret-value"),
+		"X-Client-Id":     *NewSecretVar("client-id-1234567"),
+		"X-Env":           *NewSecretVar("env.BF_TEST_HEADER_TOKEN"),
+	}
+
+	t.Run("unchanged echo restores stored values", func(t *testing.T) {
+		restored, err := RestoreRedactedExtraHeaders(echoRedacted(t, stored), stored)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for name, want := range stored {
+			if got := restored[name]; got.GetValue() != want.GetValue() {
+				t.Errorf("%s: got %q, want %q", name, got.GetValue(), want.GetValue())
+			}
+		}
+		if got := restored["X-Env"]; !got.IsFromEnv() {
+			t.Error("X-Env lost its env reference")
+		}
+	})
+
+	t.Run("edited and new values are kept as sent", func(t *testing.T) {
+		echoed := echoRedacted(t, stored)
+		echoed["X-Client-Id"] = *NewSecretVar("new-client-id")
+		echoed["X-User-Email"] = *NewSecretVar("ops@example.com")
+		restored, err := RestoreRedactedExtraHeaders(echoed, stored)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := map[string]string{"X-Client-Id": "new-client-id", "X-User-Email": "ops@example.com", "X-Client-Secret": "oauth-client-secret-value"}
+		for name, value := range want {
+			if got := restored[name]; got.GetValue() != value {
+				t.Errorf("%s: got %q, want %q", name, got.GetValue(), value)
+			}
+		}
+	})
+
+	t.Run("renamed header with a masked value is rejected", func(t *testing.T) {
+		for _, rename := range []struct{ from, to string }{
+			{"X-Client-Secret", "X-Upstream-Secret"},
+			{"Authorization", "authorization"},
+		} {
+			echoed := echoRedacted(t, stored)
+			echoed[rename.to] = echoed[rename.from]
+			delete(echoed, rename.from)
+			if _, err := RestoreRedactedExtraHeaders(echoed, stored); err == nil || !strings.Contains(err.Error(), rename.to) {
+				t.Errorf("%s -> %s: expected an error naming %s, got %v", rename.from, rename.to, rename.to, err)
+			}
+		}
+	})
+
+	t.Run("masked value with nothing stored is rejected", func(t *testing.T) {
+		if _, err := RestoreRedactedExtraHeaders(map[string]SecretVar{"X-Client-Secret": *NewSecretVar("<REDACTED>")}, nil); err == nil {
+			t.Fatal("expected an error")
+		}
+	})
+
+	t.Run("literal asterisk values are not treated as masks", func(t *testing.T) {
+		echoed := echoRedacted(t, stored)
+		echoed["If-Match"] = *NewSecretVar("*")
+		echoed["X-Client-Id"] = *NewSecretVar("*")
+		restored, err := RestoreRedactedExtraHeaders(echoed, stored)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		for _, name := range []string{"If-Match", "X-Client-Id"} {
+			if got := restored[name]; got.GetValue() != "*" {
+				t.Errorf("%s: got %q, want *", name, got.GetValue())
+			}
+		}
+	})
+
+	t.Run("removed header stays removed", func(t *testing.T) {
+		restored, err := RestoreRedactedExtraHeaders(map[string]SecretVar{}, stored)
+		if err != nil || len(restored) != 0 {
+			t.Fatalf("got %v, %v", restored, err)
+		}
+	})
 }
 
 // TestSecretVar_UnmarshalJSON_DecodesJSONEscapes checks that a JSON string decodes its
