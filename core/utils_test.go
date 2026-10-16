@@ -404,6 +404,10 @@ func TestClearCtxForFallback(t *testing.T) {
 		// What the caller sent is the same for every attempt of the request.
 		schemas.BifrostContextKeyRequestedProvider,
 		schemas.BifrostContextKeyRequestedModel,
+		// Opencode affinity is resolved once in the transport so retries and
+		// fallbacks emit the same upstream value; clearing it would split one
+		// logical request across backends.
+		schemas.BifrostContextKeyOpencodeSession,
 	}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
