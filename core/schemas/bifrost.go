@@ -40,6 +40,10 @@ type BifrostConfig struct {
 	KVStore            KVStore         // shared KV store for clustering/session stickiness; nil = disabled
 	SessionAffinity    SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
 	ModelCatalog       ModelInfoProvider
+	// VirtualModels resolves user-defined virtual model names to the candidate the
+	// backend currently has resident. Nil disables the feature entirely: the request
+	// path then costs one atomic load and nothing else.
+	VirtualModels VirtualModelResolver
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -287,6 +291,8 @@ const (
 	BifrostContextKeyGovernanceIncludeOnlyKeys           BifrostContextKey = "bf-governance-include-only-keys"         // []string (to store the include-only key IDs for provider config routing (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyNumberOfRetries                     BifrostContextKey = "bifrost-number-of-retries"               // int (to store the number of retries (set by bifrost - DO NOT SET THIS MANUALLY))
 	BifrostContextKeyFallbackIndex                       BifrostContextKey = "bifrost-fallback-index"                  // int (to store the fallback index (set by bifrost - DO NOT SET THIS MANUALLY)) 0 for primary, 1 for first fallback, etc.
+	BifrostContextKeyVirtualModel                        BifrostContextKey = "bifrost-virtual-model"                   // string (the virtual model name as the client sent it; absent when the request did not name a virtual model)
+	BifrostContextKeyVirtualModelResolution              BifrostContextKey = "bifrost-virtual-model-resolution"        // *VirtualModelResolution (the resident-aware decision, including why and how stale it was)
 	BifrostContextKeyResolvedAlias                       BifrostContextKey = "bifrost-resolved-alias"                  // *ResolvedAlias (set by bifrost after key-level alias resolution — providers read this for model_family routing and provider-specific overrides; nil/absent when no alias matched)
 	BifrostContextKeyProviderProxyConfig                 BifrostContextKey = "bifrost-provider-proxy-config"           // *ProxyConfig (set by bifrost per attempt from the serving provider's config - DO NOT SET THIS MANUALLY) - lets side fetches made on the provider's behalf (e.g. FetchAndEncodeURL) leave through the same proxy as its inference traffic; nil means direct
 	BifrostContextKeyRoutingInfo                         BifrostContextKey = "bifrost-routing-info"                    // RoutingInfo (set by bifrost per stream attempt - DO NOT SET THIS MANUALLY) - streams carry RoutingInfo only on chunks, so the transport reads this snapshot to emit routed-identity response headers before the first chunk
@@ -676,6 +682,12 @@ const (
 	// the per-request audit trail closes the loop on what plugin-level
 	// engines (governance, loadbalancing, etc.) selected upstream.
 	RoutingEngineCore = "core"
+	// RoutingEngineVirtualModel marks resident-aware resolution: the client named a
+	// virtual model and this engine picked which of its candidates actually handled
+	// the request, from what the backend reported holding in memory. Added last in the
+	// block on purpose - a commented entry ends the aligned run above it, and landing
+	// here keeps that run's padding untouched.
+	RoutingEngineVirtualModel = "virtual-model"
 )
 
 // LoadBalancerMetadataPrefix prefixes every key the enterprise load balancer records under

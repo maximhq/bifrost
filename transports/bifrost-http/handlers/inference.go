@@ -1034,6 +1034,12 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 	}
 
 	enrichListModelsResponse(resp, h.config.ModelCatalog)
+	// Virtual names join the listing here, after enrichment so a backend's own entry for
+	// the same string keeps its richer metadata, and after pagination because a virtual
+	// model is configuration rather than a row to page over.
+	if virtualModelsEnabled(h.config) {
+		appendVirtualModels(resp, h.config, schemas.ModelProvider(provider), h.virtualModelAccess(bifrostCtx), virtualKeyPresented(ctx))
+	}
 	if resp != nil {
 		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
 	}
@@ -1043,16 +1049,41 @@ func (h *CompletionHandler) listModels(ctx *fasthttp.RequestCtx) {
 
 // modelRetrieve handles GET /v1/models/{model} - retrieve a single model's metadata
 func (h *CompletionHandler) modelRetrieve(ctx *fasthttp.RequestCtx) {
-	provider, model, err := modelRetrieveTarget(ctx)
-	if err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
-	}
-
 	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
 	defer cancel() // Ensure cleanup on function exit
 	if bifrostCtx == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	// A virtual name is Bifrost's own construct, so Bifrost answers for it. This runs
+	// before the target is parsed on purpose: a bare virtual name carries no provider, and
+	// sending it upstream would either 400 here on "provider is required" or 404 at the
+	// backend on a string it has never seen - either of which tells a client that models
+	// it can successfully chat with does not exist.
+	if raw, _ := ctx.UserValue("model").(string); raw != "" {
+		if decoded, decodeErr := url.PathUnescape(raw); decodeErr == nil {
+			raw = decoded
+		}
+		var access schemas.Access
+		presented := virtualKeyPresented(ctx)
+		if virtualModelsEnabled(h.config) {
+			access = h.virtualModelAccess(bifrostCtx)
+		}
+		if virtualResp, ok := virtualModelRetrieve(bifrostCtx, h.config, raw, access, presented); ok {
+			if virtualResp == nil {
+				SendError(ctx, fasthttp.StatusForbidden, "virtual model access denied")
+				return
+			}
+			lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, virtualResp.ExtraFields)
+			SendJSON(ctx, virtualResp)
+			return
+		}
+	}
+
+	provider, model, err := modelRetrieveTarget(ctx)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
 

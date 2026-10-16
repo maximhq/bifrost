@@ -25761,3 +25761,41 @@ func TestA2APrivateAllowlist(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEqual(t, absent, empty)
 }
+
+// Every provider schema closes its object with additionalProperties:false, so any provider field the
+// Go config reads has to be declared there as well: a documented setting that fails validation is a
+// setting nobody can use. This walks each provider shape actually reachable from providers.* and
+// requires model_residency to be declared and to point at the definition, so a provider schema added
+// later cannot quietly omit it.
+func TestSchemaProviderSchemasAdmitModelResidency(t *testing.T) {
+	schema := loadJSONSchema(t)
+
+	props, ok := schema["properties"].(map[string]interface{})["providers"].(map[string]interface{})
+	require.True(t, ok, "providers is missing from the schema")
+	providerSchemas, ok := props["properties"].(map[string]interface{})
+	require.True(t, ok, "providers.properties is missing from the schema")
+
+	closed := 0
+	for name, raw := range providerSchemas {
+		providerSchema, ok := raw.(map[string]interface{})
+		require.True(t, ok, "provider %s is not an object", name)
+		if ref, isRef := providerSchema["$ref"].(string); isRef {
+			providerSchema = resolveSchemaRef(schema, ref)
+			require.NotNil(t, providerSchema, "provider %s has an unresolved $ref %s", name, ref)
+		}
+		if providerSchema["additionalProperties"] != false {
+			continue
+		}
+		closed++
+
+		properties, _ := providerSchema["properties"].(map[string]interface{})
+		declared, has := properties["model_residency"]
+		require.True(t, has, "provider %s closes additionalProperties without declaring model_residency", name)
+		ref, ok := declared.(map[string]interface{})["$ref"].(string)
+		require.True(t, ok, "provider %s must reference the residency definition, got %v", name, declared)
+		require.Equal(t, "#/$defs/model_residency_config", ref, "provider %s references the wrong definition", name)
+		require.NotNil(t, resolveSchemaRef(schema, ref), "model_residency_config must exist")
+	}
+
+	require.Greater(t, closed, 10, "expected to walk the full closed provider set, got %d", closed)
+}

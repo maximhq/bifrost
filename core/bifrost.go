@@ -122,36 +122,37 @@ func (m *ChannelMessage) abandonDelivery() bool {
 type Bifrost struct {
 	ctx                       *schemas.BifrostContext
 	cancel                    context.CancelFunc
-	account                   schemas.Account                     // account interface
-	llmPlugins                atomic.Pointer[[]schemas.LLMPlugin] // list of llm plugins
-	mcpPlugins                atomic.Pointer[[]schemas.MCPPlugin] // list of mcp plugins
-	a2aPlugins                atomic.Pointer[[]schemas.A2APlugin] // list of a2a (agent gateway) plugins
-	providers                 atomic.Pointer[[]schemas.Provider]  // list of providers
-	requestQueues             sync.Map                            // provider request queues (thread-safe), stores *ProviderQueue
-	waitGroups                sync.Map                            // wait groups for each provider (thread-safe)
-	oldWorkerCleanups         sync.WaitGroup                      // tracks async cleanup of old workers after provider updates
-	retiredWorkerWaits        sync.Map                            // provider old-worker cleanup wait groups (thread-safe), stores *sync.WaitGroup
-	providerLifecycleMu       sync.RWMutex                        // prevents provider updates from racing with shutdown cleanup waits
-	providerMutexes           sync.Map                            // mutexes for each provider to prevent concurrent updates (thread-safe)
-	channelMessagePool        sync.Pool                           // Pool for ChannelMessage objects, initial pool size is set in Init
-	responseChannelPool       sync.Pool                           // Pool for response channels, initial pool size is set in Init
-	errorChannelPool          sync.Pool                           // Pool for error channels, initial pool size is set in Init
-	responseStreamPool        sync.Pool                           // Pool for response stream channels, initial pool size is set in Init
-	pluginPipelinePool        sync.Pool                           // Pool for PluginPipeline objects
-	bifrostRequestPool        sync.Pool                           // Pool for BifrostRequest objects
-	logger                    schemas.Logger                      // logger instance, default logger is used if not provided
-	tracer                    atomic.Value                        // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
-	modelCatalog              schemas.ModelInfoProvider           // model pricing/capability catalog exposed to plugins via ctx.GetModelInfo (nil if not configured); set once from BifrostConfig at Init
-	MCPManager                mcp.MCPManagerInterface             // MCP integration manager (nil if MCP not configured)
-	mcpCredStore              schemas.MCPCredentialStore          // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
-	mcpInProcessServerFactory schemas.InProcessServerFactory      // Carried from MCPConfig so a lazily created manager still synthesizes openapi servers
-	mcpInitOnce               sync.Once                           // Ensures MCP manager is initialized only once
-	mcpFactoryMu              sync.Mutex                          // Orders factory registration against lazy MCP manager creation
-	dropExcessRequests        atomic.Bool                         // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	keySelector               schemas.KeySelector                 // Custom key selector function
-	keyPoolFilter             schemas.KeyPoolFilter               // optional hook to veto keys before selection (nil = all eligible)
-	kvStore                   schemas.KVStore                     // optional KV store for session stickiness (nil = disabled)
-	sessionAffinity           schemas.SessionAffinity             // decides which key a session stays on; never nil after Init
+	account                   schemas.Account                              // account interface
+	llmPlugins                atomic.Pointer[[]schemas.LLMPlugin]          // list of llm plugins
+	mcpPlugins                atomic.Pointer[[]schemas.MCPPlugin]          // list of mcp plugins
+	a2aPlugins                atomic.Pointer[[]schemas.A2APlugin]          // list of a2a (agent gateway) plugins
+	providers                 atomic.Pointer[[]schemas.Provider]           // list of providers
+	requestQueues             sync.Map                                     // provider request queues (thread-safe), stores *ProviderQueue
+	waitGroups                sync.Map                                     // wait groups for each provider (thread-safe)
+	oldWorkerCleanups         sync.WaitGroup                               // tracks async cleanup of old workers after provider updates
+	retiredWorkerWaits        sync.Map                                     // provider old-worker cleanup wait groups (thread-safe), stores *sync.WaitGroup
+	providerLifecycleMu       sync.RWMutex                                 // prevents provider updates from racing with shutdown cleanup waits
+	providerMutexes           sync.Map                                     // mutexes for each provider to prevent concurrent updates (thread-safe)
+	channelMessagePool        sync.Pool                                    // Pool for ChannelMessage objects, initial pool size is set in Init
+	responseChannelPool       sync.Pool                                    // Pool for response channels, initial pool size is set in Init
+	errorChannelPool          sync.Pool                                    // Pool for error channels, initial pool size is set in Init
+	responseStreamPool        sync.Pool                                    // Pool for response stream channels, initial pool size is set in Init
+	pluginPipelinePool        sync.Pool                                    // Pool for PluginPipeline objects
+	bifrostRequestPool        sync.Pool                                    // Pool for BifrostRequest objects
+	logger                    schemas.Logger                               // logger instance, default logger is used if not provided
+	tracer                    atomic.Value                                 // tracer for distributed tracing (stores schemas.Tracer, NoOpTracer if not configured)
+	modelCatalog              schemas.ModelInfoProvider                    // model pricing/capability catalog exposed to plugins via ctx.GetModelInfo (nil if not configured); set once from BifrostConfig at Init
+	MCPManager                mcp.MCPManagerInterface                      // MCP integration manager (nil if MCP not configured)
+	mcpCredStore              schemas.MCPCredentialStore                   // Per-call credential resolver for MCP tool execution (wraps oauth2Provider for OAuth-flavored auth types)
+	mcpInProcessServerFactory schemas.InProcessServerFactory               // Carried from MCPConfig so a lazily created manager still synthesizes openapi servers
+	mcpInitOnce               sync.Once                                    // Ensures MCP manager is initialized only once
+	mcpFactoryMu              sync.Mutex                                   // Orders factory registration against lazy MCP manager creation
+	dropExcessRequests        atomic.Bool                                  // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	keySelector               schemas.KeySelector                          // Custom key selector function
+	keyPoolFilter             schemas.KeyPoolFilter                        // optional hook to veto keys before selection (nil = all eligible)
+	kvStore                   schemas.KVStore                              // optional KV store for session stickiness (nil = disabled)
+	sessionAffinity           schemas.SessionAffinity                      // decides which key a session stays on; never nil after Init
+	virtualModels             atomic.Pointer[schemas.VirtualModelResolver] // optional resident-aware resolver
 }
 
 // ProviderQueue wraps a provider's request channel with lifecycle management
@@ -324,6 +325,9 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 	bifrost.providers.Store(&[]schemas.Provider{})
 
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	if config.VirtualModels != nil {
+		bifrost.virtualModels.Store(&config.VirtualModels)
+	}
 
 	if bifrost.keySelector == nil {
 		bifrost.keySelector = keyselectors.WeightedRandom
@@ -494,6 +498,61 @@ func (bifrost *Bifrost) setModelCatalogOnContext(ctx *schemas.BifrostContext) {
 // We will keep on adding other aspects as required
 func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
+	return nil
+}
+
+// virtualResolver returns the installed resolver, or nil when virtual models are off.
+func (bifrost *Bifrost) virtualResolver() schemas.VirtualModelResolver {
+	if ptr := bifrost.virtualModels.Load(); ptr != nil {
+		return *ptr
+	}
+	return nil
+}
+
+// resolveVirtualModel rewrites a virtual name to a concrete candidate, preferring
+// resident models. With no resident candidate it can trigger a cold load.
+//
+// Placement is the whole design: it runs after the routing plugins, so governance
+// and routing rules keep first refusal on the name the client actually sent, and
+// before session routing and key selection, which both act on the concrete model -
+// keys are filtered by key.Models against the request's model string. It returns an
+// error to the caller instead of logging one, which is precisely why it lives here
+// and not in a PreRequestHook: RunPreRequestHooks records hook errors and carries on
+// regardless.
+//
+// A no-op when there is no resolver, or when the model names no virtual model -
+// which is every ordinary request.
+func (bifrost *Bifrost) resolveVirtualModel(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) *schemas.BifrostError {
+	resolver := bifrost.virtualResolver()
+	if resolver == nil || req == nil {
+		return nil
+	}
+	provider, model, _ := req.GetRequestFields()
+	virtual, ok := resolver.Lookup(model)
+	if !ok {
+		return nil
+	}
+	// Naming provider and virtual model together ("omlx/qwen38") is fine. Naming a
+	// *different* provider is not: residency was measured on the virtual model's
+	// provider, so honouring the other one would dispatch a name whose residency
+	// nobody checked.
+	if provider != "" && provider != virtual.Provider {
+		return schemas.NewVirtualModelError(400, fmt.Sprintf(
+			"virtual model %q belongs to provider %q, not %q", virtual.Name, virtual.Provider, provider))
+	}
+
+	resolution, bifrostErr := resolver.Resolve(ctx, virtual)
+	if bifrostErr != nil {
+		return bifrostErr
+	}
+
+	req.SetProvider(resolution.Provider)
+	req.SetModel(resolution.Model)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualModel, virtual.Name)
+	ctx.SetValue(schemas.BifrostContextKeyVirtualModelResolution, resolution)
+	ctx.AppendRoutingEngineLog(schemas.RoutingEngineVirtualModel, schemas.LogLevelInfo, fmt.Sprintf(
+		"Virtual model %s resolved to %s/%s: %s", virtual.Name, resolution.Provider, resolution.Model, resolution.Reason))
+	schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineVirtualModel)
 	return nil
 }
 
@@ -5867,6 +5926,13 @@ func (bifrost *Bifrost) handleRequest(ctx *schemas.BifrostContext, req *schemas.
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	if virtualErr := bifrost.resolveVirtualModel(ctx, req); virtualErr != nil {
+		// Returning before tryRequest skips the downstream log drain.
+		flushPluginLogs(ctx)
+		provider, model, _ := req.GetRequestFields()
+		virtualErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, virtualErr
+	}
 	// The session has the last word on the chain the hooks produced.
 	bifrost.resolveSessionRoute(ctx, requested, req)
 	bifrost.endCoreSpan(setupSpan)
@@ -6080,6 +6146,13 @@ func (bifrost *Bifrost) handleStreamRequest(ctx *schemas.BifrostContext, req *sc
 	preReqPipeline := bifrost.getPluginPipeline()
 	preReqPipeline.RunPreRequestHooks(ctx, req)
 	bifrost.releasePluginPipeline(preReqPipeline)
+	if virtualErr := bifrost.resolveVirtualModel(ctx, req); virtualErr != nil {
+		// Returning before tryStreamRequest skips the downstream log drain.
+		flushPluginLogs(ctx)
+		provider, model, _ := req.GetRequestFields()
+		virtualErr.PopulateExtraFields(req.RequestType, provider, model, model)
+		return nil, virtualErr
+	}
 	// The session has the last word on the chain the hooks produced.
 	bifrost.resolveSessionRoute(ctx, requested, req)
 	// "miscellaneous" phase: pre-dispatch glue (field re-read + validation) on no other

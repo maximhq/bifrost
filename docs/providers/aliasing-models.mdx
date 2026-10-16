@@ -12,14 +12,15 @@ Model aliasing lets you decouple the model name your application sends from the 
 - Map a single logical name like `"gpt-4o"` to a provider-specific deployment name, inference profile ARN, or fine-tuned model ID
 - Give different teams different underlying models behind the same name
 
-There are two aliasing mechanisms, and they operate at different layers:
+There are two aliasing mechanisms, and they operate at different layers. A third, [virtual models](./virtualmodels), sits below both: its target is not a name at all but whichever candidate the backend currently has resident.
 
-| | Static Aliases | Dynamic Aliases (Routing Rules) |
-|---|---|---|
-| **Where configured** | On a provider key | On routing rules, scoped to VK / Team / Customer / Global |
-| **When applied** | After key selection, before the provider API call | At request time, before key selection |
-| **Scope** | Per-key | Per-VK, per-team, per-customer, or global |
-| **Condition-based** | No - always resolves | Yes - CEL expression controls when it fires |
+| | Static Aliases | Dynamic Aliases (Routing Rules) | [Virtual Models](./virtualmodels) |
+|---|---|---|---|
+| **Where configured** | On a provider key | On routing rules, scoped to VK / Team / Customer / Global | In `config.json`, per provider via `model_residency` |
+| **When applied** | After key selection, before the provider API call | At request time, before key selection | At request time, after routing plugins and before key selection |
+| **Scope** | Per-key | Per-VK, per-team, per-customer, or global | Per virtual model, one provider each |
+| **Condition-based** | No - always resolves | Yes - CEL expression controls when it fires | Yes - resolved from live GPU memory, re-read every request |
+| **Target known when** | You write the config | You write the config | Never - only the backend knows |
 
 ---
 

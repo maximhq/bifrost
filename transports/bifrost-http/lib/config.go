@@ -237,6 +237,11 @@ type ConfigData struct {
 	presentMCPSections        map[string]bool
 	SkillsRegistry            *SkillsRegistryConfig `json:"skills_registry,omitempty"`
 	rejectedMCPClients        map[string]bool       // file clients dropped while loading; a config.json sync keeps their stored clients
+
+	// VirtualModels maps a user-chosen name to the ordered candidates it may resolve
+	// to, resolved at request time against what the provider has resident in memory.
+	// See docs/providers/virtualmodels.mdx.
+	VirtualModels map[string]schemas.VirtualModel `json:"virtual_models,omitempty"`
 }
 
 // SkillsRegistryConfig defines declarative skill definitions in config.json.
@@ -569,6 +574,8 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		FeatureFlags      *FeatureFlagsFileConfig               `json:"feature_flags,omitempty"`
 		ProxyConfig       *GlobalProxyFileConfig                `json:"proxy_config,omitempty"`
 		SkillsRegistry    *SkillsRegistryConfig                 `json:"skills_registry,omitempty"`
+
+		VirtualModels map[string]schemas.VirtualModel `json:"virtual_models,omitempty"`
 	}
 
 	var temp TempConfigData
@@ -615,6 +622,7 @@ func (cd *ConfigData) UnmarshalJSON(data []byte) error {
 		}
 	}
 	cd.SkillsRegistry = temp.SkillsRegistry
+	cd.VirtualModels = temp.VirtualModels
 	// Initialize providers map if nil
 	if cd.Providers == nil {
 		cd.Providers = make(map[string]configstore.ProviderConfig)
@@ -728,6 +736,10 @@ type Config struct {
 	// HTTPClientFactory hands out outbound clients that honour ProxyConfig per purpose
 	// and follow its changes live (see network.HTTPClientFactory).
 	HTTPClientFactory *network.HTTPClientFactory
+
+	// VirtualModels answers which names are virtual and which candidate a virtual name
+	// resolves to right now. Nil when no virtual model is configured.
+	VirtualModels *VirtualModelService
 
 	// SetupToken is the resolved operator-provisioned bootstrap secret (see
 	// ConfigData.SetupToken / resolveSetupToken). Empty when the operator hasn't
@@ -1197,6 +1209,12 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	network.SetDefaultHTTPClientFactory(config.HTTPClientFactory)
 	// 5. Providers (store → file → auto-detect)
 	if err := loadProviders(ctx, config, &configData); err != nil {
+		return nil, err
+	}
+	// 5a. Virtual models, after providers because every virtual model's residency is
+	// read from a configured provider: an install that references a provider which does
+	// not exist is refused rather than deferred to a confusing failure at request time.
+	if err := installVirtualModels(config, configData.VirtualModels, logger); err != nil {
 		return nil, err
 	}
 	// 6. MCP config
