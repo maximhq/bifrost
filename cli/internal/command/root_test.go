@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/maximhq/bifrost/cli/internal/client"
 	"github.com/maximhq/bifrost/cli/internal/config"
@@ -483,6 +484,8 @@ func TestAuthPrintTokenRefreshesBeforeOutput(t *testing.T) {
 	}
 }
 
+// TestAuthPrintTokenBrowserLogin verifies browser sign-in persists the session
+// while keeping stdout limited to the validated agent token.
 func TestAuthPrintTokenBrowserLogin(t *testing.T) {
 	runner, outputBuffer, secretStore := newTestRunner(t, testRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.Path {
@@ -521,7 +524,12 @@ func TestAuthPrintTokenBrowserLogin(t *testing.T) {
 		query.Set("state", authorization.Query().Get("state"))
 		query.Set("code", "test-code")
 		callback.RawQuery = query.Encode()
-		response, err := http.Get(callback.String())
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, callback.String(), nil)
+		if err != nil {
+			return err
+		}
+		callbackClient := &http.Client{Timeout: 5 * time.Second}
+		response, err := callbackClient.Do(request)
 		if err != nil {
 			return err
 		}
@@ -545,6 +553,8 @@ func TestAuthPrintTokenBrowserLogin(t *testing.T) {
 	}
 }
 
+// TestAuthPrintTokenBrowserLoginConditions verifies login is opt-in, existing
+// tokens bypass browser sign-in, and invalid requests fail without token output.
 func TestAuthPrintTokenBrowserLoginConditions(t *testing.T) {
 	for _, test := range []struct {
 		name      string
