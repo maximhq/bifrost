@@ -1,10 +1,50 @@
 package azure
 
 import (
+	"fmt"
 	"strings"
 
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
+
+// AzureServiceTierHeader is the request header Azure OpenAI uses to select the
+// processing tier without inspecting or modifying the request body. A gateway,
+// proxy, or centralized routing layer can set it per request; when present and
+// valid it takes precedence over the service_tier field in the request body.
+//
+// See https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/flex-processing
+const AzureServiceTierHeader = "x-ms-service-tier"
+
+// azureServiceTierHeaderValues are the values Azure accepts on the header:
+// "flex" (Flex processing), "priority" (Priority processing), "default"
+// (Standard processing) and "auto" (Priority, per Azure's header semantics).
+var azureServiceTierHeaderValues = map[string]bool{
+	"flex":     true,
+	"priority": true,
+	"default":  true,
+	"auto":     true,
+}
+
+// applyAzureServiceTierHeader reads the x-ms-service-tier header from the
+// client request (the transport collects all request headers into the
+// request-headers map, lowercased) and, when present, forwards it on the
+// upstream request headers. An invalid value is rejected here, matching
+// Azure's own HTTP 400 for an unsupported header value — Azure does not fall
+// back to the request body's service_tier in that case.
+func applyAzureServiceTierHeader(ctx *schemas.BifrostContext, authHeader map[string]string) *schemas.BifrostError {
+	headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string)
+	value := strings.TrimSpace(headers[AzureServiceTierHeader])
+	if value == "" {
+		return nil
+	}
+	if !azureServiceTierHeaderValues[value] {
+		return providerUtils.NewBifrostBadRequestError(
+			fmt.Sprintf("invalid %s header value %q: expected one of flex, priority, default, auto", AzureServiceTierHeader, value))
+	}
+	authHeader[AzureServiceTierHeader] = value
+	return nil
+}
 
 // getAzureScopes returns the configured scopes or the default scope if none are valid.
 // It filters out empty/whitespace-only strings.
