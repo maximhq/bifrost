@@ -1106,6 +1106,7 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		!f.MissingCostOnly &&
 		len(f.CacheHitTypes) == 0 &&
 		len(f.ErrorTypes) == 0 && len(f.ErrorCodes) == 0 && len(f.StatusCodes) == 0 &&
+		len(f.GuardrailOutcomes) == 0 &&
 		len(f.UserAgents) == 0 &&
 		len(f.TeamIDs) == 0 &&
 		len(f.BusinessUnitIDs) == 0 &&
