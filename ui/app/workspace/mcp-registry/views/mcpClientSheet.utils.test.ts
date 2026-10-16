@@ -4,7 +4,6 @@ import {
 	deriveMemberVirtualMCPs,
 	getNextVirtualMCPPageOffset,
 	mergeVirtualMCPPages,
-	VIRTUAL_MCPS_PAGE_SIZE,
 } from "./mcpClientSheet.utils";
 
 const createMockVMCP = (id: number, name: string, tools: { mcp_client_id: string; tool_names: string[] }[] = []): VirtualMCP => ({

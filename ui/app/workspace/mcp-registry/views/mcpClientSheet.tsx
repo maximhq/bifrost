@@ -280,6 +280,7 @@ export default function MCPClientSheet({
 	} = useGetVirtualMCPsQuery({ limit: VIRTUAL_MCPS_PAGE_SIZE, offset: 0 });
 	const [fetchVirtualMCPsPage] = useLazyGetVirtualMCPsQuery();
 	const [allVirtualMcps, setAllVirtualMcps] = useState<VirtualMCP[]>([]);
+	const [isLoadingMorePages, setIsLoadingMorePages] = useState(false);
 	const [virtualMcpsPaginationError, setVirtualMcpsPaginationError] = useState(false);
 
 	useEffect(() => {
@@ -288,29 +289,42 @@ export default function MCPClientSheet({
 
 		const loadAllPages = async () => {
 			let current = firstPageVirtualMcps.virtual_mcps ?? [];
+			let consumedRows = current.length;
 			setAllVirtualMcps(current);
 			setVirtualMcpsPaginationError(false);
 
 			const total = firstPageVirtualMcps.total_count ?? 0;
 			let iterations = 0;
 
-			while (!cancelled) {
-				const nextOffset = getNextVirtualMCPPageOffset(current.length, total, VIRTUAL_MCPS_PAGE_SIZE);
-				if (nextOffset === null || iterations >= MAX_VIRTUAL_MCPS_PAGES) {
-					break;
-				}
+			setIsLoadingMorePages(true);
+			try {
+				while (!cancelled) {
+					const nextOffset = getNextVirtualMCPPageOffset(consumedRows, total);
+					if (nextOffset === null) {
+						break;
+					}
+					if (iterations >= MAX_VIRTUAL_MCPS_PAGES) {
+						if (!cancelled) setVirtualMcpsPaginationError(true);
+						break;
+					}
 
-				iterations++;
-				try {
-					const res = await fetchVirtualMCPsPage({ limit: VIRTUAL_MCPS_PAGE_SIZE, offset: nextOffset }).unwrap();
-					if (cancelled) break;
-					const incoming = res.virtual_mcps ?? [];
-					if (incoming.length === 0) break;
-					current = mergeVirtualMCPPages(current, incoming);
-					setAllVirtualMcps(current);
-				} catch {
-					if (!cancelled) setVirtualMcpsPaginationError(true);
-					break;
+					iterations++;
+					try {
+						const res = await fetchVirtualMCPsPage({ limit: VIRTUAL_MCPS_PAGE_SIZE, offset: nextOffset }).unwrap();
+						if (cancelled) break;
+						const incoming = res.virtual_mcps ?? [];
+						if (incoming.length === 0) break;
+						consumedRows += incoming.length;
+						current = mergeVirtualMCPPages(current, incoming);
+						setAllVirtualMcps(current);
+					} catch {
+						if (!cancelled) setVirtualMcpsPaginationError(true);
+						break;
+					}
+				}
+			} finally {
+				if (!cancelled) {
+					setIsLoadingMorePages(false);
 				}
 			}
 		};
@@ -326,7 +340,7 @@ export default function MCPClientSheet({
 		() => deriveMemberVirtualMCPs(allVirtualMcps, mcpClient.config.client_id),
 		[allVirtualMcps, mcpClient.config.client_id],
 	);
-	const virtualMcpsLoading = isFirstPageLoading;
+	const virtualMcpsLoading = isFirstPageLoading || isLoadingMorePages;
 	const virtualMcpsError = firstPageError || virtualMcpsPaginationError;
 
 	const toolOptions = useMemo(

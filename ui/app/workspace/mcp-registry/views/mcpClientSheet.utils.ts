@@ -69,15 +69,13 @@ export function mergeVirtualMCPPages(existing: VirtualMCP[], incoming: VirtualMC
 /**
  * Determines the next offset for pagination, or returns null if all items have been retrieved.
  *
- * @param currentCount Number of unique items fetched so far.
+ * @param currentCount Number of items fetched so far.
  * @param totalCount Total count reported by the server.
- * @param pageSize Number of items requested per page.
  * @returns The next offset number, or null if complete.
  */
 export function getNextVirtualMCPPageOffset(
 	currentCount: number,
 	totalCount: number,
-	pageSize: number = VIRTUAL_MCPS_PAGE_SIZE,
 ): number | null {
 	if (totalCount <= 0 || currentCount >= totalCount) {
 		return null;
