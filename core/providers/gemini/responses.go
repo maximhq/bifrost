@@ -5166,8 +5166,13 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 								thoughtSig = parts[1] // Extract signature (after separator)
 							}
 						}
-						// Keep the full CallID as-is (don't strip thought signature)
-						part.FunctionCall.ID = *msg.ResponsesToolMessage.CallID
+						// Send Gemini the id it issued. The signature travels in the
+						// dedicated thoughtSignature field set below, so leaving it joined to
+						// the id as well would ship a ~500-char id whose base64 tail the model
+						// can read and echo into its own output. Stripping is deterministic,
+						// and FunctionResponse.ID below is stripped the same way, so
+						// orderFunctionResponsesByCallID still pairs the two.
+						part.FunctionCall.ID = providerUtils.StripThoughtSignature(*msg.ResponsesToolMessage.CallID)
 						pendingFunctionCallIDs = append(pendingFunctionCallIDs, part.FunctionCall.ID)
 					}
 					if thoughtSig != "" {
@@ -5292,8 +5297,10 @@ func convertResponsesMessagesToGeminiContents(messages []schemas.ResponsesMessag
 						FunctionResponse: &FunctionResponse{
 							Name:     funcName,
 							Response: json.RawMessage(responseBytes),
-							ID:       *msg.ResponsesToolMessage.CallID,
-							Parts:    funcMediaParts,
+							// Stripped to match the FunctionCall.ID sent above. callIDToName
+							// is still keyed on the full id, so the name lookup is unaffected.
+							ID:    providerUtils.StripThoughtSignature(*msg.ResponsesToolMessage.CallID),
+							Parts: funcMediaParts,
 						},
 					}
 					pendingFunctionResponseParts = append(pendingFunctionResponseParts, part)

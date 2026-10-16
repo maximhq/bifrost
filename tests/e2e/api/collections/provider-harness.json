@@ -275115,6 +275115,372 @@
           }
         }
       ]
+    },
+    {
+      "name": "256. Gemini tool-call ids reach the provider without the thought signature (#8546) (gemini-call-id-strip)",
+      "description": "Bifrost joins a Gemini thought signature onto the tool-call id it hands the client (\"<id>_ts_<base64url sig>\"), because the Anthropic and OpenAI wire formats have no per-tool-call signature field. On the way back to Gemini the signature is lifted into Part.ThoughtSignature, but the joined id was also forwarded as functionCall.id / functionResponse.id, so Gemini saw a ~500-character id with the base64 signature in it as plain text -- and a model asked to reference a call by its id reproduced the whole string.\n\nEach route gets a capture row and a replay row. The signature is captured from a live turn rather than synthesised: Gemini validates the signature it is given, so a made-up blob would fail the replay for an unrelated reason. The capture row stores nothing unless the id it got back actually contains the separator, and the replay row skips on an unresolved placeholder, so a run where the model returned a bare id does not pass green having tested nothing.\n\nThe replay prompt asks the model to repeat the call id verbatim and the assertion is that the response does not contain \"_ts_\". That is one-directional by construction: once the id on the wire is the base id, the separator is a string the model has never seen and cannot invent, so the assertion can only fire when the joined id reaches the provider again.\n\nBoth converters are covered because they are the two that reach Gemini: convertResponsesMessagesToGeminiContents (/v1/responses, /anthropic/v1/messages, the Go SDK) and convertBifrostMessagesToGemini (/v1/chat/completions). Vertex has no converters of its own and reaches the same two through the WithImageURLSchemes entry points, so it is covered by the same change; swap the model prefix to a Vertex Gemini model to exercise it on that host.",
+      "item": [
+        {
+          "name": "gemini/gemini-3.6-flash /v1/responses signature-bearing call id captures replay input - gemini-call-id-strip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Gemini returned a tool call whose id carries a thought signature', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.output, 'expected output array').to.be.an('array').that.is.not.empty;",
+                  "  var kinds = j.output.map(function (o) { return o.type; });",
+                  "  pm.expect(kinds, 'no function_call came back, so the replay row would silently skip').to.include('function_call');",
+                  "});",
+                  "// The replay row is only meaningful when the captured id actually carries a",
+                  "// signature: that joined string is the thing that must not reach Gemini. When",
+                  "// the model returns a bare id there is nothing to strip, so the replay skips",
+                  "// rather than passing green having tested nothing.",
+                  "try {",
+                  "  var body = pm.response.json();",
+                  "  var calls = (body.output || []).filter(function (o) { return o.type === 'function_call' && o.call_id; });",
+                  "  var signed = calls.filter(function (c) { return c.call_id.indexOf('_ts_') !== -1; });",
+                  "  if (signed.length) {",
+                  "    var input = [{ type: 'message', role: 'user', content: \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\" }]",
+                  "      .concat(body.output)",
+                  "      .concat(calls.map(function (c) { return { type: 'function_call_output', call_id: c.call_id, output: '{\"time\": \"21:00 JST\"}' }; }))",
+                  "      .concat([{ type: 'message', role: 'user', content: \"Repeat the id of the tool call you just made, exactly as it was given to you, and output nothing else.\" }]);",
+                  "    pm.collectionVariables.set('geminiCallIdStripInput8546', JSON.stringify(input));",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/gemini-3.6-flash\", \"input\": \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\", \"tools\": [{\"type\": \"function\", \"name\": \"get_time\", \"description\": \"Get the current time\", \"parameters\": {\"type\": \"object\", \"properties\": {\"timezone\": {\"type\": \"string\"}}, \"required\": []}}], \"tool_choice\": {\"type\": \"function\", \"name\": \"get_time\"}, \"reasoning\": {\"effort\": \"low\"}, \"max_output_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /v1/responses provider never sees the signature-joined call id - gemini-call-id-strip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skip when the capture step stored nothing: the body placeholder stays",
+                  "// unresolved, so there is nothing meaningful to replay.",
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "pm.test('the replayed turn is accepted', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().output, 'expected an output array').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('the model cannot echo a separator it was never sent', function () {",
+                  "  // One-directional by construction: the prompt asks the model to repeat the",
+                  "  // call id verbatim. Once the id Gemini receives is the base id, '_ts_' is a",
+                  "  // string the model has never seen and cannot invent, so this can only fire",
+                  "  // when the joined id reaches the provider again.",
+                  "  // Scan only model-authored text and tool arguments, never the response's own",
+                  "  // tool-call id fields: Bifrost re-joins the signature onto an id it issues, so",
+                  "  // '_ts_' in an id is expected here and would make a whole-body scan fail on a",
+                  "  // correct run. Only the model's own output can show the joined id was replayed.",
+                  "  var modelText = (pm.response.json().output || []).map(function (item) {",
+                  "    var text = (item.content || []).map(function (block) { return block.text || ''; }).join('');",
+                  "    return text + (item.arguments || '');",
+                  "  }).join('');",
+                  "  // Asserted, not assumed: an empty extraction would pass the scan below having",
+                  "  // read nothing at all.",
+                  "  pm.expect(modelText, 'no model-authored text or tool arguments in the response, so the scan proves nothing')",
+                  "    .to.have.length.above(0);",
+                  "  pm.expect(modelText, 'the signature-joined id reached Gemini and came back in the model output')",
+                  "    .to.not.include('_ts_');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/gemini-3.6-flash\", \"input\": {{geminiCallIdStripInput8546}}, \"tools\": [{\"type\": \"function\", \"name\": \"get_time\", \"description\": \"Get the current time\", \"parameters\": {\"type\": \"object\", \"properties\": {\"timezone\": {\"type\": \"string\"}}, \"required\": []}}], \"reasoning\": {\"effort\": \"low\"}, \"max_output_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /v1/chat/completions signature-bearing tool call id captures replay input - gemini-call-id-strip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Gemini returned a tool call whose id carries a thought signature', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.choices, 'expected choices array').to.be.an('array').that.is.not.empty;",
+                  "  var calls = (j.choices[0].message && j.choices[0].message.tool_calls) || [];",
+                  "  pm.expect(calls, 'no tool_calls came back, so the replay row would silently skip').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "try {",
+                  "  var j = pm.response.json();",
+                  "  var msg = j.choices[0].message;",
+                  "  var calls = (msg && msg.tool_calls) || [];",
+                  "  var signed = calls.filter(function (c) { return c.id && c.id.indexOf('_ts_') !== -1; });",
+                  "  if (signed.length) {",
+                  "    // Every call is answered, not just the first: a history that replays a call",
+                  "    // without its output is rejected outright, and current models parallelize.",
+                  "    var input = [{ role: 'user', content: \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\" }, msg]",
+                  "      .concat(calls.map(function (c) { return { role: 'tool', tool_call_id: c.id, content: '{\"time\": \"21:00 JST\"}' }; }))",
+                  "      .concat([{ role: 'user', content: \"Repeat the id of the tool call you just made, exactly as it was given to you, and output nothing else.\" }]);",
+                  "    pm.collectionVariables.set('geminiCallIdStripChatInput8546', JSON.stringify(input));",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/gemini-3.6-flash\", \"messages\": [{\"role\": \"user\", \"content\": \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\"}], \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_time\", \"description\": \"Get the current time\", \"parameters\": {\"type\": \"object\", \"properties\": {\"timezone\": {\"type\": \"string\"}}, \"required\": []}}}], \"tool_choice\": {\"type\": \"function\", \"function\": {\"name\": \"get_time\"}}, \"max_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /v1/chat/completions provider never sees the signature-joined call id - gemini-call-id-strip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "pm.test('the replayed turn is accepted', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().choices, 'expected choices array').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('the model cannot echo a separator it was never sent', function () {",
+                  "  // Scan only model-authored text and tool arguments, never the response's own",
+                  "  // tool-call id fields: Bifrost re-joins the signature onto an id it issues, so",
+                  "  // '_ts_' in an id is expected here and would make a whole-body scan fail on a",
+                  "  // correct run. Only the model's own output can show the joined id was replayed.",
+                  "  var modelText = (pm.response.json().choices || []).map(function (choice) {",
+                  "    var message = choice.message || {};",
+                  "    var calls = (message.tool_calls || []).map(function (call) {",
+                  "      var fn = call.function || {};",
+                  "      return (fn.name || '') + (fn.arguments || '');",
+                  "    }).join('');",
+                  "    return (message.content || '') + calls;",
+                  "  }).join('');",
+                  "  // Asserted, not assumed: an empty extraction would pass the scan below having",
+                  "  // read nothing at all.",
+                  "  pm.expect(modelText, 'no model-authored text or tool arguments in the response, so the scan proves nothing')",
+                  "    .to.have.length.above(0);",
+                  "  pm.expect(modelText, 'the signature-joined id reached Gemini and came back in the model output')",
+                  "    .to.not.include('_ts_');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/gemini-3.6-flash\", \"messages\": {{geminiCallIdStripChatInput8546}}, \"tools\": [{\"type\": \"function\", \"function\": {\"name\": \"get_time\", \"description\": \"Get the current time\", \"parameters\": {\"type\": \"object\", \"properties\": {\"timezone\": {\"type\": \"string\"}}, \"required\": []}}}], \"max_tokens\": 2048}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /anthropic/v1/messages signature-bearing tool_use id captures replay input - gemini-call-id-strip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Gemini returned a tool_use whose id carries a thought signature', function () {",
+                  "  pm.expect(pm.response.code, 'request failed: ' + pm.response.text()).to.be.below(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.content, 'expected content array').to.be.an('array').that.is.not.empty;",
+                  "  var uses = j.content.filter(function (b) { return b.type === 'tool_use'; });",
+                  "  pm.expect(uses, 'no tool_use came back, so the replay row would silently skip').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "try {",
+                  "  var j = pm.response.json();",
+                  "  var uses = (j.content || []).filter(function (b) { return b.type === 'tool_use' && b.id; });",
+                  "  var signed = uses.filter(function (b) { return b.id.indexOf('_ts_') !== -1; });",
+                  "  if (signed.length) {",
+                  "    var input = [",
+                  "      { role: 'user', content: \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\" },",
+                  "      { role: 'assistant', content: j.content },",
+                  "      { role: 'user', content: uses.map(function (b) { return { type: 'tool_result', tool_use_id: b.id, content: '{\"time\": \"21:00 JST\"}' }; }) },",
+                  "      { role: 'user', content: \"Repeat the id of the tool call you just made, exactly as it was given to you, and output nothing else.\" }",
+                  "    ];",
+                  "    pm.collectionVariables.set('geminiCallIdStripAnthropicInput8546', JSON.stringify(input));",
+                  "  }",
+                  "} catch (e) {}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/gemini-3.6-flash\", \"max_tokens\": 2048, \"messages\": [{\"role\": \"user\", \"content\": \"What time is it in Tokyo? Use the get_time tool, thinking it through first.\"}], \"tools\": [{\"name\": \"get_time\", \"description\": \"Get the current time\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"timezone\": {\"type\": \"string\"}}, \"required\": []}}], \"tool_choice\": {\"type\": \"tool\", \"name\": \"get_time\"}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3.6-flash /anthropic/v1/messages provider never sees the signature-joined tool_use id - gemini-call-id-strip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
+                  "pm.test('the replayed turn is accepted', function () {",
+                  "  var body = pm.response.text() || '';",
+                  "  pm.expect(pm.response.code, 'replay request failed: ' + body).to.be.below(400);",
+                  "  pm.expect(pm.response.json().content, 'expected content array').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('the model cannot echo a separator it was never sent', function () {",
+                  "  // Scan only model-authored text and tool arguments, never the response's own",
+                  "  // tool-call id fields: Bifrost re-joins the signature onto an id it issues, so",
+                  "  // '_ts_' in an id is expected here and would make a whole-body scan fail on a",
+                  "  // correct run. Only the model's own output can show the joined id was replayed.",
+                  "  var modelText = (pm.response.json().content || []).map(function (block) {",
+                  "    return (block.text || '') + (block.input ? JSON.stringify(block.input) : '');",
+                  "  }).join('');",
+                  "  // Asserted, not assumed: an empty extraction would pass the scan below having",
+                  "  // read nothing at all.",
+                  "  pm.expect(modelText, 'no model-authored text or tool arguments in the response, so the scan proves nothing')",
+                  "    .to.have.length.above(0);",
+                  "  pm.expect(modelText, 'the signature-joined id reached Gemini and came back in the model output')",
+                  "    .to.not.include('_ts_');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\": \"gemini/gemini-3.6-flash\", \"max_tokens\": 2048, \"messages\": {{geminiCallIdStripAnthropicInput8546}}, \"tools\": [{\"name\": \"get_time\", \"description\": \"Get the current time\", \"input_schema\": {\"type\": \"object\", \"properties\": {\"timezone\": {\"type\": \"string\"}}, \"required\": []}}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
