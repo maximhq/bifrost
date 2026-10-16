@@ -6,3 +6,4 @@
 - [fix]: web search action sources round-trip their name and no longer fabricate an empty url. OpenAI Responses web search can return specialized API sources ({"type":"api","name":"oai-weather"}) that carry a name and no URL; the typed source schema only modeled type and a required url, so decode dropped name and re-encode emitted "url":"", and the OpenAI request-side source sanitization rebuilt sources without name. url is now omitempty and name survives both the schema round-trip and the sanitization path (#7356) [@g-yixuan](https://github.com/g-yixuan)
 - feat: MiniMax provider for chat, Responses, image generation, video generation, speech and transcription
 - feat: BytePlus ModelArk provider for Seed chat, native Responses, multimodal embeddings, Seedream image generation and editing, and Seedance video generation
+- fix: Bedrock batch jobs send the full inference profile ARN as modelId [@jeremym-tanium](https://github.com/jeremym-tanium)
