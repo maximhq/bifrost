@@ -11,7 +11,7 @@ import type {
 } from "@/lib/types/logs";
 import { COMPACT_NUMBER_FORMAT } from "@/lib/utils/numbers";
 import NumberFlow from "@number-flow/react";
-import { memo, useMemo } from "react";
+import { type ReactNode, memo, useMemo } from "react";
 import {
 	CHART_COLORS,
 	CHART_HEADER_LEGEND_CLASS,
@@ -89,6 +89,9 @@ export interface OverviewTabProps {
 	// Filter callbacks
 	onCostModelChange: (model: string) => void;
 	onUsageModelChange: (model: string) => void;
+
+	// Charts registered by a downstream build, drawn at the end of the chart grid
+	extraCharts?: ReactNode;
 }
 
 function OverviewTabImpl({
@@ -129,6 +132,7 @@ function OverviewTabImpl({
 	onThroughputChartToggle,
 	onCostModelChange,
 	onUsageModelChange,
+	extraCharts,
 }: OverviewTabProps) {
 	const volumeTotal = useMemo(() => {
 		if (!histogramData?.buckets) return null;
@@ -550,6 +554,8 @@ function OverviewTabImpl({
 				>
 					<ThroughputChart data={throughputData} chartType={throughputChartType} startTime={startTime} endTime={endTime} />
 				</ChartCard>
+
+				{extraCharts}
 			</div>
 		</>
 	);

@@ -299,6 +299,21 @@ func StripSpanAttributes(src *Span, denied map[string]struct{}) *Span {
 	// Raw payloads sit on LLM but export under attribute names, so denying a name
 	// must clear the field too. Copy-on-write: the source is pooled.
 	llm := src.LLM
+	a2a := src.A2A
+	if a2a != nil {
+		_, denyRequest := denied[AttrBifrostRawRequest]
+		_, denyResponse := denied[AttrBifrostRawResponse]
+		if denyRequest || denyResponse {
+			cp := *a2a
+			if denyRequest {
+				cp.RawRequest = ""
+			}
+			if denyResponse {
+				cp.RawResponse = ""
+			}
+			a2a = &cp
+		}
+	}
 	if llm != nil {
 		_, denyRequest := denied[AttrBifrostRawRequest]
 		_, denyResponse := denied[AttrBifrostRawResponse]
@@ -329,6 +344,7 @@ func StripSpanAttributes(src *Span, denied map[string]struct{}) *Span {
 		StatusMsg:  src.StatusMsg,
 		Attributes: denyAttrs(src.Attributes, denied),
 		LLM:        llm,
+		A2A:        a2a,
 		Enrichment: src.Enrichment,
 		Events:     events,
 	}

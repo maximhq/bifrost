@@ -320,6 +320,104 @@
         "responses": {
           "200": {
             "description": "Successful response",
+            "headers": {
+              "x-bifrost-request-id": {
+                "$ref": "#/components/headers/BifrostRequestId"
+              },
+              "x-bifrost-trace-id": {
+                "$ref": "#/components/headers/BifrostTraceId"
+              },
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestIdLegacy"
+              },
+              "x-bifrost-routing-info-provider": {
+                "$ref": "#/components/headers/BifrostRoutingInfoProvider"
+              },
+              "x-bifrost-routing-info-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoModel"
+              },
+              "x-bifrost-routing-info-key": {
+                "$ref": "#/components/headers/BifrostRoutingInfoKey"
+              },
+              "x-bifrost-routing-info-requested-provider": {
+                "$ref": "#/components/headers/BifrostRoutingInfoRequestedProvider"
+              },
+              "x-bifrost-routing-info-requested-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoRequestedModel"
+              },
+              "x-bifrost-routing-info-is-fallback": {
+                "$ref": "#/components/headers/BifrostRoutingInfoIsFallback"
+              },
+              "x-bifrost-routing-info-primary-provider": {
+                "$ref": "#/components/headers/BifrostRoutingInfoPrimaryProvider"
+              },
+              "x-bifrost-routing-info-primary-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoPrimaryModel"
+              },
+              "x-bifrost-routing-info-alias-model-id": {
+                "$ref": "#/components/headers/BifrostRoutingInfoAliasModelId"
+              },
+              "x-bifrost-routing-info-alias-model-name": {
+                "$ref": "#/components/headers/BifrostRoutingInfoAliasModelName"
+              },
+              "x-bifrost-routing-info-alias-model-family": {
+                "$ref": "#/components/headers/BifrostRoutingInfoAliasModelFamily"
+              },
+              "x-bifrost-routing-info-server-side-fallback-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoServerSideFallbackModel"
+              },
+              "x-bifrost-request-type": {
+                "$ref": "#/components/headers/BifrostRequestType"
+              },
+              "x-bifrost-provider": {
+                "$ref": "#/components/headers/BifrostProvider"
+              },
+              "x-bifrost-original-model": {
+                "$ref": "#/components/headers/BifrostOriginalModel"
+              },
+              "x-bifrost-resolved-model": {
+                "$ref": "#/components/headers/BifrostResolvedModel"
+              },
+              "x-bifrost-fallback-index": {
+                "$ref": "#/components/headers/BifrostFallbackIndex"
+              },
+              "x-bifrost-upstream-latency-ms": {
+                "$ref": "#/components/headers/BifrostUpstreamLatencyMs"
+              },
+              "x-bifrost-cache-hit": {
+                "$ref": "#/components/headers/BifrostCacheHit"
+              },
+              "x-bifrost-cache-id": {
+                "$ref": "#/components/headers/BifrostCacheId"
+              },
+              "x-bifrost-cache-hit-type": {
+                "$ref": "#/components/headers/BifrostCacheHitType"
+              },
+              "x-bifrost-cache-hit-latency-ms": {
+                "$ref": "#/components/headers/BifrostCacheHitLatencyMs"
+              },
+              "x-bifrost-cache-requested-provider": {
+                "$ref": "#/components/headers/BifrostCacheRequestedProvider"
+              },
+              "x-bifrost-cache-requested-model": {
+                "$ref": "#/components/headers/BifrostCacheRequestedModel"
+              },
+              "x-bifrost-cache-similarity": {
+                "$ref": "#/components/headers/BifrostCacheSimilarity"
+              },
+              "x-bifrost-cache-threshold": {
+                "$ref": "#/components/headers/BifrostCacheThreshold"
+              },
+              "x-bifrost-cache-provider-used": {
+                "$ref": "#/components/headers/BifrostCacheProviderUsed"
+              },
+              "x-bifrost-cache-model-used": {
+                "$ref": "#/components/headers/BifrostCacheModelUsed"
+              },
+              "x-bifrost-cache-input-tokens": {
+                "$ref": "#/components/headers/BifrostCacheInputTokens"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -569,24 +667,10 @@
             }
           },
           "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
+            "$ref": "#/components/responses/InferenceBadRequest"
           },
           "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
+            "$ref": "#/components/responses/InferenceInternalError"
           }
         },
         "security": [
@@ -623,6 +707,104 @@
         "responses": {
           "200": {
             "description": "Successful response",
+            "headers": {
+              "x-bifrost-request-id": {
+                "$ref": "#/components/headers/BifrostRequestId"
+              },
+              "x-bifrost-trace-id": {
+                "$ref": "#/components/headers/BifrostTraceId"
+              },
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestIdLegacy"
+              },
+              "x-bifrost-routing-info-provider": {
+                "$ref": "#/components/headers/BifrostRoutingInfoProvider"
+              },
+              "x-bifrost-routing-info-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoModel"
+              },
+              "x-bifrost-routing-info-key": {
+                "$ref": "#/components/headers/BifrostRoutingInfoKey"
+              },
+              "x-bifrost-routing-info-requested-provider": {
+                "$ref": "#/components/headers/BifrostRoutingInfoRequestedProvider"
+              },
+              "x-bifrost-routing-info-requested-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoRequestedModel"
+              },
+              "x-bifrost-routing-info-is-fallback": {
+                "$ref": "#/components/headers/BifrostRoutingInfoIsFallback"
+              },
+              "x-bifrost-routing-info-primary-provider": {
+                "$ref": "#/components/headers/BifrostRoutingInfoPrimaryProvider"
+              },
+              "x-bifrost-routing-info-primary-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoPrimaryModel"
+              },
+              "x-bifrost-routing-info-alias-model-id": {
+                "$ref": "#/components/headers/BifrostRoutingInfoAliasModelId"
+              },
+              "x-bifrost-routing-info-alias-model-name": {
+                "$ref": "#/components/headers/BifrostRoutingInfoAliasModelName"
+              },
+              "x-bifrost-routing-info-alias-model-family": {
+                "$ref": "#/components/headers/BifrostRoutingInfoAliasModelFamily"
+              },
+              "x-bifrost-routing-info-server-side-fallback-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoServerSideFallbackModel"
+              },
+              "x-bifrost-request-type": {
+                "$ref": "#/components/headers/BifrostRequestType"
+              },
+              "x-bifrost-provider": {
+                "$ref": "#/components/headers/BifrostProvider"
+              },
+              "x-bifrost-original-model": {
+                "$ref": "#/components/headers/BifrostOriginalModel"
+              },
+              "x-bifrost-resolved-model": {
+                "$ref": "#/components/headers/BifrostResolvedModel"
+              },
+              "x-bifrost-fallback-index": {
+                "$ref": "#/components/headers/BifrostFallbackIndex"
+              },
+              "x-bifrost-upstream-latency-ms": {
+                "$ref": "#/components/headers/BifrostUpstreamLatencyMs"
+              },
+              "x-bifrost-cache-hit": {
+                "$ref": "#/components/headers/BifrostCacheHit"
+              },
+              "x-bifrost-cache-id": {
+                "$ref": "#/components/headers/BifrostCacheId"
+              },
+              "x-bifrost-cache-hit-type": {
+                "$ref": "#/components/headers/BifrostCacheHitType"
+              },
+              "x-bifrost-cache-hit-latency-ms": {
+                "$ref": "#/components/headers/BifrostCacheHitLatencyMs"
+              },
+              "x-bifrost-cache-requested-provider": {
+                "$ref": "#/components/headers/BifrostCacheRequestedProvider"
+              },
+              "x-bifrost-cache-requested-model": {
+                "$ref": "#/components/headers/BifrostCacheRequestedModel"
+              },
+              "x-bifrost-cache-similarity": {
+                "$ref": "#/components/headers/BifrostCacheSimilarity"
+              },
+              "x-bifrost-cache-threshold": {
+                "$ref": "#/components/headers/BifrostCacheThreshold"
+              },
+              "x-bifrost-cache-provider-used": {
+                "$ref": "#/components/headers/BifrostCacheProviderUsed"
+              },
+              "x-bifrost-cache-model-used": {
+                "$ref": "#/components/headers/BifrostCacheModelUsed"
+              },
+              "x-bifrost-cache-input-tokens": {
+                "$ref": "#/components/headers/BifrostCacheInputTokens"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -869,24 +1051,10 @@
             }
           },
           "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
+            "$ref": "#/components/responses/InferenceBadRequest"
           },
           "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
+            "$ref": "#/components/responses/InferenceInternalError"
           }
         },
         "security": [
@@ -923,6 +1091,104 @@
         "responses": {
           "200": {
             "description": "Successful response",
+            "headers": {
+              "x-bifrost-request-id": {
+                "$ref": "#/components/headers/BifrostRequestId"
+              },
+              "x-bifrost-trace-id": {
+                "$ref": "#/components/headers/BifrostTraceId"
+              },
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestIdLegacy"
+              },
+              "x-bifrost-routing-info-provider": {
+                "$ref": "#/components/headers/BifrostRoutingInfoProvider"
+              },
+              "x-bifrost-routing-info-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoModel"
+              },
+              "x-bifrost-routing-info-key": {
+                "$ref": "#/components/headers/BifrostRoutingInfoKey"
+              },
+              "x-bifrost-routing-info-requested-provider": {
+                "$ref": "#/components/headers/BifrostRoutingInfoRequestedProvider"
+              },
+              "x-bifrost-routing-info-requested-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoRequestedModel"
+              },
+              "x-bifrost-routing-info-is-fallback": {
+                "$ref": "#/components/headers/BifrostRoutingInfoIsFallback"
+              },
+              "x-bifrost-routing-info-primary-provider": {
+                "$ref": "#/components/headers/BifrostRoutingInfoPrimaryProvider"
+              },
+              "x-bifrost-routing-info-primary-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoPrimaryModel"
+              },
+              "x-bifrost-routing-info-alias-model-id": {
+                "$ref": "#/components/headers/BifrostRoutingInfoAliasModelId"
+              },
+              "x-bifrost-routing-info-alias-model-name": {
+                "$ref": "#/components/headers/BifrostRoutingInfoAliasModelName"
+              },
+              "x-bifrost-routing-info-alias-model-family": {
+                "$ref": "#/components/headers/BifrostRoutingInfoAliasModelFamily"
+              },
+              "x-bifrost-routing-info-server-side-fallback-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoServerSideFallbackModel"
+              },
+              "x-bifrost-request-type": {
+                "$ref": "#/components/headers/BifrostRequestType"
+              },
+              "x-bifrost-provider": {
+                "$ref": "#/components/headers/BifrostProvider"
+              },
+              "x-bifrost-original-model": {
+                "$ref": "#/components/headers/BifrostOriginalModel"
+              },
+              "x-bifrost-resolved-model": {
+                "$ref": "#/components/headers/BifrostResolvedModel"
+              },
+              "x-bifrost-fallback-index": {
+                "$ref": "#/components/headers/BifrostFallbackIndex"
+              },
+              "x-bifrost-upstream-latency-ms": {
+                "$ref": "#/components/headers/BifrostUpstreamLatencyMs"
+              },
+              "x-bifrost-cache-hit": {
+                "$ref": "#/components/headers/BifrostCacheHit"
+              },
+              "x-bifrost-cache-id": {
+                "$ref": "#/components/headers/BifrostCacheId"
+              },
+              "x-bifrost-cache-hit-type": {
+                "$ref": "#/components/headers/BifrostCacheHitType"
+              },
+              "x-bifrost-cache-hit-latency-ms": {
+                "$ref": "#/components/headers/BifrostCacheHitLatencyMs"
+              },
+              "x-bifrost-cache-requested-provider": {
+                "$ref": "#/components/headers/BifrostCacheRequestedProvider"
+              },
+              "x-bifrost-cache-requested-model": {
+                "$ref": "#/components/headers/BifrostCacheRequestedModel"
+              },
+              "x-bifrost-cache-similarity": {
+                "$ref": "#/components/headers/BifrostCacheSimilarity"
+              },
+              "x-bifrost-cache-threshold": {
+                "$ref": "#/components/headers/BifrostCacheThreshold"
+              },
+              "x-bifrost-cache-provider-used": {
+                "$ref": "#/components/headers/BifrostCacheProviderUsed"
+              },
+              "x-bifrost-cache-model-used": {
+                "$ref": "#/components/headers/BifrostCacheModelUsed"
+              },
+              "x-bifrost-cache-input-tokens": {
+                "$ref": "#/components/headers/BifrostCacheInputTokens"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1753,24 +2019,10 @@
             }
           },
           "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
+            "$ref": "#/components/responses/InferenceBadRequest"
           },
           "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
+            "$ref": "#/components/responses/InferenceInternalError"
           }
         },
         "security": [
@@ -1969,7 +2221,7 @@
       "post": {
         "operationId": "createDecision",
         "summary": "Evaluate a decision",
-        "description": "Asks a list of questions about some input and returns one typed answer\nper question, in order, with per-answer confidence and probabilities.\nServed by any decision model: Typesafe's jev models (and Laya, Nimble,\nand Clef), or any chat model through structured output.\n\nThe map form (a `state` plus questions keyed by name) is deprecated but\nstill served; a map-form request is answered in the map form.\n",
+        "description": "Asks a list of questions about some input and returns one typed answer\nper question, in order, with per-answer confidence and probabilities.\nServed by any decision model: Typesafe's jev models (and Laya, Nimble,\nand Clef), or any chat model through structured output.\n\nThe map form (a `state` plus questions keyed by name) is deprecated but\nstill served; a map-form request is answered in the map form.\n\nImages sent by reference to Typesafe can also come as a multipart request:\nthe JSON in a part named `request`, and each image in its own file part,\nnamed by the image part's `name`.\n",
         "tags": [
           "Decisions"
         ],
@@ -1986,6 +2238,25 @@
                     "$ref": "#/components/schemas/DecisionMapFormRequest"
                   }
                 ]
+              }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "request"
+                ],
+                "properties": {
+                  "request": {
+                    "type": "string",
+                    "description": "The JSON request, as for `application/json` (not the map form), with each image part's `name` naming a file part of this request."
+                  }
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "An image file part, named by exactly one image part's `name`"
+                }
               }
             }
           }
@@ -2063,6 +2334,104 @@
         "responses": {
           "200": {
             "description": "Successful response",
+            "headers": {
+              "x-bifrost-request-id": {
+                "$ref": "#/components/headers/BifrostRequestId"
+              },
+              "x-bifrost-trace-id": {
+                "$ref": "#/components/headers/BifrostTraceId"
+              },
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestIdLegacy"
+              },
+              "x-bifrost-routing-info-provider": {
+                "$ref": "#/components/headers/BifrostRoutingInfoProvider"
+              },
+              "x-bifrost-routing-info-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoModel"
+              },
+              "x-bifrost-routing-info-key": {
+                "$ref": "#/components/headers/BifrostRoutingInfoKey"
+              },
+              "x-bifrost-routing-info-requested-provider": {
+                "$ref": "#/components/headers/BifrostRoutingInfoRequestedProvider"
+              },
+              "x-bifrost-routing-info-requested-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoRequestedModel"
+              },
+              "x-bifrost-routing-info-is-fallback": {
+                "$ref": "#/components/headers/BifrostRoutingInfoIsFallback"
+              },
+              "x-bifrost-routing-info-primary-provider": {
+                "$ref": "#/components/headers/BifrostRoutingInfoPrimaryProvider"
+              },
+              "x-bifrost-routing-info-primary-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoPrimaryModel"
+              },
+              "x-bifrost-routing-info-alias-model-id": {
+                "$ref": "#/components/headers/BifrostRoutingInfoAliasModelId"
+              },
+              "x-bifrost-routing-info-alias-model-name": {
+                "$ref": "#/components/headers/BifrostRoutingInfoAliasModelName"
+              },
+              "x-bifrost-routing-info-alias-model-family": {
+                "$ref": "#/components/headers/BifrostRoutingInfoAliasModelFamily"
+              },
+              "x-bifrost-routing-info-server-side-fallback-model": {
+                "$ref": "#/components/headers/BifrostRoutingInfoServerSideFallbackModel"
+              },
+              "x-bifrost-request-type": {
+                "$ref": "#/components/headers/BifrostRequestType"
+              },
+              "x-bifrost-provider": {
+                "$ref": "#/components/headers/BifrostProvider"
+              },
+              "x-bifrost-original-model": {
+                "$ref": "#/components/headers/BifrostOriginalModel"
+              },
+              "x-bifrost-resolved-model": {
+                "$ref": "#/components/headers/BifrostResolvedModel"
+              },
+              "x-bifrost-fallback-index": {
+                "$ref": "#/components/headers/BifrostFallbackIndex"
+              },
+              "x-bifrost-upstream-latency-ms": {
+                "$ref": "#/components/headers/BifrostUpstreamLatencyMs"
+              },
+              "x-bifrost-cache-hit": {
+                "$ref": "#/components/headers/BifrostCacheHit"
+              },
+              "x-bifrost-cache-id": {
+                "$ref": "#/components/headers/BifrostCacheId"
+              },
+              "x-bifrost-cache-hit-type": {
+                "$ref": "#/components/headers/BifrostCacheHitType"
+              },
+              "x-bifrost-cache-hit-latency-ms": {
+                "$ref": "#/components/headers/BifrostCacheHitLatencyMs"
+              },
+              "x-bifrost-cache-requested-provider": {
+                "$ref": "#/components/headers/BifrostCacheRequestedProvider"
+              },
+              "x-bifrost-cache-requested-model": {
+                "$ref": "#/components/headers/BifrostCacheRequestedModel"
+              },
+              "x-bifrost-cache-similarity": {
+                "$ref": "#/components/headers/BifrostCacheSimilarity"
+              },
+              "x-bifrost-cache-threshold": {
+                "$ref": "#/components/headers/BifrostCacheThreshold"
+              },
+              "x-bifrost-cache-provider-used": {
+                "$ref": "#/components/headers/BifrostCacheProviderUsed"
+              },
+              "x-bifrost-cache-model-used": {
+                "$ref": "#/components/headers/BifrostCacheModelUsed"
+              },
+              "x-bifrost-cache-input-tokens": {
+                "$ref": "#/components/headers/BifrostCacheInputTokens"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -2072,24 +2441,10 @@
             }
           },
           "400": {
-            "description": "Bad request",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
+            "$ref": "#/components/responses/InferenceBadRequest"
           },
           "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BifrostError"
-                }
-              }
-            }
+            "$ref": "#/components/responses/InferenceInternalError"
           }
         },
         "security": [
@@ -27894,7 +28249,7 @@
       "post": {
         "operationId": "typesafeSystemOne",
         "summary": "Evaluate state (Typesafe format)",
-        "description": "Evaluates state against a map of named questions using Typesafe's native\nSystem One API. The request body matches Typesafe's native format; question\nidentifiers become result field names.\n",
+        "description": "Evaluates state against a map of named questions using Typesafe's native\nSystem One API. The request body matches Typesafe's native format; question\nidentifiers become result field names. Images are listed in `assets` and placed\nby reference; send them base64 in JSON, or as file parts of a multipart request\nwhose `request` part holds the JSON. Bifrost adds the\n`TypeSafe-Danger-Zone-Images` header Typesafe requires for images and box questions.\n",
         "tags": [
           "Typesafe Integration"
         ],
@@ -27928,7 +28283,39 @@
                   },
                   "model": {
                     "type": "string",
-                    "description": "Typesafe model identifier (e.g. `jev-1.13.0`, `jev-latest`)."
+                    "description": "Typesafe model identifier (e.g. `jev-1.14.0`, `jev-latest`)."
+                  },
+                  "assets": {
+                    "type": "object",
+                    "description": "Images keyed by the reference string written wherever each belongs in the state, instructions, or criteria.",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "image"
+                          ]
+                        },
+                        "format": {
+                          "type": "string",
+                          "enum": [
+                            "png",
+                            "jpg",
+                            "jpeg"
+                          ],
+                          "description": "Required with `data_base64`"
+                        },
+                        "data_base64": {
+                          "type": "string",
+                          "description": "The image file, base64-encoded, without a `data:` prefix"
+                        },
+                        "part": {
+                          "type": "string",
+                          "description": "In a multipart request, the name of the file part holding the image"
+                        }
+                      }
+                    }
                   },
                   "questions": {
                     "type": "object",
@@ -27946,9 +28333,10 @@
                           "enum": [
                             "noul",
                             "choice",
-                            "score"
+                            "score",
+                            "box"
                           ],
-                          "description": "Question type. `noul` returns a probability from 0 to 1, `choice` a selection with probabilities, `score` a probability-weighted rubric value."
+                          "description": "Question type. `noul` returns a probability from 0 to 1, `choice` a selection with probabilities, `score` a probability-weighted rubric value, `box` the edges of a box around the instructions' subject in an image (Jev 1.14)."
                         },
                         "instructions": {
                           "description": "Question instructions. A string, or structured data.",
@@ -27988,6 +28376,25 @@
                   }
                 }
               }
+            },
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "request"
+                ],
+                "properties": {
+                  "request": {
+                    "type": "string",
+                    "description": "The JSON request, as for `application/json`, with each multipart asset's `part` naming a file part of this request."
+                  }
+                },
+                "additionalProperties": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "An image file part, named by exactly one asset's `part`"
+                }
+              }
             }
           }
         },
@@ -28021,7 +28428,8 @@
                             "enum": [
                               "noul",
                               "choice",
-                              "score"
+                              "score",
+                              "box"
                             ]
                           },
                           "noul": {
@@ -28035,6 +28443,30 @@
                           "score": {
                             "type": "number",
                             "description": "Probability-weighted value (score answers)"
+                          },
+                          "box": {
+                            "type": "object",
+                            "description": "Box answers. Edges as fractions from 0 to 1 of the image, from its top-left",
+                            "required": [
+                              "top",
+                              "bottom",
+                              "left",
+                              "right"
+                            ],
+                            "properties": {
+                              "top": {
+                                "type": "number"
+                              },
+                              "bottom": {
+                                "type": "number"
+                              },
+                              "left": {
+                                "type": "number"
+                              },
+                              "right": {
+                                "type": "number"
+                              }
+                            }
                           },
                           "probabilities": {
                             "type": "object",
@@ -81940,6 +82372,660 @@
         }
       }
     },
+    "/api/adaptive-routing/config": {
+      "get": {
+        "operationId": "getAdaptiveRoutingConfig",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AdaptiveRouter:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get adaptive routing settings",
+        "description": "Returns the adaptive routing settings in effect on this node. Before adaptive routing has\nstarted, returns the defaults.\n",
+        "tags": [
+          "Adaptive Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The adaptive routing settings. On `PUT` this is a full replacement: a switch left out of the\nbody is turned off, and `history_retention_days` and `snapshot_persist_interval_seconds` must\nbe sent. Unknown fields are ignored.\n",
+                  "required": [
+                    "history_retention_days",
+                    "snapshot_persist_interval_seconds"
+                  ],
+                  "properties": {
+                    "direction_selection_enabled": {
+                      "type": "boolean",
+                      "description": "Adaptive provider selection. Reads `true` on a fresh install."
+                    },
+                    "route_selection_enabled": {
+                      "type": "boolean",
+                      "description": "Adaptive key selection. Reads `true` on a fresh install."
+                    },
+                    "append_fallbacks_to_pinned": {
+                      "type": "boolean",
+                      "description": "Add healthy fallbacks to requests that already name a provider. Reads `false` on a fresh install."
+                    },
+                    "reroute_failed_directions": {
+                      "type": "boolean",
+                      "description": "Redirect requests that name a failing provider. Reads `false` on a fresh install."
+                    },
+                    "reroute_target": {
+                      "type": "string",
+                      "enum": [
+                        "pool",
+                        "fallbacks"
+                      ],
+                      "default": "pool",
+                      "description": "Where a redirected request goes. `pool` picks among the eligible providers adaptive routing\nscores; `fallbacks` takes the request's first configured fallback that is not failing.\nAn omitted or empty value is stored as `pool`. Any other value is rejected with `400`.\n"
+                    },
+                    "prune_failed_fallbacks": {
+                      "type": "boolean",
+                      "description": "Skip failing providers in a request's configured fallbacks. Reads `false` on a fresh install."
+                    },
+                    "history_enabled": {
+                      "type": "boolean",
+                      "description": "Record routing history. Reads `true` on a fresh install."
+                    },
+                    "history_retention_days": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 30,
+                      "default": 7,
+                      "description": "Days routing history is kept. A change applies from the next restart. Outside 1 to 30, or omitted, is rejected with `400`."
+                    },
+                    "snapshot_persist_interval_seconds": {
+                      "type": "integer",
+                      "minimum": 5,
+                      "maximum": 86400,
+                      "default": 300,
+                      "description": "How often routing state is saved, in seconds. Outside 5 to 86400, or omitted, is rejected with `400`."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateAdaptiveRoutingConfig",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AdaptiveRouter:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Update adaptive routing settings",
+        "description": "Replaces every adaptive routing setting and applies the change on every node in the cluster.\nA switch left out of the body is turned off, so read the settings first and send them all\nback with your change. `history_retention_days` applies from the next restart; every other\nsetting applies at once.\n\nReturns `400` when the body is not valid JSON, when `snapshot_persist_interval_seconds` is\nmissing or outside 5 to 86400, when `history_retention_days` is missing or outside 1 to 30,\nor when `reroute_target` is any value other than `pool` or `fallbacks`; an omitted or empty\n`reroute_target` is stored as `pool`.\n",
+        "tags": [
+          "Adaptive Routing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "The adaptive routing settings. On `PUT` this is a full replacement: a switch left out of the\nbody is turned off, and `history_retention_days` and `snapshot_persist_interval_seconds` must\nbe sent. Unknown fields are ignored.\n",
+                "required": [
+                  "history_retention_days",
+                  "snapshot_persist_interval_seconds"
+                ],
+                "properties": {
+                  "direction_selection_enabled": {
+                    "type": "boolean",
+                    "description": "Adaptive provider selection. Reads `true` on a fresh install."
+                  },
+                  "route_selection_enabled": {
+                    "type": "boolean",
+                    "description": "Adaptive key selection. Reads `true` on a fresh install."
+                  },
+                  "append_fallbacks_to_pinned": {
+                    "type": "boolean",
+                    "description": "Add healthy fallbacks to requests that already name a provider. Reads `false` on a fresh install."
+                  },
+                  "reroute_failed_directions": {
+                    "type": "boolean",
+                    "description": "Redirect requests that name a failing provider. Reads `false` on a fresh install."
+                  },
+                  "reroute_target": {
+                    "type": "string",
+                    "enum": [
+                      "pool",
+                      "fallbacks"
+                    ],
+                    "default": "pool",
+                    "description": "Where a redirected request goes. `pool` picks among the eligible providers adaptive routing\nscores; `fallbacks` takes the request's first configured fallback that is not failing.\nAn omitted or empty value is stored as `pool`. Any other value is rejected with `400`.\n"
+                  },
+                  "prune_failed_fallbacks": {
+                    "type": "boolean",
+                    "description": "Skip failing providers in a request's configured fallbacks. Reads `false` on a fresh install."
+                  },
+                  "history_enabled": {
+                    "type": "boolean",
+                    "description": "Record routing history. Reads `true` on a fresh install."
+                  },
+                  "history_retention_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "default": 7,
+                    "description": "Days routing history is kept. A change applies from the next restart. Outside 1 to 30, or omitted, is rejected with `400`."
+                  },
+                  "snapshot_persist_interval_seconds": {
+                    "type": "integer",
+                    "minimum": 5,
+                    "maximum": 86400,
+                    "default": 300,
+                    "description": "How often routing state is saved, in seconds. Outside 5 to 86400, or omitted, is rejected with `400`."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Settings saved and applied. Returns the saved settings, with an omitted `reroute_target` stored as `pool`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The adaptive routing settings. On `PUT` this is a full replacement: a switch left out of the\nbody is turned off, and `history_retention_days` and `snapshot_persist_interval_seconds` must\nbe sent. Unknown fields are ignored.\n",
+                  "required": [
+                    "history_retention_days",
+                    "snapshot_persist_interval_seconds"
+                  ],
+                  "properties": {
+                    "direction_selection_enabled": {
+                      "type": "boolean",
+                      "description": "Adaptive provider selection. Reads `true` on a fresh install."
+                    },
+                    "route_selection_enabled": {
+                      "type": "boolean",
+                      "description": "Adaptive key selection. Reads `true` on a fresh install."
+                    },
+                    "append_fallbacks_to_pinned": {
+                      "type": "boolean",
+                      "description": "Add healthy fallbacks to requests that already name a provider. Reads `false` on a fresh install."
+                    },
+                    "reroute_failed_directions": {
+                      "type": "boolean",
+                      "description": "Redirect requests that name a failing provider. Reads `false` on a fresh install."
+                    },
+                    "reroute_target": {
+                      "type": "string",
+                      "enum": [
+                        "pool",
+                        "fallbacks"
+                      ],
+                      "default": "pool",
+                      "description": "Where a redirected request goes. `pool` picks among the eligible providers adaptive routing\nscores; `fallbacks` takes the request's first configured fallback that is not failing.\nAn omitted or empty value is stored as `pool`. Any other value is rejected with `400`.\n"
+                    },
+                    "prune_failed_fallbacks": {
+                      "type": "boolean",
+                      "description": "Skip failing providers in a request's configured fallbacks. Reads `false` on a fresh install."
+                    },
+                    "history_enabled": {
+                      "type": "boolean",
+                      "description": "Record routing history. Reads `true` on a fresh install."
+                    },
+                    "history_retention_days": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 30,
+                      "default": 7,
+                      "description": "Days routing history is kept. A change applies from the next restart. Outside 1 to 30, or omitted, is rejected with `400`."
+                    },
+                    "snapshot_persist_interval_seconds": {
+                      "type": "integer",
+                      "minimum": 5,
+                      "maximum": 86400,
+                      "default": 300,
+                      "description": "How often routing state is saved, in seconds. Outside 5 to 86400, or omitted, is rejected with `400`."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The settings could not be saved, or were saved but could not be applied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/load-balancer-config": {
+      "get": {
+        "operationId": "getAdaptiveRoutingConfigLegacy",
+        "deprecated": true,
+        "x-bifrost-successor": "/api/adaptive-routing/config",
+        "x-bifrost-removal": "following-major-release",
+        "x-mint": {
+          "metadata": {
+            "tag": "Removing soon"
+          },
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/adaptive-routing/config` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AdaptiveRouter:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Get adaptive routing settings (deprecated path)",
+        "description": "Returns the adaptive routing settings in effect on this node. Before adaptive routing has\nstarted, returns the defaults.\n\nDeprecated: use `GET /api/adaptive-routing/config`. Every response from this alias, errors\nincluded, carries `Link: </api/adaptive-routing/config>; rel=\"successor-version\"` and a\n`Warning: 299` header naming the replacement.\n",
+        "tags": [
+          "Adaptive Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "headers": {
+              "Link": {
+                "description": "`</api/adaptive-routing/config>; rel=\"successor-version\"`",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Warning": {
+                "description": "`299 - \"The /api/load-balancer-config API is deprecated; use /api/adaptive-routing/config\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The adaptive routing settings. On `PUT` this is a full replacement: a switch left out of the\nbody is turned off, and `history_retention_days` and `snapshot_persist_interval_seconds` must\nbe sent. Unknown fields are ignored.\n",
+                  "required": [
+                    "history_retention_days",
+                    "snapshot_persist_interval_seconds"
+                  ],
+                  "properties": {
+                    "direction_selection_enabled": {
+                      "type": "boolean",
+                      "description": "Adaptive provider selection. Reads `true` on a fresh install."
+                    },
+                    "route_selection_enabled": {
+                      "type": "boolean",
+                      "description": "Adaptive key selection. Reads `true` on a fresh install."
+                    },
+                    "append_fallbacks_to_pinned": {
+                      "type": "boolean",
+                      "description": "Add healthy fallbacks to requests that already name a provider. Reads `false` on a fresh install."
+                    },
+                    "reroute_failed_directions": {
+                      "type": "boolean",
+                      "description": "Redirect requests that name a failing provider. Reads `false` on a fresh install."
+                    },
+                    "reroute_target": {
+                      "type": "string",
+                      "enum": [
+                        "pool",
+                        "fallbacks"
+                      ],
+                      "default": "pool",
+                      "description": "Where a redirected request goes. `pool` picks among the eligible providers adaptive routing\nscores; `fallbacks` takes the request's first configured fallback that is not failing.\nAn omitted or empty value is stored as `pool`. Any other value is rejected with `400`.\n"
+                    },
+                    "prune_failed_fallbacks": {
+                      "type": "boolean",
+                      "description": "Skip failing providers in a request's configured fallbacks. Reads `false` on a fresh install."
+                    },
+                    "history_enabled": {
+                      "type": "boolean",
+                      "description": "Record routing history. Reads `true` on a fresh install."
+                    },
+                    "history_retention_days": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 30,
+                      "default": 7,
+                      "description": "Days routing history is kept. A change applies from the next restart. Outside 1 to 30, or omitted, is rejected with `400`."
+                    },
+                    "snapshot_persist_interval_seconds": {
+                      "type": "integer",
+                      "minimum": 5,
+                      "maximum": 86400,
+                      "default": 300,
+                      "description": "How often routing state is saved, in seconds. Outside 5 to 86400, or omitted, is rejected with `400`."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden. Authenticated, but not permitted to perform this action.",
+            "headers": {
+              "Link": {
+                "description": "`</api/adaptive-routing/config>; rel=\"successor-version\"`",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Warning": {
+                "description": "`299 - \"The /api/load-balancer-config API is deprecated; use /api/adaptive-routing/config\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "updateAdaptiveRoutingConfigLegacy",
+        "deprecated": true,
+        "x-bifrost-successor": "/api/adaptive-routing/config",
+        "x-bifrost-removal": "following-major-release",
+        "x-mint": {
+          "metadata": {
+            "tag": "Removing soon"
+          },
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/adaptive-routing/config` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AdaptiveRouter:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Update adaptive routing settings (deprecated path)",
+        "description": "Replaces every adaptive routing setting and applies the change on every node in the cluster.\nA switch left out of the body is turned off. `history_retention_days` applies from the next\nrestart; every other setting applies at once.\n\nReturns `400` when the body is not valid JSON, when `snapshot_persist_interval_seconds` is\nmissing or outside 5 to 86400, when `history_retention_days` is missing or outside 1 to 30,\nor when `reroute_target` is any value other than `pool` or `fallbacks`; an omitted or empty\n`reroute_target` is stored as `pool`.\n\nDeprecated: use `PUT /api/adaptive-routing/config`. Every response from this alias, errors\nincluded, carries `Link: </api/adaptive-routing/config>; rel=\"successor-version\"` and a\n`Warning: 299` header naming the replacement.\n",
+        "tags": [
+          "Adaptive Routing"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "The adaptive routing settings. On `PUT` this is a full replacement: a switch left out of the\nbody is turned off, and `history_retention_days` and `snapshot_persist_interval_seconds` must\nbe sent. Unknown fields are ignored.\n",
+                "required": [
+                  "history_retention_days",
+                  "snapshot_persist_interval_seconds"
+                ],
+                "properties": {
+                  "direction_selection_enabled": {
+                    "type": "boolean",
+                    "description": "Adaptive provider selection. Reads `true` on a fresh install."
+                  },
+                  "route_selection_enabled": {
+                    "type": "boolean",
+                    "description": "Adaptive key selection. Reads `true` on a fresh install."
+                  },
+                  "append_fallbacks_to_pinned": {
+                    "type": "boolean",
+                    "description": "Add healthy fallbacks to requests that already name a provider. Reads `false` on a fresh install."
+                  },
+                  "reroute_failed_directions": {
+                    "type": "boolean",
+                    "description": "Redirect requests that name a failing provider. Reads `false` on a fresh install."
+                  },
+                  "reroute_target": {
+                    "type": "string",
+                    "enum": [
+                      "pool",
+                      "fallbacks"
+                    ],
+                    "default": "pool",
+                    "description": "Where a redirected request goes. `pool` picks among the eligible providers adaptive routing\nscores; `fallbacks` takes the request's first configured fallback that is not failing.\nAn omitted or empty value is stored as `pool`. Any other value is rejected with `400`.\n"
+                  },
+                  "prune_failed_fallbacks": {
+                    "type": "boolean",
+                    "description": "Skip failing providers in a request's configured fallbacks. Reads `false` on a fresh install."
+                  },
+                  "history_enabled": {
+                    "type": "boolean",
+                    "description": "Record routing history. Reads `true` on a fresh install."
+                  },
+                  "history_retention_days": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 30,
+                    "default": 7,
+                    "description": "Days routing history is kept. A change applies from the next restart. Outside 1 to 30, or omitted, is rejected with `400`."
+                  },
+                  "snapshot_persist_interval_seconds": {
+                    "type": "integer",
+                    "minimum": 5,
+                    "maximum": 86400,
+                    "default": 300,
+                    "description": "How often routing state is saved, in seconds. Outside 5 to 86400, or omitted, is rejected with `400`."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Settings saved and applied. Returns the saved settings, with an omitted `reroute_target` stored as `pool`.",
+            "headers": {
+              "Link": {
+                "description": "`</api/adaptive-routing/config>; rel=\"successor-version\"`",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Warning": {
+                "description": "`299 - \"The /api/load-balancer-config API is deprecated; use /api/adaptive-routing/config\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "The adaptive routing settings. On `PUT` this is a full replacement: a switch left out of the\nbody is turned off, and `history_retention_days` and `snapshot_persist_interval_seconds` must\nbe sent. Unknown fields are ignored.\n",
+                  "required": [
+                    "history_retention_days",
+                    "snapshot_persist_interval_seconds"
+                  ],
+                  "properties": {
+                    "direction_selection_enabled": {
+                      "type": "boolean",
+                      "description": "Adaptive provider selection. Reads `true` on a fresh install."
+                    },
+                    "route_selection_enabled": {
+                      "type": "boolean",
+                      "description": "Adaptive key selection. Reads `true` on a fresh install."
+                    },
+                    "append_fallbacks_to_pinned": {
+                      "type": "boolean",
+                      "description": "Add healthy fallbacks to requests that already name a provider. Reads `false` on a fresh install."
+                    },
+                    "reroute_failed_directions": {
+                      "type": "boolean",
+                      "description": "Redirect requests that name a failing provider. Reads `false` on a fresh install."
+                    },
+                    "reroute_target": {
+                      "type": "string",
+                      "enum": [
+                        "pool",
+                        "fallbacks"
+                      ],
+                      "default": "pool",
+                      "description": "Where a redirected request goes. `pool` picks among the eligible providers adaptive routing\nscores; `fallbacks` takes the request's first configured fallback that is not failing.\nAn omitted or empty value is stored as `pool`. Any other value is rejected with `400`.\n"
+                    },
+                    "prune_failed_fallbacks": {
+                      "type": "boolean",
+                      "description": "Skip failing providers in a request's configured fallbacks. Reads `false` on a fresh install."
+                    },
+                    "history_enabled": {
+                      "type": "boolean",
+                      "description": "Record routing history. Reads `true` on a fresh install."
+                    },
+                    "history_retention_days": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 30,
+                      "default": 7,
+                      "description": "Days routing history is kept. A change applies from the next restart. Outside 1 to 30, or omitted, is rejected with `400`."
+                    },
+                    "snapshot_persist_interval_seconds": {
+                      "type": "integer",
+                      "minimum": 5,
+                      "maximum": 86400,
+                      "default": 300,
+                      "description": "How often routing state is saved, in seconds. Outside 5 to 86400, or omitted, is rejected with `400`."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "headers": {
+              "Link": {
+                "description": "`</api/adaptive-routing/config>; rel=\"successor-version\"`",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Warning": {
+                "description": "`299 - \"The /api/load-balancer-config API is deprecated; use /api/adaptive-routing/config\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden. Authenticated, but not permitted to perform this action.",
+            "headers": {
+              "Link": {
+                "description": "`</api/adaptive-routing/config>; rel=\"successor-version\"`",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Warning": {
+                "description": "`299 - \"The /api/load-balancer-config API is deprecated; use /api/adaptive-routing/config\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The settings could not be saved, or were saved but could not be applied.",
+            "headers": {
+              "Link": {
+                "description": "`</api/adaptive-routing/config>; rel=\"successor-version\"`",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Warning": {
+                "description": "`299 - \"The /api/load-balancer-config API is deprecated; use /api/adaptive-routing/config\"`",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/routing/rules": {
       "get": {
         "operationId": "listRoutingRules",
@@ -81955,15 +83041,48 @@
           {
             "name": "scope",
             "in": "query",
-            "description": "Filter routing rules by scope (global, team, customer, virtual_key)",
+            "description": "Filter by scope. Returns only enabled rules in that scope and ignores limit, offset and search. A scope other than global needs scope_id.",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "global",
+                "team",
+                "customer",
+                "virtual_key",
+                "user"
+              ]
             }
           },
           {
             "name": "scope_id",
             "in": "query",
-            "description": "Filter routing rules by scope ID",
+            "description": "Filter by scope ID. Required with a scope other than global.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (default 25, maximum 100). Sending limit, offset or search returns one page. Ignored when scope is set.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of rules to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive match against the rule's name or CEL expression.",
             "schema": {
               "type": "string"
             }
@@ -81988,6 +83107,16 @@
               }
             }
           },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -82006,7 +83135,7 @@
           "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `RoutingRules:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Create routing rule",
-        "description": "Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values.\n",
+        "description": "Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Only `name` and at least one target are required: `scope` defaults to `global`, `priority` to `0`, `enabled` to `true` and `chain_rule` to `false`, and an empty `cel_expression` matches every request.\n",
         "tags": [
           "Routing"
         ],
@@ -82041,6 +83170,16 @@
           },
           "400": {
             "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another rule in the same scope and scope_id already uses this priority, for example `routing rule with priority 5 already exists for scope 'global'; use a different priority`, or already has this name.",
             "content": {
               "application/json": {
                 "schema": {
@@ -82192,6 +83331,16 @@
           },
           "404": {
             "description": "Routing rule not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another rule in the same scope and scope_id already uses this priority, for example `routing rule with priority 5 already exists for scope 'global'; use a different priority`, or already has this name.",
             "content": {
               "application/json": {
                 "schema": {
@@ -84063,6 +85212,14 @@
         "tags": [
           "Routing"
         ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
         "responses": {
           "200": {
             "description": "Complexity classifier status retrieved successfully",
@@ -84213,6 +85370,14 @@
         "description": "Restarts the saved semantic classifier warmup only when its current state is failed. The retry runs asynchronously and does not change the saved configuration.\n",
         "tags": [
           "Routing"
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
         ],
         "responses": {
           "202": {
@@ -84368,6 +85533,9 @@
         "security": [
           {
             "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
           }
         ],
         "responses": {
@@ -84500,11 +85668,13 @@
       "get": {
         "operationId": "listRoutingRulesLegacy",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `RoutingRules:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/rules` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `RoutingRules:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "metadata": {
+            "tag": "Removing soon"
+          }
         },
-        "deprecated": true,
         "summary": "List routing rules (deprecated path)",
-        "description": "Returns a list of all routing rules configured for intelligent request routing across providers. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.\n",
+        "description": "Returns a list of all routing rules configured for intelligent request routing across providers.\n",
         "tags": [
           "Routing"
         ],
@@ -84512,15 +85682,48 @@
           {
             "name": "scope",
             "in": "query",
-            "description": "Filter routing rules by scope (global, team, customer, virtual_key)",
+            "description": "Filter by scope. Returns only enabled rules in that scope and ignores limit, offset and search. A scope other than global needs scope_id.",
             "schema": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "global",
+                "team",
+                "customer",
+                "virtual_key",
+                "user"
+              ]
             }
           },
           {
             "name": "scope_id",
             "in": "query",
-            "description": "Filter routing rules by scope ID",
+            "description": "Filter by scope ID. Required with a scope other than global.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size (default 25, maximum 100). Sending limit, offset or search returns one page. Ignored when scope is set.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "Number of rules to skip.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "description": "Case-insensitive match against the rule's name or CEL expression.",
             "schema": {
               "type": "string"
             }
@@ -84545,6 +85748,16 @@
               }
             }
           },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -84555,16 +85768,21 @@
               }
             }
           }
-        }
+        },
+        "x-bifrost-successor": "/api/routing/rules",
+        "x-bifrost-removal": "following-major-release",
+        "deprecated": true
       },
       "post": {
         "operationId": "createRoutingRuleLegacy",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `RoutingRules:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/rules` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `RoutingRules:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "metadata": {
+            "tag": "Removing soon"
+          }
         },
-        "deprecated": true,
         "summary": "Create routing rule (deprecated path)",
-        "description": "Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Deprecated, use /api/routing/rules instead. This path is kept for backwards compatibility and behaves identically.\n",
+        "description": "Creates a new CEL-based routing rule for intelligent request routing. Provider and model can be left empty to use the incoming request values. Only `name` and at least one target are required: `scope` defaults to `global`, `priority` to `0`, `enabled` to `true` and `chain_rule` to `false`, and an empty `cel_expression` matches every request.\n",
         "tags": [
           "Routing"
         ],
@@ -84607,6 +85825,16 @@
               }
             }
           },
+          "409": {
+            "description": "Another rule in the same scope and scope_id already uses this priority, for example `routing rule with priority 5 already exists for scope 'global'; use a different priority`, or already has this name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -84617,18 +85845,23 @@
               }
             }
           }
-        }
+        },
+        "x-bifrost-successor": "/api/routing/rules",
+        "x-bifrost-removal": "following-major-release",
+        "deprecated": true
       }
     },
     "/api/governance/routing-rules/{rule_id}": {
       "get": {
         "operationId": "getRoutingRuleLegacy",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `RoutingRules:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/rules/{rule_id}` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `RoutingRules:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "metadata": {
+            "tag": "Removing soon"
+          }
         },
-        "deprecated": true,
         "summary": "Get routing rule (deprecated path)",
-        "description": "Returns a specific routing rule by ID. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.\n",
+        "description": "Returns a specific routing rule by ID.\n",
         "tags": [
           "Routing"
         ],
@@ -84687,16 +85920,21 @@
               }
             }
           }
-        }
+        },
+        "x-bifrost-successor": "/api/routing/rules/{rule_id}",
+        "x-bifrost-removal": "following-major-release",
+        "deprecated": true
       },
       "put": {
         "operationId": "updateRoutingRuleLegacy",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `RoutingRules:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/rules/{rule_id}` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `RoutingRules:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "metadata": {
+            "tag": "Removing soon"
+          }
         },
-        "deprecated": true,
         "summary": "Update routing rule (deprecated path)",
-        "description": "Updates an existing routing rule's configuration. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.\n",
+        "description": "Updates an existing routing rule's configuration.\n",
         "tags": [
           "Routing"
         ],
@@ -84760,6 +85998,16 @@
               }
             }
           },
+          "409": {
+            "description": "Another rule in the same scope and scope_id already uses this priority, for example `routing rule with priority 5 already exists for scope 'global'; use a different priority`, or already has this name.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -84770,16 +86018,21 @@
               }
             }
           }
-        }
+        },
+        "x-bifrost-successor": "/api/routing/rules/{rule_id}",
+        "x-bifrost-removal": "following-major-release",
+        "deprecated": true
       },
       "delete": {
         "operationId": "deleteRoutingRuleLegacy",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `RoutingRules:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/rules/{rule_id}` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `RoutingRules:Delete` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "metadata": {
+            "tag": "Removing soon"
+          }
         },
-        "deprecated": true,
         "summary": "Delete routing rule (deprecated path)",
-        "description": "Deletes a routing rule. Deprecated, use /api/routing/rules/{rule_id} instead. This path is kept for backwards compatibility and behaves identically.\n",
+        "description": "Deletes a routing rule.\n",
         "tags": [
           "Routing"
         ],
@@ -84833,18 +86086,23 @@
               }
             }
           }
-        }
+        },
+        "x-bifrost-successor": "/api/routing/rules/{rule_id}",
+        "x-bifrost-removal": "following-major-release",
+        "deprecated": true
       }
     },
     "/api/governance/complexity-analyzer-config": {
       "get": {
         "operationId": "getComplexityAnalyzerConfigLegacy",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "metadata": {
+            "tag": "Removing soon"
+          }
         },
-        "deprecated": true,
         "summary": "Get complexity analyzer config (deprecated path)",
-        "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.\n",
+        "description": "Returns the full complexity analyzer runtime config, including the selected classifier, semantic embedding and decision-model settings, optional LLM fallback settings, and per-tier reference phrase lists. Returns built-in defaults if none have been configured.",
         "tags": [
           "Routing"
         ],
@@ -85287,16 +86545,21 @@
               }
             }
           }
-        }
+        },
+        "x-bifrost-successor": "/api/routing/complexity-analyzer-config",
+        "x-bifrost-removal": "following-major-release",
+        "deprecated": true
       },
       "put": {
         "operationId": "updateComplexityAnalyzerConfigLegacy",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Update` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "metadata": {
+            "tag": "Removing soon"
+          }
         },
-        "deprecated": true,
         "summary": "Update complexity analyzer config (deprecated path)",
-        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials. Deprecated, use /api/routing/complexity-analyzer-config instead. This path is kept for backwards compatibility and behaves identically.\n",
+        "description": "Replaces the full complexity analyzer runtime config and hot-reloads the routing plugin. Changing the embedding configuration or reference phrases triggers a background re-warm of the semantic classifier; unchanged phrases are not re-embedded. Setting semantic.fallback to llm requires an llm block. A decision model can be selected as the primary classifier or semantic fallback; it uses the decision block's provider and model (default typesafe/jev-latest) and that provider's credentials.",
         "tags": [
           "Routing"
         ],
@@ -86159,18 +87422,23 @@
               }
             }
           }
-        }
+        },
+        "x-bifrost-successor": "/api/routing/complexity-analyzer-config",
+        "x-bifrost-removal": "following-major-release",
+        "deprecated": true
       }
     },
     "/api/governance/complexity-analyzer-config/reset": {
       "post": {
         "operationId": "resetComplexityAnalyzerConfigLegacy",
         "x-mint": {
-          "content": "**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/routing/complexity-analyzer-config/reset` instead.\n</Warning>\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `Governance:Create` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n",
+          "metadata": {
+            "tag": "Removing soon"
+          }
         },
-        "deprecated": true,
         "summary": "Reset complexity analyzer config (deprecated path)",
-        "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, decision-model settings, semantic and LLM configuration, and session settings are preserved. Deprecated, use /api/routing/complexity-analyzer-config/reset instead. This path is kept for backwards compatibility and behaves identically.\n",
+        "description": "Restores the built-in reference phrase lists and hot-reloads the routing plugin. The selected classifier, decision-model settings, semantic and LLM configuration, and session settings are preserved.\n",
         "tags": [
           "Routing"
         ],
@@ -86613,7 +87881,10 @@
               }
             }
           }
-        }
+        },
+        "x-bifrost-successor": "/api/routing/complexity-analyzer-config/reset",
+        "x-bifrost-removal": "following-major-release",
+        "deprecated": true
       }
     },
     "/api/logs": {
@@ -86695,7 +87966,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -86804,6 +88075,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -87371,7 +88650,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by (routing-rule, governance, or loadbalancing)",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -87480,6 +88759,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -87669,7 +88956,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -87791,7 +89078,7 @@
           {
             "name": "metadata_<key>",
             "in": "query",
-            "description": "Metadata filter where <key> is the metadata key to match",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
             "schema": {
               "type": "string"
             }
@@ -87966,7 +89253,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -88043,6 +89330,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -88215,7 +89510,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -88292,6 +89587,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -88469,7 +89772,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -88546,6 +89849,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -88734,7 +90045,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -88811,6 +90122,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -88987,7 +90306,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -89064,6 +90383,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -89240,7 +90567,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -89317,6 +90644,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -89505,7 +90840,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -89582,6 +90917,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -89794,7 +91137,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -89871,6 +91214,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -90081,7 +91432,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -90158,6 +91509,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -90379,7 +91738,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -90456,6 +91815,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -90698,7 +92065,7 @@
                       "items": {
                         "type": "string"
                       },
-                      "description": "Available routing engine types (routing-rule, governance, loadbalancing)"
+                      "description": "Available routing engine types (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)"
                     },
                     "tool_call_names": {
                       "type": "array",
@@ -90852,7 +92219,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -90937,6 +92304,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -91138,7 +92513,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -91223,6 +92598,14 @@
             "description": "Only show logs with missing cost",
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "name": "metadata_<key>",
+            "in": "query",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
+            "schema": {
+              "type": "string"
             }
           },
           {
@@ -91448,7 +92831,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -91578,7 +92961,7 @@
           {
             "name": "metadata_<key>",
             "in": "query",
-            "description": "Metadata filter where <key> is the metadata key to match",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
             "schema": {
               "type": "string"
             }
@@ -91866,7 +93249,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -91996,7 +93379,7 @@
           {
             "name": "metadata_<key>",
             "in": "query",
-            "description": "Metadata filter where <key> is the metadata key to match",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
             "schema": {
               "type": "string"
             }
@@ -92526,7 +93909,7 @@
           {
             "name": "routing_engine_used",
             "in": "query",
-            "description": "Comma-separated list of routing engines to filter by",
+            "description": "Comma-separated list of routing engines to filter by (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)",
             "schema": {
               "type": "string"
             }
@@ -92656,7 +94039,7 @@
           {
             "name": "metadata_<key>",
             "in": "query",
-            "description": "Metadata filter where <key> is the metadata key to match",
+            "description": "Filter on custom log metadata. Replace <key> with the metadata key, for example `metadata_team=search`. Repeat with different keys to require all of them; the value must match exactly. Keys may use letters, digits, `.`, `_` and `-`, up to 256 characters; other keys are ignored. List the keys in use with `GET /api/logs/filterdata?dimensions=metadata_keys`.",
             "schema": {
               "type": "string"
             }
@@ -106218,7 +107601,356 @@
         }
       }
     },
+    "headers": {
+      "BifrostRequestId": {
+        "description": "The x-request-id the caller sent, or a UUID Bifrost generated. It is also the ID of the request's log entry.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostTraceId": {
+        "description": "Trace ID, inherited from an incoming W3C traceparent or generated.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "RequestIdLegacy": {
+        "deprecated": true,
+        "description": "Same value as x-bifrost-request-id, unless the provider answers with its own x-request-id (OpenAI does), which then replaces it. Read x-bifrost-request-id instead.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostRoutingInfoProvider": {
+        "description": "Provider that ran the attempt.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostRoutingInfoModel": {
+        "description": "Model sent to that provider.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostRoutingInfoKey": {
+        "description": "Name of the stored key used, never its ID or secret. Absent when no stored key was used.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostRoutingInfoRequestedProvider": {
+        "description": "Provider the caller asked for, before routing rules, load balancing or session affinity changed it. Sent only when the caller sent provider/model.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostRoutingInfoRequestedModel": {
+        "description": "Model the caller asked for, before anything changed it.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostRoutingInfoIsFallback": {
+        "description": "Sent only when a fallback served the request or returned the error.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "true"
+          ]
+        }
+      },
+      "BifrostRoutingInfoPrimaryProvider": {
+        "description": "The primary attempt's provider. Sent with x-bifrost-routing-info-is-fallback.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostRoutingInfoPrimaryModel": {
+        "description": "The primary attempt's model. Sent with x-bifrost-routing-info-is-fallback.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostRoutingInfoAliasModelId": {
+        "description": "Model ID sent to the provider, when a model alias on the key matched.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostRoutingInfoAliasModelName": {
+        "description": "The matched alias's canonical model name, when it has one.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostRoutingInfoAliasModelFamily": {
+        "description": "The matched alias's model family, when it sets one.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostRoutingInfoServerSideFallbackModel": {
+        "description": "Model that answered when Anthropic switched models inside one call. Never sent on streams.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostRequestType": {
+        "description": "Request type, for example chat_completion or chat_completion_stream.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostProvider": {
+        "deprecated": true,
+        "description": "Mirrors the deprecated extra_fields.provider. Use x-bifrost-routing-info-provider.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostOriginalModel": {
+        "deprecated": true,
+        "description": "Mirrors the deprecated extra_fields.original_model_requested. Use x-bifrost-routing-info-requested-model or x-bifrost-routing-info-primary-model.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostResolvedModel": {
+        "deprecated": true,
+        "description": "Mirrors the deprecated extra_fields.resolved_model_used. Use x-bifrost-routing-info-alias-model-id or x-bifrost-routing-info-model.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostFallbackIndex": {
+        "description": "Which fallback served the request, counting from 1. Absent when the primary served.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "BifrostUpstreamLatencyMs": {
+        "description": "Milliseconds spent waiting on the provider, with three decimals, summed over every attempt, retry and fallback. On a stream it covers only the time until the stream opened.",
+        "schema": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "BifrostCacheHit": {
+        "description": "Whether the semantic cache served the response. Sent whenever the cache ran a lookup.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "true",
+            "false"
+          ]
+        }
+      },
+      "BifrostCacheId": {
+        "description": "Cache entry ID. Sent when the cache ran a lookup.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostCacheHitType": {
+        "description": "Hit type. Sent on a hit.",
+        "schema": {
+          "type": "string",
+          "enum": [
+            "direct",
+            "semantic"
+          ]
+        }
+      },
+      "BifrostCacheHitLatencyMs": {
+        "description": "Milliseconds spent serving the hit. Sent on a hit.",
+        "schema": {
+          "type": "integer"
+        }
+      },
+      "BifrostCacheRequestedProvider": {
+        "description": "Provider of the cached entry. Sent on a hit.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostCacheRequestedModel": {
+        "description": "Model of the cached entry. Sent on a hit.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostCacheSimilarity": {
+        "description": "Similarity score. Sent on a semantic hit.",
+        "schema": {
+          "type": "number"
+        }
+      },
+      "BifrostCacheThreshold": {
+        "description": "Similarity threshold. Sent on a semantic hit.",
+        "schema": {
+          "type": "number"
+        }
+      },
+      "BifrostCacheProviderUsed": {
+        "description": "Embedding provider. Sent when a semantic search ran.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostCacheModelUsed": {
+        "description": "Embedding model. Sent when a semantic search ran.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "BifrostCacheInputTokens": {
+        "description": "Embedding input tokens. Sent when a semantic search ran.",
+        "schema": {
+          "type": "integer"
+        }
+      }
+    },
     "responses": {
+      "InferenceBadRequest": {
+        "description": "Bad request",
+        "headers": {
+          "x-bifrost-request-id": {
+            "$ref": "#/components/headers/BifrostRequestId"
+          },
+          "x-bifrost-trace-id": {
+            "$ref": "#/components/headers/BifrostTraceId"
+          },
+          "x-request-id": {
+            "$ref": "#/components/headers/RequestIdLegacy"
+          },
+          "x-bifrost-routing-info-provider": {
+            "$ref": "#/components/headers/BifrostRoutingInfoProvider"
+          },
+          "x-bifrost-routing-info-model": {
+            "$ref": "#/components/headers/BifrostRoutingInfoModel"
+          },
+          "x-bifrost-routing-info-key": {
+            "$ref": "#/components/headers/BifrostRoutingInfoKey"
+          },
+          "x-bifrost-routing-info-requested-provider": {
+            "$ref": "#/components/headers/BifrostRoutingInfoRequestedProvider"
+          },
+          "x-bifrost-routing-info-requested-model": {
+            "$ref": "#/components/headers/BifrostRoutingInfoRequestedModel"
+          },
+          "x-bifrost-routing-info-is-fallback": {
+            "$ref": "#/components/headers/BifrostRoutingInfoIsFallback"
+          },
+          "x-bifrost-routing-info-primary-provider": {
+            "$ref": "#/components/headers/BifrostRoutingInfoPrimaryProvider"
+          },
+          "x-bifrost-routing-info-primary-model": {
+            "$ref": "#/components/headers/BifrostRoutingInfoPrimaryModel"
+          },
+          "x-bifrost-routing-info-alias-model-id": {
+            "$ref": "#/components/headers/BifrostRoutingInfoAliasModelId"
+          },
+          "x-bifrost-routing-info-alias-model-name": {
+            "$ref": "#/components/headers/BifrostRoutingInfoAliasModelName"
+          },
+          "x-bifrost-routing-info-alias-model-family": {
+            "$ref": "#/components/headers/BifrostRoutingInfoAliasModelFamily"
+          },
+          "x-bifrost-routing-info-server-side-fallback-model": {
+            "$ref": "#/components/headers/BifrostRoutingInfoServerSideFallbackModel"
+          },
+          "x-bifrost-request-type": {
+            "$ref": "#/components/headers/BifrostRequestType"
+          },
+          "x-bifrost-provider": {
+            "$ref": "#/components/headers/BifrostProvider"
+          },
+          "x-bifrost-original-model": {
+            "$ref": "#/components/headers/BifrostOriginalModel"
+          },
+          "x-bifrost-resolved-model": {
+            "$ref": "#/components/headers/BifrostResolvedModel"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            }
+          }
+        }
+      },
+      "InferenceInternalError": {
+        "description": "Internal server error",
+        "headers": {
+          "x-bifrost-request-id": {
+            "$ref": "#/components/headers/BifrostRequestId"
+          },
+          "x-bifrost-trace-id": {
+            "$ref": "#/components/headers/BifrostTraceId"
+          },
+          "x-request-id": {
+            "$ref": "#/components/headers/RequestIdLegacy"
+          },
+          "x-bifrost-routing-info-provider": {
+            "$ref": "#/components/headers/BifrostRoutingInfoProvider"
+          },
+          "x-bifrost-routing-info-model": {
+            "$ref": "#/components/headers/BifrostRoutingInfoModel"
+          },
+          "x-bifrost-routing-info-key": {
+            "$ref": "#/components/headers/BifrostRoutingInfoKey"
+          },
+          "x-bifrost-routing-info-requested-provider": {
+            "$ref": "#/components/headers/BifrostRoutingInfoRequestedProvider"
+          },
+          "x-bifrost-routing-info-requested-model": {
+            "$ref": "#/components/headers/BifrostRoutingInfoRequestedModel"
+          },
+          "x-bifrost-routing-info-is-fallback": {
+            "$ref": "#/components/headers/BifrostRoutingInfoIsFallback"
+          },
+          "x-bifrost-routing-info-primary-provider": {
+            "$ref": "#/components/headers/BifrostRoutingInfoPrimaryProvider"
+          },
+          "x-bifrost-routing-info-primary-model": {
+            "$ref": "#/components/headers/BifrostRoutingInfoPrimaryModel"
+          },
+          "x-bifrost-routing-info-alias-model-id": {
+            "$ref": "#/components/headers/BifrostRoutingInfoAliasModelId"
+          },
+          "x-bifrost-routing-info-alias-model-name": {
+            "$ref": "#/components/headers/BifrostRoutingInfoAliasModelName"
+          },
+          "x-bifrost-routing-info-alias-model-family": {
+            "$ref": "#/components/headers/BifrostRoutingInfoAliasModelFamily"
+          },
+          "x-bifrost-routing-info-server-side-fallback-model": {
+            "$ref": "#/components/headers/BifrostRoutingInfoServerSideFallbackModel"
+          },
+          "x-bifrost-request-type": {
+            "$ref": "#/components/headers/BifrostRequestType"
+          },
+          "x-bifrost-provider": {
+            "$ref": "#/components/headers/BifrostProvider"
+          },
+          "x-bifrost-original-model": {
+            "$ref": "#/components/headers/BifrostOriginalModel"
+          },
+          "x-bifrost-resolved-model": {
+            "$ref": "#/components/headers/BifrostResolvedModel"
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/BifrostError"
+            }
+          }
+        }
+      },
       "BadRequest": {
         "description": "Bad request",
         "content": {
@@ -106348,19 +108080,22 @@
           "runtime_auth": {
             "$ref": "#/components/schemas/AgentUpstreamAuth"
           },
+          "credential_origins": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^https?://[^@/?#\\s]+$"
+            },
+            "description": "Additional HTTP(S) origins permitted for runtime requests, including configured credentials, caller-provided upstream headers, forwarded Bifrost credentials, and TLS client certificates. Every runtime endpoint must pass this policy. The card origin is permitted automatically. Include scheme and optional port; paths, userinfo, queries, and fragments are forbidden. Private destinations also need permission in a2a_private_allowlist. Nonempty values require dashboard authentication.\n"
+          },
           "virtual_key_ids": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "description": "Virtual key IDs granted access to the agent. Empty and duplicate IDs are rejected."
-          },
-          "extension_uris": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "A2A extension URIs enabled for upstream requests."
           }
         },
         "required": [
@@ -106433,7 +108168,7 @@
         "required": [
           "type"
         ],
-        "description": "Shared upstream authentication. Header auth requires nonempty headers. OAuth uses client credentials and requires client_id, client_secret, and a token, discovery, or provider URL. Interactive OAuth is not supported."
+        "description": "Shared upstream authentication. Header auth requires nonempty headers. OAuth uses client credentials and requires client_id, client_secret, and a token, discovery, or provider URL. Interactive OAuth is not supported. Using environment or vault secret references requires dashboard authentication for card inspection, creation, and updates. Operator declarations in config.json may use these references. Preserving stored secrets through masked placeholders on an update also requires dashboard authentication."
       },
       "AgentUpstreamOAuthConfig": {
         "type": "object",
@@ -106658,19 +108393,22 @@
           "runtime_auth": {
             "$ref": "#/components/schemas/AgentUpstreamAuth"
           },
+          "credential_origins": {
+            "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^https?://[^@/?#\\s]+$"
+            },
+            "description": "Additional HTTP(S) origins permitted for runtime requests, including configured credentials, caller-provided upstream headers, forwarded Bifrost credentials, and TLS client certificates. Every runtime endpoint must pass this policy. The card origin is permitted automatically. Include scheme and optional port; paths, userinfo, queries, and fragments are forbidden. Private destinations also need permission in a2a_private_allowlist. Nonempty values require dashboard authentication. Omit or send [] to clear.\n"
+          },
           "virtual_key_ids": {
             "type": "array",
             "items": {
               "type": "string"
             },
             "description": "Virtual key IDs granted access to the agent. Empty and duplicate IDs are rejected."
-          },
-          "extension_uris": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "A2A extension URIs enabled for upstream requests."
           }
         },
         "required": [
@@ -107209,12 +108947,15 @@
           "runtime_auth": {
             "$ref": "#/components/schemas/AgentUpstreamAuth"
           },
-          "extension_uris": {
+          "credential_origins": {
             "type": "array",
+            "maxItems": 32,
+            "uniqueItems": true,
             "items": {
-              "type": "string"
+              "type": "string",
+              "pattern": "^https?://[^@/?#\\s]+$"
             },
-            "description": "A2A extension URIs enabled for upstream requests."
+            "description": "Additional origins permitted for all runtime requests and their credentials. The card origin is permitted automatically.\n"
           },
           "virtual_key_ids": {
             "type": "array",
@@ -109219,16 +110960,104 @@
           }
         }
       },
+      "RoutingInfo": {
+        "type": "object",
+        "description": "Which provider, model and key handled the attempt that produced this response or error, and what the caller asked for. Also sent as x-bifrost-routing-info-* response headers.",
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/ModelProvider",
+            "description": "Provider that ran the attempt"
+          },
+          "model": {
+            "type": "string",
+            "description": "Model sent to that provider"
+          },
+          "key": {
+            "type": "string",
+            "description": "Name of the stored key used, never its ID or secret"
+          },
+          "resolved_key_alias": {
+            "$ref": "#/components/schemas/ResolvedKeyAlias"
+          },
+          "is_fallback": {
+            "type": "boolean",
+            "description": "True when a fallback served the request or returned the error. Omitted when false."
+          },
+          "primary_provider": {
+            "$ref": "#/components/schemas/ModelProvider",
+            "description": "The primary attempt's provider. Set only when a fallback ran."
+          },
+          "primary_model": {
+            "type": "string",
+            "description": "The primary attempt's model. Set only when a fallback ran."
+          },
+          "requested_provider": {
+            "$ref": "#/components/schemas/ModelProvider",
+            "description": "Provider the caller asked for, before routing rules, load balancing or session affinity changed it. Omitted when the caller sent a bare model."
+          },
+          "requested_model": {
+            "type": "string",
+            "description": "Model the caller asked for, before anything changed it"
+          },
+          "server_side_fallback_model": {
+            "type": "string",
+            "description": "Model that answered when Anthropic switched models inside one call"
+          }
+        }
+      },
+      "ResolvedKeyAlias": {
+        "type": "object",
+        "description": "Set only when the requested model matched a model alias on the key",
+        "required": [
+          "model_id"
+        ],
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "description": "Model ID sent to the provider"
+          },
+          "model_name": {
+            "type": "string",
+            "description": "Canonical model name, used for pricing and logs"
+          },
+          "model_family": {
+            "type": "string",
+            "description": "Resolved model family"
+          }
+        }
+      },
       "BifrostErrorExtraFields": {
         "type": "object",
         "properties": {
-          "provider": {
-            "$ref": "#/components/schemas/ModelProvider"
+          "routing_info": {
+            "$ref": "#/components/schemas/RoutingInfo"
           },
-          "model_requested": {
-            "type": "string"
+          "provider": {
+            "$ref": "#/components/schemas/ModelProvider",
+            "deprecated": true,
+            "description": "Deprecated: use routing_info.provider."
+          },
+          "original_model_requested": {
+            "type": "string",
+            "deprecated": true,
+            "description": "Deprecated: use routing_info.primary_model when routing_info.is_fallback is true, otherwise routing_info.model. For the model the caller asked for, read routing_info.requested_model."
+          },
+          "resolved_model_used": {
+            "type": "string",
+            "deprecated": true,
+            "description": "Deprecated: use routing_info.resolved_key_alias.model_id when an alias matched, otherwise routing_info.model."
           },
           "request_type": {
+            "type": "string"
+          },
+          "mcp_request_type": {
+            "type": "string"
+          },
+          "a2a_request_type": {
+            "type": "string",
+            "description": "Agent Gateway operation, for A2A errors"
+          },
+          "a2a_agent_name": {
             "type": "string"
           },
           "error_type": {
@@ -109241,6 +111070,79 @@
             "minimum": 1000,
             "maximum": 300000,
             "description": "The provider's hint for how long to wait before retrying, in milliseconds, read from its retry-after-ms or Retry-After header or its google.rpc.RetryInfo error detail, and clamped to between 1000 and 300000. Absent when the provider gave no explicit hint."
+          },
+          "raw_request": {
+            "description": "Raw provider request, when raw request capture is enabled"
+          },
+          "raw_response": {
+            "description": "Raw provider response, when raw response capture is enabled"
+          },
+          "converted_request_type": {
+            "type": "string"
+          },
+          "dropped_compat_plugin_params": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "latency": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Latency in milliseconds"
+          },
+          "key_statuses": {
+            "type": "array",
+            "description": "Per-key results, for requests that ran on every key such as listing models",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "success",
+                    "list_models_failed"
+                  ]
+                },
+                "provider": {
+                  "$ref": "#/components/schemas/ModelProvider"
+                },
+                "error": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "mcp_auth_required": {
+            "type": "object",
+            "description": "Set when a per-user MCP tool needs the caller to complete an inline auth flow",
+            "properties": {
+              "kind": {
+                "type": "string"
+              },
+              "mcp_client_id": {
+                "type": "string"
+              },
+              "mcp_client_name": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "authorize_url": {
+                "type": "string"
+              },
+              "session_id": {
+                "type": "string"
+              }
+            }
+          },
+          "billed_usage": {
+            "$ref": "#/components/schemas/BifrostLLMUsage",
+            "description": "Usage the provider reported and billed even though the request failed"
           }
         }
       },
@@ -109252,36 +111154,136 @@
             "type": "string",
             "description": "Type of request that was made"
           },
+          "pricing_request_type": {
+            "type": "string",
+            "description": "Request type used for pricing, when it differs from request_type"
+          },
+          "routing_info": {
+            "$ref": "#/components/schemas/RoutingInfo"
+          },
           "provider": {
-            "$ref": "#/components/schemas/ModelProvider"
+            "$ref": "#/components/schemas/ModelProvider",
+            "deprecated": true,
+            "description": "Deprecated: use routing_info.provider."
           },
-          "model_requested": {
+          "original_model_requested": {
             "type": "string",
-            "description": "The model that was requested"
+            "deprecated": true,
+            "description": "Deprecated: use routing_info.primary_model when routing_info.is_fallback is true, otherwise routing_info.model. For the model the caller asked for, read routing_info.requested_model."
           },
-          "model_deployment": {
+          "resolved_model_used": {
             "type": "string",
-            "description": "The actual model deployment used"
+            "deprecated": true,
+            "description": "Deprecated: use routing_info.resolved_key_alias.model_id when an alias matched, otherwise routing_info.model."
           },
           "latency": {
             "type": "integer",
             "format": "int64",
-            "description": "Request latency in milliseconds"
+            "description": "Request latency in milliseconds. On a stream each chunk carries its own latency and the last chunk the total."
+          },
+          "upstream_latency": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Milliseconds spent waiting on the provider, summed over every attempt, retry and fallback. Absent when unknown."
           },
           "chunk_index": {
             "type": "integer",
-            "description": "Index of the chunk for streaming responses"
+            "description": "Index of the chunk for streaming responses, 0 otherwise"
           },
           "raw_request": {
-            "type": "object",
-            "description": "Raw request if enabled"
+            "description": "Raw provider request, when raw request capture is enabled"
           },
           "raw_response": {
-            "type": "object",
-            "description": "Raw response if enabled"
+            "description": "Raw provider response, when raw response capture is enabled"
           },
           "cache_debug": {
             "$ref": "#/components/schemas/BifrostCacheDebug"
+          },
+          "routing_metadata": {
+            "type": "object",
+            "description": "Billable internal calls the routing plugin made while classifying the request's complexity",
+            "properties": {
+              "calls": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "request_type": {
+                      "type": "string"
+                    },
+                    "provider_used": {
+                      "type": "string"
+                    },
+                    "model_used": {
+                      "type": "string"
+                    },
+                    "input_tokens": {
+                      "type": "integer"
+                    },
+                    "output_tokens": {
+                      "type": "integer"
+                    },
+                    "count_toward_budgets": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "guardrail_debug": {
+            "type": "object",
+            "description": "Guardrail judge calls and detect-only matches",
+            "additionalProperties": true
+          },
+          "parse_errors": {
+            "type": "array",
+            "description": "Errors hit while parsing JSONL batch results",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "param": {
+                  "type": "string"
+                },
+                "line": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "converted_request_type": {
+            "type": "string"
+          },
+          "dropped_compat_plugin_params": {
+            "type": "array",
+            "description": "Parameters the compat plugin dropped because the model does not support them",
+            "items": {
+              "type": "string"
+            }
+          },
+          "dropped_unsupported_tools": {
+            "type": "array",
+            "description": "Tool types removed because the target model does not support them",
+            "items": {
+              "type": "string"
+            }
+          },
+          "provider_response_headers": {
+            "type": "object",
+            "description": "The provider's HTTP response headers, without transport-level headers",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "passthrough_path": {
+            "type": "string",
+            "description": "Provider path of a passthrough request"
           }
         }
       },
@@ -109317,6 +111319,11 @@
           },
           "similarity": {
             "type": "number"
+          },
+          "cache_hit_latency": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Milliseconds spent serving a cache hit. Set only on a hit."
           }
         }
       },
@@ -113681,9 +115688,10 @@
             "enum": [
               "predicate",
               "choice",
-              "score"
+              "score",
+              "box"
             ],
-            "description": "How the question is decided. `predicate` yields the probability a condition is true (Typesafe's `noul`), `choice` one of the choices, `score` a probability-weighted level index that may fall between levels."
+            "description": "How the question is decided. `predicate` yields the probability a condition is true (Typesafe's `noul`), `choice` one of the choices, `score` a probability-weighted level index that may fall between levels, `box` the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14)."
           },
           "name": {
             "type": "string",
@@ -113801,6 +115809,30 @@
             "type": "number",
             "description": "Score answers. Probability-weighted level index"
           },
+          "box": {
+            "type": "object",
+            "description": "Box answers. Each edge is a fraction from 0 to 1 of the image's height (`top`, `bottom`) or width (`left`, `right`), measured from its top-left",
+            "required": [
+              "top",
+              "bottom",
+              "left",
+              "right"
+            ],
+            "properties": {
+              "top": {
+                "type": "number"
+              },
+              "bottom": {
+                "type": "number"
+              },
+              "left": {
+                "type": "number"
+              },
+              "right": {
+                "type": "number"
+              }
+            }
+          },
           "probabilities": {
             "type": "array",
             "description": "Distribution over choices or levels, in question order, when supplied",
@@ -113909,6 +115941,9 @@
           },
           {
             "$ref": "#/components/schemas/DecisionInputImage"
+          },
+          {
+            "$ref": "#/components/schemas/DecisionInputImageAsset"
           }
         ]
       },
@@ -113926,12 +115961,26 @@
             ]
           },
           "text": {
-            "type": "string"
+            "description": "A string, or structured data that Typesafe-based models read as is and OpenAI receives as JSON text",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": true
+              },
+              {
+                "type": "array",
+                "items": {}
+              }
+            ]
           }
         }
       },
       "DecisionInputImage": {
         "type": "object",
+        "description": "An inline image, read as evidence",
         "required": [
           "type",
           "image_url"
@@ -113956,6 +116005,47 @@
               "original"
             ],
             "description": "Image detail level, forwarded to models that read images (OpenAI's defaults to `auto`)"
+          }
+        }
+      },
+      "DecisionInputImageAsset": {
+        "type": "object",
+        "description": "Typesafe only. An image sent by reference, as one of Typesafe's `assets`, placed wherever its ID is written in the input, instructions, or criteria instead of as evidence itself. Other providers reject it.",
+        "required": [
+          "type",
+          "id"
+        ],
+        "anyOf": [
+          {
+            "required": [
+              "data"
+            ]
+          },
+          {
+            "required": [
+              "name"
+            ]
+          }
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "input_image"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "description": "The reference written where the image belongs"
+          },
+          "data": {
+            "type": "string",
+            "format": "byte",
+            "description": "The image file, base64-encoded, without a `data:` prefix; its format is read from the bytes"
+          },
+          "name": {
+            "type": "string",
+            "description": "In a multipart request, the name of the file part that holds the image. A JSON request cannot use it."
           }
         }
       },
@@ -114055,9 +116145,10 @@
             "enum": [
               "noul",
               "choice",
-              "score"
+              "score",
+              "box"
             ],
-            "description": "How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions."
+            "description": "How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions, `box` yields the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14)."
           },
           "instructions": {
             "description": "Instructions for this question. A string, or structured data preserved losslessly.",
@@ -114076,7 +116167,7 @@
             ]
           },
           "criteria": {
-            "description": "Applicable criteria. Optional `true`/`false` descriptions for `noul`; a\nrequired map of option to description for `choice` (at most 255 options);\na required ordered array of 2-10 level descriptions for `score`.\n",
+            "description": "Applicable criteria. Optional `true`/`false` descriptions for `noul`; a\nrequired map of option to description for `choice` (at most 255 options);\na required ordered array of 2-10 level descriptions for `score`; none\nfor `box`.\n",
             "oneOf": [
               {
                 "type": "object",
@@ -114106,18 +116197,43 @@
             "enum": [
               "noul",
               "choice",
-              "score"
+              "score",
+              "box"
             ],
             "description": "The question's decision kind"
           },
           "value": {
-            "description": "The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`.",
+            "description": "The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`, the box's edges for `box`.",
             "oneOf": [
               {
                 "type": "number"
               },
               {
                 "type": "string"
+              },
+              {
+                "type": "object",
+                "description": "Box answers. Each edge is a fraction from 0 to 1 of the image's height (`top`, `bottom`) or width (`left`, `right`), measured from its top-left",
+                "required": [
+                  "top",
+                  "bottom",
+                  "left",
+                  "right"
+                ],
+                "properties": {
+                  "top": {
+                    "type": "number"
+                  },
+                  "bottom": {
+                    "type": "number"
+                  },
+                  "left": {
+                    "type": "number"
+                  },
+                  "right": {
+                    "type": "number"
+                  }
+                }
               }
             ]
           },
@@ -122582,6 +124698,13 @@
                 },
                 "description": "Hostnames, IP addresses, or CIDR ranges (no scheme or port) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json. Link-local and cloud metadata addresses are always refused and cannot be listed. Omit to keep the current list; send [] to clear it. Changing it requires an authenticated admin session.\n"
               },
+              "a2a_private_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hosts, IP addresses, or CIDR ranges without a scheme or port that Agent Gateway card discovery, OAuth, and runtime HTTP or gRPC calls may reach when they resolve to private or loopback addresses. Link-local and cloud metadata addresses are always blocked. Applies to agents registered by an authenticated administrator or declared in config.json. Registrations created with dashboard authentication bypassed cannot use private permissions. Omit to keep the current list; send [] to clear it. Changing this setting requires dashboard authentication.\n"
+              },
               "mcp_code_mode_limits": {
                 "type": "object",
                 "description": "Limits applied to each code mode (executeToolCode) execution. Omit the object to keep the current limits; send {} to reset every limit to its default. Any field omitted or set to 0 uses its default. There is no limit on concurrent executions.\n",
@@ -123104,6 +125227,13 @@
                   "type": "string"
                 },
                 "description": "Hostnames, IP addresses, or CIDR ranges (no scheme or port) that the MCP OAuth chain (discovery, dynamic client registration, token requests) may reach when they resolve to a loopback or private address. Applies only to MCP clients registered by an authenticated admin or declared in config.json. Link-local and cloud metadata addresses are always refused and cannot be listed. Omit to keep the current list; send [] to clear it. Changing it requires an authenticated admin session.\n"
+              },
+              "a2a_private_allowlist": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Hosts, IP addresses, or CIDR ranges without a scheme or port that Agent Gateway card discovery, OAuth, and runtime HTTP or gRPC calls may reach when they resolve to private or loopback addresses. Link-local and cloud metadata addresses are always blocked. Applies to agents registered by an authenticated administrator or declared in config.json. Registrations created with dashboard authentication bypassed cannot use private permissions. Omit to keep the current list; send [] to clear it. Changing this setting requires dashboard authentication.\n"
               },
               "mcp_code_mode_limits": {
                 "type": "object",
@@ -124273,7 +126403,8 @@
           },
           "weight": {
             "type": "number",
-            "description": "Weight for load balancing"
+            "minimum": 0,
+            "description": "Weight for load balancing. A negative weight is rejected with 400. A key with weight 0 is picked only when no other eligible key has a positive weight; when every weight is 0, keys are picked uniformly."
           },
           "aliases": {
             "type": "object",
@@ -125443,7 +127574,44 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "Additional headers to include in requests"
+            "description": "Additional headers to include in requests. A value may be a literal, an `env.VAR_NAME` reference, or a `vault.path` reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400."
+          },
+          "extra_headers_secret_vars": {
+            "type": "object",
+            "readOnly": true,
+            "additionalProperties": {
+              "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                },
+                {
+                  "type": "object",
+                  "description": "Resolved form, as returned by GET responses",
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "description": "Resolved value (redacted in GET responses for secret fields)"
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "plain_text",
+                        "env",
+                        "vault"
+                      ],
+                      "description": "Source type of the value"
+                    }
+                  }
+                }
+              ]
+            },
+            "description": "Response only. The same headers as `extra_headers`, as SecretVar objects (`value`, `ref`, `type`) so clients can tell literals from `env`/`vault` references without parsing prefixes. Literal values are `<REDACTED>`. Ignored on input; send `extra_headers` to change headers."
           },
           "default_request_timeout_in_seconds": {
             "type": "integer",
@@ -127202,7 +129370,8 @@
               "number",
               "null"
             ],
-            "description": "Weight for provider load balancing. Null means excluded from weighted routing."
+            "minimum": 0,
+            "description": "Weight for provider load balancing. Null means excluded from weighted routing. A negative weight is rejected with 400; when every weight is 0, the first configured provider is picked."
           },
           "allowed_models": {
             "type": "array",
@@ -127548,7 +129717,8 @@
                     "number",
                     "null"
                   ],
-                  "description": "Weight for load balancing. Null means excluded from weighted routing."
+                  "minimum": 0,
+                  "description": "Weight for load balancing. Null means excluded from weighted routing. A negative weight is rejected with 400; when every weight is 0, the first configured provider is picked."
                 },
                 "allowed_models": {
                   "type": "array",
@@ -127687,7 +129857,10 @@
             "type": "string"
           },
           "metadata": {
-            "type": ["object", "null"],
+            "type": [
+              "object",
+              "null"
+            ],
             "description": "Replaces the key's metadata as a whole. Omit (or send null) to leave it unchanged; send {} to clear it. Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.",
             "maxProperties": 50,
             "propertyNames": {
@@ -127724,7 +129897,8 @@
                     "number",
                     "null"
                   ],
-                  "description": "Weight for load balancing. Null means excluded from weighted routing."
+                  "minimum": 0,
+                  "description": "Weight for load balancing. Null means excluded from weighted routing. A negative weight is rejected with 400; when every weight is 0, the first configured provider is picked."
                 },
                 "allowed_models": {
                   "type": "array",
@@ -128453,6 +130627,10 @@
             "type": "string",
             "description": "Unique identifier for the routing rule"
           },
+          "config_hash": {
+            "type": "string",
+            "description": "Hash of the config.json entry the rule was last synced from. Empty for rules created through the API."
+          },
           "name": {
             "type": "string",
             "description": "Name of the routing rule"
@@ -128464,6 +130642,10 @@
           "enabled": {
             "type": "boolean",
             "description": "Whether the rule is enabled and active"
+          },
+          "chain_rule": {
+            "type": "boolean",
+            "description": "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
           },
           "cel_expression": {
             "type": "string",
@@ -128571,20 +130753,21 @@
               "global",
               "team",
               "customer",
-              "virtual_key"
+              "virtual_key",
+              "user"
             ],
-            "description": "Scope level for the rule"
+            "description": "Scope level for the rule. Scopes are evaluated in the order virtual_key, user, team, customer, global. The user scope can be set through the API and UI only; config.json does not support it."
           },
           "scope_id": {
             "type": [
               "string",
               "null"
             ],
-            "description": "ID for the scope (empty for global scope)"
+            "description": "ID of the team, customer, virtual key or user the rule is scoped to; null for global scope"
           },
           "priority": {
             "type": "integer",
-            "description": "Priority for rule evaluation (lower number = higher priority)"
+            "description": "Priority for rule evaluation (lower number = higher priority). Unique within a scope and scope_id."
           },
           "query": {
             "type": [
@@ -128626,7 +130809,8 @@
                 "enum": [
                   "team",
                   "customer",
-                  "virtual_key"
+                  "virtual_key",
+                  "user"
                 ]
               },
               "scope_id": {
@@ -128666,6 +130850,18 @@
           "count": {
             "type": "integer",
             "description": "Number of routing rules returned"
+          },
+          "total_count": {
+            "type": "integer",
+            "description": "Number of rules matching the filter before limit and offset"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Page size applied (default 25, maximum 100). Without limit, offset or search, the number of rules returned."
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Offset applied; 0 without limit, offset or search"
           }
         }
       },
@@ -128674,9 +130870,6 @@
         "description": "Request to create a routing rule",
         "required": [
           "name",
-          "cel_expression",
-          "scope",
-          "priority",
           "targets"
         ],
         "properties": {
@@ -128690,11 +130883,17 @@
           },
           "enabled": {
             "type": "boolean",
+            "default": true,
             "description": "Whether the rule is enabled"
+          },
+          "chain_rule": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
           },
           "cel_expression": {
             "type": "string",
-            "description": "CEL expression for matching"
+            "description": "CEL expression for matching. Empty or omitted matches every request."
           },
           "targets": {
             "type": "array",
@@ -128799,20 +130998,23 @@
               "global",
               "team",
               "customer",
-              "virtual_key"
+              "virtual_key",
+              "user"
             ],
-            "description": "Scope level for the rule"
+            "default": "global",
+            "description": "Scope level for the rule. The team, customer or virtual key named by scope_id must exist (400 otherwise); a user scope_id is not checked."
           },
           "scope_id": {
             "type": [
               "string",
               "null"
             ],
-            "description": "ID for the scope (required if scope is not global)"
+            "description": "ID for the scope. Required when scope is not global; stored as null for global."
           },
           "priority": {
             "type": "integer",
-            "description": "Priority for rule evaluation (lower number = higher priority)"
+            "default": 0,
+            "description": "Priority for rule evaluation (lower number = higher priority). Must be unique within the same scope and scope_id; a duplicate returns 409."
           },
           "query": {
             "type": [
@@ -128833,10 +131035,7 @@
                 ]
               }
             },
-            "required": [
-              "scope"
-            ],
-            "description": "Global scope routing rule"
+            "description": "Global scope routing rule (scope omitted or global)"
           },
           {
             "type": "object",
@@ -128846,11 +131045,13 @@
                 "enum": [
                   "team",
                   "customer",
-                  "virtual_key"
+                  "virtual_key",
+                  "user"
                 ]
               },
               "scope_id": {
-                "type": "string"
+                "type": "string",
+                "minLength": 1
               }
             },
             "required": [
@@ -128866,13 +131067,18 @@
         "description": "Request to update a routing rule (all fields optional; providing `targets` replaces all existing targets)",
         "properties": {
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "New name. An empty string is ignored."
           },
           "description": {
             "type": "string"
           },
           "enabled": {
             "type": "boolean"
+          },
+          "chain_rule": {
+            "type": "boolean",
+            "description": "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
           },
           "cel_expression": {
             "type": "string"
@@ -128972,10 +131178,29 @@
                 }
               ]
             },
-            "description": "Ordered fallback chain, tried after the selected target fails"
+            "description": "Replaces the fallback chain when provided; send an empty array to clear it."
           },
           "priority": {
-            "type": "integer"
+            "type": "integer",
+            "description": "Must stay unique within the rule's scope and scope_id; a conflict returns 409."
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "global",
+              "team",
+              "customer",
+              "virtual_key",
+              "user"
+            ],
+            "description": "Moves the rule to another scope. An empty string is ignored. A scope other than global needs a scope_id, sent here or already stored; global clears scope_id."
+          },
+          "scope_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "New scope ID, checked against the scope when scope or scope_id is sent."
           },
           "query": {
             "type": [
@@ -129046,7 +131271,8 @@
             "type": [
               "number",
               "null"
-            ]
+            ],
+            "minimum": 0
           },
           "enabled": {
             "type": [
@@ -131275,7 +133501,7 @@
             "items": {
               "type": "string"
             },
-            "description": "Array of routing engines used for this request (routing-rule, governance, or loadbalancing)"
+            "description": "Routing engines that acted on this request (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core). core records fallback transitions; loadbalancing and circuit-breaker appear only in Bifrost Enterprise."
           },
           "tool_call_names": {
             "type": "array",
@@ -132803,7 +135029,7 @@
                     "items": {
                       "type": "string"
                     },
-                    "description": "Filter by routing engine (routing-rule, governance, or loadbalancing)"
+                    "description": "Filter by routing engine (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)"
                   },
                   "start_time": {
                     "type": "string",

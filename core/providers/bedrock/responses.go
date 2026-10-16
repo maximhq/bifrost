@@ -2466,6 +2466,16 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		bifrostReq.Params.ExtraParams["requestMetadata"] = request.RequestMetadata
 	}
 
+	// An Anthropic-dialect InvokeModel body may carry a top-level cache_control (automatic
+	// caching). Converse has no such field, so it rides ExtraParams to the egress converter,
+	// which turns it into a trailing cachePoint (or restores it on an Anthropic fallback).
+	if cc, ok := request.ExtraParams["cache_control"]; ok && cc != nil {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+		bifrostReq.Params.ExtraParams["cache_control"] = cc
+	}
+
 	// Convert additional model request fields to extra params
 	if request.AdditionalModelRequestFields.Len() > 0 {
 		fieldsToForward := request.AdditionalModelRequestFields
@@ -2804,7 +2814,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			}
 		}
 		if bifrostReq.Params.ExtraParams != nil {
-			bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
+			bedrockReq.ExtraParams = withoutTopLevelCacheControl(bifrostReq.Params.ExtraParams)
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				delete(bedrockReq.ExtraParams, "stop")
 				// GLM models on Bedrock reject the stopSequences field.
@@ -3018,6 +3028,12 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	if !caps.SupportsConverseToolResultImages(schemas.BedrockModelSupportsToolResultImages(capModel)) {
 		hoistToolResultImages(bedrockReq)
+	}
+
+	if bifrostReq.Params != nil {
+		if err := applyBedrockAutomaticCachePoint(bedrockReq, bedrockTopLevelCacheControl(bifrostReq.Params.ExtraParams)); err != nil {
+			return nil, err
+		}
 	}
 
 	if !caps.SupportsCachePoint(schemas.BedrockModelSupportsCachePoints(capModel)) {

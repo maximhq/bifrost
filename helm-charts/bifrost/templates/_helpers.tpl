@@ -501,6 +501,9 @@ false
 {{- if .Values.bifrost.server.readBufferSize }}
 {{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
 {{- end }}
+{{- if not (kindIs "invalid" .Values.bifrost.server.bodyBufferPoolLimitBytes) }}
+{{- $_ := set $server "body_buffer_pool_limit_bytes" .Values.bifrost.server.bodyBufferPoolLimitBytes }}
+{{- end }}
 {{- if .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
 {{- $_ := set $server "plugin_download_private_allowlist" .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
 {{- end }}
@@ -1051,6 +1054,7 @@ false
 {{- end }}
 {{- with .Values.storage.configStore.statementTimeout }}{{- $_ := set $pgConfig "statement_timeout" (toString .) }}{{- end }}
 {{- with .Values.storage.configStore.idleInTransactionSessionTimeout }}{{- $_ := set $pgConfig "idle_in_transaction_session_timeout" (toString .) }}{{- end }}
+{{- with .Values.storage.configStore.migrationLockRetryBudget }}{{- $_ := set $pgConfig "migration_lock_retry_budget" (toString .) }}{{- end }}
 {{- $configStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "config_store" $configStore }}
 {{- else }}
@@ -1150,6 +1154,7 @@ false
 {{- end }}
 {{- with .Values.storage.logsStore.statementTimeout }}{{- $_ := set $pgConfig "statement_timeout" (toString .) }}{{- end }}
 {{- with .Values.storage.logsStore.idleInTransactionSessionTimeout }}{{- $_ := set $pgConfig "idle_in_transaction_session_timeout" (toString .) }}{{- end }}
+{{- with .Values.storage.logsStore.migrationLockRetryBudget }}{{- $_ := set $pgConfig "migration_lock_retry_budget" (toString .) }}{{- end }}
 {{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- if .Values.storage.logsStore.writer }}
 {{- $writer := dict }}

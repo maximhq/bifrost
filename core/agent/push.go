@@ -784,6 +784,7 @@ func (r *pushRelay) run() {
 func (r *pushRelay) prune() {
 	m := r.manager
 	ctx := gateContext(m.ctx)
+	defer ctx.Cancel()
 	finish := m.startPushTrace(ctx, "a2a.push.maintenance.prune")
 	phase := startPhaseSpan(ctx, "a2a.push.db.prune")
 	err := m.pushStore.PruneAgentPushDeliveries(m.ctx, time.Now().UTC().Add(-pushDeliveryRetention))
@@ -806,6 +807,7 @@ func (r *pushRelay) processDue() {
 		due, err := m.pushStore.ListDueAgentPushDeliveries(m.ctx, time.Now().UTC(), pushDeliveryBatchSize)
 		endPhaseSpan(phase)
 		finish(err, err != nil || len(due) > 0)
+		ctx.Cancel()
 		if err != nil {
 			if m.logger != nil && m.ctx.Err() == nil {
 				m.logger.Error("push relay failed to list due deliveries: %v", err)
@@ -854,6 +856,7 @@ func (r *pushRelay) deliver(delivery *schemas.AgentPushDelivery, leaseUntil time
 	}
 	start := time.Now()
 	gateCtx := gateContext(m.ctx)
+	defer gateCtx.Cancel()
 	finish := m.startPushTrace(gateCtx, "a2a.push.delivery")
 	var traceErr error
 	defer func() { finish(traceErr, true) }()

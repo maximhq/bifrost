@@ -46,6 +46,18 @@ func SecretVarAsString(e *SecretVar) string {
 	return e.GetValue()
 }
 
+// NewSecretVarMap wraps each value of a string map in a SecretVar via NewSecretVar.
+func NewSecretVarMap(values map[string]string) map[string]SecretVar {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]SecretVar, len(values))
+	for name, value := range values {
+		out[name] = *NewSecretVar(value)
+	}
+	return out
+}
+
 // knownProvidersMu protects concurrent access to knownProviders.
 var knownProvidersMu sync.RWMutex
 

@@ -1,11 +1,17 @@
 package integrations
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"mime/multipart"
+	"net/textproto"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/typesafe"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/valyala/fasthttp"
 )
 
 // TestSDKFidelityTypesafeSystemOneRouteNullStateAndExtensions pins #7599 on the
@@ -109,5 +115,104 @@ func TestSDKFidelityTypesafeSystemOneRouteRelaysNativeBodies(t *testing.T) {
 	local := &schemas.BifrostError{Error: &schemas.ErrorField{Message: "state is required"}}
 	if _, ok := route.ErrorConverter(ctx, local).(json.RawMessage); ok {
 		t.Error("errors Bifrost raised itself must use the rebuilt envelope")
+	}
+}
+
+// systemOneMultipart builds a multipart systemone body from parts in order: each
+// part is a name, an optional filename (a file part), an optional content type,
+// and its data.
+func systemOneMultipart(t *testing.T, parts ...[4]string) (*fasthttp.RequestCtx, *typesafe.TypesafeDecisionRequest) {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	for _, p := range parts {
+		header := textproto.MIMEHeader{}
+		disposition := fmt.Sprintf(`form-data; name=%q`, p[0])
+		if p[1] != "" {
+			disposition += fmt.Sprintf(`; filename=%q`, p[1])
+		}
+		header.Set("Content-Disposition", disposition)
+		if p[2] != "" {
+			header.Set("Content-Type", p[2])
+		}
+		w, err := writer.CreatePart(header)
+		if err != nil {
+			t.Fatalf("create part: %v", err)
+		}
+		_, _ = w.Write([]byte(p[3]))
+	}
+	_ = writer.Close()
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentType(writer.FormDataContentType())
+	ctx.Request.SetBody(buf.Bytes())
+	return ctx, &typesafe.TypesafeDecisionRequest{}
+}
+
+// TestTypesafeSystemOneMultipartParser pins the systemone route's multipart body: the
+// JSON is read from the "request" part, a plain field or a file part, in any position,
+// and each file part's bytes become the asset that names it, keeping its name.
+func TestTypesafeSystemOneMultipartParser(t *testing.T) {
+	request := `{"model":"jev-latest","state":{"door":"r-door","note":"r-note"},"assets":{"r-door":{"type":"image","part":"door"},"r-note":{"format":"png","data_base64":"Tk9URQ=="}},"questions":{"q":{"type":"noul","instructions":"Is someone at the door?"}}}`
+	for name, parts := range map[string][][4]string{
+		"request field first":   {{"request", "", "application/json", request}, {"door", "door.jpg", "image/jpeg", "JPEG"}},
+		"request as a file":     {{"request", "request.json", "application/json", request}, {"door", "door.jpg", "image/jpeg", "JPEG"}},
+		"request not first":     {{"door", "door.jpg", "image/jpeg", "JPEG"}, {"request", "", "application/json", request}},
+		"part without its type": {{"request", "", "", request}, {"door", "door.jpg", "", "JPEG"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, native := systemOneMultipart(t, parts...)
+			if err := parseTypesafeSystemOneRequest(ctx, native); err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			shared, err := native.ToBifrostDecisionRequest(nil)
+			if err != nil {
+				t.Fatalf("to shared: %v", err)
+			}
+			door := shared.Input.Messages[0].Content.Parts[1]
+			if *door.ID != "r-door" || door.Name == nil || *door.Name != "door" || string(door.Data) != "JPEG" {
+				t.Errorf("door part = %+v", door)
+			}
+			if note := shared.Input.Messages[0].Content.Parts[2]; note.Name != nil || string(note.Data) != "NOTE" {
+				t.Errorf("base64 asset in a multipart request changed: %+v", note)
+			}
+		})
+	}
+}
+
+// TestTypesafeSystemOneMultipartParserRejections pins the 400s for a multipart body
+// the request cannot be built from; Typesafe rejects each of them too.
+func TestTypesafeSystemOneMultipartParserRejections(t *testing.T) {
+	request := func(assets string) string {
+		return `{"model":"jev-latest","state":"r-a","assets":` + assets + `,"questions":{"q":{"type":"noul","instructions":"x"}}}`
+	}
+	one := request(`{"r-a":{"part":"a"}}`)
+	for name, parts := range map[string][][4]string{
+		"no request part":      {{"a", "a.png", "image/png", "PNG"}},
+		"duplicate part":       {{"request", "", "", one}, {"a", "a.png", "image/png", "PNG"}, {"a", "b.png", "image/png", "PNG"}},
+		"missing part":         {{"request", "", "", request(`{"r-a":{"part":"gone"}}`)}},
+		"unused part":          {{"request", "", "", one}, {"a", "a.png", "image/png", "PNG"}, {"b", "b.png", "image/png", "PNG"}},
+		"stray form field":     {{"request", "", "", one}, {"a", "a.png", "image/png", "PNG"}, {"note", "", "", "hello"}},
+		"two assets, one part": {{"request", "", "", request(`{"r-a":{"part":"a"},"r-b":{"part":"a"}}`)}, {"a", "a.png", "image/png", "PNG"}},
+		"part named request":   {{"request", "", "", request(`{"r-a":{"part":"request"}}`)}},
+		"part without a name":  {{"request", "", "", one}, {"a", "a.png", "image/png", "PNG"}, {"", "b.png", "image/png", "PNG"}},
+	} {
+		ctx, native := systemOneMultipart(t, parts...)
+		if err := parseTypesafeSystemOneRequest(ctx, native); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+// TestTypesafeSystemOneParserJSON pins that a JSON body still decodes as before.
+func TestTypesafeSystemOneParserJSON(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentType("application/json")
+	ctx.Request.SetBody([]byte(`{"model":"jev-latest","state":"text","questions":{"q":{"type":"noul","instructions":"x"}}}`))
+	native := &typesafe.TypesafeDecisionRequest{}
+	if err := parseTypesafeSystemOneRequest(ctx, native); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if native.State != "text" || native.Model != "jev-latest" || len(native.Questions) != 1 {
+		t.Errorf("decoded = %+v", native)
 	}
 }

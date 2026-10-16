@@ -535,6 +535,35 @@ When multiple Bifrost instances run behind a load balancer:
 
 ---
 
+## Agent Gateway
+
+The `bifrost_a2a_client_operation_duration_seconds` histogram records one observation per completed A2A operation. Its `_count` series gives operation volume, `_sum` gives total duration, and `_bucket` supports latency percentiles. Duration is in seconds and prefers the gateway's measured operation latency.
+
+Labels are `operation`, `method`, `upstream_transport`, `error_type`, and the available virtual-key, team, customer, business-unit, and project IDs and names. Successful operations have an empty `error_type`; failures use the recorded error type or `_OTHER`. Task, message, and session IDs are excluded from labels.
+
+```promql
+# Operation volume
+sum by (operation) (bifrost_a2a_client_operation_duration_seconds_count)
+
+# Failed operations
+sum by (operation, error_type) (
+  bifrost_a2a_client_operation_duration_seconds_count{error_type!=""}
+)
+
+# p95 duration over five minutes
+histogram_quantile(0.95,
+  sum by (le, operation) (
+    rate(bifrost_a2a_client_operation_duration_seconds_bucket[5m])
+  )
+)
+```
+
+Prometheus exports metrics only. Request and response bodies, artifacts, stream events, and raw payloads belong in the trace or log connectors. A2A metrics use the existing scrape or Push Gateway setup without additional A2A configuration.
+
+See [Agent Gateway observability](/features/agent-gateway/observability#export-to-observability-connectors) for operation coverage and the other export formats.
+
+---
+
 ## Troubleshooting
 
 ### Push Gateway Connection Failed

@@ -1,3 +1,4 @@
+import { supportsCalendarAlignment } from "@/lib/constants/governance";
 /**
  * Parses a duration string (e.g., "1m", "5m", "1h", "1d", "1w", "1M") into human readable format
  */
@@ -105,6 +106,7 @@ export function getBudgetOverrideValidUntil(
 	if (!match || Number.isNaN(validUntil.getTime())) return null;
 
 	const unit = match[2];
+	calendarAligned = calendarAligned && supportsCalendarAlignment(budget.reset_duration);
 	if (calendarAligned) snapToCalendarPeriodStart(validUntil, unit);
 	const durationValue = Number(match[1]) * cycles;
 	switch (unit) {

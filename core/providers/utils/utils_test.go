@@ -4097,7 +4097,7 @@ func decisionUserMessage(parts ...schemas.DecisionInputPart) schemas.DecisionInp
 }
 
 func decisionTextPart(text string) schemas.DecisionInputPart {
-	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr(text)}
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(text)}
 }
 
 func decisionImagePart(url string, detail *string) schemas.DecisionInputPart {

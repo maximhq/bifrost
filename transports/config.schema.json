@@ -18,6 +18,12 @@
           "description": "Read buffer size in bytes. This controls the size of the buffer used for reading HTTP headers.",
           "default": 65536
         },
+        "body_buffer_pool_limit_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Largest request-body buffer (in bytes) a pooled keep-alive connection keeps for reuse between requests. Larger buffers are released after each request so connections do not pin their largest-ever body in memory; larger bodies are still accepted up to the max request body size. Not set uses the default (4 MiB); 0 means unlimited and keeps every buffer. Process-wide: also applies to outbound fasthttp request buffers. Deploy-time only.",
+          "default": 4194304
+        },
         "plugin_download_private_allowlist": {
           "type": "array",
           "items": {
@@ -2250,10 +2256,6 @@
             "pattern": "^https?://[^@/?#\\s]+(?:[/?#].*)?$",
             "description": "Absolute http(s) URL of the upstream agent's Agent Card (typically .../.well-known/agent-card.json)."
           },
-          "tenant": {
-            "type": "string",
-            "description": "Optional tenant label for the registration."
-          },
           "enabled": {
             "type": "boolean",
             "description": "Whether the agent is enabled (default: true when omitted)."
@@ -2284,13 +2286,6 @@
             "uniqueItems": true,
             "items": { "type": "string", "pattern": "^https?://[^@/?#\\s]+$" },
             "description": "Additional HTTP(S) origins permitted to receive runtime credentials and client certificates. Include scheme and optional port, without paths, queries, fragments, or userinfo. The agent card origin is permitted automatically."
-          },
-          "extension_uris": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "A2A extension URIs to activate for this agent."
           },
           "virtual_key_ids": {
             "type": "array",
@@ -2649,6 +2644,12 @@
                     "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default.",
                     "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
                     "default": "120s"
+                  },
+                  "migration_lock_retry_budget": {
+                    "type": "string",
+                    "description": "How long a schema migration step keeps retrying after lock timeouts before the process gives up and exits (Go duration string, default 10m). During a rolling upgrade a step that needs a table lock retries while older replicas' long queries hold the table; raise this on large deployments so the budget outlasts those queries, and keep the Kubernetes startup probe at least as long. Each lock timeout logs the sessions holding the table so an operator can cancel them instead of waiting.",
+                    "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$",
+                    "default": "10m"
                   }
                 },
                 "required": [
@@ -3365,6 +3366,12 @@
                     "description": "Server-side idle_in_transaction_session_timeout set on every runtime pool connection (Go duration string, default 120s). Ends a session left idle inside an open transaction, which would otherwise hold row locks and block vacuum. \"0\" or a negative value leaves the server default.",
                     "pattern": "^(0|[-+]?([0-9]+(\\.[0-9]+)?(ns|us|\u00b5s|ms|s|m|h))+)$",
                     "default": "120s"
+                  },
+                  "migration_lock_retry_budget": {
+                    "type": "string",
+                    "description": "How long a schema migration step keeps retrying after lock timeouts before the process gives up and exits (Go duration string, default 10m). During a rolling upgrade a step that needs a table lock retries while older replicas' long queries hold the table; raise this on large deployments so the budget outlasts those queries, and keep the Kubernetes startup probe at least as long. Each lock timeout logs the sessions holding the table so an operator can cancel them instead of waiting.",
+                    "pattern": "^[1-9][0-9]*(ns|us|\u00b5s|ms|s|m|h)$",
+                    "default": "10m"
                   }
                 },
                 "required": [
@@ -6518,7 +6525,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Additional headers to send with requests"
+          "description": "Additional headers to send with requests. A value may be a literal, an env.VAR_NAME reference, or a vault.path reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400."
         },
         "default_request_timeout_in_seconds": {
           "type": "integer",
@@ -6581,7 +6588,7 @@
           "additionalProperties": {
             "type": "boolean"
           },
-          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+          "description": "Override default beta header support per provider. For Anthropic-family providers, keys are anthropic-beta prefixes (e.g. 'redact-thinking-'); for TypeSafe-based providers, 'typesafe-danger-zone-images' controls the TypeSafe-Danger-Zone-Images header sent with image and box requests. Values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
         },
         "allow_private_network": {
           "type": "boolean",
@@ -6599,7 +6606,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Additional headers to send with requests"
+          "description": "Additional headers to send with requests. A value may be a literal, an env.VAR_NAME reference, or a vault.path reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400."
         },
         "default_request_timeout_in_seconds": {
           "type": "integer",
@@ -6662,7 +6669,7 @@
           "additionalProperties": {
             "type": "boolean"
           },
-          "description": "Override default Anthropic beta header support per provider. Keys are header prefixes (e.g. 'redact-thinking-'), values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
+          "description": "Override default beta header support per provider. For Anthropic-family providers, keys are anthropic-beta prefixes (e.g. 'redact-thinking-'); for TypeSafe-based providers, 'typesafe-danger-zone-images' controls the TypeSafe-Danger-Zone-Images header sent with image and box requests. Values are true (supported) or false (unsupported). Headers not listed use the built-in defaults."
         },
         "allow_private_network": {
           "type": "boolean",

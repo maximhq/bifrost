@@ -163,6 +163,13 @@ type pluginOrderInfo struct {
 type ServerConfig struct {
 	ReadBufferSize int `json:"read_buffer_size,omitempty"`
 
+	// BodyBufferPoolLimitBytes caps the request-body buffer a pooled keep-alive
+	// connection keeps between requests; larger buffers are released after each
+	// request. Not set uses DefaultBodyBufferPoolLimitBytes and 0 means unlimited, so
+	// it is a pointer to tell the two apart. See ApplyBodyBufferPoolLimit. Deploy-time
+	// only - read from config.json at startup.
+	BodyBufferPoolLimitBytes *int `json:"body_buffer_pool_limit_bytes,omitempty"`
+
 	// PluginDownloadPrivateAllowlist lists hostnames, IPs, and CIDR ranges that custom
 	// plugin (.so) downloads may reach even when they resolve to a private/loopback/
 	// link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted
@@ -370,7 +377,6 @@ func (w *WebhookEndpointConfig) toTable() *configstoreTables.TableWebhookEndpoin
 type AgentRegistrationFileConfig struct {
 	Name                                   string                `json:"name"`
 	AgentCardURL                           string                `json:"agent_card_url"`
-	Tenant                                 string                `json:"tenant,omitempty"`
 	Enabled                                *bool                 `json:"enabled,omitempty"`
 	AllowByDefault                         bool                  `json:"allow_by_default,omitempty"`
 	ForwardAcceptedCredential              bool                  `json:"forward_accepted_credential,omitempty"`
@@ -378,7 +384,6 @@ type AgentRegistrationFileConfig struct {
 	DiscoveryAuth                          *schemas.UpstreamAuth `json:"discovery_auth,omitempty"`
 	RuntimeAuth                            *schemas.UpstreamAuth `json:"runtime_auth,omitempty"`
 	CredentialOrigins                      []string              `json:"credential_origins,omitempty"`
-	ExtensionURIs                          []string              `json:"extension_uris,omitempty"`
 	VirtualKeyIDs                          []string              `json:"virtual_key_ids,omitempty"`
 }
 
@@ -412,14 +417,11 @@ func (a *AgentRegistrationFileConfig) toRegistration() *schemas.AgentRegistratio
 	}
 	ids := slices.Clone(a.VirtualKeyIDs)
 	sort.Strings(ids)
-	uris := slices.Clone(a.ExtensionURIs)
-	sort.Strings(uris)
 	origins, _ := agent.ValidateCredentialOrigins(a.CredentialOrigins)
 	now := time.Now().UTC()
 	return &schemas.AgentRegistration{
 		Name:                                   strings.TrimSpace(a.Name),
 		AgentCardURL:                           a.AgentCardURL,
-		Tenant:                                 a.Tenant,
 		Enabled:                                enabled,
 		AllowByDefault:                         a.AllowByDefault,
 		ForwardAcceptedCredential:              a.ForwardAcceptedCredential,
@@ -427,7 +429,6 @@ func (a *AgentRegistrationFileConfig) toRegistration() *schemas.AgentRegistratio
 		DiscoveryAuth:                          a.DiscoveryAuth,
 		RuntimeAuth:                            a.RuntimeAuth,
 		CredentialOrigins:                      origins,
-		ExtensionURIs:                          uris,
 		VirtualKeyIDs:                          ids,
 		CreatedAt:                              now,
 		UpdatedAt:                              now,
@@ -696,7 +697,12 @@ type Config struct {
 	LogsStore   logstore.LogStore
 	// LogsStoreConfig is the effective logs store configuration used to create LogsStore.
 	LogsStoreConfig *logstore.Config
-	ObjectStore     objectstore.ObjectStore
+	// ConfigStoreConfig is the config.json config store configuration used to
+	// create ConfigStore, or nil when the store was defaulted (SQLite) or is
+	// disabled. Downstream migrations that run against the config store
+	// (bifrost-enterprise) read their migration settings from it.
+	ConfigStoreConfig *configstore.Config
+	ObjectStore       objectstore.ObjectStore
 
 	// oauth2SigningKey caches the immutable OAuth2 signing key used to sign and
 	// verify Bifrost-issued /mcp JWTs. The key is created once via an idempotent
@@ -1132,6 +1138,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 		}
 		logger.Info("loading configuration from: %s", absConfigFilePath)
+		warnMultiUnitCalendarConfig(data, logger.Warn)
 		// Promote deprecated per-budget / per-rate-limit calendar_aligned to the
 		// owning VK / Team. Independent of config version — the deprecation
 		// predates the v1/v2 allow-list split.
@@ -1270,6 +1277,7 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 		if err != nil {
 			return err
 		}
+		config.ConfigStoreConfig = configData.ConfigStoreConfig
 		logger.Info("config store initialized")
 	} else if configData.ConfigStoreConfig == nil {
 		// No config store section — create default SQLite store for persistence

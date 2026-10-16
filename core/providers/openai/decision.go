@@ -50,6 +50,7 @@ func ToOpenAIDecisionRequest(request *schemas.BifrostDecisionRequest) (*OpenAIDe
 		}
 		input = schemas.DecisionInput{Text: schemas.Ptr(string(text))}
 	}
+	input.Messages = openAITextParts(input.Messages)
 
 	questions := make([]OpenAIDecisionQuestion, len(request.Questions))
 	for i, question := range request.Questions {
@@ -131,6 +132,43 @@ func toOpenAIDecisionQuestion(index int, question schemas.DecisionQuestion) (Ope
 
 // openAIText returns decision text as OpenAI takes it: nil for none, text
 // unchanged, and a structured value as sorted JSON text.
+// openAITextParts returns the messages with each structured text part sent as
+// JSON text, since OpenAI's input_text carries a string. The input is not
+// modified, and is returned as it is when it has no structured text part.
+func openAITextParts(messages []schemas.DecisionInputMessage) []schemas.DecisionInputMessage {
+	if !hasStructuredTextPart(messages) {
+		return messages
+	}
+	converted := make([]schemas.DecisionInputMessage, len(messages))
+	for i, message := range messages {
+		converted[i] = message
+		if message.Content.Parts == nil {
+			continue
+		}
+		parts := make([]schemas.DecisionInputPart, len(message.Content.Parts))
+		for j, part := range message.Content.Parts {
+			if part.Text != nil && part.Text.Structured != nil {
+				part.Text = schemas.NewDecisionText(providerUtils.DecisionTextString(part.Text))
+			}
+			parts[j] = part
+		}
+		converted[i].Content.Parts = parts
+	}
+	return converted
+}
+
+// hasStructuredTextPart reports whether any part's text is a structured value.
+func hasStructuredTextPart(messages []schemas.DecisionInputMessage) bool {
+	for _, message := range messages {
+		for _, part := range message.Content.Parts {
+			if part.Text != nil && part.Text.Structured != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func openAIText(text *schemas.DecisionText) *string {
 	if text == nil {
 		return nil
@@ -288,7 +326,7 @@ func HandleOpenAIDecisionRequest(
 	url string,
 	request *schemas.BifrostDecisionRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,

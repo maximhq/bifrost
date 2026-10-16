@@ -222,6 +222,19 @@ func resolveMigrationMatViewCancelAfter(raw string, logger schemas.Logger) time.
 	return d
 }
 
+// MigrationLockRetryOptions returns the lock-timeout retry options a log store
+// config asks for: its migration_lock_retry_budget when cfg is a Postgres log
+// store, and the package default otherwise. Downstream migrations that run
+// against the log store (bifrost-enterprise) call it so one setting governs them.
+func MigrationLockRetryOptions(cfg *Config, logger schemas.Logger) postgresconn.LockRetryOptions {
+	if cfg != nil {
+		if pg, ok := cfg.Config.(*PostgresConfig); ok && pg != nil {
+			return postgresconn.MigrationLockRetryOptions(&pg.Config, logger)
+		}
+	}
+	return postgresconn.LockRetryOptions{}
+}
+
 // MigrationMatViewPauseOptions returns the matview pause options a log store
 // config asks for: its migration_matview_cancel_after when cfg is a Postgres log
 // store, and the defaults otherwise. Other stores' migrations (the config store,

@@ -214,7 +214,8 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	logger.Info("logstore: postgres server_version_num=%d; running schema migrations (may block on a cross-node advisory lock if another pod is migrating)", pgVersionNum)
 
 	pauseOpts := MatViewPauseOptions{CancelAfter: resolveMigrationMatViewCancelAfter(config.MigrationMatViewCancelAfter, logger)}
-	if err := triggerMigrationsWithPause(ctx, mDb, logger, pauseOpts); err != nil {
+	retry := postgresconn.MigrationLockRetryOptions(&config.Config, logger)
+	if err := triggerMigrationsWithOptions(ctx, mDb, logger, pauseOpts, retry); err != nil {
 		logger.Error("logstore: schema migrations failed: %v", err)
 		_ = closePool(mDb)
 		return nil, err
