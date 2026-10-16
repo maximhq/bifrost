@@ -7172,6 +7172,11 @@
               "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
               "default": false
             },
+            "use_session_routing": {
+              "type": "boolean",
+              "description": "Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.",
+              "default": false
+            },
             "aws_workload_identity": {
               "type": "object",
               "description": "GCP Workload Identity Federation from the workload's AWS identity (EKS IRSA / Pod Identity, ECS task role, EC2 instance profile, AWS_* env vars). Takes precedence over auth_credentials; the two must not be combined.",
@@ -8614,6 +8619,11 @@
                   "force_single_region": {
                     "type": "boolean",
                     "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
+                    "default": false
+                  },
+                  "use_session_routing": {
+                    "type": "boolean",
+                    "description": "Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.",
                     "default": false
                   },
                   "aws_workload_identity": {

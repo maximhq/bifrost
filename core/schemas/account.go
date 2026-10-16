@@ -756,6 +756,8 @@ type VertexKeyConfig struct {
 	// ForceSingleRegion pins requests to the configured region and disables automatic promotion of
 	// multi-region-only models to a multi-region pool endpoint (e.g. for provisioned throughput).
 	ForceSingleRegion bool `json:"force_single_region,omitempty"`
+	// UseSessionRouting sends prompt_cache_key to Gemini models as session_id, so Vertex reuses one replica's implicit cache.
+	UseSessionRouting bool `json:"use_session_routing,omitempty"`
 	// AWSWorkloadIdentity federates the workload's AWS identity into GCP; see VertexAWSWorkloadIdentityConfig.
 	AWSWorkloadIdentity *VertexAWSWorkloadIdentityConfig `json:"aws_workload_identity,omitempty"`
 }

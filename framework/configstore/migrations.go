@@ -567,6 +567,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_a2a_private_allowlist_column"}, run: migrationAddA2APrivateAllowlistColumn},
 	{IDs: []string{"add_agent_destination_policy_columns"}, run: migrationAddAgentDestinationPolicyColumns},
 	{IDs: []string{"drop_agent_registration_options"}, run: migrationDropAgentRegistrationOptions},
+	{IDs: []string{"add_vertex_use_session_routing_column"}, run: migrationAddVertexUseSessionRoutingColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -16277,4 +16278,27 @@ func migrationDropAgentRegistrationOptions(ctx context.Context, db *gorm.DB, log
 			return fmt.Errorf("drop_agent_registration_options is non-rollbackable: removed registration values cannot be recovered")
 		},
 	})
+}
+
+// migrationAddVertexUseSessionRoutingColumn adds the vertex_use_session_routing column to the key table.
+// Existing keys default to false (NULL), so no request gains a session_id.
+func migrationAddVertexUseSessionRoutingColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_vertex_use_session_routing_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return addColumnIfNotExists(tx, logger, &tables.TableKey{}, "vertex_use_session_routing")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			return dropColumnIfExists(tx, logger, &tables.TableKey{}, "vertex_use_session_routing")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %w", migrationName, err)
+	}
+	return nil
 }

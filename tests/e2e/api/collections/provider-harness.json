@@ -275370,6 +275370,703 @@
           ]
         }
       ]
+    },
+    {
+      "name": "258. Vertex session routing from prompt_cache_key (session routing)",
+      "description": "use_session_routing on a Vertex key sends the request's prompt cache key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so stateless requests that share a long prefix and differ in the question read it from the implicit cache (Google enables session routing per project). Each route carries the key in its own field: prompt_cache_key on /v1/chat/completions and /v1/responses (unary and streamed), metadata.user_id on /anthropic, and session_id on /genai (a string, or the Gemini API's int64, sent on as a string). Rows read the Vertex-bound request back from the log. Guards: a Vertex key without the flag sends nothing; the Gemini API, whose session_id is an int64, never receives one (a leaked string would answer 400); /genai countTokens with session_id still answers, since Vertex rejects session_id there. Requests pin the key by name (x-bf-api-key), since two profile keys can serve Gemini models. Red before the feature: rows 1-7 reach Vertex without session_id.",
+      "item": [
+        {
+          "name": "258.1 vertex/gemini-3.7-flash /v1/chat/completions prompt_cache_key is sent as session_id (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.1 vertex/gemini-3.7-flash /v1/chat/completions prompt_cache_key is sent as session_id (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID harness-session-chat', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('harness-session-chat');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"prompt_cache_key\": \"harness-session-chat\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.2 vertex/gemini-3.7-flash /v1/chat/completions streamed prompt_cache_key is sent as session_id (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.2 vertex/gemini-3.7-flash /v1/chat/completions streamed prompt_cache_key is sent as session_id (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID harness-session-chat-stream', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('harness-session-chat-stream');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"stream\": true,\n  \"prompt_cache_key\": \"harness-session-chat-stream\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.3 vertex/gemini-3.7-flash /v1/responses prompt_cache_key is sent as session_id (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.3 vertex/gemini-3.7-flash /v1/responses prompt_cache_key is sent as session_id (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID harness-session-responses', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('harness-session-responses');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_output_tokens\": 64,\n  \"prompt_cache_key\": \"harness-session-responses\",\n  \"input\": \"Say ok.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.4 vertex/gemini-3.7-flash /v1/responses streamed prompt_cache_key is sent as session_id (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.4 vertex/gemini-3.7-flash /v1/responses streamed prompt_cache_key is sent as session_id (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID harness-session-responses-stream', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('harness-session-responses-stream');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_output_tokens\": 64,\n  \"stream\": true,\n  \"prompt_cache_key\": \"harness-session-responses-stream\",\n  \"input\": \"Say ok.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.5 vertex/gemini-3.7-flash /anthropic/v1/messages metadata.user_id is sent as session_id (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.5 vertex/gemini-3.7-flash /anthropic/v1/messages metadata.user_id is sent as session_id (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID harness-session-user', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('harness-session-user');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"metadata\": {\n    \"user_id\": \"harness-session-user\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.6 vertex/gemini-3.7-flash /genai generateContent session_id is passed on to Vertex (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.6 vertex/gemini-3.7-flash /genai generateContent session_id is passed on to Vertex (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID harness-session-genai', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('harness-session-genai');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  },\n  \"session_id\": \"harness-session-genai\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.7-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.7-flash:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.7 vertex/gemini-3.7-flash /genai generateContent a numeric session_id is sent as a string (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.7 vertex/gemini-3.7-flash /genai generateContent a numeric session_id is sent as a string (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID 12345', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('12345');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  },\n  \"session_id\": 12345\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.7-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.7-flash:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.8 vertex/gemini-2.5-flash /v1/chat/completions a key without session routing sends no session_id (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.8 vertex/gemini-2.5-flash /v1/chat/completions a key without session routing sends no session_id (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex without a session ID', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex API Key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 64,\n  \"prompt_cache_key\": \"harness-session-plain-key\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.9 gemini/gemini-3.8-flash /v1/chat/completions the Gemini API never receives a session ID (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.9 gemini/gemini-3.8-flash /v1/chat/completions the Gemini API never receives a session ID (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex without a session ID', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"max_tokens\": 64,\n  \"prompt_cache_key\": \"harness-session-gemini-api\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.10 vertex/gemini-3.7-flash /genai countTokens with session_id still counts (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('258.10 vertex/gemini-3.7-flash /genai countTokens with session_id still counts (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('a token count is returned', function () {",
+                  "  pm.expect(pm.response.json().totalTokens, pm.response.text().slice(0, 300)).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ],\n  \"session_id\": \"harness-session-count\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.7-flash:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.7-flash:countTokens"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
