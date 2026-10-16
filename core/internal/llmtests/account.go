@@ -287,7 +287,7 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 				},
 			},
 			{
-				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku"},
+				Models: []string{"claude-3.5-sonnet", "claude-3.7-sonnet", "claude-4-sonnet", "claude-4.5-sonnet", "claude-4.6-sonnet", "claude-4.5-haiku", "amazon.nova-2-sonic-v1:0"}, // Nova Sonic needs a key without an ARN: realtime streams to the ARN when one is set
 				Weight: 1.0,
 				Aliases: schemas.KeyAliases{
 					"claude-3.5-sonnet": {ModelID: "anthropic.claude-3-5-sonnet-20240620-v1:0"},
