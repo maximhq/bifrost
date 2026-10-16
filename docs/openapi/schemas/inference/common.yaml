@@ -38,6 +38,7 @@ ModelProvider:
     - cloudflare
     - typesafe
     - minimax
+    - byteplus
 
 Fallback:
   type: object

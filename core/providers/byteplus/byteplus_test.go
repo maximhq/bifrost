@@ -318,6 +318,28 @@ func textItem(text string) schemas.EmbeddingInputItem {
 	return schemas.EmbeddingInputItem{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: schemas.Ptr(text)}}}
 }
 
+// Per-item params override the request-level ones for dimensions; task_type and title have no Ark field and are not forwarded.
+func TestBytePlusEmbeddingPerItemParams(t *testing.T) {
+	provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/embeddings/multimodal": jsonResponse(http.StatusOK, `{"id":"e1","model":"skylark-embedding-vision-250615","object":"list","data":{"embedding":[0.1,0.2],"object":"embedding"},"usage":{"prompt_tokens":4,"total_tokens":4,"prompt_tokens_details":{"text_tokens":4,"image_tokens":0}}}`),
+	})
+	item := textItem("first")
+	item.Params = &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(1024), TaskType: schemas.Ptr("retrieval_query"), Title: schemas.Ptr("a title")}
+	req := embeddingRequest(item)
+	req.Params = &schemas.EmbeddingParameters{Dimensions: schemas.Ptr(2048)}
+
+	if _, bifrostErr := provider.Embedding(testContext(t), testKey(), req); bifrostErr != nil {
+		t.Fatalf("Embedding error: %+v", bifrostErr.Error)
+	}
+	body := captured()[0].body
+	if gjson.GetBytes(body, "dimensions").Int() != 1024 {
+		t.Errorf("per-item dimensions should override the request-level value: %s", body)
+	}
+	if gjson.GetBytes(body, "task_type").Exists() || gjson.GetBytes(body, "title").Exists() {
+		t.Errorf("task_type and title are not forwarded to Ark: %s", body)
+	}
+}
+
 // Ark's multimodal endpoint fuses a request's parts into one vector, so each input item is its own call.
 func TestBytePlusEmbeddingFansOutOneCallPerItem(t *testing.T) {
 	provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){

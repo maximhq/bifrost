@@ -151,6 +151,7 @@
                   "providers/supported-providers/azure-model-router",
                   "providers/supported-providers/bedrock",
                   "providers/supported-providers/bedrock-mantle",
+                  "providers/supported-providers/byteplus",
                   "providers/supported-providers/cerebras",
                   "providers/supported-providers/cloudflare",
                   "providers/supported-providers/cohere",
