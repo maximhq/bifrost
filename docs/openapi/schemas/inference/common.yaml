@@ -37,6 +37,7 @@ ModelProvider:
     - databricks
     - cloudflare
     - typesafe
+    - minimax
 
 Fallback:
   type: object
