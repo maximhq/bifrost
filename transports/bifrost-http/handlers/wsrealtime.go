@@ -570,8 +570,35 @@ func runRealtimeRelays(conn *ws.Conn, toProvider, toClient func() error, closeBo
 
 	firstErr := <-errCh
 	closeBoth()
-	secondErr := <-errCh
+	secondErr := awaitRealtimeRelay(conn, errCh)
 	return selectRealtimeRelayError(firstErr, secondErr)
+}
+
+// realtimeCloseHandshakeGrace bounds the wait for the client's close reply before its read is cut off.
+const realtimeCloseHandshakeGrace = time.Second
+
+// awaitRealtimeRelay waits for the relay still running after teardown. Close on a fasthttp hijacked
+// connection does not interrupt a pending client read, so the client is sent a close frame and, if
+// it does not answer in time, a repeated read deadline releases the read (a pong pushes one out).
+func awaitRealtimeRelay(conn *ws.Conn, errCh <-chan error) error {
+	if conn == nil {
+		return <-errCh
+	}
+	// WriteControl is safe alongside the connection's other writers.
+	_ = conn.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "realtime session ended"), time.Now().Add(realtimeCloseHandshakeGrace))
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(realtimeCloseHandshakeGrace):
+	}
+	for {
+		_ = conn.SetReadDeadline(time.Now())
+		select {
+		case err := <-errCh:
+			return err
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // relayClientToRealtimeProvider forwards client frames through the realtime turn pipeline.
