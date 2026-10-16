@@ -891,6 +891,7 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 		Region:            *schemas.NewSecretVar("us-central1"),
 		AuthCredentials:   *schemas.NewSecretVar("vertex-creds"),
 		ForceSingleRegion: true,
+		UseSessionRouting: true,
 	}
 
 	bedrockCfg := &schemas.BedrockKeyConfig{
@@ -968,6 +969,8 @@ func TestBeforeSave_DoesNotMutateSharedProviderConfigs(t *testing.T) {
 	assert.Equal(t, "us-central1", found.VertexKeyConfig.Region.GetValue())
 	assert.True(t, found.VertexKeyConfig.ForceSingleRegion,
 		"ForceSingleRegion must survive the save/reload round-trip")
+	assert.True(t, found.VertexKeyConfig.UseSessionRouting,
+		"UseSessionRouting must survive the save/reload round-trip")
 	require.NotNil(t, found.BedrockKeyConfig)
 	assert.Equal(t, "AKIAEXAMPLE", found.BedrockKeyConfig.AccessKey.GetValue())
 	assert.Equal(t, "secret-key", found.BedrockKeyConfig.SecretKey.GetValue())

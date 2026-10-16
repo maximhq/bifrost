@@ -229,6 +229,7 @@ func tableKeyFromSchemaKey(provider tables.TableProvider, key schemas.Key) (tabl
 		dbKey.VertexRegion = &key.VertexKeyConfig.Region
 		dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
 		dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
+		dbKey.VertexUseSessionRouting = &key.VertexKeyConfig.UseSessionRouting
 		wif, err := tables.MarshalVertexAWSWorkloadIdentityJSON(key.VertexKeyConfig.AWSWorkloadIdentity)
 		if err != nil {
 			return tables.TableKey{}, err
@@ -861,6 +862,7 @@ func (s *RDBConfigStore) UpdateProvidersConfig(ctx context.Context, providers ma
 				dbKey.VertexRegion = &key.VertexKeyConfig.Region
 				dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
 				dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
+				dbKey.VertexUseSessionRouting = &key.VertexKeyConfig.UseSessionRouting
 				wif, err := tables.MarshalVertexAWSWorkloadIdentityJSON(key.VertexKeyConfig.AWSWorkloadIdentity)
 				if err != nil {
 					return err
@@ -1156,6 +1158,7 @@ func (s *RDBConfigStore) UpdateProvider(ctx context.Context, provider schemas.Mo
 			dbKey.VertexRegion = &key.VertexKeyConfig.Region
 			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
 			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
+			dbKey.VertexUseSessionRouting = &key.VertexKeyConfig.UseSessionRouting
 			wif, err := tables.MarshalVertexAWSWorkloadIdentityJSON(key.VertexKeyConfig.AWSWorkloadIdentity)
 			if err != nil {
 				return err
@@ -1320,6 +1323,7 @@ func (s *RDBConfigStore) AddProvider(ctx context.Context, provider schemas.Model
 			dbKey.VertexRegion = &key.VertexKeyConfig.Region
 			dbKey.VertexAuthCredentials = &key.VertexKeyConfig.AuthCredentials
 			dbKey.VertexForceSingleRegion = &key.VertexKeyConfig.ForceSingleRegion
+			dbKey.VertexUseSessionRouting = &key.VertexKeyConfig.UseSessionRouting
 			wif, err := tables.MarshalVertexAWSWorkloadIdentityJSON(key.VertexKeyConfig.AWSWorkloadIdentity)
 			if err != nil {
 				return err

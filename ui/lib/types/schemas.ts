@@ -132,6 +132,7 @@ export const vertexKeyConfigSchema = z
 		region: secretVarSchema.optional(),
 		auth_credentials: secretVarSchema.optional(),
 		force_single_region: z.boolean().optional(),
+		use_session_routing: z.boolean().optional(),
 		aws_workload_identity: vertexAWSWorkloadIdentitySchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.project_id), {

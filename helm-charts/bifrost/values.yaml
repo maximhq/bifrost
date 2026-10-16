@@ -493,6 +493,7 @@ bifrost:
   #         region: "us-central1"
   #         auth_credentials: "env.GOOGLE_CREDENTIALS"
   #         force_single_region: false  # Set true for provisioned throughput to skip multi-region promotion
+  #         use_session_routing: false  # Set true only on projects where Google enabled Vertex session routing
   #
   # # AWS Bedrock example (requires bedrock_key_config)
   # bedrock:
