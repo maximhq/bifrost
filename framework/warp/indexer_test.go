@@ -47,6 +47,9 @@ type fakeWarpVectorStore struct {
 	// respondVector, when set, answers from the query vector as well, for tests
 	// where each phrasing of a search reaches different rows.
 	respondVector func(vector []float32, queries []vectorstore.Query) []vectorstore.SearchResult
+	// fail, when set, makes GetNearest refuse a filter set it returns an
+	// error for, as a store refuses a filter on a property it does not have.
+	fail func(queries []vectorstore.Query) error
 	// created is every namespace CreateNamespace was called for. With strict
 	// set, a paging read of any other namespace fails, which is how the
 	// embedded and Pinecone backends behave after a restart: they keep each
@@ -170,6 +173,11 @@ func (f *fakeWarpVectorStore) GetNearest(_ context.Context, _ string, vector []f
 	f.limit = limit
 	f.limits = append(f.limits, limit)
 	f.calls = append(f.calls, queries)
+	if f.fail != nil {
+		if err := f.fail(queries); err != nil {
+			return nil, err
+		}
+	}
 	if f.respondVector != nil {
 		page := f.respondVector(vector, queries)
 		if limit >= 0 && int64(len(page)) > limit {
@@ -321,9 +329,10 @@ func TestWarpIndexerEmbedsAndStoresVisibleConversation(t *testing.T) {
 	defer indexer.Close()
 	user, assistant := "find payment failures", "The card was declined"
 	latency, cost := 432.6, 0.001234
+	session := "Sess-1"
 	entry := &logstore.Log{
 		ID: "log-1", Timestamp: time.Unix(100, 0), Object: string(schemas.ChatCompletionRequest), Status: "success",
-		Provider: "openai", Model: "gpt-4o", Latency: &latency, Cost: &cost, PromptTokens: 12, CompletionTokens: 8, TotalTokens: 20,
+		Provider: "openai", Model: "gpt-4o", Latency: &latency, Cost: &cost, PromptTokens: 12, CompletionTokens: 8, TotalTokens: 20, SessionID: &session,
 		InputHistoryParsed:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: &user}}},
 		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &assistant}},
 	}
@@ -340,6 +349,7 @@ func TestWarpIndexerEmbedsAndStoresVisibleConversation(t *testing.T) {
 	require.Equal(t, 12, vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1")["prompt_tokens"])
 	require.Equal(t, 8, vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1")["completion_tokens"])
 	require.Equal(t, 20, vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1")["total_tokens"])
+	require.Equal(t, "Sess-1", vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1")["session_id"], "a session id is opaque and kept exactly")
 	require.NotContains(t, vectors.metadata(schemas.WarpDefaultLogVectorStoreNamespace, "log-1"), "content")
 }
 
@@ -634,6 +644,66 @@ func TestWarpIndexTextCarriesTheOpeningQuestion(t *testing.T) {
 	})
 	require.True(t, ok)
 	require.Equal(t, "user: "+opening, single.text)
+}
+
+// A coding agent opens a conversation with turns of its own, each wrapped in
+// a system-reminder envelope: the project's instructions file, the git
+// status, attribution rules. The same ones in every request. Read as the
+// opening, they embedded every Claude Code request alike, so thousands of
+// requests clustered into one topic about AGENTS.md. The envelopes come out,
+// and a turn that was only an envelope is no turn.
+func TestWarpIndexTextSkipsAgentReminders(t *testing.T) {
+	reminder := func(text string) string { return "<system-reminder>\n" + text + "\n</system-reminder>\n" }
+	question, later, answer := "can you tell me about this branch?", "lets run the warpseed", "Running it now."
+	item, ok := buildLogIndexItem(&logstore.Log{
+		ID: "log-agent", Object: string(schemas.ResponsesRequest), Status: "success",
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+			responsesTurn(schemas.ResponsesInputMessageRoleSystem, "You are Claude Code, Anthropic's official CLI for Claude."),
+			responsesTurn(schemas.ResponsesInputMessageRoleUser, reminder("Codebase and user instructions are shown below.\n\n# AGENTS.md")),
+			responsesTurn(schemas.ResponsesInputMessageRoleUser, reminder("As you answer the user's questions, you can use the following context:\n# gitStatus")),
+			responsesTurn(schemas.ResponsesInputMessageRoleUser, reminder("Attribution for git commits")),
+			responsesTurn(schemas.ResponsesInputMessageRoleUser, question),
+			responsesTurn(schemas.ResponsesInputMessageRoleAssistant, "It is the topics branch."),
+			// A later turn carries the person's words beside an envelope.
+			responsesTurn(schemas.ResponsesInputMessageRoleUser, reminder("The user opened a file.")+later),
+		},
+		ResponsesOutputParsed: []schemas.ResponsesMessage{responsesTurn(schemas.ResponsesInputMessageRoleAssistant, answer)},
+	})
+	require.True(t, ok)
+	require.Equal(t, "user: "+question+"\nuser: "+later+"\nassistant: "+answer, item.text)
+	require.NotContains(t, item.text, "AGENTS.md")
+
+	// The same in chat shape, with the envelope as one block of several.
+	envelope, text := reminder("# gitStatus"), question
+	chat, ok := buildLogIndexItem(&logstore.Log{
+		ID: "log-agent-chat", Object: string(schemas.ChatCompletionRequest), Status: "success",
+		InputHistoryParsed: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{Text: &envelope}, {Text: &text}}}},
+		},
+	})
+	require.True(t, ok)
+	require.Equal(t, "user: "+question, chat.text)
+
+	// A request whose only text is the agent's envelope has nothing of the
+	// person's to embed, even with a reply: the reply alone would file the
+	// request under what the model said, not what was asked. The stored
+	// preview is read the same way.
+	reply := "Here is the git status you asked about."
+	_, ok = buildLogIndexItem(&logstore.Log{
+		ID: "log-envelope-only", Object: string(schemas.ChatCompletionRequest), Status: "success",
+		ContentSummary:      reminder("# gitStatus"),
+		OutputMessageParsed: &schemas.ChatMessage{Role: schemas.ChatMessageRoleAssistant, Content: &schemas.ChatMessageContent{ContentStr: &reply}},
+	})
+	require.False(t, ok)
+
+	// Naming reads the same turns, so a topic is named for what was asked.
+	require.Equal(t, question+" (later: "+later+")", logUserText(&logstore.Log{
+		ResponsesInputHistoryParsed: []schemas.ResponsesMessage{
+			responsesTurn(schemas.ResponsesInputMessageRoleUser, reminder("# AGENTS.md")),
+			responsesTurn(schemas.ResponsesInputMessageRoleUser, question),
+			responsesTurn(schemas.ResponsesInputMessageRoleUser, later),
+		},
+	}))
 }
 
 // An opening message can be a pasted file. It gets at most half of what is

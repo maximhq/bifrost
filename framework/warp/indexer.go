@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -388,6 +389,7 @@ func ensureWarpNamespace(ctx context.Context, store vectorstore.VectorStore, nam
 		"completion_tokens": {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Output token count"},
 		"total_tokens":      {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Total token count"},
 		"parent_request_id": {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Fallback or session parent"},
+		"session_id":        {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Bifrost session the request belongs to"},
 		"app":               {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Detected client app"},
 		"virtual_key_id":    {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Virtual key ID"},
 		"user_id":           {DataType: vectorstore.VectorStorePropertyTypeString, Description: "User ID"},
@@ -497,6 +499,11 @@ func buildLogIndexItem(entry *logstore.Log) (logIndexItem, bool) {
 		return logIndexItem{}, false
 	}
 	opening, user := conversationUserTexts(entry)
+	// Nothing the person wrote means nothing to file the request under: a
+	// reply alone would place it by what the model said, not what was asked.
+	if opening == "" && user == "" {
+		return logIndexItem{}, false
+	}
 	assistant := strings.Join(strings.Fields(logAssistantText(entry)), " ")
 	text := boundedConversationText(opening, user, assistant, warpMaxEmbeddingBytes)
 	if text == "" {
@@ -506,12 +513,14 @@ func buildLogIndexItem(entry *logstore.Log) (logIndexItem, bool) {
 	// prefilter compares exactly while the post-filter compares with EqualFold
 	// - appendScalarQuery lowers the filter values to meet these. Hydration
 	// reads the full row from the logstore, so nothing rendered loses casing.
+	// session_id is kept exactly: it is an opaque id, matched exactly by the
+	// log store and by the post-filter.
 	metadata := map[string]interface{}{
 		"log_id": entry.ID, "timestamp": entry.Timestamp.Unix(), "object": entry.Object,
 		"provider": strings.ToLower(entry.Provider), "model": strings.ToLower(entry.Model), "status": strings.ToLower(entry.Status), "warp_log": true,
 		"latency_ms": roundedMetric(entry.Latency, 1), "cost_micro_usd": roundedMetric(entry.Cost, 1_000_000),
 		"prompt_tokens": entry.PromptTokens, "completion_tokens": entry.CompletionTokens, "total_tokens": entry.TotalTokens,
-		"parent_request_id": stringValue(entry.ParentRequestID), "app": strings.ToLower(stringValue(entry.App)),
+		"parent_request_id": stringValue(entry.ParentRequestID), "session_id": stringValue(entry.SessionID), "app": strings.ToLower(stringValue(entry.App)),
 		"virtual_key_id": strings.ToLower(stringValue(entry.VirtualKeyID)), "user_id": strings.ToLower(stringValue(entry.UserID)),
 		"team_ids": mergedIDs(entry.TeamID, entry.TeamIDs), "customer_ids": mergedIDs(entry.CustomerID, entry.CustomerIDs),
 		"business_unit_ids": mergedIDs(entry.BusinessUnitID, entry.BusinessUnitIDs),
@@ -579,39 +588,61 @@ func logInstructions(entry *logstore.Log) string {
 	return ""
 }
 
+// agentReminder matches the envelope a coding agent wraps around the context
+// it adds to a user turn: the project's instructions file, the git status,
+// attribution rules. Claude Code sends several such turns before the first
+// thing the person typed, and the same ones in every request.
+var agentReminder = regexp.MustCompile(`(?is)<system-reminder>.*?</system-reminder>`)
+
+// userTurnText is one user turn as it is read for embedding and naming: what
+// the person wrote, on one line, with the agent's envelopes taken out.
+//
+// Without this, every Claude Code request opened with the same contents of
+// AGENTS.md, so they embedded alike whatever was asked and clustered into one
+// topic about the project's instructions.
+func userTurnText(text string) string {
+	return strings.Join(strings.Fields(agentReminder.ReplaceAllString(text, " ")), " ")
+}
+
 // conversationUserTexts returns what a conversation opened with and the
 // user's last message, each on one line.
 //
 // The last message alone is what the request answers, but it is often a reply
 // to a question - "all", "yes", "-7d" - and says nothing about the subject.
 // The opening is empty when the conversation has one user turn, or when the
-// history was not kept and only the last message is known.
+// history was not kept and only the last message is known. A turn that was
+// nothing but an agent's envelope is not a turn.
 func conversationUserTexts(entry *logstore.Log) (opening, last string) {
-	last = strings.Join(strings.Fields(entry.BuildInputContentSummary()), " ")
-	if last == "" {
-		last = strings.Join(strings.Fields(entry.ContentSummary), " ")
-	}
+	var turns []string
 	for index := range entry.InputHistoryParsed {
 		if entry.InputHistoryParsed[index].Role != schemas.ChatMessageRoleUser {
 			continue
 		}
-		if opening = strings.Join(strings.Fields(chatContentText(entry.InputHistoryParsed[index].Content)), " "); opening != "" {
-			break
+		if text := userTurnText(chatContentText(entry.InputHistoryParsed[index].Content)); text != "" {
+			turns = append(turns, text)
 		}
 	}
-	if opening == "" {
-		for index := range entry.ResponsesInputHistoryParsed {
-			message := entry.ResponsesInputHistoryParsed[index]
-			if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleUser {
-				continue
-			}
-			if opening = strings.Join(strings.Fields(responsesContentText(message.Content)), " "); opening != "" {
-				break
-			}
+	for index := range entry.ResponsesInputHistoryParsed {
+		message := entry.ResponsesInputHistoryParsed[index]
+		if message.Role == nil || *message.Role != schemas.ResponsesInputMessageRoleUser {
+			continue
+		}
+		if text := userTurnText(responsesContentText(message.Content)); text != "" {
+			turns = append(turns, text)
 		}
 	}
-	if opening == last {
-		opening = ""
+	if len(turns) == 0 {
+		// The history was not kept, or held nothing of the person's: the
+		// stored preview is all there is.
+		last = userTurnText(entry.BuildInputContentSummary())
+		if last == "" {
+			last = userTurnText(entry.ContentSummary)
+		}
+		return "", last
+	}
+	last = turns[len(turns)-1]
+	if len(turns) > 1 && turns[0] != last {
+		opening = turns[0]
 	}
 	return opening, last
 }
