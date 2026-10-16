@@ -559,6 +559,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 	// additional_tools items are lifted to the top level so the tools inside them get
 	// the same rewrite; the item's tools live in raw bytes that are not rewritten in place.
 	customToolsAsFunctions := customToolsUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
+	developerAsSystem := developerRoleUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model)
 	keepAdditionalTools := supportsAdditionalToolsItem(bifrostReq.Provider) && !customToolsAsFunctions
 	replayAssistantTextAsInput := isMantleGPTOSSResponses(ctx, bifrostReq.Provider, capModel)
 	replayComputerActions := bifrostReq.Params != nil && slices.ContainsFunc(bifrostReq.Params.Tools, func(t schemas.ResponsesTool) bool {
@@ -579,6 +580,11 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 				continue
 			}
 			message.OutputConfig = nil
+		}
+		// Role is swapped for a new pointer, so the caller's message keeps "developer".
+		if developerAsSystem && (message.Type == nil || *message.Type == schemas.ResponsesMessageTypeMessage) &&
+			message.Role != nil && *message.Role == schemas.ResponsesInputMessageRoleDeveloper {
+			message.Role = schemas.Ptr(schemas.ResponsesInputMessageRoleSystem)
 		}
 		// First, check if message has compaction/fallback content blocks and rewrite them
 		if message.Content != nil && len(message.Content.ContentBlocks) > 0 {

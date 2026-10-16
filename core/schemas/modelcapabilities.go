@@ -77,6 +77,7 @@ type ModelCapabilities struct {
 	// is the scope sub-feature.
 	SupportsAssistantPrefill         *bool `json:"supports_assistant_prefill,omitempty"`
 	SupportsSystemMessages           *bool `json:"supports_system_messages,omitempty"`
+	SupportsDeveloperRole            *bool `json:"supports_developer_role,omitempty"` // false ⇒ developer messages are sent as system
 	SupportsFunctionCalling          *bool `json:"supports_function_calling,omitempty"`
 	SupportsParallelFunctionCalling  *bool `json:"supports_parallel_function_calling,omitempty"`
 	SupportsToolChoice               *bool `json:"supports_tool_choice,omitempty"`

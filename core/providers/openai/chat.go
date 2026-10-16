@@ -48,6 +48,15 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	capModel := schemas.ResolveCanonicalModel(ctx, bifrostReq.Model)
 	caps := schemas.ResolveModelCaps(bifrostReq.Provider, capModel)
 
+	// Messages is a fresh conversion, so the caller's input keeps its roles.
+	if developerRoleUnsupported(ctx, bifrostReq.Provider, bifrostReq.Model) {
+		for i := range openaiReq.Messages {
+			if openaiReq.Messages[i].Role == schemas.ChatMessageRoleDeveloper {
+				openaiReq.Messages[i].Role = schemas.ChatMessageRoleSystem
+			}
+		}
+	}
+
 	if bifrostReq.Params != nil {
 		openaiReq.ChatParameters = *bifrostReq.Params
 		openaiReq.ServiceTier = serviceTierForModel(caps, openaiReq.ServiceTier)
