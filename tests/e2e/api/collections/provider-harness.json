@@ -276968,7 +276968,7 @@
     },
     {
       "name": "264. MiniMax provider (minimax provider)",
-      "description": "MiniMax is reached through its OpenAI-compatible chat API, its /v1/image_generation API and its /v2/video_generation task API. Bifrost sends reasoning_split true on chat so thinking comes back in reasoning_content instead of <think> tags inside the answer, maps reasoning_effort none to thinking disabled (dropped on M3.1, which always thinks), and turns a non-zero base_resp.status_code on a 200 into an error. Video generation is billed per output second, so it is covered by Go tests and not by a live case here.",
+      "description": "MiniMax is reached through its OpenAI-compatible chat API, its /v1/image_generation API its /v2/video_generation task API, /v1/t2a_v2 for speech and /v1/speech_to_text for transcription. Bifrost sends reasoning_split true on chat so thinking comes back in reasoning_content instead of <think> tags inside the answer, maps reasoning_effort none to thinking disabled (dropped on M3.1, which always thinks), and turns a non-zero base_resp.status_code on a 200 into an error. Video generation is billed per output second, so it is covered by Go tests and not by a live case here. Speech audio comes back hex-encoded and Bifrost decodes it; an unknown voice is a 200 with base_resp 2054 that Bifrost turns into a 400.",
       "item": [
         {
           "name": "/v1/chat/completions - thinking arrives as reasoning, not <think> tags - minimax/MiniMax-M3",
@@ -277362,6 +277362,364 @@
                 "v1",
                 "images",
                 "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/speech - hex audio decoded to mp3 bytes - minimax/speech-2.8-turbo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('speech returns decoded audio, not hex', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var ct = pm.response.headers.get('Content-Type') || '';",
+                  "  pm.expect(ct, 'content type').to.match(/audio|octet-stream/);",
+                  "  var bytes = pm.response.stream;",
+                  "  pm.expect(bytes.length, 'audio too small').to.be.above(2000);",
+                  "  var head = String.fromCharCode(bytes[0], bytes[1], bytes[2]);",
+                  "  var isMp3 = head === 'ID3' || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0);",
+                  "  pm.expect(isMp3, 'body is not mp3 (hex not decoded?): ' + head).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/speech-2.8-turbo\",\n  \"input\": \"Hello from MiniMax through Bifrost.\",\n  \"voice\": \"English_Graceful_Lady\",\n  \"response_format\": \"mp3\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/speech stream - SSE deltas then done with usage - minimax/speech-2.8-turbo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('speech streams deltas and a done event', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no delta events').to.include('speech.audio.delta');",
+                  "  pm.expect(text, 'no done event').to.include('speech.audio.done');",
+                  "  pm.expect(text, 'no usage on done').to.match(/\"input_chars\":\\s*[1-9]/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/speech-2.8-turbo\",\n  \"input\": \"This is a streaming speech test for MiniMax.\",\n  \"voice\": \"English_Graceful_Lady\",\n  \"stream_format\": \"sse\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/audio/speech - unknown voice_id is a 400, not a 200 - minimax/speech-2.8-turbo",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unknown voice surfaces base_resp 2054 as a 400', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('voice id not exist');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"minimax/speech-2.8-turbo\",\n  \"input\": \"Hello.\",\n  \"voice\": \"not_a_real_minimax_voice\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/speech",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "speech"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/transcriptions - json text and duration usage - minimax/asr-1.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('transcription returns text and seconds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.text, 'empty text: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.usage && j.usage.seconds, 'usage seconds missing').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "minimax/asr-1.0",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "language",
+                  "value": "en",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/transcriptions - word timestamps become words with speakers - minimax/asr-1.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('word-level timestamps map to words', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.words, 'no words: ' + pm.response.text().slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(j.words[0].word).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.words[0].end).to.be.at.least(j.words[0].start);",
+                  "  pm.expect(j.words[0].speaker).to.match(/^S\\d+$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "minimax/asr-1.0",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "response_format",
+                  "value": "verbose_json",
+                  "type": "text"
+                },
+                {
+                  "key": "timestamp_granularities[]",
+                  "value": "word",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "/v1/audio/transcriptions stream - deltas then done with full text - minimax/asr-1.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('transcription streams to a done event', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(text, 'no done event: ' + text.slice(0, 500)).to.include('transcript.text.done');",
+                  "  pm.expect(text, 'no duration usage').to.match(/\"seconds\":\\s*[0-9.]+/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "minimax/asr-1.0",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "stream",
+                  "value": "true",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/audio/transcriptions stream - verbose_json is rejected before reaching MiniMax - minimax/asr-1.0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('streaming only allows json', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text()).to.eql(400);",
+                  "  pm.expect(pm.response.text()).to.include('only supports the json response format');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "minimax/asr-1.0",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                },
+                {
+                  "key": "stream",
+                  "value": "true",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "verbose_json",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/audio/transcriptions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "audio",
+                "transcriptions"
               ]
             }
           }

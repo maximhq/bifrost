@@ -1,6 +1,6 @@
 ---
 title: "MiniMax"
-description: "MiniMax conversion guide for chat, streaming, tool calling, reasoning, image generation with image-01, and H3 video generation"
+description: "MiniMax conversion guide for chat, streaming, tool calling, reasoning, image generation with image-01, H3 video generation, text-to-speech and speech-to-text"
 icon: "m"
 ---
 
@@ -15,6 +15,8 @@ MiniMax is an OpenAI-compatible provider with its own Bifrost implementation. Ch
 - **Responses API.** Converted to Chat Completions internally.
 - **Image generation.** `image-01` through `/v1/image_generation`.
 - **Video generation.** `MiniMax-H3` and `MiniMax-H3-Max` as async tasks through `/v2/video_generation`.
+- **Text-to-speech.** `speech-2.8-hd`, `speech-2.8-turbo` and older speech models through `/v1/t2a_v2`, streamed or not.
+- **Speech-to-text.** `asr-1.0` through `/v1/speech_to_text`, with sentence or word timestamps, speaker labels, SRT/VTT output and streaming.
 
 ### Supported operations
 
@@ -30,9 +32,9 @@ MiniMax is an OpenAI-compatible provider with its own Bifrost implementation. Ch
 | Video Delete | ✅ | - | `DELETE /v2/video_generation/{task_id}` |
 | Text Completions | ❌ | ❌ | - |
 | Embeddings | ❌ | ❌ | - |
+| Speech (TTS) | ✅ | ✅ | `/v1/t2a_v2` |
+| Transcriptions (STT) | ✅ | ✅ | `/v1/speech_to_text` |
 | Image Edit | ❌ | ❌ | - |
-| Speech (TTS) | ❌ | ❌ | - |
-| Transcriptions (STT) | ❌ | ❌ | - |
 | Video List | ❌ | - | - |
 | Files, Batch | ❌ | ❌ | - |
 
@@ -219,3 +221,63 @@ curl -X POST http://localhost:8080/v1/videos \
 | `extra_params.callback_url` | `callback_url` | |
 
 Without a `size`, text to video uses `16:9` (MiniMax needs a concrete ratio there) and image to video uses `adaptive`. `video_uri` and video list aren't supported.
+
+---
+
+# 6. Speech (TTS)
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "minimax/speech-2.8-turbo",
+    "input": "Hello! This is MiniMax speaking through Bifrost.",
+    "voice": "English_Graceful_Lady",
+    "response_format": "mp3"
+  }' --output hello.mp3
+```
+
+`voice` is a MiniMax `voice_id`, such as `English_Graceful_Lady`, `English_Insightful_Speaker` or `English_Persuasive_Man`, or a cloned or designed voice. See MiniMax's [system voice list](https://platform.minimax.io/docs/faq/system-voice-id) for the rest. MiniMax reports an unknown voice as an HTTP 200 with error code 2054 (`voice id not exist`), and Bifrost returns it as a 400.
+
+| Bifrost parameter | MiniMax field | Notes |
+|-------------------|---------------|-------|
+| `input` | `text` | Under 10,000 characters |
+| `voice` | `voice_setting.voice_id` | Required. Multi-speaker voice config isn't supported. |
+| `speed` | `voice_setting.speed` | 0.5 to 2 |
+| `response_format` | `audio_setting.format` | `mp3` (default), `wav`, `flac`, `pcm`, `opus`, `pcmu_raw`, `pcmu_wav`. Other formats are rejected. |
+| `extra_params.vol`, `extra_params.pitch`, `extra_params.emotion` | `voice_setting.vol`, `.pitch`, `.emotion` | |
+| `extra_params.sample_rate`, `extra_params.bitrate`, `extra_params.channel` | `audio_setting.*` | |
+| `extra_params.language_boost` | `language_boost` | For example `English` or `Chinese,Yue` |
+
+Any other extra params, such as `pronunciation_dict` or `voice_modify`, are sent to MiniMax unchanged. Usage reports MiniMax's `usage_characters`.
+
+## Streaming
+
+Set `stream_format: "sse"` on `/v1/audio/speech` to stream. MiniMax returns hex-encoded audio chunks, which Bifrost decodes into `speech.audio.delta` events, followed by a `speech.audio.done` event carrying usage. Bifrost asks MiniMax not to repeat the whole clip in its final chunk (`exclude_aggregated_audio`), so each audio byte arrives once.
+
+---
+
+# 7. Transcriptions (STT)
+
+```bash
+curl -X POST http://localhost:8080/v1/audio/transcriptions \
+  -F model="minimax/asr-1.0" \
+  -F file="@meeting.mp3" \
+  -F language="en" \
+  -F response_format="verbose_json" \
+  -F "timestamp_granularities[]=word"
+```
+
+| Bifrost parameter | MiniMax field | Notes |
+|-------------------|---------------|-------|
+| `file` | `file` | wav, aiff, flac, m4a, mp3, aac, opus, ogg. Up to 500 seconds and 50 MB. |
+| `language` | `language` request header | Short codes such as `en`, `zh`, `ja`. Omit it for mixed-language audio. |
+| `response_format` | `response_format` | `json` (default), `verbose_json`, `srt`, `vtt`. `text` is served from MiniMax's `json` output. |
+| `timestamp_granularities` | `timestamp_level` | `segment` maps to `sentence` and `word` to `word`. Either one switches the response to `verbose_json`. |
+
+With `verbose_json`, sentence-level timestamps come back as `segments`. Word-level timestamps come back as `words`, with MiniMax's speaker label (`S1`, `S2`, and so on) on each word. Usage is reported as seconds of audio.
+
+## Streaming
+
+Send the form field `stream=true` to stream. Each MiniMax event becomes a `transcript.text.delta`, and the final event becomes `transcript.text.done` with the full text and the audio duration. MiniMax only streams the `json` format, so streaming with `verbose_json`, `srt` or `vtt` fails with a 400.
+
