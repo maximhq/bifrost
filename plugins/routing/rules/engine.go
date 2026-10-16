@@ -3,7 +3,6 @@ package rules
 import (
 	"fmt"
 	"math/rand/v2"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -220,13 +219,6 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 			}
 			re.logger.Debug("[Engine] Evaluating scope=%s, scopeID=%s, ruleCount=%d", scope.ScopeName, scope.ScopeID, len(rules))
 
-			ruleNames := make([]string, 0, len(rules))
-			for _, r := range rules {
-				ruleNames = append(ruleNames, r.Name)
-			}
-
-			ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo, fmt.Sprintf("Evaluating scope %s: %d rules [%s]", scope.ScopeName, len(rules), strings.Join(ruleNames, ", ")))
-
 			for _, rule := range rules {
 				if _, fired := visitedRuleIDs[rule.ID]; fired {
 					re.logger.Debug("[Engine] Skipping rule %s (already fired this chain)", rule.Name)
@@ -267,9 +259,8 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 
 				re.logger.Debug("[Engine] Rule %s evaluation result: matched=%v", rule.Name, matched)
 
+				// No per-rule entry for a miss: each cost a formatted line and an O(n) append, per rule, per request.
 				if !matched {
-					ctx.AppendRoutingEngineLog(schemas.RoutingEngineRoutingRule, schemas.LogLevelInfo,
-						fmt.Sprintf("Rule '%s' [%s] → no match (%s)", rule.Name, rule.CelExpression, buildNoMatchContext(rule.CelExpression, variables)))
 					continue
 				}
 
@@ -540,68 +531,6 @@ func scopeChainToStrings(chain []ScopeLevel) []string {
 		}
 	}
 	return scopes
-}
-
-// buildNoMatchContext builds a compact debug string of scalar variables plus
-// only the headers/params keys actually referenced in the CEL expression.
-func buildNoMatchContext(expr string, variables map[string]any) string {
-	parts := []string{
-		fmt.Sprintf("model=%q", variables["model"]),
-		fmt.Sprintf("provider=%q", variables["provider"]),
-		fmt.Sprintf("request_type=%q", variables["request_type"]),
-		fmt.Sprintf("budget_used=%.1f%%", variables["budget_used"]),
-		fmt.Sprintf("tokens_used=%.1f%%", variables["tokens_used"]),
-		fmt.Sprintf("request=%.1f%%", variables["request"]),
-	}
-	for _, mapName := range []string{"headers", "params"} {
-		keys := extractMapKeysFromCEL(expr, mapName)
-		if len(keys) == 0 {
-			continue
-		}
-		if m, ok := variables[mapName].(map[string]string); ok {
-			kvs := make([]string, 0, len(keys))
-			for _, k := range keys {
-				if _, exists := m[k]; exists {
-					kvs = append(kvs, k+"=<present>")
-				} else {
-					kvs = append(kvs, k+"=<missing>")
-				}
-			}
-			parts = append(parts, mapName+"("+strings.Join(kvs, ", ")+")")
-		}
-	}
-	return strings.Join(parts, ", ")
-}
-
-// celMapKeyRegexCache caches one *regexp.Regexp per mapName to avoid
-// recompiling on every call. Lazy and concurrent-safe via sync.Map's
-// LoadOrStore atomicity; benign duplicate compiles on first concurrent miss.
-var celMapKeyRegexCache sync.Map // map[string]*regexp.Regexp
-
-// extractMapKeysFromCEL extracts unique map access keys for mapName from a CEL expression.
-// Handles mapName["key"], mapName['key'], and mapName.key patterns.
-func extractMapKeysFromCEL(expr, mapName string) []string {
-	v, ok := celMapKeyRegexCache.Load(mapName)
-	if !ok {
-		quoted := regexp.QuoteMeta(mapName)
-		compiled := regexp.MustCompile(quoted + `\["([^"]+)"\]|` + quoted + `\['([^']+)'\]|` + quoted + `\.([a-zA-Z_][a-zA-Z0-9_]*)`)
-		v, _ = celMapKeyRegexCache.LoadOrStore(mapName, compiled)
-	}
-	re := v.(*regexp.Regexp)
-	seen := map[string]struct{}{}
-	var keys []string
-	for _, m := range re.FindAllStringSubmatch(expr, -1) {
-		for _, cap := range m[1:] {
-			if cap != "" {
-				if _, dup := seen[cap]; !dup {
-					seen[cap] = struct{}{}
-					keys = append(keys, cap)
-				}
-				break
-			}
-		}
-	}
-	return keys
 }
 
 var (
