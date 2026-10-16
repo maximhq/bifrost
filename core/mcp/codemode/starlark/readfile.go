@@ -189,7 +189,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	}
 
 	// Generate compact Python signatures
-	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(matchedClientName))
+	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
 	lines := strings.Split(fileContent, "\n")
 	totalLines := len(lines)
 
@@ -282,7 +282,8 @@ func parseVFSFilePath(fileName string) (serverName, toolName string, isToolLevel
 }
 
 // generateCompactSignatures generates compact Python function signatures for tools.
-func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isToolLevel bool, instructions string) string {
+// jsonModuleAvailable says whether the sandbox's json module is reachable (see generateTypeDefinitions).
+func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isToolLevel bool, instructions string, jsonModuleAvailable bool) string {
 	var sb strings.Builder
 
 	// Minimal header
@@ -295,6 +296,10 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 	sb.WriteString(fmt.Sprintf("# Usage: %s.tool_name(param=value)\n", clientName))
 	sb.WriteString("# The def names below are the exact callable names to use in executeToolCode.\n")
 	sb.WriteString("# Read this file before executeToolCode to confirm parameters and return shape.\n")
+	sb.WriteString("# Results: the decoded JSON when the server sends JSON (a dict or list, or a number, bool or None), otherwise a str.\n")
+	if jsonModuleAvailable {
+		sb.WriteString("# json.decode(s) parses a str that holds JSON; plain text raises.\n")
+	}
 	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"tool_name\")\n", clientName))
 	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n")
 	if instructions != "" {

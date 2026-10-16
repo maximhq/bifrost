@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -32,6 +33,16 @@ func (s *StarlarkCodeMode) serverInstructionsComment(clientName string) string {
 		limit = s.clientManager.InstructionCaps().PerClient
 	}
 	return codemcp.InstructionsCommentBlock(client.ServerInstructions, limit)
+}
+
+// jsonModuleShadowed reports whether a code mode server is bound as "json", which keeps the
+// sandbox's json module out of a script's reach (see runSandbox).
+func (s *StarlarkCodeMode) jsonModuleShadowed(toolsPerClient map[string][]schemas.ChatTool) bool {
+	if len(toolsPerClient["json"]) == 0 {
+		return false
+	}
+	client := s.clientManager.GetClientByName("json")
+	return client != nil && client.ExecutionConfig != nil && client.ExecutionConfig.IsCodeModeClient
 }
 
 // extractResultFromChatMessage extracts the result from a chat message and parses it as JSON if possible.
@@ -199,7 +210,13 @@ func unsupportedStatement(code string, err error) string {
 func generatePythonErrorHints(errorMessage string, serverKeys []string) []string {
 	hints := []string{}
 
-	if strings.Contains(errorMessage, "got try") || strings.Contains(errorMessage, "got except") ||
+	if strings.Contains(errorMessage, "string index") || strings.Contains(errorMessage, "string has no .") {
+		hints = append(hints, "The value is a str, not a dict: the server's text was not JSON, or was JSON wrapped in a string.")
+		if !slices.Contains(serverKeys, "json") {
+			hints = append(hints, "If it holds JSON, parse it first: data = json.decode(result)")
+		}
+		hints = append(hints, "Check the shape with type(result) before indexing a tool result.")
+	} else if strings.Contains(errorMessage, "got try") || strings.Contains(errorMessage, "got except") ||
 		strings.Contains(errorMessage, "got finally") || strings.Contains(errorMessage, "got raise") {
 		hints = append(hints, exceptionHandlingHints()...)
 	} else if strings.Contains(errorMessage, "undefined") || strings.Contains(errorMessage, "not defined") {
@@ -236,7 +253,7 @@ func generatePythonErrorHints(errorMessage string, serverKeys []string) []string
 	} else if strings.Contains(errorMessage, "has no") && strings.Contains(errorMessage, "attribute") {
 		hints = append(hints, "You're trying to access an attribute that doesn't exist.")
 		hints = append(hints, "Use dict access syntax: result[\"key\"] instead of result.key")
-		hints = append(hints, "Use print(result) to see the actual structure.")
+		hints = append(hints, "Check the shape with print(type(result)), and print(sorted(result.keys())) for a dict.")
 		if len(serverKeys) > 0 {
 			hints = append(hints, fmt.Sprintf("Available server keys: %s", strings.Join(serverKeys, ", ")))
 		}
@@ -249,7 +266,7 @@ func generatePythonErrorHints(errorMessage string, serverKeys []string) []string
 		hints = append(hints, "Use readToolFile to see available tools for a server.")
 	} else if strings.Contains(errorMessage, "key") && strings.Contains(errorMessage, "not found") {
 		hints = append(hints, "Dictionary key not found.")
-		hints = append(hints, "Use print() to inspect the dict structure before accessing keys.")
+		hints = append(hints, "Check which keys exist with print(sorted(result.keys())) before indexing.")
 		hints = append(hints, "Use .get(\"key\", default) for safe access.")
 	} else {
 		hints = append(hints, "Check the error message above for details.")

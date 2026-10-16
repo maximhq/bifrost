@@ -274340,6 +274340,327 @@
           }
         }
       ]
+    },
+    {
+      "name": "254. Code mode scripts can parse string results, and the stubs say how (code-mode-guidance) [SERIAL]",
+      "description": "The sandbox had no `json` module, so a result that arrived as a string could not be parsed in a script, and the stubs claimed every result was a dict while telling the model to print whole responses. These cases pin that `json` and `math` are available in executeToolCode, and that readToolFile and getToolDocs describe the real result shapes and point at `json.decode` instead of `print(result)`.\n\nSerial, and it provisions its own client for the same reason as folder 210: a code-mode client makes the four meta-tools visible to every MCP-bearing request while it exists.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance provision a code-mode client on the SSE fixture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Per-run name, so two runs against one gateway never contend, and the sweep below can",
+                  "// reap anything an interrupted run left behind by its prefix.",
+                  "pm.collectionVariables.set('codeModeGuidanceClient', 'harness_codemode_guidance_' + Date.now());",
+                  "pm.collectionVariables.set('codeModeGuidanceQueue', '[]');",
+                  "pm.collectionVariables.set('codeModeGuidanceSweeps', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeGuidanceClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"echo\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance json and math are available in the sandbox",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('json and math are available in the sandbox', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value, 'json or math is missing from the sandbox: ' + content).to.eql([2, '{\"b\":1}', 2]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"result = [json.decode('{\\\\\\\"a\\\\\\\": [1, 2]}')[\\\\\\\"a\\\\\\\"][1], json.encode({\\\\\\\"b\\\\\\\": 1}), math.floor(2.7)]\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance readToolFile states the result shapes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the stub says what a call returns and how to parse a str', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'readToolFile errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var stub = String(pm.response.json().content || '');",
+                  "  pm.expect(stub, 'stub does not state the result shapes:\\n' + stub).to.include('# Results: the decoded JSON when the server sends JSON (a dict or list, or a number, bool or None), otherwise a str.');",
+                  "  pm.expect(stub, 'stub does not limit json.decode to a str holding JSON:\\n' + stub).to.include('json.decode(s) parses a str that holds JSON; plain text raises.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"readToolFile\",\n    \"arguments\": \"{\\\"fileName\\\":\\\"servers/{{codeModeGuidanceClient}}.pyi\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance getToolDocs checks the shape instead of printing whole responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the docs describe real result shapes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'getToolDocs errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var docs = String(pm.response.json().content || '');",
+                  "  pm.expect(docs, 'docs still claim every response is a dict:\\n' + docs).to.not.include('Tool responses are dicts');",
+                  "  pm.expect(docs, 'docs still tell the model to print a whole response:\\n' + docs).to.not.include('print(result)');",
+                  "  pm.expect(docs, 'docs still label every response a dict:\\n' + docs).to.not.include('dict: Response from the tool');",
+                  "  pm.expect(docs, 'docs do not say a bare JSON value arrives as a scalar:\\n' + docs).to.include('a number, bool or None');",
+                  "  pm.expect(docs, 'docs do not limit json.decode to a str holding JSON:\\n' + docs).to.include('json.decode(r[\"body\"]); plain text raises.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"getToolDocs\",\n    \"arguments\": \"{\\\"server\\\":\\\"{{codeModeGuidanceClient}}\\\",\\\"tool\\\":\\\"echo\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance queue this run's client, plus any stale leftovers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeGuidanceClient');",
+                  "var PREFIX = 'harness_codemode_guidance_';",
+                  "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
+                  "// Anything younger than this belongs to a run that may still be executing: never touch it.",
+                  "var STALE_MS = 3600000;",
+                  "pm.test('this run\\'s code-mode client is listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients || [];",
+                  "  var mine = null, stale = [];",
+                  "  for (var i = 0; i < clients.length; i++) {",
+                  "    var cfg = clients[i].config;",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf(PREFIX) !== 0) { continue; }",
+                  "    if (cfg.name === client) { mine = cfg.client_id; continue; }",
+                  "    var stamp = parseInt(cfg.name.substring(PREFIX.length), 10);",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
+                  "  }",
+                  "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
+                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
+                  "  pm.collectionVariables.set('codeModeGuidanceQueue', JSON.stringify([mine].concat(stale)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance remove every queued code-mode client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeGuidanceQueue') || '[]');",
+                  "// An empty queue means the listing above already failed: skip, rather than add a second failure.",
+                  "if (!queue.length) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('codeModeGuidanceClientId', queue[0]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "",
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeGuidanceQueue') || '[]');",
+                  "// Only a removed client leaves the queue: a failed delete stays queued for the next pass.",
+                  "if (pm.response.code === 200) {",
+                  "  queue.shift();",
+                  "  pm.collectionVariables.set('codeModeGuidanceQueue', JSON.stringify(queue));",
+                  "}",
+                  "",
+                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
+                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeGuidanceSweeps') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeGuidanceSweeps', String(sweeps));",
+                  "",
+                  "if (queue.length > 0 && sweeps < 10) {",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
+                  "  pm.test('the sweep drained every queued client', function () {",
+                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{codeModeGuidanceClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{codeModeGuidanceClientId}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

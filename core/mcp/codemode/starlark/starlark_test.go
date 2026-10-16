@@ -672,6 +672,9 @@ func TestDecodeToolResult(t *testing.T) {
 		{name: "a second wrap is not unwrapped", raw: `"\"{\\\"a\\\":1}\""`, want: `"{\"a\":1}"`},
 		{name: "plain text stays as sent", raw: "not json at all", want: "not json at all"},
 		{name: "bare object", raw: `{"a":1}`, want: map[string]interface{}{"a": float64(1)}},
+		{name: "bare number", raw: `42`, want: float64(42)},
+		{name: "bare bool", raw: `true`, want: true},
+		{name: "bare null", raw: `null`, want: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := decodeToolResult(tc.raw)
@@ -1209,6 +1212,55 @@ func TestCodeModeSandboxToolRoundTrip(t *testing.T) {
 	if len(result.Logs) != 1 || result.Logs[0] != "tool completed" {
 		t.Fatalf("logs=%v", result.Logs)
 	}
+}
+
+// json and math are predeclared so a script can parse a string result itself; a server bound
+// under either name keeps that name.
+func TestCodeModeSandboxJSONAndMathModules(t *testing.T) {
+	limits := schemas.MCPCodeModeLimits{}.WithDefaults()
+	returning := func(value interface{}) sandboxToolCaller {
+		return func(context.Context, string, string, map[string]interface{}, func(string)) (interface{}, error) {
+			return value, nil
+		}
+	}
+
+	t.Run("decode, encode and math are available", func(t *testing.T) {
+		code := "parsed = json.decode(server.echo())\nresult = [len(parsed[\"items\"]), json.encode({\"a\": 1}), math.floor(2.7)]"
+		result := runSandbox(context.Background(), limits, code, map[string][]string{"server": {"server-echo"}}, returning(`{"items":[1,2,3]}`))
+		if result.Errors != nil {
+			t.Fatalf("modules unavailable: %s", result.Errors.Message)
+		}
+		got, _ := sonic.Marshal(result.Result)
+		if string(got) != `[3,"{\"a\":1}",2]` {
+			t.Fatalf("result=%s", got)
+		}
+	})
+
+	t.Run("a server named json keeps its binding", func(t *testing.T) {
+		result := runSandbox(context.Background(), limits, "result = [json.echo(), math.floor(1.5)]", map[string][]string{"json": {"json-echo"}}, returning("from the server"))
+		if result.Errors != nil {
+			t.Fatalf("server binding lost: %s", result.Errors.Message)
+		}
+		got, _ := sonic.Marshal(result.Result)
+		if string(got) != `["from the server",1]` {
+			t.Fatalf("result=%s", got)
+		}
+	})
+
+	t.Run("decoding is charged to the memory budget", func(t *testing.T) {
+		small := limits
+		small.MaxMemoryBytes = 1 << 20
+		payload := "[" + strings.TrimSuffix(strings.Repeat("1,", 200_000), ",") + "]"
+		bindings := map[string][]string{"server": {"server-echo"}}
+		// Control: the payload itself fits, so the decode is what exceeds the budget.
+		if result := runSandbox(context.Background(), small, "result = len(server.echo())", bindings, returning(payload)); result.Errors != nil {
+			t.Fatalf("the payload alone exceeded the budget: %s", result.Errors.Message)
+		}
+		result := runSandbox(context.Background(), small, "result = len(json.decode(server.echo()))", bindings, returning(payload))
+		if result.Errors == nil || !strings.Contains(result.Errors.Message, "exceeded memory allocation limits") {
+			t.Fatalf("a 200,000-element decode was not charged to a 1 MiB budget: %+v", result)
+		}
+	})
 }
 
 func TestCodeModeSandboxCancellation(t *testing.T) {
@@ -1943,6 +1995,68 @@ func BenchmarkFormatPythonParams(b *testing.B) {
 				_ = formatPythonParams(tc.params)
 			}
 		})
+	}
+}
+
+// The stubs describe the result shapes a script really gets, and steer away from printing a
+// whole response into the model's context.
+func TestStubsDescribeResultShapes(t *testing.T) {
+	stub, docs := readSearchStubs(t, newSearchCodeMode(searchToolSchema()))
+
+	for name, content := range map[string]string{"readToolFile": stub, "getToolDocs": docs} {
+		if !strings.Contains(content, "json.decode(") {
+			t.Errorf("%s does not say how to parse a str result, got:\n%s", name, content)
+		}
+		if !strings.Contains(content, "number, bool or None") {
+			t.Errorf("%s does not say a bare JSON value arrives as a scalar, got:\n%s", name, content)
+		}
+		// Most str results are plain text, and json.decode raises on those.
+		if !strings.Contains(content, "plain text raises") {
+			t.Errorf("%s does not limit json.decode to a str holding JSON, got:\n%s", name, content)
+		}
+	}
+	if strings.Contains(docs, "dict: Response from the tool") {
+		t.Errorf("getToolDocs still labels every response a dict, got:\n%s", docs)
+	}
+	if strings.Contains(docs, "Tool responses are dicts") {
+		t.Errorf("getToolDocs still claims every response is a dict, got:\n%s", docs)
+	}
+	if strings.Contains(docs, "print(result)") {
+		t.Errorf("getToolDocs still tells the model to print a whole response, got:\n%s", docs)
+	}
+}
+
+// A code mode server bound as "json" keeps that name in the sandbox, so the stubs must not point
+// the model at a json module its scripts cannot reach.
+func TestStubsOmitJSONDecodeWhenAServerTakesTheName(t *testing.T) {
+	mode := newSearchCodeMode(searchToolSchema())
+	manager := mode.clientManager.(*testClientManager)
+	manager.clients["json"] = &schemas.MCPClientState{Name: "json", ExecutionConfig: &schemas.MCPClientConfig{Name: "json", IsCodeModeClient: true}}
+	manager.tools["json"] = []schemas.ChatTool{{Function: &schemas.ChatToolFunction{Name: "json-lint"}}}
+
+	stub, docs := readSearchStubs(t, mode)
+
+	for name, content := range map[string]string{"readToolFile": stub, "getToolDocs": docs} {
+		if strings.Contains(content, "json.decode(") {
+			t.Errorf("%s points at a json module a server shadows, got:\n%s", name, content)
+		}
+		if !strings.Contains(content, "number, bool or None") {
+			t.Errorf("%s does not say a bare JSON value arrives as a scalar, got:\n%s", name, content)
+		}
+	}
+}
+
+// Indexing a str is the error a model hits when it trusts a "dict" it never checked.
+func TestGeneratePythonErrorHintsForStringResults(t *testing.T) {
+	for _, message := range []string{"string index: got string, want int", "string has no .get field or method"} {
+		hints := strings.Join(generatePythonErrorHints(message, []string{"server"}), "\n")
+		if !strings.Contains(hints, "json.decode(") || strings.Contains(hints, "brackets") {
+			t.Errorf("hints for %q do not explain a str result:\n%s", message, hints)
+		}
+		shadowed := strings.Join(generatePythonErrorHints(message, []string{"json", "server"}), "\n")
+		if strings.Contains(shadowed, "json.decode(") {
+			t.Errorf("hints for %q point at a json module a server shadows:\n%s", message, shadowed)
+		}
 	}
 }
 

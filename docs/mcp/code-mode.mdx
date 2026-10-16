@@ -329,6 +329,8 @@ Reads a virtual `.pyi` file to get compact Python function signatures for tools.
 ```python
 # youtube server tools
 # Usage: youtube.tool_name(param=value)
+# Results: the decoded JSON when the server sends JSON (a dict or list, or a number, bool or None), otherwise a str.
+# json.decode(s) parses a str that holds JSON; plain text raises.
 # For detailed docs: use getToolDocs(server="youtube", tool="tool_name")
 #
 # ---- server instructions (from the upstream handshake) ----
@@ -370,10 +372,15 @@ Get detailed documentation for a specific tool when the compact signature from `
 # No async/await needed - calls are synchronous.
 #
 # CRITICAL - HANDLING RESPONSES:
-# Tool responses are dicts. To avoid runtime errors:
-# 1. Use print(result) to inspect the response structure first
-# 2. Access dict values with brackets: result["key"] NOT result.key
-# 3. Use .get() for safe access: result.get("key", default)
+# A tool returns the decoded JSON when the server sends JSON: a dict or list,
+# or a number, bool or None. Any other text arrives as a str.
+# 1. Check the shape, not the whole value: print(type(r)), and print(sorted(r.keys())) for a dict.
+#    Printing a whole response puts all of it into your context.
+# 2. dict: r["key"] or r.get("key", default), never r.key. list: r[0].
+# 3. str holding JSON, often a field: data = json.decode(r["body"]); plain text raises.
+#
+# Common errors: "key not found", "has no attribute", "string index"
+# Fix: check type(r) first, then index the shape you actually got
 # ============================================================================
 
 def search(query: str, maxResults: int = None) -> dict:
@@ -385,13 +392,14 @@ def search(query: str, maxResults: int = None) -> dict:
         maxResults (int): Max results to return (optional)
 
     Returns:
-        dict: Response from the tool. Structure varies by tool.
-              Use print(result) to inspect the actual structure.
+        The decoded JSON (usually a dict or list; a number, bool or None for a
+        bare value), or a str when the server's text is not JSON.
+        Check type(result) before indexing it.
 
     Example:
         result = youtube.search(query="...")
-        print(result)  # Always inspect response first!
-        value = result.get("key", default)  # Safe access
+        print(type(result))  # check the shape before indexing it
+        value = result.get("key") if type(result) == "dict" else result
     """
     ...
 ```
@@ -586,6 +594,9 @@ youtube.delete_video(id="abc123")
 | `print()` for logging | File I/O |
 | Dict/List operations | Network access |
 | List comprehensions | `random`, `time` modules |
+| `json` (`json.decode`, `json.encode`) and `math` modules, predeclared | |
+
+A code mode server named `json` or `math` keeps its name in the sandbox, and the module of that name is then unavailable to scripts.
 
 ### Tool Results Inside a Script
 
@@ -597,7 +608,7 @@ A nested tool call hands the script a value, not text:
 | One text block holding JSON | The decoded dict, list or scalar |
 | Several text blocks, each holding JSON | A list with one element per block |
 | JSON wrapped in a JSON string (`"{\"a\": 1}"`) | The decoded object or array. A wrapped scalar such as `"123"` stays a str |
-| Any other text | A str |
+| Any other text | A str, as sent. `json.decode` parses a str that holds JSON and raises on plain text |
 | `isError: true` | The error message, as a str. The script keeps running and decides what the failure means |
 | Text starting with `Error: ` | Nothing: the call raises, the script stops, and the error message is returned to the model |
 
