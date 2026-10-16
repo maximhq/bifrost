@@ -276067,6 +276067,677 @@
           }
         }
       ]
+    },
+    {
+      "name": "259. GitHub Copilot routes and sign-in (copilot routes)",
+      "description": "GitHub Copilot routing and Sign in with GitHub. Copilot rejects a bare-string embeddings input with a body-less 400, so a single input must go out as string[] (red before: 259.1 answered 400). Claude models are served from Copilot's Anthropic-compatible /v1/messages, reached from /v1/chat/completions (unary and streamed), /v1/responses and the native /anthropic route; rows read the provider-bound body back from extra_fields.raw_request (send_back_raw_request is on in the profile) and assert the Messages shape (top-level system, no Responses input). OpenAI models that advertise the Responses API go to Copilot's native /responses rather than through Chat Completions (raw body carries input, not messages). /v1/models lists the provider's models per key. The sign-in rows exercise the gateway's device-flow proxy: start returns a real GitHub device code (free, nothing is approved), an unknown device code and a missing one answer 400, and sign-in on any other provider answers 400. Inference rows need GITHUB_COPILOT_API_KEY (a fine-grained PAT with Copilot Requests) and run only under PROVIDER=github-copilot.",
+      "item": [
+        {
+          "name": "259.1 github-copilot/text-embedding-3-small /v1/embeddings single string input is sent as an array (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('259.1 github-copilot/text-embedding-3-small /v1/embeddings single string input is sent as an array (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('one embedding comes back', function () {",
+                  "  pm.expect(j.data, 'data: ' + pm.response.text().slice(0, 300)).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j.data[0].embedding, 'embedding vector').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('Copilot received input as string[] (it 400s on a bare string)', function () {",
+                  "  var rr = rawRequest(j);",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - is send_back_raw_request on for github-copilot?').to.be.an('object');",
+                  "  pm.expect(Array.isArray(rr.input), 'raw input: ' + JSON.stringify(rr.input)).to.equal(true);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/text-embedding-3-small\",\n  \"input\": \"harness copilot embedding\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "259.2 github-copilot/claude-sonnet-4-6 /v1/chat/completions is sent to Copilot's /v1/messages (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('259.2 github-copilot/claude-sonnet-4-6 /v1/chat/completions is sent to Copilot's /v1/messages (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('assistant message has content', function () {",
+                  "  var msg = j.choices && j.choices[0] && j.choices[0].message;",
+                  "  pm.expect(msg && msg.content, 'message: ' + JSON.stringify(msg)).to.be.a('string').and.not.empty;",
+                  "});",
+                  "pm.test('Copilot received an Anthropic Messages body', function () {",
+                  "  var rr = rawRequest(j);",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - is send_back_raw_request on for github-copilot?').to.be.an('object');",
+                  "  pm.expect(rr.system, 'top-level system (Messages shape): ' + JSON.stringify(rr).slice(0, 400)).to.not.equal(undefined);",
+                  "  var sys = (rr.messages || []).filter(function (m) { return m.role === 'system'; });",
+                  "  pm.expect(sys.length, 'system role left in messages (Chat shape)').to.equal(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Reply with one word.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "259.3 github-copilot/claude-sonnet-4-6 /v1/chat/completions stream via /v1/messages (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "function sseFrames() {",
+                  "  var out = [];",
+                  "  pm.response.text().split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data: ') !== 0) { return; }",
+                  "    var data = line.slice(6).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    try { out.push(JSON.parse(data)); } catch (e) {}",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('259.3 github-copilot/claude-sonnet-4-6 /v1/chat/completions stream via /v1/messages (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('response is SSE', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('event-stream');",
+                  "});",
+                  "pm.test('stream carries assistant text', function () {",
+                  "  var text = sseFrames().map(function (f) { var d = f.choices && f.choices[0] && f.choices[0].delta; return (d && d.content) || ''; }).join('');",
+                  "  pm.expect(text, 'no delta content in: ' + pm.response.text().slice(0, 400)).to.not.be.empty;",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"Reply with one word.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ],\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "259.4 github-copilot/claude-sonnet-4-6 /v1/responses is sent to Copilot's /v1/messages (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('259.4 github-copilot/claude-sonnet-4-6 /v1/responses is sent to Copilot's /v1/messages (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('output carries an assistant message', function () {",
+                  "  var msgs = (j.output || []).filter(function (o) { return o.type === 'message'; });",
+                  "  pm.expect(msgs.length, 'output: ' + JSON.stringify(j.output).slice(0, 400)).to.be.above(0);",
+                  "});",
+                  "pm.test('Copilot received an Anthropic Messages body, not a Responses one', function () {",
+                  "  var rr = rawRequest(j);",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - is send_back_raw_request on for github-copilot?').to.be.an('object');",
+                  "  pm.expect(rr.messages, 'messages: ' + JSON.stringify(rr).slice(0, 400)).to.be.an('array');",
+                  "  pm.expect(rr.system, 'instructions became top-level system').to.not.equal(undefined);",
+                  "  pm.expect(rr.input, 'Responses input sent to /v1/messages').to.equal(undefined);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4-6\",\n  \"max_output_tokens\": 64,\n  \"instructions\": \"Reply with one word.\",\n  \"input\": \"Say hi.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "259.5 github-copilot/claude-sonnet-4-6 /anthropic/v1/messages native route (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('259.5 github-copilot/claude-sonnet-4-6 /anthropic/v1/messages native route (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('Anthropic-shaped message with text', function () {",
+                  "  pm.expect(j.type, 'body: ' + pm.response.text().slice(0, 400)).to.equal('message');",
+                  "  var text = (j.content || []).filter(function (b) { return b.type === 'text' && b.text; });",
+                  "  pm.expect(text.length, 'content: ' + JSON.stringify(j.content)).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/claude-sonnet-4-6\",\n  \"max_tokens\": 64,\n  \"system\": \"Reply with one word.\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say hi.\"\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "259.6 github-copilot/gpt-5-mini /v1/responses is sent to Copilot's native /responses (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "function rawRequest(j) {",
+                  "  var rr = j && j.extra_fields && j.extra_fields.raw_request;",
+                  "  if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "  return rr;",
+                  "}",
+                  "pm.test('259.6 github-copilot/gpt-5-mini /v1/responses is sent to Copilot's native /responses (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('a Responses object comes back', function () {",
+                  "  pm.expect(j.object, 'body: ' + pm.response.text().slice(0, 400)).to.equal('response');",
+                  "  pm.expect(j.output, 'output').to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "pm.test('Copilot received a Responses body, not a Chat Completions one', function () {",
+                  "  var rr = rawRequest(j);",
+                  "  pm.expect(rr, 'extra_fields.raw_request missing - is send_back_raw_request on for github-copilot?').to.be.an('object');",
+                  "  pm.expect(rr.input, 'input: ' + JSON.stringify(rr).slice(0, 400)).to.not.equal(undefined);",
+                  "  pm.expect(rr.messages, 'Chat messages sent instead of input').to.equal(undefined);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/gpt-5-mini\",\n  \"max_output_tokens\": 512,\n  \"input\": \"Say hi in one word.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "259.7 github-copilot/gpt-5-mini /v1/responses stream via native /responses (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "function sseFrames() {",
+                  "  var out = [];",
+                  "  pm.response.text().split('\\n').forEach(function (line) {",
+                  "    if (line.indexOf('data: ') !== 0) { return; }",
+                  "    var data = line.slice(6).trim();",
+                  "    if (!data || data === '[DONE]') { return; }",
+                  "    try { out.push(JSON.parse(data)); } catch (e) {}",
+                  "  });",
+                  "  return out;",
+                  "}",
+                  "pm.test('259.7 github-copilot/gpt-5-mini /v1/responses stream via native /responses (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('response is SSE', function () {",
+                  "  var ct = pm.response.headers.get('content-type') || '';",
+                  "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('event-stream');",
+                  "});",
+                  "pm.test('stream completes', function () {",
+                  "  var done = sseFrames().filter(function (f) { return f.type === 'response.completed'; });",
+                  "  pm.expect(done.length, 'no response.completed in: ' + pm.response.text().slice(-400)).to.equal(1);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"github-copilot/gpt-5-mini\",\n  \"max_output_tokens\": 512,\n  \"input\": \"Say hi in one word.\",\n  \"stream\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "259.8 github-copilot /v1/models lists Copilot models (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('259.8 github-copilot /v1/models lists Copilot models (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('models are listed, all under github-copilot/', function () {",
+                  "  pm.expect(j.data, 'body: ' + pm.response.text().slice(0, 300)).to.be.an('array').that.is.not.empty;",
+                  "  var foreign = j.data.filter(function (m) { return String(m.id).indexOf('github-copilot/') !== 0; });",
+                  "  pm.expect(foreign.length, 'non-Copilot ids: ' + JSON.stringify(foreign.slice(0, 3))).to.equal(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/v1/models?provider=github-copilot",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "models"
+              ],
+              "query": [
+                {
+                  "key": "provider",
+                  "value": "github-copilot"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "259.9 POST /api/providers/github-copilot/sign-in returns a GitHub device code (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('259.9 POST /api/providers/github-copilot/sign-in returns a GitHub device code (copilot routes) answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var j = pm.response.json();",
+                  "pm.test('device code fields are present', function () {",
+                  "  pm.expect(j.device_code, 'body: ' + pm.response.text()).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.user_code, 'user_code').to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.verification_uri, 'verification_uri').to.include('github.com');",
+                  "  pm.expect(j.interval, 'interval').to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/github-copilot/sign-in",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "github-copilot",
+                "sign-in"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "259.10 [EXPECT-400] POST /api/providers/github-copilot/sign-in/poll with an unknown device_code (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('GitHub's incorrect_device_code becomes a 400 that says to start again', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text().slice(0, 500)).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error names the fix').to.include('start the sign-in again');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/github-copilot/sign-in/poll",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "github-copilot",
+                "sign-in",
+                "poll"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"device_code\": \"harness-not-a-real-device-code\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "259.11 [EXPECT-400] POST /api/providers/github-copilot/sign-in/poll without device_code (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('missing device_code is rejected before GitHub is called', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text().slice(0, 500)).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error names the fix').to.include('device_code is required');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/github-copilot/sign-in/poll",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "github-copilot",
+                "sign-in",
+                "poll"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "259.12 [EXPECT-400] POST /api/providers/openai/sign-in is github-copilot only (copilot routes)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('sign-in on another provider is rejected', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400: ' + pm.response.text().slice(0, 500)).to.equal(400);",
+                  "  pm.expect(pm.response.text(), 'error names the fix').to.include('only available for github-copilot');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/openai/sign-in",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "openai",
+                "sign-in"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
     }
   ]
 }
