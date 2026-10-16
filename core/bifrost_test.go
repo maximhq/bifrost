@@ -7666,29 +7666,43 @@ func TestBatchCreateRequest_RejectsFileAndInlineRequestsTogether(t *testing.T) {
 // logprobs value outside its range: no key or provider is at fault, the request is.
 const callerFaultBody = `{"error":{"message":"logprobs must be in the range [0, 20]","type":"invalid_request_error","param":"logprobs","code":"invalid_value"}}`
 
-// TestScenarioInferredFallbacksStopOnCallerFault pins which primary failures run a fallback chain
+// TestScenarioFallbacksStopOnCallerFault pins which primary failures run a fallback chain, on a chain
 // Bifrost inferred (the model-catalog resolver promoting every other provider that serves a bare
-// model) rather than one the caller or a routing config named. A refusal of the request itself
-// (a 400 with a provider error body) comes back to the caller instead of being answered by a
-// provider nobody asked for; a failure another provider or key can get past (5xx, 429, a rejected
-// key, a model this provider cannot reach) still falls back. A caller-named chain falls back on the
-// same 400, as it always has. Both orchestrator loops are covered.
-func TestScenarioInferredFallbacksStopOnCallerFault(t *testing.T) {
+// model) and on one the caller or a routing config named alike. A refusal of the request itself (a
+// 400/413/422 with a provider error body) comes back to the caller instead of being answered by a
+// model nobody asked for; a failure another provider or key can get past (5xx, 429, a rejected key,
+// a model this provider cannot reach, a region block) still falls back. Both orchestrator loops
+// are covered.
+func TestScenarioFallbacksStopOnCallerFault(t *testing.T) {
 	notFound := `{"error":{"message":"The model m does not exist or you do not have access to it.","type":"invalid_request_error","code":"model_not_found"}}`
-	for _, tc := range []struct {
+	region := `{"error":{"message":"User location is not supported for the API use.","type":"invalid_request_error","code":"failed_precondition"}}`
+	type replyCase struct {
 		name         string
 		reply        scenarioReply
-		inferred     bool
 		wantFallback bool
-	}{
-		{name: "inferred chain, caller fault 400 returns the primary error", reply: scenarioReply{status: http.StatusBadRequest, body: callerFaultBody}, inferred: true},
-		{name: "inferred chain, caller fault 422 returns the primary error", reply: scenarioReply{status: http.StatusUnprocessableEntity, body: callerFaultBody}, inferred: true},
-		{name: "inferred chain, 503 falls back", reply: scenarioReply{status: http.StatusServiceUnavailable, body: `{"error":{"message":"overloaded","type":"server_error"}}`}, inferred: true, wantFallback: true},
-		{name: "inferred chain, 429 falls back", reply: scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`}, inferred: true, wantFallback: true},
-		{name: "inferred chain, rejected key 401 falls back", reply: scenarioReply{status: http.StatusUnauthorized, body: `{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`}, inferred: true, wantFallback: true},
-		{name: "inferred chain, model not found 404 falls back", reply: scenarioReply{status: http.StatusNotFound, body: notFound}, inferred: true, wantFallback: true},
-		{name: "caller-named chain, caller fault 400 still falls back", reply: scenarioReply{status: http.StatusBadRequest, body: callerFaultBody}, wantFallback: true},
-	} {
+	}
+	replies := []replyCase{
+		{name: "caller fault 400 returns the primary error", reply: scenarioReply{status: http.StatusBadRequest, body: callerFaultBody}},
+		{name: "caller fault 413 returns the primary error", reply: scenarioReply{status: http.StatusRequestEntityTooLarge, body: callerFaultBody}},
+		{name: "caller fault 422 returns the primary error", reply: scenarioReply{status: http.StatusUnprocessableEntity, body: callerFaultBody}},
+		{name: "503 falls back", reply: scenarioReply{status: http.StatusServiceUnavailable, body: `{"error":{"message":"overloaded","type":"server_error"}}`}, wantFallback: true},
+		{name: "429 falls back", reply: scenarioReply{status: http.StatusTooManyRequests, body: `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`}, wantFallback: true},
+		{name: "rejected key 401 falls back", reply: scenarioReply{status: http.StatusUnauthorized, body: `{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`}, wantFallback: true},
+		{name: "model not found 404 falls back", reply: scenarioReply{status: http.StatusNotFound, body: notFound}, wantFallback: true},
+		{name: "region 400 falls back", reply: scenarioReply{status: http.StatusBadRequest, body: region}, wantFallback: true},
+	}
+	type chainCase struct {
+		replyCase
+		inferred bool
+	}
+	var cases []chainCase
+	for _, inferred := range []bool{true, false} {
+		for _, r := range replies {
+			r.name = map[bool]string{true: "inferred chain, ", false: "caller-named chain, "}[inferred] + r.name
+			cases = append(cases, chainCase{r, inferred})
+		}
+	}
+	for _, tc := range cases {
 		for _, stream := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
 				u := newScenarioUpstream(t)
@@ -7724,7 +7738,7 @@ func TestScenarioInferredFallbacksStopOnCallerFault(t *testing.T) {
 					return
 				}
 				if bifrostErr == nil {
-					t.Fatalf("an inferred fallback answered a request the primary refused as malformed (fallback hits %d)", u.count("sk-b1"))
+					t.Fatalf("a fallback answered a request the primary refused as malformed (fallback hits %d)", u.count("sk-b1"))
 				}
 				if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.reply.status {
 					t.Fatalf("status %v, want the primary's %d: %s", bifrostErr.StatusCode, tc.reply.status, bifrostErr.GetErrorString())
