@@ -506,3 +506,10 @@ legacy-audit-logs-verify:
     operationId: verifyAuditLogSignatureLegacy
     x-bifrost-successor: '/api/governance/audit-logs/{id}/verify'
     x-bifrost-removal: following-major-release
+
+legacy-audit-logs-integrity:
+  get:
+    $ref: './auditlogs.yaml#/audit-logs-integrity/get'
+    operationId: checkAuditLogIntegrityLegacy
+    x-bifrost-successor: '/api/governance/audit-logs/integrity'
+    x-bifrost-removal: following-major-release

@@ -1108,6 +1108,8 @@ paths:
     $ref: "./paths/management/auditlogs.yaml#/audit-logs-filterdata"
   /api/governance/audit-logs/export:
     $ref: "./paths/management/auditlogs.yaml#/audit-logs-export"
+  /api/governance/audit-logs/integrity:
+    $ref: "./paths/management/auditlogs.yaml#/audit-logs-integrity"
   /api/governance/audit-logs/{id}:
     $ref: "./paths/management/auditlogs.yaml#/audit-logs-by-id"
   /api/governance/audit-logs/{id}/verify:
@@ -1120,6 +1122,8 @@ paths:
     $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-filterdata"
   /api/audit-logs/export:
     $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-export"
+  /api/audit-logs/integrity:
+    $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-integrity"
   /api/audit-logs/{id}:
     $ref: "./paths/management/governancelegacy.yaml#/legacy-audit-logs-by-id"
   /api/audit-logs/{id}/verify:
@@ -2353,6 +2357,20 @@ components:
       $ref: "./schemas/management/auditlogs.yaml#/AuditFilterDataResponse"
     AuditVerifyResult:
       $ref: "./schemas/management/auditlogs.yaml#/AuditVerifyResult"
+    AuditSeverity:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditSeverity"
+    AuditAuthMethod:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditAuthMethod"
+    AuditFieldChange:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditFieldChange"
+    AuditChangeSet:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditChangeSet"
+    AuditIntegrityStatus:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditIntegrityStatus"
+    AuditWindowIntegrity:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditWindowIntegrity"
+    AuditIntegrityReport:
+      $ref: "./schemas/management/auditlogs.yaml#/AuditIntegrityReport"
 
     # API Keys
     APIKey:

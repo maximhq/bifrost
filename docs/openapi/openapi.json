@@ -78291,7 +78291,7 @@
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AuditLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List audit logs",
-        "description": "Retrieves CADF-compliant audit log events with filtering, search, and\npagination via query parameters. Most filter dimensions accept either a\nsingle value (singular parameter, e.g. `action`) or a JSON-encoded array\nof values (plural parameter, e.g. `actions`); when both are supplied the\nplural array takes precedence.\n",
+        "description": "Retrieves CADF-compliant audit log events with filtering, search, and\npagination via query parameters. Most filter dimensions accept either a\nsingle value (singular parameter, e.g. `action`) or a JSON-encoded array\nof values (plural parameter, e.g. `actions`); when both are supplied the\nplural array takes precedence. List responses omit each event's\n`changes` diff; fetch the event by ID or export it to get the diff.\n",
         "tags": [
           "Audit Logs"
         ],
@@ -78382,6 +78382,40 @@
               "type": "string"
             },
             "example": "[\"activity\",\"control\"]"
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "description": "Filter by a single severity.",
+            "schema": {
+              "$ref": "#/components/schemas/AuditSeverity"
+            }
+          },
+          {
+            "name": "severities",
+            "in": "query",
+            "description": "JSON array of severities to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "[\"high\"]"
+          },
+          {
+            "name": "event_name",
+            "in": "query",
+            "description": "Filter by a single event name (e.g. `virtual_key.updated`).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_names",
+            "in": "query",
+            "description": "JSON array of event names to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "[\"virtual_key.updated\",\"user.role_assigned\"]"
           },
           {
             "name": "initiator_id",
@@ -78562,6 +78596,14 @@
         "responses": {
           "200": {
             "description": "Successful response",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Request ID recorded on any audit event this request writes. A caller-supplied value of up to 128 characters is kept.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -78665,10 +78707,10 @@
           "metadata": {
             "tag": "Enterprise"
           },
-          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AuditLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AuditLogs:Download` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Export audit logs",
-        "description": "Streams audit log events matching the supplied filters as a downloadable\nfile. Accepts the same filter query parameters as `GET /api/audit-logs`.\nThe response is returned as an attachment with a generated filename.\n",
+        "description": "Streams audit log events matching the supplied filters as a downloadable\nfile. Accepts the same filter query parameters as `GET /api/governance/audit-logs`.\nThe response is returned as an attachment with a generated filename.\nExported events include the `changes` diff. Requires `AuditLogs:Download`;\na caller with only `AuditLogs:View` gets 403.\n",
         "tags": [
           "Audit Logs"
         ],
@@ -78715,6 +78757,22 @@
             "name": "event_types",
             "in": "query",
             "description": "JSON array of event types to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "severities",
+            "in": "query",
+            "description": "JSON array of severities to filter by (OR match). Values are `info` and `high`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_names",
+            "in": "query",
+            "description": "JSON array of event names to filter by (OR match).",
             "schema": {
               "type": "string"
             }
@@ -78783,6 +78841,102 @@
               }
             }
           },
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/governance/audit-logs/integrity": {
+      "get": {
+        "operationId": "checkAuditLogIntegrity",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AuditLogs:View` with all-data access | RBAC role or API key scope |\n\nA caller whose `AuditLogs` data access is scoped gets 403, since the\ncheck reports row counts across every user.\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Check audit log integrity",
+        "description": "Rechecks the signed hourly hash chain against the audit rows now in the\ndatabase and reports each window that has an issue or was sealed.\nDefaults to the last 24 hours. The range may span at most 31 days.\n",
+        "tags": [
+          "Audit Logs"
+        ],
+        "parameters": [
+          {
+            "name": "start_date",
+            "in": "query",
+            "description": "Start of the range (RFC 3339). Default 24 hours ago.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "description": "End of the range (RFC 3339). Default now.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditIntegrityReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -78806,7 +78960,7 @@
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AuditLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get audit log by ID",
-        "description": "Retrieves a single audit log event by its unique ID.\n",
+        "description": "Retrieves a single audit log event by its unique ID, including its\n`changes` diff.\n",
         "tags": [
           "Audit Logs"
         ],
@@ -78883,7 +79037,7 @@
           "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AuditLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Verify audit log signature",
-        "description": "Recomputes the HMAC-SHA256 signature for a single audit log event and\ncompares it (in constant time) against the stored signature to detect\ntampering.\n",
+        "description": "Recomputes the HMAC-SHA256 signature for a single audit log event and\ncompares it (in constant time) against the stored signature to detect\ntampering. The response reports the result, the signature scheme and the\nkey ID. It never returns the expected signature, since a reader holding\nit could forge a matching row.\n",
         "tags": [
           "Audit Logs"
         ],
@@ -78960,7 +79114,7 @@
           "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/audit-logs` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AuditLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "List audit logs (deprecated path)",
-        "description": "Retrieves CADF-compliant audit log events with filtering, search, and\npagination via query parameters. Most filter dimensions accept either a\nsingle value (singular parameter, e.g. `action`) or a JSON-encoded array\nof values (plural parameter, e.g. `actions`); when both are supplied the\nplural array takes precedence.\n",
+        "description": "Retrieves CADF-compliant audit log events with filtering, search, and\npagination via query parameters. Most filter dimensions accept either a\nsingle value (singular parameter, e.g. `action`) or a JSON-encoded array\nof values (plural parameter, e.g. `actions`); when both are supplied the\nplural array takes precedence. List responses omit each event's\n`changes` diff; fetch the event by ID or export it to get the diff.\n",
         "tags": [
           "Audit Logs"
         ],
@@ -79051,6 +79205,40 @@
               "type": "string"
             },
             "example": "[\"activity\",\"control\"]"
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "description": "Filter by a single severity.",
+            "schema": {
+              "$ref": "#/components/schemas/AuditSeverity"
+            }
+          },
+          {
+            "name": "severities",
+            "in": "query",
+            "description": "JSON array of severities to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "[\"high\"]"
+          },
+          {
+            "name": "event_name",
+            "in": "query",
+            "description": "Filter by a single event name (e.g. `virtual_key.updated`).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_names",
+            "in": "query",
+            "description": "JSON array of event names to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            },
+            "example": "[\"virtual_key.updated\",\"user.role_assigned\"]"
           },
           {
             "name": "initiator_id",
@@ -79231,6 +79419,14 @@
         "responses": {
           "200": {
             "description": "Successful response",
+            "headers": {
+              "X-Request-ID": {
+                "description": "Request ID recorded on any audit event this request writes. A caller-supplied value of up to 128 characters is kept.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -79340,10 +79536,10 @@
           "metadata": {
             "tag": "Removing soon"
           },
-          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/audit-logs/export` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AuditLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/audit-logs/export` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AuditLogs:Download` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Export audit logs (deprecated path)",
-        "description": "Streams audit log events matching the supplied filters as a downloadable\nfile. Accepts the same filter query parameters as `GET /api/audit-logs`.\nThe response is returned as an attachment with a generated filename.\n",
+        "description": "Streams audit log events matching the supplied filters as a downloadable\nfile. Accepts the same filter query parameters as `GET /api/governance/audit-logs`.\nThe response is returned as an attachment with a generated filename.\nExported events include the `changes` diff. Requires `AuditLogs:Download`;\na caller with only `AuditLogs:View` gets 403.\n",
         "tags": [
           "Audit Logs"
         ],
@@ -79390,6 +79586,22 @@
             "name": "event_types",
             "in": "query",
             "description": "JSON array of event types to filter by (OR match).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "severities",
+            "in": "query",
+            "description": "JSON array of severities to filter by (OR match). Values are `info` and `high`.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_names",
+            "in": "query",
+            "description": "JSON array of event names to filter by (OR match).",
             "schema": {
               "type": "string"
             }
@@ -79458,6 +79670,16 @@
               }
             }
           },
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -79474,6 +79696,95 @@
         "deprecated": true
       }
     },
+    "/api/audit-logs/integrity": {
+      "get": {
+        "operationId": "checkAuditLogIntegrityLegacy",
+        "x-mint": {
+          "metadata": {
+            "tag": "Removing soon"
+          },
+          "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/audit-logs/integrity` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AuditLogs:View` with all-data access | RBAC role or API key scope |\n\nA caller whose `AuditLogs` data access is scoped gets 403, since the\ncheck reports row counts across every user.\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Check audit log integrity (deprecated path)",
+        "description": "Rechecks the signed hourly hash chain against the audit rows now in the\ndatabase and reports each window that has an issue or was sealed.\nDefaults to the last 24 hours. The range may span at most 31 days.\n",
+        "tags": [
+          "Audit Logs"
+        ],
+        "parameters": [
+          {
+            "name": "start_date",
+            "in": "query",
+            "description": "Start of the range (RFC 3339). Default 24 hours ago.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "end_date",
+            "in": "query",
+            "description": "End of the range (RFC 3339). Default now.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        ],
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditIntegrityReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — authenticated, but not permitted to perform this action",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        },
+        "x-bifrost-successor": "/api/governance/audit-logs/integrity",
+        "x-bifrost-removal": "following-major-release",
+        "deprecated": true
+      }
+    },
     "/api/audit-logs/{id}": {
       "get": {
         "operationId": "getAuditLogByIdLegacy",
@@ -79484,7 +79795,7 @@
           "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/audit-logs/{id}` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AuditLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Get audit log by ID (deprecated path)",
-        "description": "Retrieves a single audit log event by its unique ID.\n",
+        "description": "Retrieves a single audit log event by its unique ID, including its\n`changes` diff.\n",
         "tags": [
           "Audit Logs"
         ],
@@ -79564,7 +79875,7 @@
           "content": "<Warning>\n  This path is deprecated and will be removed in the following major release.\n  Use `/api/governance/audit-logs/{id}/verify` instead.\n</Warning>\n<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `AuditLogs:View` | RBAC role or API key scope |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
         },
         "summary": "Verify audit log signature (deprecated path)",
-        "description": "Recomputes the HMAC-SHA256 signature for a single audit log event and\ncompares it (in constant time) against the stored signature to detect\ntampering.\n",
+        "description": "Recomputes the HMAC-SHA256 signature for a single audit log event and\ncompares it (in constant time) against the stored signature to detect\ntampering. The response reports the result, the signature scheme and the\nkey ID. It never returns the expected signature, since a reader holding\nit could forge a matching row.\n",
         "tags": [
           "Audit Logs"
         ],
@@ -135897,11 +136208,19 @@
             "format": "date-time",
             "description": "When the event occurred (RFC 3339)."
           },
+          "eventName": {
+            "type": "string",
+            "description": "Named event in the form `<resource>.<verb>`, such as\n`virtual_key.updated`, `user.role_assigned` or `audit.settings_changed`.\n",
+            "example": "virtual_key.updated"
+          },
           "action": {
             "$ref": "#/components/schemas/AuditAction"
           },
           "outcome": {
             "$ref": "#/components/schemas/AuditOutcome"
+          },
+          "severity": {
+            "$ref": "#/components/schemas/AuditSeverity"
           },
           "initiator": {
             "$ref": "#/components/schemas/AuditResource"
@@ -135920,6 +136239,14 @@
             "items": {
               "$ref": "#/components/schemas/AuditAttachment"
             }
+          },
+          "changes": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AuditChangeSet"
+              }
+            ],
+            "description": "Before/after diff of the target, with secrets redacted. Omitted from\nlist responses; returned by get-by-id and in exports.\n"
           },
           "tags": {
             "type": "array",
@@ -135944,6 +136271,21 @@
             "type": "string",
             "description": "HTTP User-Agent header."
           },
+          "requestID": {
+            "type": "string",
+            "description": "The request's `X-Request-ID`. Bifrost keeps a caller-supplied value of\nup to 128 characters and generates one otherwise.\n"
+          },
+          "sessionID": {
+            "type": "string",
+            "description": "One-way hash of the initiator's dashboard session. It links events from\none session and cannot be used as a session.\n"
+          },
+          "authMethod": {
+            "$ref": "#/components/schemas/AuditAuthMethod"
+          },
+          "onBehalfOfId": {
+            "type": "string",
+            "description": "For API keys, the user who created the key. For system jobs, the user\nwho queued the job, when there is one.\n"
+          },
           "duration": {
             "type": "integer",
             "format": "int64",
@@ -135951,7 +136293,7 @@
           },
           "signature": {
             "type": "string",
-            "description": "HMAC-SHA256 signature for tamper detection."
+            "description": "HMAC-SHA256 signature for tamper detection. Rows written by current\nversions use `v2:<key id>:<hex>`; older rows keep the v1 format.\n"
           },
           "createdAt": {
             "type": "string",
@@ -136116,30 +136458,192 @@
             "items": {
               "type": "string"
             }
+          },
+          "severities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "event_names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
       "AuditVerifyResult": {
         "type": "object",
-        "description": "The result of an audit log signature verification.",
+        "description": "The result of an audit log signature check. The expected signature is never\nreturned, since a reader holding it could forge a matching row.\n",
         "properties": {
           "valid": {
             "type": "boolean",
-            "description": "Whether the stored signature matches the recomputed signature."
+            "description": "Whether the stored signature matches the one recomputed from the row."
           },
-          "computed": {
+          "algorithm": {
             "type": "string",
-            "description": "The signature recomputed from the stored event fields."
+            "description": "Signature scheme of the row.",
+            "enum": [
+              "hmac-sha256-v1",
+              "hmac-sha256-v2"
+            ]
           },
-          "stored": {
+          "key_id": {
             "type": "string",
-            "description": "The signature persisted with the event."
+            "description": "ID of the key the row was signed with (v2 rows only)."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the check failed, for example when the signing key is no longer configured."
           }
         },
         "required": [
-          "valid",
-          "computed",
-          "stored"
+          "valid"
+        ]
+      },
+      "AuditSeverity": {
+        "type": "string",
+        "description": "How sensitive the action is. `info` for routine changes, `high` for admin\nactions with a large blast radius, such as role assignment or API key\ncreation.\n",
+        "enum": [
+          "info",
+          "high"
+        ]
+      },
+      "AuditAuthMethod": {
+        "type": "string",
+        "description": "How the initiator authenticated.",
+        "enum": [
+          "sso_login",
+          "sso_session",
+          "idp_token",
+          "auth_proxy",
+          "agent_token",
+          "api_key"
+        ]
+      },
+      "AuditFieldChange": {
+        "type": "object",
+        "description": "One field that differs between the before and after state of the target.\nSecret fields have `redacted: true` and carry no `old` or `new` value.\n",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Dotted path of the field (e.g., \"budget.max_limit\", \"keys[0].value\")."
+          },
+          "old": {
+            "description": "Value before the change. Omitted for created fields and redacted fields."
+          },
+          "new": {
+            "description": "Value after the change. Omitted for deleted fields and redacted fields."
+          },
+          "redacted": {
+            "type": "boolean",
+            "description": "True when the field holds a secret. The diff records that it changed, never its value."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "AuditChangeSet": {
+        "type": "object",
+        "description": "Before/after diff of the target. Capped at 200 fields and 16 KB; a larger\ndiff is cut short and has `truncated: true`.\n",
+        "properties": {
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditFieldChange"
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "True when the diff was cut at the field or size cap."
+          }
+        },
+        "required": [
+          "fields"
+        ]
+      },
+      "AuditIntegrityStatus": {
+        "type": "string",
+        "description": "Result for one window of the hash chain.\n- `ok`: rows match the sealed digest.\n- `rows_mismatch`: rows were added, removed or edited after the window was sealed.\n- `chain_broken`: the previous digest is missing or was altered.\n- `signature_invalid`: the digest does not match its signature, or its key is not configured.\n- `missing`: no digest covers this span.\n- `pruned`: retention deleted the rows. Expected.\n- `pruned_early`: rows were removed before the retention period ended.\n",
+        "enum": [
+          "ok",
+          "rows_mismatch",
+          "chain_broken",
+          "signature_invalid",
+          "missing",
+          "pruned",
+          "pruned_early"
+        ]
+      },
+      "AuditWindowIntegrity": {
+        "type": "object",
+        "description": "Integrity result for one hourly window.",
+        "properties": {
+          "window_start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "window_end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AuditIntegrityStatus"
+          },
+          "expected_rows": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Row count recorded in the sealed digest."
+          },
+          "actual_rows": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Rows now in the database for the window."
+          },
+          "detail": {
+            "type": "string",
+            "description": "Extra context when the status is not `ok`."
+          }
+        },
+        "required": [
+          "window_start",
+          "window_end",
+          "status",
+          "expected_rows",
+          "actual_rows"
+        ]
+      },
+      "AuditIntegrityReport": {
+        "type": "object",
+        "description": "Result of rechecking the audit hash chain against the rows in the database.",
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "intact": {
+            "type": "boolean",
+            "description": "False when any window has a status other than `ok` or `pruned`."
+          },
+          "windows": {
+            "type": "array",
+            "description": "Windows with an issue, plus sealed windows. The genesis link is listed\nonly when it fails.\n",
+            "items": {
+              "$ref": "#/components/schemas/AuditWindowIntegrity"
+            }
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "intact",
+          "windows"
         ]
       },
       "APIKey": {

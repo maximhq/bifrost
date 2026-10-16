@@ -1710,6 +1710,7 @@
                   "GET /api/governance/audit-logs",
                   "GET /api/governance/audit-logs/filterdata",
                   "GET /api/governance/audit-logs/export",
+                  "GET /api/governance/audit-logs/integrity",
                   "GET /api/governance/audit-logs/{id}",
                   "GET /api/governance/audit-logs/{id}/verify"
                 ]
@@ -1909,6 +1910,7 @@
                   "GET /api/audit-logs",
                   "GET /api/audit-logs/filterdata",
                   "GET /api/audit-logs/export",
+                  "GET /api/audit-logs/integrity",
                   "GET /api/audit-logs/{id}",
                   "GET /api/audit-logs/{id}/verify"
                 ]
