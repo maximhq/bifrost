@@ -3197,3 +3197,34 @@ func BenchmarkToAnthropicInvokeStreamBytes_TerminalEvent(b *testing.B) {
 		}
 	}
 }
+
+// The invoke-with-response-stream route can be served by other providers, whose stop
+// reasons reach the terminal event without IncompleteDetails. Only reasons Anthropic
+// defines may reach message_delta.stop_reason.
+func TestToAnthropicInvokeStreamBytes_StopReasonWithoutIncompleteDetails(t *testing.T) {
+	tests := []struct {
+		stopReason string
+		expected   string
+	}{
+		{stopReason: "tool_calls", expected: "tool_use"},
+		{stopReason: "stop", expected: "end_turn"},
+		{stopReason: "compaction", expected: "compaction"},
+		{stopReason: "pause_turn", expected: "pause_turn"},
+		{stopReason: "guardrail_intervened", expected: "refusal"},
+		{stopReason: "content_filter", expected: "refusal"},
+		{stopReason: "some_future_reason", expected: "end_turn"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.stopReason, func(t *testing.T) {
+			resp := &schemas.BifrostResponsesStreamResponse{
+				Type:     schemas.ResponsesStreamResponseTypeCompleted,
+				Response: &schemas.BifrostResponsesResponse{StopReason: schemas.Ptr(tt.stopReason)},
+			}
+			frames, err := toAnthropicInvokeStreamBytes(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), resp)
+			require.NoError(t, err)
+			require.NotEmpty(t, frames)
+			assert.Equal(t, tt.expected, gjson.GetBytes(frames[0], "delta.stop_reason").String())
+		})
+	}
+}

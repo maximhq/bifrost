@@ -2136,6 +2136,24 @@ func bedrockInvokeStreamItemKey(resp *schemas.BifrostResponsesStreamResponse) st
 	return ""
 }
 
+// anthropicInvokeStopReason maps a terminal event's StopReason to an Anthropic stop_reason.
+// The invoke stream can be served by any provider, so a reason Anthropic does not define
+// (e.g. a passed-through guardrail_intervened) must not reach message_delta as-is.
+func anthropicInvokeStopReason(reason string) string {
+	switch reason {
+	case "content_filter", "guardrail_intervened":
+		return string(anthropic.AnthropicStopReasonRefusal)
+	}
+	switch mapped := anthropic.ConvertBifrostFinishReasonToAnthropic(reason); mapped {
+	case anthropic.AnthropicStopReasonEndTurn, anthropic.AnthropicStopReasonMaxTokens,
+		anthropic.AnthropicStopReasonStopSequence, anthropic.AnthropicStopReasonToolUse,
+		anthropic.AnthropicStopReasonPauseTurn, anthropic.AnthropicStopReasonRefusal,
+		anthropic.AnthropicStopReasonModelContextWindowExceeded, anthropic.AnthropicStopReasonCompaction:
+		return string(mapped)
+	}
+	return string(anthropic.AnthropicStopReasonEndTurn)
+}
+
 // toAnthropicInvokeStreamBytes converts a Bifrost stream event into raw bytes representing
 // the Anthropic Messages API streaming event JSON, suitable for wrapping in InvokeModelRawChunks.
 // Returns a slice of byte slices since some Bifrost events map to multiple Anthropic events
@@ -2380,7 +2398,7 @@ func toAnthropicInvokeStreamBytes(ctx *schemas.BifrostContext, resp *schemas.Bif
 		} else if resp.Response != nil && resp.Response.StopReason != nil {
 			// A completed turn carries its reason in StopReason (e.g. "tool_calls" when the
 			// model called a tool), matching the non-streaming converter's tool_use.
-			stopReason = string(anthropic.ConvertBifrostFinishReasonToAnthropic(*resp.Response.StopReason))
+			stopReason = anthropicInvokeStopReason(*resp.Response.StopReason)
 		}
 
 		// Build message_delta event
