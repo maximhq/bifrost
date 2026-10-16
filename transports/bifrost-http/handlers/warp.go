@@ -161,6 +161,7 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 	// write-triggered sweep would never fire. It is a no-op without a history
 	// store, and Shutdown stops it.
 	handler.service.StartHistoryCleanup()
+	handler.service.StartTopicUpkeep()
 	return handler
 }
 
@@ -325,7 +326,7 @@ func (h *WarpHandler) backfillSpec() warpJobSpec {
 func (h *WarpHandler) topicsSpec() warpJobSpec {
 	return warpJobSpec{
 		kind:        warp.TopicsJobKind,
-		partition:   "warp_log_topics",
+		partition:   warp.TopicsJobPartition,
 		noun:        "topic clustering",
 		plural:      "topic clustering runs",
 		startDenied: "Only administrators can start Warp topic clustering",
