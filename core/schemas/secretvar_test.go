@@ -1,7 +1,9 @@
 package schemas
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -940,5 +942,140 @@ func TestSecretVar_VertexAWSWorkloadIdentityRoundTrip(t *testing.T) {
 	}
 	if strings.Contains(string(plain), "aws_workload_identity") {
 		t.Errorf("aws_workload_identity must be omitted when unset: %s", plain)
+	}
+}
+
+// stubVaultResolveHook makes vault.* references resolve from secrets for the test's duration.
+func stubVaultResolveHook(t *testing.T, secrets map[string]string) {
+	t.Helper()
+	prev := VaultResolveHook
+	VaultResolveHook = func(_ context.Context, value *string) error {
+		secret, ok := secrets[strings.TrimPrefix(*value, "vault.")]
+		if !ok {
+			return fmt.Errorf("no vault secret at %s", *value)
+		}
+		*value = secret
+		return nil
+	}
+	t.Cleanup(func() { VaultResolveHook = prev })
+}
+
+// TestNetworkConfigExtraHeaders_ResolvesAndResavesReferences checks that env.* and
+// vault.* header values resolve on decode, that encode (API response, DB row,
+// config hash) emits the reference and not the resolved secret, and that decoding
+// that output again (a UI resave) resolves the same references.
+func TestNetworkConfigExtraHeaders_ResolvesAndResavesReferences(t *testing.T) {
+	t.Setenv("BF_TEST_HEADER_TOKEN", "token-from-env")
+	stubVaultResolveHook(t, map[string]string{"bifrost/headers/secret": "token-from-vault"})
+
+	var nc NetworkConfig
+	raw := `{"extra_headers":{"X-Plain":"literal","X-Env":"env.BF_TEST_HEADER_TOKEN","X-Vault":"vault.bifrost/headers/secret"}}`
+	if err := json.Unmarshal([]byte(raw), &nc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	wantValues := map[string]string{"X-Plain": "literal", "X-Env": "token-from-env", "X-Vault": "token-from-vault"}
+	for name, want := range wantValues {
+		if got := nc.ExtraHeaders[name]; got.GetValue() != want {
+			t.Errorf("%s: resolved %q, want %q", name, got.GetValue(), want)
+		}
+	}
+	if envHeader, vaultHeader := nc.ExtraHeaders["X-Env"], nc.ExtraHeaders["X-Vault"]; !envHeader.IsFromEnv() || !vaultHeader.IsFromVault() {
+		t.Fatalf("references lost their type: %+v", nc.ExtraHeaders)
+	}
+
+	encoded, err := json.Marshal(nc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire struct {
+		ExtraHeaders map[string]string `json:"extra_headers"`
+	}
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatalf("unmarshal wire: %v", err)
+	}
+	wantWire := map[string]string{"X-Plain": "literal", "X-Env": "env.BF_TEST_HEADER_TOKEN", "X-Vault": "vault.bifrost/headers/secret"}
+	for name, want := range wantWire {
+		if got := wire.ExtraHeaders[name]; got != want {
+			t.Errorf("%s: wire %q, want %q", name, got, want)
+		}
+	}
+	for _, leaked := range []string{"token-from-env", "token-from-vault"} {
+		if strings.Contains(string(encoded), leaked) {
+			t.Errorf("encoded config leaks %q: %s", leaked, encoded)
+		}
+	}
+
+	// Resave: what the API returned comes back unchanged and must resolve identically.
+	var resaved NetworkConfig
+	if err := json.Unmarshal(encoded, &resaved); err != nil {
+		t.Fatalf("unmarshal resave: %v", err)
+	}
+	for name, want := range wantValues {
+		if got := resaved.ExtraHeaders[name]; got.GetValue() != want {
+			t.Errorf("resave %s: resolved %q, want %q", name, got.GetValue(), want)
+		}
+	}
+	if envHeader, vaultHeader := resaved.ExtraHeaders["X-Env"], resaved.ExtraHeaders["X-Vault"]; envHeader.GetRawRef() != "env.BF_TEST_HEADER_TOKEN" || vaultHeader.GetRawRef() != "vault.bifrost/headers/secret" {
+		t.Fatalf("resave lost references: %+v", resaved.ExtraHeaders)
+	}
+}
+
+// TestNetworkConfigExtraHeaders_AcceptsSecretVarObjects checks the object form a
+// SecretVar-aware client sends decodes the same as the string form.
+func TestNetworkConfigExtraHeaders_AcceptsSecretVarObjects(t *testing.T) {
+	t.Setenv("BF_TEST_HEADER_TOKEN", "token-from-env")
+	var nc NetworkConfig
+	raw := `{"extra_headers":{"X-Env":{"value":"","ref":"env.BF_TEST_HEADER_TOKEN","type":"env"},"X-Plain":{"value":"literal"}}}`
+	if err := json.Unmarshal([]byte(raw), &nc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := nc.ExtraHeaders["X-Env"]; got.GetValue() != "token-from-env" || !got.IsFromEnv() {
+		t.Errorf("X-Env: %+v", got)
+	}
+	if got := nc.ExtraHeaders["X-Plain"]; got.GetValue() != "literal" || got.IsFromSecret() {
+		t.Errorf("X-Plain: %+v", got)
+	}
+}
+
+// TestNetworkConfigRedacted_ExtraHeaders checks that a redacted copy masks the resolved
+// value of env/vault headers while keeping their references and literal values, and
+// never aliases the live map.
+func TestNetworkConfigRedacted_ExtraHeaders(t *testing.T) {
+	t.Setenv("BF_TEST_HEADER_TOKEN", "token-from-env-value")
+	nc := &NetworkConfig{ExtraHeaders: map[string]SecretVar{
+		"X-Plain": *NewSecretVar("literal"),
+		"X-Env":   *NewSecretVar("env.BF_TEST_HEADER_TOKEN"),
+	}}
+	redacted := nc.Redacted()
+	if got := redacted.ExtraHeaders["X-Plain"]; got.GetValue() != "literal" {
+		t.Errorf("literal header changed: %q", got.GetValue())
+	}
+	env := redacted.ExtraHeaders["X-Env"]
+	if !env.IsRedacted() || env.GetValue() == "token-from-env-value" || env.GetRawRef() != "env.BF_TEST_HEADER_TOKEN" {
+		t.Errorf("env header not redacted with ref kept: %+v", env)
+	}
+	if live := nc.ExtraHeaders["X-Env"]; live.GetValue() != "token-from-env-value" {
+		t.Fatal("live config mutated by Redacted")
+	}
+	redacted.ExtraHeaders["X-New"] = *NewSecretVar("x")
+	if _, aliased := nc.ExtraHeaders["X-New"]; aliased {
+		t.Fatal("redacted copy aliases the live map")
+	}
+}
+
+// TestSecretVar_UnmarshalJSON_DecodesJSONEscapes checks that a JSON string decodes its
+// escapes: an escaped slash or \u escape must yield the character, not the quoted JSON
+// text, or a header carrying it fails upstream authentication.
+func TestSecretVar_UnmarshalJSON_DecodesJSONEscapes(t *testing.T) {
+	var nc NetworkConfig
+	raw := `{"extra_headers":{"Authorization":"Bearer a\/b","X-Name":"café 😀","X-Quote":"say \"hi\""}}`
+	if err := json.Unmarshal([]byte(raw), &nc); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := map[string]string{"Authorization": "Bearer a/b", "X-Name": "café 😀", "X-Quote": `say "hi"`}
+	for name, value := range want {
+		if got := nc.ExtraHeaders[name]; got.GetValue() != value {
+			t.Errorf("%s: got %q, want %q", name, got.GetValue(), value)
+		}
 	}
 }

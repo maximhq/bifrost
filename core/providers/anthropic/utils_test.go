@@ -1083,9 +1083,9 @@ func TestMergeBetaHeaders(t *testing.T) {
 
 	t.Run("provider_extra_headers_case_insensitive_key", func(t *testing.T) {
 		ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
-		got := MergeBetaHeaders(ctx, map[string]string{
+		got := MergeBetaHeaders(ctx, schemas.NewSecretVarMap(map[string]string{
 			"Anthropic-Beta": "mcp-client-2025-04-04",
-		})
+		}))
 		want := []string{"mcp-client-2025-04-04"}
 		if !slices.Equal(got, want) {
 			t.Fatalf("got %v, want %v", got, want)
@@ -1097,9 +1097,9 @@ func TestMergeBetaHeaders(t *testing.T) {
 		ctx.SetValue(schemas.BifrostContextKeyExtraHeaders, map[string][]string{
 			"ANTHROPIC-BETA": {"foo,bar", "bar,baz"},
 		})
-		got := MergeBetaHeaders(ctx, map[string]string{
+		got := MergeBetaHeaders(ctx, schemas.NewSecretVarMap(map[string]string{
 			"anthropic-beta": "foo",
-		})
+		}))
 		sort.Strings(got)
 		wantSorted := []string{"bar", "baz", "foo"}
 		if !slices.Equal(got, wantSorted) {
@@ -1486,7 +1486,7 @@ func TestNetworkConfigBetaOverridesFlow(t *testing.T) {
 				AnthropicBetaHeader: tc.allowedByDefault,
 			}
 			overrides := map[string]bool{tc.allowedByDefaultPfx: false}
-			got := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, providerExtra), tc.provider, overrides)
+			got := FilterBetaHeadersForProvider(MergeBetaHeaders(ctx, schemas.NewSecretVarMap(providerExtra)), tc.provider, overrides)
 			if len(got) != 0 {
 				t.Fatalf("expected override to drop %q from merged sources for %s, got %v", tc.allowedByDefault, tc.provider, got)
 			}

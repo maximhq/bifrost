@@ -856,7 +856,7 @@ func HandleTypesafeDecisionRequest(
 	request *schemas.BifrostDecisionRequest,
 	toRequest func(*schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error),
 	authHeaders map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	parseError func(*fasthttp.Response) *schemas.BifrostError,
 	sendBackRawRequest bool,

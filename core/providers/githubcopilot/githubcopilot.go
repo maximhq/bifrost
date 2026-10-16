@@ -135,19 +135,19 @@ func (p *githubCopilotProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 
 // mergeEditorHeaders overlays the editor identity onto the operator's extra headers.
 // Used only on the ListModels path, where there is no authHeader map to carry them.
-func (p *githubCopilotProvider) mergeEditorHeaders(extra map[string]string) map[string]string {
-	merged := make(map[string]string, len(p.networkConfig.ExtraHeaders)+len(extra)+6)
+func (p *githubCopilotProvider) mergeEditorHeaders(extra map[string]string) map[string]schemas.SecretVar {
+	merged := make(map[string]schemas.SecretVar, len(p.networkConfig.ExtraHeaders)+len(extra)+6)
 	for k, v := range p.networkConfig.ExtraHeaders {
 		merged[k] = v
 	}
 	for k, v := range extra {
-		merged[k] = v
+		merged[k] = *schemas.NewSecretVar(v)
 	}
-	merged["Copilot-Integration-Id"] = copilotIntegrationID
-	merged["Editor-Version"] = editorVersion
-	merged["Editor-Plugin-Version"] = editorPluginVersion
-	merged["User-Agent"] = copilotUserAgent
-	merged["X-Github-Api-Version"] = githubAPIVersion
+	merged["Copilot-Integration-Id"] = *schemas.NewSecretVar(copilotIntegrationID)
+	merged["Editor-Version"] = *schemas.NewSecretVar(editorVersion)
+	merged["Editor-Plugin-Version"] = *schemas.NewSecretVar(editorPluginVersion)
+	merged["User-Agent"] = *schemas.NewSecretVar(copilotUserAgent)
+	merged["X-Github-Api-Version"] = *schemas.NewSecretVar(githubAPIVersion)
 	return merged
 }
 

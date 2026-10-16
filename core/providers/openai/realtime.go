@@ -41,7 +41,7 @@ func (provider *OpenAIProvider) RealtimeHeaders(ctx *schemas.BifrostContext, key
 		"Authorization": "Bearer " + key.Value.GetValue(),
 	}
 	for k, v := range provider.networkConfig.ExtraHeaders {
-		headers[k] = v
+		headers[k] = v.GetValue()
 	}
 	return headers, nil
 }
@@ -119,7 +119,7 @@ func (provider *OpenAIProvider) exchangeWebRTCSDP(
 	req.Header.SetContentType(writer.FormDataContentType())
 	req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
 	for k, v := range provider.networkConfig.ExtraHeaders {
-		req.Header.Set(k, v)
+		req.Header.Set(k, v.GetValue())
 	}
 	if headers, _ := ctx.Value(schemas.BifrostContextKeyRequestHeaders).(map[string]string); headers != nil {
 		if agentsSDK := headers["x-openai-agents-sdk"]; agentsSDK != "" {
@@ -486,7 +486,7 @@ func (provider *OpenAIProvider) realtimeSessionHeaders(key schemas.Key) map[stri
 		"Authorization": "Bearer " + key.Value.GetValue(),
 	}
 	for k, v := range provider.networkConfig.ExtraHeaders {
-		headers[k] = v
+		headers[k] = v.GetValue()
 	}
 	return headers
 }

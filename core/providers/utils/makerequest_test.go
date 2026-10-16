@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1115,5 +1116,47 @@ func TestContextTransport_BufferedLateCancelDoesNotPoisonPool(t *testing.T) {
 	}
 	if got := srv.accepted.Load(); got != 1 {
 		t.Fatalf("connections accepted = %d, want 1: the pooled connection was closed by a late cancellation", got)
+	}
+}
+
+// TestSetExtraHeaders_ResolvesSecretVarValues checks that both header setters send the
+// resolved value of an env-backed header, send literals as-is, and still never overwrite
+// a header the request already carries.
+func TestSetExtraHeaders_ResolvesSecretVarValues(t *testing.T) {
+	t.Setenv("BF_TEST_EXTRA_HEADER", "from-env")
+	headers := map[string]schemas.SecretVar{
+		"X-Plain":       *schemas.NewSecretVar("literal"),
+		"X-Env":         *schemas.NewSecretVar("env.BF_TEST_EXTRA_HEADER"),
+		"Authorization": *schemas.NewSecretVar("Bearer override"),
+	}
+
+	req := fasthttp.AcquireRequest()
+	defer fasthttp.ReleaseRequest(req)
+	req.Header.Set("Authorization", "Bearer keep")
+	SetExtraHeaders(context.Background(), req, headers, nil)
+	if got := string(req.Header.Peek("X-Plain")); got != "literal" {
+		t.Errorf("fasthttp X-Plain = %q", got)
+	}
+	if got := string(req.Header.Peek("X-Env")); got != "from-env" {
+		t.Errorf("fasthttp X-Env = %q", got)
+	}
+	if got := string(req.Header.Peek("Authorization")); got != "Bearer keep" {
+		t.Errorf("fasthttp Authorization overwritten: %q", got)
+	}
+
+	httpReq, err := http.NewRequest(http.MethodGet, "http://example.invalid", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer keep")
+	SetExtraHeadersHTTP(context.Background(), httpReq, headers, nil)
+	if got := httpReq.Header.Get("X-Plain"); got != "literal" {
+		t.Errorf("http X-Plain = %q", got)
+	}
+	if got := httpReq.Header.Get("X-Env"); got != "from-env" {
+		t.Errorf("http X-Env = %q", got)
+	}
+	if got := httpReq.Header.Get("Authorization"); got != "Bearer keep" {
+		t.Errorf("http Authorization overwritten: %q", got)
 	}
 }
