@@ -207,7 +207,8 @@ func TestWarpSystemPromptSaysWhatTopicsCannotAnswer(t *testing.T) {
 		"The requests behind a topic are reached with topic_ids",
 		"never guess one",
 		"sessions are sessions, not people",
-		"broader themes",
+		"list_topics with group_by theme",
+		"the themes are the answer and the topics the detail",
 		"is not available yet",
 		"Do not rebuild a topic breakdown",
 	} {
@@ -993,9 +994,11 @@ func TestWarpTopicsJobReplacesPreviousTopics(t *testing.T) {
 }
 
 // A run replaces the topics list_topics serves - active topics under the
-// configured embedding model - and nothing else. A theme, or a topic built
-// with another embedding model, is not its to retire. The topic it does
-// retire keeps its centre: retiring rewrites the whole row.
+// configured embedding model - and nothing else. A topic built with another
+// embedding model is not its to retire. The topic it does retire keeps its
+// centre: retiring rewrites the whole row. Themes are left out here: the run
+// regroups them afterwards (GroupTopics), which retires a theme left without
+// topics, and that is tested with the themes.
 func TestWarpTopicsJobRetiresOnlyTheTopicsItReplaces(t *testing.T) {
 	service, start := topicTestService(t, newFakeWarpVectorStore(), nil, topicTestChat("Refund requests"))
 	store := service.topicStore()
@@ -1003,7 +1006,6 @@ func TestWarpTopicsJobRetiresOnlyTheTopicsItReplaces(t *testing.T) {
 	centre := logstore.EncodeWarpVector([]float32{0, 0, 1})
 	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
 		{ID: "replaced", Label: "Old", EmbeddingSignature: topicTestSignature(), Centroid: centre},
-		{ID: "theme", Kind: logstore.WarpTopicKindTheme, Label: "Billing", EmbeddingSignature: topicTestSignature(), Centroid: centre},
 		{ID: "other-model", Label: "Other", EmbeddingSignature: "another-embedding-space", Centroid: centre},
 	}))
 
@@ -1012,7 +1014,7 @@ func TestWarpTopicsJobRetiresOnlyTheTopicsItReplaces(t *testing.T) {
 	_, err = service.RunTopicsJob(ctx, tables.TableSidekiqJob{Metadata: metaJSON}, func(string) error { return nil })
 	require.NoError(t, err)
 
-	rows, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{IDs: []string{"replaced", "theme", "other-model"}})
+	rows, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{IDs: []string{"replaced", "other-model"}})
 	require.NoError(t, err)
 	status := map[string]string{}
 	for _, row := range rows {
@@ -1021,7 +1023,6 @@ func TestWarpTopicsJobRetiresOnlyTheTopicsItReplaces(t *testing.T) {
 	}
 	require.Equal(t, map[string]string{
 		"replaced":    logstore.WarpTopicStatusRetired,
-		"theme":       logstore.WarpTopicStatusActive,
 		"other-model": logstore.WarpTopicStatusActive,
 	}, status)
 }
@@ -1377,7 +1378,7 @@ func TestWarpListTopicsToolReturnsSortedTopics(t *testing.T) {
 	require.Contains(t, big.Link, "start_time=")
 	require.Equal(t, big.Link, logsViewLink(&logstore.SearchFilters{StartTime: new(now.Add(-7 * 24 * time.Hour)), EndTime: new(now), TopicIDs: []string{"t-big"}}))
 	require.Contains(t, encoded, `"link":"`+logsViewLink(&logstore.SearchFilters{StartTime: new(now.Add(-7 * 24 * time.Hour)), EndTime: new(now), TopicIDs: []string{"t-small"}})+`"`)
-	require.Contains(t, out["links"], "link the topic's name to it")
+	require.Contains(t, out["links"], "link the name to it")
 }
 
 // The window and the filters are the ones every other tool takes, over the
@@ -1486,7 +1487,120 @@ func TestTopicFilterSchemaIsTheSharedFilterCutDown(t *testing.T) {
 
 	tool, ok := toolByName(buildTools(), "list_topics")
 	require.True(t, ok)
-	require.ElementsMatch(t, []string{"filters", "interval", "limit"}, tool.argumentNames())
+	require.ElementsMatch(t, []string{"filters", "interval", "group_by", "limit"}, tool.argumentNames())
+}
+
+// With group_by theme the answer is the themes, each its topics' counts
+// added up with the topics inside, largest theme first, and the topics in no
+// theme on their own. A theme links to its requests as a topic does, and a
+// topic row says which theme it is in either way.
+func TestWarpListTopicsToolGroupsByTheme(t *testing.T) {
+	store := topicTestLogStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
+		{ID: "money", Label: "Billing", Kind: logstore.WarpTopicKindTheme, EmbeddingSignature: topicTestSignature()},
+		{ID: "access", Label: "Account Access", Kind: logstore.WarpTopicKindTheme, EmbeddingSignature: topicTestSignature()},
+		{ID: "gone", Label: "Retired theme", Kind: logstore.WarpTopicKindTheme, EmbeddingSignature: topicTestSignature(), Status: logstore.WarpTopicStatusRetired},
+		{ID: "refunds", Label: "Refund requests", ParentID: "money", EmbeddingSignature: topicTestSignature()},
+		{ID: "invoices", Label: "Invoice questions", ParentID: "money", EmbeddingSignature: topicTestSignature()},
+		{ID: "old-invoices", Label: "Invoices", ParentID: "money", EmbeddingSignature: topicTestSignature(), Status: logstore.WarpTopicStatusMerged, MergedInto: "invoices"},
+		{ID: "passwords", Label: "Password resets", ParentID: "access", EmbeddingSignature: topicTestSignature()},
+		{ID: "weather", Label: "Weather", EmbeddingSignature: topicTestSignature()},
+		{ID: "stale", Label: "Stale", ParentID: "gone", EmbeddingSignature: topicTestSignature()},
+	}))
+	var rows []logstore.WarpTopicAssignment
+	file := func(topic string, count int, at time.Time, cost float64) {
+		for index := range count {
+			rows = append(rows, logstore.WarpTopicAssignment{LogID: fmt.Sprintf("%s-%d-%d", topic, at.Day(), index), TopicID: topic, Timestamp: at, Cost: cost, SessionID: topic})
+		}
+	}
+	file("refunds", 6, now.Add(-time.Hour), 1)
+	file("invoices", 3, now.Add(-time.Hour), 1)
+	file("old-invoices", 2, now.Add(-26*time.Hour), 1)
+	file("passwords", 6, now.Add(-time.Hour), 0)
+	file("weather", 4, now.Add(-time.Hour), 0)
+	file("stale", 1, now.Add(-time.Hour), 0)
+	file("", 1, now.Add(-time.Hour), 0)
+	file("refunds", 2, now.Add(-10*24*time.Hour), 1) // the week before
+	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, rows))
+
+	result, err := runTool(t, "list_topics", topicToolDeps(store, now), map[string]any{"group_by": "theme", "interval": "day"})
+	require.NoError(t, err)
+	out := result.(map[string]any)
+	_, flat := out["topics"]
+	require.False(t, flat, "grouped, the topics come inside their themes")
+	themes := out["themes"].([]TopicTheme)
+	require.Len(t, themes, 2)
+	require.Equal(t, 2, out["total_themes"])
+	require.Equal(t, 2, out["returned"])
+	billing := themes[0]
+	require.Equal(t, "Billing", billing.Label)
+	require.EqualValues(t, 11, billing.Requests, "6 refunds, 3 invoices, 2 under the topic merged into invoices")
+	require.EqualValues(t, 3, billing.Sessions)
+	require.InDelta(t, 11, billing.Cost, 1e-9)
+	require.InDelta(t, 11.0/23, billing.Share, 1e-9, "of every request in the window")
+	require.True(t, billing.Trend.HasPreviousPeriod)
+	require.EqualValues(t, 2, billing.Trend.PreviousRequests)
+	require.InDelta(t, 450, billing.Trend.RequestsTrend, 1e-9)
+	require.Contains(t, billing.Link, "topic_ids=money")
+	require.Len(t, billing.Topics, 2)
+	require.Equal(t, "Refund requests", billing.Topics[0].Label)
+	require.Equal(t, "Billing", billing.Topics[0].Theme)
+	require.Equal(t, "money", billing.Topics[0].ThemeID)
+	require.Contains(t, billing.Topics[0].Link, "topic_ids=refunds")
+	require.EqualValues(t, 5, billing.Topics[1].Requests, "3 of its own and 2 merged in")
+	var inSeries int64
+	for _, point := range billing.Series {
+		inSeries += point.Requests
+	}
+	require.EqualValues(t, 11, inSeries, "the theme's series is its topics' added up")
+	require.Len(t, billing.Series, 2, "yesterday and today")
+	require.Equal(t, "Account Access", themes[1].Label)
+	require.EqualValues(t, 6, themes[1].Requests)
+	require.False(t, themes[1].Trend.HasPreviousPeriod)
+
+	ungrouped := out["ungrouped_topics"].([]Topic)
+	require.Len(t, ungrouped, 2, "no theme, and a retired theme is no theme")
+	require.Equal(t, "Weather", ungrouped[0].Label)
+	require.Empty(t, ungrouped[0].Theme)
+	require.Equal(t, "Stale", ungrouped[1].Label)
+	require.Empty(t, ungrouped[1].ThemeID)
+	require.Contains(t, ungrouped[0].Link, "topic_ids=weather")
+	require.Equal(t, int64(23), out["total_requests"])
+	require.Contains(t, out["links"], "theme's link")
+	require.NotContains(t, out["cannot_answer"], "themes")
+	_, hasHint := out["hint"]
+	require.False(t, hasHint)
+
+	// limit counts themes.
+	result, err = runTool(t, "list_topics", topicToolDeps(store, now), map[string]any{"group_by": "theme", "limit": float64(1)})
+	require.NoError(t, err)
+	out = result.(map[string]any)
+	require.Len(t, out["themes"], 1)
+	require.Equal(t, 2, out["total_themes"])
+
+	// Listed flat, each topic still says which theme it is in.
+	result, err = runTool(t, "list_topics", topicToolDeps(store, now), map[string]any{})
+	require.NoError(t, err)
+	topics := result.(map[string]any)["topics"].([]Topic)
+	require.Equal(t, "Password resets", topics[0].Label)
+	require.Equal(t, "Account Access", topics[0].Theme)
+	encoded, err := sonic.MarshalString(topics)
+	require.NoError(t, err)
+	require.Contains(t, encoded, `"theme":"Billing"`)
+
+	// Nothing grouped yet: the topics come back on their own, with a word.
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
+		{ID: "money", Label: "Billing", Kind: logstore.WarpTopicKindTheme, EmbeddingSignature: topicTestSignature(), Status: logstore.WarpTopicStatusRetired},
+		{ID: "access", Label: "Account Access", Kind: logstore.WarpTopicKindTheme, EmbeddingSignature: topicTestSignature(), Status: logstore.WarpTopicStatusRetired},
+	}))
+	result, err = runTool(t, "list_topics", topicToolDeps(store, now), map[string]any{"group_by": "theme"})
+	require.NoError(t, err)
+	out = result.(map[string]any)
+	require.Empty(t, out["themes"])
+	require.Len(t, out["ungrouped_topics"], 5)
+	require.Contains(t, out["hint"], "not grouped into themes")
 }
 
 func TestWarpListTopicsToolHintsWhenNothingComputed(t *testing.T) {

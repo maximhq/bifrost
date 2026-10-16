@@ -305,7 +305,7 @@ const FOLDERS = [
   {
     name: "Topics",
     description:
-      "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with each topic's name linked to its own requests in the Logs view - never to a single example, which says how many requests the topic holds and opens one. The requests behind a topic are reached through the topic_ids filter the other tools take. What topics still cannot show - a count of people - is declined with the feature-request link, without rebuilding a breakdown by slicing the logs.",
+      "Topics are counted over whatever window the question names, from the topic each request Setup indexed was filed under, across the whole deployment, in requests. list_topics takes the window and filters itself and carries a trend per topic against the period before, so the overview, a time range and a week-over-week trend are each one call, with each topic's name linked to its own requests in the Logs view - never to a single example, which says how many requests the topic holds and opens one. Broad areas are the themes the topics are grouped into, one list_topics call with group_by theme. The requests behind a topic are reached through the topic_ids filter the other tools take. What topics still cannot show - a count of people - is declined with the feature-request link, without rebuilding a breakdown by slicing the logs.",
     cases: [
       {
         id: "topics-overview",
@@ -328,6 +328,18 @@ const FOLDERS = [
         name: "Reads a topic trend off one call",
         ask: "Which topics are growing this week compared to last week, across the whole deployment?",
         expect: { ...ONE_LIST_TOPICS, answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK] },
+      },
+      {
+        id: "topics-themes",
+        name: "Answers broad areas from the themes",
+        ask: "What broad areas do people ask about, across the whole deployment?",
+        expect: {
+          toolsAll: ["list_topics"],
+          toolsOnly: ["list_topics"],
+          maxToolCalls: 2,
+          argsMatch: [{ tool: "list_topics", pattern: "\"group_by\"\\s*:\\s*\"theme\"" }],
+          answerNone: [TOPIC_NAME_LINKED, FEATURE_LINK],
+        },
       },
       {
         id: "topics-drill-down",

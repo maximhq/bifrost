@@ -356,23 +356,31 @@ func (s *RDBLogStore) applyAgentContextFilter(baseQuery *gorm.DB, agentNames []s
 }
 
 // applyTopicFilter narrows a logs query to the requests Warp filed under any
-// of the topics, by id.
+// of the topics or themes, by id.
 //
 // A request's topic lives in warp_topic_assignments, not on the log row, so
-// the filter is a membership test against that table. A topic that has been
-// merged into one of the named topics counts as it: its requests were never
-// refiled (see MaintainTopics in framework/warp), and upkeep keeps every
-// merged topic pointing at a live survivor, so one level of merged_into is the
-// whole chain. The id list is bound twice, which at the 50 ids a request may
-// name is well inside any backend's parameter limit.
+// the filter is a membership test against that table. An id names a topic,
+// the topics merged into it, or the topics of a theme. A merged topic's
+// requests were never refiled (see MaintainTopics in framework/warp), and
+// upkeep keeps every merged topic pointing at a live survivor and carrying
+// its survivor's theme, so one level of merged_into and one of parent_id is
+// the whole tree. The id list is bound three times, which at the 50 ids a
+// request may name is well inside any backend's parameter limit.
+//
+// Only topics still in use are followed through merged_into and parent_id. A
+// topic a later run retired keeps the theme and survivor it pointed at -
+// retiring changes only its status - but its requests are no longer theirs,
+// and Warp's own counts leave them out. Merged topics are followed: their
+// requests count under the survivor. A retired topic named directly still
+// matches through topic_id.
 //
 // Not scoped on its own: the assignment rows are only a key into the logs
 // table, and the caller's access scope applies to the log rows that come
 // back.
 func applyTopicFilter(baseQuery *gorm.DB, topicIDs []string) *gorm.DB {
 	return baseQuery.Where(
-		"id IN (SELECT log_id FROM warp_topic_assignments WHERE topic_id IN ? OR topic_id IN (SELECT id FROM warp_topics WHERE merged_into IN ?))",
-		topicIDs, topicIDs,
+		"id IN (SELECT log_id FROM warp_topic_assignments WHERE topic_id IN ? OR topic_id IN (SELECT id FROM warp_topics WHERE (merged_into IN ? OR parent_id IN ?) AND status <> ?))",
+		topicIDs, topicIDs, topicIDs, WarpTopicStatusRetired,
 	)
 }
 
