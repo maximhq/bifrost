@@ -10749,3 +10749,116 @@ func (s *RDBConfigStore) DeleteWebhookJob(ctx context.Context, id, runnerID stri
 	}
 	return nil
 }
+
+// GetGithubCopilotSignIns returns every stored GitHub Copilot sign-in.
+func (s *RDBConfigStore) GetGithubCopilotSignIns(ctx context.Context) ([]tables.TableGithubCopilotSignIn, error) {
+	var rows []tables.TableGithubCopilotSignIn
+	if err := s.DB().WithContext(ctx).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("failed to list github copilot sign-ins: %w", err)
+	}
+	return rows, nil
+}
+
+// GetGithubCopilotSignIn returns the sign-in for a key, or nil when there is none.
+func (s *RDBConfigStore) GetGithubCopilotSignIn(ctx context.Context, keyID string) (*tables.TableGithubCopilotSignIn, error) {
+	var row tables.TableGithubCopilotSignIn
+	err := s.DB().WithContext(ctx).Where("key_id = ?", keyID).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get github copilot sign-in: %w", err)
+	}
+	return &row, nil
+}
+
+// ReplaceGithubCopilotSignIn stores a new sign-in for a key. The version always moves
+// forward, so a refresh still in flight for the old sign-in loses its conditional write.
+func (s *RDBConfigStore) ReplaceGithubCopilotSignIn(ctx context.Context, row *tables.TableGithubCopilotSignIn) error {
+	return s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing tables.TableGithubCopilotSignIn
+		err := dbForUpdate(tx).Where("key_id = ?", row.KeyID).First(&existing).Error
+		found := err == nil
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("failed to read github copilot sign-in: %w", err)
+		}
+		// Saved from a copy: BeforeSave encrypts in place and the caller keeps the plaintext.
+		c := *row
+		c.RefreshLeaseUntil = nil
+		c.EncryptionStatus = tables.EncryptionStatusPlainText
+		c.UpdatedAt = time.Now().UTC()
+		if found {
+			c.Version = existing.Version + 1
+			c.CreatedAt = existing.CreatedAt
+			err = tx.Save(&c).Error
+		} else {
+			c.Version = 1
+			c.CreatedAt = c.UpdatedAt
+			err = tx.Create(&c).Error
+		}
+		if err != nil {
+			return fmt.Errorf("failed to store github copilot sign-in: %w", err)
+		}
+		row.Version = c.Version
+		return nil
+	})
+}
+
+// UpdateGithubCopilotSignInIfVersion writes a refreshed or failed sign-in only while the row
+// is still at expectedVersion. The row lock (Postgres) keeps the check and the write atomic.
+func (s *RDBConfigStore) UpdateGithubCopilotSignInIfVersion(ctx context.Context, row *tables.TableGithubCopilotSignIn, expectedVersion int64) (bool, error) {
+	updated := false
+	err := s.DB().WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var existing tables.TableGithubCopilotSignIn
+		err := dbForUpdate(tx).Where("key_id = ?", row.KeyID).First(&existing).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read github copilot sign-in: %w", err)
+		}
+		if existing.Version != expectedVersion {
+			return nil
+		}
+		c := *row
+		c.Version = expectedVersion + 1
+		c.CreatedAt = existing.CreatedAt
+		c.UpdatedAt = time.Now().UTC()
+		c.RefreshLeaseUntil = nil
+		c.EncryptionStatus = tables.EncryptionStatusPlainText
+		if err := tx.Save(&c).Error; err != nil {
+			return fmt.Errorf("failed to update github copilot sign-in: %w", err)
+		}
+		row.Version = c.Version
+		updated = true
+		return nil
+	})
+	return updated, err
+}
+
+// ClaimGithubCopilotSignInRefresh takes the refresh lease for one key, so only one node
+// redeems the refresh token. UpdateColumns skips the save hooks, which would otherwise try
+// to re-encrypt an empty model.
+func (s *RDBConfigStore) ClaimGithubCopilotSignInRefresh(ctx context.Context, keyID string, version int64, leaseUntil time.Time) (bool, error) {
+	now := time.Now().UTC()
+	leaseUntil = normalizeLeaseTime(leaseUntil)
+	if !leaseUntil.After(now) {
+		return false, fmt.Errorf("github copilot sign-in refresh lease must expire in the future")
+	}
+	res := s.DB().WithContext(ctx).
+		Model(&tables.TableGithubCopilotSignIn{}).
+		Where("key_id = ? AND version = ? AND (refresh_lease_until IS NULL OR refresh_lease_until < ?)", keyID, version, now).
+		UpdateColumns(map[string]any{"refresh_lease_until": leaseUntil})
+	if res.Error != nil {
+		return false, fmt.Errorf("failed to claim github copilot sign-in refresh: %w", res.Error)
+	}
+	return res.RowsAffected == 1, nil
+}
+
+// DeleteGithubCopilotSignIn removes a key's sign-in. Deleting a missing row is not an error.
+func (s *RDBConfigStore) DeleteGithubCopilotSignIn(ctx context.Context, keyID string) error {
+	if err := s.DB().WithContext(ctx).Where("key_id = ?", keyID).Delete(&tables.TableGithubCopilotSignIn{}).Error; err != nil {
+		return fmt.Errorf("failed to delete github copilot sign-in: %w", err)
+	}
+	return nil
+}

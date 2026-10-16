@@ -65,6 +65,7 @@ func setupRDBTestStore(t *testing.T) *RDBConfigStore {
 		&tables.TableOAuth2RefreshToken{},
 		&tables.TableWebhookEndpoint{},
 		&tables.TableWebhookJob{},
+		&tables.TableGithubCopilotSignIn{},
 	)
 	require.NoError(t, err, "Failed to migrate test database")
 	require.NoError(t, migrationAddAgentGatewayTables(context.Background(), db, testMigrationLogger), "Failed to migrate Agent Gateway tables")
@@ -5815,4 +5816,73 @@ func TestGetVirtualKeysPaginated_MetadataFiltersAndSearch(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestGithubCopilotSignInStore pins the version and lease rules the sign-in manager relies
+// on: GitHub retires the old token pair on every refresh, so a write that lands on a newer
+// row, or two nodes redeeming the same refresh token, would sign the key out.
+func TestGithubCopilotSignInStore(t *testing.T) {
+	ctx := context.Background()
+	store := setupRDBTestStore(t)
+
+	got, err := store.GetGithubCopilotSignIn(ctx, "key-1")
+	require.NoError(t, err)
+	assert.Nil(t, got, "a key that never signed in has no row")
+
+	first := &tables.TableGithubCopilotSignIn{KeyID: "key-1", ClientID: "Iv23li", AccessToken: "ghu_one", RefreshToken: "ghr_one"}
+	require.NoError(t, store.ReplaceGithubCopilotSignIn(ctx, first))
+	assert.Equal(t, int64(1), first.Version)
+	assert.Equal(t, "ghu_one", first.AccessToken, "the caller's copy keeps the plaintext token")
+
+	second := &tables.TableGithubCopilotSignIn{KeyID: "key-1", ClientID: "Iv23li", AccessToken: "ghu_two", RefreshToken: "ghr_two"}
+	require.NoError(t, store.ReplaceGithubCopilotSignIn(ctx, second))
+	assert.Equal(t, int64(2), second.Version, "a new sign-in moves the version past any in-flight refresh")
+
+	got, err = store.GetGithubCopilotSignIn(ctx, "key-1")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, "ghu_two", got.AccessToken)
+	assert.Equal(t, "ghr_two", got.RefreshToken)
+	assert.Equal(t, tables.GithubCopilotSignInActive, got.Status)
+
+	t.Run("only one node gets the refresh lease", func(t *testing.T) {
+		lease := time.Now().Add(time.Minute)
+		claimed, err := store.ClaimGithubCopilotSignInRefresh(ctx, "key-1", 2, lease)
+		require.NoError(t, err)
+		assert.True(t, claimed)
+
+		claimed, err = store.ClaimGithubCopilotSignInRefresh(ctx, "key-1", 2, lease)
+		require.NoError(t, err)
+		assert.False(t, claimed, "an unexpired lease blocks a second claim")
+
+		claimed, err = store.ClaimGithubCopilotSignInRefresh(ctx, "key-1", 1, lease)
+		require.NoError(t, err)
+		assert.False(t, claimed, "a stale version cannot claim")
+	})
+
+	t.Run("a write against a stale version is refused", func(t *testing.T) {
+		stale := &tables.TableGithubCopilotSignIn{KeyID: "key-1", ClientID: "Iv23li", AccessToken: "ghu_stale", Status: tables.GithubCopilotSignInActive}
+		updated, err := store.UpdateGithubCopilotSignInIfVersion(ctx, stale, 1)
+		require.NoError(t, err)
+		assert.False(t, updated)
+
+		fresh := &tables.TableGithubCopilotSignIn{KeyID: "key-1", ClientID: "Iv23li", AccessToken: "ghu_three", RefreshToken: "ghr_three", Status: tables.GithubCopilotSignInActive}
+		updated, err = store.UpdateGithubCopilotSignInIfVersion(ctx, fresh, 2)
+		require.NoError(t, err)
+		assert.True(t, updated)
+		assert.Equal(t, int64(3), fresh.Version)
+
+		got, err := store.GetGithubCopilotSignIn(ctx, "key-1")
+		require.NoError(t, err)
+		assert.Equal(t, "ghu_three", got.AccessToken)
+		assert.Nil(t, got.RefreshLeaseUntil, "a successful write releases the lease")
+	})
+
+	t.Run("delete removes the row", func(t *testing.T) {
+		require.NoError(t, store.DeleteGithubCopilotSignIn(ctx, "key-1"))
+		got, err := store.GetGithubCopilotSignIn(ctx, "key-1")
+		require.NoError(t, err)
+		assert.Nil(t, got)
+		require.NoError(t, store.DeleteGithubCopilotSignIn(ctx, "key-1"), "deleting a missing row is not an error")
+	})
 }
