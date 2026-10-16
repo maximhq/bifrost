@@ -170,6 +170,10 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 		openaiReq.filterOpenAISpecificParameters(caps)
 		openaiReq.applyMiniMaxCompatibility(capModel)
 		return openaiReq
+	case schemas.BytePlus:
+		openaiReq.filterOpenAISpecificParameters(caps)
+		openaiReq.applyBytePlusCompatibility()
+		return openaiReq
 	case schemas.OpencodeGo, schemas.OpencodeZen:
 		openaiReq.filterOpenAISpecificParameters(caps)
 		// OpenCode's chat-completions endpoints still use the legacy max_tokens
@@ -379,6 +383,30 @@ func (req *OpenAIChatRequest) applyMiniMaxCompatibility(model string) {
 		extraParams["thinking"] = map[string]interface{}{"type": "disabled"}
 		req.ExtraParams = extraParams
 	}
+}
+
+// applyBytePlusCompatibility maps reasoning effort onto Ark's thinking switch. Ark rejects effort
+// "none" and returns 400 when reasoning_effort is sent alongside thinking:disabled, so "none"
+// becomes thinking:disabled and any effort is dropped once thinking is disabled. The params map
+// is copied only when thinking is added, so requests without reasoning pay nothing.
+func (req *OpenAIChatRequest) applyBytePlusCompatibility() {
+	if req.Reasoning == nil || req.Reasoning.Effort == nil {
+		return
+	}
+	if thinking, ok := req.ExtraParams["thinking"].(map[string]interface{}); ok {
+		if thinking["type"] == "disabled" {
+			req.Reasoning = nil
+		}
+		return
+	}
+	if *req.Reasoning.Effort != schemas.ReasoningEffortNone {
+		return
+	}
+	req.Reasoning = nil
+	extraParams := make(map[string]interface{}, len(req.ExtraParams)+1)
+	maps.Copy(extraParams, req.ExtraParams)
+	extraParams["thinking"] = map[string]interface{}{"type": "disabled"}
+	req.ExtraParams = extraParams
 }
 
 // stripReasoningDetailsExceptToolCalls strips reasoning_content from assistant messages that
