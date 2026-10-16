@@ -64,7 +64,7 @@ func miniMaxStatusToHTTP(code int) (int, string) {
 		return fasthttp.StatusPaymentRequired, "insufficient_balance"
 	case 1026, 1027:
 		return fasthttp.StatusBadRequest, "content_filter"
-	case 1042, 2013, 20132, 2037, 2039, 2042, 2048:
+	case 1042, 2013, 20132, 2037, 2039, 2042, 2048, 2054:
 		return fasthttp.StatusBadRequest, "invalid_request_error"
 	case 1001:
 		return fasthttp.StatusGatewayTimeout, "timeout_error"

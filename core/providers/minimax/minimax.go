@@ -2,14 +2,20 @@
 package minimax
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -453,11 +459,6 @@ func (provider *MiniMaxProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
 }
 
-// Speech is not supported by the MiniMax provider.
-func (provider *MiniMaxProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
-}
-
 // Rerank is not supported by the MiniMax provider.
 func (provider *MiniMaxProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
@@ -471,21 +472,6 @@ func (provider *MiniMaxProvider) Decision(ctx *schemas.BifrostContext, key schem
 // OCR is not supported by the MiniMax provider.
 func (provider *MiniMaxProvider) OCR(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostOCRRequest) (*schemas.BifrostOCRResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
-}
-
-// SpeechStream is not supported by the MiniMax provider.
-func (provider *MiniMaxProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
-}
-
-// Transcription is not supported by the MiniMax provider.
-func (provider *MiniMaxProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionRequest, provider.GetProviderKey())
-}
-
-// TranscriptionStream is not supported by the MiniMax provider.
-func (provider *MiniMaxProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
 // ImageGenerationStream is not supported by the MiniMax provider.
@@ -645,4 +631,379 @@ func (provider *MiniMaxProvider) Passthrough(_ *schemas.BifrostContext, _ schema
 
 func (provider *MiniMaxProvider) PassthroughStream(_ *schemas.BifrostContext, _ schemas.PostHookRunner, _ func(context.Context), _ schemas.Key, _ *schemas.BifrostPassthroughRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.PassthroughStreamRequest, provider.GetProviderKey())
+}
+
+// Speech performs a text-to-speech request to MiniMax's /v1/t2a_v2 API.
+func (provider *MiniMaxProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToMiniMaxSpeechRequest(request, false)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	body, latency, bifrostErr := provider.doMiniMaxRequest(ctx, key, http.MethodPost, "/v1/t2a_v2", jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	var minimaxResp MiniMaxSpeechResponse
+	if err := sonic.Unmarshal(body, &minimaxResp); err != nil {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+	bifrostResp, bifrostErr := ToBifrostSpeechResponse(&minimaxResp)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+	if bifrostResp.Usage == nil {
+		bifrostResp.BackfillParams(request)
+	}
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	if sendBackRawRequest {
+		providerUtils.ParseAndSetRawRequest(&bifrostResp.ExtraFields, jsonData)
+	}
+	if sendBackRawResponse {
+		// The hex audio would dominate the raw payload, so it is left out.
+		minimaxResp.Data.Audio = ""
+		bifrostResp.ExtraFields.RawResponse = minimaxResp
+	}
+	return bifrostResp, nil
+}
+
+// SpeechStream performs a streaming text-to-speech request to MiniMax's /v1/t2a_v2 API.
+// Status-1 chunks carry incremental hex audio; the status-2 chunk carries usage and, with exclude_aggregated_audio, no audio.
+func (provider *MiniMaxProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToMiniMaxSpeechRequest(request, true)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	return provider.streamMiniMaxSSE(ctx, postHookRunner, postHookSpanFinalizer, key, "/v1/t2a_v2", "application/json", nil, jsonData, jsonData,
+		func(data []byte, ef schemas.BifrostResponseExtraFields) (*schemas.BifrostResponse, bool, *schemas.BifrostError) {
+			var chunk MiniMaxSpeechResponse
+			if err := sonic.Unmarshal(data, &chunk); err != nil {
+				return nil, false, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+			}
+			if bifrostErr := miniMaxBaseRespError(chunk.BaseResp); bifrostErr != nil {
+				return nil, true, bifrostErr
+			}
+			if chunk.Data == nil {
+				return nil, false, nil
+			}
+			if chunk.Data.Status == 2 {
+				done := &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDone, Audio: []byte{}, Usage: miniMaxSpeechUsage(&chunk), ExtraFields: ef}
+				if done.Usage == nil {
+					done.BackfillParams(request)
+				}
+				return providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, done, nil, nil), true, nil
+			}
+			if chunk.Data.Audio == "" {
+				return nil, false, nil
+			}
+			audio, err := hex.DecodeString(chunk.Data.Audio)
+			if err != nil {
+				return nil, true, providerUtils.NewBifrostOperationError("failed to decode minimax hex audio", err)
+			}
+			delta := &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDelta, Audio: audio, ExtraFields: ef}
+			return providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, delta, nil, nil), false, nil
+		})
+}
+
+// Transcription performs a speech-to-text request to MiniMax's /v1/speech_to_text API.
+func (provider *MiniMaxProvider) Transcription(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostTranscriptionRequest) (*schemas.BifrostTranscriptionResponse, *schemas.BifrostError) {
+	minimaxReq, err := toMiniMaxTranscriptionRequest(request, false)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
+	}
+	body, contentType, bifrostErr := buildMiniMaxTranscriptionBody(minimaxReq)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	respBody, latency, bifrostErr := provider.doMiniMaxMultipartRequest(ctx, key, "/v1/speech_to_text", contentType, minimaxReq.Language, body, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	var bifrostResp *schemas.BifrostTranscriptionResponse
+	var rawResponse interface{} = string(respBody)
+	if minimaxReq.ResponseFormat == "srt" || minimaxReq.ResponseFormat == "vtt" {
+		bifrostResp = &schemas.BifrostTranscriptionResponse{Text: string(respBody), ResponseFormat: schemas.Ptr(minimaxReq.ResponseFormat)}
+	} else {
+		var minimaxResp MiniMaxTranscriptionResponse
+		if err := sonic.Unmarshal(respBody, &minimaxResp); err != nil {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err), nil, respBody, false, sendBackRawResponse, latency)
+		}
+		bifrostResp = ToBifrostTranscriptionResponse(&minimaxResp, minimaxReq.TimestampLevel)
+		rawResponse = minimaxResp
+		bifrostResp.BackfillParams(request)
+	}
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+	return bifrostResp, nil
+}
+
+// TranscriptionStream performs a streaming speech-to-text request; MiniMax streams {index, delta, finish} events.
+func (provider *MiniMaxProvider) TranscriptionStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostTranscriptionRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	minimaxReq, err := toMiniMaxTranscriptionRequest(request, true)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
+	}
+	body, contentType, bifrostErr := buildMiniMaxTranscriptionBody(minimaxReq)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	var headers map[string]string
+	if minimaxReq.Language != "" {
+		headers = map[string]string{"language": minimaxReq.Language}
+	}
+
+	var text strings.Builder
+	return provider.streamMiniMaxSSE(ctx, postHookRunner, postHookSpanFinalizer, key, "/v1/speech_to_text", contentType, headers, body, nil,
+		func(data []byte, ef schemas.BifrostResponseExtraFields) (*schemas.BifrostResponse, bool, *schemas.BifrostError) {
+			var event MiniMaxTranscriptionStreamEvent
+			if err := sonic.Unmarshal(data, &event); err != nil {
+				return nil, false, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseUnmarshal, err)
+			}
+			text.WriteString(event.Delta)
+			if !event.Finish {
+				delta := &schemas.BifrostTranscriptionStreamResponse{Type: schemas.TranscriptionStreamResponseTypeDelta, Delta: schemas.Ptr(event.Delta), ExtraFields: ef}
+				return providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, delta, nil), false, nil
+			}
+			// The final event can still carry text, so it is folded into the done event's full text.
+			done := &schemas.BifrostTranscriptionStreamResponse{Type: schemas.TranscriptionStreamResponseTypeDone, Text: text.String(), ExtraFields: ef}
+			if event.Delta != "" {
+				done.Delta = schemas.Ptr(event.Delta)
+			}
+			if event.Duration != nil {
+				done.Usage = &schemas.TranscriptionUsage{Type: "duration", Seconds: event.Duration}
+			}
+			return providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, done, nil), true, nil
+		})
+}
+
+func buildMiniMaxTranscriptionBody(req *miniMaxTranscriptionRequest) ([]byte, string, *schemas.BifrostError) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if bifrostErr := writeMiniMaxTranscriptionMultipart(writer, req); bifrostErr != nil {
+		return nil, "", bifrostErr
+	}
+	contentType := writer.FormDataContentType()
+	if err := writer.Close(); err != nil {
+		return nil, "", providerUtils.NewBifrostOperationError("failed to finalize multipart transcription request", err)
+	}
+	return body.Bytes(), contentType, nil
+}
+
+// doMiniMaxMultipartRequest posts a multipart body and returns a copy of the decoded body of a 2xx response.
+func (provider *MiniMaxProvider) doMiniMaxMultipartRequest(ctx *schemas.BifrostContext, key schemas.Key, path, contentType, language string, body []byte, sendBackRawResponse bool) ([]byte, time.Duration, *schemas.BifrostError) {
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType(contentType)
+	if value := key.Value.GetValue(); value != "" {
+		req.Header.Set("Authorization", "Bearer "+value)
+	}
+	if language != "" {
+		req.Header.Set("language", language)
+	}
+	req.SetBody(body)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, latency, bifrostErr
+	}
+	if resp.StatusCode() < fasthttp.StatusOK || resp.StatusCode() >= fasthttp.StatusMultipleChoices {
+		return nil, latency, providerUtils.EnrichError(ctx, parseMiniMaxError(resp), nil, nil, false, sendBackRawResponse, latency)
+	}
+	respBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, latency, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), nil, nil, false, sendBackRawResponse, latency)
+	}
+	respBody = append([]byte(nil), respBody...)
+	if bifrostErr := miniMaxBaseRespErrorFromBody(respBody); bifrostErr != nil {
+		return nil, latency, providerUtils.EnrichError(ctx, bifrostErr, nil, respBody, false, sendBackRawResponse, latency)
+	}
+	return respBody, latency, nil
+}
+
+// miniMaxStreamHandler turns one SSE data payload into a Bifrost stream response; done ends the stream.
+type miniMaxStreamHandler func(data []byte, extraFields schemas.BifrostResponseExtraFields) (resp *schemas.BifrostResponse, done bool, bifrostErr *schemas.BifrostError)
+
+// streamMiniMaxSSE posts body to path and feeds each SSE data line to handle. rawRequest is the JSON body to echo
+// back when raw requests are on (nil for multipart). A 200 that is not SSE but carries a non-zero base_resp
+// is reported as that MiniMax error rather than a generic non-SSE failure.
+func (provider *MiniMaxProvider) streamMiniMaxSSE(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, path, contentType string, headers map[string]string, body, rawRequest []byte, handle miniMaxStreamHandler) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest) && rawRequest != nil
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, path))
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType(contentType)
+	req.Header.Set("Accept", "text/event-stream")
+	if value := key.Value.GetValue(); value != "" {
+		req.Header.Set("Authorization", "Bearer "+value)
+	}
+	for name, value := range headers {
+		req.Header.Set(name, value)
+	}
+	req.SetBody(body)
+
+	startTime := time.Now()
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	latency := time.Since(startTime)
+	if err != nil {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		if errors.Is(err, context.Canceled) {
+			return nil, providerUtils.EnrichError(ctx, &schemas.BifrostError{
+				Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled), Message: schemas.ErrRequestCancelled, Error: err},
+			}, rawRequest, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), rawRequest, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), rawRequest, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		return nil, providerUtils.EnrichError(ctx, parseMiniMaxError(resp), rawRequest, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
+	go func() {
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, rawRequest)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, rawRequest)
+			}
+			providerUtils.CloseStream(ctx, responseChan)
+		}()
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
+		defer stopIdleTimeout()
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
+		defer stopCancellation()
+
+		reader, nonSSE := providerUtils.DrainNonSSEStreamReader(resp, reader)
+		if nonSSE != nil {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			if bifrostErr := miniMaxBaseRespErrorFromBody(nonSSE.Sample); bifrostErr != nil {
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, rawRequest, nonSSE.Sample, sendBackRawRequest, sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
+				return
+			}
+			providerUtils.ProcessAndSendNonSSEStreamError(ctx, postHookRunner, nonSSE, responseChan, provider.logger, postHookSpanFinalizer)
+			return
+		}
+
+		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+		chunkIndex := -1
+		lastChunkTime := startTime
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			data, readErr := sseReader.ReadDataLine()
+			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if readErr != io.EOF {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					provider.logger.Warn("Error reading minimax stream: %v", readErr)
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, provider.logger, postHookSpanFinalizer)
+				}
+				break
+			}
+
+			chunkIndex++
+			ef := schemas.BifrostResponseExtraFields{ChunkIndex: chunkIndex, Latency: time.Since(lastChunkTime).Milliseconds()}
+			if sendBackRawResponse {
+				ef.RawResponse = string(data)
+			}
+			parseStart := time.Now()
+			bifrostResp, done, bifrostErr := handle(data, ef)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if bifrostErr != nil {
+				if !done {
+					provider.logger.Warn("Failed to parse minimax stream chunk: %v", bifrostErr.Error.Message)
+					continue
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, rawRequest, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
+				return
+			}
+			if bifrostResp == nil {
+				chunkIndex--
+				continue
+			}
+			lastChunkTime = time.Now()
+			if done {
+				setMiniMaxFinalStreamFields(bifrostResp, time.Since(startTime), sendBackRawRequest, rawRequest)
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, bifrostResp, responseChan, postHookSpanFinalizer)
+				return
+			}
+			providerUtils.ProcessAndSendResponse(ctx, postHookRunner, bifrostResp, responseChan, postHookSpanFinalizer)
+		}
+
+		// A healthy MiniMax stream ends on its final (status 2 / finish) event, so falling out of the loop means it was cut short.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, rawRequest)
+		}
+	}()
+	return responseChan, nil
+}
+
+// setMiniMaxFinalStreamFields stamps total latency and the raw request on the terminal stream event.
+func setMiniMaxFinalStreamFields(resp *schemas.BifrostResponse, total time.Duration, sendBackRawRequest bool, rawRequest []byte) {
+	var ef *schemas.BifrostResponseExtraFields
+	switch {
+	case resp.SpeechStreamResponse != nil:
+		ef = &resp.SpeechStreamResponse.ExtraFields
+	case resp.TranscriptionStreamResponse != nil:
+		ef = &resp.TranscriptionStreamResponse.ExtraFields
+	default:
+		return
+	}
+	ef.Latency = total.Milliseconds()
+	if sendBackRawRequest {
+		providerUtils.ParseAndSetRawRequest(ef, rawRequest)
+	}
 }

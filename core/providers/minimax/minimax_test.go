@@ -1,8 +1,12 @@
 package minimax_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/hex"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -41,6 +45,8 @@ func TestMinimax(t *testing.T) {
 		VisionModel:          "MiniMax-M3",
 		ImageGenerationModel: "image-01",
 		VideoGenerationModel: "MiniMax-H3-Max",
+		SpeechSynthesisModel: "speech-2.8-turbo",
+		TranscriptionModel:   "asr-1.0",
 		Scenarios: llmtests.TestScenarios{
 			SimpleChat:            true,
 			CompletionStream:      true,
@@ -56,6 +62,10 @@ func TestMinimax(t *testing.T) {
 			ListModels:            true,
 			Reasoning:             true,
 			ImageGeneration:       true,
+			SpeechSynthesis:       true,
+			SpeechSynthesisStream: true,
+			Transcription:         true,
+			TranscriptionStream:   true,
 			VideoGeneration:       os.Getenv("MINIMAX_RUN_VIDEO_TESTS") == "1", // H3 billing is per output second
 		},
 	}
@@ -69,6 +79,7 @@ type capturedRequest struct {
 	method string
 	path   string
 	auth   string
+	header http.Header
 	body   []byte
 }
 
@@ -80,7 +91,7 @@ func newMockMiniMax(t *testing.T, responses map[string]func(w http.ResponseWrite
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		mu.Lock()
-		captured = append(captured, capturedRequest{method: r.Method, path: r.URL.Path, auth: r.Header.Get("Authorization"), body: body})
+		captured = append(captured, capturedRequest{method: r.Method, path: r.URL.Path, auth: r.Header.Get("Authorization"), header: r.Header.Clone(), body: body})
 		mu.Unlock()
 		if respond, ok := responses[r.Method+" "+r.URL.Path]; ok {
 			respond(w)
@@ -464,5 +475,408 @@ func TestToBifrostVideoGenerationResponseFailedTask(t *testing.T) {
 	}
 	if resp.Status != schemas.VideoStatusFailed || resp.Error == nil || resp.Error.Code != "content_policy" || resp.Error.Message != "blocked" {
 		t.Errorf("unexpected failed task mapping: %+v", resp)
+	}
+}
+
+func passthroughPostHook(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return result, err
+}
+
+func sseResponse(events ...string) func(w http.ResponseWriter) {
+	return func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, e := range events {
+			_, _ = w.Write([]byte("data: " + e + "\n\n"))
+		}
+	}
+}
+
+func collectStream(t *testing.T, stream chan *schemas.BifrostStreamChunk) []*schemas.BifrostStreamChunk {
+	t.Helper()
+	var chunks []*schemas.BifrostStreamChunk
+	for chunk := range stream {
+		chunks = append(chunks, chunk)
+	}
+	return chunks
+}
+
+// multipartFields parses a captured multipart request into its text fields and file bytes.
+func multipartFields(t *testing.T, req capturedRequest) (map[string]string, []byte) {
+	t.Helper()
+	_, params, err := mime.ParseMediaType(req.header.Get("Content-Type"))
+	if err != nil {
+		t.Fatalf("content type: %v", err)
+	}
+	reader := multipart.NewReader(bytes.NewReader(req.body), params["boundary"])
+	fields := map[string]string{}
+	var file []byte
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("multipart: %v", err)
+		}
+		data, _ := io.ReadAll(part)
+		if part.FormName() == "file" {
+			file = data
+			continue
+		}
+		fields[part.FormName()] = string(data)
+	}
+	return fields, file
+}
+
+func speechRequest(voice string, params *schemas.SpeechParameters) *schemas.BifrostSpeechRequest {
+	if params == nil {
+		params = &schemas.SpeechParameters{}
+	}
+	if voice != "" {
+		params.VoiceConfig = &schemas.SpeechVoiceInput{Voice: schemas.Ptr(voice)}
+	}
+	return &schemas.BifrostSpeechRequest{
+		Provider: schemas.MiniMax,
+		Model:    "speech-2.8-turbo",
+		Input:    &schemas.SpeechInput{Input: "Hello there"},
+		Params:   params,
+	}
+}
+
+func TestToMiniMaxSpeechRequest(t *testing.T) {
+	t.Run("voice is required", func(t *testing.T) {
+		if _, err := minimax.ToMiniMaxSpeechRequest(speechRequest("", nil), false); err == nil || !strings.Contains(err.Error(), "voice is required") {
+			t.Fatalf("expected a voice error, got %v", err)
+		}
+	})
+	t.Run("unsupported format is rejected", func(t *testing.T) {
+		if _, err := minimax.ToMiniMaxSpeechRequest(speechRequest("English_Graceful_Lady", &schemas.SpeechParameters{ResponseFormat: "aac"}), false); err == nil {
+			t.Fatal("expected aac to be rejected")
+		}
+	})
+	t.Run("tuning extra params move into voice and audio settings", func(t *testing.T) {
+		req, err := minimax.ToMiniMaxSpeechRequest(speechRequest("English_Graceful_Lady", &schemas.SpeechParameters{
+			ResponseFormat: "wav",
+			Speed:          schemas.Ptr(1.25),
+			ExtraParams:    map[string]interface{}{"vol": 2.0, "pitch": 3.0, "emotion": "happy", "sample_rate": 24000.0, "language_boost": "English", "subtitle_enable": true},
+		}), false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		vs := req.VoiceSetting
+		if vs.VoiceID != "English_Graceful_Lady" || *vs.Speed != 1.25 || *vs.Vol != 2 || *vs.Pitch != 3 || *vs.Emotion != "happy" {
+			t.Errorf("unexpected voice_setting: %+v", vs)
+		}
+		if req.AudioSetting == nil || *req.AudioSetting.Format != "wav" || *req.AudioSetting.SampleRate != 24000 {
+			t.Errorf("unexpected audio_setting: %+v", req.AudioSetting)
+		}
+		if req.LanguageBoost == nil || *req.LanguageBoost != "English" {
+			t.Errorf("language_boost = %v", req.LanguageBoost)
+		}
+		if _, ok := req.ExtraParams["subtitle_enable"]; !ok || len(req.ExtraParams) != 1 {
+			t.Errorf("only unknown keys should stay in extra params, got %v", req.ExtraParams)
+		}
+		if req.OutputFormat == nil || *req.OutputFormat != "hex" || req.Stream {
+			t.Errorf("non-streaming request should ask for hex output: %+v", req)
+		}
+	})
+	t.Run("stream excludes the aggregated final audio", func(t *testing.T) {
+		req, err := minimax.ToMiniMaxSpeechRequest(speechRequest("English_Graceful_Lady", nil), true)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !req.Stream || req.StreamOptions == nil || !req.StreamOptions.ExcludeAggregatedAudio || req.OutputFormat != nil {
+			t.Errorf("unexpected stream request: %+v", req)
+		}
+	})
+}
+
+func TestMiniMaxSpeech(t *testing.T) {
+	audio := []byte("ID3fake-mp3")
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/t2a_v2": jsonResponse(http.StatusOK, `{"data":{"audio":"`+hex.EncodeToString(audio)+`","status":2},"extra_info":{"audio_length":900,"usage_characters":11},"trace_id":"t1","base_resp":{"status_code":0,"status_msg":"success"}}`),
+	})
+
+	resp, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest("English_Graceful_Lady", nil))
+	if bifrostErr != nil {
+		t.Fatalf("Speech error: %+v", bifrostErr.Error)
+	}
+	if !bytes.Equal(resp.Audio, audio) {
+		t.Errorf("audio = %q, want %q", resp.Audio, audio)
+	}
+	if resp.Usage == nil || resp.Usage.InputChars != 11 {
+		t.Errorf("usage = %+v, want 11 input chars", resp.Usage)
+	}
+	body := captured()[0].body
+	if gjson.GetBytes(body, "voice_setting.voice_id").String() != "English_Graceful_Lady" || gjson.GetBytes(body, "output_format").String() != "hex" {
+		t.Errorf("unexpected request body: %s", body)
+	}
+}
+
+func TestMiniMaxSpeechBaseRespErrorOn200(t *testing.T) {
+	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/t2a_v2": jsonResponse(http.StatusOK, `{"base_resp":{"status_code":2054,"status_msg":"voice id not exist"}}`),
+	})
+
+	_, bifrostErr := provider.Speech(testContext(t), testKey(), speechRequest("not_a_voice", nil))
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected a 400, got %+v", bifrostErr)
+	}
+	if bifrostErr.Error.Message != "voice id not exist" {
+		t.Errorf("message = %q", bifrostErr.Error.Message)
+	}
+}
+
+func TestMiniMaxSpeechStream(t *testing.T) {
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/t2a_v2": sseResponse(
+			`{"data":{"audio":"aa","status":1},"trace_id":"t1","base_resp":{"status_code":0,"status_msg":""}}`,
+			`{"data":{"audio":"bbcc","status":1},"trace_id":"t1","base_resp":{"status_code":0,"status_msg":""}}`,
+			`{"data":{"audio":"","status":1},"trace_id":"t1","base_resp":{"status_code":0,"status_msg":""}}`,
+			`{"data":{"audio":"","status":2},"extra_info":{"audio_length":900,"usage_characters":11},"trace_id":"t1","base_resp":{"status_code":0,"status_msg":"success"}}`,
+		),
+	})
+
+	stream, bifrostErr := provider.SpeechStream(testContext(t), passthroughPostHook, func(context.Context) {}, testKey(), speechRequest("English_Graceful_Lady", nil))
+	if bifrostErr != nil {
+		t.Fatalf("SpeechStream error: %+v", bifrostErr.Error)
+	}
+	chunks := collectStream(t, stream)
+	var audio []byte
+	var types []schemas.SpeechStreamResponseType
+	var usage *schemas.SpeechUsage
+	for _, c := range chunks {
+		if c.BifrostError != nil {
+			t.Fatalf("unexpected stream error: %+v", c.BifrostError.Error)
+		}
+		types = append(types, c.BifrostSpeechStreamResponse.Type)
+		audio = append(audio, c.BifrostSpeechStreamResponse.Audio...)
+		if c.BifrostSpeechStreamResponse.Usage != nil {
+			usage = c.BifrostSpeechStreamResponse.Usage
+		}
+	}
+	want := []schemas.SpeechStreamResponseType{schemas.SpeechStreamResponseTypeDelta, schemas.SpeechStreamResponseTypeDelta, schemas.SpeechStreamResponseTypeDone}
+	if len(types) != len(want) || types[0] != want[0] || types[1] != want[1] || types[2] != want[2] {
+		t.Errorf("event types = %v, want %v", types, want)
+	}
+	if !bytes.Equal(audio, []byte{0xaa, 0xbb, 0xcc}) {
+		t.Errorf("audio = %x, want aabbcc", audio)
+	}
+	if usage == nil || usage.InputChars != 11 {
+		t.Errorf("usage = %+v, want 11 input chars", usage)
+	}
+	if !gjson.GetBytes(captured()[0].body, "stream_options.exclude_aggregated_audio").Bool() {
+		t.Errorf("exclude_aggregated_audio not sent: %s", captured()[0].body)
+	}
+}
+
+func TestMiniMaxSpeechStreamBaseRespErrorOn200(t *testing.T) {
+	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/t2a_v2": jsonResponse(http.StatusOK, `{"base_resp":{"status_code":2054,"status_msg":"voice id not exist"}}`),
+	})
+
+	stream, bifrostErr := provider.SpeechStream(testContext(t), passthroughPostHook, func(context.Context) {}, testKey(), speechRequest("not_a_voice", nil))
+	if bifrostErr != nil {
+		t.Fatalf("SpeechStream setup error: %+v", bifrostErr.Error)
+	}
+	chunks := collectStream(t, stream)
+	if len(chunks) != 1 || chunks[0].BifrostError == nil {
+		t.Fatalf("expected exactly one error chunk, got %d chunks", len(chunks))
+	}
+	got := chunks[0].BifrostError
+	if got.StatusCode == nil || *got.StatusCode != http.StatusBadRequest || got.Error.Message != "voice id not exist" {
+		t.Errorf("unexpected error: status=%v message=%q", got.StatusCode, got.Error.Message)
+	}
+}
+
+func TestMiniMaxSpeechStreamTruncated(t *testing.T) {
+	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/t2a_v2": sseResponse(`{"data":{"audio":"aa","status":1},"base_resp":{"status_code":0,"status_msg":""}}`),
+	})
+
+	stream, bifrostErr := provider.SpeechStream(testContext(t), passthroughPostHook, func(context.Context) {}, testKey(), speechRequest("English_Graceful_Lady", nil))
+	if bifrostErr != nil {
+		t.Fatalf("SpeechStream setup error: %+v", bifrostErr.Error)
+	}
+	chunks := collectStream(t, stream)
+	if len(chunks) == 0 || chunks[len(chunks)-1].BifrostError == nil {
+		t.Fatalf("a stream cut before its status 2 chunk must end with an error, got %d chunks", len(chunks))
+	}
+}
+
+func transcriptionRequest(params *schemas.TranscriptionParameters) *schemas.BifrostTranscriptionRequest {
+	return &schemas.BifrostTranscriptionRequest{
+		Provider: schemas.MiniMax,
+		Model:    "asr-1.0",
+		Input:    &schemas.TranscriptionInput{File: []byte("ID3fake-mp3"), Filename: "clip.mp3"},
+		Params:   params,
+	}
+}
+
+func TestMiniMaxTranscription(t *testing.T) {
+	tests := []struct {
+		name         string
+		params       *schemas.TranscriptionParameters
+		response     string
+		wantFields   map[string]string
+		wantLanguage string
+		wantText     string
+		wantWords    int
+		wantSegments int
+		wantPlainFmt string
+		wantSeconds  float64
+	}{
+		{
+			name:       "json with language header",
+			params:     &schemas.TranscriptionParameters{Language: schemas.Ptr("en")},
+			response:   `{"text":"The quick brown fox.","duration":3.312,"trace_id":"t1"}`,
+			wantFields: map[string]string{"model": "asr-1.0"}, wantLanguage: "en",
+			wantText: "The quick brown fox.", wantSeconds: 3.312,
+		},
+		{
+			name:       "word granularity maps segments to words",
+			params:     &schemas.TranscriptionParameters{TimestampGranularities: []string{"word"}},
+			response:   `{"text":"The quick","duration":1,"n_speakers":1,"segments":[{"id":0,"start":0.14,"end":0.26,"speaker":"S1","text":"The "},{"id":1,"start":0.26,"end":0.6,"speaker":"S1","text":"quick "}]}`,
+			wantFields: map[string]string{"response_format": "verbose_json", "timestamp_level": "word"},
+			wantText:   "The quick", wantWords: 2, wantSeconds: 1,
+		},
+		{
+			name:       "verbose_json keeps sentence segments",
+			params:     &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("verbose_json")},
+			response:   `{"text":"Hello. Bye.","duration":2,"segments":[{"id":0,"start":0,"end":1,"speaker":"S1","text":"Hello."},{"id":1,"start":1,"end":2,"speaker":"S2","text":"Bye."}]}`,
+			wantFields: map[string]string{"response_format": "verbose_json"},
+			wantText:   "Hello. Bye.", wantSegments: 2, wantSeconds: 2,
+		},
+		{
+			name:       "srt comes back as plain text",
+			params:     &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("srt")},
+			response:   "1\n00:00:00,140 --> 00:00:03,120\nThe quick brown fox.\n",
+			wantFields: map[string]string{"response_format": "srt"},
+			wantText:   "1\n00:00:00,140 --> 00:00:03,120\nThe quick brown fox.\n", wantPlainFmt: "srt",
+		},
+		{
+			name:       "text is served from json",
+			params:     &schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("text")},
+			response:   `{"text":"Hi.","duration":0.5}`,
+			wantFields: map[string]string{"response_format": ""},
+			wantText:   "Hi.", wantPlainFmt: "text", wantSeconds: 0.5,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+				"POST /v1/speech_to_text": func(w http.ResponseWriter) {
+					if strings.HasPrefix(tt.response, "{") {
+						w.Header().Set("Content-Type", "application/json")
+					} else {
+						w.Header().Set("Content-Type", "text/plain")
+					}
+					_, _ = w.Write([]byte(tt.response))
+				},
+			})
+
+			resp, bifrostErr := provider.Transcription(testContext(t), testKey(), transcriptionRequest(tt.params))
+			if bifrostErr != nil {
+				t.Fatalf("Transcription error: %+v", bifrostErr.Error)
+			}
+			req := captured()[0]
+			fields, file := multipartFields(t, req)
+			if string(file) != "ID3fake-mp3" {
+				t.Errorf("file = %q", file)
+			}
+			for k, v := range tt.wantFields {
+				if fields[k] != v {
+					t.Errorf("field %s = %q, want %q (all: %v)", k, fields[k], v, fields)
+				}
+			}
+			if got := req.header.Get("language"); got != tt.wantLanguage {
+				t.Errorf("language header = %q, want %q", got, tt.wantLanguage)
+			}
+			if resp.Text != tt.wantText {
+				t.Errorf("text = %q, want %q", resp.Text, tt.wantText)
+			}
+			if len(resp.Words) != tt.wantWords || len(resp.Segments) != tt.wantSegments {
+				t.Errorf("words = %d, segments = %d, want %d and %d", len(resp.Words), len(resp.Segments), tt.wantWords, tt.wantSegments)
+			}
+			if tt.wantWords > 0 && (resp.Words[1].Word != "quick" || resp.Words[1].Speaker == nil || *resp.Words[1].Speaker != "S1") {
+				t.Errorf("unexpected word: %+v", resp.Words[1])
+			}
+			gotFmt := ""
+			if resp.ResponseFormat != nil {
+				gotFmt = *resp.ResponseFormat
+			}
+			if tt.wantPlainFmt != "" && gotFmt != tt.wantPlainFmt {
+				t.Errorf("response format = %q, want %q", gotFmt, tt.wantPlainFmt)
+			}
+			if tt.wantSeconds > 0 && (resp.Usage == nil || resp.Usage.Seconds == nil || *resp.Usage.Seconds != tt.wantSeconds) {
+				t.Errorf("usage = %+v, want %v seconds", resp.Usage, tt.wantSeconds)
+			}
+		})
+	}
+}
+
+func TestMiniMaxTranscriptionHTTPError(t *testing.T) {
+	provider, _ := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/speech_to_text": jsonResponse(http.StatusBadRequest, `{"type":"error","error":{"type":"bad_request_error","message":"invalid params, audio duration 623.4s exceeds the limit of 500s (2013)","http_code":"400"},"request_id":"r1"}`),
+	})
+
+	_, bifrostErr := provider.Transcription(testContext(t), testKey(), transcriptionRequest(nil))
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected a 400, got %+v", bifrostErr)
+	}
+	if !strings.Contains(bifrostErr.Error.Message, "exceeds the limit of 500s") {
+		t.Errorf("message = %q", bifrostErr.Error.Message)
+	}
+}
+
+func TestMiniMaxTranscriptionStream(t *testing.T) {
+	provider, captured := newMockMiniMax(t, map[string]func(http.ResponseWriter){
+		"POST /v1/speech_to_text": sseResponse(
+			`{"index":0,"delta":"The","finish":false}`,
+			`{"index":1,"delta":" quick brown fox jumps o","finish":false}`,
+			`{"index":2,"delta":"ver the lazy dog.","finish":true,"duration":3.312}`,
+		),
+	})
+
+	stream, bifrostErr := provider.TranscriptionStream(testContext(t), passthroughPostHook, func(context.Context) {}, testKey(), transcriptionRequest(&schemas.TranscriptionParameters{Language: schemas.Ptr("en")}))
+	if bifrostErr != nil {
+		t.Fatalf("TranscriptionStream error: %+v", bifrostErr.Error)
+	}
+	chunks := collectStream(t, stream)
+	if len(chunks) != 3 {
+		t.Fatalf("expected 2 deltas and a done event, got %d chunks", len(chunks))
+	}
+	for _, c := range chunks {
+		if c.BifrostError != nil {
+			t.Fatalf("unexpected stream error: %+v", c.BifrostError.Error)
+		}
+	}
+	done := chunks[2].BifrostTranscriptionStreamResponse
+	if done.Type != schemas.TranscriptionStreamResponseTypeDone || done.Text != "The quick brown fox jumps over the lazy dog." {
+		t.Errorf("unexpected done event: type=%s text=%q", done.Type, done.Text)
+	}
+	if done.Usage == nil || done.Usage.Seconds == nil || *done.Usage.Seconds != 3.312 {
+		t.Errorf("usage = %+v, want 3.312 seconds", done.Usage)
+	}
+	if d := chunks[1].BifrostTranscriptionStreamResponse; d.Type != schemas.TranscriptionStreamResponseTypeDelta || *d.Delta != " quick brown fox jumps o" {
+		t.Errorf("unexpected delta: %+v", d)
+	}
+	req := captured()[0]
+	fields, _ := multipartFields(t, req)
+	if fields["stream"] != "true" || req.header.Get("language") != "en" {
+		t.Errorf("stream field = %q, language header = %q", fields["stream"], req.header.Get("language"))
+	}
+}
+
+func TestMiniMaxTranscriptionStreamRejectsNonJSONFormat(t *testing.T) {
+	provider, captured := newMockMiniMax(t, nil)
+
+	_, bifrostErr := provider.TranscriptionStream(testContext(t), passthroughPostHook, func(context.Context) {}, testKey(), transcriptionRequest(&schemas.TranscriptionParameters{ResponseFormat: schemas.Ptr("verbose_json")}))
+	if bifrostErr == nil || bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected a 400, got %+v", bifrostErr)
+	}
+	if len(captured()) != 0 {
+		t.Errorf("no request should reach MiniMax, got %d", len(captured()))
 	}
 }
