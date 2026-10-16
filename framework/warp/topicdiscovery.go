@@ -498,6 +498,20 @@ func (s *Service) MaintainTopics(ctx context.Context) (TopicUpkeep, error) {
 	changed = append(changed, merged...)
 	changed = append(changed, survivors...)
 	done.Merged = len(merged)
+	// Every pass, not only one that merged: a chain left deeper than one level
+	// by an earlier pass whose write failed partway is flattened here too.
+	live := make(map[string]struct{}, len(current))
+	for _, topic := range current {
+		live[topic.ID] = struct{}{}
+	}
+	for _, topic := range merged {
+		delete(live, topic.ID)
+	}
+	repointed, err := repointMergedTopics(ctx, store, live, merged)
+	if err != nil {
+		return done, err
+	}
+	changed = append(changed, repointed...)
 	if len(changed) == 0 {
 		return done, nil
 	}
@@ -508,6 +522,45 @@ func (s *Service) MaintainTopics(ctx context.Context) (TopicUpkeep, error) {
 		s.indexer.InvalidateTopics()
 	}
 	return done, nil
+}
+
+// repointMergedTopics returns the topics already merged whose merged_into is
+// not the live topic their chain ends in, pointed at that topic instead. live
+// is the topics active once this pass is written, and merged the topics this
+// pass merges.
+//
+// Every merged topic then points straight at a live topic, so "the requests
+// of topic X" is X and the topics merged into X, one level deep: the logs
+// filter (applyTopicFilter in logstore) follows exactly one, and the reader's
+// chain walk (resolveMergedTopics) finds the same answer either way. A chain
+// that ends nowhere live is left as it is.
+func repointMergedTopics(ctx context.Context, store logstore.WarpTopicStore, live map[string]struct{}, merged []logstore.WarpTopic) ([]logstore.WarpTopic, error) {
+	earlier, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{Kinds: []string{logstore.WarpTopicKindTopic}, Statuses: []string{logstore.WarpTopicStatusMerged}, OmitCentroids: true})
+	if err != nil {
+		return nil, fmt.Errorf("read merged topics: %w", err)
+	}
+	if len(earlier) == 0 {
+		return nil, nil
+	}
+	survivorOf := resolveMergedTopics(live, append(slices.Clone(earlier), merged...))
+	var repointed []logstore.WarpTopic
+	for _, topic := range earlier {
+		survivor, ok := survivorOf[topic.ID]
+		if !ok || survivor == topic.MergedInto {
+			continue
+		}
+		// Omitted on read; written back whole, so it has to be read in full.
+		whole, err := store.ListWarpTopics(ctx, logstore.WarpTopicFilter{IDs: []string{topic.ID}})
+		if err != nil {
+			return nil, fmt.Errorf("read merged topic %s: %w", topic.ID, err)
+		}
+		if len(whole) != 1 {
+			return nil, fmt.Errorf("read merged topic %s: want 1 row, got %d", topic.ID, len(whole))
+		}
+		whole[0].MergedInto = survivor
+		repointed = append(repointed, whole[0])
+	}
+	return repointed, nil
 }
 
 // mergeStoredTopics finds the topics that have come to mean the same thing

@@ -100,6 +100,17 @@ type Service struct {
 
 // topicLister returns the topic reader as the tool interface, or a nil
 // interface when there is none - a typed nil would pass the tool's nil check.
+// ListTopics answers a topic query from the current reader, so a caller that
+// holds the service - the logs filter dimension does - follows the reader
+// through a log store rebind rather than keeping a stale one.
+func (s *Service) ListTopics(ctx context.Context, query TopicQuery) (*TopicList, error) {
+	lister := s.topicLister()
+	if lister == nil {
+		return nil, ErrUnavailable
+	}
+	return lister.ListTopics(ctx, query)
+}
+
 func (s *Service) topicLister() TopicLister {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

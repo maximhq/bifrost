@@ -355,6 +355,27 @@ func (s *RDBLogStore) applyAgentContextFilter(baseQuery *gorm.DB, agentNames []s
 	return baseQuery.Where("session_id IN (?)", contexts)
 }
 
+// applyTopicFilter narrows a logs query to the requests Warp filed under any
+// of the topics, by id.
+//
+// A request's topic lives in warp_topic_assignments, not on the log row, so
+// the filter is a membership test against that table. A topic that has been
+// merged into one of the named topics counts as it: its requests were never
+// refiled (see MaintainTopics in framework/warp), and upkeep keeps every
+// merged topic pointing at a live survivor, so one level of merged_into is the
+// whole chain. The id list is bound twice, which at the 50 ids a request may
+// name is well inside any backend's parameter limit.
+//
+// Not scoped on its own: the assignment rows are only a key into the logs
+// table, and the caller's access scope applies to the log rows that come
+// back.
+func applyTopicFilter(baseQuery *gorm.DB, topicIDs []string) *gorm.DB {
+	return baseQuery.Where(
+		"id IN (SELECT log_id FROM warp_topic_assignments WHERE topic_id IN ? OR topic_id IN (SELECT id FROM warp_topics WHERE merged_into IN ?))",
+		topicIDs, topicIDs,
+	)
+}
+
 // applyFilters applies search filters to a GORM query. Callers are
 // responsible for starting from ScopedDB(ctx) when row visibility
 // should be respected; this helper only adds the per-call filter
@@ -434,6 +455,9 @@ func (s *RDBLogStore) applyFilters(baseQuery *gorm.DB, filters SearchFilters) *g
 	// one project, so there is no array column to OR against.
 	if len(filters.ProjectIDs) > 0 {
 		baseQuery = baseQuery.Where("project_id IN ?", filters.ProjectIDs)
+	}
+	if len(filters.TopicIDs) > 0 {
+		baseQuery = applyTopicFilter(baseQuery, filters.TopicIDs)
 	}
 	if len(filters.BusinessUnitIDs) > 0 {
 		sql, args := dimensionMembershipFilterSQL(s.db.Dialector.Name(), "business_unit_id", "business_unit_ids", filters.BusinessUnitIDs)

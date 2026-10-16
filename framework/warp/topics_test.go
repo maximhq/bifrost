@@ -204,7 +204,8 @@ func TestWarpSystemPromptSaysWhatTopicsCannotAnswer(t *testing.T) {
 		"with interval hour or day",
 		"growing or shrinking, new, costly or failing",
 		`"this week against last week" is one call`,
-		"It cannot list every request in a topic",
+		"The requests behind a topic are reached with topic_ids",
+		"never guess one",
 		"sessions are sessions, not people",
 		"broader themes",
 		"is not available yet",
@@ -215,7 +216,8 @@ func TestWarpSystemPromptSaysWhatTopicsCannotAnswer(t *testing.T) {
 	for _, gone := range []string{"Topics are a snapshot", "a different time range", "Call list_topics once"} {
 		require.NotContains(t, content, gone)
 	}
-	require.Contains(t, content, "Leave a topic's name unlinked")
+	require.Contains(t, content, "link each topic's name to its own link")
+	require.NotContains(t, content, "Leave a topic's name unlinked")
 	require.Contains(t, content, `say "requests" when you report them`)
 }
 
@@ -648,6 +650,34 @@ func listAllTopics(t *testing.T, reader *TopicReader) ([]Topic, int) {
 	list, err := reader.ListTopics(context.Background(), allTimeTopicQuery(15))
 	require.NoError(t, err)
 	return list.Topics, int(list.TotalRequests)
+}
+
+// A name search runs before the list is cut to its limit: a small topic whose
+// name matches is found even when larger ones would fill the limit.
+func TestTopicReaderSearchesNamesBeforeTheLimit(t *testing.T) {
+	store := topicTestLogStore(t)
+	ctx := context.Background()
+	at := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	require.NoError(t, store.UpsertWarpTopics(ctx, []logstore.WarpTopic{
+		{ID: "big", Label: "Password resets", EmbeddingSignature: topicTestSignature(), CreatedAt: at},
+		{ID: "small", Label: "Refund fraud", EmbeddingSignature: topicTestSignature(), CreatedAt: at},
+	}))
+	require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []logstore.WarpTopicAssignment{
+		{LogID: "b1", TopicID: "big", Timestamp: at}, {LogID: "b2", TopicID: "big", Timestamp: at},
+		{LogID: "s1", TopicID: "small", Timestamp: at},
+	}))
+	reader := NewTopicReader(&recordingStore{row: validWarpConfigRow()}, store)
+
+	query := allTimeTopicQuery(1)
+	query.NameContains = "  REFUND "
+	list, err := reader.ListTopics(ctx, query)
+	require.NoError(t, err)
+	require.Len(t, list.Topics, 1)
+	require.Equal(t, "small", list.Topics[0].ID)
+
+	list, err = reader.ListTopics(ctx, allTimeTopicQuery(1))
+	require.NoError(t, err)
+	require.Equal(t, "big", list.Topics[0].ID, "with no name, the largest topic still leads")
 }
 
 // allTimeTopicQuery is a query whose window holds every test timestamp.
@@ -1337,8 +1367,17 @@ func TestWarpListTopicsToolReturnsSortedTopics(t *testing.T) {
 	require.Contains(t, out["links"], "one example request")
 	require.Contains(t, out["counts"], "count requests")
 	require.Contains(t, out["trend"], "previous_window")
-	require.Contains(t, out["cannot_answer"], "every request in a topic")
+	require.Contains(t, out["requests"], "topic_ids")
+	require.NotContains(t, out["cannot_answer"], "every request in a topic")
 	require.NotContains(t, out["cannot_answer"], "time range")
+
+	// Each row links to its own requests, over the window the count ran on,
+	// so a name that says nine opens nine.
+	require.Contains(t, big.Link, "topic_ids=t-big")
+	require.Contains(t, big.Link, "start_time=")
+	require.Equal(t, big.Link, logsViewLink(&logstore.SearchFilters{StartTime: new(now.Add(-7 * 24 * time.Hour)), EndTime: new(now), TopicIDs: []string{"t-big"}}))
+	require.Contains(t, encoded, `"link":"`+logsViewLink(&logstore.SearchFilters{StartTime: new(now.Add(-7 * 24 * time.Hour)), EndTime: new(now), TopicIDs: []string{"t-small"}})+`"`)
+	require.Contains(t, out["links"], "link the topic's name to it")
 }
 
 // The window and the filters are the ones every other tool takes, over the
@@ -1379,6 +1418,8 @@ func TestWarpListTopicsToolTakesAWindowFiltersAndAnInterval(t *testing.T) {
 	require.InDelta(t, 100, topics[0].Trend.RequestsTrend, 1e-9)
 	require.Equal(t, "named", out["scope"])
 	require.Equal(t, int64(6), out["total_requests"])
+	require.Contains(t, topics[0].Link, "team_ids=team-a")
+	require.Contains(t, topics[0].Link, "topic_ids=refunds")
 
 	// A model and a session narrow the same way.
 	result, err = runTool(t, "list_topics", deps, map[string]any{"filters": map[string]any{"models": []any{"claude"}}})
