@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { DisabledReason } from "@/components/ui/disabledReason";
+import { actionDisabledReason } from "@/lib/utils/governance";
 import { WalletCards } from "lucide-react";
 import { ArrowUpRight } from "lucide-react";
 
@@ -31,9 +33,11 @@ export function CustomersEmptyState({ onAddClick, canCreate = true }: CustomersE
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button aria-label="Add your first customer" onClick={onAddClick} disabled={!canCreate} data-testid="customer-button-create">
-						Add Customer
-					</Button>
+					<DisabledReason reason={actionDisabledReason(canCreate, "create", "customers")}>
+						<Button onClick={onAddClick} disabled={!canCreate} data-testid="customer-button-create">
+							Add Customer
+						</Button>
+					</DisabledReason>
 				</div>
 			</div>
 		</div>

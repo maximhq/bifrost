@@ -23,6 +23,7 @@ import {
   isRetryable,
   DEFAULT_POLICY,
 } from "./lib/rate-limit-retry.mjs";
+import { isExpectedStatus } from "./lib/expected-status.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, cur, i, arr) => {
@@ -59,7 +60,7 @@ const executions = report.run?.executions || [];
 const failed = (e) =>
   (e.assertions || []).some((a) => !!a.error) ||
   (e.response?.code ?? 0) === 0 ||
-  (e.response?.code ?? 0) >= 400 ||
+  ((e.response?.code ?? 0) >= 400 && !isExpectedStatus(e.item?.name, e.response?.code ?? 0)) ||
   !e.response;
 
 if (QUERY === "only-rate-limited") {

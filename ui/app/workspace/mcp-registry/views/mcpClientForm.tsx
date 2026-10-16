@@ -17,6 +17,7 @@ import {
 	useMCPClientFormSatellites,
 	validateMCPClientForm,
 } from "./mcpClientFormFields";
+import { needsHeadersVerification } from "./mcpClientOpenApiUtils";
 import { MCPHeadersAuthorizer } from "./mcpHeadersAuthorizer";
 import { OAuth2Authorizer } from "./oauth2Authorizer";
 
@@ -36,6 +37,7 @@ const emptySecretVar: SecretVar = { value: "", ref: "" };
 
 const emptyForm: CreateMCPClientRequest = {
 	name: "",
+	endpoint_slug: "",
 	is_code_mode_client: false,
 	is_ping_available: true,
 	connection_type: "http",
@@ -70,11 +72,10 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 	const satellites = useMCPClientFormSatellites();
 
 	const connectionType = watch("connection_type");
-	const authType = watch("auth_type");
 	const headers = watch("headers");
 
 	const headersValidationError =
-		connectionType === "http" || connectionType === "sse" ? getHeadersValidationError(authType, headers) : null;
+		connectionType === "http" || connectionType === "sse" || connectionType === "openapi" ? getHeadersValidationError(headers) : null;
 
 	// Reset form state when the sheet opens
 	const { reset: resetSatellites } = satellites;
@@ -103,7 +104,7 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 		// The dialog collects sample values and POSTs once to /api/mcp/client
 		// where the server verifies, discovers tools, and persists in a single
 		// round-trip. Mirrors the per-user OAuth flow's single-call shape.
-		if (data.auth_type === "per_user_headers") {
+		if (needsHeadersVerification(payload)) {
 			setIsLoading(false);
 			setHeadersFlow({ payload });
 			return;
@@ -166,6 +167,28 @@ const ClientForm: React.FC<ClientFormProps> = ({ open, onClose, onSaved }) => {
 										<FormControl>
 											<Input id="client-name" data-testid="client-name-input" placeholder="Server name" maxLength={50} {...field} />
 										</FormControl>
+										<FormMessage />
+									</FormItem>
+								)}
+							/>
+
+							{/* Endpoint slug: optional on create, immutable after. Served at /mcp/<slug>. */}
+							<FormField
+								control={control}
+								name="endpoint_slug"
+								render={({ field }) => (
+									<FormItem>
+										<FormLabel>Endpoint slug</FormLabel>
+										<FormControl>
+											<Input
+												id="client-endpoint-slug"
+												data-testid="client-endpoint-slug-input"
+												placeholder="Leave blank to derive from the name"
+												{...field}
+												value={field.value ?? ""}
+											/>
+										</FormControl>
+										<p className="text-muted-foreground text-xs">{"Served at /mcp/<slug>. Immutable after creation."}</p>
 										<FormMessage />
 									</FormItem>
 								)}

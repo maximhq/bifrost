@@ -215,7 +215,7 @@ func TestSemantic(t *testing.T) {
 
 		respB := postChat(t, lc, 4, simpleChat(cfg.OpenAIModel, pair.Paraphrase), cacheHeaders{Key: key})
 		_ = assertHit(t, lc, 5, respB, "semantic")
-		cd := respB.cacheDebug()
+		cd := respB.cacheMetadata()
 		if cd.Similarity == nil || cd.Threshold == nil || cd.ProviderUsed == nil || cd.ModelUsed == nil || cd.InputTokens == nil {
 			t.Fatalf("expected similarity/threshold/provider_used/model_used/input_tokens stamped on semantic hit, got %+v", cd)
 		}
@@ -237,7 +237,7 @@ func TestSemantic(t *testing.T) {
 
 		respB := postChat(t, lc, 4, simpleChat(cfg.OpenAIModel, pair.Unrelated), cacheHeaders{Key: key})
 		_ = assertMiss(t, lc, 5, respB)
-		cd := respB.cacheDebug()
+		cd := respB.cacheMetadata()
 		if cd.ProviderUsed == nil || cd.InputTokens == nil {
 			t.Fatalf("expected provider_used + input_tokens stamped on semantic-search miss, got %+v", cd)
 		}
@@ -437,7 +437,7 @@ func TestSemantic(t *testing.T) {
 		// B: same canonical body — direct runs first and hits.
 		respB := postChat(t, lc, 4, simpleChat(cfg.OpenAIModel, pair.Canonical), cacheHeaders{Key: key})
 		_ = assertHit(t, lc, 5, respB, "direct")
-		cd := respB.cacheDebug()
+		cd := respB.cacheMetadata()
 		if cd.ProviderUsed != nil || cd.ModelUsed != nil || cd.InputTokens != nil {
 			t.Fatalf("expected provider_used/model_used/input_tokens NIL on direct hit (no embedding generated), got %+v", cd)
 		}
@@ -567,8 +567,8 @@ func TestSemantic(t *testing.T) {
 		}
 		req := chatRequest{Model: cfg.OpenAIModel, Messages: msgs}
 
-		assertNoCacheDebug(t, lc, 2, postChat(t, lc, 1, req, cacheHeaders{Key: key}))
-		assertNoCacheDebug(t, lc, 4, postChat(t, lc, 3, req, cacheHeaders{Key: key}))
+		assertNoCacheMetadata(t, lc, 2, postChat(t, lc, 1, req, cacheHeaders{Key: key}))
+		assertNoCacheMetadata(t, lc, 4, postChat(t, lc, 3, req, cacheHeaders{Key: key}))
 	})
 
 	// 2.23 attachments_change_semantic — paraphrase + different image URL → miss
@@ -768,7 +768,7 @@ func TestSemantic(t *testing.T) {
 		// If Bifrost errors instead, the test will fail at postChat with status!=200
 		// — that surfaces a different actual behavior worth documenting.
 		respB := postChat(t, lc, 5, simpleChat(cfg.OpenAIModel, pair.Paraphrase), cacheHeaders{Key: key})
-		if cd := respB.cacheDebug(); cd != nil && cd.CacheHit {
+		if cd := respB.cacheMetadata(); cd != nil && cd.CacheHit {
 			t.Fatalf("expected miss (UI banner: dim change makes reads silently miss); got hit cache_id=%s", deref(cd.CacheID))
 		}
 		logf(t, lc.at(6), "PASS", "dimension_change_silent_miss_documented", map[string]any{
@@ -977,11 +977,11 @@ func TestSemantic(t *testing.T) {
 				t.Fatalf("[%s] no data chunks", stage)
 			}
 			for i := 0; i < len(data)-1; i++ {
-				if cd := data[i].cacheDebug(); cd != nil {
+				if cd := data[i].cacheMetadata(); cd != nil {
 					t.Fatalf("[%s] non-final chunk %d had cache_debug: %+v", stage, i, cd)
 				}
 			}
-			if data[len(data)-1].cacheDebug() == nil {
+			if data[len(data)-1].cacheMetadata() == nil {
 				t.Fatalf("[%s] final chunk missing cache_debug", stage)
 			}
 		}
@@ -1021,10 +1021,10 @@ func TestSemantic(t *testing.T) {
 		_ = assertMiss(t, lc, 2, postChat(t, lc, 1, simpleChat(cfg.OpenAIModel, pair.Canonical), cacheHeaders{Key: key}))
 		waitForCacheWrite(t, lc, 3)
 		respB := postChat(t, lc, 4, simpleChat(cfg.OpenAIModel, pair.Paraphrase), cacheHeaders{Key: key})
-		respCD := assertHitAndReturnCacheDebug(t, lc, 5, respB, "semantic")
+		respCD := assertHitAndReturnCacheMetadata(t, lc, 5, respB, "semantic")
 
-		entry := findLogByCacheDebug(t, lc, 6, respCD)
-		assertLogMatchesResponseCacheDebug(t, lc, 7, respCD, entry.CacheDebug)
+		entry := findLogByCacheMetadata(t, lc, 6, respCD)
+		assertLogMatchesResponseCacheMetadata(t, lc, 7, respCD, entry.CacheMetadata)
 	})
 
 	logf(t, newLogCtx("semantic", "teardown").at(99), "TEARDOWN", "phase_end", nil)

@@ -309,7 +309,15 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 	}
 
 	// Decode response body
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	respBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		rawErrBody := append([]byte(nil), resp.Body()...)
 		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), body, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
@@ -317,7 +325,7 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 
 	// Parse response envelope
 	var runwareResp RunwareResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(respBody, &runwareResp, body, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &runwareResp, body, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -344,6 +352,11 @@ func (provider *RunwareProvider) handleImageInference(ctx *schemas.BifrostContex
 // Rerank is not supported by the Runware provider.
 func (provider *RunwareProvider) Rerank(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostRerankRequest) (*schemas.BifrostRerankResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.RerankRequest, provider.GetProviderKey())
+}
+
+// Decision is not supported by the Runware provider.
+func (provider *RunwareProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
 }
 
 // OCR is not supported by the Runware provider.
@@ -396,7 +409,15 @@ func (provider *RunwareProvider) sendTaskArray(ctx *schemas.BifrostContext, key 
 	if resp.StatusCode() != fasthttp.StatusOK {
 		return reqBody, nil, lat, providerUtils.SetErrorLatency(parseRunwareError(resp), lat)
 	}
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
 	decoded, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return reqBody, nil, lat, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), lat)
 	}
@@ -427,7 +448,7 @@ func (provider *RunwareProvider) VideoGeneration(ctx *schemas.BifrostContext, ke
 	}
 
 	var videoResp RunwareResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -458,7 +479,16 @@ func (provider *RunwareProvider) VideoRetrieve(ctx *schemas.BifrostContext, key 
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
+	// Time the request marshal as the request-marshal phase.
+	mt, mh := providerUtils.StartPhaseSpan(ctx, "request-marshal")
 	jsonData, err := providerUtils.MarshalSorted(RunwareGetResponseRequest{TaskType: taskTypeGetResponse, TaskUUID: taskID})
+	if mt != nil {
+		if err != nil {
+			mt.EndSpan(mh, schemas.SpanStatusError, err.Error())
+		} else {
+			mt.EndSpan(mh, schemas.SpanStatusOk, "")
+		}
+	}
 	if err != nil {
 		return nil, providerUtils.NewBifrostOperationError(schemas.ErrProviderRequestMarshal, err)
 	}
@@ -469,7 +499,7 @@ func (provider *RunwareProvider) VideoRetrieve(ctx *schemas.BifrostContext, key 
 	}
 
 	var videoResp RunwareResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -584,7 +614,7 @@ func (provider *RunwareProvider) VideoEdit(ctx *schemas.BifrostContext, key sche
 	}
 
 	var videoResp RunwareResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponse(respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &videoResp, reqBody, sendBackRawRequest, sendBackRawResponse)
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
@@ -673,6 +703,11 @@ func (provider *RunwareProvider) CountTokens(_ *schemas.BifrostContext, _ schema
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CountTokensRequest, provider.GetProviderKey())
 }
 
+// ModelRetrieve is not supported by the Runware provider.
+func (provider *RunwareProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
+	return nil, providerUtils.NewUnsupportedOperationError(schemas.ModelRetrieveRequest, provider.GetProviderKey())
+}
+
 // Compaction is not supported by the Runware provider.
 func (provider *RunwareProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.CompactionRequest, provider.GetProviderKey())
@@ -727,17 +762,18 @@ func (provider *RunwareProvider) ContainerFileDelete(_ *schemas.BifrostContext, 
 // single endpoint whose base URL already includes the /v1 version segment, so a leading /v1 in the
 // passthrough path is stripped to avoid duplicating it — both /runware_passthrough and
 // /runware_passthrough/v1 therefore map to the base endpoint.
-func (provider *RunwareProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) string {
+func (provider *RunwareProvider) buildPassthroughURL(req *schemas.BifrostPassthroughRequest) (string, error) {
 	baseURL := provider.networkConfig.BaseURL
 	if req.UpstreamURL != "" {
-		baseURL = strings.TrimRight(req.UpstreamURL, "/")
+		baseURL = req.UpstreamURL
 	}
-	path := strings.TrimPrefix(req.Path, "/v1")
-	url := baseURL + path
-	if req.RawQuery != "" {
-		url += "?" + req.RawQuery
+	// Collapse a leading /v1 only as a whole segment: /v1 and /v1/... map onto the base
+	// endpoint, while /v1beta/... merely shares the prefix and is forwarded as sent.
+	path := req.Path
+	if path == "/v1" || strings.HasPrefix(path, "/v1/") {
+		path = strings.TrimPrefix(path, "/v1")
 	}
-	return url
+	return providerUtils.BuildPassthroughURL(baseURL, path, req.RawQuery)
 }
 
 // Passthrough forwards a raw request to Runware's unified endpoint and returns the untouched
@@ -753,7 +789,10 @@ func (provider *RunwareProvider) Passthrough(
 	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
 	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
 
-	url := provider.buildPassthroughURL(req)
+	url, err := provider.buildPassthroughURL(req)
+	if err != nil {
+		return nil, providerUtils.NewBifrostBadRequestError(err.Error())
+	}
 
 	fasthttpReq := fasthttp.AcquireRequest()
 	resp := fasthttp.AcquireResponse()

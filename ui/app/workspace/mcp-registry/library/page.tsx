@@ -5,7 +5,7 @@ import { ScrollArea } from "@/components/ui/scrollArea";
 import { useToast } from "@/hooks/use-toast";
 import { useDebouncedValue } from "@/hooks/useDebounce";
 import { parseAsSafeString } from "@/lib/queryParamsParser";
-import { getErrorMessage, useGetMCPClientsQuery, useGetMCPLibraryQuery } from "@/lib/store";
+import { getErrorMessage, useGetMCPLibraryQuery } from "@/lib/store";
 import type { MCPLibraryEntry } from "@/lib/types/mcp";
 import { cn } from "@/lib/utils";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -14,7 +14,7 @@ import { parseAsArrayOf, parseAsInteger, parseAsString, useQueryStates } from "n
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { MCPLibraryAddServerSheet } from "./views/mcpLibraryAddServerSheet";
 import { MCPLibraryFilterSidebar, type MCPLibraryFilters } from "./views/mcpLibraryFilterSidebar";
-import { MCPLibraryInstallSheet, sanitizeServerName } from "./views/mcpLibraryInstallSheet";
+import { MCPLibraryInstallSheet } from "./views/mcpLibraryInstallSheet";
 import { MCPLibraryServerCard, MCPLibraryServerCardSkeleton } from "./views/mcpLibraryServerCard";
 import { MCPLibraryServersTable, MCPLibraryServersTableSkeleton } from "./views/mcpLibraryServersTable";
 import { MCPLibrarySettingsSheet } from "./views/mcpLibrarySettingsSheet";
@@ -102,36 +102,15 @@ export default function MCPLibraryPage() {
 	const servers = useMemo(() => libraryData?.servers || [], [libraryData?.servers]);
 	const totalCount = libraryData?.total_count || 0;
 
-	// Installed-detection: match on connection_url or name (case-insensitive)
-	const { data: mcpClientsData, error: mcpClientsError } = useGetMCPClientsQuery({ limit: 100, offset: 0 });
-
 	useEffect(() => {
-		if (!libraryError && !mcpClientsError) return;
-		const err = libraryError || mcpClientsError;
-		if (!err) return;
-		const message = getErrorMessage(err);
+		if (!libraryError) return;
+		const message = getErrorMessage(libraryError);
 		if (message.toLowerCase().includes("mcp is not configured in this bifrost instance")) return;
 		toast({ title: "Error", description: message, variant: "destructive" });
-	}, [libraryError, mcpClientsError, toast]);
+	}, [libraryError, toast]);
 
-	const installedServerSlugs = useMemo(() => {
-		const clients = mcpClientsData?.clients || [];
-		return new Set(
-			servers
-				.filter((server) =>
-					clients.some((client) => {
-						const connectionString = client.config.connection_string;
-						const connectionUrl =
-							connectionString?.type === "env" || connectionString?.type === "vault" ? connectionString.ref : connectionString?.value;
-						return (
-							(server.connection_url && connectionUrl === server.connection_url) ||
-							client.config.name.toLowerCase() === sanitizeServerName(server.name).toLowerCase()
-						);
-					}),
-				)
-				.map((server) => server.slug),
-		);
-	}, [mcpClientsData?.clients, servers]);
+	// The server marks each entry installed by checking every MCP client, not one page.
+	const installedServerSlugs = useMemo(() => new Set(servers.filter((server) => server.installed).map((server) => server.slug)), [servers]);
 
 	const handleInstalled = useCallback(async () => {
 		await refetch();
@@ -220,7 +199,7 @@ export default function MCPLibraryPage() {
 							)}
 							<div className="flex items-center gap-2 sm:ml-auto">
 								{hasCreateMCPClientAccess && (
-									<Button variant="outline" size="sm" onClick={() => setAddServerOpen(true)} data-testid="mcp-library-add-server-btn">
+									<Button size="sm" onClick={() => setAddServerOpen(true)} data-testid="mcp-library-add-server-btn">
 										<Plus className="h-4 w-4" />
 										Add to Library
 									</Button>

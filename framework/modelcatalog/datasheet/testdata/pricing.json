@@ -146,5 +146,12 @@
     "output_vector_size": 1536,
     "provider": "openai",
     "base_model": "text-embedding-3-small"
+  },
+  "sora-2-pro": {
+    "provider": "openai",
+    "mode": "video_generation",
+    "output_cost_per_video_per_second": 0.3,
+    "output_cost_per_video_per_second_720p": 0.3,
+    "output_cost_per_video_per_second_1024p": 0.5
   }
 }

@@ -153,6 +153,12 @@ const (
 	// SSEHeartbeatDelimitedCommentBlock emits a self-contained comment block for
 	// clients that parse streams as blank-line-delimited blocks.
 	SSEHeartbeatDelimitedCommentBlock
+	// SSEHeartbeatNone writes nothing. Some official decoders reject every SSE line that
+	// is not "data:" or blank - the google-genai Python SDK json.loads a comment line and
+	// raises UnknownApiResponseError - so no comment framing is safe for them. A route on
+	// this framing keeps only reactive (write-failure-based) disconnect detection, like
+	// Bedrock's binary EventStream route.
+	SSEHeartbeatNone
 )
 
 var (
@@ -205,7 +211,7 @@ func (r *SSEStreamReader) SendHeartbeatWithFraming(framing SSEHeartbeatFraming) 
 		return false
 	default:
 	}
-	if !r.atLineBoundary {
+	if !r.atLineBoundary || framing == SSEHeartbeatNone {
 		return true
 	}
 	heartbeatFrame := sseHeartbeatFrame

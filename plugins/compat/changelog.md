@@ -1,4 +1,0 @@
-- fix: force `reasoning.effort` to `"none"` in `dropUnsupportedParams` when a model supports reasoning but not `reasoning_with_tool_calls` and advertises `supports_none_reasoning_effort`; models without the flag still have `reasoning` dropped (#6293)
-- fix: clone `json.RawMessage` values (such as a raw `response_format`) in the request copier so the compat clone never shares a backing array with the original request (#6235)
-- feat: add a no-op `HTTPTransportPreAuthHook` for the new pre-authentication transport phase (#6375)
-- chore: upgraded core to v1.8.0 and framework to v1.6.0

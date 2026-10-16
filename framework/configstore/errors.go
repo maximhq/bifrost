@@ -9,6 +9,31 @@ import (
 var ErrNotFound = errors.New("not found")
 var ErrAlreadyExists = errors.New("already exists")
 
+// ErrRoutingRulePriorityTaken is returned when a routing rule's priority is already used by another
+// rule in the same scope and scope ID. It wraps ErrAlreadyExists and reads the same, so callers that
+// only ask whether something already exists are unaffected; callers that advise changing the
+// priority check for it, since a duplicate name surfaces as ErrAlreadyExists too.
+var ErrRoutingRulePriorityTaken = fmt.Errorf("%w", ErrAlreadyExists)
+
+// ErrInvalidAgentGrant marks malformed Agent grant input supplied by a caller.
+var ErrInvalidAgentGrant = errors.New("invalid agent grant")
+
+// ErrMCPEndpointSlugExists is returned when a create resolves an endpoint slug already used by a
+// Virtual MCP or an MCP client. Both serve at /mcp/<slug>, so the slug namespace is shared; callers
+// answer with a clear message and a 409. (Name uniqueness is left to each table's own unique index
+// and surfaces as a generic unique-constraint error.)
+var ErrMCPEndpointSlugExists = errors.New("an MCP endpoint with this slug already exists")
+
+// ErrMCPEndpointSlugInvalid is returned when a create cannot derive an endpoint slug (the name
+// slugifies to empty and no endpoint_slug was supplied). It is caller input, so handlers map it
+// to a 400 rather than a 500.
+var ErrMCPEndpointSlugInvalid = errors.New("could not derive an MCP endpoint slug; provide an endpoint_slug")
+
+// ErrVirtualKeyAccessProfileManaged is returned by AttachVirtualMCPToVirtualKey (enterprise) when the
+// target virtual key is managed by an access profile: its MCP access is governed by the profile, so it
+// cannot be assigned a Virtual MCP directly. OSS never returns it (no access profiles).
+var ErrVirtualKeyAccessProfileManaged = errors.New("access-profile-managed virtual keys cannot be assigned a virtual MCP directly")
+
 // ErrConfigUnreadable marks a stored configuration value that could not be
 // decoded or that failed validation — the value is present but this version
 // cannot make sense of it.

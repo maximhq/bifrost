@@ -82,3 +82,53 @@ func TestConvertBedrockRequestsToJSONL_RequiresModelID(t *testing.T) {
 	_, err = ConvertBedrockRequestsToJSONL(requests, &empty)
 	assert.Error(t, err)
 }
+
+// TestValidateS3Bucket_RejectsHostInjection pins the fix for caller-supplied s3://
+// file IDs choosing the request host: the bucket is the leading label of
+// "https://{bucket}.{s3host}/", so "s3://evil.example#/x" reached evil.example.
+func TestValidateS3Bucket_RejectsHostInjection(t *testing.T) {
+	valid := []string{
+		"test-ai-dev",
+		"my.bucket.name",
+		"abc",
+		strings.Repeat("a", 63),
+	}
+	for _, bucket := range valid {
+		assert.Nil(t, validateS3Bucket(bucket), "bucket %q should be accepted", bucket)
+	}
+
+	invalid := []string{
+		"", "ab", strings.Repeat("a", 64),
+		"evil.example#",   // truncates the authority, picks the host
+		"127.0.0.1:8080#", // the live-verified SSRF payload
+		"bucket/../other", // path delimiter
+		"bucket?x", "bucket@evil", "bucket:1", "bucket\\x",
+		"Bucket", "-bucket", "bucket-",
+		"bucket name", "bucket\nname",
+	}
+	for _, bucket := range invalid {
+		err := validateS3Bucket(bucket)
+		require.NotNil(t, err, "bucket %q should be rejected", bucket)
+		require.NotNil(t, err.StatusCode)
+		assert.Equal(t, 400, *err.StatusCode, "bucket %q should be a 400", bucket)
+	}
+}
+
+// TestParseS3URIBucketFeedsValidator walks the caller-controlled shapes through
+// parseS3URI the way the file routes do, so a parser change cannot silently
+// reintroduce a host-bearing bucket.
+func TestParseS3URIBucketFeedsValidator(t *testing.T) {
+	for _, uri := range []string{
+		"s3://127.0.0.1:8080#/x",
+		"s3://evil.example#/x",
+		"s3://evil.example#",
+	} {
+		bucket, _ := parseS3URI(uri)
+		assert.NotNil(t, validateS3Bucket(bucket), "uri %q yielded accepted bucket %q", uri, bucket)
+	}
+
+	bucket, key := parseS3URI("s3://test-ai-dev/path/to/file.jsonl")
+	assert.Equal(t, "test-ai-dev", bucket)
+	assert.Equal(t, "path/to/file.jsonl", key)
+	assert.Nil(t, validateS3Bucket(bucket))
+}

@@ -171,13 +171,6 @@ func validateTTLExpireMutex(ttl, expireTime *string) *schemas.BifrostError {
 	return nil
 }
 
-func normalizeCachedContentName(name string) string {
-	if strings.HasPrefix(name, "cachedContents/") {
-		return name
-	}
-	return "cachedContents/" + name
-}
-
 // CachedContentCreate creates a new cached content via Google AI Studio's
 // /v1beta/cachedContents endpoint.
 func (provider *GeminiProvider) CachedContentCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCachedContentCreateRequest) (*schemas.BifrostCachedContentCreateResponse, *schemas.BifrostError) {
@@ -238,9 +231,7 @@ func (provider *GeminiProvider) CachedContentCreate(ctx *schemas.BifrostContext,
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPost)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 	req.SetBody(jsonBody)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -303,9 +294,7 @@ func (provider *GeminiProvider) cachedContentListByKey(ctx *schemas.BifrostConte
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
@@ -365,16 +354,17 @@ func (provider *GeminiProvider) cachedContentRetrieveByKey(ctx *schemas.BifrostC
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	name := normalizeCachedContentName(request.Name)
+	name, idErr := geminiResourcePath(request.Name, "cachedContents", "name")
+	if idErr != nil {
+		return nil, 0, idErr
+	}
 	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, name)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodGet)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()
@@ -461,7 +451,10 @@ func (provider *GeminiProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	name := normalizeCachedContentName(request.Name)
+	name, idErr := geminiResourcePath(request.Name, "cachedContents", "name")
+	if idErr != nil {
+		return nil, 0, idErr
+	}
 	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, name)
 	if len(updateMaskFields) > 0 {
 		requestURL += "?updateMask=" + strings.Join(updateMaskFields, ",")
@@ -471,9 +464,7 @@ func (provider *GeminiProvider) cachedContentUpdateByKey(ctx *schemas.BifrostCon
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodPatch)
 	req.Header.SetContentType("application/json")
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 	req.SetBody(jsonBody)
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
@@ -547,15 +538,16 @@ func (provider *GeminiProvider) cachedContentDeleteByKey(ctx *schemas.BifrostCon
 	defer fasthttp.ReleaseRequest(req)
 	defer fasthttp.ReleaseResponse(resp)
 
-	name := normalizeCachedContentName(request.Name)
+	name, idErr := geminiResourcePath(request.Name, "cachedContents", "name")
+	if idErr != nil {
+		return nil, 0, idErr
+	}
 	requestURL := fmt.Sprintf("%s/%s", provider.networkConfig.BaseURL, name)
 
 	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
 	req.SetRequestURI(requestURL)
 	req.Header.SetMethod(http.MethodDelete)
-	if key.Value.GetValue() != "" {
-		req.Header.Set("x-goog-api-key", key.Value.GetValue())
-	}
+	setGeminiAuthHeader(req, key.Value.GetValue())
 
 	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
 	defer wait()

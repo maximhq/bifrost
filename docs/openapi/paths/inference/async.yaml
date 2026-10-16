@@ -35,7 +35,6 @@ async-chat-completions:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-text-completions:
@@ -71,7 +70,6 @@ async-text-completions:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-responses:
@@ -107,7 +105,6 @@ async-responses:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-embeddings:
@@ -142,7 +139,6 @@ async-embeddings:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-speech:
@@ -178,7 +174,6 @@ async-speech:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-transcriptions:
@@ -214,7 +209,6 @@ async-transcriptions:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-image-generation:
@@ -250,7 +244,6 @@ async-image-generation:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-image-edit:
@@ -289,7 +282,6 @@ async-image-edit:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-image-variation:
@@ -326,7 +318,6 @@ async-image-variation:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-chat-completions-job:
@@ -362,7 +353,6 @@ async-chat-completions-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-text-completions-job:
@@ -398,7 +388,6 @@ async-text-completions-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-responses-job:
@@ -434,7 +423,6 @@ async-responses-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-embeddings-job:
@@ -470,7 +458,6 @@ async-embeddings-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-speech-job:
@@ -506,7 +493,6 @@ async-speech-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-transcriptions-job:
@@ -542,7 +528,6 @@ async-transcriptions-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-image-generation-job:
@@ -578,7 +563,6 @@ async-image-generation-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-image-edit-job:
@@ -614,7 +598,6 @@ async-image-edit-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-image-variation-job:
@@ -650,7 +633,6 @@ async-image-variation-job:
 
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-rerank:
@@ -684,7 +666,6 @@ async-rerank:
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 async-rerank-job:
@@ -719,7 +700,6 @@ async-rerank-job:
               $ref: '../../schemas/inference/common.yaml#/BifrostError'
     security:
     - BearerAuth: []
-    - BasicAuth: []
     - VirtualKeyAuth: []
     - ApiKeyAuth: []
 

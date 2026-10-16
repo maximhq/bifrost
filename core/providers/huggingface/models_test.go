@@ -1,11 +1,19 @@
 package huggingface
 
 import (
+	"context"
+	"crypto/tls"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/valyala/fasthttp"
 )
 
 // Regression tests for https://github.com/maximhq/bifrost/issues/4215.
@@ -54,6 +62,60 @@ func TestToBifrostListModelsResponse_AllowlistWithInferenceProviderSegment(t *te
 		require.NotNil(t, result)
 		assert.Empty(t, result.Data, "an allowlist entry pinned to featherless-ai must not be backfilled under cohere")
 	})
+}
+
+func TestToBifrostListModelsResponse_AllowlistWithBasetenProviderSegment(t *testing.T) {
+	t.Parallel()
+
+	provider := baseten
+	assert.Contains(t, INFERENCE_PROVIDERS, provider)
+
+	response := &HuggingFaceListModelsResponse{Models: nil}
+	allowlist := schemas.WhiteList{"baseten/zai-org/GLM-5.3-Flash"}
+
+	result := response.ToBifrostListModelsResponse(schemas.HuggingFace, provider, allowlist, nil, nil, false)
+	require.NotNil(t, result)
+	require.Len(t, result.Data, 1)
+	assert.Equal(t, "huggingface/baseten/zai-org/GLM-5.3-Flash", result.Data[0].ID)
+}
+
+func TestListModelsByKey_DiscoversBasetenModels(t *testing.T) {
+	t.Parallel()
+
+	var requested atomic.Bool
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/models", r.URL.Path)
+		if r.URL.Query().Get("inference_provider") == string(baseten) {
+			requested.Store(true)
+			w.Header().Set("Content-Type", "application/json")
+			_, err := w.Write([]byte(`[{"_id":"glm-5.3-flash","modelId":"zai-org/GLM-5.3-Flash","pipeline_tag":"conversational"}]`))
+			assert.NoError(t, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, err := w.Write([]byte(`[]`))
+		assert.NoError(t, err)
+	}))
+	defer server.Close()
+
+	provider := &HuggingFaceProvider{
+		client: &fasthttp.Client{
+			Dial: func(string) (net.Conn, error) {
+				return net.Dial("tcp", server.Listener.Addr().String())
+			},
+			TLSConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // Test server certificate.
+		},
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	key := schemas.Key{Value: *schemas.NewSecretVar(""), Models: schemas.WhiteList{"*"}}
+
+	response, bifrostErr := provider.listModelsByKey(ctx, key, &schemas.BifrostListModelsRequest{})
+
+	require.Nil(t, bifrostErr)
+	require.True(t, requested.Load(), "model discovery must query the Baseten inference provider")
+	require.NotNil(t, response)
+	require.Len(t, response.Data, 1)
+	assert.Equal(t, "huggingface/baseten/zai-org/GLM-5.3-Flash", response.Data[0].ID)
 }
 
 // Allowlist entries prefixed with the "auto" policy must not be re-prefixed

@@ -11,7 +11,7 @@ import (
 	bifrost "github.com/maximhq/bifrost/core"
 	openaiProvider "github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 )
 
 func newRealtimeTurnContext(
@@ -40,6 +40,10 @@ func newRealtimeTurnContext(
 				continue
 			}
 			ctx.SetValue(ctxKey, value)
+		}
+		// A turn is the session's request: it carries the session's grant, not a copy.
+		if g := baseCtx.Grant(); g != nil {
+			ctx.SetGrant(g)
 		}
 	}
 
@@ -284,6 +288,7 @@ func buildRealtimeTurnPostResponse(
 	rawResponse []byte,
 	contentOverride string,
 	latency int64,
+	transcriptionSession bool,
 ) *schemas.BifrostResponse {
 	output := buildRealtimeTurnOutputMessages(rtProvider, rawResponse, contentOverride)
 	resp := &schemas.BifrostResponsesResponse{
@@ -296,6 +301,9 @@ func buildRealtimeTurnPostResponse(
 			OriginalModelRequested: model,
 			Latency:                latency,
 		},
+	}
+	if transcriptionSession {
+		resp.ExtraFields.PricingRequestType = schemas.TranscriptionRequest
 	}
 	if usage := extractRealtimeTurnUsage(rtProvider, rawResponse); usage != nil {
 		resp.Usage = buildRealtimeResponsesUsage(usage)
@@ -487,6 +495,7 @@ func buildRealtimeResponsesUsage(usage *schemas.BifrostLLMUsage) *schemas.Respon
 		InputTokens:  usage.PromptTokens,
 		OutputTokens: usage.CompletionTokens,
 		TotalTokens:  usage.TotalTokens,
+		AudioSeconds: usage.AudioSeconds,
 	}
 	if usage.PromptTokensDetails != nil {
 		result.InputTokensDetails = &schemas.ResponsesResponseInputTokens{
@@ -509,6 +518,7 @@ func buildRealtimeResponsesUsage(usage *schemas.BifrostLLMUsage) *schemas.Respon
 			NumSearchQueries:         usage.CompletionTokensDetails.NumSearchQueries,
 		}
 	}
+	result.ToolUsage = usage.ToolUsage.DeepCopy()
 	return result
 }
 
@@ -580,6 +590,9 @@ func mapRealtimeWireErrorFields(bifrostErr *schemas.BifrostError) (string, strin
 			continue
 		case strings.Contains(lower, "invalid_request_error"):
 			return "invalid_request_error", "invalid_request_error", errorMessage, errorParam
+		case strings.Contains(lower, "unsupported_operation"):
+			// A provider configured not to serve the operation refuses the caller, not itself.
+			return "invalid_request_error", "unsupported_operation", errorMessage, errorParam
 		case isBudgetOrBillingError(lower):
 			return "insufficient_quota", "insufficient_quota", errorMessage, errorParam
 		case bifrost.IsRateLimitErrorMessage(lower):
@@ -707,6 +720,8 @@ func finalizeRealtimeTurnHooks(
 	key *schemas.Key,
 	rawResponse []byte,
 	contentOverride string,
+	terminalEventType schemas.RealtimeEventType,
+	transcriptionSession bool,
 ) *schemas.BifrostError {
 	if client == nil || session == nil {
 		return nil
@@ -729,8 +744,9 @@ func finalizeRealtimeTurnHooks(
 			rawResponse,
 			contentOverride,
 			time.Since(activeHooks.StartedAt).Milliseconds(),
+			transcriptionSession,
 		)
-		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, rtProvider.RealtimeTurnFinalEvent(), key)
+		postCtx := newRealtimeTurnContext(baseCtx, activeHooks.RequestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, terminalEventType, key)
 		applyRealtimeTurnContextValues(postCtx, activeHooks.PreHookValues)
 		restoreRealtimeTurnTraceContext(postCtx, activeHooks.TraceID, activeHooks.PreHookValues)
 		applyRealtimeRawStorageContext(postCtx, activeHooks.RawStore)
@@ -765,8 +781,9 @@ func finalizeRealtimeTurnHooks(
 		rawResponse,
 		contentOverride,
 		time.Since(startedAt).Milliseconds(),
+		transcriptionSession,
 	)
-	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, rtProvider.RealtimeTurnFinalEvent(), key)
+	postCtx := newRealtimeTurnContext(baseCtx, requestID, session.ID(), session.ProviderSessionID(), realtimeTurnSourceLM, terminalEventType, key)
 	applyRealtimeTurnContextValues(postCtx, preHookValues)
 	restoreRealtimeTurnTraceContext(postCtx, traceID, preHookValues)
 	applyRealtimeRawStorageContext(postCtx, storeRaw)

@@ -8,6 +8,14 @@ flush-cache:
         <Note>
           This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.
         </Note>
+
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `Settings:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
     summary: Flush vault secret cache
     description: |
       Clears the in-memory vault secret cache so the next resolution of every
@@ -23,6 +31,7 @@ flush-cache:
       - Vault
     security:
       - ManagementBearerAuth: []
+      - BasicAuth: []
     responses:
       '200':
         description: Vault cache flushed successfully

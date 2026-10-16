@@ -5,10 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/migrator"
+	"github.com/maximhq/bifrost/framework/postgresconn"
 	"gorm.io/gorm"
 )
 
@@ -31,6 +34,25 @@ var addColumnIfNotExists = migrator.AddColumnIfNotExists
 // same reason as above so call sites can use dropColumnIfExists(tx, ...).
 var dropColumnIfExists = migrator.DropColumnIfExists
 
+// boundDDLLockWait caps how long the DDL that follows waits for its table lock,
+// on PostgreSQL only.
+//
+// ADD COLUMN and DROP COLUMN both take ACCESS EXCLUSIVE on logs. The change
+// itself is metadata-only, but waiting for the lock parks the statement at the
+// head of the lock queue, where every query arriving behind a long-running read
+// waits on it too - a cluster-wide stall on the highest-volume table. Bounding
+// the wait fails this boot's migration instead, and the next boot retries it.
+//
+// SET LOCAL needs the transaction opts.UseTransaction gives the migration, and
+// reverts with it. It applies to the whole transaction, so it is set once per
+// callback rather than before each statement.
+func boundDDLLockWait(tx *gorm.DB) error {
+	if tx.Dialector.Name() != "postgres" {
+		return nil
+	}
+	return tx.Exec("SET LOCAL lock_timeout = '5s'").Error
+}
+
 const (
 	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
 	// to serialize migrations across cluster nodes.
@@ -52,9 +74,16 @@ const (
 	// advisoryLockRetryInterval is how long to wait between lock acquisition attempts.
 	advisoryLockRetryInterval = 5 * time.Second
 
-	// advisoryLockTimeout is the maximum time to wait for an advisory lock
-	// before giving up with actionable operator guidance.
+	// advisoryLockTimeout is how long to wait for an advisory lock while its
+	// holder shows no sign of work (a crashed instance's lingering session) before
+	// giving up with actionable operator guidance.
 	advisoryLockTimeout = 5 * time.Minute
+
+	// advisoryLockBusyTimeout is how long to wait for the migration lock while
+	// its holder is visibly running statements: a live instance whose migrations are
+	// slow, not a stale session. The background index lock does not get this
+	// extension because its holder builds the same indexes this node would.
+	advisoryLockBusyTimeout = 20 * time.Minute
 
 	// maintenanceUpdateBatchSize bounds background data cleanups so they don't
 	// lock or rewrite very large log tables in one transaction.
@@ -74,7 +103,7 @@ type advisoryLock struct {
 // blocking indefinitely if a previous pod crashed without releasing the lock
 // (e.g., behind a connection proxy or with slow TCP keepalive detection).
 // For non-PostgreSQL databases, returns a no-op lock.
-func acquireAdvisoryLock(ctx context.Context, db *gorm.DB, logger schemas.Logger, lockKey int64, label string) (*advisoryLock, error) {
+func acquireAdvisoryLock(ctx context.Context, db *gorm.DB, logger schemas.Logger, lockKey int64, label string, busyTimeout time.Duration) (*advisoryLock, error) {
 	if db.Dialector.Name() != "postgres" {
 		return &advisoryLock{}, nil
 	}
@@ -91,70 +120,18 @@ func acquireAdvisoryLock(ctx context.Context, db *gorm.DB, logger schemas.Logger
 	}
 
 	logger.Info("[logstore] attempting to acquire %s lock %d", label, lockKey)
-	// Try to acquire advisory lock with retry + timeout instead of blocking forever.
-	// pg_try_advisory_lock returns true if acquired, false if held by another session.
-	deadline := time.Now().Add(advisoryLockTimeout)
-	maxAttempts := int(advisoryLockTimeout / advisoryLockRetryInterval)
-	attempt := 0
-
-	for {
-		attempt++
-		// Derive a per-attempt context with the remaining lock budget as timeout,
-		// so a stalled DB round-trip can't block beyond the overall deadline.
-		attemptTimeout := time.Until(deadline)
-		if attemptTimeout <= 0 {
-			attemptTimeout = advisoryLockRetryInterval
-		}
-		attemptCtx, attemptCancel := context.WithTimeout(ctx, attemptTimeout)
-		var acquired bool
-		err = conn.QueryRowContext(attemptCtx, "SELECT pg_try_advisory_lock($1)", lockKey).Scan(&acquired)
-		attemptCancel()
-		if err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("failed to attempt %s advisory lock: %w", label, err)
-		}
-
-		if acquired {
-			if attempt > 1 {
-				logger.Info("[logstore] %s lock acquired after %d attempts", label, attempt)
-			}
-			return &advisoryLock{conn: conn, lockKey: lockKey}, nil
-		}
-
-		// Lock not acquired -- check if we've exceeded the timeout
-		if time.Now().After(deadline) {
-			conn.Close()
-			return nil, fmt.Errorf(
-				"failed to acquire logstore %s lock (key=%d) after %d attempts over %s\n\n"+
-					"This usually means another Bifrost pod (or a previous crashed pod's lingering\n"+
-					"database session) is still holding the lock. To diagnose and resolve:\n\n"+
-					"1. Find who holds the lock:\n"+
-					"   SELECT pid, usename, application_name, client_addr, backend_start, state, query\n"+
-					"   FROM pg_stat_activity\n"+
-					"   WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = %d AND granted = true);\n\n"+
-					"2. If the session belongs to a dead/crashed pod, terminate it:\n"+
-					"   SELECT pg_terminate_backend(<pid_from_step_1>);\n\n"+
-					"3. List all sessions waiting for this lock:\n"+
-					"   SELECT pid, usename, client_addr, state, wait_event\n"+
-					"   FROM pg_stat_activity\n"+
-					"   WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = %d AND granted = false);\n\n"+
-					"After terminating the stale session, restart this pod and it should proceed normally.",
-				label, lockKey, attempt, advisoryLockTimeout,
-				lockKey, lockKey,
-			)
-		}
-
-		logger.Info("[logstore] waiting for %s lock (attempt %d/%d) - another node is running %s operations, retrying in %s...",
-			label, attempt, maxAttempts, label, advisoryLockRetryInterval)
-
-		// Wait before retrying, but respect context cancellation
-		select {
-		case <-ctx.Done():
-			conn.Close()
-			return nil, fmt.Errorf("context cancelled while waiting for %s lock: %w", label, ctx.Err())
-		case <-time.After(advisoryLockRetryInterval):
-		}
+	if err := postgresconn.WaitForAdvisoryLock(ctx, conn, logger, postgresconn.AdvisoryWaitOptions{
+		Key:           lockKey,
+		Label:         "logstore " + label,
+		LogPrefix:     "[logstore]",
+		RetryInterval: advisoryLockRetryInterval,
+		Timeout:       advisoryLockTimeout,
+		BusyTimeout:   busyTimeout,
+	}); err != nil {
+		conn.Close()
+		return nil, err
 	}
+	return &advisoryLock{conn: conn, lockKey: lockKey}, nil
 }
 
 // release unlocks and closes the dedicated connection.
@@ -169,12 +146,12 @@ func (l *advisoryLock) release(ctx context.Context) {
 
 // acquireMigrationLock acquires the serialization lock for schema migrations.
 func acquireMigrationLock(ctx context.Context, db *gorm.DB, logger schemas.Logger) (*advisoryLock, error) {
-	return acquireAdvisoryLock(ctx, db, logger, migrationAdvisoryLockKey, "migration")
+	return acquireAdvisoryLock(ctx, db, logger, migrationAdvisoryLockKey, "migration", advisoryLockBusyTimeout)
 }
 
 // acquireIndexLock acquires the serialization lock for the background index build.
 func acquireIndexLock(ctx context.Context, db *gorm.DB, logger schemas.Logger) (*advisoryLock, error) {
-	return acquireAdvisoryLock(ctx, db, logger, indexAdvisoryLockKey, "index")
+	return acquireAdvisoryLock(ctx, db, logger, indexAdvisoryLockKey, "index", 0)
 }
 
 // migrationStep records the migration IDs written by one migration function.
@@ -199,14 +176,65 @@ func pendingMigrationStepIDs(ctx context.Context, db *gorm.DB, steps []migration
 	return migrator.PendingIDs(ctx, db, migrator.DefaultOptions, migrationStepIDs(steps))
 }
 
-// runMigrationSteps runs migration steps in their declared order.
+// migrationStepLockRetry tunes how runMigrationSteps retries a step that fails
+// on a lock timeout. The zero value takes postgresconn's defaults; a variable
+// only so tests can shrink the budget and backoff.
+var migrationStepLockRetry postgresconn.LockRetryOptions
+
+// runMigrationSteps runs migration steps in their declared order. It reads the
+// pending IDs once and skips steps whose IDs are all recorded, so a deploy with
+// one new migration does not pay a round trip per already-applied step. If the
+// preflight read fails, every step runs and each one checks its own row. A step
+// that fails on a lock timeout is retried within postgresconn's retry budget.
 func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep) error {
+	return runMigrationStepsWithRetry(ctx, db, logger, steps, migrationStepLockRetry)
+}
+
+// runMigrationStepsWithRetry is runMigrationSteps with explicit lock-timeout
+// retry options; a zero budget takes postgresconn's default.
+func runMigrationStepsWithRetry(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep, retry postgresconn.LockRetryOptions) error {
+	pending, err := pendingMigrationStepIDs(ctx, db, steps)
+	var pendingSet map[string]struct{}
+	if err != nil {
+		logger.Warn("[logstore] migration preflight failed; running every step: %v", err)
+	} else {
+		pendingSet = make(map[string]struct{}, len(pending))
+		for _, id := range pending {
+			pendingSet[id] = struct{}{}
+		}
+	}
+	// On a lock timeout, log who holds the log tables: on a rolling upgrade the
+	// blocker is almost always an old replica's long read, which an operator can
+	// cancel to let the migration through.
+	retry.Describe = func(ctx context.Context) string {
+		return postgresconn.DescribeTableLockHolders(ctx, db, "logs", "mcp_tool_logs")
+	}
 	for _, step := range steps {
-		if err := step.run(ctx, db, logger); err != nil {
+		if pendingSet != nil && !stepHasPendingID(step, pendingSet) {
+			continue
+		}
+		// A step that times out waiting for a table lock (another session holds a
+		// conflicting lock, e.g. a long read on the table being altered) is retried
+		// with backoff instead of failing the boot. Steps are idempotent: the
+		// migrator records completed IDs and the DDL helpers use IF [NOT] EXISTS.
+		label := "[logstore] migration " + strings.Join(step.IDs, ",")
+		if err := postgresconn.RunWithLockRetry(ctx, logger, label, retry, func() error {
+			return step.run(ctx, db, logger)
+		}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// stepHasPendingID reports whether any ID the step writes is still pending.
+func stepHasPendingID(step migrationStep, pending map[string]struct{}) bool {
+	for _, id := range step.IDs {
+		if _, ok := pending[id]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // logstoreMigrationSteps is the ordered source of truth for logstore migration
@@ -290,10 +318,31 @@ var logstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"mcp_tool_logs_add_plugin_logs_column"}, run: migrationAddMCPPluginLogsColumn},
 	{IDs: []string{"logs_add_video_edit_input_column"}, run: migrationAddVideoEditInputColumn},
 	{IDs: []string{"logs_add_upstream_and_overhead_latency_columns"}, run: migrationAddUpstreamAndOverheadLatencyColumns},
+	{IDs: []string{"logs_add_complexity_routing_columns"}, run: migrationAddComplexityRoutingColumns},
+	{IDs: []string{"logs_add_session_id_column"}, run: migrationAddSessionIDColumn},
+	{IDs: []string{"logs_add_routing_metadata_column"}, run: migrationAddRoutingMetadataColumn},
 	{IDs: []string{"logs_add_batch_debug_column"}, run: migrationAddBatchDebugColumn},
 	{IDs: []string{"logs_add_cost_breakdown_columns"}, run: migrationAddCostBreakdownColumns},
 	{IDs: []string{"logs_recreate_matviews_with_cost_breakdown"}, run: migrationRecreateMatViewsWithCostBreakdown},
 	{IDs: []string{"logs_add_overhead_breakdown_column"}, run: migrationAddOverheadBreakdownColumn},
+	{IDs: []string{"webhook_deliveries_add_filter_indexes_v1"}, run: migrationAddWebhookDeliveryFilterIndexes},
+	{IDs: []string{"logs_add_video_debug_column"}, run: migrationAddVideoDebugColumn},
+	{IDs: []string{"logs_add_project_columns"}, run: migrationAddProjectColumns},
+	{IDs: []string{"mcp_tool_logs_add_project_columns"}, run: migrationAddProjectColumnsToMCPToolLogs},
+	{IDs: []string{"logs_add_served_model_column"}, run: migrationAddServedModelColumn},
+	{IDs: []string{"logs_add_tool_call_names_column"}, run: migrationAddToolCallNamesColumn},
+	{IDs: []string{"mcp_tool_logs_add_governance_snapshots"}, run: migrationAddMCPGovernanceSnapshots},
+	{IDs: []string{"logs_add_warp_conversation_tables"}, run: migrationAddWarpConversationTables},
+	{IDs: []string{"logs_add_warp_conversations_updated_at_index"}, run: migrationAddWarpConversationsUpdatedAtIndex},
+	{IDs: []string{"logs_add_warp_message_outcome_columns"}, run: migrationAddWarpMessageOutcomeColumns},
+	{IDs: []string{"logs_add_embedding_input_column"}, run: migrationAddEmbeddingInputColumn},
+	{IDs: []string{"logs_add_owner_timestamp_indexes"}, run: migrationAddOwnerTimestampIndexes},
+	{IDs: []string{"logs_add_ranking_name_timestamp_indexes"}, run: migrationAddRankingNameTimestampIndexes},
+	{IDs: []string{"logs_add_live_session_column"}, run: migrationAddLiveSessionColumn},
+	{IDs: []string{"agent_logs_init"}, run: migrationCreateAgentLogsTable},
+	{IDs: []string{"agent_logs_add_raw_payload_columns"}, run: migrationAddAgentRawPayloadColumns},
+	{IDs: []string{"logs_add_matview_refresh_state_table"}, run: migrationAddMatViewRefreshStateTable},
+	{IDs: []string{"logs_add_is_passthrough_column"}, run: migrationAddIsPassthroughColumn},
 }
 
 // areThereAnyPendingMigrations returns true if there are any pending migrations to be applied.
@@ -310,8 +359,29 @@ func areThereAnyPendingMigrations(ctx context.Context, db *gorm.DB, logger schem
 }
 
 // triggerMigrations runs all registered logstore schema migrations in order under
-// a PostgreSQL advisory lock so only one node migrates the logstore at a time.
+// a PostgreSQL advisory lock so only one node migrates the logstore at a time,
+// pausing materialized-view refreshes with the default options.
 func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return triggerMigrationsWithPause(ctx, db, logger, MatViewPauseOptions{CancelAfter: DefaultMatViewPauseCancelAfter})
+}
+
+// pauseMatViewsForMigrations is the pause triggerMigrationsWithPause takes; a
+// variable only so tests can switch it off to reproduce the pre-pause behaviour.
+var pauseMatViewsForMigrations = PauseMatViewsForMigrations
+
+// triggerMigrationsWithPause is triggerMigrations with explicit matview pause
+// options. When there is work to do, refreshes are paused for the whole run so a
+// long REFRESH from any replica (including an older release mid-rollout) cannot
+// hold the snapshot and table lock the DDL below needs.
+func triggerMigrationsWithPause(ctx context.Context, db *gorm.DB, logger schemas.Logger, pauseOpts MatViewPauseOptions) error {
+	return triggerMigrationsWithOptions(ctx, db, logger, pauseOpts, migrationStepLockRetry)
+}
+
+// triggerMigrationsWithOptions is triggerMigrationsWithPause with the lock-timeout
+// retry options too, so a configured migration_lock_retry_budget governs how
+// long a blocked step keeps retrying. A test override of migrationStepLockRetry
+// keeps precedence over the configured budget.
+func triggerMigrationsWithOptions(ctx context.Context, db *gorm.DB, logger schemas.Logger, pauseOpts MatViewPauseOptions, retry postgresconn.LockRetryOptions) error {
 	if !areThereAnyPendingMigrations(ctx, db, logger) {
 		logger.Info("[logstore] migrations already current; skipping migration lock")
 		return nil
@@ -329,7 +399,12 @@ func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) 
 		return nil
 	}
 
-	return runMigrationSteps(ctx, db, logger, logstoreMigrationSteps)
+	// Taken after the migration lock and released before it (defers run LIFO),
+	// matching the configstore order so the two locks never invert.
+	releasePause := pauseMatViewsForMigrations(ctx, db, logger, pauseOpts)
+	defer releasePause()
+
+	return runMigrationStepsWithRetry(ctx, db, logger, logstoreMigrationSteps, migrationStepLockRetry.WithBudgetFallback(retry))
 }
 
 // migrationInit creates the logs table if it does not exist.
@@ -697,6 +772,39 @@ func migrationAddOverheadBreakdownColumn(ctx context.Context, db *gorm.DB, logge
 	return nil
 }
 
+// migrationAddRoutingMetadataColumn adds the routing_metadata column to the logs
+// table, so the semantic classification embed and llm classification calls
+// the routing plugin made for a request are visible in the log detail view,
+// mirroring how guardrail_debug already surfaces guardrail judge calls.
+func migrationAddRoutingMetadataColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_routing_metadata_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "routing_metadata")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &Log{}, "routing_metadata")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding routing_metadata column: %s", err.Error())
+	}
+	return nil
+}
+
 // migrationAddResponsesInputHistoryColumn adds the responses_input_history column to the logs table.
 func migrationAddResponsesInputHistoryColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "logs_init_add_responses_input_history_column"
@@ -822,18 +930,25 @@ func migrationAddPerformanceIndexes(ctx context.Context, db *gorm.DB, logger sch
 				}
 			}
 
-			// Add index on selected_key_id for filtering
-			if !migrator.HasIndex(&Log{}, "idx_logs_selected_key_id") {
+			// Add index on selected_key_id for filtering. The struct tags now define
+			// the (selected_key_id, timestamp) composite instead, so older tables get
+			// the single-column index by raw SQL and
+			// migrationAddRankingNameTimestampIndexes later swaps it for the composite.
+			if !migrator.HasIndex(&Log{}, "idx_logs_selected_key_ts") && !migrator.HasIndex(&Log{}, "idx_logs_selected_key_id") {
 				logger.Info("[logstore] %s: creating index idx_logs_selected_key_id on Log", migrationName)
-				if err := migrator.CreateIndex(&Log{}, "idx_logs_selected_key_id"); err != nil {
+				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_selected_key_id ON logs(selected_key_id)").Error; err != nil {
 					return fmt.Errorf("failed to create index on selected_key_id: %w", err)
 				}
 			}
 
-			// Add index on virtual_key_id for filtering
-			if !migrator.HasIndex(&Log{}, "idx_logs_virtual_key_id") {
+			// Add index on virtual_key_id for filtering. The struct tags now define
+			// the (virtual_key_id, timestamp) composite instead, so a table created
+			// from them already has an index leading on virtual_key_id; older tables
+			// get the single-column index by raw SQL, and
+			// migrationAddOwnerTimestampIndexes later swaps it for the composite.
+			if !migrator.HasIndex(&Log{}, "idx_logs_vk_ts") && !migrator.HasIndex(&Log{}, "idx_logs_virtual_key_id") {
 				logger.Info("[logstore] %s: creating index idx_logs_virtual_key_id on Log", migrationName)
-				if err := migrator.CreateIndex(&Log{}, "idx_logs_virtual_key_id"); err != nil {
+				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_logs_virtual_key_id ON logs(virtual_key_id)").Error; err != nil {
 					return fmt.Errorf("failed to create index on virtual_key_id: %w", err)
 				}
 			}
@@ -1349,9 +1464,11 @@ func migrationAddVirtualKeyColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB
 			}
 
 			// Create index on virtual_key_id column
-			if tx.Dialector.Name() != "postgres" && !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id") {
+			// A table created from the current struct tags already has the
+			// (virtual_key_id, timestamp) composite; see migrationAddOwnerTimestampIndexes.
+			if tx.Dialector.Name() != "postgres" && !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_vk_ts") && !migrator.HasIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id") {
 				logger.Info("[logstore] %s: creating index idx_mcp_logs_virtual_key_id on MCPToolLog", migrationName)
-				if err := migrator.CreateIndex(&MCPToolLog{}, "idx_mcp_logs_virtual_key_id"); err != nil {
+				if err := tx.Exec("CREATE INDEX IF NOT EXISTS idx_mcp_logs_virtual_key_id ON mcp_tool_logs(virtual_key_id)").Error; err != nil {
 					return fmt.Errorf("failed to create index on virtual_key_id: %w", err)
 				}
 			}
@@ -1790,6 +1907,96 @@ func migrationAddWebhookDeliveryRequestIDColumn(ctx context.Context, db *gorm.DB
 		return fmt.Errorf("error while adding request_id column to webhook_deliveries: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddWebhookDeliveryFilterIndexes creates the indexes backing the
+// delivery-history filters (outcome, event, request_id, plus the composite
+// endpoint_id+created_at used by the default page query) on databases that
+// predate them.
+//
+// Postgres is deliberately skipped: there the same indexes are built
+// post-startup and CONCURRENTLY by ensurePerformanceIndexes, so a rolling
+// upgrade never blocks writes on this insert-heavy table.
+func migrationAddWebhookDeliveryFilterIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	logger.Info("[logstore] starting migration %s", webhookDeliveryFilterIndexMigrationName)
+	defer logger.Info("[logstore] finished migration %s", webhookDeliveryFilterIndexMigrationName)
+	if err := webhookDeliveryFilterIndexMigration(ctx, db, logger).Migrate(); err != nil {
+		return fmt.Errorf("error while adding webhook delivery filter indexes: %s", err.Error())
+	}
+	return nil
+}
+
+const webhookDeliveryFilterIndexMigrationName = "webhook_deliveries_add_filter_indexes_v1"
+
+// webhookDeliveryFilterIndexNames are the indexes this migration owns on the
+// dialects it applies to. On Postgres the same four are built post-startup and
+// CONCURRENTLY by ensurePerformanceIndexes instead.
+var webhookDeliveryFilterIndexNames = []string{
+	"idx_webhook_deliveries_endpoint_created",
+	"idx_webhook_deliveries_outcome",
+	"idx_webhook_deliveries_event",
+	"idx_webhook_deliveries_request_id",
+}
+
+// webhookDeliveryFilterIndexMigration builds the migration so both directions
+// are reachable from a test — the rollback in particular, which must stay as
+// Postgres-exempt as the forward direction.
+func webhookDeliveryFilterIndexMigration(ctx context.Context, db *gorm.DB, logger schemas.Logger) *migrator.Gormigrate {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	indexes := webhookDeliveryFilterIndexNames
+	return migrator.New(db, &opts, []*migrator.Migration{{
+		ID: webhookDeliveryFilterIndexMigrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if skipWebhookDeliveryFilterIndexes(tx) {
+				return nil
+			}
+			dbMigrator := tx.Migrator()
+			if !dbMigrator.HasTable(&WebhookDelivery{}) {
+				return nil
+			}
+			for _, index := range indexes {
+				if dbMigrator.HasIndex(&WebhookDelivery{}, index) {
+					continue
+				}
+				logger.Info("[logstore] %s: creating index %s on WebhookDelivery", webhookDeliveryFilterIndexMigrationName, index)
+				if err := dbMigrator.CreateIndex(&WebhookDelivery{}, index); err != nil {
+					return fmt.Errorf("failed to create index %s: %w", index, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Symmetric with Migrate: on Postgres this migration never created
+			// these indexes, so it must not drop them either. They belong to
+			// ensurePerformanceIndexes, which builds them CONCURRENTLY — a plain
+			// DropIndex here would take an ACCESS EXCLUSIVE lock on
+			// webhook_deliveries inside this transaction, blocking reads and
+			// writes on an insert-heavy table.
+			if skipWebhookDeliveryFilterIndexes(tx) {
+				return nil
+			}
+			dbMigrator := tx.Migrator()
+			for _, index := range indexes {
+				if !dbMigrator.HasIndex(&WebhookDelivery{}, index) {
+					continue
+				}
+				if err := dbMigrator.DropIndex(&WebhookDelivery{}, index); err != nil {
+					return fmt.Errorf("failed to drop index %s: %w", index, err)
+				}
+			}
+			return nil
+		},
+	}})
+}
+
+// skipWebhookDeliveryFilterIndexes reports whether this migration leaves the
+// filter indexes alone on the given dialect. See the comment on
+// migrationAddWebhookDeliveryFilterIndexes.
+func skipWebhookDeliveryFilterIndexes(tx *gorm.DB) bool {
+	return tx.Dialector.Name() == "postgres"
 }
 
 // migrationAddMetadataColumn adds the metadata JSON column to the logs table.
@@ -2234,19 +2441,11 @@ func migrationAddMultiTeamBusinessUnitGINIndexes(ctx context.Context, db *gorm.D
 // the long-running CREATE INDEX CONCURRENTLY does not block pod startup. Callers that
 // want non-blocking behaviour should invoke this in a goroutine (see postgres.go).
 func ensureMetadataGINIndex(ctx context.Context, conn *sql.Conn) error {
-	// pg_index.indisvalid is false when a CONCURRENTLY build was interrupted.
-	// COALESCE returns false when no row matches (index does not exist yet).
-	var indexValid bool
-
-	if err := conn.QueryRowContext(ctx, `
-		SELECT COALESCE(bool_and(pi.indisvalid), false)
-		FROM pg_class pc
-		JOIN pg_index pi ON pi.indrelid = pc.oid
-		JOIN pg_class ic ON ic.oid = pi.indexrelid
-		WHERE pc.relname = 'logs'
-		  AND ic.relname = 'idx_logs_metadata_gin'
-	`).Scan(&indexValid); err != nil {
-		return fmt.Errorf("failed to query GIN index validity: %w", err)
+	// pg_index.indisvalid is false when a CONCURRENTLY build was interrupted;
+	// a missing index reads as not valid.
+	indexValid, err := pgIndexValid(ctx, conn, "logs", "idx_logs_metadata_gin")
+	if err != nil {
+		return err
 	}
 
 	if indexValid {
@@ -2257,8 +2456,8 @@ func ensureMetadataGINIndex(ctx context.Context, conn *sql.Conn) error {
 	}
 
 	// Drop any INVALID remnant left by a prior interrupted CONCURRENTLY build.
-	if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS idx_logs_metadata_gin"); err != nil {
-		return fmt.Errorf("failed to drop invalid metadata GIN index: %w", err)
+	if err := pgDropIndexConcurrently(ctx, conn, "idx_logs_metadata_gin"); err != nil {
+		return err
 	}
 
 	// Boost memory available for the sort phase so PostgreSQL needs fewer merge
@@ -2292,21 +2491,87 @@ func ensureMetadataGINIndex(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
+// invalidMetadataCleanupJobID and cachedReadTokensBackfillJobID are the
+// migrations-ledger ids that record the one-time background data jobs as done.
+// They are not migration steps (the background goroutine runs the jobs after
+// startup), so they never appear in logstoreMigrationSteps; the ledger is only
+// where their completion is remembered across boots.
+const (
+	invalidMetadataCleanupJobID   = "logs_bg_invalid_metadata_cleanup_v1"
+	cachedReadTokensBackfillJobID = "logs_bg_cached_read_tokens_backfill_v1"
+)
+
+// maintenanceWindow is the timestamp span one keyset maintenance statement
+// covers. Each statement walks one hour of the timestamp index, so no single
+// UPDATE touches more than an hour of traffic and no statement rescans rows an
+// earlier one already passed.
+const maintenanceWindow = time.Hour
+
+// cleanupInvalidLogMetadata nulls metadata values that are not JSON objects so
+// the metadata GIN index and the jsonb filters never see them. It runs once:
+// completion is recorded in the migrations ledger and later boots skip the scan.
 func cleanupInvalidLogMetadata(ctx context.Context, conn *sql.Conn) error {
-	return execBatchedMaintenanceUpdate(ctx, conn, "invalid metadata cleanup", `
-		WITH batch AS (
-			SELECT ctid
-			FROM logs
-			WHERE metadata IS NOT NULL
+	return runBackgroundJobOnce(ctx, conn, invalidMetadataCleanupJobID, func() error {
+		return execWindowedMaintenanceUpdate(ctx, conn, "invalid metadata cleanup", `
+			UPDATE logs
+			SET metadata = NULL
+			WHERE timestamp >= $1 AND timestamp < $2
+			  AND metadata IS NOT NULL
 			  AND metadata IS NOT JSON OBJECT
-			LIMIT $1
-			FOR UPDATE SKIP LOCKED
-		)
-		UPDATE logs
-		SET metadata = NULL
-		FROM batch
-		WHERE logs.ctid = batch.ctid
-	`)
+		`)
+	})
+}
+
+// runBackgroundJobOnce runs job unless id is already recorded in the
+// migrations ledger, and records id after job succeeds. A failed ledger read
+// runs the job anyway (the jobs are idempotent), and a failed ledger write only
+// means the next boot repeats the job, so neither blocks the index builds that
+// follow.
+func runBackgroundJobOnce(ctx context.Context, conn *sql.Conn, id string, job func() error) error {
+	var recorded int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM migrations WHERE id = $1", id).Scan(&recorded); err == nil && recorded > 0 {
+		return nil
+	}
+	if err := job(); err != nil {
+		return err
+	}
+	recordBackgroundJob(ctx, conn, id)
+	return nil
+}
+
+// recordBackgroundJob writes id to the migrations ledger with the same
+// sequence/applied_at/status shape the migrator writes. A ledger created
+// before those columns existed only has id, so that insert is the fallback.
+func recordBackgroundJob(ctx context.Context, conn *sql.Conn, id string) {
+	if _, err := conn.ExecContext(ctx, `
+		INSERT INTO migrations (id, sequence, applied_at, status)
+		SELECT $1, COALESCE(MAX(sequence), 0) + 1, NOW(), 'success' FROM migrations
+		ON CONFLICT (id) DO NOTHING
+	`, id); err == nil {
+		return
+	}
+	_, _ = conn.ExecContext(ctx, "INSERT INTO migrations (id) VALUES ($1) ON CONFLICT (id) DO NOTHING", id)
+}
+
+// execWindowedMaintenanceUpdate runs query once per maintenanceWindow from the
+// oldest to the newest logs timestamp. query must take the window as $1
+// (inclusive) and $2 (exclusive) on timestamp, so each statement is an index
+// range scan. This replaces restart-from-the-start ctid batching, which
+// rescanned every already-clean row on each batch.
+func execWindowedMaintenanceUpdate(ctx context.Context, conn *sql.Conn, label string, query string) error {
+	var minTS, maxTS sql.NullTime
+	if err := conn.QueryRowContext(ctx, "SELECT MIN(timestamp), MAX(timestamp) FROM logs").Scan(&minTS, &maxTS); err != nil {
+		return fmt.Errorf("failed to read %s range: %w", label, err)
+	}
+	if !minTS.Valid || !maxTS.Valid {
+		return nil
+	}
+	for start := minTS.Time.Truncate(maintenanceWindow); !start.After(maxTS.Time); start = start.Add(maintenanceWindow) {
+		if _, err := conn.ExecContext(ctx, query, start, start.Add(maintenanceWindow)); err != nil {
+			return fmt.Errorf("failed to run %s window starting %s: %w", label, start.Format(time.RFC3339), err)
+		}
+	}
+	return nil
 }
 
 // ensureArrayGINIndex builds a partial jsonb_path_ops GIN index on a JSON-array
@@ -2317,23 +2582,17 @@ func cleanupInvalidLogMetadata(ctx context.Context, conn *sql.Conn) error {
 // JSON array or NULL in these columns. indexName/column are internal constants
 // (not user input), so identifier interpolation is safe. Postgres-only.
 func ensureArrayGINIndex(ctx context.Context, conn *sql.Conn, indexName, column string) error {
-	var indexValid bool
-	if err := conn.QueryRowContext(ctx, `
-		SELECT COALESCE(bool_and(pi.indisvalid), false)
-		FROM pg_class pc
-		JOIN pg_index pi ON pi.indrelid = pc.oid
-		JOIN pg_class ic ON ic.oid = pi.indexrelid
-		WHERE pc.relname = 'logs' AND ic.relname = $1
-	`, indexName).Scan(&indexValid); err != nil {
-		return fmt.Errorf("failed to query GIN index validity for %s: %w", indexName, err)
+	indexValid, err := pgIndexValid(ctx, conn, "logs", indexName)
+	if err != nil {
+		return err
 	}
 	if indexValid {
 		return nil
 	}
 
 	// Drop any INVALID remnant left by a prior interrupted CONCURRENTLY build.
-	if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+indexName); err != nil {
-		return fmt.Errorf("failed to drop invalid GIN index %s: %w", indexName, err)
+	if err := pgDropIndexConcurrently(ctx, conn, indexName); err != nil {
+		return err
 	}
 
 	// Non-fatal tuning to speed up the build.
@@ -2419,20 +2678,13 @@ func ensureDashboardEnhancements(ctx context.Context, conn *sql.Conn) error {
 
 	// Rebuild histogram covering index with cached_read_tokens included,
 	// but only if missing or invalid (skip if already healthy).
-	var logsIndexValid bool
-	if err := conn.QueryRowContext(ctx, `
-		SELECT COALESCE(bool_and(pi.indisvalid), false)
-		FROM pg_class pc
-		JOIN pg_index pi ON pi.indrelid = pc.oid
-		JOIN pg_class ic ON ic.oid = pi.indexrelid
-		WHERE pc.relname = 'logs'
-		  AND ic.relname = 'idx_logs_histogram_cover'
-	`).Scan(&logsIndexValid); err != nil {
-		return fmt.Errorf("failed to check logs histogram index validity: %w", err)
+	logsIndexValid, err := pgIndexValid(ctx, conn, "logs", "idx_logs_histogram_cover")
+	if err != nil {
+		return err
 	}
 	if !logsIndexValid {
-		if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS idx_logs_histogram_cover"); err != nil {
-			return fmt.Errorf("failed to drop old covering index: %w", err)
+		if err := pgDropIndexConcurrently(ctx, conn, "idx_logs_histogram_cover"); err != nil {
+			return err
 		}
 		createLogsIndexSQL := `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_histogram_cover ON logs(
 			status, timestamp,
@@ -2445,20 +2697,13 @@ func ensureDashboardEnhancements(ctx context.Context, conn *sql.Conn) error {
 	}
 
 	// Create MCP histogram covering index if missing or invalid.
-	var mcpIndexValid bool
-	if err := conn.QueryRowContext(ctx, `
-		SELECT COALESCE(bool_and(pi.indisvalid), false)
-		FROM pg_class pc
-		JOIN pg_index pi ON pi.indrelid = pc.oid
-		JOIN pg_class ic ON ic.oid = pi.indexrelid
-		WHERE pc.relname = 'mcp_tool_logs'
-		  AND ic.relname = 'idx_mcp_logs_histogram_cover'
-	`).Scan(&mcpIndexValid); err != nil {
-		return fmt.Errorf("failed to check MCP histogram index validity: %w", err)
+	mcpIndexValid, err := pgIndexValid(ctx, conn, "mcp_tool_logs", "idx_mcp_logs_histogram_cover")
+	if err != nil {
+		return err
 	}
 	if !mcpIndexValid {
-		if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS idx_mcp_logs_histogram_cover"); err != nil {
-			return fmt.Errorf("failed to drop invalid MCP histogram index: %w", err)
+		if err := pgDropIndexConcurrently(ctx, conn, "idx_mcp_logs_histogram_cover"); err != nil {
+			return err
 		}
 		createMCPIndexSQL := `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_histogram_cover ON mcp_tool_logs(
 			status, timestamp, tool_name, server_label, virtual_key_id, cost
@@ -2471,43 +2716,28 @@ func ensureDashboardEnhancements(ctx context.Context, conn *sql.Conn) error {
 	return nil
 }
 
+// backfillCachedReadTokens copies cached_read_tokens out of token_usage for rows
+// written before the column existed. It runs once: completion is recorded in
+// the migrations ledger and later boots skip the scan. New rows are written with
+// the column set, so nothing needs it afterwards.
 func backfillCachedReadTokens(ctx context.Context, conn *sql.Conn) error {
-	return execBatchedMaintenanceUpdate(ctx, conn, "cached_read_tokens backfill", `
-		WITH batch AS (
-			SELECT ctid
-			FROM logs
-			WHERE cached_read_tokens = 0
+	return runBackgroundJobOnce(ctx, conn, cachedReadTokensBackfillJobID, func() error {
+		return execWindowedMaintenanceUpdate(ctx, conn, "cached_read_tokens backfill", `
+			UPDATE logs
+			SET cached_read_tokens = (token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int
+			WHERE timestamp >= $1 AND timestamp < $2
+			  AND cached_read_tokens = 0
 			  AND token_usage IS NOT NULL
 			  AND token_usage != ''
 			  AND token_usage != 'null'
 			  AND token_usage ~ '^\s*\{.*\}\s*$'
 			  AND COALESCE((token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int, 0) > 0
-			LIMIT $1
-			FOR UPDATE SKIP LOCKED
-		)
-		UPDATE logs
-		SET cached_read_tokens = (token_usage::jsonb->'prompt_tokens_details'->>'cached_read_tokens')::int
-		FROM batch
-		WHERE logs.ctid = batch.ctid
-	`)
+		`)
+	})
 }
 
-func execBatchedMaintenanceUpdate(ctx context.Context, conn *sql.Conn, label string, query string) error {
-	for {
-		result, err := conn.ExecContext(ctx, query, maintenanceUpdateBatchSize)
-		if err != nil {
-			return fmt.Errorf("failed to run %s batch: %w", label, err)
-		}
-		rowsAffected, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("failed to read %s batch rows affected: %w", label, err)
-		}
-		if rowsAffected == 0 {
-			return nil
-		}
-	}
-}
-
+// execBatchedGormMaintenanceUpdate repeats a LIMIT-$1 maintenance update inside a
+// migration until a batch affects no rows.
 func execBatchedGormMaintenanceUpdate(tx *gorm.DB, label string, query string) error {
 	for {
 		result := tx.Exec(query, maintenanceUpdateBatchSize)
@@ -2591,16 +2821,6 @@ var performanceIndexes = []performanceIndexDef{
 	},
 	{
 		table: "logs",
-		name:  "idx_logs_selected_key_id",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_selected_key_id ON logs(selected_key_id)",
-	},
-	{
-		table: "logs",
-		name:  "idx_logs_virtual_key_id",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_virtual_key_id ON logs(virtual_key_id)",
-	},
-	{
-		table: "logs",
 		name:  "idx_logs_timestamp",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)",
 	},
@@ -2633,6 +2853,22 @@ var performanceIndexes = []performanceIndexDef{
 		table: "logs",
 		name:  "idx_logs_cost",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cost ON logs(cost)",
+	},
+	// The logs list sorts cost and latency DESC NULLS LAST so requests with no
+	// value trail the ones that have it. A plain btree only yields ASC NULLS LAST
+	// or DESC NULLS FIRST, so without these the DESC sort seq-scans every row
+	// that survives the WHERE clause. ASC NULLS LAST is served by idx_logs_cost
+	// and idx_logs_latency. id DESC covers the tiebreak in searchLogs' ORDER BY.
+	// Not partial: the query keeps NULL rows, so a partial index is unusable.
+	{
+		table: "logs",
+		name:  "idx_logs_cost_desc_nulls_last",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cost_desc_nulls_last ON logs(cost DESC NULLS LAST, id DESC)",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_latency_desc_nulls_last",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_latency_desc_nulls_last ON logs(latency DESC NULLS LAST, id DESC)",
 	},
 	{
 		table: "logs",
@@ -2676,11 +2912,6 @@ var performanceIndexes = []performanceIndexDef{
 	},
 	{
 		table: "mcp_tool_logs",
-		name:  "idx_mcp_logs_virtual_key_id",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_virtual_key_id ON mcp_tool_logs(virtual_key_id)",
-	},
-	{
-		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_request_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_request_id ON mcp_tool_logs(request_id)",
 	},
@@ -2708,6 +2939,13 @@ var performanceIndexes = []performanceIndexDef{
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_routing_engines_arr ON logs USING GIN (string_to_array(routing_engines_used, ',')) WHERE routing_engines_used IS NOT NULL",
 	},
 	{
+		table: "logs",
+		name:  "idx_logs_tool_call_names_arr",
+		// Backs the tool_call_names filter's array-overlap predicate; partial so
+		// the (dominant) rows that called no tools stay out of the index.
+		sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_tool_call_names_arr ON logs USING GIN (string_to_array(tool_call_names, ',')) WHERE tool_call_names IS NOT NULL",
+	},
+	{
 		table: "mcp_tool_logs",
 		name:  "idx_mcp_logs_timestamp",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_timestamp ON mcp_tool_logs (timestamp)",
@@ -2732,26 +2970,6 @@ var performanceIndexes = []performanceIndexDef{
 	},
 	{
 		table: "logs",
-		name:  "idx_logs_team_id",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_team_id ON logs(team_id)",
-	},
-	{
-		table: "logs",
-		name:  "idx_logs_customer_id",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_customer_id ON logs(customer_id)",
-	},
-	{
-		table: "logs",
-		name:  "idx_logs_user_id",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_user_id ON logs(user_id)",
-	},
-	{
-		table: "logs",
-		name:  "idx_logs_business_unit_id",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_business_unit_id ON logs(business_unit_id)",
-	},
-	{
-		table: "logs",
 		name:  "idx_logs_parent_request_id",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_parent_request_id ON logs(parent_request_id) WHERE parent_request_id IS NOT NULL",
 	},
@@ -2766,14 +2984,43 @@ var performanceIndexes = []performanceIndexDef{
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_stop_reason ON logs(stop_reason)",
 	},
 	{
-		table: "mcp_tool_logs",
-		name:  "idx_mcp_logs_user_id",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_user_id ON mcp_tool_logs(user_id)",
+		table: "logs",
+		name:  "idx_logs_complexity_tier",
+		// Partial: only requests routed through a complexity_tier rule carry a tier,
+		// so the index skips the (dominant) NULL rows.
+		sql: "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_complexity_tier ON logs(complexity_tier) WHERE complexity_tier IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_complexity_mechanism",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_complexity_mechanism ON logs(complexity_mechanism) WHERE complexity_mechanism IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_session_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_session_id ON logs(session_id) WHERE session_id IS NOT NULL",
+	},
+	{
+		table: "logs",
+		// Session grouping keeps each session's earliest chain root, which probes
+		// a session's peers in timestamp order.
+		name: "idx_logs_session_id_timestamp",
+		sql:  "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_session_id_timestamp ON logs(session_id, timestamp) WHERE session_id IS NOT NULL",
+	},
+	{
+		table: "logs",
+		name:  "idx_logs_agent_correlation_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_agent_correlation_id ON logs(agent_correlation_id) WHERE agent_correlation_id IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
-		name:  "idx_mcp_logs_team_id",
-		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_team_id ON mcp_tool_logs(team_id)",
+		name:  "idx_mcp_logs_session_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_session_id ON mcp_tool_logs(session_id) WHERE session_id IS NOT NULL",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_agent_correlation_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_agent_correlation_id ON mcp_tool_logs(agent_correlation_id) WHERE agent_correlation_id IS NOT NULL",
 	},
 	{
 		table: "mcp_tool_logs",
@@ -2830,6 +3077,34 @@ var performanceIndexes = []performanceIndexDef{
 		name:  "idx_logs_cluster_node_inc_usage",
 		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_logs_cluster_node_inc_usage ON logs(cluster_node_id, status, inc_number) WHERE cluster_node_id IS NOT NULL AND inc_number IS NOT NULL",
 	},
+	// Webhook delivery history filtering (see WebhookDeliverySearchFilters).
+	// The composite backs the default endpoint-scoped, newest-first page query;
+	// the rest back the sidebar filters.
+	{
+		table: "webhook_deliveries",
+		name:  "idx_webhook_deliveries_endpoint_created",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_webhook_deliveries_endpoint_created ON webhook_deliveries(endpoint_id, created_at DESC)",
+	},
+	{
+		table: "webhook_deliveries",
+		name:  "idx_webhook_deliveries_outcome",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_webhook_deliveries_outcome ON webhook_deliveries(outcome)",
+	},
+	{
+		table: "webhook_deliveries",
+		name:  "idx_webhook_deliveries_event",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_webhook_deliveries_event ON webhook_deliveries(event)",
+	},
+	{
+		table: "webhook_deliveries",
+		name:  "idx_webhook_deliveries_request_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_webhook_deliveries_request_id ON webhook_deliveries(request_id)",
+	},
+	{
+		table: "mcp_tool_logs",
+		name:  "idx_mcp_logs_project_id",
+		sql:   "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mcp_logs_project_id ON mcp_tool_logs(project_id)",
+	},
 }
 
 // ensurePerformanceIndexes checks whether each performance GIN index exists and is
@@ -2846,16 +3121,9 @@ func ensurePerformanceIndexes(ctx context.Context, conn *sql.Conn, logger schema
 
 	for _, idx := range performanceIndexes {
 		// Check if the index exists and is valid.
-		var indexValid bool
-		if err := conn.QueryRowContext(ctx, `
-			SELECT COALESCE(bool_and(pi.indisvalid), false)
-			FROM pg_class pc
-			JOIN pg_index pi ON pi.indrelid = pc.oid
-			JOIN pg_class ic ON ic.oid = pi.indexrelid
-			WHERE pc.relname = $1
-			  AND ic.relname = $2
-		`, idx.table, idx.name).Scan(&indexValid); err != nil {
-			return fmt.Errorf("failed to check index %s validity: %w", idx.name, err)
+		indexValid, err := pgIndexValid(ctx, conn, idx.table, idx.name)
+		if err != nil {
+			return err
 		}
 		if indexValid {
 			continue
@@ -2864,8 +3132,8 @@ func ensurePerformanceIndexes(ctx context.Context, conn *sql.Conn, logger schema
 		logger.Info("[logstore] building performance index %s on %s", idx.name, idx.table)
 
 		// Drop any INVALID remnant left by a prior interrupted CONCURRENTLY build.
-		if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+idx.name); err != nil {
-			return fmt.Errorf("failed to drop invalid index %s: %w", idx.name, err)
+		if err := pgDropIndexConcurrently(ctx, conn, idx.name); err != nil {
+			return err
 		}
 
 		// Create the index concurrently (does not block writes).
@@ -2876,6 +3144,281 @@ func ensurePerformanceIndexes(ctx context.Context, conn *sql.Conn, logger schema
 	}
 
 	return nil
+}
+
+// ownerTimestampIndexDef is one (owner, timestamp) composite index and the
+// single-column owner index it replaces.
+type ownerTimestampIndexDef struct {
+	table    string
+	name     string
+	column   string
+	replaces string
+}
+
+// createSQL returns the CONCURRENTLY build statement for the composite.
+func (d ownerTimestampIndexDef) createSQL() string {
+	return fmt.Sprintf("CREATE INDEX CONCURRENTLY IF NOT EXISTS %s ON %s(%s, timestamp)", d.name, d.table, d.column)
+}
+
+// ownerTimestampIndexes back the logs and MCP lists filtered by virtual key,
+// user or team and ordered by timestamp DESC with a LIMIT. A composite leading
+// on the owner column serves every equality lookup the single-column index
+// served, so the single-column index is dropped once the composite is valid.
+// The struct tags on Log and MCPToolLog define the same names, so fresh
+// installs build them with the table.
+var ownerTimestampIndexes = []ownerTimestampIndexDef{
+	{table: "logs", name: "idx_logs_vk_ts", column: "virtual_key_id", replaces: "idx_logs_virtual_key_id"},
+	{table: "logs", name: "idx_logs_user_ts", column: "user_id", replaces: "idx_logs_user_id"},
+	{table: "logs", name: "idx_logs_team_ts", column: "team_id", replaces: "idx_logs_team_id"},
+	{table: "mcp_tool_logs", name: "idx_mcp_logs_vk_ts", column: "virtual_key_id", replaces: "idx_mcp_logs_virtual_key_id"},
+	{table: "mcp_tool_logs", name: "idx_mcp_logs_user_ts", column: "user_id", replaces: "idx_mcp_logs_user_id"},
+	{table: "mcp_tool_logs", name: "idx_mcp_logs_team_ts", column: "team_id", replaces: "idx_mcp_logs_team_id"},
+}
+
+// rankingNameTimestampIndexes back the ranking name fallback: for each ranked id
+// the view could not name, the latest logged name is one backward walk of the
+// (id, timestamp) composite that stops at the first row carrying a name. Like
+// ownerTimestampIndexes, each replaces the single-column index on its id.
+var rankingNameTimestampIndexes = []ownerTimestampIndexDef{
+	{table: "logs", name: "idx_logs_selected_key_ts", column: "selected_key_id", replaces: "idx_logs_selected_key_id"},
+	{table: "logs", name: "idx_logs_routing_rule_ts", column: "routing_rule_id", replaces: "idx_logs_routing_rule_id"},
+	{table: "logs", name: "idx_logs_customer_ts", column: "customer_id", replaces: "idx_logs_customer_id"},
+	{table: "logs", name: "idx_logs_business_unit_ts", column: "business_unit_id", replaces: "idx_logs_business_unit_id"},
+	{table: "logs", name: "idx_logs_project_ts", column: "project_id", replaces: "idx_logs_project_id"},
+}
+
+// pgIndexValid reports whether the named index on table exists and is valid in
+// the connection's current schema. An interrupted CREATE INDEX CONCURRENTLY
+// leaves the index present but invalid. A same-named table and index in another
+// schema must not count, or the builder would skip the build and then drop this
+// schema's replaced index with no replacement.
+func pgIndexValid(ctx context.Context, conn *sql.Conn, table, name string) (bool, error) {
+	var valid bool
+	err := conn.QueryRowContext(ctx, `
+		SELECT COALESCE(bool_and(pi.indisvalid), false)
+		FROM pg_class pc
+		JOIN pg_index pi ON pi.indrelid = pc.oid
+		JOIN pg_class ic ON ic.oid = pi.indexrelid
+		WHERE pc.relnamespace = to_regnamespace(current_schema())
+		  AND pc.relname = $1
+		  AND ic.relname = $2
+	`, table, name).Scan(&valid)
+	if err != nil {
+		return false, fmt.Errorf("failed to check index %s validity: %w", name, err)
+	}
+	return valid, nil
+}
+
+// pgDropIndexConcurrently drops an INVALID remnant left by an interrupted
+// CREATE INDEX CONCURRENTLY, so the build that follows starts clean. The name is
+// qualified with the current schema, the one pgIndexValid checks: unqualified,
+// a missing index here would resolve to a same-named index in a later
+// search_path schema and drop that one instead.
+//
+// A build another backend is still running also reads as INVALID (see
+// pgWaitForIndexBuild), so it waits for that build first and skips the drop
+// when the build finished valid; every caller rebuilds with IF NOT EXISTS,
+// which then keeps it.
+func pgDropIndexConcurrently(ctx context.Context, conn *sql.Conn, name string) error {
+	qualified, err := pgQualifiedIndex(ctx, conn, name)
+	if err != nil {
+		return err
+	}
+	waited, err := pgWaitForIndexBuild(ctx, conn, qualified)
+	if err != nil {
+		return err
+	}
+	if waited {
+		var valid bool
+		if err := conn.QueryRowContext(ctx, `SELECT COALESCE((SELECT indisvalid FROM pg_index
+			WHERE indexrelid = to_regclass($1)), false)`, qualified).Scan(&valid); err != nil {
+			return fmt.Errorf("failed to check index %s validity: %w", qualified, err)
+		}
+		if valid {
+			return nil
+		}
+	}
+	if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+qualified); err != nil {
+		return fmt.Errorf("failed to drop invalid index %s: %w", qualified, err)
+	}
+	return nil
+}
+
+// concurrentIndexBuildPollInterval is how often pgWaitForIndexBuild re-checks a
+// concurrent build that another backend is still running.
+const concurrentIndexBuildPollInterval = 2 * time.Second
+
+// pgRowQuerier is the QueryRowContext of a *sql.Conn or a gorm ConnPool.
+type pgRowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// pgWaitForIndexBuild blocks while a backend is still running CREATE INDEX
+// CONCURRENTLY (or REINDEX CONCURRENTLY) for index, and reports whether it waited.
+//
+// An index under a concurrent build reads indisvalid=false, the same as the
+// leftover of an interrupted build, and that build can outlive the pod that
+// started it: when a pod is killed, Postgres ends its idle advisory-lock session
+// at once but keeps the busy build running until it next touches the socket. The
+// next pod then holds the migration lock and sees what looks like a leftover.
+// Dropping it blocks behind the live build and then fails one side with "tuple
+// concurrently updated". Callers that drop an INVALID index call this first and
+// re-check validity when it waited.
+//
+// Postgres hides index_relid in pg_stat_progress_create_index for backends of
+// another role unless the caller has pg_read_all_stats. Bifrost nodes share one
+// role; a hidden build reads as "not building" and keeps the drop-and-rebuild path.
+func pgWaitForIndexBuild(ctx context.Context, q pgRowQuerier, index string) (bool, error) {
+	for waited := false; ; waited = true {
+		var building bool
+		if err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_progress_create_index
+			WHERE index_relid = to_regclass($1))`, index).Scan(&building); err != nil {
+			return waited, fmt.Errorf("failed to check concurrent build of %s: %w", index, err)
+		}
+		if !building {
+			return waited, nil
+		}
+		select {
+		case <-ctx.Done():
+			return waited, fmt.Errorf("wait for concurrent build of %s: %w", index, ctx.Err())
+		case <-time.After(concurrentIndexBuildPollInterval):
+		}
+	}
+}
+
+// pgQualifiedIndex returns name qualified with the connection's current schema,
+// so DROP INDEX never resolves to a same-named index in another schema.
+func pgQualifiedIndex(ctx context.Context, conn *sql.Conn, name string) (string, error) {
+	var schema string
+	if err := conn.QueryRowContext(ctx, "SELECT current_schema()").Scan(&schema); err != nil {
+		return "", fmt.Errorf("failed to read current schema: %w", err)
+	}
+	return pgx.Identifier{schema, name}.Sanitize(), nil
+}
+
+// ensureOwnerTimestampIndexes builds each (owner, timestamp) composite with
+// CREATE INDEX CONCURRENTLY, dropping an INVALID leftover first, and then drops
+// the single-column index it replaces with DROP INDEX CONCURRENTLY. The drop
+// happens only after the composite is confirmed valid, so an owner lookup
+// always has an index. Idempotent; Postgres only (see postgres.go).
+func ensureOwnerTimestampIndexes(ctx context.Context, conn *sql.Conn, logger schemas.Logger) error {
+	_, _ = conn.ExecContext(ctx, "SET maintenance_work_mem = '512MB'")
+	_, _ = conn.ExecContext(ctx, "SET max_parallel_maintenance_workers = 4")
+
+	for _, idx := range append(append([]ownerTimestampIndexDef{}, ownerTimestampIndexes...), rankingNameTimestampIndexes...) {
+		valid, err := pgIndexValid(ctx, conn, idx.table, idx.name)
+		if err != nil {
+			return err
+		}
+		if !valid {
+			logger.Info("[logstore] building index %s on %s", idx.name, idx.table)
+			if err := pgDropIndexConcurrently(ctx, conn, idx.name); err != nil {
+				return err
+			}
+			if _, err := conn.ExecContext(ctx, idx.createSQL()); err != nil {
+				return fmt.Errorf("failed to create index %s: %w", idx.name, err)
+			}
+			if valid, err = pgIndexValid(ctx, conn, idx.table, idx.name); err != nil {
+				return err
+			}
+			if !valid {
+				return fmt.Errorf("index %s is still invalid after build", idx.name)
+			}
+			logger.Info("[logstore] built index %s on %s", idx.name, idx.table)
+		}
+		qualifiedReplaced, err := pgQualifiedIndex(ctx, conn, idx.replaces)
+		if err != nil {
+			return err
+		}
+		if _, err := conn.ExecContext(ctx, "DROP INDEX CONCURRENTLY IF EXISTS "+qualifiedReplaced); err != nil {
+			return fmt.Errorf("failed to drop index %s replaced by %s: %w", idx.replaces, idx.name, err)
+		}
+	}
+	return nil
+}
+
+// migrationAddOwnerTimestampIndexes swaps the single-column virtual_key_id,
+// user_id and team_id indexes on logs and mcp_tool_logs for (owner, timestamp)
+// composites on SQLite and other non-Postgres databases. Postgres builds the
+// same indexes CONCURRENTLY in the background (ensureOwnerTimestampIndexes),
+// because a plain CREATE INDEX there would block writes on a large table.
+func migrationAddOwnerTimestampIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return runTimestampIndexMigration(ctx, db, logger, "logs_add_owner_timestamp_indexes", ownerTimestampIndexes)
+}
+
+// migrationAddRankingNameTimestampIndexes swaps the single-column
+// selected_key_id, routing_rule_id, customer_id, business_unit_id and project_id
+// indexes on logs for (id, timestamp) composites on SQLite and other
+// non-Postgres databases; Postgres builds them CONCURRENTLY in the background
+// (ensureOwnerTimestampIndexes).
+func migrationAddRankingNameTimestampIndexes(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return runTimestampIndexMigration(ctx, db, logger, "logs_add_ranking_name_timestamp_indexes", rankingNameTimestampIndexes)
+}
+
+// runTimestampIndexMigration records migrationName and, off Postgres, builds each
+// composite in defs and drops the single-column index it replaces.
+func runTimestampIndexMigration(ctx context.Context, db *gorm.DB, logger schemas.Logger, migrationName string, defs []ownerTimestampIndexDef) error {
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if tx.Dialector.Name() == "postgres" {
+				return nil
+			}
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, idx := range defs {
+				model := ownerTimestampIndexModel(idx.table)
+				if !mg.HasIndex(model, idx.name) {
+					if err := mg.CreateIndex(model, idx.name); err != nil {
+						return fmt.Errorf("failed to create index %s: %w", idx.name, err)
+					}
+				}
+				if mg.HasIndex(model, idx.replaces) {
+					if err := mg.DropIndex(model, idx.replaces); err != nil {
+						return fmt.Errorf("failed to drop index %s: %w", idx.replaces, err)
+					}
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Postgres indexes belong to the background builder; rolling back this
+			// ledger entry must not take a write-blocking lock on logs.
+			if tx.Dialector.Name() == "postgres" {
+				return nil
+			}
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			for _, idx := range defs {
+				model := ownerTimestampIndexModel(idx.table)
+				if err := tx.Exec(fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s(%s)", idx.replaces, idx.table, idx.column)).Error; err != nil {
+					return fmt.Errorf("failed to restore index %s: %w", idx.replaces, err)
+				}
+				if mg.HasIndex(model, idx.name) {
+					if err := mg.DropIndex(model, idx.name); err != nil {
+						return fmt.Errorf("failed to drop index %s: %w", idx.name, err)
+					}
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// ownerTimestampIndexModel returns the GORM model for an ownerTimestampIndexes table.
+func ownerTimestampIndexModel(table string) any {
+	if table == "mcp_tool_logs" {
+		return &MCPToolLog{}
+	}
+	return &Log{}
 }
 
 // migrationAddImageEditInputColumn adds the image_edit_input column to the logs table.
@@ -2904,7 +3447,6 @@ func migrationAddImageEditInputColumn(ctx context.Context, db *gorm.DB, logger s
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding image edit input column: %s", err.Error())
-
 	}
 	return nil
 }
@@ -3019,7 +3561,6 @@ func migrationAddAliasColumn(ctx context.Context, db *gorm.DB, logger schemas.Lo
 	err := m.Migrate()
 	if err != nil {
 		return fmt.Errorf("error while adding alias column: %s", err.Error())
-
 	}
 	return nil
 }
@@ -3302,6 +3843,92 @@ func migrationAddGovernanceContextColumns(ctx context.Context, db *gorm.DB, logg
 // the full deduped set of teams / business units a request belongs to (enterprise
 // user/AP path). The scalar team_id/business_unit_id remain the primary; these
 // power display, multi-team filtering (jsonb @> + GIN), and fan-out aggregation.
+// migrationAddProjectColumns adds the project dimension to the request log. A request records the
+// project it was scoped to the way it records the team or business unit it was made under: as the
+// resolved id and its display name, so a log row still reads correctly after the project is renamed
+// or deleted.
+//
+// Indexed on the id alone, because that is what filtering and rollups ask about; the name is only
+// ever read back off a row that has already been found. The index is built CONCURRENTLY by
+// ensurePerformanceIndexes (an entry appended to performanceIndexes), since addColumnIfNotExists
+// adds only the column and an in-migration build would block writes on a populated table.
+func migrationAddProjectColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_project_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+
+	columns := []string{"project_id", "project_name"}
+
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range columns {
+				if err := addColumnIfNotExists(tx, logger, &Log{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range columns {
+				if err := dropColumnIfExists(tx, logger, &Log{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding project columns: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddProjectColumnsToMCPToolLogs is the same dimension on the tool log, so a tool call made
+// inside a project is attributable to it exactly as a model call is. Its index is likewise built by
+// ensurePerformanceIndexes rather than here.
+func migrationAddProjectColumnsToMCPToolLogs(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "mcp_tool_logs_add_project_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+
+	columns := []string{"project_id", "project_name"}
+
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range columns {
+				if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			for _, col := range columns {
+				if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding project columns to mcp tool logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMultiTeamBusinessUnitColumns adds the JSON-array team and business-unit
+// id/name columns to logs.
 func migrationAddMultiTeamBusinessUnitColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
 	migrationName := "logs_add_multi_team_business_unit_columns"
 	logger.Info("[logstore] starting migration %s", migrationName)
@@ -3761,6 +4388,136 @@ func migrationAddStopReasonColumn(ctx context.Context, db *gorm.DB, logger schem
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while adding stop_reason column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddToolCallNamesColumn adds the tool_call_names column to the logs table.
+// It holds the comma-separated distinct function names a response called, kept
+// on the row (not offloaded as payload) so the logs filter works in hybrid mode.
+func migrationAddToolCallNamesColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_tool_call_names_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "tool_call_names")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &Log{}, "tool_call_names")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding tool_call_names column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddComplexityRoutingColumns adds the complexity_tier, complexity_mechanism,
+// and complexity_score columns to the logs table. They record how the governance
+// complexity classifier routed each request; all three stay NULL for requests where
+// no routing rule referenced complexity_tier.
+func migrationAddComplexityRoutingColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_complexity_routing_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "complexity_tier"); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "complexity_mechanism"); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "complexity_score"); err != nil {
+				return err
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "complexity_score"); err != nil {
+				return err
+			}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "complexity_mechanism"); err != nil {
+				return err
+			}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "complexity_tier"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding complexity routing columns: %w", err)
+	}
+	return nil
+}
+
+// migrationAddSessionIDColumn adds the generic session identity resolved at
+// ingress so callers can correlate all requests in a Bifrost session.
+func migrationAddSessionIDColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_session_id_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := addColumnIfNotExists(tx, logger, &Log{}, "session_id"); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" && !tx.Migrator().HasIndex(&Log{}, "idx_logs_session_id") {
+				if err := tx.Migrator().CreateIndex(&Log{}, "idx_logs_session_id"); err != nil {
+					return fmt.Errorf("create session_id index: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if tx.Dialector.Name() != "postgres" && tx.Migrator().HasIndex(&Log{}, "idx_logs_session_id") {
+				if err := tx.Migrator().DropIndex(&Log{}, "idx_logs_session_id"); err != nil {
+					return err
+				}
+			}
+			if err := dropColumnIfExists(tx, logger, &Log{}, "session_id"); err != nil {
+				return err
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding session ID column: %w", err)
 	}
 	return nil
 }
@@ -4267,6 +5024,132 @@ func migrationAddServerSideFallbackModelColumn(ctx context.Context, db *gorm.DB,
 	return nil
 }
 
+// migrationCreateAgentLogsTable is the single unshipped relational migration for
+// Agent Gateway observability. It adds the agent correlation columns and
+// indexes to the logs and mcp_tool_logs tables and creates the agent_logs table.
+// AutoMigrate keeps table creation idempotent while the feature remains
+// unshipped and ensures fresh SQLite/PostgreSQL stores receive the same columns
+// and declared indexes. Postgres correlation indexes come from
+// performanceIndexes instead.
+func migrationCreateAgentLogsTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "agent_logs_init"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for _, column := range []struct {
+				model any
+				name  string
+			}{
+				{&Log{}, "agent_correlation_id"},
+				{&MCPToolLog{}, "session_id"},
+				{&MCPToolLog{}, "agent_correlation_id"},
+			} {
+				if err := addColumnIfNotExists(tx, logger, column.model, column.name); err != nil {
+					return err
+				}
+			}
+			if tx.Dialector.Name() != "postgres" {
+				for _, index := range []struct {
+					model any
+					name  string
+				}{
+					{&Log{}, "idx_logs_agent_correlation_id"},
+					{&MCPToolLog{}, "idx_mcp_logs_session_id"},
+					{&MCPToolLog{}, "idx_mcp_logs_agent_correlation_id"},
+				} {
+					if !tx.Migrator().HasIndex(index.model, index.name) {
+						if err := tx.Migrator().CreateIndex(index.model, index.name); err != nil {
+							return fmt.Errorf("create %s index: %w", index.name, err)
+						}
+					}
+				}
+			}
+			return tx.AutoMigrate(&AgentLog{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackAgentLogsMigration(tx.WithContext(ctx), logger)
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running Agent Gateway logstore migration: %w", err)
+	}
+	return nil
+}
+
+func rollbackAgentLogsMigration(tx *gorm.DB, logger schemas.Logger) error {
+	if err := boundDDLLockWait(tx); err != nil {
+		return err
+	}
+	migrator := tx.Migrator()
+	if tx.Dialector.Name() == "postgres" {
+		for _, table := range []string{"agent_logs", "logs", "mcp_tool_logs"} {
+			if migrator.HasTable(table) {
+				if err := tx.Exec("LOCK TABLE " + table + " IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+					return fmt.Errorf("could not lock %s before Agent log rollback: %w", table, err)
+				}
+			}
+		}
+	}
+
+	if migrator.HasTable(&AgentLog{}) {
+		var present []struct{ One int }
+		if err := tx.Model(&AgentLog{}).Select("1 AS one").Limit(1).Find(&present).Error; err != nil {
+			return fmt.Errorf("could not check Agent log history before rollback: %w", err)
+		}
+		if len(present) > 0 {
+			return fmt.Errorf("agent_logs_init is non-rollbackable: agent_logs holds recorded Agent history, and dropping it would delete that content rather than reverse a schema change; clear the history first if the rollback is genuinely intended")
+		}
+	}
+
+	for _, correlation := range []struct {
+		model  any
+		table  string
+		column string
+	}{
+		{&Log{}, "logs", "agent_correlation_id"},
+		{&MCPToolLog{}, "mcp_tool_logs", "session_id"},
+		{&MCPToolLog{}, "mcp_tool_logs", "agent_correlation_id"},
+	} {
+		if !migrator.HasTable(correlation.model) || !migrator.HasColumn(correlation.model, correlation.column) {
+			continue
+		}
+		var present []struct{ One int }
+		if err := tx.Table(correlation.table).Select("1 AS one").Where(correlation.column + " IS NOT NULL").Limit(1).Find(&present).Error; err != nil {
+			return fmt.Errorf("could not check %s.%s before Agent log rollback: %w", correlation.table, correlation.column, err)
+		}
+		if len(present) > 0 {
+			return fmt.Errorf("agent_logs_init is non-rollbackable: %s.%s holds recorded correlation data, and dropping it would delete that content rather than reverse a schema change; clear the correlation data first if the rollback is genuinely intended", correlation.table, correlation.column)
+		}
+	}
+
+	if migrator.HasTable(&AgentLog{}) {
+		if err := migrator.DropTable(&AgentLog{}); err != nil {
+			return err
+		}
+	}
+	for _, column := range []struct {
+		model any
+		name  string
+	}{
+		{&MCPToolLog{}, "agent_correlation_id"},
+		{&MCPToolLog{}, "session_id"},
+		{&Log{}, "agent_correlation_id"},
+	} {
+		if err := dropColumnIfExists(tx, logger, column.model, column.name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // migrationAddBillingFidelityColumns adds the served-tier columns cost recomputation
 // needs in order to reprice a row at the rates it was actually served at:
 // service_tier, speed, and inference_geo.
@@ -4351,4 +5234,606 @@ func migrationAddVideoEditInputColumn(ctx context.Context, db *gorm.DB, logger s
 		return fmt.Errorf("error while adding video edit input column: %s", err.Error())
 	}
 	return nil
+}
+
+// migrationAddVideoDebugColumn adds the video_debug column to the logs table. It
+// carries the video job id and lifecycle status on video rows, and on the aggregate
+// cost row the pricing detail that tells it apart from the submission it settles —
+// which is otherwise identical to it but for a cost. Nullable and unindexed, so this
+// is a metadata-only DDL change with no table rewrite and no backfill: rows written
+// before it simply have no video detail.
+func migrationAddVideoDebugColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_video_debug_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &Log{}, "video_debug")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &Log{}, "video_debug")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding video_debug column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddServedModelColumn adds the served_model column to the logs table.
+// Records the model the provider named on the response body when it differs from
+// the one the caller addressed.
+func migrationAddServedModelColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_served_model_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &Log{}, "served_model")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &Log{}, "served_model")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding served model column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddMCPGovernanceSnapshots gives the tool log the attribution shape the logs table already
+// has: a name recorded beside every governance id, and the multi-valued team / customer / business
+// unit sets, so a row says who made the call without a second lookup at read time.
+//
+// Structure only. Rows written before this keep their bare ids, as they do for every other column
+// added to this table; nothing here rewrites history. Indexes are left to ensurePerformanceIndexes,
+// and names are not indexed on the logs table either.
+func migrationAddMCPGovernanceSnapshots(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "mcp_tool_logs_add_governance_snapshots"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+
+	columns := []string{
+		"user_name", "team_name", "customer_name", "business_unit_name",
+		"team_ids", "team_names", "customer_ids", "customer_names",
+		"business_unit_ids", "business_unit_names", "budget_ids", "rate_limit_ids",
+	}
+
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Twelve ALTER TABLEs on a table that is being written to continuously.
+			// Without a bounded wait each one can sit behind a long-running log
+			// transaction holding ACCESS EXCLUSIVE, and startup stalls with it.
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for _, col := range columns {
+				if err := addColumnIfNotExists(tx, logger, &MCPToolLog{}, col); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for i := len(columns) - 1; i >= 0; i-- {
+				if err := dropColumnIfExists(tx, logger, &MCPToolLog{}, columns[i]); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding governance snapshot columns to mcp tool logs: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddWarpConversationTables creates Warp's saved-chat storage.
+//
+// These live in the log store rather than the config store: a transcript is
+// user-generated content that grows with use and carries the same prompt text
+// the logs do, not configuration an install is worthless without. See
+// warpconversations.go.
+func migrationAddWarpConversationTables(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_warp_conversation_tables"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	// Transactional so a boot that dies between the two tables leaves neither,
+	// rather than a conversations table whose messages have nowhere to go.
+	//
+	// No boundDDLLockWait, unlike the migrations that alter logs: this one only
+	// creates tables that do not exist yet, so it takes no lock any running query
+	// could be holding and has nothing to time out against.
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return tx.WithContext(ctx).AutoMigrate(&WarpConversation{}, &WarpMessage{})
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackWarpConversationTables(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// rollbackWarpConversationTables drops Warp's history tables, but only while
+// they are empty.
+//
+// These hold user content, not schema: a saved conversation is something
+// someone can reopen, so dropping a populated pair is deleting their data
+// rather than reversing a migration. Empty is still reversible, which keeps a
+// failed upgrade recoverable without putting saved chats at risk.
+//
+// The emptiness check is only worth anything if nothing can write between it
+// and the DROP. Runtime chat writes take no migration lock - the advisory lock
+// in triggerMigrations covers startup migrations only - so on PostgreSQL this
+// takes ACCESS EXCLUSIVE on both tables first, under a bounded lock_timeout,
+// and probes afterwards. Holding that lock, no insert can commit, so what the
+// probe sees is what the DROP will destroy. SQLite serializes writers at the
+// database level and needs no equivalent; the ClickHouse tables are a separate
+// migration with no rollback.
+//
+// The probe is an existence check rather than a COUNT: counting a populated
+// history table while holding ACCESS EXCLUSIVE would stall every reader and
+// writer for the length of the scan, to answer a question that one row settles.
+func rollbackWarpConversationTables(tx *gorm.DB) error {
+	postgres := tx.Dialector.Name() == "postgres"
+	if postgres {
+		if err := boundDDLLockWait(tx); err != nil {
+			return err
+		}
+	}
+	// Names spelled out rather than derived: they are fixed by TableName(), and a
+	// literal keeps this identifier out of any interpolation question.
+	//
+	// Lock order follows the writers: AppendWarpMessages locks the conversation
+	// row first and then inserts messages, so the rollback acquires
+	// warp_conversations before warp_messages. Taking them the other way round
+	// is the textbook two-lock deadlock, with one side aborted by the server.
+	// The drop below stays child-before-parent; only the locks follow the
+	// writers, and lock order is independent of drop order.
+	tables := []struct {
+		model any
+		name  string
+	}{
+		{&WarpConversation{}, "warp_conversations"},
+		{&WarpMessage{}, "warp_messages"},
+	}
+	if postgres {
+		for _, table := range tables {
+			if !tx.Migrator().HasTable(table.model) {
+				continue
+			}
+			if err := tx.Exec("LOCK TABLE " + table.name + " IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+				return fmt.Errorf("could not lock warp history before rollback: %w", err)
+			}
+		}
+	}
+	for _, table := range tables {
+		if !tx.Migrator().HasTable(table.model) {
+			continue
+		}
+		var present []struct{ One int }
+		if err := tx.Model(table.model).Select("1 AS one").Limit(1).Find(&present).Error; err != nil {
+			return fmt.Errorf("could not check warp history before rollback: %w", err)
+		}
+		if len(present) > 0 {
+			return fmt.Errorf("logs_add_warp_conversation_tables is non-rollbackable: warp_conversations and warp_messages hold saved chats, and dropping them would delete that content rather than reverse a schema change; clear the history first if the rollback is genuinely intended")
+		}
+	}
+	return tx.Migrator().DropTable(&WarpMessage{}, &WarpConversation{})
+}
+
+// warpMessageOutcomeColumns are the per-message outcome fields added after the
+// conversation tables shipped: how the turn ended and what it cost.
+var warpMessageOutcomeColumns = []struct{ column, field string }{
+	{"finish_reason", "FinishReason"},
+	{"total_tokens", "TotalTokens"},
+	{"cost", "Cost"},
+	// The structured question a turn ended with, kept alongside the other
+	// outcome fields because it describes how the turn ended too.
+	{"question_json", "QuestionJSON"},
+}
+
+// migrationAddWarpMessageOutcomeColumns adds finish_reason, total_tokens and
+// cost to Warp's stored messages, so a partial answer stays marked partial when
+// its thread is reopened and the history list can show what each thread cost.
+//
+// A separate step rather than a wider AutoMigrate in the migration that created
+// the tables: applied ids are recorded and never re-run, so a database that
+// already has warp_messages would keep the original column list forever and
+// every insert naming one of these would fail.
+func migrationAddWarpMessageOutcomeColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_warp_message_outcome_columns"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			// Bounded, unlike logs_add_warp_conversation_tables: that one only
+			// creates tables nothing can be holding a lock on, while ADD COLUMN
+			// here waits behind any open read of warp_messages. An unbounded wait
+			// blocks every later statement queued behind it, so a slow reader
+			// stalls the boot instead of failing this migration and retrying.
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			mg := tx.Migrator()
+			for _, column := range warpMessageOutcomeColumns {
+				if mg.HasColumn(&WarpMessage{}, column.column) {
+					continue
+				}
+				if err := mg.AddColumn(&WarpMessage{}, column.field); err != nil {
+					return fmt.Errorf("add %s column: %w", column.column, err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return rollbackWarpMessageOutcomeColumns(tx.WithContext(ctx))
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// rollbackWarpMessageOutcomeColumns drops the outcome columns, but only while
+// nothing has been recorded in them.
+//
+// These annotate a transcript rather than holding it, so at first glance they
+// look like pure schema. They are not: finish_reason is what marks an answer
+// partial, and total_tokens/cost are the only record of what a saved chat cost.
+// Dropping a populated set destroys that record - the chats stay readable, and
+// every figure anyone might reconcile against is gone. Empty is still
+// reversible, which keeps a failed upgrade recoverable.
+func rollbackWarpMessageOutcomeColumns(tx *gorm.DB) error {
+	mg := tx.Migrator()
+	if mg.HasTable(&WarpMessage{}) {
+		// Same shape as the table rollback: take the lock, then probe. The check
+		// is only worth anything if nothing can commit between it and DropColumn,
+		// and runtime chat writes take no migration lock - so a concurrent append
+		// could land outcome data after a zero result and have it dropped.
+		//
+		// The probe is an existence check rather than a Count, because holding
+		// ACCESS EXCLUSIVE through a scan of a populated warp_messages is an
+		// outage to answer a question one row settles.
+		if tx.Dialector.Name() == "postgres" {
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			if err := tx.Exec("LOCK TABLE warp_messages IN ACCESS EXCLUSIVE MODE").Error; err != nil {
+				return fmt.Errorf("could not lock warp messages before rollback: %w", err)
+			}
+		}
+		// Zero tokens and zero cost are what an unmigrated row reads as, so the
+		// guard asks whether anything was actually written rather than whether
+		// rows exist at all.
+		var recorded []struct{ One int }
+		if err := tx.Model(&WarpMessage{}).
+			Select("1 AS one").
+			Where("finish_reason <> '' OR total_tokens <> 0 OR cost <> 0 OR question_json <> ''").
+			Limit(1).
+			Find(&recorded).Error; err != nil {
+			return fmt.Errorf("could not check recorded warp outcomes before rollback: %w", err)
+		}
+		if len(recorded) > 0 {
+			return fmt.Errorf("logs_add_warp_message_outcome_columns is non-rollbackable: warp message(s) carry a recorded finish reason or usage, and dropping these columns would destroy that record rather than reverse a schema change; clear the history first if the rollback is genuinely intended")
+		}
+	}
+	for _, column := range warpMessageOutcomeColumns {
+		if !mg.HasColumn(&WarpMessage{}, column.column) {
+			continue
+		}
+		if err := mg.DropColumn(&WarpMessage{}, column.field); err != nil {
+			return fmt.Errorf("drop %s column: %w", column.column, err)
+		}
+	}
+	return nil
+}
+
+// smallTableForPlainIndex decides when a logstore migration builds an index
+// without CONCURRENTLY; see postgresconn.TableIsSmall. A variable only so tests
+// can force the concurrent path.
+var smallTableForPlainIndex = func(tx *gorm.DB, table string) (bool, error) {
+	return postgresconn.TableIsSmall(tx, table, postgresconn.DefaultSmallTableMaxBytes, postgresconn.DefaultSmallTableMaxRows)
+}
+
+// migrationAddWarpConversationsUpdatedAtIndex adds the index the retention
+// sweep needs.
+//
+// A migration of its own rather than a wider AutoMigrate in the step that
+// created the tables: applied ids are recorded and never re-run, so an install
+// that already has warp_conversations would never gain this index, and the
+// hourly sweep would keep scanning the whole table there forever.
+func migrationAddWarpConversationsUpdatedAtIndex(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_warp_conversations_updated_at_index"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	// No transaction: CREATE INDEX CONCURRENTLY cannot run inside one. The whole
+	// point of this migration is that warp_conversations may already exist and be
+	// large, and a plain CREATE INDEX holds its lock for the entire build - a
+	// bounded lock_timeout caps the wait to acquire that lock, never the build,
+	// so it does nothing for the outage it looks like it prevents.
+	opts.UseTransaction = false
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if tx.Dialector.Name() == "postgres" {
+				// HasIndex reads pg_indexes, which lists an interrupted
+				// CONCURRENTLY build by name even though pg_index.indisvalid is
+				// false. Trusting it meant this migration recorded success while
+				// leaving an index the planner will not use - and the retention
+				// sweep's cross-owner `updated_at < cutoff` then scans the whole
+				// table, which is the exact cost this index exists to avoid.
+				//
+				// An invalid remnant is dropped concurrently and rebuilt, matching
+				// how ensureMetadataGINIndex recovers the same situation.
+				indexValid := func() (bool, error) {
+					var valid bool
+					// Resolved through search_path, like every other statement here: a
+					// bare relname match would find a same-named index in another schema
+					// and skip the build for this one.
+					if err := tx.Raw(`
+						SELECT COALESCE(bool_and(pi.indisvalid), false)
+						FROM pg_index pi
+						WHERE pi.indexrelid = to_regclass('idx_warp_conversations_updated_at')
+						  AND pi.indrelid = to_regclass('warp_conversations')
+					`).Scan(&valid).Error; err != nil {
+						return false, fmt.Errorf("check warp_conversations updated_at index validity: %w", err)
+					}
+					return valid, nil
+				}
+				valid, err := indexValid()
+				if err != nil {
+					return err
+				}
+				if !valid {
+					// A build another node is still running reads as INVALID too;
+					// wait for it rather than drop it (see pgWaitForIndexBuild).
+					waited, err := pgWaitForIndexBuild(ctx, tx.Statement.ConnPool, "idx_warp_conversations_updated_at")
+					if err != nil {
+						return err
+					}
+					if waited {
+						if valid, err = indexValid(); err != nil {
+							return err
+						}
+					}
+				}
+				if valid {
+					return nil
+				}
+				// A small table (always the case on an upgrade that just created it)
+				// gets a plain build under a bounded lock wait. CONCURRENTLY waits for
+				// every older transaction in the database, so on a rolling upgrade it
+				// would wait out each old replica's long logs query and stall boot.
+				small, err := smallTableForPlainIndex(tx, "warp_conversations")
+				if err != nil {
+					return fmt.Errorf("check size of warp_conversations: %w", err)
+				}
+				if small {
+					return postgresconn.ExecWithBoundedLock(tx, "index idx_warp_conversations_updated_at",
+						`DROP INDEX IF EXISTS idx_warp_conversations_updated_at`,
+						`CREATE INDEX IF NOT EXISTS idx_warp_conversations_updated_at ON warp_conversations (updated_at DESC)`)
+				}
+				// Safe when it does not exist; necessary when it exists but is invalid.
+				if err := tx.Exec(`DROP INDEX CONCURRENTLY IF EXISTS idx_warp_conversations_updated_at`).Error; err != nil {
+					return fmt.Errorf("drop invalid warp_conversations updated_at index: %w", err)
+				}
+			} else if mg.HasIndex(&WarpConversation{}, "idx_warp_conversations_updated_at") {
+				return nil
+			}
+			if tx.Dialector.Name() == "postgres" {
+				// IF NOT EXISTS because CONCURRENTLY can fail partway and leave an
+				// invalid index behind; a re-run then has something to find.
+				if err := tx.Exec(`CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_warp_conversations_updated_at ON warp_conversations (updated_at DESC)`).Error; err != nil {
+					return fmt.Errorf("create warp_conversations updated_at index: %w", err)
+				}
+				return nil
+			}
+			// SQLite and the rest: no CONCURRENTLY, and no concurrent writers to
+			// block either, so the migrator's own path is right.
+			if err := mg.CreateIndex(&WarpConversation{}, "idx_warp_conversations_updated_at"); err != nil {
+				return fmt.Errorf("create warp_conversations updated_at index: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Purely an access path: dropping it costs performance, never content.
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasIndex(&WarpConversation{}, "idx_warp_conversations_updated_at") {
+				return nil
+			}
+			if tx.Dialector.Name() == "postgres" {
+				return tx.Exec(`DROP INDEX CONCURRENTLY IF EXISTS idx_warp_conversations_updated_at`).Error
+			}
+			return mg.DropIndex(&WarpConversation{}, "idx_warp_conversations_updated_at")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error running %s migration: %s", migrationName, err.Error())
+	}
+	return nil
+}
+
+// migrationAddEmbeddingInputColumn adds the embedding_input column to the logs table.
+func migrationAddEmbeddingInputColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_embedding_input_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "embedding_input")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &Log{}, "embedding_input")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding embedding_input column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddLiveSessionColumn adds the live_session column to the logs table: a GPT Live
+// session's typed log payload (transcript, delegations, voice and backend cost).
+func migrationAddLiveSessionColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_live_session_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "live_session")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return dropColumnIfExists(tx, logger, &Log{}, "live_session")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding live session column: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAgentRawPayloadColumns adds lossless raw bodies separately from typed payloads.
+func migrationAddAgentRawPayloadColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{{
+		ID: "agent_logs_add_raw_payload_columns",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			for _, field := range []string{"RawRequest", "RawResponse"} {
+				if err := addColumnIfNotExists(tx, logger, &AgentLog{}, field); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("agent_logs_add_raw_payload_columns is non-rollbackable: dropping raw payload columns would delete recorded transport bodies")
+		},
+	}})
+	return m.Migrate()
+}
+
+// migrationAddMatViewRefreshStateTable creates matview_refresh_state, the
+// cluster-wide record of when each materialized view last refreshed successfully
+// (see matViewRefreshStateDDL). Materialized views exist only on Postgres, so on
+// other dialects the migration records itself without creating anything. The
+// table is new and touches no existing table, so it takes no lock on logs.
+func migrationAddMatViewRefreshStateTable(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_matview_refresh_state_table"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			return tx.WithContext(ctx).Exec(matViewRefreshStateDDL).Error
+		},
+		Rollback: func(tx *gorm.DB) error {
+			if tx.Dialector.Name() != "postgres" {
+				return nil
+			}
+			return tx.WithContext(ctx).Exec("DROP TABLE IF EXISTS matview_refresh_state").Error
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while creating matview_refresh_state table: %w", err)
+	}
+	return nil
+}
+
+// migrationAddIsPassthroughColumn adds the is_passthrough column to the logs table. A passthrough
+// call is stored under the request type its route was inferred as (chat_completion, responses, ...)
+// and tagged with this flag; rows written before it keep object_type=passthrough. A constant
+// default, so the ALTER does not rewrite the table on Postgres.
+func migrationAddIsPassthroughColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "logs_add_is_passthrough_column"
+	logger.Info("[logstore] starting migration %s", migrationName)
+	defer logger.Info("[logstore] finished migration %s", migrationName)
+	opts := *migrator.DefaultOptions
+	opts.UseTransaction = true
+	m := migrator.New(db, &opts, []*migrator.Migration{isPassthroughColumnMigration(ctx, logger)})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while adding is_passthrough column: %s", err.Error())
+	}
+	return nil
+}
+
+// isPassthroughColumnMigration bounds its lock wait like every logs DDL (see boundDDLLockWait). Its
+// rollback deliberately keeps the column: is_passthrough is the only marker of a passthrough row
+// stored under its inferred type, dropping it would make those rows indistinguishable from typed
+// requests, and older code ignores an extra column with a default.
+func isPassthroughColumnMigration(ctx context.Context, logger schemas.Logger) *migrator.Migration {
+	return &migrator.Migration{
+		ID: "logs_add_is_passthrough_column",
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			if err := boundDDLLockWait(tx); err != nil {
+				return err
+			}
+			return addColumnIfNotExists(tx, logger, &Log{}, "is_passthrough")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return nil
+		},
+	}
 }

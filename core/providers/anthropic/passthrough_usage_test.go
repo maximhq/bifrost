@@ -50,7 +50,8 @@ func TestExtractAnthropicPassthroughUsage(t *testing.T) {
 			check: func(t *testing.T, u *schemas.BifrostPassthroughUsage) {
 				if u == nil || u.LLMUsage == nil || u.LLMUsage.CompletionTokensDetails == nil ||
 					u.LLMUsage.CompletionTokensDetails.NumSearchQueries == nil ||
-					*u.LLMUsage.CompletionTokensDetails.NumSearchQueries != 2 {
+					*u.LLMUsage.CompletionTokensDetails.NumSearchQueries != 2 ||
+					u.LLMUsage.ToolUsage.WebSearch.NumRequests != 2 {
 					t.Fatalf("web search requests = %+v, want 2", u)
 				}
 			},
@@ -129,7 +130,8 @@ func TestAnthropicPassthroughStreamUsage(t *testing.T) {
 		u := acc.ObserveEvent([]byte(`{"type":"message_delta","usage":{"output_tokens":4,"server_tool_use":{"web_search_requests":3}}}`))
 		if u == nil || u.LLMUsage == nil || u.LLMUsage.CompletionTokensDetails == nil ||
 			u.LLMUsage.CompletionTokensDetails.NumSearchQueries == nil ||
-			*u.LLMUsage.CompletionTokensDetails.NumSearchQueries != 3 {
+			*u.LLMUsage.CompletionTokensDetails.NumSearchQueries != 3 ||
+			u.LLMUsage.ToolUsage.WebSearch.NumRequests != 3 {
 			t.Fatalf("web search requests = %+v, want 3", u)
 		}
 	})
@@ -163,5 +165,27 @@ func anthropicMustLLM(t *testing.T, u *schemas.BifrostPassthroughUsage, prompt, 
 	if u.LLMUsage.PromptTokens != prompt || u.LLMUsage.CompletionTokens != completion || u.LLMUsage.TotalTokens != total {
 		t.Fatalf("LLMUsage = {prompt:%d completion:%d total:%d}, want {%d %d %d}",
 			u.LLMUsage.PromptTokens, u.LLMUsage.CompletionTokens, u.LLMUsage.TotalTokens, prompt, completion, total)
+	}
+}
+
+func TestClassifyPassthroughPath(t *testing.T) {
+	tests := []struct {
+		path string
+		want schemas.RequestType
+	}{
+		{"/v1/messages", schemas.ResponsesRequest},
+		{"/v1/messages?beta=true", schemas.ResponsesRequest},
+		{"/anthropic/v1/messages", schemas.ResponsesRequest},
+		{"/v1/messages/count_tokens", schemas.CountTokensRequest},
+		{"/v1/complete", schemas.TextCompletionRequest},
+		{"/v1/messages/batches", ""},
+		{"/v1/models", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := anthropic.ClassifyPassthroughPath(tt.path); got != tt.want {
+				t.Fatalf("ClassifyPassthroughPath(%q) = %q, want %q", tt.path, got, tt.want)
+			}
+		})
 	}
 }

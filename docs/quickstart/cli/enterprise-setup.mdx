@@ -1,0 +1,110 @@
+---
+title: "Enterprise setup"
+description: "Sign in to Bifrost CLI with Enterprise SSO, choose an assigned virtual key, and add a scoped management API key for administrative commands."
+icon: "building"
+---
+
+Enterprise SSO requires [User Provisioning](/enterprise/user-provisioning) to be configured, and the signed-in user needs an access profile or assigned virtual key. If you have not installed the CLI yet, see [Install the CLI](/quickstart/cli/getting-started#install-the-cli).
+
+## Set up the CLI
+
+<Steps>
+  <Step title="Add a context">
+    ```bash
+    bifrost context add production --base-url https://bifrost.example.com --use
+    ```
+  </Step>
+  <Step title="Sign in with Enterprise SSO">
+    ```bash
+    bifrost auth login
+    ```
+
+    The CLI opens your browser to the Bifrost sign-in page, which uses your organization's identity provider. When sign-in completes, the terminal prints:
+
+    ```text
+    Signed in to https://bifrost.example.com as <you> using context "production".
+    Enterprise SSO now authorizes user-scoped inference. Management commands still require a management API key.
+    ```
+
+    followed by the number of assigned virtual keys available to you.
+
+    {/* SCREENSHOT TODO: Bifrost sign-in page opened by bifrost auth login, redirecting to the organization's identity provider */}
+    {/* SCREENSHOT TODO: Enterprise SSO login successful in Bifrost CLI, showing the signed-in user, context, and assigned virtual key count */}
+
+    If the browser cannot open, run `bifrost auth login --no-browser` and open the printed URL **on the same machine**. The sign-in callback listens on a local `127.0.0.1` port, so the flow cannot be completed from another device.
+  </Step>
+  <Step title="Choose an assigned virtual key (optional)">
+    By default, the gateway applies your access profile or a default assigned key. To pin one of your assigned keys for this context:
+
+    ```bash
+    bifrost virtual-keys assigned
+    bifrost auth select-virtual-key <virtual-key-id>
+    ```
+
+    `bifrost auth clear-selection` returns to the gateway default. An administrator can require a specific key, in which case only that key can be selected.
+  </Step>
+  <Step title="Add a management API key (administrators)">
+    Skip this step if you only use the CLI for inference and coding agents.
+
+    1. In the Bifrost dashboard, go to **Settings → API Keys** and select **Create API Key**.
+    2. Choose scopes for the resources and operations the key needs. Setting an expiry is optional but recommended.
+    3. Copy the `bfst-*` key. It is shown only once.
+    4. Store it in the context:
+
+    ```bash
+    printf '%s\n' "$BIFROST_MANAGEMENT_KEY" | bifrost auth set-management-key --stdin
+    bifrost auth whoami
+    ```
+
+    `bifrost auth whoami` lists the permissions the key holds.
+
+    {/* SCREENSHOT TODO: Settings → API Keys create dialog with scopes selected for a CLI management key */}
+  </Step>
+  <Step title="Verify">
+    ```bash
+    bifrost auth status --output json
+    bifrost models list
+    bifrost usage
+    ```
+
+    In `auth status`, confirm `inference_credential_type` is `enterprise-sso` and, for administrators, `management_credential_type` is `management-api-key`.
+
+    {/* SCREENSHOT TODO: bifrost auth status --output json showing enterprise-sso inference and management-api-key management credential types */}
+  </Step>
+</Steps>
+
+## Management API key permissions
+
+A management API key has only the permissions in its scopes; it does not inherit the creating user's role. You can grant only scopes you hold yourself, and a request outside the key's scopes fails with exit code `3`.
+
+Grant the least access each workflow needs. Scopes are named by dashboard resource and operation, for example:
+
+| Workflow | Scopes |
+| --- | --- |
+| List and inspect providers and credentials | `ModelProvider` → View |
+| Create, rotate, or delete virtual keys | `VirtualKeys` → View, Create, Update, Delete |
+| Reveal a virtual key's value | `VirtualKeys` → Reveal |
+| Manage users and role assignments | `Users` → View, Update |
+| Query inference logs | `Logs` → View |
+| Manage management API keys | `APIKeys` → View, Create, Update, Delete |
+
+## Session lifetime
+
+An SSO access token is valid for one hour and refreshes automatically with a refresh token that is valid for 30 days and rotates on each use. If the refresh token expires or is revoked, commands fail with exit code `3`; run `bifrost auth login` again. `bifrost auth logout` revokes the session and removes the stored SSO and dashboard session credentials from the context.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Coding agents" icon="terminal" href="/quickstart/cli/coding-agents">
+    Launch Claude Code, Codex, OpenCode, or Gemini through Bifrost.
+  </Card>
+  <Card title="Contexts and credentials" icon="layer-group" href="/quickstart/cli/contexts">
+    Work across environments and configure CI.
+  </Card>
+  <Card title="Commands" icon="list" href="/quickstart/cli/commands">
+    Inspect, query, and administer the gateway.
+  </Card>
+  <Card title="User Provisioning" icon="users-gear" href="/enterprise/user-provisioning">
+    Connect your identity provider for Enterprise SSO.
+  </Card>
+</CardGroup>

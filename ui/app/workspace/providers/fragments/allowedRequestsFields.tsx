@@ -21,6 +21,7 @@ interface AllowedRequestsFieldsProps {
 const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType, string>>>> = {
 	openai: {
 		list_models: "/v1/models",
+		model_retrieve: "/v1/models/{model}",
 		text_completion: "/v1/completions",
 		text_completion_stream: "/v1/completions",
 		chat_completion: "/v1/chat/completions",
@@ -38,12 +39,17 @@ const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType
 		image_edit_stream: "/v1/images/edits",
 		image_variation: "/v1/images/variations",
 		count_tokens: "/v1/responses/tokens",
+		decisions: "/v1/decisions",
 	},
 	anthropic: {
 		chat_completion: "/v1/messages",
 		chat_completion_stream: "/v1/messages",
 		responses: "/v1/messages",
 		responses_stream: "/v1/messages",
+	},
+	typesafe: {
+		list_models: "/v1/models",
+		decisions: "/v1/systemone",
 	},
 	cohere: {
 		chat_completion: "/v2/chat",
@@ -64,6 +70,7 @@ const getPlaceholder = (providerType: BaseProvider | undefined, requestKey: Requ
 
 const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "list_models", label: "List Models" },
+	{ key: "model_retrieve", label: "Retrieve Model" },
 	{ key: "text_completion", label: "Text Completion" },
 	{ key: "text_completion_stream", label: "Text Completion Stream" },
 	{ key: "chat_completion", label: "Chat Completion" },
@@ -85,11 +92,14 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "image_edit_stream", label: "Image Edit Stream" },
 	{ key: "image_variation", label: "Image Variation" },
 	{ key: "count_tokens", label: "Count Tokens" },
+	{ key: "decisions", label: "Decisions" },
+	{ key: "live", label: "Live" },
 ];
 
-// Path overrides replace the default path verbatim; these request paths embed the
-// response ID, so an override can never produce a valid URL for them.
+// Path overrides replace the default path verbatim; these request paths embed a
+// resource ID, so an override can never produce a valid URL for them.
 const PathOverrideUnsupported = new Set<RequestType>([
+	"model_retrieve",
 	"responses_retrieve",
 	"responses_delete",
 	"responses_cancel",
@@ -128,7 +138,7 @@ export function AllowedRequestsFields({
 				name={`${namePrefix}.${requestType.key}`}
 				render={({ field: allowedField }) => (
 					<FormItem
-						className={`flex flex-row items-center justify-between rounded-lg border p-3 ${isDisabled ? "bg-muted/30 opacity-60" : ""}`}
+						className={`flex flex-row items-center justify-between rounded-sm border p-3 ${isDisabled ? "bg-muted/30 opacity-60" : ""}`}
 					>
 						<div className="space-y-0.5">
 							<FormLabel className={isDisabled ? "cursor-not-allowed" : ""}>{requestType.label}</FormLabel>
@@ -174,7 +184,12 @@ export function AllowedRequestsFields({
 										<Tooltip>
 											<TooltipTrigger asChild>
 												<div>
-													<Switch checked={isDisabled ? false : allowedField.value} disabled={true} size="md" />
+													<Switch
+														checked={isDisabled ? false : allowedField.value}
+														disabled={true}
+														size="md"
+														data-testid={`allowed-request-switch-${requestType.key}`}
+													/>
 												</div>
 											</TooltipTrigger>
 											<TooltipContent>
@@ -183,7 +198,13 @@ export function AllowedRequestsFields({
 										</Tooltip>
 									</TooltipProvider>
 								) : (
-									<Switch checked={allowedField.value} onCheckedChange={allowedField.onChange} size="md" disabled={disabled} />
+									<Switch
+										checked={allowedField.value}
+										onCheckedChange={allowedField.onChange}
+										size="md"
+										disabled={disabled}
+										data-testid={`allowed-request-switch-${requestType.key}`}
+									/>
 								)}
 							</FormControl>
 						</div>

@@ -1,3 +1,5 @@
+import { CalendarAlignmentNotice } from "@/components/calendarAlignmentNotice";
+import { calendarWindowDurations, isMultiUnitDuration } from "@/lib/constants/governance";
 import { Button } from "@/components/ui/button";
 import { Form } from "@/components/ui/form";
 import { Label } from "@/components/ui/label";
@@ -16,6 +18,7 @@ import {
 } from "@/lib/store";
 import { ModelProvider } from "@/lib/types/config";
 import { CreateBudgetRequest, ProviderGovernance } from "@/lib/types/governance";
+import { budgetSignature } from "@/lib/utils/governance";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
@@ -31,6 +34,7 @@ const budgetLineSchema = z.object({
 	id: z.string().optional(),
 	max_limit: z.number({ error: "Budget limit must be a number" }).nonnegative("Budget limit cannot be negative").optional(),
 	reset_duration: z.string().min(1, "Reset duration is required"),
+	reset_config: z.object({ quarter_start_month: z.number().optional() }).optional(),
 });
 
 const formSchema = z.object({
@@ -60,6 +64,7 @@ function governanceToFormValues(provGov: ProviderGovernance | undefined): FormDa
 			id: b.id,
 			max_limit: b.max_limit,
 			reset_duration: b.reset_duration,
+			reset_config: b.reset_config,
 		})),
 		calendarAligned: provGov.calendar_aligned ?? false,
 		tokenMaxLimit: provGov.rate_limit?.token_max_limit ?? undefined,
@@ -93,7 +98,9 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 	const watchedBudgets = form.watch("budgets");
 	const watchedCalendarAligned = form.watch("calendarAligned");
 	const configuredBudgets = watchedBudgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
-	const showCalendarAlignment = configuredBudgets.some((b) => supportsCalendarAlignment(b.reset_duration));
+	const showCalendarAlignment = configuredBudgets.some(
+		(b) => supportsCalendarAlignment(b.reset_duration) || isMultiUnitDuration(b.reset_duration),
+	);
 
 	useEffect(() => {
 		if (providerGovernance && !form.formState.isDirty) {
@@ -118,15 +125,10 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 	// A budget config change on existing provider governance is when clearing
 	// accumulated spend becomes a meaningful choice.
 	const budgetsChanged = (data: FormData) => {
-		const signature = (rows: { max_limit?: number | null; reset_duration?: string }[]) =>
-			[...rows]
-				.map((r) => `${r.max_limit ?? ""}:${r.reset_duration ?? ""}`)
-				.sort()
-				.join("|");
 		const existing = providerGovernance?.budgets ?? [];
 		if (existing.length === 0) return false;
 		const next = data.budgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
-		return signature(next) !== signature(existing);
+		return budgetSignature(next) !== budgetSignature(existing);
 	};
 
 	const onSubmit = async (data: FormData) => {
@@ -140,7 +142,9 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 	const saveGovernance = async (data: FormData, resetBudgetUsage: boolean) => {
 		try {
 			const validBudgets = data.budgets.filter((b) => b.max_limit !== undefined && b.max_limit > 0);
-			const hasAlignableBudget = validBudgets.some((b) => supportsCalendarAlignment(b.reset_duration));
+			const hasAlignableBudget = validBudgets.some(
+				(b) => supportsCalendarAlignment(b.reset_duration) || isMultiUnitDuration(b.reset_duration),
+			);
 			const hadBudgets = (providerGovernance?.budgets?.length ?? 0) > 0;
 			const hadRateLimit = !!providerGovernance?.rate_limit;
 			const hasRateLimit = data.tokenMaxLimit !== undefined || data.requestMaxLimit !== undefined;
@@ -151,6 +155,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 					id: b.id,
 					max_limit: b.max_limit!,
 					reset_duration: b.reset_duration,
+					reset_config: b.reset_config,
 				}));
 			} else if (hadBudgets) {
 				budgetsPayload = [];
@@ -218,6 +223,7 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 				/>
 
 				{/* Calendar Alignment — only shown when a budget uses a calendar-alignable period (day/week/month/year) */}
+				<CalendarAlignmentNotice enabled={watchedCalendarAligned} durations={calendarWindowDurations([{ budgets: configuredBudgets }])} />
 				{showCalendarAlignment && (
 					<div className="flex items-center justify-between gap-4">
 						<div className="space-y-1">
@@ -225,7 +231,8 @@ export function GovernanceFormFragment({ provider }: GovernanceFormFragmentProps
 								Align to calendar cycle
 							</Label>
 							<p className="text-muted-foreground text-xs">
-								Reset budgets at the start of each period (e.g. 1st of month) instead of rolling from creation date. Quarterly budgets always align to fiscal quarter starts.
+								Reset budgets at the start of each period (e.g. 1st of month) instead of rolling from creation date. Single-unit day, week,
+								month, quarter and year windows align to calendar boundaries. Other durations remain rolling.
 							</p>
 						</div>
 						<Switch

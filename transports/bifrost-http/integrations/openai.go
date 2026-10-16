@@ -17,7 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -270,17 +270,49 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 	}
 }
 
+// openAIRawPassthrough reports whether the raw upstream bytes are already the
+// caller's OpenAI wire format. A converted request (chat served through Responses,
+// text through chat, Responses through chat) carries the other API's raw bytes, so
+// the Bifrost response is serialized instead.
+func openAIRawPassthrough(extra *schemas.BifrostResponseExtraFields) bool {
+	return extra.Provider == schemas.OpenAI && extra.RawResponse != nil && extra.ConvertedRequestType == ""
+}
+
 // openAIResponsesWireConverter maps a Bifrost responses payload to the OpenAI wire JSON shape.
 func openAIResponsesWireConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-	if resp != nil && resp.ExtraFields.Provider == schemas.OpenAI {
-		if resp.ExtraFields.RawResponse != nil {
-			return resp.ExtraFields.RawResponse, nil
-		}
-	}
 	if resp == nil {
 		return nil, nil
 	}
-	return resp.WithDefaults(), nil
+	if openAIRawPassthrough(&resp.ExtraFields) {
+		return resp.ExtraFields.RawResponse, nil
+	}
+	return openAIWireCostResponse(resp.WithDefaults()), nil
+}
+
+// openAIChatStreamWireConverter frames raw upstream payloads at the HTTP boundary.
+// The provider buffers non-forwarding frames (such as finish and usage) in one
+// RawResponse separated by blank lines. SendEvent adds only one data prefix, so
+// a bundle must be emitted as preformatted SSE with a prefix on every frame.
+// Keep the raw capture itself unchanged for logging and plugins.
+func openAIChatStreamWireConverter(_ *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
+	if openAIRawPassthrough(&resp.ExtraFields) {
+		raw := resp.ExtraFields.RawResponse
+		if frames, ok := raw.(string); ok && strings.Contains(frames, "\n\n") {
+			var framed strings.Builder
+			framed.Grow(len(frames) + 8*(strings.Count(frames, "\n\n")+1))
+			for frame := range strings.SplitSeq(frames, "\n\n") {
+				if frame == "" {
+					continue
+				}
+				framed.WriteString("data: ")
+				framed.WriteString(frame)
+				framed.WriteString("\n\n")
+			}
+			return "", framed.String(), nil
+		}
+		return "", raw, nil
+	}
+	return "", openAIWireCostResponse(resp), nil
 }
 
 // CreateOpenAIRouteConfigs creates route configurations for OpenAI endpoints.
@@ -426,20 +458,16 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			return nil, errors.New("invalid request type")
 		},
 		ChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.OpenAI {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
+			if openAIRawPassthrough(&resp.ExtraFields) {
+				return resp.ExtraFields.RawResponse, nil
 			}
-			return resp, nil
+			return openAIWireCostResponse(resp), nil
 		},
 		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.OpenAI {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
+			if openAIRawPassthrough(&resp.ExtraFields) {
+				return resp.ExtraFields.RawResponse, nil
 			}
-			return resp, nil
+			return openAIWireCostResponse(resp), nil
 		},
 		EmbeddingResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostEmbeddingResponse) (interface{}, error) {
 			if resp.ExtraFields.Provider == schemas.OpenAI {
@@ -449,14 +477,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			}
 			return resp, nil
 		},
-		SpeechResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.OpenAI {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
-			}
-			return resp, nil
-		},
+		// No SpeechResponseConverter: like /v1/audio/speech, the router then writes the raw
+		// audio bytes, which is what the Azure OpenAI SDK reads. A converter's return value is
+		// JSON-encoded, which turned the audio into {"audio":"<base64>"}.
 		TranscriptionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
 			if schemas.IsPlainTextTranscriptionFormat(resp.ResponseFormat) {
 				return []byte(resp.Text), nil
@@ -474,32 +497,16 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					return resp.ExtraFields.RawResponse, nil
 				}
 			}
-			return resp, nil
+			return openAIWireCostResponse(resp), nil
 		},
-		ResponsesResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.OpenAI {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
-			}
-			return resp.WithDefaults(), nil
-		},
+		ResponsesResponseConverter: openAIResponsesWireConverter,
 		StreamConfig: &StreamConfig{
-			ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return "", resp.ExtraFields.RawResponse, nil
-					}
-				}
-				return "", resp, nil
-			},
+			ChatStreamResponseConverter: openAIChatStreamWireConverter,
 			TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return "", resp.ExtraFields.RawResponse, nil
-					}
+				if openAIRawPassthrough(&resp.ExtraFields) {
+					return "", resp.ExtraFields.RawResponse, nil
 				}
-				return "", resp, nil
+				return "", openAIWireCostResponse(resp), nil
 			},
 			SpeechStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechStreamResponse) (string, interface{}, error) {
 				if resp.ExtraFields.Provider == schemas.OpenAI {
@@ -523,19 +530,17 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						return "", resp.ExtraFields.RawResponse, nil
 					}
 				}
-				return "", resp, nil
+				return "", openAIWireCostResponse(resp), nil
 			},
 			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return string(resp.Type), resp.ExtraFields.RawResponse, nil
-					}
+				if openAIRawPassthrough(&resp.ExtraFields) {
+					return string(resp.Type), resp.ExtraFields.RawResponse, nil
 				}
 				converted := resp.WithDefaults()
 				if converted == nil {
 					return "", nil, nil
 				}
-				return string(resp.Type), converted, nil
+				return string(resp.Type), openAIWireCostResponse(converted), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
@@ -573,20 +578,18 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type")
 			},
 			ChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return resp.ExtraFields.RawResponse, nil
-					}
+				if openAIRawPassthrough(&resp.ExtraFields) {
+					return resp.ExtraFields.RawResponse, nil
 				}
 				// Here we will combine content blocks into a single text block as required by openai SDK
 				if len(resp.Choices) == 0 {
-					return resp, nil
+					return openAIWireCostResponse(resp), nil
 				}
 				choice := resp.Choices[0]
 				allText := true
 				message := choice.ChatNonStreamResponseChoice.Message
 				if message == nil || message.Content == nil || message.Content.ContentBlocks == nil {
-					return resp, nil
+					return openAIWireCostResponse(resp), nil
 				}
 				for _, block := range message.Content.ContentBlocks {
 					if block.Type != schemas.ChatContentBlockTypeText {
@@ -595,7 +598,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 				}
 				if !allText || len(message.Content.ContentBlocks) == 0 {
-					return resp, nil
+					return openAIWireCostResponse(resp), nil
 				}
 				var contentStr *string
 				contentBlocks := message.Content.ContentBlocks
@@ -622,20 +625,13 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				}
 				message.Content.ContentStr = contentStr
 				message.Content.ContentBlocks = nil
-				return resp, nil
+				return openAIWireCostResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
-				ChatStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
-						if resp.ExtraFields.RawResponse != nil {
-							return "", resp.ExtraFields.RawResponse, nil
-						}
-					}
-					return "", resp, nil
-				},
+				ChatStreamResponseConverter: openAIChatStreamWireConverter,
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
 				},
@@ -668,24 +664,20 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type")
 			},
 			TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return resp.ExtraFields.RawResponse, nil
-					}
+				if openAIRawPassthrough(&resp.ExtraFields) {
+					return resp.ExtraFields.RawResponse, nil
 				}
-				return resp, nil
+				return openAIWireCostResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
 			},
 			StreamConfig: &StreamConfig{
 				TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
-						if resp.ExtraFields.RawResponse != nil {
-							return "", resp.ExtraFields.RawResponse, nil
-						}
+					if openAIRawPassthrough(&resp.ExtraFields) {
+						return "", resp.ExtraFields.RawResponse, nil
 					}
-					return "", resp, nil
+					return "", openAIWireCostResponse(resp), nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
@@ -742,16 +734,14 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
-						if resp.ExtraFields.RawResponse != nil {
-							return string(resp.Type), resp.ExtraFields.RawResponse, nil
-						}
+					if openAIRawPassthrough(&resp.ExtraFields) {
+						return string(resp.Type), resp.ExtraFields.RawResponse, nil
 					}
 					converted := resp.WithDefaults()
 					if converted == nil {
 						return "", nil, nil
 					}
-					return string(resp.Type), converted, nil
+					return string(resp.Type), openAIWireCostResponse(converted), nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
@@ -836,16 +826,14 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			ResponsesResponseConverter: openAIResponsesWireConverter,
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
-						if resp.ExtraFields.RawResponse != nil {
-							return string(resp.Type), resp.ExtraFields.RawResponse, nil
-						}
+					if openAIRawPassthrough(&resp.ExtraFields) {
+						return string(resp.Type), resp.ExtraFields.RawResponse, nil
 					}
 					converted := resp.WithDefaults()
 					if converted == nil {
 						return "", nil, nil
 					}
-					return string(resp.Type), converted, nil
+					return string(resp.Type), openAIWireCostResponse(converted), nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
@@ -1038,6 +1026,57 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		})
 	}
 
+	// Decisions endpoint. The route speaks OpenAI's Decisions API, and any
+	// decision model can answer: the request is converted to the normalized
+	// shape, so Typesafe-based models and emulation serve it as well as
+	// OpenAI's own decisions models. It registers no large-payload hook: a
+	// decision body is small, and the hook would leave the questions unparsed.
+	for _, path := range []string{
+		"/v1/decisions",
+		"/decisions",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.DecisionRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &openai.OpenAIDecisionRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				decisionReq, ok := req.(*openai.OpenAIDecisionRequest)
+				if !ok {
+					return nil, errors.New("invalid decision request type")
+				}
+				bifrostDecisionReq, err := decisionReq.ToBifrostDecisionRequest()
+				if err != nil {
+					return nil, err
+				}
+				// The route is OpenAI's wire shape: a field a newer SDK sends
+				// always reaches the provider, no header needed.
+				if len(decisionReq.ExtraParams) > 0 && ctx != nil {
+					ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+				}
+				return &schemas.BifrostRequest{DecisionRequest: bifrostDecisionReq}, nil
+			},
+			DecisionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostDecisionResponse) (interface{}, error) {
+				// As on the other OpenAI routes, the upstream body is relayed only
+				// when raw responses were asked for; otherwise the normalized
+				// response, as plugins left it, is rendered. Custom providers report
+				// their own name, so match on the base provider that served it.
+				if schemas.ResolveBaseProvider(ctx, resp.ExtraFields.Provider) == schemas.OpenAI && resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+				return openai.ToOpenAIDecisionResponse(resp), nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
 	// Speech synthesis endpoint
 	for _, path := range []string{
 		"/v1/audio/speech",
@@ -1166,7 +1205,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						return resp.ExtraFields.RawResponse, nil
 					}
 				}
-				return resp, nil
+				return openAIWireCostResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
@@ -1178,7 +1217,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 							return string(resp.Type), resp.ExtraFields.RawResponse, nil
 						}
 					}
-					return string(resp.Type), resp, nil
+					return string(resp.Type), openAIWireCostResponse(resp), nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
@@ -1217,7 +1256,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						return resp.ExtraFields.RawResponse, nil
 					}
 				}
-				return resp, nil
+				return openAIWireCostResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
@@ -1229,7 +1268,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 							return string(resp.Type), resp.ExtraFields.RawResponse, nil
 						}
 					}
-					return string(resp.Type), resp, nil
+					return string(resp.Type), openAIWireCostResponse(resp), nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
@@ -1267,7 +1306,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 						return resp.ExtraFields.RawResponse, nil
 					}
 				}
-				return resp, nil
+				return openAIWireCostResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
@@ -1279,7 +1318,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 							return string(resp.Type), resp.ExtraFields.RawResponse, nil
 						}
 					}
-					return string(resp.Type), resp, nil
+					return string(resp.Type), openAIWireCostResponse(resp), nil
 				},
 				ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 					return err
@@ -1314,7 +1353,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid video generation request type")
 			},
 			VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
-				return resp, nil
+				return openAIWireCostResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
@@ -1354,7 +1393,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid video retrieve request type")
 			},
 			VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
-				return resp, nil
+				return openAIWireCostResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
@@ -1456,7 +1495,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid video remix request type")
 			},
 			VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
-				return resp, nil
+				return openAIWireCostResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
@@ -1490,7 +1529,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid video edit request type")
 			},
 			VideoGenerationResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostVideoGenerationResponse) (interface{}, error) {
-				return resp, nil
+				return openAIWireCostResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
@@ -1534,6 +1573,154 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 	return routes
 }
 
+// OpenAIUsage is the OpenAI-compatible usage shape: the standard usage fields,
+// but cost is the bare total (float) rather than the nested BifrostCost object
+// which strict OpenAI SDKs reject. The embedded pointer promotes every other
+// usage field unchanged; the shallower Cost field shadows the embedded object's
+// `cost` at marshal time.
+type OpenAIUsage struct {
+	*schemas.BifrostLLMUsage
+	Cost *float64 `json:"cost,omitempty"`
+}
+
+// newOpenAIUsage wraps u so cost serializes as the bare total float. Copies the
+// total into a local, so the wrapper never aliases into the shared response.
+func newOpenAIUsage(u *schemas.BifrostLLMUsage) *OpenAIUsage {
+	if u == nil || u.Cost == nil {
+		return &OpenAIUsage{BifrostLLMUsage: u}
+	}
+	total := u.Cost.TotalCost
+	return &OpenAIUsage{BifrostLLMUsage: u, Cost: &total}
+}
+
+// openAIResponsesUsage / openAIImageUsage / openAIVideoUsage are the same
+// float-cost shadow for the modalities whose usage type differs from
+// BifrostLLMUsage. Each provider that reports cost natively (xAI Responses via
+// ticks; Runware images/videos) surfaces it here.
+type openAIResponsesUsage struct {
+	*schemas.ResponsesResponseUsage
+	Cost *float64 `json:"cost,omitempty"`
+}
+
+type openAIImageUsage struct {
+	*schemas.ImageUsage
+	Cost *float64 `json:"cost,omitempty"`
+}
+
+type openAIVideoUsage struct {
+	*schemas.VideoUsage
+	Cost *float64 `json:"cost,omitempty"`
+}
+
+func totalOf(c *schemas.BifrostCost) *float64 {
+	total := c.TotalCost
+	return &total
+}
+
+type openAIChatResponse struct {
+	*schemas.BifrostChatResponse
+	Usage *OpenAIUsage `json:"usage,omitempty"`
+}
+
+type openAITextResponse struct {
+	*schemas.BifrostTextCompletionResponse
+	Usage *OpenAIUsage `json:"usage,omitempty"`
+}
+
+type openAIResponsesResponse struct {
+	*schemas.BifrostResponsesResponse
+	Usage *openAIResponsesUsage `json:"usage,omitempty"`
+}
+
+// MarshalJSON is required because the embedded response's own MarshalJSON would otherwise be
+// promoted and drop the flattened usage override. Like it, tool_usage goes top-level only.
+func (r openAIResponsesResponse) MarshalJSON() ([]byte, error) {
+	type responsesAlias schemas.BifrostResponsesResponse
+	resp := *r.BifrostResponsesResponse
+	usage := r.Usage
+	if usage != nil && usage.ResponsesResponseUsage != nil && usage.ResponsesResponseUsage.ToolUsage != nil {
+		if resp.ToolUsage == nil {
+			resp.ToolUsage = usage.ResponsesResponseUsage.ToolUsage
+		}
+		inner := *usage.ResponsesResponseUsage
+		inner.ToolUsage = nil
+		usage = &openAIResponsesUsage{ResponsesResponseUsage: &inner, Cost: usage.Cost}
+	}
+	return schemas.Marshal(struct {
+		*responsesAlias
+		Usage *openAIResponsesUsage `json:"usage,omitempty"`
+	}{(*responsesAlias)(&resp), usage})
+}
+
+type openAIResponsesStreamResponse struct {
+	*schemas.BifrostResponsesStreamResponse
+	Response *openAIResponsesResponse `json:"response,omitempty"`
+}
+
+type openAIImageResponse struct {
+	*schemas.BifrostImageGenerationResponse
+	Usage *openAIImageUsage `json:"usage,omitempty"`
+}
+
+type openAIImageStreamResponse struct {
+	*schemas.BifrostImageGenerationStreamResponse
+	Usage *openAIImageUsage `json:"usage,omitempty"`
+}
+
+type openAIVideoResponse struct {
+	*schemas.BifrostVideoGenerationResponse
+	Usage *openAIVideoUsage `json:"usage,omitempty"`
+}
+
+func openAIWireResponses(r *schemas.BifrostResponsesResponse) *openAIResponsesResponse {
+	return &openAIResponsesResponse{
+		BifrostResponsesResponse: r,
+		Usage:                    &openAIResponsesUsage{ResponsesResponseUsage: r.Usage, Cost: totalOf(r.Usage.Cost)},
+	}
+}
+
+// openAIWireCostResponse rewrites usage.cost to the bare total (float) for the
+// OpenAI-compatible wire. The OpenAI usage schema has no nested cost object, so a
+// BifrostCost object breaks strict SDK deserialization; a bare number is the
+// legacy shape SDKs tolerate. Only provider-supplied cost reaches here (Bifrost
+// computes cost log-only), and it stays intact in logs. The rewrite wraps rather
+// than mutates, so the shared response (which governance/telemetry may still read
+// on another goroutine) is untouched. Raw upstream payloads and cost-free
+// responses pass through unchanged.
+func openAIWireCostResponse(v interface{}) interface{} {
+	switch r := v.(type) {
+	case *schemas.BifrostChatResponse:
+		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
+			return &openAIChatResponse{BifrostChatResponse: r, Usage: newOpenAIUsage(r.Usage)}
+		}
+	case *schemas.BifrostTextCompletionResponse:
+		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
+			return &openAITextResponse{BifrostTextCompletionResponse: r, Usage: newOpenAIUsage(r.Usage)}
+		}
+	case *schemas.BifrostResponsesResponse:
+		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
+			return openAIWireResponses(r)
+		}
+	case *schemas.BifrostResponsesStreamResponse:
+		if r != nil && r.Response != nil && r.Response.Usage != nil && r.Response.Usage.Cost != nil {
+			return &openAIResponsesStreamResponse{BifrostResponsesStreamResponse: r, Response: openAIWireResponses(r.Response)}
+		}
+	case *schemas.BifrostImageGenerationResponse:
+		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
+			return &openAIImageResponse{BifrostImageGenerationResponse: r, Usage: &openAIImageUsage{ImageUsage: r.Usage, Cost: totalOf(r.Usage.Cost)}}
+		}
+	case *schemas.BifrostImageGenerationStreamResponse:
+		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
+			return &openAIImageStreamResponse{BifrostImageGenerationStreamResponse: r, Usage: &openAIImageUsage{ImageUsage: r.Usage, Cost: totalOf(r.Usage.Cost)}}
+		}
+	case *schemas.BifrostVideoGenerationResponse:
+		if r != nil && r.Usage != nil && r.Usage.Cost != nil {
+			return &openAIVideoResponse{BifrostVideoGenerationResponse: r, Usage: &openAIVideoUsage{VideoUsage: r.Usage, Cost: totalOf(r.Usage.Cost)}}
+		}
+	}
+	return v
+}
+
 // CreateOpenAIListModelsRouteConfigs creates route configurations for OpenAI list models endpoint.
 func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
 	var routes []RouteConfig
@@ -1572,6 +1759,79 @@ func CreateOpenAIListModelsRouteConfigs(pathPrefix string, handlerStore lib.Hand
 	}
 
 	return routes
+}
+
+// CreateOpenAIModelRetrieveRouteConfigs creates route configurations for the OpenAI retrieve model endpoint.
+func CreateOpenAIModelRetrieveRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) []RouteConfig {
+	var routes []RouteConfig
+
+	// Retrieve model endpoint. The catch-all lets a model be addressed as "provider/model" too.
+	for _, path := range []string{
+		"/v1/models/{model:*}",
+		"/models/{model:*}",
+		"/openai/models/{model:*}",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "GET",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.ModelRetrieveRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &schemas.BifrostModelRetrieveRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				if modelRetrieveReq, ok := req.(*schemas.BifrostModelRetrieveRequest); ok {
+					return &schemas.BifrostRequest{
+						ModelRetrieveRequest: modelRetrieveReq,
+					}, nil
+				}
+				return nil, errors.New("invalid request type")
+			},
+			ModelRetrieveResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostModelRetrieveResponse) (interface{}, error) {
+				return openai.ToOpenAIModelRetrieveResponse(resp), nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+			PreCallback: extractOpenAIModelRetrieveParams,
+		})
+	}
+
+	return routes
+}
+
+// extractOpenAIModelRetrieveParams maps GET /v1/models/{model} onto a model retrieve request.
+func extractOpenAIModelRetrieveParams(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req interface{}) error {
+	modelRetrieveReq, ok := req.(*schemas.BifrostModelRetrieveRequest)
+	if !ok {
+		return errors.New("invalid request type for OpenAI model retrieve")
+	}
+
+	rawModel, _ := ctx.UserValue("model").(string)
+	// The router hands the catch-all over still percent-encoded, and OpenAI SDKs send "provider%2Fmodel".
+	decodedModel, err := url.PathUnescape(rawModel)
+	if err != nil {
+		return errors.New("invalid model encoding")
+	}
+	rawModel = strings.Trim(strings.TrimSpace(decodedModel), "/")
+	if rawModel == "" {
+		return errors.New("model parameter is required")
+	}
+
+	// An explicit header wins, since ParseModelString cannot recognise a custom provider.
+	provider := getProviderFromHeader(ctx, "")
+	model := rawModel
+	if provider != "" {
+		model = strings.TrimPrefix(rawModel, string(provider)+"/")
+	} else {
+		provider, model = schemas.ParseModelString(rawModel, schemas.OpenAI)
+	}
+
+	modelRetrieveReq.Provider = provider
+	modelRetrieveReq.Model = model
+	return nil
 }
 
 // CreateOpenAIBatchRouteConfigs creates route configurations for OpenAI Batch API endpoints.
@@ -3280,6 +3540,23 @@ func OpenAIRealtimePaths(pathPrefix string) []string {
 	return paths
 }
 
+// OpenAILivePaths returns WebSocket paths for GPT Live primary sessions under an integration prefix.
+func OpenAILivePaths(pathPrefix string) []string {
+	return []string{
+		pathPrefix + "/v1/live/sessions",
+		pathPrefix + "/live/sessions",
+	}
+}
+
+// OpenAILiveSessionPaths returns paths for an action on an existing GPT Live session (attach,
+// content, ...) under an integration prefix.
+func OpenAILiveSessionPaths(pathPrefix, action string) []string {
+	return []string{
+		pathPrefix + "/v1/live/sessions/{session_id}/" + action,
+		pathPrefix + "/live/sessions/{session_id}/" + action,
+	}
+}
+
 // OpenAIRealtimeWebRTCCallsPaths returns HTTP POST paths for the GA /realtime/calls
 // WebRTC SDP exchange endpoint (multipart sdp + session format).
 func OpenAIRealtimeWebRTCCallsPaths(pathPrefix string) []string {
@@ -3300,7 +3577,6 @@ func OpenAIRealtimeWebRTCCallsPaths(pathPrefix string) []string {
 func OpenAIRealtimeClientSecretPaths(pathPrefix string) []string {
 	basePaths := []string{
 		"/v1/realtime/client_secrets",
-		"/v1/realtime/sessions",
 	}
 	paths := make([]string, 0, len(basePaths))
 	for _, p := range basePaths {
@@ -3310,16 +3586,17 @@ func OpenAIRealtimeClientSecretPaths(pathPrefix string) []string {
 }
 
 // NewOpenAIRouter creates a new OpenAIRouter with the given bifrost client.
-func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, logger schemas.Logger) *OpenAIRouter {
+func NewOpenAIRouter(client *bifrost.Bifrost, handlerStore lib.HandlerStore, accessResolver AccessResolver, logger schemas.Logger) *OpenAIRouter {
 	routes := CreateOpenAIRouteConfigs("/openai", handlerStore)
 	routes = append(routes, CreateOpenAIListModelsRouteConfigs("/openai", handlerStore)...)
+	routes = append(routes, CreateOpenAIModelRetrieveRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIBatchRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIFileRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIContainerRouteConfigs("/openai", handlerStore)...)
 	routes = append(routes, CreateOpenAIContainerFileRouteConfigs("/openai", handlerStore)...)
 
 	return &OpenAIRouter{
-		GenericRouter: NewGenericRouter(client, handlerStore, routes, nil, logger),
+		GenericRouter: NewGenericRouter(client, handlerStore, accessResolver, routes, nil, logger),
 	}
 }
 

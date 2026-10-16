@@ -32,10 +32,10 @@ export function MCPServersEmptyState({ onAddClick, canCreate = true }: MCPServer
 					>
 						Read more <ArrowUpRight className="text-muted-foreground h-3 w-3" />
 					</Button>
-					<Button aria-label="Add your first MCP server" onClick={onAddClick} disabled={!canCreate} data-testid="create-mcp-client-btn">
+					<Button onClick={onAddClick} disabled={!canCreate} data-testid="create-mcp-client-btn">
 						Add MCP Server
 					</Button>
-					<Button asChild aria-label="Browse the MCP server library" data-testid="mcp-library-empty-link-btn">
+					<Button asChild data-testid="mcp-library-empty-link-btn">
 						<Link to="/workspace/mcp-registry/library">
 							<Boxes className="h-4 w-4" />
 							Browse Library

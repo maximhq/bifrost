@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" role="img" aria-label="Singulr AI">
+  <style>
+    .bg { fill: #ffffff; }
+    .mark { stroke: #0b1020; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #090d0d; }
+      .mark { stroke: #f9fafb; }
+    }
+  </style>
+  <rect class="bg" width="200" height="200"/>
+  <path class="mark" d="M130 51A66 66 0 1 0 146 136" fill="none" stroke-linecap="round" stroke-width="25"/>
+  <circle cx="145" cy="70" r="19" fill="#8FD600"/>
+</svg>

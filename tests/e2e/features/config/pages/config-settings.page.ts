@@ -1,4 +1,4 @@
-import { Locator, Page } from '@playwright/test'
+import { Locator, Page, expect } from '@playwright/test'
 import { BasePage } from '../../../core/pages/base.page'
 import { waitForNetworkIdle } from '../../../core/utils/test-helpers'
 
@@ -16,9 +16,10 @@ export class ConfigSettingsPage extends BasePage {
 
   // Client Settings
   readonly dropExcessRequestsSwitch: Locator
-  readonly enableLiteLLMFallbacksSwitch: Locator
   readonly disableDBPingsSwitch: Locator
   readonly asyncJobResultTtlInput: Locator
+  readonly extraFieldsPlacementSelect: Locator
+  readonly extraFieldsPlacementDroppedNote: Locator
 
   // Logging Settings
   readonly enableLoggingSwitch: Locator
@@ -30,7 +31,14 @@ export class ConfigSettingsPage extends BasePage {
   // Security Settings
   readonly rateLimitingSection: Locator
   readonly enforceAuthOnInferenceSwitch: Locator
+  readonly enforceVKObjectOwnershipSwitch: Locator
   readonly requiredHeadersTextarea: Locator
+  readonly vkRotationCooldownInput: Locator
+  readonly dashboardAuthSwitch: Locator
+  readonly currentPasswordInput: Locator
+  readonly currentPasswordError: Locator
+  readonly setupTokenToggle: Locator
+  readonly setupTokenInput: Locator
 
   // Performance Tuning Settings
   readonly workerPoolSizeInput: Locator
@@ -45,15 +53,19 @@ export class ConfigSettingsPage extends BasePage {
   readonly pricingForceSyncBtn: Locator
   readonly pricingSaveBtn: Locator
 
+  // Compatibility Settings
+  readonly compatConvertDecisionToResponsesSwitch: Locator
+
   constructor(page: Page) {
     super(page)
     this.saveBtn = page.getByRole('button', { name: /Save/i })
 
     // Client Settings locators
     this.dropExcessRequestsSwitch = page.locator('#drop-excess-requests')
-    this.enableLiteLLMFallbacksSwitch = page.locator('#enable-litellm-fallbacks')
     this.disableDBPingsSwitch = page.locator('#disable-db-pings-in-health')
     this.asyncJobResultTtlInput = page.getByTestId('client-settings-async-job-result-ttl-input')
+    this.extraFieldsPlacementSelect = page.getByTestId('client-settings-extra-fields-placement-select')
+    this.extraFieldsPlacementDroppedNote = page.getByTestId('client-settings-extra-fields-placement-dropped-note')
 
     // Logging Settings locators
     this.enableLoggingSwitch = page.locator('#enable-logging')
@@ -67,7 +79,14 @@ export class ConfigSettingsPage extends BasePage {
     // Security Settings locators
     this.rateLimitingSection = page.locator('text=Rate Limiting').locator('..')
     this.enforceAuthOnInferenceSwitch = page.getByTestId('enforce-auth-on-inference-switch')
+    this.enforceVKObjectOwnershipSwitch = page.getByTestId('security-enforce-vk-object-ownership-switch')
     this.requiredHeadersTextarea = page.getByTestId('required-headers-textarea')
+    this.vkRotationCooldownInput = page.getByTestId('security-vk-rotation-cooldown-input')
+    this.dashboardAuthSwitch = page.locator('#auth-enabled')
+    this.currentPasswordInput = page.getByTestId('security-current-password-input')
+    this.currentPasswordError = page.getByTestId('security-current-password-error')
+    this.setupTokenToggle = page.getByTestId('security-setup-token-toggle')
+    this.setupTokenInput = page.getByTestId('security-setup-token-input')
 
     // Performance Tuning locators
     this.workerPoolSizeInput = page.getByLabel(/Worker Pool Size/i)
@@ -77,15 +96,26 @@ export class ConfigSettingsPage extends BasePage {
     this.observabilityToggles = page.locator('button[role="switch"]')
 
     // Pricing Config locators
-    this.pricingConfigView = page.getByTestId('pricing-config-view')
+    this.pricingConfigView = page.getByTestId('model-settings-view')
     this.pricingDatasheetUrlInput = page.getByTestId('pricing-datasheet-url-input')
     this.pricingForceSyncBtn = page.getByTestId('pricing-force-sync-btn')
-    this.pricingSaveBtn = page.getByTestId('pricing-save-btn')
+    this.pricingSaveBtn = page.getByTestId('model-settings-save-btn')
+
+    // Compatibility locators
+    this.compatConvertDecisionToResponsesSwitch = page.getByTestId('compat-convert-decision-to-responses')
   }
 
   async goto(path: string): Promise<void> {
     await this.page.goto(`/workspace/config/${path}`)
     await waitForNetworkIdle(this.page)
+  }
+
+  /**
+   * Pick a value in the Extra Fields Placement select
+   */
+  async selectExtraFieldsPlacement(value: 'body' | 'headers'): Promise<void> {
+    await this.extraFieldsPlacementSelect.click()
+    await this.page.getByTestId(`client-settings-extra-fields-placement-option-${value}`).click()
   }
 
   async saveSettings(): Promise<void> {
@@ -129,6 +159,52 @@ export class ConfigSettingsPage extends BasePage {
    */
   async getInputValue(inputLocator: Locator): Promise<string> {
     return await inputLocator.inputValue()
+  }
+
+  /**
+   * Dismiss the first-run onboarding checklist. It renders as a fixed card in
+   * the bottom-right corner, which is exactly where the config pages put their
+   * Save button, so while it is open a click on Save silently times out on
+   * Playwright's actionability check rather than failing with a useful message.
+   * "Remind me later" snoozes it across navigations and reloads.
+   */
+  async dismissOnboardingWidget(): Promise<void> {
+    // The widget snoozes itself with the bifrost_onboarding_remind_at cookie
+    // (see ui/hooks/useOnboardingChecklist.ts). Setting it directly is
+    // deterministic; driving the UI instead means opening the "Remind me later"
+    // picker and choosing a date, which leaves the widget on screen in between.
+    const remindAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+    await this.page.context().addCookies([
+      {
+        name: 'bifrost_onboarding_remind_at',
+        value: remindAt.toISOString(),
+        url: new URL(this.page.url()).origin,
+      },
+    ])
+    // The checklist is decided at render time, so reload with the snooze set.
+    await this.page.reload()
+    await waitForNetworkIdle(this.page)
+    await expect(this.page.getByTestId('onboarding-later')).not.toBeVisible({ timeout: 5000 })
+  }
+
+  /**
+   * Set the virtual key rotation cooldown. An empty string is a meaningful
+   * value here: it disables the grace period, so the previous key value stops
+   * authenticating as soon as the key is rotated.
+   */
+  async setVkRotationCooldown(value: string): Promise<void> {
+    await this.vkRotationCooldownInput.clear()
+    if (value !== '') {
+      await this.vkRotationCooldownInput.fill(value)
+    }
+  }
+
+  /**
+   * Read the rotation cooldown as displayed. The API stores nanoseconds, so
+   * this is the duration string the UI formats back for the operator.
+   */
+  async getVkRotationCooldown(): Promise<string> {
+    return await this.vkRotationCooldownInput.inputValue()
   }
 
   /**
@@ -244,10 +320,6 @@ export class ConfigSettingsPage extends BasePage {
     await this.dropExcessRequestsSwitch.click()
   }
 
-  async toggleLiteLLMFallbacks(): Promise<void> {
-    await this.enableLiteLLMFallbacksSwitch.click()
-  }
-
   async toggleDisableDBPings(): Promise<void> {
     await this.disableDBPingsSwitch.click()
   }
@@ -286,6 +358,24 @@ export class ConfigSettingsPage extends BasePage {
 
   async toggleEnforceAuthOnInference(): Promise<void> {
     await this.enforceAuthOnInferenceSwitch.click()
+  }
+
+  /**
+   * Flip the "Password protect the dashboard" switch without saving.
+   */
+  async toggleDashboardAuth(): Promise<void> {
+    await this.dashboardAuthSwitch.click()
+  }
+
+  /**
+   * Fill the confirmation field that appears when auth is being turned back on
+   * while it is off: the admin password currently stored on the server.
+   */
+  async setCurrentPassword(value: string): Promise<void> {
+    await this.currentPasswordInput.clear()
+    if (value !== '') {
+      await this.currentPasswordInput.fill(value)
+    }
   }
 
   async setRequiredHeaders(value: string): Promise<void> {
@@ -337,7 +427,13 @@ export class ConfigSettingsPage extends BasePage {
   }
 
   async savePricingConfig(): Promise<void> {
+    // The save re-syncs the pricing datasheet and model parameters before responding, which can take ~10s.
+    const saved = this.page.waitForResponse(
+      (r) => r.url().endsWith('/api/config') && r.request().method() === 'PUT',
+      { timeout: 60_000 },
+    )
     await this.pricingSaveBtn.click()
+    expect((await saved).ok()).toBe(true)
     await this.waitForSuccessToast()
   }
 }

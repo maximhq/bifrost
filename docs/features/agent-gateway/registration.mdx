@@ -1,0 +1,202 @@
+---
+title: "Register your first agent"
+description: "Connect an existing A2A agent to Bifrost using the dashboard, config.json, or Helm."
+icon: "plus"
+---
+
+You need a running A2A agent and its agent card URL. Bifrost must be able to reach both the card and the endpoints advertised in it.
+
+For private-network agents, first add the required destinations in [Agent Settings → Private Network Allowlist](./configuration#permit-private-agent-destinations). If the card and runtime use different origins, configure [Additional agent endpoints](./authentication#additional-agent-endpoints) in the registration too.
+
+Before calling agents through Bifrost, set **Agents → Agent Settings → External Client URL** as described in [Gateway settings and transports](./configuration#set-the-public-base-url). You can register and manage agents while this setting is empty, but their gateway protocol endpoints remain disabled.
+
+We used our `library-research` agent, which answers questions about software libraries, for these screenshots. Follow the steps with your own A2A agent and replace the example name, domain, and credentials with yours.
+
+## Register in the dashboard
+
+<Steps>
+<Step title="Open the Agent Catalog">
+Open **Agents → Agent Catalog** and select **New Agent**.
+
+Give the registration a name such as `library-research`. Use lowercase letters, digits, and single hyphens. The name becomes part of the gateway URL.
+
+<Note>
+For gRPC, agent names must be **63 characters or fewer** because the name becomes a DNS label, such as `library-research` in `library-research.a2a.example.com`. Longer names can still use JSON-RPC and REST.
+</Note>
+</Step>
+<Step title="Fetch the agent card">
+Enter the complete **agent card URL**, including the path to the card, for example `https://research.example.com/.well-known/agent-card.json`. The base URL alone, such as `https://research.example.com`, is not enough. Select **Fetch**.
+
+<Accordion title="Fetching a private agent card">
+
+Before selecting **Fetch**, expand **Card fetch options** and enter the credentials required to read the card. Bifrost uses these credentials for card discovery. Configure credentials for sending work separately under **Request authentication**.
+
+</Accordion>
+
+The preview shows the agent's skills, interfaces, capabilities, and advertised authentication. Check that this is the agent you intended to register.
+
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-registration.png"
+    alt="New agent registration with separate card fetch and request authentication controls"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+</Step>
+<Step title="Check request authentication">
+The card's requirements select the request authentication fields. Fill in the credentials your agent expects.
+
+### Authentication options
+
+- **Configure manually** lets you override an inaccurate card or choose a different authentication setup. Use **TLS and certificates** for a private CA or mutual TLS.
+- **Forward Bifrost authentication** passes the caller's credentials to agents that use Bifrost for LLM or MCP calls. Enable it and configure your agent to reuse those credentials on its model and tool requests to preserve caller attribution.
+
+The [authentication guide](./authentication) explains auto-selection, overrides, and what happens when two credentials use the same header.
+
+Under **Additional agent endpoints**, select **Allow** for trusted addresses discovered in the card, or **Add endpoint** to enter another runtime origin. The card's own origin is permitted automatically. Include the scheme and port, such as `https://research.internal:9000`. Private destinations also need permission in **Agent Settings → Private Network Allowlist**.
+
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-registration-auth.png"
+    alt="Card-selected Authorization header authentication with TLS and credential forwarding controls"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+</Step>
+<Step title="Grant access and create">
+Select the virtual keys allowed to call the agent. Leave **Allow any virtual key** off for a restricted agent, or turn it on to allow identified callers without an explicit agent grant.
+
+Bifrost discovers supported A2A extensions from the agent card. No manual extension list is required. See [A2A extensions](#a2a-extensions) for negotiation behavior.
+
+Select **Create**, then reopen the registration to copy its gateway endpoints. Point your client at the Bifrost agent card, rather than the original server card, so discovery returns the gateway routes.
+
+</Step>
+</Steps>
+
+<Note>
+Agent grants restrict authenticated callers. Enable inference authentication enforcement for a deployment that must reject anonymous calls. See [access control](./access-control).
+</Note>
+
+### Check your registered agent
+
+Your agent appears in **Agent Catalog** after registration. Reopen it to review its access and copy the gateway endpoints.
+
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-catalog.png"
+    alt="A registered research agent in the Agent Catalog with one virtual-key grant"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+Open the agent's action menu and select **Edit**. Under **Gateway endpoints**, use the copy button beside **Agent card**, **JSON-RPC**, **REST**, or **gRPC**. Give your client the gateway's agent card URL for discovery, or the endpoint for its chosen transport.
+
+<Note>
+Each request to the gateway's agent card URL fetches the current card from your agent server, using the configured card-fetch authentication. Bifrost rewrites its endpoints and authentication requirements for gateway access before returning it. It does not return a cached registration-time card. If your server cannot provide the card, the request fails.
+</Note>
+
+<Frame>
+  <img
+    src="/media/agent-gateway/ui-gateway-endpoints.png"
+    alt="The edit form&#x27;s Gateway endpoints section with copy buttons for the agent card and each transport"
+    style={{ maxHeight: "440px", maxWidth: "100%", width: "auto", margin: "0 auto" }}
+  />
+</Frame>
+
+## Register from deployment configuration
+
+<Tabs group="config-method">
+<Tab title="config.json">
+Add an `agents` entry to your configuration:
+
+```json
+{
+  "agents": [
+    {
+      "name": "library-research",
+      "agent_card_url": "https://research.example.com/.well-known/agent-card.json",
+      "enabled": true,
+      "allow_by_default": false,
+      "virtual_key_ids": ["YOUR_VIRTUAL_KEY_ID"],
+      "forward_accepted_credential": true,
+      "runtime_auth": {
+        "type": "headers",
+        "headers": {"Authorization": "env.RESEARCH_AGENT_AUTHORIZATION"}
+      }
+    }
+  ]
+}
+```
+
+The virtual key must already exist or be declared in the deployment. Use its ID here, not its secret value. A runtime credential is only needed if your agent requires one.
+</Tab>
+<Tab title="Helm">
+The chart passes `bifrost.agents` into the top-level `agents` configuration. Agent fields use snake_case, just as in config.json.
+
+```yaml
+bifrost:
+  agents:
+    - name: library-research
+      agent_card_url: https://research.example.com/.well-known/agent-card.json
+      enabled: true
+      allow_by_default: false
+      virtual_key_ids:
+        - YOUR_VIRTUAL_KEY_ID
+      forward_accepted_credential: true
+      runtime_auth:
+        type: headers
+        headers:
+          Authorization: env.RESEARCH_AGENT_AUTHORIZATION
+```
+
+Supply `RESEARCH_AGENT_AUTHORIZATION` as the complete header value, such as `Bearer <agent-token>`, through your deployment's secret mechanism. See [Helm secret management](/deployment-guides/helm/secret-management).
+</Tab>
+</Tabs>
+
+Declarations reconcile by registration name at startup. Under the default `split` source of truth, removing an entry from the file does not delete its stored registration. With `source_of_truth: "config.json"`, a present `agents` list is authoritative. See [source of truth](/deployment-guides/config-json/source-of-truth) before mixing file and dashboard changes.
+
+<Accordion title="Manage registrations through the API">
+The [API reference](/api-reference/agent-gateway/register-agent) documents registration and card inspection endpoints. Management requests use dashboard or API authentication; that is separate from the credential used to call an agent.
+
+`PUT /api/agents/{name}` replaces the registration. Include the settings and collections you intend to keep. Omitting authentication or virtual-key IDs can remove them. The registration name stays fixed; use a new registration if you need a different route name.
+</Accordion>
+
+## Make your first request
+
+Use a virtual key granted access to this registration:
+
+```bash
+curl http://localhost:8080/agents/a2a/library-research/.well-known/agent-card.json \
+  -H "x-bf-vk: $BIFROST_VK"
+```
+
+Then send a message over JSON-RPC. This example uses A2A v1 method names and JSON field names.
+
+```bash
+curl http://localhost:8080/agents/a2a/library-research/json-rpc \
+  -H "x-bf-vk: $BIFROST_VK" \
+  -H "Content-Type: application/json" \
+  -H "A2A-Version: 1.0" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "research-1",
+    "method": "SendMessage",
+    "params": {
+      "message": {
+        "messageId": "question-1",
+        "role": "user",
+        "parts": [{"text": "Explain how to reuse one HTTP client across requests."}]
+      }
+    }
+  }'
+```
+
+The agent may return a message or a task. See [Messages, tasks, and events](./messages-and-tasks) to continue the conversation or follow a task's progress.
+
+## A2A extensions
+
+Bifrost reads extension declarations from the upstream agent card and advertises those it can safely relay. Your client must still request extensions through A2A negotiation. Required extensions must be requested before an operation can proceed; requests for undeclared extensions are rejected before reaching the agent.
+
+The card may declare at most 32 extensions, with absolute URIs no longer than 2048 bytes. Negotiated extension payloads are limited to 64 KiB. Invalid required declarations fail discovery; optional declarations that cannot be safely relayed are omitted.
+
+Next, review [Authentication](./authentication) for card fetching, agent credentials, and caller forwarding. Then configure [Agent access](./access-control) for your callers.

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -229,6 +228,7 @@ func (p *OAuth2Provider) refreshExchangeAdminToken(ctx context.Context, token *t
 		token.ExpiresAt = &exp
 	}
 	token.LastRefreshedAt = &now
+	token.StatusReason = ""
 	if err := p.configStore.UpdateOauthToken(ctx, token); err != nil {
 		return fmt.Errorf("failed to update admin exchange credential: %w", err)
 	}
@@ -242,7 +242,7 @@ func (p *OAuth2Provider) refreshExchangeAdminToken(ctx context.Context, token *t
 // credential looking active, mirroring RefreshAccessToken's permanent-error
 // path) and signals re-verification via the ErrOAuth2TokenExpired sentinel.
 func (p *OAuth2Provider) markExchangeAdminNeedsReauth(token *tables.TableMCPOauthToken, cause error) error {
-	if markErr := p.configStore.MarkOauthUserTokenNeedsReauthByID(context.Background(), token.ID); markErr != nil {
+	if markErr := p.configStore.MarkOauthUserTokenNeedsReauthByID(context.Background(), token.ID, "admin token exchange failed: "+cause.Error()); markErr != nil {
 		return fmt.Errorf("admin exchange credential is dead but status update failed (mcp_client=%s): %w", token.MCPClientID, markErr)
 	}
 	p.EvictUserTokenByID(token.ID)
@@ -282,6 +282,7 @@ func (p *OAuth2Provider) performExchange(ctx *schemas.BifrostContext, config *sc
 // *schemas.TokenExchangeRejectedError so callers can distinguish "fix the
 // credential" from transient failures.
 func (p *OAuth2Provider) rawExchange(ctx context.Context, config *schemas.MCPClientConfig, form func(*schemas.TokenExchangeIdP) (url.Values, error)) (*schemas.OAuth2TokenExchangeResponse, error) {
+	ctx = withRequirePublicTarget(ctx, config == nil || config.RequirePublicTarget)
 	resolver := p.tokenExchangeIdPResolver()
 	if resolver == nil || !resolver.Available() {
 		return nil, schemas.ErrTokenExchangeUnavailable
@@ -318,17 +319,14 @@ func (p *OAuth2Provider) rawExchange(ctx context.Context, config *schemas.MCPCli
 // traces, internal error pages, unrelated response content some identity
 // providers include — must not pass through verbatim.
 func sanitizeTokenExchangeRejection(rawBody string) string {
-	var oauthErr struct {
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
-	}
-	if err := json.Unmarshal([]byte(rawBody), &oauthErr); err != nil || oauthErr.Error == "" {
+	code, description := parseOAuthErrorBody([]byte(rawBody))
+	if code == "" {
 		return "identity provider rejected the request"
 	}
-	if oauthErr.ErrorDescription == "" {
-		return oauthErr.Error
+	if description == "" {
+		return code
 	}
-	return oauthErr.Error + ": " + oauthErr.ErrorDescription
+	return code + ": " + description
 }
 
 // performExchangeCtx shapes a rawExchange result into a cache entry, with the

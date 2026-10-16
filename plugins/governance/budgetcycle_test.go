@@ -345,7 +345,7 @@ func TestResetExpiredRateLimitsPersistsLastResetUnderTraffic(t *testing.T) {
 	rateLimit.RequestLastReset = anchor
 	require.NoError(t, configStore.CreateRateLimit(ctx, rateLimit))
 
-	store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil)
+	store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil, nil)
 	require.NoError(t, err)
 
 	boundary := anchor.Add(cycleTestWindow)
@@ -486,7 +486,7 @@ func TestDumpBudgetsPersistsUsageAndNeverRewindsBoundary(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, configStore.Close(ctx)) })
 		require.NoError(t, configStore.CreateBudget(ctx, seeded))
-		store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil)
+		store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil, nil)
 		require.NoError(t, err)
 		return store, configStore
 	}
@@ -792,7 +792,7 @@ func TestDumpBudgetsCannotUndoOperatorReset(t *testing.T) {
 		require.NoError(t, err)
 		t.Cleanup(func() { require.NoError(t, configStore.Close(ctx)) })
 		require.NoError(t, configStore.CreateBudget(ctx, seeded))
-		store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil)
+		store, err := NewLocalGovernanceStore(ctx, logger, configStore, nil, nil, nil)
 		require.NoError(t, err)
 		return store, configStore
 	}

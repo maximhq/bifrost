@@ -1,205 +1,188 @@
 ---
 title: "Codex CLI"
-description: "Use OpenAI's Codex CLI with Bifrost for powerful code generation with any provider."
+description: "Use Codex CLI with Bifrost through a custom Responses API provider."
 icon: "openai"
 ---
 
-[Codex CLI](https://developers.openai.com/codex/cli/) provides powerful code generation and completion capabilities directly in your terminal.
+[Codex CLI](https://developers.openai.com/codex/cli/) is OpenAI's terminal
+coding agent. Bifrost connects it through a named custom provider backed by the
+OpenAI-compatible Responses API.
 
-<Note>
-If your Allowed Headers are already set to `*`, you can skip this note. If not, and you face issues integrating Bifrost with Codex CLI, try switching to `*` or adding the specific headers required by your client. By default, Bifrost whitelists: `Content-Type`, `Authorization`, `X-Requested-With`, `X-Stainless-Timeout`, and `X-Api-Key`.
-</Note>
+<Tip>
+Codex CLI sends a `session-id` header on every request, so a session sticks to
+the provider and key that served it and keeps hitting the same prompt cache,
+with nothing to configure. See [Session Affinity](/providers/session-affinity).
+</Tip>
 
-## Installing Codex CLI
+## Install Codex CLI
 
 ```bash
 npm install -g @openai/codex
 ```
 
-## Configuring Codex CLI with Bifrost
-
-<Warning>
-Codex CLI always prefers OAuth over custom API keys. Make sure you run `/logout` before configuring the Bifrost gateway with Codex.
-</Warning>
-
-### Update codex.toml
-
-Add the Bifrost base URL and credentials to your global `~/.codex/config.toml` or project-specific `.codex/config.toml`:
+## Recommended: launch with Bifrost CLI
 
 ```bash
-export OPENAI_API_KEY=<bifrost_virtual_key>
-```
+bifrost context add production \
+  --base-url https://gateway.example.com \
+  --use
 
-```toml
-openai_base_url="http://localhost:8080/openai/v1"
-env_key="OPENAI_API_KEY"
-model = "openai/gpt-5.4"
-```
+# Enterprise user-scoped inference
+bifrost auth login
 
-Always run `codex` from the same terminal session where you exported variables, or restart the terminal after changing your profile. GUI-launched terminals or IDEs may not pick up shell-profile exports unless the environment is configured there as well.
+# Or configure a virtual key
+printf '%s\n' "$BIFROST_VIRTUAL_KEY" |
+  bifrost auth set-virtual-key --stdin
 
-## Using Non-OpenAI models
+# Confirm the virtual key allows this model before launching
+bifrost models list
 
-Codex CLI defaults to [websocket mode](https://developers.openai.com/api/docs/guides/websocket-mode) for the Responses API and automatically falls back to HTTPS if the WebSocket connection fails. Non-OpenAI models are not supported in WebSocket mode, because in this mode, the server is expected to maintain the conversation context. If you are using non-OpenAI models, you must enable HTTPS mode.
-
-To enable https for Codex CLI by default, add these settings in your `config.toml`: 
-
-```toml
-
-model_provider = "openai_http"
-
-[model_providers.openai_http]
-name = "OpenAI HTTP"
-wire_api = "responses"
-supports_websockets = false
-base_url = "http://localhost:8080/openai/v1"
-```
-
-## Model Configuration
-
-Use the `--model` flag to start Codex with a specific model:
-
-```bash
-codex --model openai/gpt-5-codex
-codex --model openai/gpt-5.4-pro
-```
-
-You can also switch models mid-session with the `/model` command:
-
-```bash
-/model openai/gpt-5.4-pro
-/model openai/gpt-5-codex
-```
-
-## Using Non-OpenAI Models with Codex CLI
-
-Bifrost automatically translates OpenAI API requests to other providers, so you can use Codex CLI with models from Anthropic, Google, Mistral, and more. Use the `provider/model-name` format to specify any Bifrost-configured model:
-
-```bash
-# Start with an Anthropic model
-codex --model anthropic/claude-sonnet-4-5-20250929
-
-# Start with a Google model
-codex --model gemini/gemini-2.5-pro
-
-# Switch mid-session
-/model anthropic/claude-sonnet-4-5-20250929
-/model mistral/mistral-large-latest
-```
-
-### Supported Providers
-
-Bifrost supports the following providers with the `provider/model-name` format:
-
-`openai`, `azure`, `gemini`, `vertex`, `bedrock`, `mistral`, `groq`, `cerebras`, `deepseek`, `cohere`, `perplexity`, `xai`, `ollama`, `openrouter`, `huggingface`, `nebius`, `parasail`, `replicate`, `vllm`, `sgl`
-
-<Warning>
-Non-OpenAI models **must support tool use** for Codex CLI to work properly. Codex CLI relies on tool calling for file operations, terminal commands, and code editing. Models without tool use support will fail on most operations.
-</Warning>
-
-## Listing Non-OpenAI Models in the Model Picker
-
-You can always start or switch to a non-OpenAI model by passing it explicitly (`codex --model bedrock/...` or `/model bedrock/...`). However, these models do not appear in the `/models` picker by default, and selecting them logs a warning like:
-
-```
-⚠ Model metadata for `bedrock/anthropic.claude-haiku-4-5` not found.
-  Defaulting to fallback metadata; this can degrade performance and cause issues.
-```
-
-This happens because Codex CLI builds its model picker from its own catalogue i.e. a list bundled into the Codex binary plus a refresh tied to your OpenAI account. Bifrost sits on the inference path, not Codex's model-discovery path, so Codex never learns about your non-OpenAI models. The fallback metadata also assigns a conservative context window, which can trigger premature history compaction.
-
-To make non-OpenAI models show up in `/models` and carry correct metadata, create a local model catalog file and reference it from `config.toml`.
-
-### 1. Create a model catalog file
-
-You don't need to create a model entry from scratch. First choose a complete, compatible entry from `~/.codex/models_cache.json`, then copy it into `~/.codex/bifrost_catalog.json` while overriding only `slug`, `display_name`, and `context_window`.
-
-The following example shows the complete entry shape. The two `<COPY-...>` values represent long, version-specific strings; copy their full values from the same source entry without modifying them.
-
-```json
-{
-  "models": [
-    {
-      "slug": "bedrock/anthropic.claude-haiku-4-5",
-      "display_name": "Claude Haiku 4.5 (Bifrost)",
-      "description": "Small, fast, and cost-efficient model for simpler coding tasks.",
-      "default_reasoning_level": "medium",
-      "supported_reasoning_levels": [
-        {
-          "effort": "low",
-          "description": "Fast responses with lighter reasoning"
-        },
-        {
-          "effort": "medium",
-          "description": "Balances speed and reasoning depth for everyday tasks"
-        },
-        {
-          "effort": "high",
-          "description": "Greater reasoning depth for complex problems"
-        },
-        {
-          "effort": "xhigh",
-          "description": "Extra high reasoning depth for complex problems"
-        }
-      ],
-      "shell_type": "shell_command",
-      "visibility": "list",
-      "supported_in_api": true,
-      "priority": 23,
-      "additional_speed_tiers": [],
-      "service_tiers": [],
-      "availability_nux": null,
-      "upgrade": null,
-      "base_instructions": "<COPY-FULL-BASE-INSTRUCTIONS-FROM-SOURCE-ENTRY>",
-      "model_messages": {
-        "instructions_template": "<COPY-FULL-INSTRUCTIONS-TEMPLATE-FROM-SOURCE-ENTRY>",
-        "instructions_variables": {},
-        "approvals": null,
-        "auto_review": null,
-        "permissions": null
-      },
-      "include_skills_usage_instructions": true,
-      "default_reasoning_summary": "none",
-      "support_verbosity": true,
-      "default_verbosity": "medium",
-      "apply_patch_tool_type": "freeform",
-      "web_search_tool_type": "text_and_image",
-      "truncation_policy": {
-        "mode": "tokens",
-        "limit": 10000
-      },
-      "supports_parallel_tool_calls": true,
-      "supports_image_detail_original": true,
-      "context_window": 200000,
-      "max_context_window": 272000,
-      "comp_hash": "2911",
-      "effective_context_window_percent": 95,
-      "experimental_supported_tools": [],
-      "input_modalities": [
-        "text",
-        "image"
-      ],
-      "supports_search_tool": true,
-      "use_responses_lite": false
-    }
-  ]
-}
+bifrost run codex --model openai/gpt-5
 ```
 
 <Note>
-The catalog JSON schema is internal to Codex and can change between versions. Select a source entry whose API behavior and capabilities are closest to the target model. Preserve every other field from that entry, including compatibility, response parsing, priority, visibility, truncation, reasoning, and tooling metadata. Do not trim the copied object into a minimal entry or remove fields that appear optional.
+A new virtual key with no `provider_configs` denies all providers by default.
+Make sure `openai/gpt-5` (or the model you choose) appears in
+`bifrost models list` before launching, or the request is rejected.
 </Note>
 
-### 2. Reference it from config.toml
+Bifrost creates an isolated temporary `CODEX_HOME` for the launched process and
+declares a `bifrost` model provider. It copies the user's `config.toml` first,
+preserving MCP servers, project trust entries, reasoning preferences, and other
+non-auth settings before replacing the model-provider routing. The user's
+normal authentication and session history remain isolated, and changes Codex
+makes inside the temporary home are discarded when the process exits.
 
-Add the `model_catalog_json` key to your `~/.codex/config.toml`, pointing at the file:
-
-```toml
-model_catalog_json = "/Users/<you>/.codex/bifrost_catalog.json"
-```
-
-Restart Codex and run `/models` — your Bifrost models now appear in the picker, and the metadata warning is gone.
+Enterprise SSO and virtual keys are both supported. With SSO, Codex receives
+the current Bifrost agent access token only in its child-process environment.
+The token is not written to the temporary Codex provider configuration.
 
 <Warning>
-This makes non-OpenAI models appear in the **Codex CLI** picker only. The Codex desktop app's model dropdown is populated from your OpenAI account's catalogue and does **not** merge the local `model_catalog_json` file. Non-OpenAI models won't appear there. In the app, select them with the in-session `/model bedrock/...` command instead.
+Codex currently receives one agent access token when the process starts. If a
+long-running Codex session reaches token expiry, exit and relaunch it through
+Bifrost so the CLI can refresh the Enterprise session first.
 </Warning>
+
+## Configure Codex manually with a virtual key
+
+<Warning>
+Codex prefers an existing OpenAI OAuth session over custom API credentials. Run
+`/logout` before using a manually configured Bifrost provider. This is not
+required for `bifrost run codex`, which uses an isolated temporary home.
+</Warning>
+
+Export the virtual key in the same terminal used to start Codex:
+
+```bash
+export OPENAI_API_KEY="your-bifrost-virtual-key"
+```
+
+Add a named provider to `~/.codex/config.toml`:
+
+```toml
+model = "openai/gpt-5"
+model_provider = "bifrost"
+
+[model_providers.bifrost]
+name = "Bifrost"
+base_url = "http://localhost:8080/openai/v1"
+wire_api = "responses"
+env_key = "OPENAI_API_KEY"
+requires_openai_auth = false
+supports_websockets = false
+```
+
+The trailing `/v1` is required because Codex appends `/responses` to the custom
+provider URL. `supports_websockets = false` keeps the custom provider on
+HTTP(S) Responses requests, which is required when Bifrost translates the
+request to a provider that does not implement OpenAI's stateful Responses
+WebSocket protocol.
+
+<Warning>
+Use a named `model_providers` entry. Setting only `OPENAI_BASE_URL` or
+`OPENAI_API_KEY` can leave Codex on its built-in OpenAI provider, where OpenAI
+OAuth and built-in transport behavior can take precedence.
+</Warning>
+
+## Select a model
+
+Pass the complete Bifrost model identifier when starting the session:
+
+```bash
+bifrost run codex --model openai/gpt-5
+bifrost run codex --model anthropic/claude-opus-4-6
+```
+
+Or, when starting Codex directly from a manually configured shell:
+
+```bash
+codex --model openai/gpt-5
+```
+
+<Warning>
+Codex's in-session `/model` picker uses Codex's model catalog, not Bifrost's
+`/v1/models` response. Provider-qualified Bifrost models may not appear there,
+and entering an arbitrary value after `/model` can leave the previous model
+active. Use `/status` to verify the model. For a model outside the picker, exit
+and relaunch with `bifrost run codex --model provider/model`.
+</Warning>
+
+The Bifrost launcher currently validates gateway connectivity and discovers the
+permitted models, but it does not generate a Codex model-catalog file.
+
+## Non-OpenAI models
+
+Bifrost can translate Codex's Responses API requests to other configured
+providers. The target model must support the tool calls Codex needs for file
+operations, shell commands, and edits. Provider support for streaming,
+reasoning items, parallel tools, images, and compaction can also differ.
+
+<Note>
+The current automated Codex cloud harness exercises the OpenAI provider path.
+Treat other provider/model combinations as compatibility targets to validate
+with your selected model before production rollout.
+</Note>
+
+A quick isolation sequence is:
+
+```bash
+bifrost models list --search claude-opus
+bifrost chat --model anthropic/claude-opus-4-6 --message "Reply with OK"
+bifrost run codex --model anthropic/claude-opus-4-6
+```
+
+Inside Codex, run `/status` before sending the first task. If Bifrost's error
+payload reports a different `original_model_requested`, Codex did not switch to
+the intended model.
+
+## Troubleshooting
+
+### The request still uses `gpt-5`
+
+The in-session model change did not take effect. Relaunch with the desired
+model on the command line and verify it with `/status`.
+
+### The request is routed to the wrong provider key
+
+Bifrost routes from the model actually sent by Codex. Inspect
+`original_model_requested` in the error response or the Bifrost logs. Fixing a
+provider-key error will not change Codex's active model.
+
+### `401 Unauthorized`
+
+When using Bifrost CLI, run:
+
+```bash
+bifrost auth status --output json
+bifrost models list
+```
+
+When configuring Codex manually, confirm that `model_provider = "bifrost"`,
+`requires_openai_auth = false`, and `OPENAI_API_KEY` contains a Bifrost virtual
+key.
+
+## Next steps
+
+- [Bifrost CLI](/quickstart/cli/getting-started)
+- [Provider configuration](/quickstart/gateway/provider-configuration)
+- [Virtual keys](/features/governance/virtual-keys)

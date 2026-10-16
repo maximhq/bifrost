@@ -1,7 +1,107 @@
 import { Function as ToolFunction } from "./logs";
 import { SecretVar } from "./schemas";
 
-export type MCPConnectionType = "http" | "stdio" | "sse";
+export type MCPConnectionType = "http" | "stdio" | "sse" | "openapi";
+
+// ---------------------------------------------------------------------------
+// OpenAPI-backed servers (connection_type === "openapi"): Bifrost synthesizes
+// the MCP server from an OpenAPI/Swagger document; every supported operation
+// becomes a tool whose call is proxied to the described API.
+// ---------------------------------------------------------------------------
+
+// Secret material for one securitySchemes entry. apiKey and http-bearer
+// schemes use value; http-basic uses username and password.
+export interface MCPOpenAPICredential {
+	value?: SecretVar;
+	username?: SecretVar;
+	password?: SecretVar;
+}
+
+export interface MCPOpenAPIConfig {
+	// Inline document text (JSON or YAML). Write-only: client reads omit it;
+	// GET /mcp/client/{id}/openapi-spec serves it on demand.
+	spec?: string;
+	// Fetched on create when spec is empty; kept as provenance afterwards.
+	spec_url?: string;
+	// Upstream base URL. Defaults to the document's first server.
+	base_url?: string;
+	// Keyed by the document's securitySchemes name. Redacted on GET; sending a
+	// redacted value back keeps the stored secret.
+	security_credentials?: Record<string, MCPOpenAPICredential>;
+	include_deprecated?: boolean;
+	// Cap on the upstream response body returned to the model (0 = default).
+	max_response_bytes?: number;
+	// Server-computed, read-only metadata describing the stored document.
+	spec_size?: number;
+	spec_hash?: string;
+	spec_title?: string;
+	openapi_version?: string;
+	operation_count?: number;
+}
+
+export type MCPOpenAPISecuritySchemeType = "apiKey" | "http" | "oauth2" | "openIdConnect" | "mutualTLS";
+
+export interface MCPOpenAPISecurityScheme {
+	name: string;
+	type: MCPOpenAPISecuritySchemeType;
+	in?: "header" | "query" | "cookie"; // apiKey only
+	param_name?: string; // apiKey only
+	scheme?: string; // http only: bearer | basic
+	description?: string;
+	supported: boolean;
+	reason?: string; // why unsupported
+}
+
+export interface MCPOpenAPIPreviewTool {
+	name: string;
+	operation_id?: string;
+	method: string;
+	path: string;
+	summary?: string;
+	description?: string;
+	deprecated?: boolean;
+	input_schema?: Record<string, unknown>;
+	annotations?: Record<string, unknown>;
+	warnings?: string[];
+}
+
+export interface MCPOpenAPIUnsupportedOperation {
+	operation_id?: string;
+	method: string;
+	path: string;
+	reason: string;
+}
+
+export interface MCPOpenAPIPreviewRequest {
+	spec?: string;
+	spec_url?: string;
+	base_url?: string;
+	include_deprecated?: boolean;
+	// The name the client will have, so tool names are shortened as create shortens them.
+	client_name?: string;
+}
+
+export interface MCPOpenAPIPreviewResponse {
+	title: string;
+	version: string;
+	openapi_version: string;
+	description?: string;
+	servers: string[];
+	base_url?: string;
+	// No base URL needed: every operation declares its own server.
+	operation_servers?: boolean;
+	security_schemes: MCPOpenAPISecurityScheme[];
+	tools: MCPOpenAPIPreviewTool[];
+	unsupported: MCPOpenAPIUnsupportedOperation[];
+	warnings: string[];
+	tool_count: number;
+	spec_size: number;
+	spec_hash: string;
+	// The fetched document text, present only when the request named a spec_url.
+	spec?: string;
+	// The URL that text was finally read from after redirects; relative servers resolve against it.
+	spec_url?: string;
+}
 
 export type MCPConnectionState =
 	| "healthy"
@@ -17,6 +117,26 @@ export type MCPConnectionState =
 	| "degraded";
 
 export type MCPAuthType = "none" | "headers" | "oauth" | "per_user_oauth" | "per_user_headers" | "token_exchange";
+
+// Which step of Bifrost's own connection handling failed. Mirrors the Go
+// MCPConnectionFailureStage constants.
+export type MCPConnectionFailureStage = "connect" | "ping" | "list_tools" | "tool_discovery" | "transport_lost" | "credential";
+
+// Why a server's state is not healthy: the step that failed, the error it
+// failed with, the most recent failed attempt, and when the current run of
+// failures began. Absent while healthy.
+export interface MCPConnectionFailure {
+	stage: MCPConnectionFailureStage;
+	message: string;
+	at: string;
+	since: string;
+}
+
+// One instance's own view of a server in a distributed deployment.
+export interface MCPInstanceState {
+	state: MCPConnectionState;
+	last_failure?: MCPConnectionFailure;
+}
 
 // Lifecycle states for a per-user MCP header credential row. Mirrors the
 // status column on mcp_per_user_header_credentials.
@@ -99,11 +219,14 @@ export interface OAuthConfigUpdate {
 export interface MCPClientConfig {
 	client_id: string; // Maps to ClientID in TableMCPClient
 	name: string;
+	endpoint_slug?: string; // URL-safe, immutable after creation; served at /mcp/<slug>
 	is_code_mode_client?: boolean;
 	connection_type: MCPConnectionType;
 	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
 	tls_config?: MCPTLSConfig;
+	// Present for openapi clients; spec omitted and credentials redacted on GET.
+	openapi_config?: MCPOpenAPIConfig;
 	auth_type?: MCPAuthType;
 	oauth_config_id?: string;
 	oauth_client_id?: SecretVar; // Redacted existing client ID (populated on GET for oauth clients)
@@ -133,14 +256,19 @@ export interface MCPClientConfig {
 	// clients — pre-existing clients were backfilled to true). SSE and STDIO
 	// always behave as sticky regardless of this field.
 	needs_session_stickiness?: boolean;
+	// Server-set, read-only: true when the client was registered without an
+	// admin credential check, so every connection to it must resolve to a
+	// public address. Never cleared once set.
+	require_public_target?: boolean;
 	tool_pricing?: Record<string, number>;
 	// Per-client override (0 = use global). API returns NANOSECONDS
 	// (Go time.Duration), while updates send minutes — convert with
 	// toolSyncIntervalToMinutes before showing or resending this value.
 	tool_sync_interval?: number;
 	tool_execution_timeout?: string | number; // Per-client tool execution timeout; API returns string e.g. "30s", UI sends integer seconds (0 = use global)
+	max_instructions_length?: number; // Per-client cap on forwarded instructions in bytes (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
-	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
+	allow_by_default?: boolean; // When true, available to every caller not assigned this server explicitly, with all tools allowed; an explicit assignment overrides this
 	disabled?: boolean; // When true, connection/workers are shut down; tools are unavailable until re-enabled
 }
 
@@ -150,24 +278,68 @@ export interface MCPVKConfigResponse {
 	tools_to_execute: string[];
 }
 
+// MCPClientCredential is the read-only view of the credential a server holds
+// on its own behalf, as opposed to the per-caller credentials listed under
+// MCP sessions: the single shared token for an oauth server, the retained
+// admin token for per_user_oauth and token_exchange servers (used only to
+// refresh the tool list), or the retained admin header values for a
+// per_user_headers server. Never carries secret material: the refresh token
+// is reported as present or absent, and header values only by name.
+export interface MCPClientCredential {
+	kind: "oauth" | "headers";
+	// oauth: active | orphaned | needs_reauth. headers: active | orphaned | needs_update.
+	status: "active" | "orphaned" | "needs_reauth" | "needs_update";
+	// oauth only: why the status left active, as recorded when it flipped:
+	// the provider's rejection of the last refresh (HTTP status plus the
+	// OAuth error and description), a credential rotation, or a failed admin
+	// exchange. Absent while active.
+	status_reason?: string;
+	// oauth only: access token expiry; absent when the provider did not report one.
+	expires_at?: string | null;
+	// oauth only: set once the access token has been refreshed or the
+	// credential re-authorized at least once.
+	last_refreshed_at?: string | null;
+	// oauth only: whether the provider issued a refresh token. Always false for headers.
+	has_refresh_token: boolean;
+	// oauth only: scopes the provider reported at consent. Empty when the
+	// provider omitted them from its token response.
+	scopes?: string[];
+	// headers only: names of the headers the stored admin values cover, sorted.
+	header_keys?: string[];
+	created_at: string;
+	updated_at: string;
+}
+
 export interface MCPClient {
 	config: MCPClientConfig;
 	tools: ToolFunction[];
 	state: MCPConnectionState;
 	vk_configs: MCPVKConfigResponse[];
-	// Per-instance breakdown behind `state` when it's "degraded" (instance ID
-	// -> that instance's own self-reported state). Only ever present in a
-	// distributed deployment; absent otherwise.
-	node_states?: Record<string, string>;
+	// The failure behind a `state` other than healthy, as recorded by the
+	// instance that served this request. Absent while healthy.
+	last_failure?: MCPConnectionFailure;
+	// Per-instance breakdown behind `state` in a distributed deployment
+	// (instance ID -> that instance's own state and failure). Present when
+	// instances disagree (`state` is then "degraded") and when they all
+	// report unstable, so each instance's own reason is visible. Never
+	// present in a single-instance deployment.
+	node_states?: Record<string, MCPInstanceState>;
+	// The credential this server holds on its own behalf. Absent for auth
+	// types without one (none, headers) and for servers that have not
+	// completed their one-time authorization yet.
+	credential?: MCPClientCredential;
 }
 
 export interface CreateMCPClientRequest {
 	name: string;
+	endpoint_slug?: string; // Optional on create (derived from name when blank); immutable after
 	is_code_mode_client?: boolean;
 	connection_type: MCPConnectionType;
 	connection_string?: SecretVar;
 	stdio_config?: MCPStdioConfig;
 	tls_config?: MCPTLSConfig;
+	// openapi-only: the document (spec or spec_url), upstream and credentials.
+	openapi_config?: MCPOpenAPIConfig;
 	auth_type?: MCPAuthType;
 	oauth_config?: OAuthConfig;
 	tools_to_execute?: string[];
@@ -190,12 +362,18 @@ export interface CreateMCPClientRequest {
 	// Only meaningful when connection_type === "http". See MCPClientConfig's
 	// field doc for the full contract.
 	needs_session_stickiness?: boolean;
+	// Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
+	allowed_extra_headers?: string[];
 }
 
 export interface OAuthFlowResponse {
 	status: "pending_oauth";
 	message: string;
 	oauth_config_id: string;
+	// Set by /reauthorize: the flow row driving this consent. Passed back on
+	// status polls so they report the flow's own state instead of the config's
+	// bootstrap status, which stays "authorized" for an already-verified client.
+	flow_id?: string;
 	authorize_url: string;
 	expires_at: string;
 	mcp_client_id: string;
@@ -205,6 +383,8 @@ export interface OAuthStatusResponse {
 	id: string;
 	status: "pending" | "authorized" | "failed" | "expired" | "revoked";
 	created_at: string;
+	flow_id?: string;
+	flow_status?: string;
 	token_id?: string;
 	token_expires_at?: string;
 	token_scopes?: string;
@@ -235,12 +415,17 @@ export interface UpdateMCPClientRequest {
 	tool_pricing?: Record<string, number>;
 	tool_sync_interval?: number; // Per-client override in minutes (0 = use global)
 	tool_execution_timeout?: number; // Per-client tool execution timeout in seconds (0 = use global)
+	max_instructions_length?: number; // Per-client cap on forwarded instructions in bytes (0 = use global)
 	allowed_extra_headers?: string[]; // Allowlist of x-bf-eh-* headers forwarded to this MCP server. ["*"] = allow all.
-	allow_on_all_virtual_keys?: boolean; // When true, available to all VKs with all tools allowed by default; explicit VK config overrides this
+	allow_by_default?: boolean; // When true, available to every caller not assigned this server explicitly, with all tools allowed; an explicit assignment overrides this
 	disabled?: boolean; // Set to true to shut down connection/workers; false to reconnect
 	tls_config?: MCPTLSConfig; // TLS configuration for HTTP/SSE connections
 	oauth_config?: OAuthConfigUpdate; // Only supported for existing oauth/per_user_oauth clients (credential rotation)
 	token_exchange?: MCPTokenExchangeConfig; // Only supported for existing token_exchange clients; omitted = preserve
+	// openapi clients only: replaces the document and/or credentials (merged
+	// onto the stored block; a redacted credential keeps the stored secret) and
+	// rebuilds the server. Omitted = preserve.
+	openapi_config?: MCPOpenAPIConfig;
 	vk_configs?: MCPVKConfig[]; // When provided, replaces all VK assignments for this MCP client
 }
 
@@ -258,7 +443,7 @@ export interface GetMCPClientsParams {
 	// Boolean facets — omit for "no filter".
 	code_mode?: boolean; // filters is_code_mode_client
 	disabled?: boolean; // filters disabled status
-	all_virtual_keys?: boolean; // when true, include clients open to all virtual keys
+	allowed_by_default?: boolean; // when true, include clients allowed by default
 }
 
 // Paginated response for MCP clients list
@@ -305,6 +490,8 @@ export interface MCPLibraryEntry {
 	metadata?: Record<string, unknown>;
 	/** "remote" for synced rows, "custom" for org-published entries. */
 	source?: "remote" | "custom";
+	/** True when an existing MCP client was installed from this entry (computed server-side). */
+	installed?: boolean;
 	created_at: string;
 	updated_at: string;
 }

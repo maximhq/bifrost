@@ -1,15 +1,28 @@
 package handlers
 
 import (
+	"bytes"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"math"
+	"net"
 	"net/url"
+	"regexp"
+	"slices"
+	"strings"
 
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/tidwall/gjson"
 	"github.com/valyala/fasthttp"
 )
 
@@ -17,6 +30,36 @@ import (
 type ListProviderKeysResponse struct {
 	Keys  []schemas.Key `json:"keys"`
 	Total int           `json:"total"`
+}
+
+// complexitySemanticRearmer is implemented by the governance plugin. Kept as a
+// local interface so these handlers do not take a dependency on the plugin
+// package for one notification.
+type complexitySemanticRearmer interface {
+	RearmComplexitySemanticClassifier(provider schemas.ModelProvider)
+}
+
+// rearmComplexitySemanticClassifier tells the complexity router that this
+// provider's configuration changed. Its semantic classifier only ever starts
+// warmup on a write to the complexity configuration, so without this a
+// classifier that failed because the provider could not serve — every key
+// disabled, say — stays failed after the provider is fixed, and the operator
+// has no way to restart it that does not involve editing a configuration that
+// was already correct.
+//
+// Deliberately unconditional and cheap on this side: the classifier ignores
+// providers it does not embed through, and ignores changes while it is healthy.
+func (h *ProviderHandler) rearmComplexitySemanticClassifier(provider schemas.ModelProvider) {
+	basePlugins := h.inMemoryStore.BasePlugins.Load()
+	if basePlugins == nil {
+		return
+	}
+	for _, plugin := range *basePlugins {
+		if rearmer, ok := plugin.(complexitySemanticRearmer); ok {
+			rearmer.RearmComplexitySemanticClassifier(provider)
+			return
+		}
+	}
 }
 
 func (h *ProviderHandler) listProviderKeys(ctx *fasthttp.RequestCtx) {
@@ -77,6 +120,10 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
+	if err := rejectUnknownOAuthKeyConfigFields(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
 
 	providerConfig, err := h.inMemoryStore.GetProviderConfigRaw(provider)
 	if err != nil {
@@ -98,7 +145,11 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
 	}
 
-	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && key.Value.GetValue() == "" {
+	if requireGenuineAuthForEndpointChange(ctx, nil, key) {
+		return
+	}
+
+	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && key.Value.GetValue() == "" && key.OAuthKeyConfig == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
 		return
 	}
@@ -108,6 +159,20 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := validateProviderKeyServerURLs(key); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid key URL: %v", err))
+		return
+	}
+
+	if err := validateVertexKeyAuth(baseProvider, key); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := key.Models.Validate(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid models: %v", err))
+		return
+	}
 	if err := key.BlacklistedModels.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models: %v", err))
 		return
@@ -115,6 +180,11 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 
 	if err := key.Aliases.Validate(baseProvider); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid aliases: %v", err))
+		return
+	}
+
+	if err := validateWeight(key.Weight); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid weight: %v", err))
 		return
 	}
 
@@ -144,6 +214,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 			logger.Warn("Catalog refresh failed for provider %s after key create: %v", provider, err)
 		}
 	}
+	h.rearmComplexitySemanticClassifier(provider)
 
 	redactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, key.ID)
 	if err != nil {
@@ -164,12 +235,6 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 	keyID, err := getKeyIDFromCtx(ctx)
 	if err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
-		return
-	}
-
-	var updateKey schemas.Key
-	if err := sonic.Unmarshal(ctx.PostBody(), &updateKey); err != nil {
-		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
 		return
 	}
 
@@ -198,6 +263,15 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := rejectUnknownOAuthKeyConfigFields(ctx.PostBody()); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+	updateKey, err := decodeKeyUpdate(ctx.PostBody(), *oldRawKey)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
 	updateKey.ID = keyID
 	mergedKey, err := h.mergeUpdatedKey(*oldRawKey, updateKey)
 	if err != nil {
@@ -210,11 +284,19 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		baseProvider = providerConfig.CustomProviderConfig.BaseProviderType
 	}
 
-	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && mergedKey.Value.GetValue() == "" {
+	if requireGenuineAuthForEndpointChange(ctx, oldRawKey, mergedKey) {
+		return
+	}
+
+	if !bifrost.CanProviderKeyValueBeEmpty(baseProvider) && mergedKey.Value.GetValue() == "" && mergedKey.OAuthKeyConfig == nil {
 		SendError(ctx, fasthttp.StatusBadRequest, "Key value must not be empty")
 		return
 	}
 
+	if err := mergedKey.Models.Validate(); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid models: %v", err))
+		return
+	}
 	if err := mergedKey.BlacklistedModels.Validate(); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid blacklisted_models: %v", err))
 		return
@@ -225,7 +307,22 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	if err := validateWeight(mergedKey.Weight); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid weight: %v", err))
+		return
+	}
+
 	if err := validateProviderKeyURL(baseProvider, mergedKey); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := validateProviderKeyServerURLs(mergedKey); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid key URL: %v", err))
+		return
+	}
+
+	if err := validateVertexKeyAuth(baseProvider, mergedKey); err != nil {
 		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
 		return
 	}
@@ -249,6 +346,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 			logger.Warn("Catalog refresh failed for provider %s after key update: %v", provider, err)
 		}
 	}
+	h.rearmComplexitySemanticClassifier(provider)
 
 	redactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID)
 	if err != nil {
@@ -272,18 +370,14 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	providerConfig, err := h.inMemoryStore.GetProviderConfigRaw(provider)
-	if err != nil {
+	// Deletion stays allowed on keyless providers: a provider switched from
+	// keyed to keyless keeps its old keys, and this is the only way to remove them.
+	if _, err := h.inMemoryStore.GetProviderConfigRaw(provider); err != nil {
 		if errors.Is(err, lib.ErrNotFound) {
 			SendError(ctx, fasthttp.StatusNotFound, fmt.Sprintf("Provider not found: %v", err))
 			return
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider config: %v", err))
-		return
-	}
-
-	if providerConfig.CustomProviderConfig != nil && providerConfig.CustomProviderConfig.IsKeyLess {
-		SendError(ctx, fasthttp.StatusBadRequest, "Cannot delete keys on a keyless provider")
 		return
 	}
 
@@ -310,6 +404,7 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 	if err := h.modelsManager.OnKeyDeleted(ctx, provider, keyID); err != nil {
 		logger.Warn("Catalog refresh failed for provider %s after key delete: %v", provider, err)
 	}
+	h.rearmComplexitySemanticClassifier(provider)
 
 	SendJSON(ctx, redactedKey)
 }
@@ -396,6 +491,47 @@ func (h *ProviderHandler) refreshProviderKeyModels(ctx *fasthttp.RequestCtx) {
 	SendJSON(ctx, refreshedKey)
 }
 
+// decodeKeyUpdate decodes a key update body with patch semantics: a field the
+// body leaves out keeps its stored value, while a field sent as "", 0, [] or
+// null is applied as given. Decoding into a bare schemas.Key cannot tell the
+// two apart, so an update naming only models used to empty the key's value
+// and zero its weight.
+func decodeKeyUpdate(body []byte, oldRawKey schemas.Key) (schemas.Key, error) {
+	var updateKey schemas.Key
+	if err := sonic.Unmarshal(body, &updateKey); err != nil {
+		return schemas.Key{}, err
+	}
+	for field, keep := range map[string]func(){
+		"value":                     func() { updateKey.Value = oldRawKey.Value },
+		"models":                    func() { updateKey.Models = oldRawKey.Models },
+		"blacklisted_models":        func() { updateKey.BlacklistedModels = oldRawKey.BlacklistedModels },
+		"weight":                    func() { updateKey.Weight = oldRawKey.Weight },
+		"aliases":                   func() { updateKey.Aliases = oldRawKey.Aliases },
+		"azure_key_config":          func() { updateKey.AzureKeyConfig = oldRawKey.AzureKeyConfig },
+		"vertex_key_config":         func() { updateKey.VertexKeyConfig = oldRawKey.VertexKeyConfig },
+		"bedrock_key_config":        func() { updateKey.BedrockKeyConfig = oldRawKey.BedrockKeyConfig },
+		"bedrock_mantle_key_config": func() { updateKey.BedrockMantleKeyConfig = oldRawKey.BedrockMantleKeyConfig },
+		"vllm_key_config":           func() { updateKey.VLLMKeyConfig = oldRawKey.VLLMKeyConfig },
+		"replicate_key_config":      func() { updateKey.ReplicateKeyConfig = oldRawKey.ReplicateKeyConfig },
+		"ollama_key_config":         func() { updateKey.OllamaKeyConfig = oldRawKey.OllamaKeyConfig },
+		"sgl_key_config":            func() { updateKey.SGLKeyConfig = oldRawKey.SGLKeyConfig },
+		"databricks_key_config":     func() { updateKey.DatabricksKeyConfig = oldRawKey.DatabricksKeyConfig },
+		"github_copilot_key_config": func() { updateKey.GithubCopilotKeyConfig = oldRawKey.GithubCopilotKeyConfig },
+		"cloudflare_key_config":     func() { updateKey.CloudflareKeyConfig = oldRawKey.CloudflareKeyConfig },
+		"oauth_key_config":          func() { updateKey.OAuthKeyConfig = oldRawKey.OAuthKeyConfig },
+		"enabled":                   func() { updateKey.Enabled = oldRawKey.Enabled },
+		"use_for_batch_api":         func() { updateKey.UseForBatchAPI = oldRawKey.UseForBatchAPI },
+		"use_anthropic_endpoints":   func() { updateKey.UseAnthropicEndpoints = oldRawKey.UseAnthropicEndpoints },
+		"use_openai_endpoints":      func() { updateKey.UseOpenAIEndpoints = oldRawKey.UseOpenAIEndpoints },
+		"description":               func() { updateKey.Description = oldRawKey.Description },
+	} {
+		if !gjson.GetBytes(body, field).Exists() {
+			keep()
+		}
+	}
+	return updateKey, nil
+}
+
 // mergeUpdatedKey merges an updated key with the old raw version, preserving
 // stored values for masked placeholders. A placeholder without a stored
 // counterpart is rejected so it can never reach persistence.
@@ -459,6 +595,16 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 			{&mergedKey.VertexKeyConfig.AuthCredentials, authCredentials, "vertex_key_config.auth_credentials"},
 		} {
 			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
+		}
+		// aws_workload_identity.aws_role_arn is the only masked field in the federation block.
+		if wif := mergedKey.VertexKeyConfig.AWSWorkloadIdentity; wif != nil && wif.AWSRoleARN != nil {
+			var storedRoleARN *schemas.SecretVar
+			if oldRawKey.VertexKeyConfig != nil && oldRawKey.VertexKeyConfig.AWSWorkloadIdentity != nil {
+				storedRoleARN = oldRawKey.VertexKeyConfig.AWSWorkloadIdentity.AWSRoleARN
+			}
+			if err := preserve(wif.AWSRoleARN, storedRoleARN, "vertex_key_config.aws_workload_identity.aws_role_arn"); err != nil {
 				return schemas.Key{}, err
 			}
 		}
@@ -563,6 +709,100 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 		}
 	}
 
+	if mergedKey.CloudflareKeyConfig != nil {
+		var stored *schemas.SecretVar
+		if oldRawKey.CloudflareKeyConfig != nil {
+			stored = &oldRawKey.CloudflareKeyConfig.AccountID
+		}
+		if err := preserve(&mergedKey.CloudflareKeyConfig.AccountID, stored, "cloudflare_key_config.account_id"); err != nil {
+			return schemas.Key{}, err
+		}
+	}
+
+	if mergedKey.DatabricksKeyConfig != nil {
+		var workspaceURL, clientID, clientSecret *schemas.SecretVar
+		if oldRawKey.DatabricksKeyConfig != nil {
+			workspaceURL = &oldRawKey.DatabricksKeyConfig.WorkspaceURL
+			clientID = oldRawKey.DatabricksKeyConfig.ClientID
+			clientSecret = oldRawKey.DatabricksKeyConfig.ClientSecret
+		}
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{&mergedKey.DatabricksKeyConfig.WorkspaceURL, workspaceURL, "databricks_key_config.workspace_url"},
+			{mergedKey.DatabricksKeyConfig.ClientID, clientID, "databricks_key_config.client_id"},
+			{mergedKey.DatabricksKeyConfig.ClientSecret, clientSecret, "databricks_key_config.client_secret"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
+		}
+	}
+	if mergedKey.GithubCopilotKeyConfig != nil {
+		var old *schemas.GithubCopilotKeyConfig
+		if oldRawKey.GithubCopilotKeyConfig != nil {
+			old = oldRawKey.GithubCopilotKeyConfig
+		}
+		for _, field := range []struct {
+			name    string
+			updated *schemas.SecretVar
+			stored  *schemas.SecretVar
+		}{
+			{"app_id", &mergedKey.GithubCopilotKeyConfig.AppID, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.AppID })},
+			{"installation_id", &mergedKey.GithubCopilotKeyConfig.InstallationID, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.InstallationID })},
+			{"repository_id", &mergedKey.GithubCopilotKeyConfig.RepositoryID, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.RepositoryID })},
+			{"private_key", &mergedKey.GithubCopilotKeyConfig.PrivateKey, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.PrivateKey })},
+			{"github_domain", &mergedKey.GithubCopilotKeyConfig.GithubDomain, fieldOrNil(old, func(c *schemas.GithubCopilotKeyConfig) *schemas.SecretVar { return &c.GithubDomain })},
+		} {
+			if err := preserve(field.updated, field.stored, "github_copilot_key_config."+field.name); err != nil {
+
+				return schemas.Key{}, err
+			}
+		}
+	}
+
+	if mergedKey.OAuthKeyConfig != nil {
+		var tokenURL, clientID, clientSecret, privateKey *schemas.SecretVar
+		if old := oldRawKey.OAuthKeyConfig; old != nil {
+			tokenURL = &old.TokenURL
+			clientID = old.ClientID
+			clientSecret = old.ClientSecret
+			privateKey = old.PrivateKey
+		}
+		for _, item := range []struct {
+			incoming *schemas.SecretVar
+			stored   *schemas.SecretVar
+			field    string
+		}{
+			{&mergedKey.OAuthKeyConfig.TokenURL, tokenURL, "oauth_key_config.token_url"},
+			{mergedKey.OAuthKeyConfig.ClientID, clientID, "oauth_key_config.client_id"},
+			{mergedKey.OAuthKeyConfig.ClientSecret, clientSecret, "oauth_key_config.client_secret"},
+			{mergedKey.OAuthKeyConfig.PrivateKey, privateKey, "oauth_key_config.private_key"},
+		} {
+			if err := preserve(item.incoming, item.stored, item.field); err != nil {
+				return schemas.Key{}, err
+			}
+		}
+		// extra_params values come back masked from a GET; a mask resolves to the stored value.
+		// The value is a literal form parameter, never a secret reference, so it is inspected as
+		// the string it is (Redacted masks it the same way).
+		for name, value := range mergedKey.OAuthKeyConfig.ExtraParams {
+			if !(&schemas.SecretVar{Val: value}).IsMaskedPlaceholder() {
+				continue
+			}
+			stored, ok := "", false
+			if old := oldRawKey.OAuthKeyConfig; old != nil {
+				stored, ok = old.ExtraParams[name]
+			}
+			if !ok || stored == "" {
+				return schemas.Key{}, fmt.Errorf("masked preview cannot be used for oauth_key_config.extra_params.%s without a stored value", name)
+			}
+			mergedKey.OAuthKeyConfig.ExtraParams[name] = stored
+		}
+	}
+
 	mergedKey.ConfigHash = oldRawKey.ConfigHash
 	mergedKey.Status = oldRawKey.Status
 
@@ -576,6 +816,80 @@ func (h *ProviderHandler) mergeUpdatedKey(oldRawKey, updateKey schemas.Key) (sch
 	}
 
 	return mergedKey, nil
+}
+
+// validateGithubCopilotLiteral applies a format check to a credential field, but only when
+// the operator supplied a literal. A secret reference resolves elsewhere and at another
+// time, so its shape cannot be judged here.
+func validateGithubCopilotLiteral(name string, value *schemas.SecretVar, ok func(string) bool) error {
+	if value.IsFromSecret() {
+		return nil
+	}
+	if !ok(strings.TrimSpace(value.GetValue())) {
+		return fmt.Errorf("github_copilot_key_config.%s is not valid for GitHub Copilot keys", name)
+	}
+	return nil
+}
+
+// isDigits reports whether s is a non-empty run of ASCII digits. GitHub installation and
+// repository IDs are numeric, and the installation ID is interpolated into an
+// api.github.com path, so a non-numeric value is a path-injection shape as well as a typo.
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// isPEMPrivateKey reports whether s is an RSA private key Bifrost can actually sign an App
+// JWT with. GitHub issues App keys as PKCS#1 ("RSA PRIVATE KEY"); openssl can convert them
+// to PKCS#8 ("PRIVATE KEY").
+//
+// The DER payload is parsed, not just the envelope. A envelope-only check accepts an EC key,
+// a passphrase-encrypted key and a block of random base64 alike, none of which can produce
+// an RS256 signature, so each would pass setup and fail at the first inference call.
+//
+// Literal backslash-n is repaired first, because that is how a PEM most often arrives from a
+// JSON config or an environment variable.
+func isPEMPrivateKey(s string) bool {
+	if !strings.Contains(s, "\n") && strings.Contains(s, `\n`) {
+		s = strings.ReplaceAll(s, `\n`, "\n")
+	}
+
+	block, rest := pem.Decode([]byte(strings.TrimSpace(s)))
+	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
+		return false
+	}
+
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		_, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		return err == nil
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return false
+		}
+		// PKCS#8 is a container: it can hold an EC or Ed25519 key just as happily.
+		_, isRSA := key.(*rsa.PrivateKey)
+		return isRSA
+	default:
+		return false
+	}
+}
+
+// fieldOrNil selects a field from a possibly-nil stored config, so a masked update against
+// a key that never had this section behaves the same as one against a missing field.
+func fieldOrNil(config *schemas.GithubCopilotKeyConfig, pick func(*schemas.GithubCopilotKeyConfig) *schemas.SecretVar) *schemas.SecretVar {
+	if config == nil {
+		return nil
+	}
+	return pick(config)
 }
 
 func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
@@ -597,6 +911,92 @@ func getKeyIDFromCtx(ctx *fasthttp.RequestCtx) (string, error) {
 	return decoded, nil
 }
 
+// validateWeight rejects a provider key or virtual key provider-config weight that weighted
+// selection cannot draw by: a negative one, or one that is not a finite number. Selection counts such
+// a weight as zero, but storing it would leave an entry that is never drawn beside weighted siblings
+// while reading as configured.
+func validateWeight(weight float64) error {
+	if weight < 0 || math.IsNaN(weight) || math.IsInf(weight, 0) {
+		return fmt.Errorf("must be a finite number greater than or equal to 0, got %v", weight)
+	}
+	return nil
+}
+
+// validateProviderKeyServerURLs holds the key-level server URLs (Ollama/SGL/VLLM) to the
+// same destination rule as a provider base URL: link-local (cloud metadata) and unspecified
+// addresses are refused; private and loopback hosts stay allowed because a self-hosted
+// server on the local network is the documented setup. Unresolved references are skipped -
+// their presence is validateProviderKeyURL's job, and the dialer re-checks at connect time.
+func validateProviderKeyServerURLs(key schemas.Key) error {
+	type serverURL struct {
+		name string
+		v    *schemas.SecretVar
+	}
+	var urls []serverURL
+	if c := key.OllamaKeyConfig; c != nil {
+		urls = append(urls, serverURL{"ollama_key_config.url", &c.URL})
+	}
+	if c := key.SGLKeyConfig; c != nil {
+		urls = append(urls, serverURL{"sgl_key_config.url", &c.URL})
+	}
+	if c := key.VLLMKeyConfig; c != nil {
+		urls = append(urls, serverURL{"vllm_key_config.url", &c.URL})
+	}
+	for _, u := range urls {
+		raw := u.v.GetValue()
+		if !u.v.IsSet() || raw == "" {
+			continue
+		}
+		if err := bifrost.ValidateExternalURL(raw, true); err != nil {
+			return fmt.Errorf("%s: %w", u.name, err)
+		}
+	}
+	return validateProviderKeyRegions(key)
+}
+
+// providerRegionPattern is the shape of a vendor region identifier (us-east-1, europe-west4,
+// us-gov-west-1, global, us). Nothing that could change the host a region is interpolated
+// into is allowed.
+var providerRegionPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
+// validateProviderKeyRegions holds every key-level and per-alias region to
+// providerRegionPattern. A region is not a dial target (see keyDialTargets): it selects a
+// vendor region under a fixed host suffix (<region>-aiplatform.googleapis.com,
+// <service>.<region>.amazonaws.com), which is why a region-only key stays creatable without an
+// admin session. That only holds while the value cannot escape the suffix, so a host-shaped
+// region (evil.example/#) is refused here. Unresolved references are skipped, as for URLs.
+func validateProviderKeyRegions(key schemas.Key) error {
+	type region struct {
+		name string
+		v    *schemas.SecretVar
+	}
+	var regions []region
+	if c := key.VertexKeyConfig; c != nil {
+		regions = append(regions, region{"vertex_key_config.region", &c.Region})
+	}
+	if c := key.BedrockKeyConfig; c != nil && c.Region != nil {
+		regions = append(regions, region{"bedrock_key_config.region", c.Region})
+	}
+	if c := key.BedrockMantleKeyConfig; c != nil && c.Region != nil {
+		regions = append(regions, region{"bedrock_mantle_key_config.region", c.Region})
+	}
+	for alias, cfg := range key.Aliases {
+		if cfg.Region != nil {
+			regions = append(regions, region{"aliases." + alias + ".region", cfg.Region})
+		}
+	}
+	for _, r := range regions {
+		raw := r.v.GetValue()
+		if !r.v.IsSet() || raw == "" || r.v.IsFromSecret() {
+			continue
+		}
+		if !providerRegionPattern.MatchString(raw) {
+			return fmt.Errorf("%s: invalid region %q: a region is a vendor region identifier such as us-east-1", r.name, raw)
+		}
+	}
+	return nil
+}
+
 // validateProviderKeyURL checks that provider keys carry the nested fields
 // config.schema.json marks as required, so a create or merge can never persist
 // a key missing them (a masked update against a stored key lacking the section
@@ -611,6 +1011,54 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		if key.SGLKeyConfig == nil || !key.SGLKeyConfig.URL.IsSet() {
 			return fmt.Errorf("sgl_key_config.url is required for SGL keys")
 		}
+	case schemas.Cloudflare:
+		if key.CloudflareKeyConfig == nil || !key.CloudflareKeyConfig.AccountID.IsSet() {
+			return fmt.Errorf("cloudflare_key_config.account_id is required for Cloudflare keys")
+		}
+	case schemas.GithubCopilot:
+		// A Copilot API token in value is a valid alternative to the GitHub App bundle. But a
+		// supplied App config is checked either way: a half-filled block sitting behind a
+		// token persists silently and only surfaces later, when the token expires or is
+		// removed and the key falls back to credentials that were never valid.
+		if key.GithubCopilotKeyConfig == nil {
+			if key.Value.IsSet() {
+				return nil
+			}
+			return fmt.Errorf("github_copilot_key_config is required for GitHub Copilot keys without a value")
+		}
+		for _, field := range []struct {
+			name  string
+			value schemas.SecretVar
+		}{
+			{"app_id", key.GithubCopilotKeyConfig.AppID},
+			{"installation_id", key.GithubCopilotKeyConfig.InstallationID},
+			{"repository_id", key.GithubCopilotKeyConfig.RepositoryID},
+			{"private_key", key.GithubCopilotKeyConfig.PrivateKey},
+		} {
+			if !field.value.IsSet() {
+				return fmt.Errorf("github_copilot_key_config.%s is required for GitHub Copilot keys", field.name)
+			}
+		}
+		// Check the shape of literal values too, not just their presence. A non-numeric
+		// installation ID or a mangled PEM otherwise persists and fails at the first
+		// inference call, where it reads as a runtime fault rather than a typo.
+		//
+		// Environment and vault references are exempt: their values are not resolvable
+		// here, so checking them would reject every legitimate headless configuration.
+		if err := validateGithubCopilotLiteral("installation_id", &key.GithubCopilotKeyConfig.InstallationID, isDigits); err != nil {
+			return err
+		}
+		if err := validateGithubCopilotLiteral("repository_id", &key.GithubCopilotKeyConfig.RepositoryID, isDigits); err != nil {
+			return err
+		}
+		if err := validateGithubCopilotLiteral("private_key", &key.GithubCopilotKeyConfig.PrivateKey, isPEMPrivateKey); err != nil {
+			return err
+		}
+		// app_id is deliberately not digit-checked. GitHub documents the App JWT issuer as
+		// "the client ID or application ID" and says "use of the client ID is recommended",
+		// and client IDs look like Iv1.b507a08c87ecfe98. A digits-only rule here would reject
+		// the configuration GitHub itself recommends.
+		// https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
 	case schemas.Azure:
 		if key.AzureKeyConfig == nil || !key.AzureKeyConfig.Endpoint.IsSet() {
 			return fmt.Errorf("azure_key_config.endpoint is required for Azure keys")
@@ -630,6 +1078,286 @@ func validateProviderKeyURL(provider schemas.ModelProvider, key schemas.Key) err
 		if key.VLLMKeyConfig.ModelName == "" {
 			return fmt.Errorf("vllm_key_config.model_name is required for VLLM keys")
 		}
+	case schemas.Databricks:
+		if key.DatabricksKeyConfig == nil || !key.DatabricksKeyConfig.WorkspaceURL.IsSet() {
+			return fmt.Errorf("databricks_key_config.workspace_url is required for Databricks keys")
+		}
+		switch key.DatabricksKeyConfig.APIFormat {
+		case "", schemas.DatabricksAPIFormatAuto, schemas.DatabricksAPIFormatModelServing, schemas.DatabricksAPIFormatAIGateway:
+		default:
+			return fmt.Errorf("databricks_key_config.api_format must be one of auto, model_serving, ai_gateway")
+		}
+		// Either a personal access token (the key value) or a full OAuth M2M service
+		// principal pair is required; a half-configured service principal cannot authenticate.
+		hasClientID := key.DatabricksKeyConfig.ClientID != nil && key.DatabricksKeyConfig.ClientID.IsSet()
+		hasClientSecret := key.DatabricksKeyConfig.ClientSecret != nil && key.DatabricksKeyConfig.ClientSecret.IsSet()
+		if !key.Value.IsSet() && !(hasClientID && hasClientSecret) {
+			return fmt.Errorf("databricks keys require either a personal access token as the key value, or both databricks_key_config.client_id and databricks_key_config.client_secret for OAuth M2M")
+		}
+		if hasClientID != hasClientSecret {
+			return fmt.Errorf("databricks_key_config.client_id and databricks_key_config.client_secret must be set together")
+		}
+	}
+	// oauth_key_config is accepted on any provider's key and must be whole when present: a
+	// half-filled block behind a value persists silently and only surfaces once the value
+	// is removed and the key falls back to credentials that were never valid.
+	if cfg := key.OAuthKeyConfig; cfg != nil {
+		if !bifrost.ProviderSupportsOAuthKeyConfig(provider) {
+			return fmt.Errorf("oauth_key_config is only supported on openai and on custom providers whose base_provider_type is openai")
+		}
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
+		// Literal values are shape-checked too; secret references resolve elsewhere.
+		if !cfg.TokenURL.IsFromSecret() && !isHTTPSOrLoopbackURL(cfg.TokenURL.GetValue()) {
+			return fmt.Errorf("oauth_key_config.token_url must use https (http is allowed for loopback hosts only)")
+		}
+		if cfg.GrantType == schemas.OAuthGrantJWTBearer && cfg.PrivateKey != nil && !cfg.PrivateKey.IsFromSecret() {
+			key, ok := parseAsymmetricPEMPrivateKey(cfg.PrivateKey.GetValue())
+			if !ok {
+				return fmt.Errorf("oauth_key_config.private_key must be an RSA or EC private key in PEM form")
+			}
+			if err := keyMatchesSigningAlgorithm(key, cfg.SigningAlgorithm); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// isHTTPSOrLoopbackURL reports whether a token endpoint is https, or http on a loopback
+// host, which is the only place a client secret may travel in the clear.
+func isHTTPSOrLoopbackURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		// Case-insensitive, as in core's OAuthKeyConfig.Validate and the token cache, so a URL
+		// accepted from config.json is not refused through the API.
+		host := u.Hostname()
+		return strings.EqualFold(host, "localhost") || net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()
+	default:
+		return false
+	}
+}
+
+// parseAsymmetricPEMPrivateKey parses s as an RSA or EC private key Bifrost can sign a
+// JWT bearer assertion with: PKCS#1, SEC 1, or a PKCS#8 container holding either. Literal
+// backslash-n is repaired first, as in isPEMPrivateKey.
+func parseAsymmetricPEMPrivateKey(s string) (crypto.PrivateKey, bool) {
+	if !strings.Contains(s, "\n") && strings.Contains(s, `\n`) {
+		s = strings.ReplaceAll(s, `\n`, "\n")
+	}
+	block, rest := pem.Decode([]byte(strings.TrimSpace(s)))
+	if block == nil || len(bytes.TrimSpace(rest)) != 0 {
+		return nil, false
+	}
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		return key, err == nil
+	case "EC PRIVATE KEY":
+		key, err := x509.ParseECPrivateKey(block.Bytes)
+		return key, err == nil
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, false
+		}
+		switch key.(type) {
+		case *rsa.PrivateKey, *ecdsa.PrivateKey:
+			return key, true
+		}
+		return nil, false
+	default:
+		return nil, false
+	}
+}
+
+// keyMatchesSigningAlgorithm checks a parsed literal key against the algorithm it will sign
+// with (RS256 when unset): RSA for RS*/PS*, and for ES* an EC key on the curve the algorithm
+// names. The signer selects its key parser from the algorithm, so a mismatch saves cleanly and
+// then fails at the first token mint, far from the field that caused it.
+func keyMatchesSigningAlgorithm(key crypto.PrivateKey, alg string) error {
+	if alg == "" {
+		alg = "RS256"
+	}
+	if strings.HasPrefix(alg, "ES") {
+		ec, ok := key.(*ecdsa.PrivateKey)
+		if !ok {
+			return fmt.Errorf("oauth_key_config.signing_algorithm %s needs an EC private key; private_key is RSA", alg)
+		}
+		want := map[string]string{"ES256": "P-256", "ES384": "P-384", "ES512": "P-521"}[alg]
+		if got := ec.Curve.Params().Name; want != "" && got != want {
+			return fmt.Errorf("oauth_key_config.signing_algorithm %s needs a %s key; private_key is on %s", alg, want, got)
+		}
+		return nil
+	}
+	if _, ok := key.(*rsa.PrivateKey); !ok {
+		return fmt.Errorf("oauth_key_config.signing_algorithm %s needs an RSA private key; private_key is EC (set an ES* algorithm)", alg)
+	}
+	return nil
+}
+
+// keyDialTargets returns every caller-chosen host Bifrost will later dial with this key's
+// credentials, keyed by its JSON path. It reads every provider's config block, not just the
+// key's own provider: an unused block is harmless to include and fails closed, while a
+// provider-type list silently misses new fields (Databricks workspace_url, Bedrock endpoints,
+// Copilot github_domain, the per-alias Azure endpoint and the Vertex credential JSON were all
+// missed that way). Unset values are omitted.
+//
+// A Vertex auth_credentials JSON is a dial target as a whole, not only a secret: the Google
+// client takes its destinations from it (a service account's token_uri, an impersonated
+// account's impersonation URL, an external account's token_url and a credential_source file or
+// url it reads and posts there). The value may be an env or vault reference the handler cannot
+// open, and every accepted credential type carries a destination, so the field is compared
+// whole rather than parsed for URLs. The aws_workload_identity block is not listed: its
+// exchange goes to Google's fixed STS endpoint and it holds no URL.
+func keyDialTargets(key schemas.Key) map[string]*schemas.SecretVar {
+	targets := make(map[string]*schemas.SecretVar)
+	add := func(name string, v *schemas.SecretVar) {
+		if v.IsSet() {
+			targets[name] = v
+		}
+	}
+	addBedrockEndpoints := func(prefix string, e *schemas.BedrockEndpoints) {
+		if e == nil {
+			return
+		}
+		add(prefix+".runtime", e.Runtime)
+		add(prefix+".control_plane", e.ControlPlane)
+		add(prefix+".mantle", e.Mantle)
+		add(prefix+".agent_runtime", e.AgentRuntime)
+		add(prefix+".s3", e.S3)
+	}
+	if c := key.OllamaKeyConfig; c != nil {
+		add("ollama_key_config.url", &c.URL)
+	}
+	if c := key.SGLKeyConfig; c != nil {
+		add("sgl_key_config.url", &c.URL)
+	}
+	if c := key.VLLMKeyConfig; c != nil {
+		add("vllm_key_config.url", &c.URL)
+	}
+	if c := key.AzureKeyConfig; c != nil {
+		add("azure_key_config.endpoint", &c.Endpoint)
+	}
+	if c := key.DatabricksKeyConfig; c != nil {
+		add("databricks_key_config.workspace_url", &c.WorkspaceURL)
+	}
+	if c := key.GithubCopilotKeyConfig; c != nil {
+		add("github_copilot_key_config.github_domain", &c.GithubDomain)
+	}
+	if c := key.OAuthKeyConfig; c != nil {
+		add("oauth_key_config.token_url", &c.TokenURL)
+	}
+	if c := key.VertexKeyConfig; c != nil {
+		add("vertex_key_config.auth_credentials", &c.AuthCredentials)
+	}
+	if c := key.BedrockKeyConfig; c != nil {
+		addBedrockEndpoints("bedrock_key_config.endpoints", c.Endpoints)
+	}
+	if c := key.BedrockMantleKeyConfig; c != nil {
+		addBedrockEndpoints("bedrock_mantle_key_config.endpoints", c.Endpoints)
+	}
+	for alias, cfg := range key.Aliases {
+		if cfg.AzureAliasCfg != nil {
+			add("aliases."+alias+".endpoint", cfg.AzureAliasCfg.Endpoint)
+		}
+	}
+	return targets
+}
+
+// changedDialTargets returns the sorted paths of dial targets next adds, removes or changes
+// relative to old (nil on create, so every set target counts). Equality is SecretVar.Equals,
+// so swapping an env or vault reference counts as a change even when the resolved value
+// happens to match.
+func changedDialTargets(old *schemas.Key, next schemas.Key) []string {
+	nextTargets := keyDialTargets(next)
+	oldTargets := map[string]*schemas.SecretVar{}
+	if old != nil {
+		oldTargets = keyDialTargets(*old)
+	}
+	var changed []string
+	for name, v := range nextTargets {
+		if !v.Equals(oldTargets[name]) {
+			changed = append(changed, name)
+		}
+	}
+	for name := range oldTargets {
+		if _, ok := nextTargets[name]; !ok {
+			changed = append(changed, name)
+		}
+	}
+	slices.Sort(changed)
+	return changed
+}
+
+// requireGenuineAuthForEndpointChange rejects a provider-key create/update that sets, moves
+// or removes a dial target (see keyDialTargets) when the caller was only let through by the
+// fail-open bypass (dashboard auth disabled/unconfigured), not by a real credential. The
+// destination itself isn't inherently unsafe - self-hosted Ollama/vLLM on a loopback or
+// private address is the normal, documented setup - the problem is that anyone
+// unauthenticated can choose where Bifrost sends the key's credentials. oldKey is the
+// persisted key on update and nil on create; an update that keeps every stored dial target
+// passes, so bypassed callers can still edit weight, models and other non-endpoint fields.
+// On rejection this sends the response and returns true; callers should return immediately.
+func requireGenuineAuthForEndpointChange(ctx *fasthttp.RequestCtx, oldKey *schemas.Key, newKey schemas.Key) bool {
+	if !isAuthBypassed(ctx) {
+		return false
+	}
+	changed := changedDialTargets(oldKey, newKey)
+	if len(changed) == 0 {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Changing where a provider key dials (%s) requires an authenticated admin session; dashboard auth is currently disabled or unconfigured. Enable dashboard authentication first.", strings.Join(changed, ", ")))
+	return true
+}
+
+// validateVertexKeyAuth rejects Vertex keys that configure two identities at once: an
+// aws_workload_identity block (AWS → GCP federation) together with a non-empty auth_credentials
+// JSON. The core would silently prefer federation, and config.schema.json already refuses the
+// combination for config.json, so the API applies the same rule instead of guessing.
+func validateVertexKeyAuth(provider schemas.ModelProvider, key schemas.Key) error {
+	if provider != schemas.Vertex || key.VertexKeyConfig == nil || key.VertexKeyConfig.AWSWorkloadIdentity == nil {
+		return nil
+	}
+	cfg := key.VertexKeyConfig
+	wif := cfg.AWSWorkloadIdentity
+	// The block mirrors transports/config.schema.json: audience is required whenever the block is
+	// present (an empty block is a broken federation config, not "no federation"), and a supplied
+	// lifetime must sit within the IAM-accepted range.
+	if !wif.Audience.IsSet() {
+		return fmt.Errorf("vertex_key_config.aws_workload_identity.audience is required: set the workload identity pool provider resource name, or remove the aws_workload_identity block")
+	}
+	if l := wif.TokenLifetimeSeconds; l != 0 && (l < 600 || l > 43200) {
+		return fmt.Errorf("vertex_key_config.aws_workload_identity.token_lifetime_seconds must be between 600 and 43200, got %d", l)
+	}
+	if cfg.AuthCredentials.IsSet() {
+		return fmt.Errorf("vertex_key_config.auth_credentials must be empty when vertex_key_config.aws_workload_identity is configured: a key authenticates with either a credentials JSON or AWS workload identity federation, not both")
+	}
+	return nil
+}
+
+// rejectUnknownOAuthKeyConfigFields gives the API the strictness config.schema.json already
+// has for oauth_key_config (additionalProperties: false). sonic drops unknown fields, so a
+// misspelled "scope" would otherwise save a block that never requests its scopes and only
+// fails at the first token exchange. Only the oauth block is checked: the rest of the key
+// keeps its lenient decoding.
+func rejectUnknownOAuthKeyConfigFields(body []byte) error {
+	raw := gjson.GetBytes(body, "oauth_key_config")
+	if !raw.Exists() || raw.Type == gjson.Null {
+		return nil
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw.Raw))
+	decoder.DisallowUnknownFields()
+	var cfg schemas.OAuthKeyConfig
+	if err := decoder.Decode(&cfg); err != nil {
+		return fmt.Errorf("oauth_key_config: %s", strings.TrimPrefix(err.Error(), "json: "))
 	}
 	return nil
 }

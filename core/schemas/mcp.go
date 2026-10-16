@@ -45,6 +45,29 @@ var (
 	// each user manages their own auth and there is no shared upstream
 	// connection to "reconnect". Distinct from "not implemented".
 	ErrMCPReconnectNotApplicable = errors.New("reconnect is not applicable for this client type")
+	// ErrMCPClientNotFound signals that no MCP client is registered under the
+	// given ID. Callers that surface this to an operator should map it to a
+	// 404 rather than a generic failure.
+	ErrMCPClientNotFound = errors.New("mcp client not found")
+	// ErrMCPRefreshNotApplicable signals that an on-demand tool refresh is not
+	// meaningful for this client right now — it is disabled, its credential is
+	// confirmed dead, or it is still awaiting the one-time admin verification
+	// flow. The request is well-formed; the client is just not in a state
+	// where discovery means anything. Distinct from a discovery failure.
+	ErrMCPRefreshNotApplicable = errors.New("tool refresh is not applicable for this client's current state")
+)
+
+// MCPInboundBearerOmittedReason says why a request that presented an identity-provider token reached
+// token-exchange resolution without one to exchange. Only the auth layer that handled the inbound
+// credential knows the difference between a token it rejected and no token at all, and it records
+// the rejection under BifrostContextKeyMCPInboundBearerOmitted so the refusal a caller reads back
+// names the actual cause. A request with no record simply carried no token.
+type MCPInboundBearerOmittedReason string
+
+const (
+	// MCPInboundBearerRejected: the identity-provider token failed validation, so nothing verified
+	// could be exchanged on the caller's behalf.
+	MCPInboundBearerRejected MCPInboundBearerOmittedReason = "rejected"
 )
 
 // MCPAuthRequiredKind discriminates the kind of inline-401 auth flow surfaced
@@ -209,6 +232,11 @@ type MCPConfig struct {
 	ToolManagerConfig *MCPToolManagerConfig `json:"tool_manager_config,omitempty"` // MCP tool manager configuration
 	ToolSyncInterval  time.Duration         `json:"tool_sync_interval,omitempty"`  // Global default interval for syncing tools from MCP servers (0 = use default 10 min)
 
+	// VirtualMCPs are Virtual MCP definitions declared in config.json: named bundles of tools from one
+	// or more MCP clients, served at /mcp/<endpoint_slug> and assignable to virtual keys. Reconciled
+	// into the config store at load. This is the canonical key; mcp.tool_groups is a deprecated alias.
+	VirtualMCPs []VirtualMCPConfig `json:"virtual_mcps,omitempty"`
+
 	// Function to fetch a new request ID for each tool call result message in agent mode,
 	// this is used to ensure that the tool call result messages are unique and can be tracked in plugins or by the user.
 	// This id is attached to ctx.Value(schemas.BifrostContextKeyRequestID) in the agent mode.
@@ -223,6 +251,64 @@ type MCPConfig struct {
 	// ReleasePluginPipeline releases a plugin pipeline back to the pool.
 	// This should be called after the plugin pipeline is no longer needed.
 	ReleasePluginPipeline func(pipeline interface{}) `json:"-"`
+
+	// InProcessServerFactory builds the in-process MCP server for connection types
+	// that synthesize one instead of dialing a remote (MCPConnectionTypeOpenAPI).
+	// Core invokes it on every connect of such a client and never persists the
+	// result, so reconnects and spec changes always rebuild from the current config.
+	// The transport registers framework/openapimcp.Factory here; Go SDK users opt in
+	// the same way. Nil means openapi clients fail to connect with a clear error.
+	InProcessServerFactory InProcessServerFactory `json:"-"`
+}
+
+// ErrMCPOpenAPIConfigInvalid marks a permanent failure to synthesize an openapi
+// client's server: the spec does not parse, yields no usable operations, or the
+// client is misconfigured (no factory registered, no openapi_config). Factories
+// wrap such errors with it (errors.Is) so the connect path fails fast instead of
+// running its transient-error retry schedule; a failed spec_url fetch is left
+// unwrapped and keeps retrying like any other dial.
+var ErrMCPOpenAPIConfigInvalid = errors.New("openapi client configuration cannot produce a server")
+
+// InProcessServerDeps is what core hands to an InProcessServerFactory so the
+// synthesized server's tool handlers reach the upstream the same way core's own
+// transports would.
+type InProcessServerDeps struct {
+	HTTPClient *http.Client                                   // TLS, proxy and public-target rules of the client already applied
+	Headers    func(ctx context.Context) (http.Header, error) // Static config headers + resolved credentials + allow-listed per-request extras
+	Logger     Logger
+}
+
+// InProcessServerFactory synthesizes an in-process MCP server for config. ctx is
+// the connect context (bounded by the connection-establish timeout).
+type InProcessServerFactory func(ctx context.Context, config *MCPClientConfig, deps InProcessServerDeps) (*server.MCPServer, error)
+
+// VirtualMCPConfig is a Virtual MCP declared in config.json (mcp.virtual_mcps). It reconciles into a
+// Virtual MCP in the config store: a bundle of tools from one or more MCP clients, served at
+// /mcp/<endpoint_slug> and attachable to virtual keys.
+type VirtualMCPConfig struct {
+	// ID, when set, updates the Virtual MCP with this DB id rather than matching by name.
+	ID uint `json:"id,omitempty"`
+	// Name is the display name (required, unique).
+	Name string `json:"name"`
+	// EndpointSlug is the URL-safe path the Virtual MCP is served at (/mcp/<slug>). Honored on create
+	// only (immutable after); derived from the name when omitted. Unique across Virtual MCPs and MCP clients.
+	EndpointSlug string `json:"endpoint_slug,omitempty"`
+	// Description is free text.
+	Description *string `json:"description,omitempty"`
+	// Enabled defaults to true when omitted; a disabled Virtual MCP is not served.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Tools are the per-client tool specs the Virtual MCP exposes (required).
+	Tools []MCPToolSpecConfig `json:"tools"`
+	// VirtualKeyIDs are the virtual keys this Virtual MCP is attached to (reachable through them).
+	VirtualKeyIDs []string `json:"virtual_key_ids,omitempty"`
+}
+
+// MCPToolSpecConfig names a source MCP client (by id or name) and which of its tools a Virtual MCP
+// exposes: ["*"] = all (including future tools), [] = none, a named list = only those.
+type MCPToolSpecConfig struct {
+	MCPClientID   string   `json:"mcp_client_id,omitempty"`
+	MCPClientName string   `json:"mcp_client_name,omitempty"`
+	ToolNames     []string `json:"tool_names,omitempty"`
 }
 
 // UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval.
@@ -278,6 +364,71 @@ type MCPToolManagerConfig struct {
 	MaxAgentDepth         int                  `json:"max_agent_depth"`
 	CodeModeBindingLevel  CodeModeBindingLevel `json:"code_mode_binding_level,omitempty"`  // How tools are exposed in VFS: "server" or "tool"
 	DisableAutoToolInject bool                 `json:"disable_auto_tool_inject,omitempty"` // When true, MCP tools are not injected into requests by default
+	// MaxInstructionsPerClient bounds one server's forwarded instructions, in bytes. 0 is the default.
+	MaxInstructionsPerClient int `json:"max_instructions_per_client,omitempty"`
+	// MaxInstructionsTotal bounds the whole aggregate, in bytes. 0 is the default.
+	MaxInstructionsTotal  int                `json:"max_instructions_total,omitempty"`
+	CodeModeLimits        *MCPCodeModeLimits `json:"code_mode_limits,omitempty"`        // Per-execution code mode budgets; nil keeps the defaults
+	OAuthPrivateAllowlist []string           `json:"oauth_private_allowlist,omitempty"` // Private hosts, IPs and CIDRs the MCP OAuth chain may reach for clients registered with admin auth
+}
+
+// MCPCodeModeLimits bounds a single code mode execution. A zero field uses its default.
+type MCPCodeModeLimits struct {
+	MaxSourceBytes  int `json:"max_source_bytes,omitempty"`
+	MaxSteps        int `json:"max_steps,omitempty"`
+	MaxMemoryBytes  int `json:"max_memory_bytes,omitempty"`
+	MaxLogBytes     int `json:"max_log_bytes,omitempty"`
+	MaxToolCalls    int `json:"max_tool_calls,omitempty"`
+	MaxValueBytes   int `json:"max_value_bytes,omitempty"`
+	MaxNestingDepth int `json:"max_nesting_depth,omitempty"`
+}
+
+// WithDefaults returns a copy with every zero field set to its default.
+func (l MCPCodeModeLimits) WithDefaults() MCPCodeModeLimits {
+	orDefault := func(value, fallback int) int {
+		if value == 0 {
+			return fallback
+		}
+		return value
+	}
+	return MCPCodeModeLimits{
+		MaxSourceBytes:  orDefault(l.MaxSourceBytes, DefaultCodeModeMaxSourceBytes),
+		MaxSteps:        orDefault(l.MaxSteps, DefaultCodeModeMaxSteps),
+		MaxMemoryBytes:  orDefault(l.MaxMemoryBytes, DefaultCodeModeMaxMemoryBytes),
+		MaxLogBytes:     orDefault(l.MaxLogBytes, DefaultCodeModeMaxLogBytes),
+		MaxToolCalls:    orDefault(l.MaxToolCalls, DefaultCodeModeMaxToolCalls),
+		MaxValueBytes:   orDefault(l.MaxValueBytes, DefaultCodeModeMaxValueBytes),
+		MaxNestingDepth: orDefault(l.MaxNestingDepth, DefaultCodeModeMaxNestingDepth),
+	}
+}
+
+// Validate rejects limits that cannot be applied safely. Zero fields are valid
+// and use their defaults; there is no upper bound except on nesting depth, which
+// value conversion recurses through on the goroutine stack.
+func (l MCPCodeModeLimits) Validate() error {
+	for _, field := range []struct {
+		name  string
+		value int
+	}{
+		{"max_source_bytes", l.MaxSourceBytes},
+		{"max_steps", l.MaxSteps},
+		{"max_memory_bytes", l.MaxMemoryBytes},
+		{"max_log_bytes", l.MaxLogBytes},
+		{"max_tool_calls", l.MaxToolCalls},
+		{"max_value_bytes", l.MaxValueBytes},
+		{"max_nesting_depth", l.MaxNestingDepth},
+	} {
+		if field.value < 0 {
+			return fmt.Errorf("code mode limit %s must not be negative", field.name)
+		}
+	}
+	if l.MaxValueBytes != 0 && l.MaxValueBytes < MinCodeModeValueBytes {
+		return fmt.Errorf("code mode limit max_value_bytes must be at least %d", MinCodeModeValueBytes)
+	}
+	if l.MaxNestingDepth > MaxCodeModeNestingDepth {
+		return fmt.Errorf("code mode limit max_nesting_depth must be at most %d", MaxCodeModeNestingDepth)
+	}
+	return nil
 }
 
 // UnmarshalJSON implements json.Unmarshaler so that tool_execution_timeout treats
@@ -317,6 +468,23 @@ func (c *MCPToolManagerConfig) UnmarshalJSON(data []byte) error {
 const (
 	DefaultMaxAgentDepth        = 10
 	DefaultToolExecutionTimeout = 30 * time.Second
+
+	// Byte bounds on forwarded instructions. A gateway aggregating tens of upstreams can
+	// otherwise hand every caller an unbounded prefix, which on the inference path is billed
+	// on every request.
+	DefaultMaxInstructionsPerClient = 4096
+	DefaultMaxInstructionsTotal     = 16384
+
+	DefaultCodeModeMaxSourceBytes  = 64 << 10
+	DefaultCodeModeMaxSteps        = 1_000_000
+	DefaultCodeModeMaxMemoryBytes  = 64 << 20
+	DefaultCodeModeMaxLogBytes     = 64 << 10
+	DefaultCodeModeMaxToolCalls    = 64
+	DefaultCodeModeMaxValueBytes   = 1 << 20
+	DefaultCodeModeMaxNestingDepth = 64
+
+	MinCodeModeValueBytes   = 1 << 10 // Tool results need room for framing overhead
+	MaxCodeModeNestingDepth = 1000    // Value conversion recurses once per level on the goroutine stack
 )
 
 // CodeModeBindingLevel defines how tools are exposed in the VFS for code execution
@@ -326,6 +494,14 @@ const (
 	CodeModeBindingLevelServer CodeModeBindingLevel = "server"
 	CodeModeBindingLevelTool   CodeModeBindingLevel = "tool"
 )
+
+// MCPServerInstructions is one upstream's instructions, labeled with the client it came from.
+type MCPServerInstructions struct {
+	ClientName   string `json:"client_name"`
+	Instructions string `json:"instructions"`
+	// MaxLength is this server's own byte cap; 0 defers to the global one.
+	MaxLength int `json:"max_length,omitempty"`
+}
 
 // MCPAuthType defines the authentication type for MCP connections
 type MCPAuthType string
@@ -439,11 +615,13 @@ func (c *MCPTokenExchangeConfig) DiffersFrom(resolved *MCPTokenExchangeConfig) b
 type MCPClientConfig struct {
 	ID                string            `json:"client_id"`                     // Client ID
 	Name              string            `json:"name"`                          // Client name
+	EndpointSlug      string            `json:"endpoint_slug"`                 // URL-safe, immutable; serves /mcp/<slug>
 	IsCodeModeClient  bool              `json:"is_code_mode_client"`           // Whether the client is a code mode client
 	ConnectionType    MCPConnectionType `json:"connection_type"`               // How to connect (HTTP, STDIO, SSE, or InProcess)
 	ConnectionString  *SecretVar        `json:"connection_string,omitempty"`   // HTTP or SSE URL (required for HTTP or SSE connections)
 	StdioConfig       *MCPStdioConfig   `json:"stdio_config,omitempty"`        // STDIO configuration (required for STDIO connections)
 	TLSConfig         *MCPTLSConfig     `json:"tls_config,omitempty"`          // TLS configuration for HTTP/SSE connections
+	OpenAPIConfig     *MCPOpenAPIConfig `json:"openapi_config,omitempty"`      // Spec source, upstream base URL and credentials (required for OpenAPI connections)
 	AuthType          MCPAuthType       `json:"auth_type"`                     // Authentication type (none, headers, or oauth)
 	OauthConfigID     *string           `json:"oauth_config_id,omitempty"`     // OAuth config ID (references oauth_configs table)
 	OauthClientID     *SecretVar        `json:"oauth_client_id,omitempty"`     // Redacted OAuth client ID (populated on GET, not stored here)
@@ -499,16 +677,27 @@ type MCPClientConfig struct {
 	// time. Ignored for per-user auth types (already always per-call
 	// regardless).
 	NeedsSessionStickiness *bool              `json:"needs_session_stickiness,omitempty"`
-	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`     // Per-client override for tool sync interval (0 = use global; negative values are rejected)
-	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"` // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
-	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`           // Tool pricing for each tool (cost per execution)
-	Disabled               bool               `json:"disabled"`                         // Whether the client is intentionally disabled (stops connection and workers)
-	ConfigHash             string             `json:"-"`                                // Config hash for reconciliation (not serialized)
-	AllowOnAllVirtualKeys  bool               `json:"allow_on_all_virtual_keys"`        // Whether to allow the MCP client to run on all virtual keys
+	RequirePublicTarget    bool               `json:"require_public_target,omitempty"`   // Server-set: registered without admin auth, so every dial must resolve to a public address
+	ToolSyncInterval       time.Duration      `json:"tool_sync_interval,omitempty"`      // Per-client override for tool sync interval (0 = use global; negative values are rejected)
+	ToolExecutionTimeout   time.Duration      `json:"tool_execution_timeout,omitempty"`  // Per-client override for tool execution timeout (0 = use global from tool_manager_config)
+	MaxInstructionsLength  int                `json:"max_instructions_length,omitempty"` // Per-client override for the forwarded instruction byte cap (0 = use global from tool_manager_config)
+	ToolPricing            map[string]float64 `json:"tool_pricing,omitempty"`            // Tool pricing for each tool (cost per execution)
+	Disabled               bool               `json:"disabled"`                          // Whether the client is intentionally disabled (stops connection and workers)
+	ConfigHash             string             `json:"-"`                                 // Config hash for reconciliation (not serialized)
+	// AllowByDefault opens the client to every caller that has not been assigned it explicitly: all
+	// of its tools, with no per-caller configuration. An explicit assignment for a caller decides for
+	// that caller instead, including one that grants no tool at all.
+	//
+	// The wire name used to be allow_on_all_virtual_keys. That key is still read (UnmarshalJSON) and
+	// still written (MarshalJSON), so configuration and clients written against it keep working.
+	AllowByDefault bool `json:"allow_by_default"`
 
 	// Discovered tools for per-user OAuth clients (persisted so they survive restart)
 	DiscoveredTools           map[string]ChatTool `json:"-"` // Discovered tool schemas keyed by prefixed name
 	DiscoveredToolNameMapping map[string]string   `json:"-"` // Mapping from sanitized tool names to original MCP names
+	// DiscoveredInstructions is the upstream's initialize `instructions`, persisted for the
+	// same reason DiscoveredTools is: per-call clients hold no connection to re-read it from.
+	DiscoveredInstructions string `json:"-"`
 
 	// PendingOAuthConfig holds the inline `oauth_config` block declared in
 	// config.json for shared-OAuth MCP clients (auth_type == "oauth").
@@ -531,11 +720,16 @@ type MCPClientConfig struct {
 // UnmarshalJSON supports Go duration strings (e.g. "10m") for tool_sync_interval and
 // tool_execution_timeout. Numeric values are treated as raw nanoseconds for tool_sync_interval
 // and as seconds for tool_execution_timeout (matching tool_manager_config behaviour).
+//
+// It also reads allow_by_default under its earlier name, allow_on_all_virtual_keys; see
+// ResolveAllowByDefault for which one decides when both are present.
 func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 	type alias MCPClientConfig
 	aux := &struct {
-		ToolSyncInterval     *json.Number     `json:"tool_sync_interval,omitempty"`
-		ToolExecutionTimeout *json.RawMessage `json:"tool_execution_timeout,omitempty"`
+		ToolSyncInterval      *json.Number     `json:"tool_sync_interval,omitempty"`
+		ToolExecutionTimeout  *json.RawMessage `json:"tool_execution_timeout,omitempty"`
+		AllowByDefault        *bool            `json:"allow_by_default,omitempty"`
+		AllowOnAllVirtualKeys *bool            `json:"allow_on_all_virtual_keys,omitempty"`
 		*alias
 	}{alias: (*alias)(c)}
 
@@ -559,6 +753,7 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 			}
 			c.ToolExecutionTimeout = dur
 		}
+		c.AllowByDefault = ResolveAllowByDefault(aux.AllowByDefault, aux.AllowOnAllVirtualKeys)
 		return nil
 	}
 
@@ -566,8 +761,10 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 	// ToolExecutionTimeout uses *json.RawMessage (not *string) so that integer
 	// values like 60 remain valid even when tool_sync_interval is a string.
 	auxStr := &struct {
-		ToolSyncInterval     *string          `json:"tool_sync_interval,omitempty"`
-		ToolExecutionTimeout *json.RawMessage `json:"tool_execution_timeout,omitempty"`
+		ToolSyncInterval      *string          `json:"tool_sync_interval,omitempty"`
+		ToolExecutionTimeout  *json.RawMessage `json:"tool_execution_timeout,omitempty"`
+		AllowByDefault        *bool            `json:"allow_by_default,omitempty"`
+		AllowOnAllVirtualKeys *bool            `json:"allow_on_all_virtual_keys,omitempty"`
 		*alias
 	}{alias: (*alias)(c)}
 	if err := json.Unmarshal(data, auxStr); err != nil {
@@ -587,7 +784,25 @@ func (c *MCPClientConfig) UnmarshalJSON(data []byte) error {
 		}
 		c.ToolExecutionTimeout = dur
 	}
+	c.AllowByDefault = ResolveAllowByDefault(auxStr.AllowByDefault, auxStr.AllowOnAllVirtualKeys)
 	return nil
+}
+
+// ResolveAllowByDefault settles the flag from the two keys the wire accepts for it: allow_by_default,
+// and the earlier allow_on_all_virtual_keys. The current key decides whenever it is present; the
+// earlier one is read only in its absence, so a caller that sends both is taken at its current word.
+// Neither present is the default, which is off.
+//
+// Exported because every surface that reads the flag from JSON applies the same rule: the client
+// configuration here, and the create and update requests of the HTTP API.
+func ResolveAllowByDefault(allowByDefault, allowOnAllVirtualKeys *bool) bool {
+	if allowByDefault != nil {
+		return *allowByDefault
+	}
+	if allowOnAllVirtualKeys != nil {
+		return *allowOnAllVirtualKeys
+	}
+	return false
 }
 
 // parseToolExecutionTimeoutField parses a tool_execution_timeout JSON value.
@@ -625,13 +840,17 @@ func parseToolExecutionTimeoutField(raw json.RawMessage) (time.Duration, error) 
 // MarshalJSON emits tool_execution_timeout as a duration string so it round-trips
 // correctly — default time.Duration marshaling emits nanoseconds, but UnmarshalJSON
 // treats bare integers as seconds.
+//
+// It also writes allow_by_default under its earlier name, allow_on_all_virtual_keys, with the same
+// value, so a reader that still knows only that key sees the same answer.
 func (c MCPClientConfig) MarshalJSON() ([]byte, error) {
 	type alias MCPClientConfig
 	type shadow struct {
-		ToolExecutionTimeout string `json:"tool_execution_timeout,omitempty"`
+		ToolExecutionTimeout  string `json:"tool_execution_timeout,omitempty"`
+		AllowOnAllVirtualKeys bool   `json:"allow_on_all_virtual_keys"`
 		*alias
 	}
-	s := shadow{alias: (*alias)(&c)}
+	s := shadow{alias: (*alias)(&c), AllowOnAllVirtualKeys: c.AllowByDefault}
 	if c.ToolExecutionTimeout > 0 {
 		s.ToolExecutionTimeout = c.ToolExecutionTimeout.String()
 	}
@@ -710,15 +929,17 @@ const (
 	MCPConnectionTypeSTDIO     MCPConnectionType = "stdio"     // STDIO-based connection
 	MCPConnectionTypeSSE       MCPConnectionType = "sse"       // Server-Sent Events connection
 	MCPConnectionTypeInProcess MCPConnectionType = "inprocess" // In-process (in-memory) connection
+	MCPConnectionTypeOpenAPI   MCPConnectionType = "openapi"   // In-process server synthesized from an OpenAPI spec; tools proxy HTTP calls upstream
 )
 
 // OTelNetworkTransport returns the OTel semconv network.transport value: stdio→"pipe",
-// http/sse→"tcp". InProcess has none, so it returns "" and callers omit the attribute.
+// http/sse/openapi→"tcp" (openapi tools reach their upstream over HTTP). InProcess has
+// none, so it returns "" and callers omit the attribute.
 func (c MCPConnectionType) OTelNetworkTransport() string {
 	switch c {
 	case MCPConnectionTypeSTDIO:
 		return "pipe"
-	case MCPConnectionTypeHTTP, MCPConnectionTypeSSE:
+	case MCPConnectionTypeHTTP, MCPConnectionTypeSSE, MCPConnectionTypeOpenAPI:
 		return "tcp"
 	default:
 		return ""
@@ -737,6 +958,103 @@ type MCPStdioConfig struct {
 type MCPTLSConfig struct {
 	InsecureSkipVerify bool       `json:"insecure_skip_verify,omitempty"` // Disable TLS certificate verification (development only)
 	CACertPEM          *SecretVar `json:"ca_cert_pem,omitempty"`          // PEM-encoded CA certificate to trust (supports env.*)
+}
+
+// MCPOpenAPICredential is the secret material for one securitySchemes entry of an
+// OpenAPI-backed MCP client. apiKey and http-bearer schemes use Value; http-basic
+// uses Username and Password.
+type MCPOpenAPICredential struct {
+	Value    *SecretVar `json:"value,omitempty"`    // apiKey value or bearer token
+	Username *SecretVar `json:"username,omitempty"` // http basic user
+	Password *SecretVar `json:"password,omitempty"` // http basic password
+}
+
+// MCPOpenAPIConfig configures an MCP client whose server is synthesized from an
+// OpenAPI/Swagger document (ConnectionType == MCPConnectionTypeOpenAPI).
+//
+// At least one of Spec, SpecFile or SpecURL supplies the document, in that order of
+// precedence. Spec is the inline text (JSON or YAML) and is what the API stores;
+// SpecFile is a config.json-only path resolved relative to the config directory at
+// load time; SpecURL is fetched at every connect when Spec and SpecFile are empty.
+// Next to Spec, SpecFile and SpecURL record where it came from, and SpecURL still
+// resolves relative servers.
+//
+// The Spec*, OpenAPIVersion and OperationCount fields are computed by the server at
+// write time from the parsed document and are informational on read.
+type MCPOpenAPIConfig struct {
+	Spec                string                          `json:"spec,omitempty"`                 // Inline spec text (JSON or YAML); omitted from API reads
+	SpecURL             *string                         `json:"spec_url,omitempty"`             // Fetch source when Spec is empty, else provenance
+	SpecFile            *string                         `json:"spec_file,omitempty"`            // config.json only: path resolved into Spec at load
+	BaseURL             *string                         `json:"base_url,omitempty"`             // Upstream base URL; defaults to the spec's first server
+	SecurityCredentials map[string]MCPOpenAPICredential `json:"security_credentials,omitempty"` // Keyed by securitySchemes name
+	IncludeDeprecated   bool                            `json:"include_deprecated,omitempty"`   // Expose operations marked deprecated
+	MaxResponseBytes    int                             `json:"max_response_bytes,omitempty"`   // Upstream body cap returned to the model (0 = default)
+	SpecSize            int                             `json:"spec_size,omitempty"`            // Server-computed: spec byte length
+	SpecHash            string                          `json:"spec_hash,omitempty"`            // Server-computed: sha256 hex of Spec
+	SpecTitle           string                          `json:"spec_title,omitempty"`           // Server-computed: info.title
+	OpenAPIVersion      string                          `json:"openapi_version,omitempty"`      // Server-computed: detected spec version
+	OperationCount      int                             `json:"operation_count,omitempty"`      // Server-computed: synthesized tool count
+}
+
+// HasSpecSource reports whether any of Spec, SpecFile or SpecURL is set.
+func (c *MCPOpenAPIConfig) HasSpecSource() bool {
+	if c == nil {
+		return false
+	}
+	if strings.TrimSpace(c.Spec) != "" {
+		return true
+	}
+	if c.SpecFile != nil && strings.TrimSpace(*c.SpecFile) != "" {
+		return true
+	}
+	return c.SpecURL != nil && strings.TrimSpace(*c.SpecURL) != ""
+}
+
+// Clone returns a copy that shares no mutable state with c: the string
+// pointers, the credential map and its secrets are all copied.
+func (c *MCPOpenAPIConfig) Clone() *MCPOpenAPIConfig {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	out.SpecURL = cloneStringPtr(c.SpecURL)
+	out.SpecFile = cloneStringPtr(c.SpecFile)
+	out.BaseURL = cloneStringPtr(c.BaseURL)
+	if c.SecurityCredentials != nil {
+		out.SecurityCredentials = make(map[string]MCPOpenAPICredential, len(c.SecurityCredentials))
+		for name, cred := range c.SecurityCredentials {
+			out.SecurityCredentials[name] = MCPOpenAPICredential{
+				Value:    cloneSecretVarPtr(cred.Value),
+				Username: cloneSecretVarPtr(cred.Username),
+				Password: cloneSecretVarPtr(cred.Password),
+			}
+		}
+	}
+	return &out
+}
+
+func cloneStringPtr(s *string) *string {
+	if s == nil {
+		return nil
+	}
+	v := *s
+	return &v
+}
+
+func cloneSecretVarPtr(s *SecretVar) *SecretVar {
+	if s == nil {
+		return nil
+	}
+	v := *s
+	return &v
+}
+
+// Clone returns a copy of t that shares no mutable state with it.
+func (t *MCPTLSConfig) Clone() *MCPTLSConfig {
+	if t == nil {
+		return nil
+	}
+	return &MCPTLSConfig{InsecureSkipVerify: t.InsecureSkipVerify, CACertPEM: cloneSecretVarPtr(t.CACertPEM)}
 }
 
 // MarshalForStorage serializes MCPTLSConfig for DB persistence.
@@ -817,6 +1135,66 @@ const (
 	MCPConnectionStateDegraded MCPConnectionState = "degraded"
 )
 
+// MCPConnectionFailureStage names the step of Bifrost's own connection
+// handling that most recently failed for a client. It is the "what was
+// Bifrost doing when this broke" half of an MCPConnectionFailure; the error
+// text is the other half.
+type MCPConnectionFailureStage string
+
+const (
+	// MCPConnectionFailureStageConnect is establishing the shared connection:
+	// the dial, the MCP initialize handshake, the connect plugin gate, or the
+	// initial list_tools a fresh connection must pass before it counts as
+	// established.
+	MCPConnectionFailureStageConnect MCPConnectionFailureStage = "connect"
+	// MCPConnectionFailureStagePing is the periodic check's ping over an
+	// existing shared connection.
+	MCPConnectionFailureStagePing MCPConnectionFailureStage = "ping"
+	// MCPConnectionFailureStageListTools is the periodic check's list_tools
+	// over an existing shared connection.
+	MCPConnectionFailureStageListTools MCPConnectionFailureStage = "list_tools"
+	// MCPConnectionFailureStageToolDiscovery is the periodic check's
+	// ephemeral connect-discover-close cycle for per-call auth types, which
+	// never hold a shared connection to ping.
+	MCPConnectionFailureStageToolDiscovery MCPConnectionFailureStage = "tool_discovery"
+	// MCPConnectionFailureStageTransportLost is a live SSE connection
+	// dropping underneath the client, outside any check.
+	MCPConnectionFailureStageTransportLost MCPConnectionFailureStage = "transport_lost"
+	// MCPConnectionFailureStageCredential is a credential the client depends
+	// on becoming unusable: an OAuth refresh rejected upstream, a rotation
+	// that invalidated the stored token, or a retained admin discovery
+	// credential that needs repair.
+	MCPConnectionFailureStageCredential MCPConnectionFailureStage = "credential"
+)
+
+// MCPConnectionFailure records why a client most recently left, or failed to
+// reach, MCPConnectionStateHealthy on this instance. It is the explanation
+// behind a non-healthy State: which step failed, the error it failed with,
+// when that last happened, and when the current run of failures began.
+//
+// Lifecycle: written by every failure path that moves State away from
+// Healthy (the periodic connection check, a failed connect attempt, a dropped
+// SSE transport, a dead credential), refreshed on every subsequent failure so
+// At always reflects the most recent attempt while Since keeps the first, and
+// cleared the moment any success moves State back to Healthy. It is only ever
+// replaced wholesale, never mutated in place, so a snapshot that copied the
+// pointer keeps describing the failure it was taken with.
+type MCPConnectionFailure struct {
+	Stage   MCPConnectionFailureStage `json:"stage"`   // Which step of Bifrost's own connection handling failed
+	Message string                    `json:"message"` // The error, whitespace-collapsed and length-bounded
+	At      time.Time                 `json:"at"`      // The most recent failed attempt
+	Since   time.Time                 `json:"since"`   // The first failed attempt of the current unhealthy run
+}
+
+// MCPInstanceState is one instance's own view of a client: its self-reported
+// connection state and, when that state is not Healthy, the failure behind
+// it. A single instance's view is just this pair; a distributed deployment
+// compares one per instance to decide whether they agree.
+type MCPInstanceState struct {
+	State       MCPConnectionState    `json:"state"`
+	LastFailure *MCPConnectionFailure `json:"last_failure,omitempty"`
+}
+
 // MCPClientState represents a connected MCP client with its configuration and tools.
 // It is used internally by the MCP manager to track the state of a connected MCP client.
 type MCPClientState struct {
@@ -826,10 +1204,14 @@ type MCPClientState struct {
 	ToolMap         map[string]ChatTool      // Available tools mapped by name
 	ToolNameMapping map[string]string        // Maps sanitized_name -> original_mcp_name (e.g., "notion_search" -> "notion-search")
 	ConnectionInfo  *MCPClientConnectionInfo `json:"connection_info"` // Connection metadata for management
-	CancelFunc      context.CancelFunc       `json:"-"`               // Cancel function for SSE connections (not serialized)
-	State           MCPConnectionState       // Connection state (healthy, unstable, needs_reauth, ...)
-	ConnGeneration  uint64                   `json:"-"` // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
-	LastToolsHash   string                   `json:"-"` // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
+	// ServerInstructions is the upstream's initialize `instructions`, as of the last handshake.
+	// Overwritten (never appended to) on reconnect, so dropping it upstream drops it here.
+	ServerInstructions string                `json:"server_instructions,omitempty"`
+	CancelFunc         context.CancelFunc    `json:"-"` // Cancel function for SSE connections (not serialized)
+	State              MCPConnectionState    // Connection state (healthy, unstable, needs_reauth, ...)
+	LastFailure        *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy (see MCPConnectionFailure)
+	ConnGeneration     uint64                `json:"-"`                      // Counts connection swaps; late writers bound to an older Conn compare against it to detect staleness (not serialized)
+	LastToolsHash      string                `json:"-"`                      // Content hash of the last ToolMap/ToolNameMapping the tools-change callback fired for; gates the funnel to genuine changes only (not serialized)
 }
 
 // MCPClientConnectionInfo stores metadata about how a client is connected.
@@ -843,7 +1225,8 @@ type MCPClientConnectionInfo struct {
 // and connection information, after it has been initialized.
 // It is returned by GetMCPClients() method in bifrost.
 type MCPClient struct {
-	Config *MCPClientConfig   `json:"config"` // Tool filtering settings
-	Tools  []ChatToolFunction `json:"tools"`  // Available tools
-	State  MCPConnectionState `json:"state"`  // Connection state
+	Config      *MCPClientConfig      `json:"config"`                 // Tool filtering settings
+	Tools       []ChatToolFunction    `json:"tools"`                  // Available tools
+	State       MCPConnectionState    `json:"state"`                  // Connection state
+	LastFailure *MCPConnectionFailure `json:"last_failure,omitempty"` // Why State is not Healthy; nil while Healthy
 }

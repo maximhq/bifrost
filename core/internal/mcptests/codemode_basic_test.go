@@ -1,9 +1,12 @@
 package mcptests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
+
+	bifrost "github.com/maximhq/bifrost/core"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
@@ -598,4 +601,47 @@ func mustJSONString(s string) string {
 		panic(err)
 	}
 	return string(b)
+}
+
+// TestCodeMode_LimitsFromConfig pins that code mode limits set in the MCP config
+// reach executions at startup, and that a hot reload replaces them.
+func TestCodeMode_LimitsFromConfig(t *testing.T) {
+	t.Parallel()
+
+	b, err := bifrost.Init(context.Background(), schemas.BifrostConfig{
+		Account: &testAccount{},
+		Logger:  bifrost.NewDefaultLogger(schemas.LogLevelError),
+		MCPConfig: &schemas.MCPConfig{
+			ToolManagerConfig: &schemas.MCPToolManagerConfig{CodeModeLimits: &schemas.MCPCodeModeLimits{MaxSourceBytes: 16}},
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(b.Shutdown)
+
+	execute := func() string {
+		call := CreateExecuteToolCodeCall("call-1", "result = 1 + 2 + 3 + 4")
+		msg, bifrostErr := b.ExecuteChatMCPTool(createTestContext(), &call)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, msg)
+		require.NotNil(t, msg.Content)
+		require.NotNil(t, msg.Content.ContentStr)
+		return *msg.Content.ContentStr
+	}
+
+	assert.Contains(t, execute(), "source limit", "startup limits must apply")
+
+	require.NoError(t, b.UpdateCodeModeLimits(&schemas.MCPCodeModeLimits{MaxSourceBytes: 64}))
+	assert.NotContains(t, execute(), "source limit", "a hot reload must replace the limits")
+
+	require.NoError(t, b.UpdateCodeModeLimits(&schemas.MCPCodeModeLimits{MaxSourceBytes: 8}))
+	assert.Contains(t, execute(), "source limit", "a hot reload must tighten the limits")
+
+	require.NoError(t, b.UpdateToolManagerConfig(schemas.DefaultMaxAgentDepth, 30, string(schemas.CodeModeBindingLevelServer), false, 0, 0))
+	assert.Contains(t, execute(), "source limit", "a tool manager update must not reset the limits")
+
+	require.Error(t, b.UpdateCodeModeLimits(&schemas.MCPCodeModeLimits{MaxSteps: -1}))
+	assert.Contains(t, execute(), "source limit", "rejected limits must leave the current limits in place")
+
+	require.NoError(t, b.UpdateCodeModeLimits(nil))
+	assert.NotContains(t, execute(), "source limit", "nil must restore the defaults")
 }

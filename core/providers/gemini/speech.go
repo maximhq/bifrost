@@ -198,3 +198,47 @@ func ToGeminiSpeechResponse(bifrostResp *schemas.BifrostSpeechResponse) *Generat
 	genaiResp.Candidates = []*Candidate{candidate}
 	return genaiResp
 }
+
+// ToGeminiSpeechStreamResponse converts a Bifrost speech stream chunk to the
+// GenerateContentResponse shape used by Gemini's streamGenerateContent SSE API.
+func ToGeminiSpeechStreamResponse(bifrostResp *schemas.BifrostSpeechStreamResponse) *GenerateContentResponse {
+	if bifrostResp == nil {
+		return nil
+	}
+
+	genaiResp := &GenerateContentResponse{}
+	if len(bifrostResp.Audio) > 0 {
+		mimeType := utils.DetectAudioMimeType(bifrostResp.Audio)
+		provider := bifrostResp.ExtraFields.RoutingInfo.Provider
+		if provider == schemas.Gemini || provider == schemas.Vertex {
+			// Gemini TTS stream chunks are headerless signed 16-bit PCM. Generic
+			// header detection falls back to audio/mp3 for headerless data, which
+			// makes native GenAI clients decode valid PCM as the wrong format.
+			mimeType = "audio/L16;codec=pcm;rate=24000"
+		}
+		genaiResp.Candidates = []*Candidate{{
+			Content: &Content{
+				Parts: []*Part{{
+					InlineData: &Blob{
+						Data:     encodeBytesToBase64String(bifrostResp.Audio),
+						MIMEType: mimeType,
+					},
+				}},
+				Role: string(RoleModel),
+			},
+		}}
+	}
+
+	if bifrostResp.Type == schemas.SpeechStreamResponseTypeDone {
+		if len(genaiResp.Candidates) == 0 {
+			genaiResp.Candidates = []*Candidate{{FinishReason: FinishReasonStop}}
+		} else {
+			genaiResp.Candidates[0].FinishReason = FinishReasonStop
+		}
+	}
+	if bifrostResp.Usage != nil {
+		genaiResp.UsageMetadata = convertBifrostSpeechUsageToGeminiUsageMetadata(bifrostResp.Usage)
+	}
+
+	return genaiResp
+}

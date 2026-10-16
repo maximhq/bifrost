@@ -98,6 +98,10 @@ The alert history API is available at `/api/alerting/history`.
 | `status` | string (comma-separated) | Filter by status: `sent`, `failed`, `skipped`. |
 | `scope_type` | string (comma-separated) | Filter by scope: `virtual_key`, `team`, `customer`. |
 | `channel_type` | string (comma-separated) | Filter by channel: `slack`, `microsoft_teams`, `pagerduty`, `webhook`. |
+| `sort_by` | string | `created_at` (default), `rule_name`, `channel_name`, `scope_type` or `status`. Anything else returns `400`. |
+| `sort_order` | string | `asc` or `desc` (default). |
+
+Rows with the same sort value are ordered newest first.
 
 ```bash
 curl "https://your-bifrost-gateway/api/alerting/history?status=sent,failed&scope_type=virtual_key&limit=10" \

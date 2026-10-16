@@ -171,6 +171,203 @@ func TestTableKey_VertexFieldsEncryptDecrypt(t *testing.T) {
 	assert.Equal(t, `{"type":"service_account"}`, found.VertexKeyConfig.AuthCredentials.GetValue())
 }
 
+func TestTableKey_GithubCopilotFieldsEncryptDecrypt(t *testing.T) {
+	db := setupTestDB(t)
+
+	const pemBody = "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJB\n-----END RSA PRIVATE KEY-----"
+
+	key := &TableKey{
+		Name:       "copilot-key",
+		ProviderID: 1,
+		Provider:   "github-copilot",
+		KeyID:      "copilot-uuid-1",
+		GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+			AppID:          *schemas.NewSecretVar("123456"),
+			InstallationID: *schemas.NewSecretVar("87654321"),
+			RepositoryID:   *schemas.NewSecretVar("999000111"),
+			PrivateKey:     *schemas.NewSecretVar(pemBody),
+			GithubDomain:   *schemas.NewSecretVar("acme.ghe.com"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	// The private key is the entire credential. It must never sit in the table as plaintext.
+	assert.NotEqual(t, pemBody, raw["github_copilot_private_key"])
+	assert.NotEqual(t, "123456", raw["github_copilot_app_id"])
+	assert.NotEqual(t, "87654321", raw["github_copilot_installation_id"])
+	assert.NotEqual(t, "999000111", raw["github_copilot_repository_id"])
+	assert.NotEqual(t, "acme.ghe.com", raw["github_copilot_github_domain"])
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.GithubCopilotKeyConfig)
+	assert.Equal(t, "123456", found.GithubCopilotKeyConfig.AppID.GetValue())
+	assert.Equal(t, "87654321", found.GithubCopilotKeyConfig.InstallationID.GetValue())
+	assert.Equal(t, "999000111", found.GithubCopilotKeyConfig.RepositoryID.GetValue())
+	assert.Equal(t, pemBody, found.GithubCopilotKeyConfig.PrivateKey.GetValue())
+	assert.Equal(t, "acme.ghe.com", found.GithubCopilotKeyConfig.GithubDomain.GetValue())
+}
+
+func TestTableKey_GithubCopilotOptionalDomainRoundTrips(t *testing.T) {
+	db := setupTestDB(t)
+
+	// github_domain is only set for GitHub Enterprise. The zero value must round-trip as
+	// unset rather than as an empty string that later reads as a configured domain.
+	key := &TableKey{
+		Name:       "copilot-dotcom",
+		ProviderID: 1,
+		Provider:   "github-copilot",
+		KeyID:      "copilot-uuid-2",
+		GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
+			AppID:          *schemas.NewSecretVar("123456"),
+			InstallationID: *schemas.NewSecretVar("87654321"),
+			RepositoryID:   *schemas.NewSecretVar("999000111"),
+			PrivateKey:     *schemas.NewSecretVar("pem"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.GithubCopilotKeyConfig)
+	assert.Empty(t, found.GithubCopilotKeyConfig.GithubDomain.GetValue())
+}
+
+func TestTableKey_NoGithubCopilotConfig_LeavesNil(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "openai-key",
+		ProviderID: 1,
+		Provider:   "openai",
+		KeyID:      "openai-uuid-1",
+		Value:      *schemas.NewSecretVar("sk-test"),
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	assert.Nil(t, found.GithubCopilotKeyConfig,
+		"a key from another provider must not gain an empty copilot config on read")
+}
+
+func TestTableKey_OAuthFieldsEncryptDecrypt(t *testing.T) {
+	db := setupTestDB(t)
+
+	const pemBody = "-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJB\n-----END RSA PRIVATE KEY-----"
+
+	key := &TableKey{
+		Name:       "oauth-key",
+		ProviderID: 1,
+		Provider:   "acme_openai",
+		KeyID:      "oauth-uuid-1",
+		OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType:                schemas.OAuthGrantJWTBearer,
+			TokenURL:                 *schemas.NewSecretVar("https://idp.example/oauth2/token"),
+			ClientID:                 schemas.NewSecretVar("cid-123"),
+			ClientSecret:             schemas.NewSecretVar("client-secret-456"),
+			PrivateKey:               schemas.NewSecretVar(pemBody),
+			Scopes:                   []string{"inference", "models"},
+			Audience:                 "https://idp.example/oauth2/token",
+			Issuer:                   "client-123",
+			Subject:                  "svc@example",
+			KeyID:                    "kid-1",
+			SigningAlgorithm:         "RS512",
+			AuthStyle:                schemas.OAuthAuthStyleBody,
+			ExtraParams:              map[string]string{"resource": "api://x"},
+			AssertionLifetimeSeconds: 120,
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	raw := rawRow(t, db, "config_keys", key.ID)
+	assert.Equal(t, "encrypted", raw["encryption_status"])
+	// The secret and the private key are the whole credential; none of the four may sit in
+	// the table as plaintext, and none may leak into the settings column.
+	assert.NotEqual(t, pemBody, raw["oauth_private_key"])
+	assert.NotEqual(t, "client-secret-456", raw["oauth_client_secret"])
+	assert.NotEqual(t, "cid-123", raw["oauth_client_id"])
+	assert.NotEqual(t, "https://idp.example/oauth2/token", raw["oauth_token_url"])
+	settings, _ := raw["oauth_settings_json"].(string)
+	assert.NotContains(t, settings, "client-secret-456")
+	assert.NotContains(t, settings, "MIIBOgIBAAJB")
+	assert.NotContains(t, settings, "cid-123")
+	// extra_params may carry a credential, so the settings column is encrypted at rest too.
+	assert.NotContains(t, settings, `"jwt_bearer"`)
+	assert.NotContains(t, settings, "api://x")
+	assert.NotEmpty(t, settings)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.OAuthKeyConfig)
+	got := found.OAuthKeyConfig
+	assert.Equal(t, schemas.OAuthGrantJWTBearer, got.GrantType)
+	assert.Equal(t, "https://idp.example/oauth2/token", got.TokenURL.GetValue())
+	require.NotNil(t, got.ClientID)
+	assert.Equal(t, "cid-123", got.ClientID.GetValue())
+	require.NotNil(t, got.ClientSecret)
+	assert.Equal(t, "client-secret-456", got.ClientSecret.GetValue())
+	require.NotNil(t, got.PrivateKey)
+	assert.Equal(t, pemBody, got.PrivateKey.GetValue())
+	assert.Equal(t, []string{"inference", "models"}, got.Scopes)
+	assert.Equal(t, "https://idp.example/oauth2/token", got.Audience)
+	assert.Equal(t, "client-123", got.Issuer)
+	assert.Equal(t, "svc@example", got.Subject)
+	assert.Equal(t, "kid-1", got.KeyID)
+	assert.Equal(t, "RS512", got.SigningAlgorithm)
+	assert.Equal(t, schemas.OAuthAuthStyleBody, got.AuthStyle)
+	assert.Equal(t, map[string]string{"resource": "api://x"}, got.ExtraParams)
+	assert.Equal(t, 120, got.AssertionLifetimeSeconds)
+}
+
+func TestTableKey_OAuthClientCredentialsOmitsUnsetFields(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "oauth-cc",
+		ProviderID: 1,
+		Provider:   "acme_openai",
+		KeyID:      "oauth-uuid-2",
+		OAuthKeyConfig: &schemas.OAuthKeyConfig{
+			GrantType:    schemas.OAuthGrantClientCredentials,
+			TokenURL:     *schemas.NewSecretVar("https://idp.example/token"),
+			ClientID:     schemas.NewSecretVar("id"),
+			ClientSecret: schemas.NewSecretVar("secret"),
+		},
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	require.NotNil(t, found.OAuthKeyConfig)
+	assert.Nil(t, found.OAuthKeyConfig.PrivateKey, "an unset private key must round-trip as nil, not as an empty secret")
+	assert.Empty(t, found.OAuthKeyConfig.Scopes)
+	assert.Equal(t, schemas.OAuthGrantClientCredentials, found.OAuthKeyConfig.GrantType)
+}
+
+func TestTableKey_NoOAuthConfig_LeavesNil(t *testing.T) {
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "static-key",
+		ProviderID: 1,
+		Provider:   "openai",
+		KeyID:      "static-uuid-1",
+		Value:      *schemas.NewSecretVar("sk-test"),
+	}
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+	assert.Nil(t, found.OAuthKeyConfig, "a static key must not gain an empty oauth config on read")
+}
+
 func TestTableKey_BedrockFieldsEncryptDecrypt(t *testing.T) {
 	db := setupTestDB(t)
 
@@ -369,7 +566,6 @@ func TestTablePlugin_EncryptDecrypt(t *testing.T) {
 	plugin := &TablePlugin{
 		Name:    "test-plugin",
 		Enabled: true,
-		Version: 1,
 		Config:  map[string]any{"api_key": "secret-plugin-key", "endpoint": "https://plugin.example.com"},
 	}
 
@@ -394,7 +590,6 @@ func TestTablePlugin_EmptyConfig_NoEncryption(t *testing.T) {
 	plugin := &TablePlugin{
 		Name:    "empty-plugin",
 		Enabled: true,
-		Version: 1,
 		// nil Config will serialize to "{}"
 	}
 
@@ -533,6 +728,33 @@ func TestTableOauthConfig_EmptySecret_NoError(t *testing.T) {
 	var found TableOauthConfig
 	require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-empty").Error)
 	assert.Equal(t, "", found.ClientSecret.GetValue())
+}
+
+// TestTableOauthConfig_SecretRef_StampsStatus covers a client_secret held as an
+// env/vault reference. There is nothing to cipher, but the row must still leave
+// plain_text: the startup backfill selects on that column, so a row left behind
+// is re-selected and re-written on every boot.
+func TestTableOauthConfig_SecretRef_StampsStatus(t *testing.T) {
+	for _, ref := range []string{"vault.oauth_configs/cfg/client_secret", "env.OAUTH_CLIENT_SECRET"} {
+		t.Run(ref, func(t *testing.T) {
+			db := setupTestDB(t)
+
+			config := &TableOauthConfig{
+				ID:           "oauth-cfg-ref",
+				ClientSecret: schemas.NewSecretVar(ref),
+				RedirectURI:  "https://example.com/callback",
+			}
+			require.NoError(t, db.Create(config).Error)
+
+			raw := rawRow(t, db, "oauth_configs", "oauth-cfg-ref")
+			assert.Equal(t, "encrypted", raw["encryption_status"])
+			assert.Equal(t, ref, raw["client_secret"], "the reference must be stored verbatim, not ciphered")
+
+			var found TableOauthConfig
+			require.NoError(t, db.First(&found, "id = ?", "oauth-cfg-ref").Error)
+			assert.Equal(t, ref, found.ClientSecret.GetRawRef())
+		})
+	}
 }
 
 // TestTableMCPOauthFlow_EncryptDecrypt covers the CodeVerifier encrypt/decrypt
@@ -1157,7 +1379,6 @@ func TestTablePlugin_UpdatePreservesDecryption(t *testing.T) {
 	plugin := &TablePlugin{
 		Name:    "update-plugin",
 		Enabled: true,
-		Version: 1,
 		Config:  map[string]any{"key": "original-secret"},
 	}
 	require.NoError(t, db.Create(plugin).Error)
@@ -1653,7 +1874,6 @@ func TestTablePlugin_EncryptionDisabled_StoresPlaintext(t *testing.T) {
 	plugin := &TablePlugin{
 		Name:    "disabled-plugin",
 		Enabled: true,
-		Version: 1,
 		Config:  map[string]any{"api_key": "plugin-secret"},
 	}
 
@@ -2078,6 +2298,32 @@ func TestTableKey_SGLUnresolvedSecretVar_RoundTrip(t *testing.T) {
 	require.NotNil(t, found.SGLKeyConfig, "SGLKeyConfig was wiped on reload")
 	assert.Equal(t, "env.FAKE_SGL_URL_FOR_TEST", found.SGLKeyConfig.URL.GetRawRef())
 	assert.True(t, found.SGLKeyConfig.URL.IsFromSecret())
+}
+
+func TestTableKey_CloudflareUnresolvedSecretVar_RoundTrip(t *testing.T) {
+	require.NoError(t, os.Unsetenv("FAKE_CLOUDFLARE_ACCOUNT_ID_FOR_TEST"))
+
+	db := setupTestDB(t)
+
+	key := &TableKey{
+		Name:       "cloudflare-unresolved-env",
+		ProviderID: 1,
+		Provider:   "cloudflare",
+		KeyID:      "cloudflare-env-uuid-1",
+		Value:      *schemas.NewSecretVar("cf-token"),
+		CloudflareKeyConfig: &schemas.CloudflareKeyConfig{
+			AccountID: *schemas.NewSecretVar("env.FAKE_CLOUDFLARE_ACCOUNT_ID_FOR_TEST"),
+		},
+	}
+
+	require.NoError(t, db.Create(key).Error)
+
+	var found TableKey
+	require.NoError(t, db.First(&found, key.ID).Error)
+
+	require.NotNil(t, found.CloudflareKeyConfig, "CloudflareKeyConfig was wiped on reload")
+	assert.Equal(t, "env.FAKE_CLOUDFLARE_ACCOUNT_ID_FOR_TEST", found.CloudflareKeyConfig.AccountID.GetRawRef())
+	assert.True(t, found.CloudflareKeyConfig.AccountID.IsFromSecret())
 }
 
 // TestTableKey_VertexPlainValue_RoundTrip is a sanity check ensuring that plain

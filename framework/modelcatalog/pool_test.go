@@ -52,6 +52,62 @@ func TestUpsertLiveFromResponse_PopulatesFromResponse(t *testing.T) {
 	}
 }
 
+// TestGetUnfilteredModelsForProvider_UsesDatabricksPricing verifies the management catalog
+// still returns Databricks models when the provider intentionally publishes no live models.
+func TestGetUnfilteredModelsForProvider_UsesDatabricksPricing(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"databricks/databricks-pricing-model": {
+			"provider":"databricks",
+			"mode":"chat",
+			"base_model":"pricing-model"
+		}
+	}`)
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	mc := NewTestCatalogWithDatasheet(ds)
+	mc.UpsertLive(schemas.Databricks, "key-1", true, []string{})
+
+	got := mc.GetUnfilteredModelsForProvider(schemas.Databricks)
+	want := []string{"databricks-pricing-model"}
+	if !slices.Equal(got, want) {
+		t.Errorf("GetUnfilteredModelsForProvider(Databricks) = %v, want %v", got, want)
+	}
+}
+
+// TestGetUnfilteredModelsForProvider_CloudflareUsesListModelsOnly verifies the
+// unfiltered Cloudflare catalog is its live /models response alone. The datasheet
+// carries the same Workers AI models under other ID shapes, which would otherwise
+// show up as duplicates in the allowed models dropdown.
+func TestGetUnfilteredModelsForProvider_CloudflareUsesListModelsOnly(t *testing.T) {
+	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
+	pricingJSON := []byte(`{
+		"cloudflare/@cf/meta/llama-3.1-8b-instruct-fp8": {"provider":"cloudflare","mode":"chat","base_model":"llama-3.1-8b-instruct"},
+		"cloudflare/workers-ai/@cf/meta/llama-3.1-8b-instruct-fp8": {"provider":"cloudflare","mode":"chat","base_model":"llama-3.1-8b-instruct"},
+		"cloudflare/clef": {"provider":"cloudflare","mode":"chat","base_model":"clef"}
+	}`)
+	if err := os.WriteFile(pricingPath, pricingJSON, 0o600); err != nil {
+		t.Fatalf("write pricing testdata: %v", err)
+	}
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + pricingPath})
+	if err := ds.LoadFromURLIntoMemory(t.Context()); err != nil {
+		t.Fatalf("load pricing testdata: %v", err)
+	}
+	mc := NewTestCatalogWithDatasheet(ds)
+	live := []string{"@cf/cloudflare/clef", "@cf/meta/llama-3.1-8b-instruct-fp8"}
+	mc.UpsertLive(schemas.Cloudflare, "k1", true, live)
+
+	if got := mc.GetUnfilteredModelsForProvider(schemas.Cloudflare); !slices.Equal(got, live) {
+		t.Errorf("GetUnfilteredModelsForProvider(Cloudflare) = %v, want %v", got, live)
+	}
+}
+
 func TestGetModelsForProvider_IncludesDeprecatedDatasheetModelsWhenLiveExists(t *testing.T) {
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
 	pricingJSON := []byte(`{

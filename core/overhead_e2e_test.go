@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,11 @@ type recordingTracer struct {
 	*schemas.NoOpTracer
 	mu    sync.Mutex
 	attrs map[string]any
+
+	// Trace-lifecycle counters, used by the abandoned-request tests.
+	deferred  atomic.Int64
+	cleared   atomic.Int64
+	completed atomic.Int64
 }
 
 func newRecordingTracer() *recordingTracer {
@@ -43,6 +49,10 @@ func (r *recordingTracer) CreateTrace(_ string, _ ...string) string {
 func (r *recordingTracer) GetSpanHandleByID(_ string, _ *string) schemas.SpanHandle {
 	return "root-span"
 }
+
+func (r *recordingTracer) DeferTraceCompletion(_ string)         { r.deferred.Add(1) }
+func (r *recordingTracer) ClearTraceCompletionDeferral(_ string) { r.cleared.Add(1) }
+func (r *recordingTracer) CompleteAndFlushTrace(_ string)        { r.completed.Add(1) }
 
 func (r *recordingTracer) SetAttribute(_ schemas.SpanHandle, key string, value any) {
 	r.mu.Lock()
