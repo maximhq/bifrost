@@ -165,9 +165,9 @@ func (provider *MinimaxProvider) Embedding(ctx *schemas.BifrostContext, key sche
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.EmbeddingRequest, provider.GetProviderKey())
 }
 
-// Speech is not supported by the Minimax provider.
+// Speech synthesizes audio through MiniMax's T2A v2 endpoint.
 func (provider *MinimaxProvider) Speech(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostSpeechRequest) (*schemas.BifrostSpeechResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechRequest, provider.GetProviderKey())
+	return provider.speech(ctx, key, request, false)
 }
 
 // Rerank is not supported by the Minimax provider.
@@ -180,9 +180,22 @@ func (provider *MinimaxProvider) OCR(ctx *schemas.BifrostContext, key schemas.Ke
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.OCRRequest, provider.GetProviderKey())
 }
 
-// SpeechStream is not supported by the Minimax provider.
+// SpeechStream synthesizes audio and emits the resulting audio as a stream chunk.
 func (provider *MinimaxProvider) SpeechStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.SpeechStreamRequest, provider.GetProviderKey())
+	response, bifrostErr := provider.speech(ctx, key, request, true)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	ch := make(chan *schemas.BifrostStreamChunk, 2)
+	go func() {
+		defer close(ch)
+		delta := &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDelta, Audio: response.Audio, Usage: response.Usage}
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, delta, nil, nil), ch, postHookSpanFinalizer)
+		done := &schemas.BifrostSpeechStreamResponse{Type: schemas.SpeechStreamResponseTypeDone}
+		ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+		providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, done, nil, nil), ch, postHookSpanFinalizer)
+	}()
+	return ch, nil
 }
 
 // Transcription is not supported by the Minimax provider.
