@@ -5,3 +5,4 @@
 - feat: the gateway-run tool search also serves streaming Responses requests, splicing the search turns into one client stream
 - fix: preserve xhigh reasoning effort for OpenAI-compatible destinations (vLLM, Ollama, SGL, and custom providers) instead of rewriting it to high using OpenAI model-name rules [@pranavthakur0-0](https://github.com/pranavthakur0-0) (#6193)
 - feat: MiniMax provider for chat, Responses, image generation, video generation, speech and transcription
+- feat: BytePlus ModelArk provider for Seed chat, native Responses, multimodal embeddings, Seedream image generation and editing, and Seedance video generation
