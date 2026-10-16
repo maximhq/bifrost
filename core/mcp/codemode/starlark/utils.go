@@ -148,26 +148,6 @@ func truncateDiagnostic(text string) string {
 	return cut + marker
 }
 
-// formatResultForLog formats a result value for logging purposes.
-func formatResultForLog(result interface{}) string {
-	// Tool responses can be large even when code returns a small projection.
-	// Bound automatic diagnostic previews before JSON escaping/copying them.
-	if text, ok := result.(string); ok {
-		result = truncateDiagnostic(text)
-	}
-	var resultStr string
-	if result == nil {
-		resultStr = "null"
-	} else if resultBytes, err := schemas.MarshalSorted(result); err == nil {
-		resultStr = string(resultBytes)
-	} else {
-		resultStr = fmt.Sprintf("%v", result)
-	}
-	// Encoding expands: escaping turns one control byte into six, and a non-string result is not
-	// bounded above. The preview is rendered into the tool message the model receives.
-	return truncateDiagnostic(resultStr)
-}
-
 // exceptionHandlingHints explains that Starlark has no exception handling.
 func exceptionHandlingHints() []string {
 	return []string{
@@ -210,7 +190,14 @@ func unsupportedStatement(code string, err error) string {
 func generatePythonErrorHints(errorMessage string, serverKeys []string) []string {
 	hints := []string{}
 
-	if strings.Contains(errorMessage, "string index") || strings.Contains(errorMessage, "string has no .") {
+	if strings.HasPrefix(errorMessage, "fail: ") {
+		// The script chose to stop; generic advice about the code would only mislead.
+		hints = append(hints, "The script stopped itself with fail(); the message above is the reason it gave.")
+	} else if strings.Contains(errorMessage, "unhandled index operation struct[") || strings.Contains(errorMessage, `"tool_error" struct has no`) ||
+		strings.Contains(errorMessage, "value of type struct has no len") || strings.Contains(errorMessage, "struct value is not iterable") {
+		hints = append(hints, "If this value came from a tool call, the call failed: its result is an error value, not a dict or list.")
+		hints = append(hints, "Check it first: if hasattr(r, \"error\"): ... (r.error holds the message)")
+	} else if strings.Contains(errorMessage, "string index") || strings.Contains(errorMessage, "string has no .") {
 		hints = append(hints, "The value is a str, not a dict: the server's text was not JSON, or was JSON wrapped in a string.")
 		if !slices.Contains(serverKeys, "json") {
 			hints = append(hints, "If it holds JSON, parse it first: data = json.decode(result)")

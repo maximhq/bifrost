@@ -274661,6 +274661,458 @@
           }
         }
       ]
+    },
+    {
+      "name": "255. Code mode replies carry what the script returns, and failed calls are values the script handles (code-mode-replies) [SERIAL]",
+      "description": "Every nested response used to be echoed into the executeToolCode reply as a `[TOOL] ... response:` line (up to 2 KB each), and every successful run ended with an environment footer, so a script returning one number still sent the model every payload it read. A call that answered with `isError` (how mcp-go and most SDK servers report a failure) reached the script as a plain string that looked like a normal result. These cases pin that the reply carries only what the script prints and returns, that a failed call reaches the script as an error value (`hasattr(r, \"error\")`, `r.error`) and is noted in the reply with an honest status line, that `fail()` makes the run an error, and that a script which recovers from a failed call still succeeds. The SSE fixture's `echo` returns `isError` with plain text when called without a message.\n\nSerial, and it provisions its own client for the same reason as folder 210: a code-mode client makes the four meta-tools visible to every MCP-bearing request while it exists.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-replies provision a code-mode client on the SSE fixture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Per-run name, so two runs against one gateway never contend, and the sweep below can",
+                  "// reap anything an interrupted run left behind by its prefix.",
+                  "pm.collectionVariables.set('codeModeRepliesClient', 'harness_codemode_replies_' + Date.now());",
+                  "pm.collectionVariables.set('codeModeRepliesQueue', '[]');",
+                  "pm.collectionVariables.set('codeModeRepliesSweeps', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeRepliesClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\",\n    \"json_string\",\n    \"prefixed_error\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"echo\",\n    \"json_string\",\n    \"prefixed_error\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies the reply carries no nested tool payload and no environment footer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('the reply carries no nested tool payload and no environment footer', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value, 'unexpected return value: ' + content).to.equal(4);",
+                  "  pm.expect(content, 'a payload the script never printed reached the reply: ' + content).to.not.include('harness-payload-marker-31e7');",
+                  "  pm.expect(content, 'a nested call was echoed into the reply: ' + content).to.not.include('[TOOL]');",
+                  "  pm.expect(content, 'a successful run still carries the environment footer: ' + content).to.not.include('Environment:');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-replies\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"{{codeModeRepliesClient}}.echo(message=\\\\\\\"harness-payload-marker-31e7\\\\\\\")\\\\nresult = 4\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies a failed call reaches the script as an error value and is noted in the reply",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('a failed call reaches the script as an error value and is noted in the reply', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value.failed, 'the failed call was not an error value: ' + content).to.equal(true);",
+                  "  pm.expect(value.message, 'r.error does not hold the upstream message: ' + content).to.include('required argument');",
+                  "  pm.expect(content, 'the failed call is not noted in the reply: ' + content).to.include('returned an error: required argument');",
+                  "  pm.expect(content, 'the reply still claims a clean run: ' + content).to.include('Execution completed, but 1 nested tool call failed.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-replies\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeRepliesClient}}.echo()\\\\nresult = {\\\\\\\"failed\\\\\\\": hasattr(r, \\\\\\\"error\\\\\\\"), \\\\\\\"message\\\\\\\": r.error if hasattr(r, \\\\\\\"error\\\\\\\") else r}\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies an isError failure whose text opens with Error: is still an error value, without the prefix",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('an isError failure whose text opens with Error: is still an error value, without the prefix', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value.failed, 'the failed call was not an error value: ' + content).to.equal(true);",
+                  "  pm.expect(value.message, 'r.error does not hold the message without its Error: prefix: ' + content).to.equal('contact not found');",
+                  "  pm.expect(content, 'the failed call is not noted in the reply: ' + content).to.include('returned an error: contact not found');",
+                  "  pm.expect(content, 'the reply still claims a clean run: ' + content).to.include('Execution completed, but 1 nested tool call failed.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-replies\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeRepliesClient}}.prefixed_error()\\\\nresult = {\\\\\\\"failed\\\\\\\": hasattr(r, \\\\\\\"error\\\\\\\"), \\\\\\\"message\\\\\\\": r.error if hasattr(r, \\\\\\\"error\\\\\\\") else r}\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies fail() on a failed call makes the run an error",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the script stopped itself and the run is an error', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(pm.response.json().is_error, 'a script that called fail() must mark the run failed: ' + pm.response.text()).to.equal(true);",
+                  "  pm.expect(content, 'the fail() message is missing: ' + content).to.include('fail: lookup failed: required argument');",
+                  "  pm.expect(content, 'the hint does not say the script stopped itself: ' + content).to.include('The script stopped itself with fail()');",
+                  "  pm.expect(content, 'the script kept running after fail(): ' + content).to.not.include('unreachable');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-replies\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeRepliesClient}}.echo()\\\\nif hasattr(r, \\\\\\\"error\\\\\\\"):\\\\n    fail(\\\\\\\"lookup failed: \\\\\\\" + r.error)\\\\nresult = \\\\\\\"unreachable\\\\\\\"\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies a script that recovers from a failed call succeeds",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('a script that recovers from a failed call succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value, 'the fallback did not run: ' + content).to.equal('Example Domain');",
+                  "  pm.expect(content, 'the recovered failure is not noted: ' + content).to.include('Execution completed, but 1 nested tool call failed.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-replies\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeRepliesClient}}.echo()\\\\nif hasattr(r, \\\\\\\"error\\\\\\\"):\\\\n    r = {{codeModeRepliesClient}}.json_string()\\\\nresult = r[\\\\\\\"title\\\\\\\"]\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies queue this run's client, plus any stale leftovers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeRepliesClient');",
+                  "var PREFIX = 'harness_codemode_replies_';",
+                  "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
+                  "// Anything younger than this belongs to a run that may still be executing: never touch it.",
+                  "var STALE_MS = 3600000;",
+                  "pm.test('this run\\'s code-mode client is listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients || [];",
+                  "  var mine = null, stale = [];",
+                  "  for (var i = 0; i < clients.length; i++) {",
+                  "    var cfg = clients[i].config;",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf(PREFIX) !== 0) { continue; }",
+                  "    if (cfg.name === client) { mine = cfg.client_id; continue; }",
+                  "    var stamp = parseInt(cfg.name.substring(PREFIX.length), 10);",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
+                  "  }",
+                  "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
+                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
+                  "  pm.collectionVariables.set('codeModeRepliesQueue', JSON.stringify([mine].concat(stale)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies remove every queued code-mode client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeRepliesQueue') || '[]');",
+                  "// An empty queue means the listing above already failed: skip, rather than add a second failure.",
+                  "if (!queue.length) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('codeModeRepliesClientId', queue[0]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "",
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeRepliesQueue') || '[]');",
+                  "// Only a removed client leaves the queue: a failed delete stays queued for the next pass.",
+                  "if (pm.response.code === 200) {",
+                  "  queue.shift();",
+                  "  pm.collectionVariables.set('codeModeRepliesQueue', JSON.stringify(queue));",
+                  "}",
+                  "",
+                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
+                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeRepliesSweeps') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeRepliesSweeps', String(sweeps));",
+                  "",
+                  "if (queue.length > 0 && sweeps < 10) {",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
+                  "  pm.test('the sweep drained every queued client', function () {",
+                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{codeModeRepliesClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{codeModeRepliesClientId}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

@@ -144,7 +144,18 @@ func newMCPServer(instructions string) *server.MCPServer {
 		mcp.WithDescription("Return a JSON object wrapped in a JSON string"),
 	), jsonStringHandler)
 
+	// Backs the provider-harness code mode failed-call case for a failure flagged with isError
+	// whose text opens with "Error: ", the way Bifrost's own in-process tools report one.
+	s.AddTool(mcp.NewTool(
+		"prefixed_error",
+		mcp.WithDescription("Fail with isError and text that opens with \"Error: \""),
+	), prefixedErrorHandler)
+
 	return s
+}
+
+func prefixedErrorHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return mcp.NewToolResultError("Error: contact not found"), nil
 }
 
 func multiBlockHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {

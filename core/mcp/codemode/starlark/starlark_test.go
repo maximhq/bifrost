@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/canonical/starlark/starlark"
@@ -608,51 +609,6 @@ func TestExtractResultFromChatMessage(t *testing.T) {
 		result := extractResultFromChatMessage(msg)
 		if result != nil {
 			t.Errorf("Expected nil result for message without content, got %v", result)
-		}
-	})
-}
-
-func TestFormatResultForLog(t *testing.T) {
-	t.Run("Format nil result", func(t *testing.T) {
-		result := formatResultForLog(nil)
-		if result != "null" {
-			t.Errorf("Expected 'null', got '%s'", result)
-		}
-	})
-
-	t.Run("Format string result", func(t *testing.T) {
-		result := formatResultForLog("test string")
-		if result != `"test string"` {
-			t.Errorf("Expected '\"test string\"', got '%s'", result)
-		}
-	})
-
-	t.Run("Format map result", func(t *testing.T) {
-		input := map[string]interface{}{"key": "value"}
-		result := formatResultForLog(input)
-
-		// Parse it back to verify it's valid JSON
-		var parsed map[string]interface{}
-		err := sonic.Unmarshal([]byte(result), &parsed)
-		if err != nil {
-			t.Errorf("Result is not valid JSON: %v", err)
-		}
-
-		if parsed["key"] != "value" {
-			t.Errorf("Expected key 'value', got '%v'", parsed["key"])
-		}
-	})
-
-	t.Run("Truncate long result", func(t *testing.T) {
-		longString := ""
-		for i := 0; i < 300; i++ {
-			longString += "a"
-		}
-
-		result := formatResultForLog(longString)
-		if len(result) > 200 {
-			// Should be truncated to around 200 chars (plus quotes and ellipsis)
-			t.Logf("Result length: %d (truncated as expected)", len(result))
 		}
 	})
 }
@@ -1418,23 +1374,14 @@ func TestCodeModeResourceLink(t *testing.T) {
 	}
 }
 
-func TestCodeModeToolLogPreview(t *testing.T) {
-	// The bound has to hold after encoding: escaping turns one control byte into six, and a
-	// non-string result never reaches the input truncation at all.
-	for _, tc := range []struct {
-		name   string
-		result interface{}
-	}{
-		{name: "long string", result: strings.Repeat("x", 100_000)},
-		{name: "control bytes expand when escaped", result: strings.Repeat("\x00", 2048)},
-		{name: "non-string result", result: map[string]any{"body": strings.Repeat("\x00", 2048)}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			preview := formatResultForLog(tc.result)
-			if len(preview) > codeModeDiagnosticBytes || !strings.Contains(preview, "truncated") {
-				t.Fatalf("unbounded tool log preview: %d bytes", len(preview))
-			}
-		})
+// A tool's error text is raised into the script and reaches the model in the reply, so it stays
+// bounded and valid UTF-8 however long the server's message is.
+func TestCodeModeToolErrorTextIsBounded(t *testing.T) {
+	for _, text := range []string{strings.Repeat("x", 100_000), strings.Repeat("é", 2048)} {
+		got := truncateDiagnostic(text)
+		if len(got) > codeModeDiagnosticBytes || !strings.Contains(got, "truncated") || !utf8.ValidString(got) {
+			t.Fatalf("unbounded or invalid error text: %d bytes", len(got))
+		}
 	}
 }
 
@@ -2073,5 +2020,67 @@ func BenchmarkExtractResultFromChatMessage(b *testing.B) {
 				_ = extractResultFromChatMessage(msg)
 			}
 		})
+	}
+}
+
+// A failed nested call reaches the script as a tool_error struct: hasattr finds .error, and
+// returned as-is it converts back to {"error": ...}. Using it as a dict raises with a hint.
+func TestCodeModeFailedCallIsAToolErrorValue(t *testing.T) {
+	limits := schemas.MCPCodeModeLimits{}.WithDefaults()
+	bindings := map[string][]string{"srv": {"srv-get"}}
+	failing := func(context.Context, string, string, map[string]interface{}, func(string)) (interface{}, error) {
+		return toolErrorValue{message: "contact 7 not found"}, nil
+	}
+
+	for _, tc := range []struct {
+		name string
+		code string
+		want string
+	}{
+		{name: "detected and read", code: "r = srv.get()\nresult = [hasattr(r, \"error\"), r.error, type(r)]", want: `[true,"contact 7 not found","struct"]`},
+		{name: "returned as-is", code: "result = srv.get()", want: `{"error":"contact 7 not found"}`},
+		{name: "a dict result has no error attribute", code: "result = hasattr({\"error\": \"x\"}, \"error\")", want: `false`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := runSandbox(context.Background(), limits, tc.code, bindings, failing)
+			if result.Errors != nil {
+				t.Fatalf("unexpected error: %s", result.Errors.Message)
+			}
+			got, _ := sonic.Marshal(result.Result)
+			if string(got) != tc.want {
+				t.Fatalf("result=%s, want %s", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("indexing it raises with a hint", func(t *testing.T) {
+		result := runSandbox(context.Background(), limits, "r = srv.get()\nresult = r[\"email\"]", bindings, failing)
+		if result.Errors == nil {
+			t.Fatalf("indexing an error value succeeded: %v", result.Result)
+		}
+		if hints := strings.Join(result.Errors.Hints, "\n"); !strings.Contains(hints, `hasattr(r, "error")`) {
+			t.Fatalf("hints do not explain the failed call:\n%s", hints)
+		}
+	})
+}
+
+// A script that calls fail() chose to stop: the hints say so instead of generic code advice.
+func TestGeneratePythonErrorHintsForFail(t *testing.T) {
+	hints := generatePythonErrorHints("fail: update failed: permission denied", []string{"crm"})
+	if len(hints) != 1 || !strings.Contains(hints[0], "fail()") {
+		t.Fatalf("hints for fail() = %q", hints)
+	}
+}
+
+// The stubs teach the failed-call check and fail(), the two halves of handling a failed call.
+func TestStubsExplainFailedCalls(t *testing.T) {
+	stub, docs := readSearchStubs(t, newSearchCodeMode(searchToolSchema()))
+
+	for name, content := range map[string]string{"readToolFile": stub, "getToolDocs": docs} {
+		for _, want := range []string{`hasattr(r, "error")`, "fail(r.error)"} {
+			if !strings.Contains(content, want) {
+				t.Errorf("%s does not mention %s, got:\n%s", name, want, content)
+			}
+		}
 	}
 }

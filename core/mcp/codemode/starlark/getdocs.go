@@ -175,6 +175,10 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 		sb.WriteString("# 3. str holding JSON, often a field: data = json.decode(r[\"body\"]); plain text raises.\n")
 	}
 	sb.WriteString("#\n")
+	sb.WriteString("# FAILED CALLS:\n")
+	sb.WriteString("# A call that fails returns an error value, not a result: hasattr(r, \"error\") is True and\n")
+	sb.WriteString("# r.error holds the message. Call fail(r.error) to stop the run, or skip it and carry on.\n")
+	sb.WriteString("#\n")
 	sb.WriteString("# Common errors: \"key not found\", \"has no attribute\", \"string index\"\n")
 	sb.WriteString("# Fix: check type(r) first, then index the shape you actually got\n")
 	if instructions != "" {

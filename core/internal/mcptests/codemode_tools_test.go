@@ -790,42 +790,50 @@ func TestCodeMode_ToolReturnsError(t *testing.T) {
 	bifrost := setupBifrost(t)
 	bifrost.SetMCPManager(manager)
 
-	ctx := createTestContext()
-
-	// Execute code that calls error-throwing tool
-	code := `def main():
-    r = bifrostInternal.throw_error(error_message="intentional error")
-    # In Starlark, errors are returned in the result
-    if "error" in str(r) or r == None:
-        return {"success": False, "error": str(r), "caught": True}
-    else:
-        return {"success": True, "result": r}
-result = main()`
-
-	argsJSON, _ := json.Marshal(map[string]interface{}{
-		"code": code,
-	})
-
-	toolCall := schemas.ChatAssistantMessageToolCall{
-		ID:   schemas.Ptr("call-error-tool"),
-		Type: schemas.Ptr("function"),
-		Function: schemas.ChatAssistantMessageToolCallFunction{
-			Name:      schemas.Ptr("executeToolCode"),
-			Arguments: string(argsJSON),
-		},
+	run := func(t *testing.T, code string) *schemas.ChatMessage {
+		t.Helper()
+		argsJSON, _ := json.Marshal(map[string]interface{}{"code": code})
+		toolCall := schemas.ChatAssistantMessageToolCall{
+			ID:   schemas.Ptr("call-error-tool"),
+			Type: schemas.Ptr("function"),
+			Function: schemas.ChatAssistantMessageToolCallFunction{
+				Name:      schemas.Ptr("executeToolCode"),
+				Arguments: string(argsJSON),
+			},
+		}
+		result, bifrostErr := bifrost.ExecuteChatMCPTool(createTestContext(), &toolCall)
+		require.Nil(t, bifrostErr)
+		require.NotNil(t, result)
+		return result
 	}
 
-	result, bifrostErr := bifrost.ExecuteChatMCPTool(ctx, &toolCall)
-	require.Nil(t, bifrostErr)
-	require.NotNil(t, result)
+	// An in-process tool error arrives as isError with "Error: " text. Like any failed call it
+	// is an error value the script handles, and the reply notes it even when the script does not.
+	t.Run("an error value the script handles", func(t *testing.T) {
+		msg := run(t, `r = bifrostInternal.throw_error(error_message="intentional error")
+result = {"failed": hasattr(r, "error"), "message": r.error if hasattr(r, "error") else r}`)
+		text := *msg.Content.ContentStr
 
-	_, hasError, errorMsg := ParseCodeModeResponse(t, *result.Content.ContentStr)
+		value, hasError, errorMsg := ParseCodeModeResponse(t, text)
+		require.False(t, hasError, errorMsg)
+		assert.Equal(t, map[string]interface{}{"failed": true, "message": "intentional error"}, value)
+		assert.Contains(t, text, "[TOOL] bifrostInternal.throw_error returned an error: intentional error")
+		assert.Contains(t, text, "Execution completed, but 1 nested tool call failed.")
+		assert.False(t, runFailed(msg), "the script finished, so the run succeeds:\n%s", text)
+	})
 
-	// Tool errors must be propagated as runtime errors in Starlark execution
-	// The test fails if the error is caught in code instead of being propagated
-	require.True(t, hasError, "tool errors must propagate as runtime errors, not be caught in code")
-	assert.Contains(t, errorMsg, "intentional error", "error should contain the thrown error message")
-	t.Logf("Tool error propagated as expected: %s", errorMsg)
+	t.Run("fail() makes it a runtime error", func(t *testing.T) {
+		msg := run(t, `r = bifrostInternal.throw_error(error_message="intentional error")
+if hasattr(r, "error"):
+    fail(r.error)
+result = r`)
+		text := *msg.Content.ContentStr
+
+		_, hasError, errorMsg := ParseCodeModeResponse(t, text)
+		require.True(t, hasError, "fail() must make the run a runtime error:\n%s", text)
+		assert.Contains(t, errorMsg, "intentional error")
+		assert.True(t, runFailed(msg), "fail() must mark the run as failed:\n%s", text)
+	})
 }
 
 func TestCodeMode_ToolNotFound(t *testing.T) {
@@ -986,8 +994,12 @@ result = {"result": r, "format": "responses"}`
 // RESULT SHAPES REACHING THE SCRIPT
 // =============================================================================
 
+// resultShapesPayloadMarker opens the big_payload result, so an echo of that payload is easy to spot.
+const resultShapesPayloadMarker = "SHAPES-PAYLOAD-MARKER"
+
 // buildResultShapesServer serves one tool per result shape code mode has to hand a script:
-// several JSON blocks, structured content, and JSON wrapped in a JSON string.
+// spec-style errors with and without an "Error: " prefix, legacy "Error: " text, a large
+// payload, several JSON blocks, structured content, and JSON wrapped in a JSON string.
 func buildResultShapesServer(t *testing.T) *server.MCPServer {
 	t.Helper()
 	s := server.NewMCPServer("result-shapes", "1.0.0", server.WithToolCapabilities(true))
@@ -996,6 +1008,13 @@ func buildResultShapesServer(t *testing.T) *server.MCPServer {
 			return result, nil
 		})
 	}
+	// isError with plain text, the way mcp-go and most SDK servers report a failure.
+	add("plain_error", mcpgo.NewToolResultError("quota exhausted for this key"))
+	// isError with "Error: " text, the way Bifrost's own in-process tools report a failure.
+	add("prefixed_error", mcpgo.NewToolResultError("Error: contact not found"))
+	// "Error: " text without isError: the legacy soft failure.
+	add("prefixed_text", mcpgo.NewToolResultText("Error: legacy failure"))
+	add("big_payload", mcpgo.NewToolResultText(`{"body":"`+resultShapesPayloadMarker+strings.Repeat("x", 4096)+`"}`))
 	add("multi_block", &mcpgo.CallToolResult{Content: []mcpgo.Content{
 		mcpgo.NewTextContent(`{"id":1}`),
 		mcpgo.NewTextContent(`{"id":2}`),
@@ -1009,8 +1028,15 @@ func buildResultShapesServer(t *testing.T) *server.MCPServer {
 	return s
 }
 
-// runResultShapesCode runs code through executeToolCode with the result-shapes server bound as "shapes".
+// runResultShapesCode runs code through executeToolCode with the result-shapes server bound as
+// "shapes", and returns the reply text.
 func runResultShapesCode(t *testing.T, code string) string {
+	t.Helper()
+	return *runResultShapesCall(t, code).Content.ContentStr
+}
+
+// runResultShapesCall is runResultShapesCode returning the whole tool message.
+func runResultShapesCall(t *testing.T, code string) *schemas.ChatMessage {
 	t.Helper()
 	manager := setupMCPManager(t)
 	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
@@ -1038,7 +1064,118 @@ func runResultShapesCode(t *testing.T, code string) string {
 	require.NotNil(t, result)
 	require.NotNil(t, result.Content)
 	require.NotNil(t, result.Content.ContentStr)
-	return *result.Content.ContentStr
+	return result
+}
+
+// runFailed reports whether executeToolCode marked the run as failed.
+func runFailed(msg *schemas.ChatMessage) bool {
+	return msg.ChatToolMessage != nil && msg.ChatToolMessage.IsError != nil && *msg.ChatToolMessage.IsError
+}
+
+func TestCodeMode_ReplyCarriesNoToolPayload(t *testing.T) {
+	t.Parallel()
+
+	text := runResultShapesCode(t, "r = shapes.big_payload()\nresult = len(r[\"body\"])")
+
+	value, hasError, errorMsg := ParseCodeModeResponse(t, text)
+	require.False(t, hasError, errorMsg)
+	assert.EqualValues(t, len(resultShapesPayloadMarker)+4096, value)
+	assert.NotContains(t, text, resultShapesPayloadMarker, "a payload the script never printed reached the reply")
+	assert.NotContains(t, text, "[TOOL]")
+	assert.NotContains(t, text, "Environment:", "a successful run carries no environment footer")
+}
+
+// A call that answers with isError hands the script an error value: hasattr(r, "error") detects
+// it, r.error holds the message, and returned as-is it becomes {"error": ...}. The script finished,
+// so the run succeeds, and the reply still notes the failed call.
+func TestCodeMode_FailedCallIsAnErrorValue(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		code string
+		want interface{}
+	}{
+		{
+			name: "detected and read",
+			code: "r = shapes.plain_error()\nresult = {\"failed\": hasattr(r, \"error\"), \"message\": r.error if hasattr(r, \"error\") else r}",
+			want: map[string]interface{}{"failed": true, "message": "quota exhausted for this key"},
+		},
+		{
+			name: "returned as-is",
+			code: "result = shapes.plain_error()",
+			want: map[string]interface{}{"error": "quota exhausted for this key"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := runResultShapesCall(t, tc.code)
+			text := *msg.Content.ContentStr
+
+			value, hasError, errorMsg := ParseCodeModeResponse(t, text)
+			require.False(t, hasError, errorMsg)
+			assert.Equal(t, tc.want, value)
+			assert.Contains(t, text, "[TOOL] shapes.plain_error returned an error: quota exhausted for this key")
+			assert.Contains(t, text, "Execution completed, but 1 nested tool call failed.")
+			assert.False(t, runFailed(msg), "the script finished, so the run succeeds:\n%s", text)
+		})
+	}
+}
+
+// A failure the server flags with isError is an error value even when its text opens with
+// "Error: ", which loses the prefix. Only "Error: " text the server did not flag still raises.
+func TestCodeMode_ErrorPrefixedResults(t *testing.T) {
+	t.Parallel()
+
+	t.Run("flagged with isError", func(t *testing.T) {
+		msg := runResultShapesCall(t, "r = shapes.prefixed_error()\nresult = {\"failed\": hasattr(r, \"error\"), \"message\": r.error if hasattr(r, \"error\") else r}")
+		text := *msg.Content.ContentStr
+
+		value, hasError, errorMsg := ParseCodeModeResponse(t, text)
+		require.False(t, hasError, errorMsg)
+		assert.Equal(t, map[string]interface{}{"failed": true, "message": "contact not found"}, value)
+		assert.Contains(t, text, "[TOOL] shapes.prefixed_error returned an error: contact not found")
+		assert.Contains(t, text, "Execution completed, but 1 nested tool call failed.")
+		assert.False(t, runFailed(msg), "the script finished, so the run succeeds:\n%s", text)
+	})
+
+	t.Run("not flagged", func(t *testing.T) {
+		msg := runResultShapesCall(t, "r = shapes.prefixed_text()\nresult = \"kept going\"")
+		text := *msg.Content.ContentStr
+
+		_, hasError, _ := ParseCodeModeResponse(t, text)
+		assert.True(t, hasError, "unflagged \"Error: \" text must still raise:\n%s", text)
+		assert.Contains(t, text, "legacy failure")
+		assert.NotContains(t, text, "kept going")
+		assert.True(t, runFailed(msg), "a raised call fails the run:\n%s", text)
+	})
+}
+
+// fail() is how a script says a failed call is fatal: the run then fails.
+func TestCodeMode_FailInScriptFailsTheRun(t *testing.T) {
+	t.Parallel()
+
+	msg := runResultShapesCall(t, "r = shapes.plain_error()\nif hasattr(r, \"error\"):\n    fail(\"lookup failed: \" + r.error)\nresult = \"unreachable\"")
+	text := *msg.Content.ContentStr
+
+	assert.True(t, runFailed(msg), "a script that called fail() must mark the run failed:\n%s", text)
+	assert.Contains(t, text, "fail: lookup failed: quota exhausted for this key")
+	assert.Contains(t, text, "[TOOL] shapes.plain_error returned an error: quota exhausted for this key")
+	assert.Contains(t, text, "The script stopped itself with fail()")
+	assert.NotContains(t, text, "unreachable")
+}
+
+// A failed call the script recovers from leaves a successful run.
+func TestCodeMode_FallbackAfterFailedCallSucceeds(t *testing.T) {
+	t.Parallel()
+
+	msg := runResultShapesCall(t, "r = shapes.plain_error()\nif hasattr(r, \"error\"):\n    r = shapes.json_string()\nresult = r[\"title\"]")
+	text := *msg.Content.ContentStr
+
+	value, hasError, errorMsg := ParseCodeModeResponse(t, text)
+	require.False(t, hasError, errorMsg)
+	assert.Equal(t, "Example Domain", value)
+	assert.Contains(t, text, "Execution completed, but 1 nested tool call failed.")
+	assert.False(t, runFailed(msg), "the script recovered, so the run succeeds:\n%s", text)
 }
 
 func TestCodeMode_MultiBlockResultIsAList(t *testing.T) {
