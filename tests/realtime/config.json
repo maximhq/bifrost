@@ -1,0 +1,66 @@
+{
+  "$schema": "../../transports/config.schema.json",
+  "setup_token": "bifrost-realtime-setup-token",
+  "providers": {
+    "openai": {
+      "keys": [
+        {
+          "name": "fake-openai",
+          "value": "sk-fake-realtime-upstream",
+          "aliases": {
+            "rt-alias": {"model_id": "rt-e2e-alias-target"}
+          },
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:9412",
+        "default_request_timeout_in_seconds": 30
+      }
+    },
+    "anthropic": {
+      "keys": [
+        {
+          "name": "fake-anthropic",
+          "value": "sk-fake-no-realtime",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "base_url": "http://127.0.0.1:9412",
+        "default_request_timeout_in_seconds": 30
+      }
+    }
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "tests/realtime/data/realtime-test-config.db"
+    }
+  },
+  "logs_store": {
+    "enabled": true,
+    "type": "sqlite",
+    "config": {
+      "path": "tests/realtime/data/realtime-test-logs.db"
+    },
+    "writer": {
+      "max_batch_size": 100,
+      "batch_interval": "200ms",
+      "max_batch_bytes": 10485760,
+      "write_queue_capacity": 1000,
+      "deferred_usage_concurrency": 4
+    }
+  },
+  "client": {
+    "drop_excess_requests": false,
+    "initial_pool_size": 100,
+    "allowed_origins": ["*"],
+    "enable_logging": true,
+    "enforce_auth_on_inference": true,
+    "max_request_body_size_mb": 10
+  }
+}
