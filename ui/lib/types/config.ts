@@ -400,6 +400,7 @@ export interface NetworkConfig {
 	base_url?: string;
 	is_key_less?: boolean;
 	extra_headers?: Record<string, string>;
+	extra_headers_secret_vars?: Record<string, SecretVar>; // Response only: extra_headers as SecretVar objects
 	default_request_timeout_in_seconds: number;
 	max_retries: number;
 	retry_backoff_initial: number; // Duration in milliseconds
