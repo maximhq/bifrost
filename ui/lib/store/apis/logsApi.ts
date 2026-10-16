@@ -67,6 +67,9 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	if (filters.tool_call_names && filters.tool_call_names.length > 0) {
 		params.tool_call_names = filters.tool_call_names.join(",");
 	}
+	if (filters.guardrail_outcomes && filters.guardrail_outcomes.length > 0) {
+		params.guardrail_outcomes = filters.guardrail_outcomes.join(",");
+	}
 	if (filters.complexity_tiers && filters.complexity_tiers.length > 0) {
 		params.complexity_tiers = filters.complexity_tiers.join(",");
 	}

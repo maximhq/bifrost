@@ -597,6 +597,29 @@ func (bc *BifrostContext) GetAndSetValue(key any, value any) any {
 	return oldValue
 }
 
+// updateValue replaces key's value with update(current) under the root's values lock, so
+// concurrent read-modify-write callers cannot overwrite each other. current falls back to the
+// parent's value like Value does. Writes to reserved keys are dropped like SetValue.
+func (bc *BifrostContext) updateValue(key any, update func(current any) any) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.updateValue(key, update)
+		return
+	}
+	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	current, ok := bc.userValues[key]
+	if !ok && bc.parent != nil && !isNonCancellingContext(bc.parent) {
+		current = bc.parent.Value(key)
+	}
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any, 16)
+	}
+	bc.userValues[key] = update(current)
+}
+
 // GetUserValues returns a copy of all user-set values in this context.
 // If the parent is also a PluginContext, the values are merged with parent values
 // (this context's values take precedence over parent values).

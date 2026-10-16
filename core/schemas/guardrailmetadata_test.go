@@ -2,6 +2,7 @@ package schemas
 
 import (
 	"encoding/json"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -202,4 +203,97 @@ func TestGuardrailDetectionActionAndEnforcedSerialize(t *testing.T) {
 	assert.False(t, *cloned.Detections[0].Enforced)
 	*cloned.Detections[0].Enforced = true
 	assert.False(t, *monitored.Enforced, "clone must not share enforced with the original")
+}
+
+// TestGuardrailMetadataKeepsInterventionOnlyMetadata verifies a block with no judge usage is still stored.
+func TestGuardrailMetadataKeepsInterventionOnlyMetadata(t *testing.T) {
+	ctx := NewBifrostContext(nil, NoDeadline)
+	ruleID := uint(11)
+	intervention := BifrostGuardrailIntervention{
+		Phase:             "output",
+		RuleID:            &ruleID,
+		RuleName:          "block-secrets",
+		GuardrailName:     "azure-content",
+		GuardrailProvider: "azure",
+		Reason:            "Secret detected",
+		Assessments:       []string{"secrets AWS_KEY"},
+	}
+
+	require.True(t, AppendGuardrailInterventionOnContext(ctx, intervention))
+	metadata, ok := GuardrailMetadataFromContext(ctx)
+	require.True(t, ok)
+	assert.Empty(t, metadata.JudgeCalls)
+	assert.Empty(t, metadata.Detections)
+	require.Len(t, metadata.Interventions, 1)
+	assert.Equal(t, intervention, metadata.Interventions[0])
+}
+
+// TestGuardrailMetadataInterventionSnapshotIsOwned verifies nested intervention fields cannot alias context state.
+func TestGuardrailMetadataInterventionSnapshotIsOwned(t *testing.T) {
+	ctx := NewBifrostContext(nil, NoDeadline)
+	ruleID := uint(4)
+	require.True(t, AppendGuardrailInterventionOnContext(ctx, BifrostGuardrailIntervention{
+		RuleID:      &ruleID,
+		Assessments: []string{"pii EMAIL"},
+	}))
+
+	first, ok := GuardrailMetadataFromContext(ctx)
+	require.True(t, ok)
+	*first.Interventions[0].RuleID = 999
+	first.Interventions[0].Assessments[0] = "mutated"
+
+	second, ok := GuardrailMetadataFromContext(ctx)
+	require.True(t, ok)
+	assert.Equal(t, uint(4), *second.Interventions[0].RuleID)
+	assert.Equal(t, "pii EMAIL", second.Interventions[0].Assessments[0])
+}
+
+// TestGuardrailMetadataInterventionsPreserveOtherLists verifies appending a block keeps detections and judge calls.
+func TestGuardrailMetadataInterventionsPreserveOtherLists(t *testing.T) {
+	ctx := NewBifrostContext(nil, NoDeadline)
+	require.True(t, AppendGuardrailDetectionOnContext(ctx, BifrostGuardrailDetection{RuleName: "detect"}))
+	require.True(t, AppendGuardrailJudgeCallOnContext(ctx, BifrostGuardrailJudgeCall{TotalTokens: 5}))
+	require.True(t, AppendGuardrailInterventionOnContext(ctx, BifrostGuardrailIntervention{RuleName: "block"}))
+	assert.False(t, AppendGuardrailInterventionOnContext(nil, BifrostGuardrailIntervention{RuleName: "ignored"}))
+
+	metadata, ok := GuardrailMetadataFromContext(ctx)
+	require.True(t, ok)
+	require.Len(t, metadata.Detections, 1)
+	require.Len(t, metadata.JudgeCalls, 1)
+	require.Len(t, metadata.Interventions, 1)
+	assert.Equal(t, "block", metadata.Interventions[0].RuleName)
+}
+
+// TestGuardrailMetadataConcurrentAppendsAreNotLost verifies concurrent appends of every kind keep every entry.
+func TestGuardrailMetadataConcurrentAppendsAreNotLost(t *testing.T) {
+	const writers = 64
+	ctx := NewBifrostContext(nil, NoDeadline)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			<-start
+			AppendGuardrailInterventionOnContext(ctx, BifrostGuardrailIntervention{RuleName: "block"})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			AppendGuardrailDetectionOnContext(ctx, BifrostGuardrailDetection{RuleName: "detect"})
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			AppendGuardrailJudgeCallOnContext(ctx, BifrostGuardrailJudgeCall{TotalTokens: 1})
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	metadata, ok := GuardrailMetadataFromContext(ctx)
+	require.True(t, ok)
+	assert.Len(t, metadata.Interventions, writers)
+	assert.Len(t, metadata.Detections, writers)
+	assert.Len(t, metadata.JudgeCalls, writers)
 }
