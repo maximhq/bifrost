@@ -137,11 +137,39 @@ func resolvePeriodAt(period, timezone string, now time.Time) (start, end *time.T
 		case "this_month":
 			day = 1
 		}
-		from = time.Date(year, month, day, 0, 0, 0, 0, local.Location()).UTC()
+		from = startOfLocalDay(year, month, day, local.Location()).UTC()
 	default:
 		return nil, nil
 	}
 	return &from, &now
+}
+
+// startOfLocalDay returns the first instant of the given calendar date in loc. Where
+// DST starts at midnight (America/Havana, America/Santiago) the day has no 00:00,
+// and time.Date normalizes it back to 23:00 on the previous day. In that case the
+// day starts at the zone transition that skipped midnight, which ZoneBounds reports
+// as the end of the offset in effect at that 23:00. Where DST ends just after
+// midnight (Asia/Amman), 00:00 happens twice and time.Date may return the second
+// one; the day starts at the first, the same wall clock in the offset in effect
+// before the transition. day may be out of range (this week's Monday can be in the
+// previous month); it is normalized like time.Date.
+func startOfLocalDay(year int, month time.Month, day int, loc *time.Location) time.Time {
+	start := time.Date(year, month, day, 0, 0, 0, 0, loc)
+	wantYear, wantMonth, wantDay := time.Date(year, month, day, 0, 0, 0, 0, time.UTC).Date()
+	if gotYear, gotMonth, gotDay := start.Date(); gotYear != wantYear || gotMonth != wantMonth || gotDay != wantDay {
+		if _, transition := start.ZoneBounds(); !transition.IsZero() {
+			return transition
+		}
+		return start
+	}
+	if zoneStart, _ := start.ZoneBounds(); !zoneStart.IsZero() {
+		_, offset := start.Zone()
+		_, prevOffset := zoneStart.Add(-time.Nanosecond).Zone()
+		if earlier := start.Add(-time.Duration(prevOffset-offset) * time.Second); earlier.Before(zoneStart) {
+			return earlier
+		}
+	}
+	return start
 }
 
 // periodLocations caches resolved IANA locations for calendar periods, since
@@ -151,9 +179,10 @@ func resolvePeriodAt(period, timezone string, now time.Time) (start, end *time.T
 var periodLocations sync.Map // string -> *time.Location
 
 // periodLocation resolves the timezone a calendar period is measured in.
-// Empty and unknown names resolve to UTC.
+// Empty and unknown names resolve to UTC, and so does "Local", which
+// time.LoadLocation would otherwise map to the server's own timezone.
 func periodLocation(name string) *time.Location {
-	if name == "" || name == "UTC" {
+	if name == "" || name == "UTC" || name == "Local" {
 		return time.UTC
 	}
 	if cached, ok := periodLocations.Load(name); ok {

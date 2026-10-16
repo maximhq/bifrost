@@ -89,6 +89,8 @@ logs:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter
@@ -317,6 +319,8 @@ logs-stats:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter
@@ -606,6 +610,8 @@ logs-histogram-tokens:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -660,6 +666,8 @@ logs-histogram-cost:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -714,6 +722,8 @@ logs-histogram-models:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -768,6 +778,8 @@ logs-histogram-latency:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -822,6 +834,8 @@ logs-histogram-cost-by-provider:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -876,6 +890,8 @@ logs-histogram-tokens-by-provider:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -930,6 +946,8 @@ logs-histogram-latency-by-provider:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -1542,6 +1560,8 @@ mcp-logs:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter (milliseconds)
@@ -1742,6 +1762,8 @@ mcp-logs-stats:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter
@@ -2238,6 +2260,8 @@ logs-histogram-cost-by-dimension:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -2299,6 +2323,8 @@ logs-histogram-tokens-by-dimension:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -2360,6 +2386,8 @@ logs-histogram-latency-by-dimension:
       - $ref: "#/_histogram-parameters/routing_engine_used"
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -2440,6 +2468,8 @@ mcp-logs-histogram:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter (milliseconds)
@@ -2525,6 +2555,8 @@ mcp-logs-histogram-cost:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter (milliseconds)
@@ -2610,6 +2642,8 @@ mcp-logs-histogram-top-tools:
         schema:
           type: string
           format: date-time
+      - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - name: min_latency
         in: query
         description: Minimum latency filter (milliseconds)
