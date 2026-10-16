@@ -48,7 +48,7 @@ const (
 	maxExtensionURICount     = 32
 	maxExtensionURILength    = 2048
 	oauthFetchTimeout        = 2 * time.Minute
-	maxOAuthCacheEntries     = 1024 // Bounds credentials retained by registration churn and ad hoc inspection.
+	maxOAuthCacheEntries     = 5000 // Bounds OAuth credentials cached per manager (about 12 MB at 2.5 KB per entry).
 )
 
 // upstreamHTTPStatusError preserves the upstream HTTP status that the SDK client
