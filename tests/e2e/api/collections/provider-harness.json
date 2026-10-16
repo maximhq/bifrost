@@ -275370,6 +275370,245 @@
           ]
         }
       ]
+    },
+    {
+      "name": "258. Responses configuration_update input item keeps its reasoning effort (configuration-update)",
+      "description": "Pins #8616. OpenAI's configuration_update input item changes reasoning effort mid-conversation without changing the request-level reasoning.effort, so the prompt prefix stays cacheable. Codex sends it for gpt-6-astra and gpt-6.1-sol when the user changes effort during a session.\n\nPre-fix the typed decode kept only the item's type, so OpenAI answered 400 \"Missing required parameter: 'input[0].reasoning'.\". Bedrock and Bedrock Mantle reject the item outright (\"The 'configuration_update' item type is not supported with this model.\"), so on those routes it is dropped. The Responses->Chat fallback has no equivalent and drops it too, instead of emitting a roleless chat message.",
+      "item": [
+        {
+          "name": "258.1 openai/gpt-6-astra configuration_update forwarded with reasoning on /openai/v1/responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-astra\",\"reasoning\":{\"effort\":\"low\"},\"input\":[{\"type\":\"configuration_update\",\"reasoning\":{\"effort\":\"high\"}},{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('openai native configuration_update: provider did not reject the configuration_update item', function () {",
+                  "  pm.expect(body, 'pre-fix signature: ' + body).to.not.include(\"input[0].reasoning\");",
+                  "});",
+                  "pm.test('openai native configuration_update: 200', function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('openai native configuration_update: request-level reasoning.effort is unchanged', function () {",
+                  "  var json = pm.response.json();",
+                  "  if (json.reasoning) { pm.expect(json.reasoning.effort, 'response reasoning: ' + JSON.stringify(json.reasoning)).to.equal('low'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "258.2 openai/gpt-6-astra configuration_update forwarded with reasoning on /v1/responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-astra\",\"reasoning\":{\"effort\":\"low\"},\"input\":[{\"type\":\"configuration_update\",\"reasoning\":{\"effort\":\"high\"}},{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('openai configuration_update: provider did not reject the configuration_update item', function () {",
+                  "  pm.expect(body, 'pre-fix signature: ' + body).to.not.include(\"input[0].reasoning\");",
+                  "});",
+                  "pm.test('openai configuration_update: 200', function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('openai configuration_update: request-level reasoning.effort is unchanged', function () {",
+                  "  var json = pm.response.json();",
+                  "  if (json.reasoning) { pm.expect(json.reasoning.effort, 'response reasoning: ' + JSON.stringify(json.reasoning)).to.equal('low'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "258.3 bedrock/openai.gpt-6-astra configuration_update dropped on /v1/responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/openai.gpt-6-astra\",\"reasoning\":{\"effort\":\"low\"},\"input\":[{\"type\":\"configuration_update\",\"reasoning\":{\"effort\":\"high\"}},{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('bedrock configuration_update: provider did not reject the configuration_update item', function () {",
+                  "  pm.expect(body, 'pre-fix signature: ' + body).to.not.include(\"item type is not supported\");",
+                  "});",
+                  "pm.test('bedrock configuration_update: 200', function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('bedrock configuration_update: request-level reasoning.effort is unchanged', function () {",
+                  "  var json = pm.response.json();",
+                  "  if (json.reasoning) { pm.expect(json.reasoning.effort, 'response reasoning: ' + JSON.stringify(json.reasoning)).to.equal('low'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "258.4 bedrock_mantle/openai.gpt-6-astra configuration_update dropped on /v1/responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-6-astra\",\"reasoning\":{\"effort\":\"low\"},\"input\":[{\"type\":\"configuration_update\",\"reasoning\":{\"effort\":\"high\"}},{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('bedrock_mantle configuration_update: provider did not reject the configuration_update item', function () {",
+                  "  pm.expect(body, 'pre-fix signature: ' + body).to.not.include(\"item type is not supported\");",
+                  "});",
+                  "pm.test('bedrock_mantle configuration_update: 200', function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('bedrock_mantle configuration_update: request-level reasoning.effort is unchanged', function () {",
+                  "  var json = pm.response.json();",
+                  "  if (json.reasoning) { pm.expect(json.reasoning.effort, 'response reasoning: ' + JSON.stringify(json.reasoning)).to.equal('low'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "258.5 mistral/mistral-small-latest configuration_update dropped on the chat fallback of /v1/responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/mistral-small-latest\",\"reasoning\":{\"effort\":\"low\"},\"input\":[{\"type\":\"configuration_update\",\"reasoning\":{\"effort\":\"high\"}},{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('mistral configuration_update: 200', function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('mistral configuration_update: request-level reasoning.effort is unchanged', function () {",
+                  "  var json = pm.response.json();",
+                  "  if (json.reasoning) { pm.expect(json.reasoning.effort, 'response reasoning: ' + JSON.stringify(json.reasoning)).to.equal('low'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
