@@ -2284,3 +2284,11 @@ func TestWarpSystemPromptKnowsItCannotSeeItsOwnPastConversations(t *testing.T) {
 	require.Contains(t, content, "never search the logs for them")
 	require.Contains(t, content, "conversation history in the Warp panel")
 }
+
+// NewAgent's signature is what released callers compile against; topic-aware
+// callers use NewAgentWithTopics instead. Changing either line is a breaking
+// change, and this stops it compiling.
+var (
+	_ func(ChatFunc, CostFunc, LogReader, GovernanceReader, Scope, *schemas.WarpConfig, int, string, ...*SemanticSearcher) *Agent              = NewAgent
+	_ func(ChatFunc, CostFunc, LogReader, GovernanceReader, Scope, *schemas.WarpConfig, int, string, TopicLister, ...*SemanticSearcher) *Agent = NewAgentWithTopics
+)
