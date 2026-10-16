@@ -6961,7 +6961,7 @@
         },
         "enabled": {
           "type": "boolean",
-          "description": "Whether this key is used for routing. Set to false to keep the key configured but skip it during key selection (default: true)",
+          "description": "Whether this key is used for routing. Set to false to keep the key configured but skip it during key selection. New keys default to true; omitting it on an existing key keeps the stored value",
           "default": true
         },
         "use_for_batch_api": {
