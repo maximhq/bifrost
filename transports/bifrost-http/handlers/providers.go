@@ -1137,7 +1137,8 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // offers a model the request would reject nor hides one it would serve: none
 // on a custom provider whose allowed requests exclude decisions, every model
 // of a Typesafe-based provider (Typesafe, or a custom provider on its base
-// serving Laya, Nimble, or Clef), and otherwise a model the datasheet marks
+// serving Laya, Nimble, or Clef) or of a custom provider on OpenAI's base whose
+// allowed requests turn decisions on, and otherwise a model the datasheet marks
 // supports_decisions, or without a row the provider's name-based fallback (the
 // gpt-6-luna family on OpenAI or a custom provider on its base, a TypeSafe
 // System One model on OpenRouter, a Clef model on Cloudflare, a decider model on
@@ -1153,6 +1154,9 @@ func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, mode
 		return false
 	}
 	if provider == schemas.Typesafe || (custom != nil && custom.BaseProviderType == schemas.Typesafe) {
+		return true
+	}
+	if custom != nil && custom.BaseProviderType == schemas.OpenAI && custom.IsOperationExplicitlyAllowed(schemas.DecisionRequest) {
 		return true
 	}
 	listed := model
