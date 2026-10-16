@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/rand"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -91,25 +92,98 @@ const (
 	topicsWriteBatch = 5000
 )
 
-// Topic is one cluster as the tool reports it.
+// Topic is one topic as the tool reports it, counted over the window asked.
 type Topic struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
-	Size  int    `json:"size"`
-	// Share is Size over every request that has a place among the topics,
-	// those that matched none included, so the model can say "a third of
-	// requests" honestly.
+	// Requests is how many of the window's requests are filed under the topic.
+	Requests int64 `json:"requests"`
+	// Share is Requests over every request of the window that has a place
+	// among the topics, those that matched none included, so the model can
+	// say "a third of requests" honestly.
 	Share float64 `json:"share"`
-	// Cohesion is how alike the topic's requests are: their average
-	// similarity to its centre. A low figure beside a large size is a topic
-	// that is probably several.
-	Cohesion     float64  `json:"cohesion,omitempty"`
-	SampleLogIDs []string `json:"example_log_ids,omitempty"`
+	// Sessions is how many distinct sessions those requests came from. A
+	// request without a session is not one.
+	Sessions int64   `json:"sessions"`
+	Errors   int64   `json:"errors"`
+	Cost     float64 `json:"cost"`
+	Tokens   int64   `json:"tokens"`
+	// AvgLatency is the mean latency, in milliseconds, of the requests that
+	// measured one.
+	AvgLatency float64 `json:"avg_latency_ms"`
+	// Cohesion is how alike the topic's requests were when it was made: their
+	// average similarity to its centre. A low figure beside a large size is a
+	// topic that is probably several.
+	Cohesion float64 `json:"cohesion,omitempty"`
+	// FirstSeen is when the topic was made. One made inside the window is
+	// new, and says so.
+	FirstSeen time.Time `json:"first_seen"`
+	New       bool      `json:"new_in_window,omitempty"`
+	// Trend compares the topic with the period of equal length before the
+	// window.
+	Trend TopicTrend `json:"trend"`
+	// Series is the window bucket by bucket, when the caller asked for one.
+	Series       []TopicPoint `json:"series,omitempty"`
+	SampleLogIDs []string     `json:"example_log_ids,omitempty"`
 	// SampleLinks each open one of the requests nearest the topic's
 	// centre. Named as examples on the wire, because a link on a row is
 	// otherwise read as "the requests behind this row".
-	SampleLinks []string  `json:"example_links,omitempty"`
-	ComputedAt  time.Time `json:"computed_at"`
+	SampleLinks []string `json:"example_links,omitempty"`
+}
+
+// TopicTrend is a topic against the period of equal length before the
+// window, in the shape the ranking tools report theirs.
+type TopicTrend struct {
+	// HasPreviousPeriod is false when the topic had no request in the
+	// previous period, in which case RequestsTrend is zero rather than a
+	// percentage of nothing.
+	HasPreviousPeriod bool    `json:"has_previous_period"`
+	PreviousRequests  int64   `json:"previous_requests"`
+	RequestsTrend     float64 `json:"requests_trend"`
+	// TokensTrend and CostTrend are nil when the previous period had none and
+	// this one has some: there is no percentage, and 0 would read as
+	// unchanged.
+	TokensTrend *float64 `json:"tokens_trend"`
+	CostTrend   *float64 `json:"cost_trend"`
+}
+
+// TopicPoint is one bucket of a topic's series.
+type TopicPoint struct {
+	Bucket   time.Time `json:"bucket"`
+	Requests int64     `json:"requests"`
+	Errors   int64     `json:"errors"`
+	Cost     float64   `json:"cost"`
+	Tokens   int64     `json:"tokens"`
+}
+
+// TopicQuery is what list_topics asks the reader for.
+type TopicQuery struct {
+	// Filter selects the requests counted. StartTime and EndTime are required:
+	// the trend needs a window to shift.
+	Filter logstore.WarpTopicAssignmentFilter
+	// Limit bounds the topics returned, largest first. Out of range means
+	// topicsMaxListed.
+	Limit int
+	// BucketSeconds, when positive, gives each returned topic its series.
+	BucketSeconds int64
+}
+
+// TopicList is the reader's answer.
+type TopicList struct {
+	Topics []Topic `json:"topics"`
+	// Known is how many topics the deployment has for the embedding model in
+	// use, whether or not the window reached any. Zero means none have been
+	// built.
+	Known int `json:"-"`
+	// Matched is how many topics had a request in the window, before Limit.
+	Matched int `json:"-"`
+	// TotalRequests is every request in the window with a place among the
+	// topics, matched or not, and Unmatched how many of those matched none.
+	TotalRequests int64 `json:"-"`
+	Unmatched     int64 `json:"-"`
+	// PreviousStart and PreviousEnd are the period the trends compare with.
+	PreviousStart time.Time `json:"-"`
+	PreviousEnd   time.Time `json:"-"`
 }
 
 // TopicSummary is one topic as the job status reports it.
@@ -121,7 +195,7 @@ type TopicSummary struct {
 
 // TopicLister is what the list_topics tool needs.
 type TopicLister interface {
-	ListTopics(ctx context.Context, limit int) ([]Topic, int, error)
+	ListTopics(ctx context.Context, query TopicQuery) (*TopicList, error)
 }
 
 // TopicReader reads the topics for the tool.
@@ -130,39 +204,75 @@ type TopicReader struct {
 	topics logstore.WarpTopicStore
 }
 
+// CallerScopedTopicStore is a topic store that applies the caller's row scope
+// to its assignment reads itself, resolved per call from who is asking rather
+// than read from a queryscope on the context. The enterprise log store does.
+// list_topics serves a restricted caller only when the scope reaches the topic
+// reads one of those two ways.
+type CallerScopedTopicStore interface {
+	ScopesWarpTopicReadsPerCall() bool
+}
+
+// scopesCallerReadsPerCall reports whether the store under the reader applies
+// the caller's scope to topic reads on its own.
+func (r *TopicReader) scopesCallerReadsPerCall() bool {
+	if r == nil {
+		return false
+	}
+	scoped, ok := r.topics.(CallerScopedTopicStore)
+	return ok && scoped.ScopesWarpTopicReadsPerCall()
+}
+
+// topicReadsScopedPerCall reports whether a lister's reads are scoped by its
+// store whatever the context carries.
+func topicReadsScopedPerCall(lister TopicLister) bool {
+	scoped, ok := lister.(interface{ scopesCallerReadsPerCall() bool })
+	return ok && scoped.scopesCallerReadsPerCall()
+}
+
 // NewTopicReader builds a reader over the log store's topic tables.
 func NewTopicReader(store configstore.WarpStore, topics logstore.WarpTopicStore) *TopicReader {
 	return &TopicReader{store: store, topics: topics}
 }
 
-// ListTopics returns the active topics by size, largest first, and the number
-// of requests that have a place among them.
+// ListTopics returns the topics the window's requests were filed under,
+// largest first, with what those requests add up to.
 //
 // Only the topics built with the embedding model Warp is configured with are
 // listed: a topic's centre means nothing against vectors from another model,
 // and a changed configuration is read as a deployment with no topics yet
 // rather than one with stale ones.
-func (r *TopicReader) ListTopics(ctx context.Context, limit int) ([]Topic, int, error) {
+//
+// Every count comes from the assignments table through the caller's access
+// scope, so a restricted caller is answered from the requests they may see:
+// a topic none of those fall under is not listed, one some do is listed with
+// its name, and the examples offered are the ones they may open.
+func (r *TopicReader) ListTopics(ctx context.Context, query TopicQuery) (*TopicList, error) {
 	if r == nil || r.store == nil || r.topics == nil {
-		return nil, 0, ErrUnavailable
+		return nil, ErrUnavailable
+	}
+	if query.Filter.StartTime == nil || query.Filter.EndTime == nil {
+		return nil, fmt.Errorf("list topics: the window needs both ends")
 	}
 	row, err := r.store.GetWarpConfig(ctx)
 	if err != nil {
-		return nil, 0, fmt.Errorf("read Warp configuration: %w", err)
+		return nil, fmt.Errorf("read Warp configuration: %w", err)
 	}
 	config := configFromRow(row)
-	if limit < 1 || limit > topicsMaxListed {
-		limit = topicsMaxListed
+	if query.Limit < 1 || query.Limit > topicsMaxListed {
+		query.Limit = topicsMaxListed
 	}
 	rows, err := r.topics.ListWarpTopics(ctx, logstore.WarpTopicFilter{
 		Kinds: []string{logstore.WarpTopicKindTopic}, Statuses: []string{logstore.WarpTopicStatusActive},
 		EmbeddingSignature: embeddingConfigSignature(config), OmitCentroids: true,
 	})
 	if err != nil {
-		return nil, 0, fmt.Errorf("list topics: %w", err)
+		return nil, fmt.Errorf("list topics: %w", err)
 	}
+	span := query.Filter.EndTime.Sub(*query.Filter.StartTime)
+	list := &TopicList{Known: len(rows), PreviousStart: query.Filter.StartTime.Add(-span), PreviousEnd: *query.Filter.StartTime}
 	if len(rows) == 0 {
-		return nil, 0, nil
+		return list, nil
 	}
 	// Counted over the active topics, the topics merged into them, and the
 	// requests that matched none. Requests still filed under a topic that
@@ -177,7 +287,7 @@ func (r *TopicReader) ListTopics(ctx context.Context, limit int) ([]Topic, int, 
 		EmbeddingSignature: embeddingConfigSignature(config), OmitCentroids: true,
 	})
 	if err != nil {
-		return nil, 0, fmt.Errorf("list merged topics: %w", err)
+		return nil, fmt.Errorf("list merged topics: %w", err)
 	}
 	into := resolveMergedTopics(active, merged)
 	ids := make([]string, 0, len(rows)+len(into)+1)
@@ -188,44 +298,203 @@ func (r *TopicReader) ListTopics(ctx context.Context, limit int) ([]Topic, int, 
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	usage, err := r.topics.SummarizeWarpTopicAssignments(ctx, logstore.WarpTopicAssignmentFilter{TopicIDs: append(ids, "")})
+	filter := query.Filter
+	filter.TopicIDs = append(ids, "")
+	current, err := r.topics.SummarizeWarpTopicAssignments(ctx, filter)
 	if err != nil {
-		return nil, 0, fmt.Errorf("count topic requests: %w", err)
+		return nil, fmt.Errorf("count topic requests: %w", err)
 	}
-	sizes := make(map[string]int, len(usage))
-	total := 0
+	// The period before the window, ending just short of its start. The
+	// store's bounds are inclusive at both ends, and a millisecond is the
+	// finest tick every backend keeps.
+	previousFilter := filter
+	previousStart, previousEnd := list.PreviousStart, list.PreviousEnd.Add(-time.Millisecond)
+	previousFilter.StartTime, previousFilter.EndTime = &previousStart, &previousEnd
+	previous, err := r.topics.SummarizeWarpTopicAssignments(ctx, previousFilter)
+	if err != nil {
+		return nil, fmt.Errorf("count previous topic requests: %w", err)
+	}
+	usage := foldTopicUsage(current, into)
+	before := foldTopicUsage(previous, into)
+	for id, entry := range usage {
+		list.TotalRequests += entry.Requests
+		if id == "" {
+			list.Unmatched = entry.Requests
+		}
+	}
+
+	topics := make([]Topic, 0, len(rows))
+	for _, row := range rows {
+		entry, ok := usage[row.ID]
+		if !ok {
+			continue
+		}
+		topic := Topic{
+			ID: row.ID, Label: row.Label, Requests: entry.Requests, Sessions: entry.Sessions, Errors: entry.Errors,
+			Cost: entry.Cost, Tokens: entry.Tokens, AvgLatency: entry.AvgLatency, Cohesion: row.Cohesion,
+			FirstSeen: row.CreatedAt.UTC(), Trend: topicTrend(before[row.ID], entry),
+		}
+		topic.New = !topic.FirstSeen.Before(*query.Filter.StartTime) && !topic.FirstSeen.After(*query.Filter.EndTime)
+		if list.TotalRequests > 0 {
+			topic.Share = float64(entry.Requests) / float64(list.TotalRequests)
+		}
+		topic.SampleLogIDs = row.ExampleLogIDs()
+		topics = append(topics, topic)
+	}
+	sort.SliceStable(topics, func(i, j int) bool {
+		if topics[i].Requests != topics[j].Requests {
+			return topics[i].Requests > topics[j].Requests
+		}
+		return topics[i].Label < topics[j].Label
+	})
+	list.Matched = len(topics)
+	if len(topics) > query.Limit {
+		topics = topics[:query.Limit]
+	}
+	if err := r.attachTopicExamples(ctx, topics); err != nil {
+		return nil, err
+	}
+	if query.BucketSeconds > 0 {
+		if err := r.attachTopicSeries(ctx, query, topics, into); err != nil {
+			return nil, err
+		}
+	}
+	list.Topics = topics
+	return list, nil
+}
+
+// foldTopicUsage adds each topic's usage into the topic it was merged into,
+// keyed by the surviving id. Sums add; the session count is a count of
+// distinct sessions and cannot be added across topics, so it is the sum as
+// an upper bound, which is what a topic that absorbed another reports.
+func foldTopicUsage(usage []logstore.WarpTopicUsage, into map[string]string) map[string]logstore.WarpTopicUsage {
+	folded := make(map[string]logstore.WarpTopicUsage, len(usage))
 	for _, entry := range usage {
 		id := entry.TopicID
 		if target, ok := into[id]; ok {
 			id = target
 		}
-		sizes[id] += int(entry.Requests)
-		total += int(entry.Requests)
-	}
-	topics := make([]Topic, 0, len(rows))
-	for _, row := range rows {
-		topic := Topic{ID: row.ID, Label: row.Label, Size: sizes[row.ID], Cohesion: row.Cohesion, ComputedAt: row.CreatedAt.UTC()}
-		for _, logID := range row.ExampleLogIDs() {
-			topic.SampleLogIDs = append(topic.SampleLogIDs, logID)
-			topic.SampleLinks = append(topic.SampleLinks, logDetailLink(logID))
+		sum := folded[id]
+		sum.TopicID = id
+		if sum.Requests+entry.Requests > 0 {
+			sum.AvgLatency = (sum.AvgLatency*float64(sum.Requests) + entry.AvgLatency*float64(entry.Requests)) / float64(sum.Requests+entry.Requests)
 		}
-		topics = append(topics, topic)
+		sum.Requests += entry.Requests
+		sum.Sessions += entry.Sessions
+		sum.Errors += entry.Errors
+		sum.Cost += entry.Cost
+		sum.Tokens += entry.Tokens
+		folded[id] = sum
 	}
-	sort.SliceStable(topics, func(i, j int) bool {
-		if topics[i].Size != topics[j].Size {
-			return topics[i].Size > topics[j].Size
-		}
-		return topics[i].Label < topics[j].Label
-	})
-	if len(topics) > limit {
-		topics = topics[:limit]
+	return folded
+}
+
+// topicTrend compares a topic's window with the period before it, in the
+// terms the ranking tools use (see trendBlock in flows.go).
+func topicTrend(previous, current logstore.WarpTopicUsage) TopicTrend {
+	trend := TopicTrend{
+		HasPreviousPeriod: previous.Requests > 0,
+		PreviousRequests:  previous.Requests,
+		TokensTrend:       topicMetricTrend(float64(previous.Tokens), float64(current.Tokens)),
+		CostTrend:         topicMetricTrend(previous.Cost, current.Cost),
+	}
+	if previous.Requests > 0 {
+		trend.RequestsTrend = pctChange(float64(previous.Requests), float64(current.Requests))
+	}
+	return trend
+}
+
+// topicMetricTrend is metricTrend with a typed result: nil for a zero
+// baseline that is nonzero now, the percentage otherwise.
+func topicMetricTrend(old, new float64) *float64 {
+	if old == 0 && new != 0 {
+		return nil
+	}
+	change := pctChange(old, new)
+	return &change
+}
+
+// attachTopicExamples turns each topic's example ids into links, keeping
+// only the examples the caller may open.
+//
+// Examples are chosen from the whole deployment when a topic is made. The
+// assignments table says which of them the caller's access scope reaches,
+// and an example outside it would be a link to a request they cannot see.
+func (r *TopicReader) attachTopicExamples(ctx context.Context, topics []Topic) error {
+	var ids []string
+	for _, topic := range topics {
+		ids = append(ids, topic.SampleLogIDs...)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	visible, err := r.topics.ListWarpTopicAssignments(ctx, logstore.WarpTopicAssignmentFilter{LogIDs: ids}, len(ids))
+	if err != nil {
+		return fmt.Errorf("check topic examples: %w", err)
+	}
+	reachable := make(map[string]struct{}, len(visible))
+	for _, assignment := range visible {
+		reachable[assignment.LogID] = struct{}{}
 	}
 	for index := range topics {
-		if total > 0 {
-			topics[index].Share = float64(topics[index].Size) / float64(total)
+		topic := &topics[index]
+		kept := topic.SampleLogIDs[:0]
+		for _, logID := range topic.SampleLogIDs {
+			if _, ok := reachable[logID]; ok {
+				kept = append(kept, logID)
+				topic.SampleLinks = append(topic.SampleLinks, logDetailLink(logID))
+			}
+		}
+		topic.SampleLogIDs = kept
+	}
+	return nil
+}
+
+// attachTopicSeries gives each listed topic its window bucket by bucket,
+// with requests filed under a merged topic counted toward its survivor.
+func (r *TopicReader) attachTopicSeries(ctx context.Context, query TopicQuery, topics []Topic, into map[string]string) error {
+	if len(topics) == 0 {
+		return nil
+	}
+	listed := make(map[string]int, len(topics))
+	filter := query.Filter
+	filter.TopicIDs = nil
+	for index, topic := range topics {
+		listed[topic.ID] = index
+		filter.TopicIDs = append(filter.TopicIDs, topic.ID)
+	}
+	for child, survivor := range into {
+		if _, ok := listed[survivor]; ok {
+			filter.TopicIDs = append(filter.TopicIDs, child)
 		}
 	}
-	return topics, total, nil
+	sort.Strings(filter.TopicIDs)
+	buckets, err := r.topics.BucketWarpTopicAssignments(ctx, filter, query.BucketSeconds)
+	if err != nil {
+		return fmt.Errorf("bucket topic requests: %w", err)
+	}
+	for _, bucket := range buckets {
+		id := bucket.TopicID
+		if target, ok := into[id]; ok {
+			id = target
+		}
+		index, ok := listed[id]
+		if !ok {
+			continue
+		}
+		series := topics[index].Series
+		at := time.Unix(bucket.Bucket, 0).UTC()
+		if n := len(series); n > 0 && series[n-1].Bucket.Equal(at) {
+			point := &series[n-1]
+			point.Requests += bucket.Requests
+			point.Errors += bucket.Errors
+			point.Cost += bucket.Cost
+			point.Tokens += bucket.Tokens
+			continue
+		}
+		topics[index].Series = append(series, TopicPoint{Bucket: at, Requests: bucket.Requests, Errors: bucket.Errors, Cost: bucket.Cost, Tokens: bucket.Tokens})
+	}
+	return nil
 }
 
 // propertyInt reads an integer property whatever type the backend handed it
@@ -288,71 +557,180 @@ func propertyBool(value interface{}) bool {
 	}
 }
 
-// listTopicsTool answers "what do people ask about" from the computed
-// clusters.
+// topicFilterFields are the FilterSchema fields a topic count can take: the
+// window and the columns the assignments table carries. The rest describe a
+// request in ways a narrow assignment row does not record.
+var topicFilterFields = []string{
+	"start_time", "end_time", "providers", "models", "status", "virtual_key_ids", "team_ids",
+	"customer_ids", "user_ids", "business_unit_ids", "apps", "session_id", "scope",
+}
+
+// topicsDefaultLookback is the window list_topics takes when the model names
+// none. Longer than the other tools' day because a topic is a pattern, and a
+// day of one is rarely enough requests to be one.
+const topicsDefaultLookback = 7 * 24 * time.Hour
+
+// TopicFilterSchema is FilterSchema cut down to topicFilterFields, so the
+// model is offered only what the tool can honour. Built from FilterSchema
+// rather than written out, so a field's description is the same on every
+// tool that takes it.
+var TopicFilterSchema = buildTopicFilterSchema()
+
+func buildTopicFilterSchema() string {
+	var schema struct {
+		Type        string         `json:"type"`
+		Description string         `json:"description"`
+		Properties  map[string]any `json:"properties"`
+	}
+	if err := sonic.UnmarshalString(FilterSchema, &schema); err != nil {
+		panic(fmt.Sprintf("FilterSchema is not the object it is declared as: %v", err))
+	}
+	kept := make(map[string]any, len(topicFilterFields))
+	for _, field := range topicFilterFields {
+		property, ok := schema.Properties[field]
+		if !ok {
+			panic(fmt.Sprintf("FilterSchema has no %q field for the topic filter to keep", field))
+		}
+		kept[field] = property
+	}
+	schema.Properties = kept
+	schema.Description = "Narrows which requests are counted. Omit a field to leave that dimension unfiltered. If start_time is omitted the last 7 days are used."
+	encoded, err := sonic.ConfigStd.MarshalToString(schema)
+	if err != nil {
+		panic(fmt.Sprintf("topic filter schema: %v", err))
+	}
+	return encoded
+}
+
+// topicFilterArg reads the filters argument the way filterArg does, over the
+// fields a topic count can take and with the topics' own default window.
+func topicFilterArg(args map[string]any, now time.Time, scope Scope) (*logstore.SearchFilters, error) {
+	raw, err := filtersObject(args)
+	if err != nil {
+		return nil, err
+	}
+	var refused []string
+	for key := range raw {
+		if !slices.Contains(topicFilterFields, key) {
+			refused = append(refused, key)
+		}
+	}
+	if len(refused) > 0 {
+		sort.Strings(refused)
+		return nil, &unknownFilterFieldsError{fields: refused, supported: slices.Sorted(slices.Values(topicFilterFields))}
+	}
+	filters, err := parseFiltersWithLookback(raw, now, topicsDefaultLookback)
+	if err != nil {
+		return nil, err
+	}
+	all, err := scopeAllArg(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := refuseWarpApp(filters); err != nil {
+		return nil, err
+	}
+	applyScope(filters, scope, all)
+	return filters, nil
+}
+
+// topicAssignmentFilter is the store's selection for the parsed filters.
+func topicAssignmentFilter(filters *logstore.SearchFilters) logstore.WarpTopicAssignmentFilter {
+	selection := logstore.WarpTopicAssignmentFilter{
+		StartTime: filters.StartTime, EndTime: filters.EndTime,
+		UserIDs: filters.UserIDs, TeamIDs: filters.TeamIDs, VirtualKeyIDs: filters.VirtualKeyIDs,
+		CustomerIDs: filters.CustomerIDs, BusinessUnitIDs: filters.BusinessUnitIDs,
+		Providers: filters.Providers, Models: filters.Models, Apps: filters.Apps, Statuses: filters.Status,
+	}
+	if filters.SessionID != "" {
+		selection.SessionIDs = []string{filters.SessionID}
+	}
+	return selection
+}
+
+// listTopicsTool answers "what do people ask about" from the topic each
+// indexed request was filed under.
 func listTopicsTool() Tool {
 	return Tool{
 		name: "list_topics",
-		description: "List the topics people talk to the models about, largest first, from clusters computed over the indexed requests. " +
-			"Use this first for questions about what users ask, what conversations are about, or which topics are most common. " +
-			"Sizes and shares count requests, not conversations or people: every model call is one request, so a five-turn chat is five. " +
-			"Each topic carries a size, its share of clustered requests, a cohesion score (how alike its requests are, 0 to 1), " +
-			"and example_links that each open one example request from the topic. Nothing links to a whole topic.",
+		description: "List the topics people talk to the models about in a time window, largest first, counted from the topic each indexed request was filed under. " +
+			"Use this first for questions about what users ask, what conversations are about, which topics are most common, whether a topic is growing or shrinking, what is new, and what a topic costs. " +
+			"The window defaults to the last 7 days; filters narrow it to a team, customer, user, virtual key, model, provider, app, status or session, like the other tools. " +
+			"Each topic carries requests, share, distinct sessions, errors, cost, tokens, average latency, a trend block against the period of equal length before the window (has_previous_period, requests_trend, tokens_trend, cost_trend), when it was first seen (new_in_window marks one that appeared inside the window), " +
+			"and example_links that each open one example request. With interval, each topic also carries its series, bucket by bucket. " +
+			"Requests, shares and sessions count requests and sessions, not people: every model call is one request, so a five-turn chat is five.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
+    "filters": ` + TopicFilterSchema + `,
+    "interval": {"type": "string", "enum": ["hour", "day"], "description": "Also return each topic's window bucket by bucket - one point per UTC hour or day. The call for 'per day' breakdowns and for how a topic moved inside the window; the trend block already answers 'up or down since the period before'. At most 200 buckets."},
     "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Topics to return, largest first. Default 15."}
   }
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
 			if deps.topics == nil {
-				return nil, fmt.Errorf("topic clusters are not available: connect a vector store and configure embeddings")
+				return nil, fmt.Errorf("topics are not available: connect a vector store and configure embeddings")
 			}
-			// Topics cover the whole deployment, and a topic is not a row: the
-			// store's row-level scope has nothing to apply to. A caller it
-			// restricts is sent to the sample instead, which it does scope. Any
-			// scope counts as a restriction, since one cannot be inspected, and
-			// so does the turn's resolved scope, which a deployment's caller
-			// restriction can narrow without putting a scope on the context.
-			if !deps.scope.Unrestricted || queryscope.FromContext(ctx) != nil || queryscope.DimensionFromContext(ctx) != nil {
-				return map[string]any{
-					"available": false,
-					"hint": "Topics are computed across the whole deployment, so they are not available to someone whose access covers part of it. " +
-						"Instead, take one bounded sample with query_logs (include_content, limit 25) and summarise the themes, saying it is a sample of what they can see.",
-				}, nil
+			// The topic tables scope a caller's reads by a queryscope on the
+			// context, or by the store itself when it resolves the caller per
+			// call (CallerScopedTopicStore). A restricted caller reached by
+			// neither would be answered from every request, and a named team or
+			// customer would read theirs. Refuse rather than answer unscoped.
+			if !deps.scope.Unrestricted && queryscope.FromContext(ctx) == nil && !topicReadsScopedPerCall(deps.topics) {
+				return nil, fmt.Errorf("topics are not available to a caller whose access covers part of the deployment; " +
+					"take one bounded sample with query_logs (include_content, limit 25) and summarise the themes, saying it is a sample of what they can see")
+			}
+			filters, err := topicFilterArg(args, deps.now(), deps.scope)
+			if err != nil {
+				return nil, err
 			}
 			limit, err := intArg(args, "limit", 15, 50)
 			if err != nil {
 				return nil, err
 			}
-			topics, total, err := deps.topics.ListTopics(ctx, limit)
+			interval, err := enumArg(args, "interval", "", []string{"hour", "day"})
+			if err != nil {
+				return nil, err
+			}
+			query := TopicQuery{Filter: topicAssignmentFilter(filters), Limit: limit}
+			if interval != "" {
+				query.BucketSeconds = 3600
+				if interval == "day" {
+					query.BucketSeconds = 86400
+				}
+				if histogramBucketCount(*filters.StartTime, *filters.EndTime, query.BucketSeconds) > MaxHistogramBuckets {
+					return nil, fmt.Errorf(`interval %q over this range produces more than %d buckets; use interval "day" or a shorter range`, interval, MaxHistogramBuckets)
+				}
+			}
+			list, err := deps.topics.ListTopics(ctx, query)
 			if err != nil {
 				return nil, err
 			}
 			out := map[string]any{
-				"topics":          topics,
-				"returned":        len(topics),
-				"total_clustered": total,
+				"topics":             list.Topics,
+				"returned":           len(list.Topics),
+				"total_topics":       list.Matched,
+				"total_requests":     list.TotalRequests,
+				"unmatched_requests": list.Unmatched,
+				"window":             resolvedWindow(filters),
+				"previous_window":    formatWindow(list.PreviousStart, list.PreviousEnd),
+				"scope":              scopeNote(filters, deps.scope),
 			}
-			if len(topics) > 0 {
-				computedAt := topics[0].ComputedAt
-				for _, topic := range topics[1:] {
-					if topic.ComputedAt.After(computedAt) {
-						computedAt = topic.ComputedAt
-					}
-				}
-				out["computed_at"] = computedAt.Format(time.RFC3339)
-				out["scope"] = "every indexed request the last run read, across all users, teams and customers"
-				out["cannot_answer"] = "These topics are one snapshot, over the requests the last run read. There are no topics for a different time range, " +
-					"for one team, customer, user, model or app, no trend for a topic, no list of every request in a topic, and no cost, latency or errors per topic. " +
-					"Asked for one of those, say it is not available yet; do not approximate it from other tools."
-				out["counts"] = "size, share and total_clustered count requests. Every model call is one request, so a chat of five turns " +
-					"or an agent making five calls is five. Say requests, not conversations or people."
+			switch {
+			case list.Known == 0:
+				out["hint"] = "No topics have been built yet. An administrator can build them from Warp settings. " +
+					"Until then, take one bounded sample with query_logs (include_content, limit 25) and summarise the themes, saying it is a sample."
+			case len(list.Topics) == 0:
+				out["hint"] = "Topics exist, but no request in this window and scope was filed under one. Say so; a wider window or scope may hold some."
+			default:
+				out["counts"] = "requests, share, total_requests and unmatched_requests count requests, and sessions counts sessions. Every model call is one request, so a chat of five turns " +
+					"or an agent making five calls is five. Say requests, not conversations or people. Share is of total_requests, which includes the unmatched_requests that fell under no topic."
+				out["trend"] = "Each topic's trend compares it with previous_window, the period of equal length just before window. " +
+					"A null tokens_trend or cost_trend means that metric was zero in the previous period and is not now: describe it as new rather than as a change."
 				out["links"] = "Each entry of example_links opens one example request from its topic, not the topic. " +
 					"The Logs page cannot show a topic's requests, so leave topic names unlinked and offer the examples as examples."
-			} else {
-				out["hint"] = "No topic clusters have been computed yet. An administrator can compute them from Warp settings. " +
-					"Until then, take one bounded sample with query_logs (include_content, limit 25) and summarise the themes, saying it is a sample."
+				out["cannot_answer"] = "Not available yet: every request in a topic (the Logs page cannot filter by topic), how many people asked about one (sessions are sessions, not people), " +
+					"and topics grouped into broader themes. Asked for one of those, answer what the topics do show, then say it is not available yet; do not approximate it from other tools."
 			}
 			return out, nil
 		},

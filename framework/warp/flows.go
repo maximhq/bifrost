@@ -412,7 +412,7 @@ func queryMetricsTool() Tool {
 				if interval == "day" {
 					bucket = 86400
 				}
-				if span := filters.EndTime.Sub(*filters.StartTime).Seconds(); span/float64(bucket) > MaxHistogramBuckets {
+				if histogramBucketCount(*filters.StartTime, *filters.EndTime, bucket) > MaxHistogramBuckets {
 					return nil, fmt.Errorf(`interval %q over this range produces more than %d buckets; use interval "day" or a shorter range`, interval, MaxHistogramBuckets)
 				}
 			}
