@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -238,9 +240,11 @@ func (nc NetworkConfig) MarshalJSON() ([]byte, error) {
 	return json.Marshal(alias)
 }
 
-// Redacted returns a redacted copy of the network configuration with CACertPEM masked
-// and the resolved value of every env/vault-backed extra header masked. Literal header
-// values are kept as-is so the UI can show and edit them; references keep their ref.
+// Redacted returns a redacted copy of the network configuration with CACertPEM and
+// every ExtraHeaders value masked. Header values are masked regardless of name, since
+// operators put client secrets and bearer tokens under arbitrary names, and fully
+// rather than prefix/suffix, since a short credential would otherwise expose most of
+// itself. env/vault headers keep their reference, which is what serializes.
 func (nc *NetworkConfig) Redacted() *NetworkConfig {
 	if nc == nil {
 		return nil
@@ -252,10 +256,41 @@ func (nc *NetworkConfig) Redacted() *NetworkConfig {
 	if nc.ExtraHeaders != nil {
 		redacted.ExtraHeaders = make(map[string]SecretVar, len(nc.ExtraHeaders))
 		for name, value := range nc.ExtraHeaders {
-			redacted.ExtraHeaders[name] = *value.RedactedIfSecret()
+			redacted.ExtraHeaders[name] = *value.FullyRedacted()
 		}
 	}
 	return &redacted
+}
+
+// RestoreRedactedExtraHeaders returns incoming with every masked literal value replaced by
+// the stored value of the same header name, so saving a form that echoed the redacted
+// config keeps the real secrets. Edited values and env/vault references are kept as sent.
+// A masked value with no stored header of that name (a new or renamed header) is an
+// error, since saving it would send the mask upstream as the header value.
+func RestoreRedactedExtraHeaders(incoming, stored map[string]SecretVar) (map[string]SecretVar, error) {
+	if incoming == nil {
+		return nil, nil
+	}
+	restored := make(map[string]SecretVar, len(incoming))
+	var unrestorable []string
+	for name, value := range incoming {
+		// Only the exact FullyRedacted placeholder counts; a literal like "*" is a real value.
+		if !value.IsFromSecret() && strings.EqualFold(value.GetValue(), "<REDACTED>") {
+			storedValue, ok := stored[name]
+			if !ok {
+				unrestorable = append(unrestorable, name)
+				continue
+			}
+			restored[name] = storedValue
+			continue
+		}
+		restored[name] = value
+	}
+	if len(unrestorable) > 0 {
+		slices.Sort(unrestorable)
+		return nil, fmt.Errorf("masked value for extra header %s cannot be restored because no stored header has that name; re-enter the value", strings.Join(unrestorable, ", "))
+	}
+	return restored, nil
 }
 
 // DefaultNetworkConfig is the default network configuration for provider connections.

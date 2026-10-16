@@ -6525,7 +6525,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Additional headers to send with requests. A value may be a literal, an env.VAR_NAME reference, or a vault.path reference; references are resolved at load time and only the reference is stored and returned by the API."
+          "description": "Additional headers to send with requests. A value may be a literal, an env.VAR_NAME reference, or a vault.path reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400."
         },
         "default_request_timeout_in_seconds": {
           "type": "integer",
@@ -6606,7 +6606,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Additional headers to send with requests. A value may be a literal, an env.VAR_NAME reference, or a vault.path reference; references are resolved at load time and only the reference is stored and returned by the API."
+          "description": "Additional headers to send with requests. A value may be a literal, an env.VAR_NAME reference, or a vault.path reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400."
         },
         "default_request_timeout_in_seconds": {
           "type": "integer",

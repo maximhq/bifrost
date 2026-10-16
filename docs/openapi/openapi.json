@@ -127574,7 +127574,44 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "Additional headers to include in requests. A value may be a literal, an `env.VAR_NAME` reference, or a `vault.path` reference; references are resolved at load time and only the reference is returned by the API."
+            "description": "Additional headers to include in requests. A value may be a literal, an `env.VAR_NAME` reference, or a `vault.path` reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400."
+          },
+          "extra_headers_secret_vars": {
+            "type": "object",
+            "readOnly": true,
+            "additionalProperties": {
+              "description": "A secret-capable value. Serialized as an object with the resolved `value` plus\nreference metadata; on input, a bare string is also accepted — plain text,\n`env.VAR_NAME`, or `vault.path/to/secret` (references resolve at runtime and\nonly the reference is persisted).\n",
+              "oneOf": [
+                {
+                  "type": "string",
+                  "description": "Bare input form — plain text, `env.VAR_NAME`, or `vault.path/to/secret`"
+                },
+                {
+                  "type": "object",
+                  "description": "Resolved form, as returned by GET responses",
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "description": "Resolved value (redacted in GET responses for secret fields)"
+                    },
+                    "ref": {
+                      "type": "string",
+                      "description": "Source reference (`env.VAR_NAME` or `vault.path`); empty for plain-text values"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "plain_text",
+                        "env",
+                        "vault"
+                      ],
+                      "description": "Source type of the value"
+                    }
+                  }
+                }
+              ]
+            },
+            "description": "Response only. The same headers as `extra_headers`, as SecretVar objects (`value`, `ref`, `type`) so clients can tell literals from `env`/`vault` references without parsing prefixes. Literal values are `<REDACTED>`. Ignored on input; send `extra_headers` to change headers."
           },
           "default_request_timeout_in_seconds": {
             "type": "integer",
