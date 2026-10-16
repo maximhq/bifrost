@@ -576,6 +576,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 		if oc.DisableVKIdentity {
 			hash.Write([]byte("oauth2DisableVKIdentity:true"))
 		}
+		if ma := oc.ManagedAuth; ma != nil {
+			hash.Write([]byte("oauth2ManagedAuth:" + strconv.FormatBool(ma.Enabled) + "|" + ma.TrustedIssuer + "|" + ma.JWKSURL + "|" + strconv.Itoa(ma.AccessTokenTTL) + "|" + strconv.FormatBool(ma.DisableUserProvisioning)))
+		}
 	}
 
 	return hex.EncodeToString(hash.Sum(nil)), nil
