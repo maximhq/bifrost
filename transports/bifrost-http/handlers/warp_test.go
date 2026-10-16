@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -29,7 +30,15 @@ type recordingWarpStore struct {
 	upserted []tables.TableWarpConfig
 }
 
-type handlerBackfillReader struct{ warp.LogReader }
+// handlerBackfillReader is the reader the job endpoint tests run through.
+// topics is the log store Warp keeps its topics in; nil leaves the reader
+// unable to offer one, which is how a deployment without a log store looks.
+type handlerBackfillReader struct {
+	warp.LogReader
+	topics logstore.WarpTopicStore
+}
+
+func (r handlerBackfillReader) TopicStore() logstore.WarpTopicStore { return r.topics }
 
 func (handlerBackfillReader) Search(_ context.Context, _ *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error) {
 	return &logstore.SearchResult{Pagination: *pagination}, nil
@@ -77,12 +86,25 @@ func newBackfillTestHandler(t *testing.T) (*WarpHandler, *fakeSidekiqStore, func
 	}}
 	jobs := newFakeSidekiqStore()
 	runner := sidekiq.New(jobs, &mockLogger{}, 1, "")
-	service := warp.NewService(nil, warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{}), warp.WithVectorStore(handlerVectorStore{}), warp.WithEmbeddingExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	service := warp.NewService(nil, warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{topics: handlerTopicStore(t)}), warp.WithVectorStore(handlerVectorStore{}), warp.WithEmbeddingExecutor(func(_ *schemas.BifrostContext, _ *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
 		return &schemas.BifrostEmbeddingResponse{Data: []schemas.EmbeddingData{{Embedding: schemas.EmbeddingStruct{EmbeddingArray: []float64{0, 1}}}}}, nil
 	}))
 	service.RegisterBackfill(runner)
 	handler := &WarpHandler{service: service, sidekiqRunner: runner, backfillStore: jobs}
 	return handler, jobs, func() { runner.Shutdown(); service.Shutdown() }
+}
+
+// handlerTopicStore is a real SQLite log store: topics are rows in it, and a
+// job cannot be started on a deployment whose reader cannot reach one.
+func handlerTopicStore(t *testing.T) logstore.LogStore {
+	t.Helper()
+	store, err := logstore.NewLogStore(context.Background(), &logstore.Config{
+		Enabled: true, Type: logstore.LogStoreTypeSQLite,
+		Config: &logstore.SQLiteConfig{Path: filepath.Join(t.TempDir(), "warp.db")},
+	}, &mockLogger{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close(context.Background()) })
+	return store
 }
 
 func (s *recordingWarpStore) GetWarpConfig(context.Context) (*tables.TableWarpConfig, error) {
@@ -257,6 +279,27 @@ func TestWarpLogIndexStatusSummarisesState(t *testing.T) {
 	require.Contains(t, body, `"state":"indexing"`)
 	require.Contains(t, body, `"scanned":40`)
 	require.Contains(t, body, `"total":100`)
+}
+
+// Topics are rows in the log store, so without one there is no run to start:
+// the endpoint says the feature is unavailable rather than queueing a job
+// that would fail on its first write.
+func TestWarpTopicsStartNeedsALogStore(t *testing.T) {
+	config := &recordingWarpStore{row: &tables.TableWarpConfig{
+		ID: tables.WarpConfigRowID, Enabled: true, Provider: "openai", Model: "gpt-4o",
+		EmbeddingProvider: "openai", EmbeddingModel: "embed", EmbeddingDimension: 2, LogVectorStoreNamespace: "WarpLogs",
+	}}
+	jobs := newFakeSidekiqStore()
+	runner := sidekiq.New(jobs, &mockLogger{}, 1, "")
+	defer runner.Shutdown()
+	service := warp.NewService(nil, warp.WithConfigStore(config), warp.WithLogReader(handlerBackfillReader{}), warp.WithVectorStore(handlerVectorStore{}))
+	defer service.Shutdown()
+	handler := &WarpHandler{service: service, sidekiqRunner: runner, backfillStore: jobs}
+
+	startCtx := adminCtx(`{"start_time":"2026-09-01T00:00:00Z","end_time":"2026-09-02T00:00:00Z"}`)
+	handler.startTopics(startCtx)
+	require.Equal(t, fasthttp.StatusServiceUnavailable, startCtx.Response.StatusCode(), string(startCtx.Response.Body()))
+	require.Zero(t, jobs.createdCount())
 }
 
 // Topic clustering rides on the same job endpoints as the backfill: start

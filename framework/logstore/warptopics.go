@@ -225,6 +225,9 @@ type WarpTopicStore interface {
 	// ListWarpTopicAssignments returns the selected assignments newest first,
 	// within the caller's access scope.
 	ListWarpTopicAssignments(ctx context.Context, filter WarpTopicAssignmentFilter, limit int) ([]WarpTopicAssignment, error)
+	// DeleteWarpTopicAssignments removes the given requests' assignments, for
+	// a run taking back the rows it wrote.
+	DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error
 	// DeleteWarpTopicAssignmentsBatch deletes up to batchSize assignments whose
 	// log was created before cutoff, for the retention cleaner.
 	DeleteWarpTopicAssignmentsBatch(ctx context.Context, cutoff time.Time, batchSize int) (deletedCount int64, err error)
@@ -515,6 +518,16 @@ func (s *RDBLogStore) ListWarpTopicAssignments(ctx context.Context, filter WarpT
 		Limit(limit).
 		Find(&assignments).Error
 	return assignments, err
+}
+
+// DeleteWarpTopicAssignments removes the given requests' assignments.
+func (s *RDBLogStore) DeleteWarpTopicAssignments(ctx context.Context, logIDs []string) error {
+	for chunk := range slices.Chunk(logIDs, warpTopicWriteBatch) {
+		if err := s.db.WithContext(ctx).Where("log_id IN ?", chunk).Delete(&WarpTopicAssignment{}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DeleteWarpTopicAssignmentsBatch deletes up to batchSize assignments whose log

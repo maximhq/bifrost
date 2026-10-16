@@ -340,6 +340,20 @@ func TestWarpTopicAssignmentsList(t *testing.T) {
 		assert.InDelta(t, 420.5, got.Latency, 1e-9)
 		assert.Equal(t, 77, got.TotalTokens)
 		assert.InDelta(t, 0.91, got.Similarity, 1e-9)
+
+		// A run that fails partway writes back the row it replaced and removes
+		// the ones it added. The row written back wins over the run's, on a
+		// store that keeps every version as well as on one that overwrites.
+		replacing := got
+		replacing.TopicID, replacing.AssignedAt = "sql", time.Time{}
+		require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []WarpTopicAssignment{replacing}))
+		require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []WarpTopicAssignment{got}))
+		require.NoError(t, store.DeleteWarpTopicAssignments(ctx, []string{"l2", "missing"}))
+		require.NoError(t, store.DeleteWarpTopicAssignments(ctx, nil))
+		left, err := store.ListWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{}, 0)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"l4", "l3", "l1"}, warpAssignmentLogIDs(left))
+		assert.Equal(t, "billing", left[2].TopicID, "the row written back is the one read")
 	})
 }
 

@@ -23,18 +23,19 @@ import (
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
-	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
 // Topic clusters.
 //
 // "What do people ask about?" has no aggregate in the log store: the answer
 // lives in the meaning of the requests, which is exactly what the log
-// vectors encode. Weaviate does not cluster on its own, so a Sidekiq job pages
+// vectors encode. No vector store clusters on its own, so a Sidekiq job pages
 // the vectors out, clusters them here, asks the Warp model to name each
-// cluster from a few of its members, and writes one centroid per topic into a
-// namespace beside the logs. The list_topics tool then reads that namespace,
-// which turns the question into one tool call with a real answer.
+// cluster from a few of its members, and writes the result to the log store:
+// one row per topic, and one row per request saying which topic it is in.
+// The list_topics tool reads those tables, which turns the question into one
+// tool call with a real answer, counted from rows rather than remembered from
+// the run.
 //
 // k-means has to be told how many clusters to find, and nothing about a
 // corpus's size says how many subjects are in it. So the run asks for more
@@ -85,26 +86,19 @@ const (
 	// silently, which is also why the backfill pages at the same size.
 	topicsHydrationBatch = backfillBatchSize
 	topicsMaxListed      = 200
-	// topicsMaxPages bounds how many pages a read follows. Two runs of at
-	// most topicsMaxClusters each fit in one page; the rest is headroom for
-	// leftovers a failed cleanup did not remove.
-	topicsMaxPages = 10
+	// topicsWriteBatch is how many assignments are written in one call, which
+	// is also how often a run that is writing reports progress.
+	topicsWriteBatch = 5000
 )
-
-// topicsNamespaceFor names the namespace that holds a log namespace's topic
-// centroids. Derived rather than configured so the two always travel
-// together, including through retirement when the embedding model changes.
-func topicsNamespaceFor(logNamespace string) string {
-	return logNamespace + "Topics"
-}
 
 // Topic is one cluster as the tool reports it.
 type Topic struct {
 	ID    string `json:"id"`
 	Label string `json:"label"`
 	Size  int    `json:"size"`
-	// Share is Size over every request that was clustered in the same
-	// run, so the model can say "a third of requests" honestly.
+	// Share is Size over every request that has a place among the topics,
+	// those that matched none included, so the model can say "a third of
+	// requests" honestly.
 	Share float64 `json:"share"`
 	// Cohesion is how alike the topic's requests are: their average
 	// similarity to its centre. A low figure beside a large size is a topic
@@ -115,8 +109,6 @@ type Topic struct {
 	// centre. Named as examples on the wire, because a link on a row is
 	// otherwise read as "the requests behind this row".
 	SampleLinks []string  `json:"example_links,omitempty"`
-	WindowStart time.Time `json:"window_start"`
-	WindowEnd   time.Time `json:"window_end"`
 	ComputedAt  time.Time `json:"computed_at"`
 }
 
@@ -132,47 +124,26 @@ type TopicLister interface {
 	ListTopics(ctx context.Context, limit int) ([]Topic, int, error)
 }
 
-// TopicReader reads computed topics for the tool.
+// TopicReader reads the topics for the tool.
 type TopicReader struct {
-	store   configstore.WarpStore
-	vectors vectorstore.VectorStore
-
-	// ensured is the namespace and dimension last declared to the store, so
-	// a read declares them once per configuration rather than every time.
-	ensureMu         sync.Mutex
-	ensuredNamespace string
-	ensuredDimension int
+	store  configstore.WarpStore
+	topics logstore.WarpTopicStore
 }
 
-// ensureNamespace declares the topics namespace before it is read. Stores
-// that keep a namespace's dimension in memory cannot page it otherwise, and
-// the process answering a question is rarely the one that computed the
-// topics. A configuration with no dimension yet has no topics to read.
-func (r *TopicReader) ensureNamespace(ctx context.Context, namespace string, dimension int) error {
-	if dimension <= 0 {
-		return nil
-	}
-	r.ensureMu.Lock()
-	defer r.ensureMu.Unlock()
-	if r.ensuredNamespace == namespace && r.ensuredDimension == dimension {
-		return nil
-	}
-	if err := ensureTopicsNamespace(ctx, r.vectors, namespace, dimension); err != nil {
-		return err
-	}
-	r.ensuredNamespace, r.ensuredDimension = namespace, dimension
-	return nil
+// NewTopicReader builds a reader over the log store's topic tables.
+func NewTopicReader(store configstore.WarpStore, topics logstore.WarpTopicStore) *TopicReader {
+	return &TopicReader{store: store, topics: topics}
 }
 
-// NewTopicReader builds a reader over the configured topics namespace.
-func NewTopicReader(store configstore.WarpStore, vectors vectorstore.VectorStore) *TopicReader {
-	return &TopicReader{store: store, vectors: vectors}
-}
-
-// ListTopics returns topics by size, largest first, and the number of
-// requests the run clustered.
+// ListTopics returns the active topics by size, largest first, and the number
+// of requests that have a place among them.
+//
+// Only the topics built with the embedding model Warp is configured with are
+// listed: a topic's centre means nothing against vectors from another model,
+// and a changed configuration is read as a deployment with no topics yet
+// rather than one with stale ones.
 func (r *TopicReader) ListTopics(ctx context.Context, limit int) ([]Topic, int, error) {
-	if r == nil || r.store == nil || r.vectors == nil {
+	if r == nil || r.store == nil || r.topics == nil {
 		return nil, 0, ErrUnavailable
 	}
 	row, err := r.store.GetWarpConfig(ctx)
@@ -180,51 +151,43 @@ func (r *TopicReader) ListTopics(ctx context.Context, limit int) ([]Topic, int, 
 		return nil, 0, fmt.Errorf("read Warp configuration: %w", err)
 	}
 	config := configFromRow(row)
-	namespace := topicsNamespaceFor(config.EffectiveLogVectorStoreNamespace())
 	if limit < 1 || limit > topicsMaxListed {
 		limit = topicsMaxListed
 	}
-	if err := r.ensureNamespace(ctx, namespace, config.EmbeddingDimension); err != nil {
-		return nil, 0, fmt.Errorf("prepare topics namespace: %w", err)
+	rows, err := r.topics.ListWarpTopics(ctx, logstore.WarpTopicFilter{
+		Kinds: []string{logstore.WarpTopicKindTopic}, Statuses: []string{logstore.WarpTopicStatusActive},
+		EmbeddingSignature: embeddingConfigSignature(config), OmitCentroids: true,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("list topics: %w", err)
 	}
-	// While a run replaces the previous one the namespace holds both, and a
-	// run can hold more topics than one page, so the reader follows the
-	// cursor: a run cut off at a page boundary looks partial and is refused.
-	// An entry a store hands back twice across pages is counted once.
-	var (
-		results []vectorstore.SearchResult
-		cursor  *string
-		seen    = map[string]struct{}{}
-	)
-	for range topicsMaxPages {
-		page, next, err := r.vectors.GetAll(ctx, namespace,
-			[]vectorstore.Query{{Field: "warp_topic", Operator: vectorstore.QueryOperatorEqual, Value: true}},
-			[]string{"topic_id", "label", "size", "cohesion_milli", "sample_log_ids", "window_start", "window_end", "computed_at", "total_clustered", "run_id", "run_topics"},
-			cursor, int64(topicsMaxListed))
-		if err != nil {
-			return nil, 0, fmt.Errorf("list topics: %w", err)
-		}
-		for _, result := range page {
-			if _, dup := seen[result.ID]; dup {
-				continue
-			}
-			seen[result.ID] = struct{}{}
-			results = append(results, result)
-		}
-		if next == nil || *next == "" {
-			break
-		}
-		cursor = next
+	if len(rows) == 0 {
+		return nil, 0, nil
 	}
-	results = newestCompleteTopicRun(results)
-	topics := make([]Topic, 0, len(results))
+	// Counted over the active topics and the requests that matched none.
+	// Requests still filed under a topic that has since been retired are
+	// neither: they belong to a set of topics that is no longer the answer.
+	ids := make([]string, 0, len(rows)+1)
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	usage, err := r.topics.SummarizeWarpTopicAssignments(ctx, logstore.WarpTopicAssignmentFilter{TopicIDs: append(ids, "")})
+	if err != nil {
+		return nil, 0, fmt.Errorf("count topic requests: %w", err)
+	}
+	sizes := make(map[string]int, len(usage))
 	total := 0
-	for _, result := range results {
-		topic := topicFromProperties(result.ID, result.Properties)
-		if topic.Label == "" {
-			continue
+	for _, entry := range usage {
+		sizes[entry.TopicID] = int(entry.Requests)
+		total += int(entry.Requests)
+	}
+	topics := make([]Topic, 0, len(rows))
+	for _, row := range rows {
+		topic := Topic{ID: row.ID, Label: row.Label, Size: sizes[row.ID], Cohesion: row.Cohesion, ComputedAt: row.CreatedAt.UTC()}
+		for _, logID := range row.ExampleLogIDs() {
+			topic.SampleLogIDs = append(topic.SampleLogIDs, logID)
+			topic.SampleLinks = append(topic.SampleLinks, logDetailLink(logID))
 		}
-		total = max(total, propertyInt(result.Properties["total_clustered"]))
 		topics = append(topics, topic)
 	}
 	sort.SliceStable(topics, func(i, j int) bool {
@@ -242,69 +205,6 @@ func (r *TopicReader) ListTopics(ctx context.Context, limit int) ([]Topic, int, 
 		}
 	}
 	return topics, total, nil
-}
-
-// newestCompleteTopicRun keeps the topics of one run: the most recent that
-// wrote everything it set out to.
-//
-// A run writes its topics before it removes the previous run's, so for a
-// moment the namespace holds both, and the new set is partial until the last
-// write lands. Every topic records how many its run wrote, which is what lets
-// a partial set be told from a whole one. With no whole run there is nothing
-// to answer from.
-func newestCompleteTopicRun(results []vectorstore.SearchResult) []vectorstore.SearchResult {
-	type run struct {
-		entries    []vectorstore.SearchResult
-		expected   int
-		computedAt int
-	}
-	runs := map[string]*run{}
-	for _, result := range results {
-		computedAt := propertyInt(result.Properties["computed_at"])
-		key, _ := result.Properties["run_id"].(string)
-		if key == "" {
-			key = fmt.Sprintf("at-%d", computedAt)
-		}
-		entry, ok := runs[key]
-		if !ok {
-			entry = &run{expected: propertyInt(result.Properties["run_topics"]), computedAt: computedAt}
-			runs[key] = entry
-		}
-		entry.entries = append(entry.entries, result)
-	}
-	var newest *run
-	for _, entry := range runs {
-		if len(entry.entries) < entry.expected {
-			continue
-		}
-		if newest == nil || entry.computedAt > newest.computedAt {
-			newest = entry
-		}
-	}
-	if newest == nil {
-		return nil
-	}
-	return newest.entries
-}
-
-// topicFromProperties decodes one stored centroid's metadata.
-func topicFromProperties(id string, properties map[string]interface{}) Topic {
-	topic := Topic{ID: id, Size: propertyInt(properties["size"])}
-	if topicID, ok := properties["topic_id"].(string); ok && topicID != "" {
-		topic.ID = topicID
-	}
-	topic.Label, _ = properties["label"].(string)
-	topic.Cohesion = float64(propertyInt(properties["cohesion_milli"])) / 1000
-	if raw, ok := properties["sample_log_ids"].(string); ok && raw != "" {
-		topic.SampleLogIDs = strings.Split(raw, ",")
-		for _, logID := range topic.SampleLogIDs {
-			topic.SampleLinks = append(topic.SampleLinks, logDetailLink(logID))
-		}
-	}
-	topic.WindowStart = time.Unix(int64(propertyInt(properties["window_start"])), 0).UTC()
-	topic.WindowEnd = time.Unix(int64(propertyInt(properties["window_end"])), 0).UTC()
-	topic.ComputedAt = time.Unix(int64(propertyInt(properties["computed_at"])), 0).UTC()
-	return topic
 }
 
 // propertyInt reads an integer property whatever type the backend handed it
@@ -414,13 +314,15 @@ func listTopicsTool() Tool {
 				"total_clustered": total,
 			}
 			if len(topics) > 0 {
-				out["window"] = map[string]string{
-					"start": topics[0].WindowStart.Format(time.RFC3339),
-					"end":   topics[0].WindowEnd.Format(time.RFC3339),
+				computedAt := topics[0].ComputedAt
+				for _, topic := range topics[1:] {
+					if topic.ComputedAt.After(computedAt) {
+						computedAt = topic.ComputedAt
+					}
 				}
-				out["computed_at"] = topics[0].ComputedAt.Format(time.RFC3339)
-				out["scope"] = "every indexed request in the topic window, across all users, teams and customers"
-				out["cannot_answer"] = "These topics are one snapshot, over the window above. There are no topics for a different time range, " +
+				out["computed_at"] = computedAt.Format(time.RFC3339)
+				out["scope"] = "every indexed request the last run read, across all users, teams and customers"
+				out["cannot_answer"] = "These topics are one snapshot, over the requests the last run read. There are no topics for a different time range, " +
 					"for one team, customer, user, model or app, no trend for a topic, no list of every request in a topic, and no cost, latency or errors per topic. " +
 					"Asked for one of those, say it is not available yet; do not approximate it from other tools."
 				out["counts"] = "size, share and total_clustered count requests. Every model call is one request, so a chat of five turns " +
@@ -444,6 +346,24 @@ func (s *Service) RegisterTopics(runner *sidekiq.Runner) {
 	runner.Register(TopicsJobKind, s.RunTopicsJob)
 }
 
+// topicStore returns the log store's topic tables under the read lock, or nil
+// on a deployment whose log reader cannot reach them.
+func (s *Service) topicStore() logstore.WarpTopicStore {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return topicStoreOf(s.logs)
+}
+
+// topicStoreOf returns the topic tables behind a reader, or nil when the
+// reader has none to offer.
+func topicStoreOf(logs LogReader) logstore.WarpTopicStore {
+	provider, ok := logs.(TopicStoreProvider)
+	if !ok {
+		return nil
+	}
+	return provider.TopicStore()
+}
+
 // BuildTopicsJobMeta freezes the window and embedding space for one run. It
 // reuses the backfill's checkpoint shape so the same status endpoint and the
 // same progress card serve both jobs. A config without an embedding provider
@@ -452,6 +372,9 @@ func (s *Service) RegisterTopics(runner *sidekiq.Runner) {
 func (s *Service) BuildTopicsJobMeta(ctx context.Context, start, end time.Time) (string, error) {
 	if s.vectorStore == nil || s.logs == nil || s.store == nil {
 		return "", ErrUnavailable
+	}
+	if s.topicStore() == nil {
+		return "", fmt.Errorf("%w: the log store cannot keep topics", ErrUnavailable)
 	}
 	config, err := s.Config(ctx)
 	if err != nil {
@@ -464,7 +387,7 @@ func (s *Service) BuildTopicsJobMeta(ctx context.Context, start, end time.Time) 
 		StartTime:       start.UTC(),
 		EndTime:         end.UTC(),
 		ConfigSignature: embeddingConfigSignature(config),
-		Namespace:       topicsNamespaceFor(config.EffectiveLogVectorStoreNamespace()),
+		Namespace:       config.EffectiveLogVectorStoreNamespace(),
 	})
 }
 
@@ -476,7 +399,7 @@ type topicVector struct {
 }
 
 // RunTopicsJob is the Sidekiq handler: read, cluster, merge, assign, label,
-// replace. A run either replaces the previous topics or leaves them as they
+// write. A run either replaces the previous topics or leaves them as they
 // were.
 func (s *Service) RunTopicsJob(ctx context.Context, job tables.TableSidekiqJob, progress sidekiq.ProgressFunc) (string, error) {
 	var meta BackfillJobMeta
@@ -501,6 +424,10 @@ func (s *Service) RunTopicsJob(ctx context.Context, job tables.TableSidekiqJob, 
 	}
 	if embeddingConfigSignature(config) != meta.ConfigSignature {
 		return snapshot(), fmt.Errorf("Warp embedding configuration changed while topics were being computed")
+	}
+	topicStore := s.topicStore()
+	if topicStore == nil {
+		return snapshot(), fmt.Errorf("%w: the log store cannot keep topics", ErrUnavailable)
 	}
 
 	// 1-3. Read the window, cluster it in batches, merge the batches' clusters,
@@ -577,60 +504,47 @@ func (s *Service) RunTopicsJob(ctx context.Context, job tables.TableSidekiqJob, 
 	}
 	clusters, meta.MergedByName = joinTopicsByName(clusters)
 
-	// 5. Write the new topics, then remove the previous ones. In that order,
-	// so there is no moment with no topics, and a run that cannot finish
-	// writing takes back what it wrote and leaves the previous topics alone.
-	dimension := config.EmbeddingDimension
-	if len(clusters) > 0 && len(clusters[0].sum) > 0 {
-		dimension = len(clusters[0].sum)
-	}
-	if err := ensureTopicsNamespace(ctx, s.vectorStore, meta.Namespace, dimension); err != nil {
-		meta.LastError = err.Error()
+	// 5. Write the topics, then every request's place among them, then retire
+	// the previous topics. In that order, so there is no moment with no
+	// topics, and a run that cannot finish writing retires what it wrote and
+	// leaves the previous topics as they were.
+	if err := checkpoint(fmt.Sprintf("Writing %d topic(s).", len(clusters))); err != nil {
 		return snapshot(), err
 	}
-	runID := job.ID
-	if runID == "" {
-		runID = uuid.NewString()
+	// What this run replaces is what TopicReader serves: active topics under
+	// this embedding model. Themes and other models' topics are not its to
+	// retire. Centroids are read, because retiring rewrites the whole row.
+	previous, err := topicStore.ListWarpTopics(ctx, logstore.WarpTopicFilter{
+		Kinds: []string{logstore.WarpTopicKindTopic}, Statuses: []string{logstore.WarpTopicStatusActive},
+		EmbeddingSignature: meta.ConfigSignature,
+	})
+	if err != nil {
+		meta.LastError = err.Error()
+		return snapshot(), fmt.Errorf("read previous topics: %w", err)
 	}
-	isTopic := vectorstore.Query{Field: "warp_topic", Operator: vectorstore.QueryOperatorEqual, Value: true}
-	now := time.Now().UTC()
-	summaries := make([]TopicSummary, 0, len(clusters))
-	for _, cluster := range clusters {
-		id := uuid.NewString()
-		metadata := map[string]interface{}{
-			"warp_topic": true, "topic_id": id, "label": cluster.label, "size": int64(cluster.size),
-			"cohesion_milli": int64(math.Round(cluster.cohesion() * 1000)),
-			"sample_log_ids": strings.Join(cluster.sampleIDs, ","), "total_clustered": int64(meta.Scanned),
-			"window_start": meta.StartTime.Unix(), "window_end": meta.EndTime.Unix(), "computed_at": now.Unix(),
-			"run_id": runID, "run_topics": int64(len(clusters)),
+	written, err := writeTopics(ctx, topicStore, &meta, run, clusters, limits.write)
+	if err != nil {
+		meta.LastError = err.Error()
+		meta.Message = "Could not write the new topics; the previous topics were kept."
+		meta.Indexed, meta.Topics = 0, nil
+		// Best effort, and on a context of its own: the run may be failing
+		// because its context is gone, and what it wrote must be taken back
+		// regardless. Retired rather than deleted, so the assignments already
+		// written against them stay consistent and simply stop counting.
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), topicsCleanupTimeout)
+		retireErr := retireTopics(cleanupCtx, topicStore, written)
+		cancel()
+		if retireErr != nil {
+			// The topics it wrote are still active, so the run says so.
+			meta.LastError += fmt.Sprintf("; retire written topics: %v", retireErr)
+			return snapshot(), fmt.Errorf("write topics: %w; retire written topics: %v", err, retireErr)
 		}
-		if err := s.vectorStore.Add(ctx, meta.Namespace, id, cluster.centroid(), metadata); err != nil {
-			meta.LastError = err.Error()
-			meta.Message = "Could not write the new topics; the previous topics were kept."
-			// Best effort, and on a context of its own: the run may be failing
-			// because its context is gone, and leftovers must go regardless.
-			// Anything that survives is a partial run, which list_topics
-			// already refuses to answer from.
-			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), topicsCleanupTimeout)
-			_, _ = s.vectorStore.DeleteAll(cleanupCtx, meta.Namespace, []vectorstore.Query{isTopic, {Field: "run_id", Operator: vectorstore.QueryOperatorEqual, Value: runID}})
-			cancel()
-			return snapshot(), fmt.Errorf("write topics: %w", err)
-		}
-		summaries = append(summaries, TopicSummary{Label: cluster.label, Size: cluster.size, Cohesion: roundTo(cluster.cohesion(), 3)})
+		return snapshot(), fmt.Errorf("write topics: %w", err)
 	}
-	meta.Indexed, meta.Topics = len(summaries), summaries
-
-	// Earlier runs are matched both ways: by run, and by age for topics
-	// written before runs were recorded, which a run filter cannot see.
-	for _, stale := range []vectorstore.Query{
-		{Field: "run_id", Operator: vectorstore.QueryOperatorNotEqual, Value: runID},
-		{Field: "computed_at", Operator: vectorstore.QueryOperatorLessThan, Value: now.Unix()},
-	} {
-		if _, err := s.vectorStore.DeleteAll(ctx, meta.Namespace, []vectorstore.Query{isTopic, stale}); err != nil {
-			// The new topics are in place and are what list_topics serves, so
-			// this is reported rather than failing a run that did its job.
-			meta.LastError = fmt.Sprintf("clear previous topics: %v", err)
-		}
+	if err := retireTopics(ctx, topicStore, previous); err != nil {
+		// The new topics are in place and are what list_topics serves, so
+		// this is reported rather than failing a run that did its job.
+		meta.LastError = fmt.Sprintf("retire previous topics: %v", err)
 	}
 	meta.Message = fmt.Sprintf("Clustered %d request(s) into %d topic(s).", meta.Clustered, meta.Indexed)
 	if meta.Assigned > 0 {
@@ -638,6 +552,9 @@ func (s *Service) RunTopicsJob(ctx context.Context, job tables.TableSidekiqJob, 
 	}
 	if meta.Unassigned > 0 {
 		meta.Message += fmt.Sprintf(" %d matched no topic.", meta.Unassigned)
+	}
+	if meta.Skipped > 0 {
+		meta.Message += fmt.Sprintf(" %d were indexed but are no longer in the log store.", meta.Skipped)
 	}
 	if meta.Capped {
 		meta.Message += fmt.Sprintf(" Stopped at the limit of %d request(s) for one run; the window holds more, and these were drawn from across it.", limits.read)
@@ -649,6 +566,195 @@ func (s *Service) RunTopicsJob(ctx context.Context, job tables.TableSidekiqJob, 
 		meta.Message += fmt.Sprintf(" %d more joined for sharing a name.", meta.MergedByName)
 	}
 	return snapshot(), progress(snapshot())
+}
+
+// writeTopics writes the run's topics and the place of every request it read,
+// and returns the topics it wrote, whether or not it finished.
+//
+// Each request's row copies the columns the log store answers topic
+// questions from, read back from the log rather than from the vector's
+// metadata: the vector carries a lossy copy of them, and the log is what the
+// access scope on a restricted caller's reads is written against. A request
+// whose log has gone since it was indexed has no row to copy and is counted
+// as skipped.
+//
+// Each batch replaces the rows its requests already had. The store has no
+// transaction to span the batches (ClickHouse has none), so the rows a batch
+// replaces are read first and put back if the run fails, and the rows it adds
+// are removed: a run that stops partway leaves every request under the topic
+// it had. The unmatched pool is written only after every batch has landed.
+func writeTopics(ctx context.Context, store logstore.WarpTopicStore, meta *BackfillJobMeta, run *topicRun, clusters []topicCluster, batchSize int) (_ []logstore.WarpTopic, err error) {
+	if batchSize <= 0 {
+		batchSize = topicsWriteBatch
+	}
+	now := time.Now().UTC()
+	topics := make([]logstore.WarpTopic, 0, len(clusters))
+	summaries := make([]TopicSummary, 0, len(clusters))
+	// members is every request that ended in a topic; pooled every one that
+	// ended in none, with its vector.
+	members := make(map[string]topicMember, run.read())
+	memberTopic := make(map[string]string, run.read())
+	for _, cluster := range clusters {
+		topic := logstore.WarpTopic{
+			ID: uuid.NewString(), Kind: logstore.WarpTopicKindTopic, Label: cluster.label,
+			Centroid: logstore.EncodeWarpVector(cluster.centroid()), AssignFloor: float64(run.floor), Cohesion: cluster.cohesion(),
+			EmbeddingSignature: meta.ConfigSignature, Status: logstore.WarpTopicStatusActive, CreatedAt: now,
+		}
+		if err := topic.SetExampleLogIDs(cluster.sampleIDs); err != nil {
+			return nil, fmt.Errorf("encode topic examples: %w", err)
+		}
+		topics = append(topics, topic)
+		summaries = append(summaries, TopicSummary{Label: cluster.label, Size: cluster.size, Cohesion: roundTo(cluster.cohesion(), 3)})
+		for _, member := range cluster.members {
+			members[member.logID] = member
+			memberTopic[member.logID] = topic.ID
+		}
+	}
+	if err := store.UpsertWarpTopics(ctx, topics); err != nil {
+		return nil, err
+	}
+	meta.Indexed, meta.Topics = len(topics), summaries
+
+	// Every unmatched request is filed under no topic, which also replaces a
+	// row an earlier run wrote against a topic this run retires. Only the
+	// pooled ones, which the cap bounds, go on to the unmatched pool.
+	ids := make([]string, 0, len(members)+len(run.unmatchedIDs))
+	for logID := range members {
+		ids = append(ids, logID)
+	}
+	listed := make(map[string]struct{}, len(run.unmatchedIDs))
+	unmatchedID := func(logID string) {
+		if _, inTopic := members[logID]; inTopic {
+			return
+		}
+		if _, dup := listed[logID]; dup {
+			return
+		}
+		listed[logID] = struct{}{}
+		ids = append(ids, logID)
+	}
+	for _, logID := range run.unmatchedIDs {
+		unmatchedID(logID)
+	}
+	pooled := make(map[string][]float32, len(run.pooled))
+	for _, entry := range run.pooled {
+		if _, inTopic := members[entry.logID]; inTopic {
+			continue
+		}
+		pooled[entry.logID] = entry.vector
+		unmatchedID(entry.logID)
+	}
+	sort.Strings(ids)
+	var (
+		replaced []logstore.WarpTopicAssignment
+		added    []string
+	)
+	defer func() {
+		if err == nil || (len(replaced) == 0 && len(added) == 0) {
+			return
+		}
+		// On a context of its own: the run may be failing because its context
+		// is gone, and the previous rows must go back regardless.
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), topicsCleanupTimeout)
+		defer cancel()
+		if restoreErr := restoreTopicAssignments(restoreCtx, store, replaced, added); restoreErr != nil {
+			err = fmt.Errorf("%w; restore previous assignments: %v", err, restoreErr)
+		}
+	}()
+	found := 0
+	var unmatched []logstore.WarpTopicAssignment
+	for start := 0; start < len(ids); start += batchSize {
+		if err := ctx.Err(); err != nil {
+			return topics, err
+		}
+		batch := ids[start:min(start+batchSize, len(ids))]
+		rows, err := store.ListLogsForWarpTopics(ctx, batch, meta.StartTime, meta.EndTime)
+		if err != nil {
+			return topics, fmt.Errorf("read requests: %w", err)
+		}
+		found += len(rows)
+		assignments := make([]logstore.WarpTopicAssignment, 0, len(rows))
+		batchIDs := make([]string, 0, len(rows))
+		for _, row := range rows {
+			row.AssignedAt = now
+			if member, ok := members[row.LogID]; ok {
+				row.TopicID, row.Similarity = memberTopic[row.LogID], float64(member.similarity)
+			} else if _, ok := pooled[row.LogID]; ok {
+				unmatched = append(unmatched, row)
+			}
+			assignments = append(assignments, row)
+			batchIDs = append(batchIDs, row.LogID)
+		}
+		// Every request in the batch is gone from the log store. An empty id
+		// filter is no filter, so reading by it would take other requests'
+		// rows into replaced, and a failed run would write them back.
+		if len(batchIDs) == 0 {
+			continue
+		}
+		// The job's context carries no access scope, so this reads every row.
+		previous, err := store.ListWarpTopicAssignments(ctx, logstore.WarpTopicAssignmentFilter{LogIDs: batchIDs}, len(batchIDs))
+		if err != nil {
+			return topics, fmt.Errorf("read previous assignments: %w", err)
+		}
+		had := make(map[string]struct{}, len(previous))
+		for _, row := range previous {
+			had[row.LogID] = struct{}{}
+		}
+		for _, logID := range batchIDs {
+			if _, ok := had[logID]; !ok {
+				added = append(added, logID)
+			}
+		}
+		replaced = append(replaced, previous...)
+		if err := store.UpsertWarpTopicAssignments(ctx, assignments); err != nil {
+			return topics, fmt.Errorf("write assignments: %w", err)
+		}
+		meta.Message = fmt.Sprintf("Wrote %d topic(s); filed %d of %d request(s).", len(topics), min(start+batchSize, len(ids)), len(ids))
+	}
+	for start := 0; start < len(unmatched); start += batchSize {
+		batch := unmatched[start:min(start+batchSize, len(unmatched))]
+		rows := make([]logstore.WarpTopicUnmatched, 0, len(batch))
+		for _, row := range batch {
+			rows = append(rows, logstore.WarpTopicUnmatched{
+				LogID: row.LogID, Timestamp: row.Timestamp, LogCreatedAt: row.LogCreatedAt,
+				Vector: logstore.EncodeWarpVector(pooled[row.LogID]), EmbeddingSignature: meta.ConfigSignature,
+			})
+		}
+		if err := store.AddWarpTopicUnmatched(ctx, rows); err != nil {
+			return topics, fmt.Errorf("pool unmatched requests: %w", err)
+		}
+	}
+	// A request that is in a topic now is no longer waiting for one.
+	inTopics := make([]string, 0, len(members))
+	for logID := range members {
+		inTopics = append(inTopics, logID)
+	}
+	if err := store.DeleteWarpTopicUnmatched(ctx, inTopics); err != nil {
+		return topics, fmt.Errorf("clear pooled requests: %w", err)
+	}
+	meta.Skipped = len(ids) - found
+	return topics, nil
+}
+
+// restoreTopicAssignments puts back the rows a failed run replaced and
+// removes the ones it added.
+func restoreTopicAssignments(ctx context.Context, store logstore.WarpTopicStore, replaced []logstore.WarpTopicAssignment, added []string) error {
+	if err := store.UpsertWarpTopicAssignments(ctx, replaced); err != nil {
+		return err
+	}
+	return store.DeleteWarpTopicAssignments(ctx, added)
+}
+
+// retireTopics marks topics as taking nothing new. Their rows stay, so the
+// assignments written against them still resolve.
+func retireTopics(ctx context.Context, store logstore.WarpTopicStore, topics []logstore.WarpTopic) error {
+	if len(topics) == 0 {
+		return nil
+	}
+	for index := range topics {
+		topics[index].Status = logstore.WarpTopicStatusRetired
+	}
+	return store.UpsertWarpTopics(ctx, topics)
 }
 
 // topicsSeed starts k-means from the same place for the same window over the
@@ -849,32 +955,6 @@ func fallbackTopicLabel(texts []string) string {
 		order = order[:3]
 	}
 	return strings.Join(order, " ")
-}
-
-// ensureTopicsNamespace creates the centroid namespace with the properties
-// the reader filters and reads.
-func ensureTopicsNamespace(ctx context.Context, vectors vectorstore.VectorStore, namespace string, dimension int) error {
-	if vectors == nil {
-		return ErrNoVectorStore
-	}
-	if dimension <= 0 {
-		return fmt.Errorf("%w: embedding dimension must be positive", ErrInvalidConfig)
-	}
-	properties := map[string]vectorstore.VectorStoreProperties{
-		"warp_topic":      {DataType: vectorstore.VectorStorePropertyTypeBoolean, Description: "Marks Warp topic centroids"},
-		"topic_id":        {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Topic ID"},
-		"label":           {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Topic name"},
-		"size":            {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Requests in the topic"},
-		"cohesion_milli":  {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Average member similarity to the centroid, in thousandths"},
-		"total_clustered": {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Requests clustered in the same run"},
-		"sample_log_ids":  {DataType: vectorstore.VectorStorePropertyTypeString, Description: "Comma-separated sample log IDs"},
-		"window_start":    {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Window start, Unix seconds"},
-		"window_end":      {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Window end, Unix seconds"},
-		"computed_at":     {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Computed at, Unix seconds"},
-		"run_id":          {DataType: vectorstore.VectorStorePropertyTypeString, Description: "The run that wrote the topic"},
-		"run_topics":      {DataType: vectorstore.VectorStorePropertyTypeInteger, Description: "Topics the run set out to write"},
-	}
-	return vectors.CreateNamespace(ctx, namespace, dimension, properties)
 }
 
 // topicClusterCount picks how many clusters to ask k-means for.
