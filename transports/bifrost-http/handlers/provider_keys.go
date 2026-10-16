@@ -222,6 +222,7 @@ func (h *ProviderHandler) createProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "provider_key.created", "provider_key", redactedKey.ID, redactedKey.Name, nil, redactedKey)
 	SendJSON(ctx, redactedKey)
 }
 
@@ -261,6 +262,10 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		}
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to get provider key: %v", err))
 		return
+	}
+	var before json.RawMessage
+	if oldRedactedKey, err := h.inMemoryStore.GetProviderKeyRedacted(provider, keyID); err == nil {
+		before = lib.AuditSnapshot(oldRedactedKey)
 	}
 
 	if err := rejectUnknownOAuthKeyConfigFields(ctx.PostBody()); err != nil {
@@ -354,6 +359,7 @@ func (h *ProviderHandler) updateProviderKey(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "provider_key.updated", "provider_key", redactedKey.ID, redactedKey.Name, before, redactedKey)
 	SendJSON(ctx, redactedKey)
 }
 
@@ -406,6 +412,7 @@ func (h *ProviderHandler) deleteProviderKey(ctx *fasthttp.RequestCtx) {
 	}
 	h.rearmComplexitySemanticClassifier(provider)
 
+	lib.RecordAuditChange(ctx, "provider_key.deleted", "provider_key", redactedKey.ID, redactedKey.Name, redactedKey, nil)
 	SendJSON(ctx, redactedKey)
 }
 
@@ -445,6 +452,7 @@ func (h *ProviderHandler) refreshProviderModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "provider.models_refreshed", "provider", string(provider), string(provider), nil, map[string]any{"key_count": len(keys)})
 	SendJSON(ctx, ListProviderKeysResponse{Keys: keys, Total: len(keys)})
 }
 
@@ -488,6 +496,7 @@ func (h *ProviderHandler) refreshProviderKeyModels(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	lib.RecordAuditChange(ctx, "provider_key.models_refreshed", "provider_key", keyID, refreshedKey.Name, nil, map[string]any{"provider": string(provider), "key_id": keyID})
 	SendJSON(ctx, refreshedKey)
 }
 
