@@ -43105,7 +43105,7 @@
     },
     {
       "name": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102) (chat-responses-tool-replay)",
-      "description": "Regression coverage for PR #5102 (closes #5101): Vercel-AI-SDK-style clients replay an assistant tool call and its tool result on the second step of a run. When the compat plugin converts /v1/chat/completions to the OpenAI Responses API, the replayed tool call becomes a function_call input item that must NOT carry role - OpenAI rejects role on any non-message input item with 400 unknown_parameter input[N].role. Cases 1-2 drive the real conversion route (x-bf-compat forces convert_chat_to_responses); case 3 pins the wire invariant on the native /v1/responses route with a caller-supplied role-bearing function_call item. Cases 4-5 pin that a chat tool message with array content converts to function_call_output blocks in the Responses spelling (input_text, not the chat text type), which OpenAI and Azure rejected with \"Invalid value: 'text'. Supported values are: 'input_text', ...\" at input[N].output[0].type.",
+      "description": "Regression coverage for PR #5102 (closes #5101): Vercel-AI-SDK-style clients replay an assistant tool call and its tool result on the second step of a run. When the compat plugin converts /v1/chat/completions to the OpenAI Responses API, the replayed tool call becomes a function_call input item that must NOT carry role - OpenAI rejects role on any non-message input item with 400 unknown_parameter input[N].role. Cases 1-2 drive the real conversion route (x-bf-compat forces convert_chat_to_responses); case 3 pins the wire invariant on the native /v1/responses route with a caller-supplied role-bearing function_call item. Cases 4-5 pin that a chat tool message with array content converts to function_call_output blocks in the Responses spelling (input_text, not the chat text type), which OpenAI and Azure rejected with \"Invalid value: 'text'. Supported values are: 'input_text', ...\" at input[N].output[0].type. Cases 6-8 pin that a chat tool message with empty string content converts to a function_call_output that still carries output \"\"; the field used to be dropped and OpenAI rejected the request with \"Missing required parameter: 'input[N].output'\" (#8568).",
       "item": [
         {
           "name": "bedrock_mantle/openai.gpt-5.6-luna compat chat->responses: replayed tool call accepted (non-streaming) - chat-responses-tool-replay",
@@ -43393,6 +43393,177 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_paris_blocks\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_paris_blocks\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Thanks. Is that warm?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.1-codex-mini compat chat->responses: empty tool result keeps function_call_output.output (non-streaming) - chat-responses-tool-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('openai: empty tool result is not rejected as a missing output', function () {",
+                  "  pm.expect(text, 'function_call_output went out without output').to.not.match(/Missing required parameter: 'input\\[\\d+\\]\\.output'/);",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('chat->responses conversion actually fired', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.converted_request_type, 'conversion did not fire, so this row proves nothing: ' + text).to.eql('responses');",
+                  "});",
+                  "pm.test('openai: function_call_output carries output \"\" on the wire', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+                  "  pm.expect(outs.length, 'expected one function_call_output in the converted request: ' + JSON.stringify(raw)).to.equal(1);",
+                  "  pm.expect(outs[0], 'output key dropped: ' + JSON.stringify(outs[0])).to.have.property('output');",
+                  "  pm.expect(outs[0].output).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.1-codex-mini\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.1-codex-mini compat chat->responses: empty tool result keeps function_call_output.output (streaming) - chat-responses-tool-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('openai: empty tool result is not rejected as a missing output', function () {",
+                  "  pm.expect(text, 'function_call_output went out without output').to.not.match(/Missing required parameter: 'input\\[\\d+\\]\\.output'/);",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('openai: stream converted and finished without an error frame', function () {",
+                  "  var converted = false;",
+                  "  text.split('\\n').forEach(function (line) {",
+                  "    var t = line.replace(/\\r$/, '');",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    var payload = t.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    try { var ef = JSON.parse(payload).extra_fields || {}; if (ef.converted_request_type === 'responses') { converted = true; } } catch (e) {}",
+                  "  });",
+                  "  pm.expect(converted, 'conversion did not fire on any chunk, so this row proves nothing: ' + text).to.equal(true);",
+                  "  pm.expect(text, 'stream ended with an error frame: ' + text).to.not.include('\"error\"');",
+                  "  pm.expect(text, 'stream did not finish: ' + text).to.include('[DONE]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.1-codex-mini\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}],\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna compat chat->responses: empty tool result keeps function_call_output.output (non-streaming) - chat-responses-tool-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('bedrock_mantle: empty tool result is not rejected as a missing output', function () {",
+                  "  pm.expect(text, 'function_call_output went out without output').to.not.match(/Missing required parameter: 'input\\[\\d+\\]\\.output'/);",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('chat->responses conversion actually fired', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.converted_request_type, 'conversion did not fire, so this row proves nothing: ' + text).to.eql('responses');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -190333,7 +190504,7 @@
     },
     {
       "name": "143. Mistral content arrays return text or explicit streaming errors (#7906) (mistral-content-array)",
-      "description": "Deterministic, free fixture pin for #7906. A local SSE upstream emits original Mistral delta.content arrays through the real native provider parser. Three routes complete homogeneous text arrays; thinking, mixed and reference arrays terminate with a structured error instead of being dropped. Uses real dashboard login, a fresh app profile with no preexisting Mistral, an owned native provider with a dummy key, upstream wire witness and cleanup. Mistral is not a supported custom-provider base in this revision, so no allowlist changes or bypass mocker plugin are used. Same-host fixture started by run-mistral-content-array-fixture.mjs; scoped INCLUDE_PREVIEW=1 PARALLEL=0 only. User-run live harness; complete preparation below.\n\nUser-run setup (Linux/WSL Bash, repo root; Node, Go, jq, curl, docker, nc and lsof):\n1. Start the profile backing service: docker compose -f tests/docker-compose.yml up -d weaviate. Wait for curl -sf http://localhost:9000/v1/.well-known/ready and nc -z localhost 50051 to succeed. Check lsof -nP -iTCP:3021 -sTCP:LISTEN prints no listener; use another free port consistently if occupied.\n2. Make a fresh isolated profile (never run this on an existing app directory):\nmkdir -p tmp\nTASK_MISTRAL_APP_DIR=$(mktemp -d \"$PWD/tmp/mistral-content-array.XXXXXX\")\ngit show HEAD:tests/integrations/python/config.json | jq --arg db \"$TASK_MISTRAL_APP_DIR/config.db\" --arg logs \"$TASK_MISTRAL_APP_DIR/logs.db\" '.providers={} | .governance.routing_rules=[] | .governance.virtual_keys=[] | .governance.auth_config={\"is_enabled\":true,\"admin_username\":\"mistral_array_harness\",\"admin_password\":\"harness-only-password\"} | .config_store.config.path=$db | .logs_store.config.path=$logs | .mcp.client_configs=[] | .client.oauth2_server_config.issuer_url=\"http://localhost:3021\"' > \"$TASK_MISTRAL_APP_DIR/config.json\"\nprintf '%s\\n' \"$TASK_MISTRAL_APP_DIR\" > tmp/mistral-content-array-app-dir\n3. In a separate terminal, start only the same-host fixture (ENV_FILE must not already exist; choose another path for concurrent runs):\nnode tests/e2e/api/runners/run-mistral-content-array-fixture.mjs --env-out tmp/mistral-content-array.env.json\n4. Start the gateway from the reviewed source in another terminal:\nmake dev PORT=3021 APP_DIR=$(cat tmp/mistral-content-array-app-dir)\n5. After /health answers, obtain a disposable bootstrap session for the Makefile's authenticated raw-override preflight (do not print its token):\nTASK_MISTRAL_BOOTSTRAP_TOKEN=$(curl -fsS -c - -o /dev/null -H 'Content-Type: application/json' --data '{\"username\":\"mistral_array_harness\",\"password\":\"harness-only-password\"}' http://localhost:3021/api/session/login | awk '$6==\"token\" {print $7}')\ntest -n \"$TASK_MISTRAL_BOOTSTRAP_TOKEN\" && export BIFROST_E2E_AUTH_HEADER=\"Bearer $TASK_MISTRAL_BOOTSTRAP_TOKEN\"\n6. Run the full owned setup/wire/cleanup chain in one Newman process:\nmake run-provider-harness-test PROVIDER=mistral FEATURE=\"mistral-content-array\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 ENV_FILE=tmp/mistral-content-array.env.json BASE_URL=http://localhost:3021\n7. The collection removes its provider/key, witness and login session. Invalidate the separate bootstrap session after the run, then stop the two foreground servers:\ncurl -fsS -X POST -H \"Authorization: $BIFROST_E2E_AUTH_HEADER\" http://localhost:3021/api/session/logout >/dev/null\nunset BIFROST_E2E_AUTH_HEADER TASK_MISTRAL_BOOTSTRAP_TOKEN\nThe submitted rows are structurally validated; live execution belongs to the user. These six calls reach only the local fixture, with a dummy key; no real provider credential is needed.",
+      "description": "Deterministic, free fixture pin for #7906. A local SSE upstream emits original Mistral delta.content arrays through the real native provider parser. Three routes complete homogeneous text arrays; three routes stream a leading thinking block as reasoning followed by the answer text in the same delta (the zai-glm/magistral shape); text-then-thinking and reference arrays terminate with a structured error instead of being dropped. Uses real dashboard login, a fresh app profile with no preexisting Mistral, an owned native provider with a dummy key, upstream wire witness and cleanup. Mistral is not a supported custom-provider base in this revision, so no allowlist changes or bypass mocker plugin are used. Same-host fixture started by run-mistral-content-array-fixture.mjs; scoped INCLUDE_PREVIEW=1 PARALLEL=0 only. User-run live harness; complete preparation below.\n\nUser-run setup (Linux/WSL Bash, repo root; Node, Go, jq, curl, docker, nc and lsof):\n1. Start the profile backing service: docker compose -f tests/docker-compose.yml up -d weaviate. Wait for curl -sf http://localhost:9000/v1/.well-known/ready and nc -z localhost 50051 to succeed. Check lsof -nP -iTCP:3021 -sTCP:LISTEN prints no listener; use another free port consistently if occupied.\n2. Make a fresh isolated profile (never run this on an existing app directory):\nmkdir -p tmp\nTASK_MISTRAL_APP_DIR=$(mktemp -d \"$PWD/tmp/mistral-content-array.XXXXXX\")\ngit show HEAD:tests/integrations/python/config.json | jq --arg db \"$TASK_MISTRAL_APP_DIR/config.db\" --arg logs \"$TASK_MISTRAL_APP_DIR/logs.db\" '.providers={} | .governance.routing_rules=[] | .governance.virtual_keys=[] | .governance.auth_config={\"is_enabled\":true,\"admin_username\":\"mistral_array_harness\",\"admin_password\":\"harness-only-password\"} | .config_store.config.path=$db | .logs_store.config.path=$logs | .mcp.client_configs=[] | .client.oauth2_server_config.issuer_url=\"http://localhost:3021\"' > \"$TASK_MISTRAL_APP_DIR/config.json\"\nprintf '%s\\n' \"$TASK_MISTRAL_APP_DIR\" > tmp/mistral-content-array-app-dir\n3. In a separate terminal, start only the same-host fixture (ENV_FILE must not already exist; choose another path for concurrent runs):\nnode tests/e2e/api/runners/run-mistral-content-array-fixture.mjs --env-out tmp/mistral-content-array.env.json\n4. Start the gateway from the reviewed source in another terminal:\nmake dev PORT=3021 APP_DIR=$(cat tmp/mistral-content-array-app-dir)\n5. After /health answers, obtain a disposable bootstrap session for the Makefile's authenticated raw-override preflight (do not print its token):\nTASK_MISTRAL_BOOTSTRAP_TOKEN=$(curl -fsS -c - -o /dev/null -H 'Content-Type: application/json' --data '{\"username\":\"mistral_array_harness\",\"password\":\"harness-only-password\"}' http://localhost:3021/api/session/login | awk '$6==\"token\" {print $7}')\ntest -n \"$TASK_MISTRAL_BOOTSTRAP_TOKEN\" && export BIFROST_E2E_AUTH_HEADER=\"Bearer $TASK_MISTRAL_BOOTSTRAP_TOKEN\"\n6. Run the full owned setup/wire/cleanup chain in one Newman process:\nmake run-provider-harness-test PROVIDER=mistral FEATURE=\"mistral-content-array\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 ENV_FILE=tmp/mistral-content-array.env.json BASE_URL=http://localhost:3021\n7. The collection removes its provider/key, witness and login session. Invalidate the separate bootstrap session after the run, then stop the two foreground servers:\ncurl -fsS -X POST -H \"Authorization: $BIFROST_E2E_AUTH_HEADER\" http://localhost:3021/api/session/logout >/dev/null\nunset BIFROST_E2E_AUTH_HEADER TASK_MISTRAL_BOOTSTRAP_TOKEN\nThe submitted rows are structurally validated; live execution belongs to the user. These eight calls reach only the local fixture, with a dummy key; no real provider credential is needed.",
       "item": [
         {
           "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture local fixture identity - mistral-content-array - #7906",
@@ -190600,11 +190771,16 @@
                   "var errors = events.filter(function (e) { return e.error && typeof e.error.message === 'string'; });",
                   "var completed = events.filter(function (e) { return e.type === 'response.completed' || e.type === 'message_stop'; });",
                   "var text = '';",
+                  "var reasoning = '';",
                   "events.forEach(function (e) {",
-                  "  if (route === 'chat') (e.choices || []).forEach(function (c) { if (c.delta && typeof c.delta.content === 'string') text += c.delta.content; });",
+                  "  if (route === 'chat') (e.choices || []).forEach(function (c) { if (!c.delta) return; if (typeof c.delta.content === 'string') text += c.delta.content; if (typeof c.delta.reasoning === 'string') reasoning += c.delta.reasoning; });",
                   "  else if (route === 'responses' && e.type === 'response.output_text.delta') text += e.delta || '';",
+                  "  else if (route === 'responses' && e.type === 'response.reasoning_summary_text.delta') reasoning += e.delta || '';",
                   "  else if (route === 'anthropic' && e.type === 'content_block_delta' && e.delta && e.delta.type === 'text_delta') text += e.delta.text || '';",
+                  "  else if (route === 'anthropic' && e.type === 'content_block_delta' && e.delta && e.delta.type === 'thinking_delta') reasoning += e.delta.thinking || '';",
                   "});",
+                  "var thinking = pm.info.requestName.indexOf(' thinking-') >= 0;",
+                  "var nonce = pm.collectionVariables.get('mistralArrayNonce');",
                   "pm.test('array content produces the promised successful or explicit error stream', function () {",
                   "  if (unsupported) {",
                   "    pm.expect(errors.length, raw).to.equal(1);",
@@ -190612,9 +190788,11 @@
                   "    pm.expect(completed.length, 'unsupported content must not be reported completed: ' + raw).to.equal(0);",
                   "    pm.expect(doneMarkers, 'failed stream must not claim a clean terminal marker: ' + raw).to.equal(0);",
                   "    pm.expect(text, 'a mixed array must not leak a partial answer before rejecting its thinking block: ' + raw).to.equal('');",
+                  "    pm.expect(reasoning, 'a rejected array must not leak reasoning: ' + raw).to.equal('');",
                   "  } else {",
                   "    pm.expect(errors.length, raw).to.equal(0);",
-                  "    pm.expect(text, raw).to.equal('mistral array fixture ' + pm.collectionVariables.get('mistralArrayNonce'));",
+                  "    pm.expect(text, 'answer text after a thinking block must not be dropped: ' + raw).to.equal('mistral array fixture ' + nonce);",
+                  "    pm.expect(reasoning, 'thinking blocks must surface as reasoning: ' + raw).to.equal(thinking ? 'private reasoning ' + nonce : '');",
                   "    if (route === 'chat') {",
                   "      pm.expect(doneMarkers, raw).to.equal(1);",
                   "      pm.expect(events.some(function (e) { return (e.choices || []).some(function (c) { return c.finish_reason === 'stop'; }); }), raw).to.equal(true);",
@@ -190628,14 +190806,17 @@
                   "      pm.expect(completed.length, raw).to.equal(1);",
                   "      var starts = events.filter(function (e) { return e.type === 'content_block_start'; });",
                   "      var stops = events.filter(function (e) { return e.type === 'content_block_stop'; });",
-                  "      pm.expect(starts.length, raw).to.equal(1);",
-                  "      pm.expect(starts[0].content_block.type, raw).to.equal('text');",
-                  "      pm.expect(stops.map(function (e) { return e.index; }), raw).to.deep.equal([starts[0].index]);",
-                  "      var open = false;",
+                  "      pm.expect(starts.map(function (e) { return e.content_block.type; }), raw).to.deep.equal(thinking ? ['thinking', 'text'] : ['text']);",
+                  "      pm.expect(stops.map(function (e) { return e.index; }), raw).to.deep.equal(starts.map(function (e) { return e.index; }));",
+                  "      var openIndex = null, openType = null;",
+                  "      var deltaTypes = { thinking: ['thinking_delta', 'signature_delta'], text: ['text_delta'] };",
                   "      events.forEach(function (e) {",
-                  "        if (e.type === 'content_block_start') open = true;",
-                  "        if (e.type === 'content_block_delta') pm.expect(open && e.index === starts[0].index, 'every text delta targets the open block: ' + raw).to.equal(true);",
-                  "        if (e.type === 'content_block_stop') open = false;",
+                  "        if (e.type === 'content_block_start') { openIndex = e.index; openType = e.content_block.type; }",
+                  "        if (e.type === 'content_block_delta') {",
+                  "          pm.expect(e.index, 'every delta targets the open block: ' + raw).to.equal(openIndex);",
+                  "          pm.expect(deltaTypes[openType] || [], e.delta.type + ' inside an open ' + openType + ' block: ' + raw).to.include(e.delta.type);",
+                  "        }",
+                  "        if (e.type === 'content_block_stop') { openIndex = null; openType = null; }",
                   "      });",
                   "      pm.expect(events.some(function (e) { return e.type === 'message_delta' && e.delta.stop_reason === 'end_turn' && e.usage.output_tokens === 2; }), raw).to.equal(true);",
                   "    }",
@@ -190793,7 +190974,7 @@
               ]
             },
             {
-              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [chat] unsupported thinking-chat fails explicitly - mistral-content-array - #7906",
+              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [chat] thinking-chat streams reasoning and text - mistral-content-array - #7906",
               "protocolProfileBehavior": {
                 "disableCookies": true
               },
@@ -190926,11 +191107,101 @@
                   }
                 }
               ]
+            },
+            {
+              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [responses] thinking-responses streams reasoning and text - mistral-content-array - #7906",
+              "protocolProfileBehavior": {
+                "disableCookies": true
+              },
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{mistralArrayToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-response",
+                    "value": "true"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/responses",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"model\": \"mistral/mistral-array-fixture\", \"input\": \"mistral-content-array:thinking-responses:{{mistralArrayNonce}}\", \"stream\": true, \"max_output_tokens\": 8}"
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var ready = pm.collectionVariables.get('mistralArrayKeyReady');",
+                      "pm.test('prerequisite mistralArrayKeyReady exists', function () { pm.expect(ready).to.equal('1'); });",
+                      "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();",
+                      "pm.collectionVariables.set('mistralArrayThinkingResponsesAttempted', '1');"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [anthropic] thinking-anthropic streams reasoning and text - mistral-content-array - #7906",
+              "protocolProfileBehavior": {
+                "disableCookies": true
+              },
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{mistralArrayToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-response",
+                    "value": "true"
+                  }
+                ],
+                "url": "{{baseUrl}}/anthropic/v1/messages",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"model\": \"mistral/mistral-array-fixture\", \"messages\": [{\"role\": \"user\", \"content\": \"mistral-content-array:thinking-anthropic:{{mistralArrayNonce}}\"}], \"stream\": true, \"max_tokens\": 8}"
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var ready = pm.collectionVariables.get('mistralArrayKeyReady');",
+                      "pm.test('prerequisite mistralArrayKeyReady exists', function () { pm.expect(ready).to.equal('1'); });",
+                      "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();",
+                      "pm.collectionVariables.set('mistralArrayThinkingAnthropicAttempted', '1');"
+                    ]
+                  }
+                }
+              ]
             }
           ]
         },
         {
-          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture inspect actual six upstream array frames - mistral-content-array - #7906",
+          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture inspect actual eight upstream array frames - mistral-content-array - #7906",
           "protocolProfileBehavior": {
             "disableCookies": true
           },
@@ -190951,19 +191222,22 @@
                   "pm.test('upstream witness returns HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "pm.test('six gateway requests reached the Mistral SSE parser path', function () {",
+                  "pm.test('eight gateway requests reached the Mistral SSE parser path', function () {",
                   "  pm.expect(pm.collectionVariables.get('mistralArrayTextChatAttempted'), 'run the full scoped chain').to.equal('1');",
                   "  pm.expect(pm.collectionVariables.get('mistralArrayTextResponsesAttempted'), 'run the full scoped chain').to.equal('1');",
                   "  pm.expect(pm.collectionVariables.get('mistralArrayTextAnthropicAttempted'), 'run the full scoped chain').to.equal('1');",
                   "  pm.expect(pm.collectionVariables.get('mistralArrayThinkingChatAttempted'), 'run the full scoped chain').to.equal('1');",
                   "  pm.expect(pm.collectionVariables.get('mistralArrayMixedResponsesAttempted'), 'run the full scoped chain').to.equal('1');",
                   "  pm.expect(pm.collectionVariables.get('mistralArrayReferenceAnthropicAttempted'), 'run the full scoped chain').to.equal('1');",
+                  "  pm.expect(pm.collectionVariables.get('mistralArrayThinkingResponsesAttempted'), 'run the full scoped chain').to.equal('1');",
+                  "  pm.expect(pm.collectionVariables.get('mistralArrayThinkingAnthropicAttempted'), 'run the full scoped chain').to.equal('1');",
                   "  var rows = pm.response.json().requests;",
-                  "  pm.expect(rows.map(function (r) { return r.scenario; }), pm.response.text()).to.deep.equal(['text-chat','text-responses','text-anthropic','thinking-chat','mixed-responses','reference-anthropic']);",
+                  "  pm.expect(rows.map(function (r) { return r.scenario; }), pm.response.text()).to.deep.equal(['text-chat','text-responses','text-anthropic','thinking-chat','mixed-responses','reference-anthropic','thinking-responses','thinking-anthropic']);",
                   "  pm.expect(rows.every(function (r) { return r.method === 'POST' && r.path === '/v1/chat/completions' && r.model === 'mistral-array-fixture' && r.stream === true && Array.isArray(r.frame.choices[0].delta.content); }), pm.response.text()).to.equal(true);",
                   "  pm.expect(rows[0].frame.choices[0].delta.content.map(function (c) { return c.text; }).join('')).to.equal('mistral array fixture ' + pm.collectionVariables.get('mistralArrayNonce'));",
                   "  pm.expect(rows[3].frame.choices[0].delta.content[0].thinking[0].type).to.equal('text');",
                   "  pm.expect(rows[3].frame.choices[0].delta.content[0].signature).to.equal('fixture-signature');",
+                  "  [3, 6, 7].forEach(function (i) { pm.expect(rows[i].frame.choices[0].delta.content.map(function (c) { return c.type; })).to.deep.equal(['thinking', 'text', 'text']); });",
                   "  pm.expect(rows[4].frame.choices[0].delta.content.map(function (c) { return c.type; })).to.deep.equal(['text', 'thinking']);",
                   "  pm.expect(rows[5].frame.choices[0].delta.content[0].reference_ids).to.deep.equal([7, 'fixture-' + pm.collectionVariables.get('mistralArrayNonce')]);",
                   "});"
@@ -269307,7 +269581,8 @@
                   "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
                   "});",
                   "pm.test('bedrock converse: cache_control on the tool_calls entry becomes a cachePoint directly after its toolUse (was silently dropped before the fix)', function () {",
-                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  var raw = (pm.response.json().extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'extra_fields.raw_request missing; was x-bf-send-back-raw-request: true honored? body=' + text).to.exist;",
                   "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
                   "  var assistant = (raw.messages || []).filter(function (m) { return m.role === 'assistant'; })[0];",
                   "  pm.expect(assistant, 'no assistant message in raw_request: ' + JSON.stringify(raw)).to.not.equal(undefined);",
@@ -273517,6 +273792,210 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"openai_decisions_optin/kserve-decider\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "252. Mistral rejects replayed assistant reasoning (mistral-reasoning-replay)",
+      "description": "Mistral validates chat requests strictly and 422s any unknown assistant field (extra_forbidden). Once Bifrost surfaces zai-glm-5-3 thinking blocks as reasoning, clients send that reasoning back on the next turn: reasoning_content on /v1/chat/completions, a thinking block on /anthropic/v1/messages (Claude Code), a reasoning item on /v1/responses. All of them reached Mistral as assistant reasoning_content and failed every follow-up turn. Each case replays one turn of reasoning and must get a 200; the unary chat case also asserts the outbound body carries no reasoning field. Vertex-hosted Mistral shares applyMistralCompatibility and is pinned by the Go unit test only (no Vertex Mistral model in the harness profile).",
+      "item": [
+        {
+          "name": "mistral/zai-glm-5-3 /v1/chat/completions assistant reasoning_content replay is stripped before Mistral - mistral-reasoning-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('replayed assistant reasoning is not rejected by Mistral', function () {",
+                  "  pm.expect(body, 'Mistral rejected a replayed reasoning field (extra_forbidden): ' + body).to.not.include('extra_forbidden');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('reasoning_content never reaches the Mistral request body', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  var assistant = (parsed.messages || []).filter(function (m) { return m.role === 'assistant'; })[0];",
+                  "  pm.expect(assistant, 'no assistant message in raw_request: ' + JSON.stringify(raw)).to.not.equal(undefined);",
+                  "  pm.expect(assistant, 'assistant reasoning leaked to Mistral: ' + JSON.stringify(assistant)).to.not.have.any.keys('reasoning_content', 'reasoning', 'reasoning_details');",
+                  "  pm.expect(assistant.content, 'assistant answer text must survive the strip').to.equal('Hi! What can I help you with today?');",
+                  "  pm.expect(pm.response.json().choices, 'no choices returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"Hi! What can I help you with today?\",\"reasoning_content\":\"Simple greeting. Respond briefly.\"},{\"role\":\"user\",\"content\":\"Reply with just the word ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mistral/zai-glm-5-3 /v1/chat/completions streaming assistant reasoning_content replay is stripped before Mistral - mistral-reasoning-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('replayed assistant reasoning is not rejected by Mistral', function () {",
+                  "  pm.expect(body, 'Mistral rejected a replayed reasoning field (extra_forbidden): ' + body).to.not.include('extra_forbidden');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('stream completes without an error frame', function () {",
+                  "  pm.expect(body, 'no SSE chunks returned: ' + body).to.include('data:');",
+                  "  pm.expect(body, 'stream ended with an error frame: ' + body).to.not.include('\"error\"');",
+                  "  pm.expect(body, 'stream did not finish: ' + body).to.include('[DONE]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"max_tokens\":512,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"Hi! What can I help you with today?\",\"reasoning_content\":\"Simple greeting. Respond briefly.\"},{\"role\":\"user\",\"content\":\"Reply with just the word ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mistral/zai-glm-5-3 /anthropic/v1/messages streaming thinking block replay (Claude Code shape) is stripped before Mistral - mistral-reasoning-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('replayed assistant reasoning is not rejected by Mistral', function () {",
+                  "  pm.expect(body, 'Mistral rejected a replayed reasoning field (extra_forbidden): ' + body).to.not.include('extra_forbidden');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('anthropic stream completes without an error event', function () {",
+                  "  pm.expect(body, 'stream ended with an error event: ' + body).to.not.include('event: error');",
+                  "  pm.expect(body, 'stream did not reach message_stop: ' + body).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"max_tokens\":512,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"Simple greeting. Respond briefly.\",\"signature\":\"\"},{\"type\":\"text\",\"text\":\"Hi! What can I help you with today?\"}]},{\"role\":\"user\",\"content\":\"Reply with just the word ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mistral/zai-glm-5-3 /v1/responses reasoning item replay is stripped before Mistral - mistral-reasoning-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('replayed assistant reasoning is not rejected by Mistral', function () {",
+                  "  pm.expect(body, 'Mistral rejected a replayed reasoning field (extra_forbidden): ' + body).to.not.include('extra_forbidden');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('responses request completes with a message', function () {",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.status, 'response not completed: ' + body).to.equal('completed');",
+                  "  pm.expect((json.output || []).some(function (o) { return o.type === 'message'; }), 'no message output: ' + body).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"max_output_tokens\":512,\"input\":[{\"role\":\"user\",\"content\":\"hi\"},{\"type\":\"reasoning\",\"summary\":[],\"content\":[{\"type\":\"reasoning_text\",\"text\":\"Simple greeting. Respond briefly.\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi! What can I help you with today?\"}]},{\"role\":\"user\",\"content\":\"Reply with just the word ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
             }
           }
         }
