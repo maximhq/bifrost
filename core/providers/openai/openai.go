@@ -476,7 +476,9 @@ func HandleOpenAITextCompletionRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
@@ -674,7 +676,9 @@ func HandleOpenAITextCompletionStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, time.Since(startTime))
+		}
 		latency := time.Since(startTime)
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
@@ -1143,7 +1147,9 @@ func HandleOpenAIChatCompletionRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
@@ -1409,7 +1415,9 @@ func HandleOpenAIChatCompletionStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
@@ -2102,7 +2110,9 @@ func HandleOpenAIResponsesRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
@@ -2335,7 +2345,9 @@ func HandleOpenAIResponsesStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 		}
@@ -2637,7 +2649,9 @@ func HandleOpenAIEmbeddingRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		logger.Debug(fmt.Sprintf("error from %s provider: status %d", providerName, resp.StatusCode()))
 		if customErrorConverter != nil {
 			return nil, providerUtils.EnrichError(ctx, customErrorConverter(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
@@ -2813,7 +2827,9 @@ func HandleOpenAISpeechRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		logger.Debug(fmt.Sprintf("error from %s provider: status %d", providerName, resp.StatusCode()))
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
@@ -2993,7 +3009,9 @@ func HandleOpenAISpeechStreamRequest(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
@@ -3297,7 +3315,9 @@ func HandleOpenAITranscriptionRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.SetErrorLatency(readErr, latency)
+		}
 		logger.Debug("error from %s provider: status %d", providerName, resp.StatusCode())
 		return nil, providerUtils.SetErrorLatency(ParseOpenAIError(resp), latency)
 	}
@@ -3573,7 +3593,9 @@ func HandleOpenAITranscriptionStreamRequest(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.SetErrorLatency(readErr, latency)
+		}
 		return nil, providerUtils.SetErrorLatency(ParseOpenAIError(resp), latency)
 	}
 
@@ -3856,7 +3878,9 @@ func HandleOpenAIImageGenerationRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		logger.Debug(fmt.Sprintf("error from %s provider: status %d", providerName, resp.StatusCode()))
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
@@ -4044,7 +4068,9 @@ func HandleOpenAIImageGenerationStreaming(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonBody, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
@@ -4451,7 +4477,9 @@ func HandleOpenAIRerankRequest(
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		logger.Debug(fmt.Sprintf("error from %s provider: status %d", providerName, resp.StatusCode()))
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
@@ -5326,7 +5354,9 @@ func HandleOpenAICompactionRequest(
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		logger.Debug("error from %s provider with status %d", providerName, resp.StatusCode())
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
@@ -5440,7 +5470,9 @@ func HandleOpenAICountTokensRequest(
 
 	// Handle error response
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		logger.Debug(fmt.Sprintf("error from %s provider: status %d", providerName, resp.StatusCode()))
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
@@ -5604,7 +5636,9 @@ func HandleOpenAIImageEditRequest(
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, nil, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
@@ -5780,7 +5814,9 @@ func HandleOpenAIImageEditStreamRequest(
 	// Check for HTTP errors
 	if resp.StatusCode() != fasthttp.StatusOK {
 		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, nil, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
@@ -6181,7 +6217,9 @@ func HandleOpenAIImageVariationRequest(
 	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
 
 	if resp.StatusCode() != fasthttp.StatusOK {
-		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		if readErr := providerUtils.MaterializeStreamErrorBody(ctx, resp); readErr != nil {
+			return nil, providerUtils.EnrichError(ctx, readErr, nil, nil, sendBackRawRequest, sendBackRawResponse, latency)
+		}
 		return nil, providerUtils.EnrichError(ctx, ParseOpenAIError(resp), nil, nil, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
