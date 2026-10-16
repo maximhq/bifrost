@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
+import { createHash } from "crypto";
 import { execFileSync } from "child_process";
-import { chmodSync, createWriteStream, existsSync, fsyncSync, mkdirSync, mkdtempSync, rmSync } from "fs";
+import { chmodSync, createReadStream, createWriteStream, existsSync, fsyncSync, mkdirSync, mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Readable } from "stream";
@@ -241,6 +242,39 @@ async function downloadBinary(url, dest) {
 	chmodSync(dest, 0o755);
 }
 
+async function verifyBinaryIntegrity(binaryUrl, binaryPath) {
+	const sha256Url = binaryUrl + ".sha256";
+	try {
+		const res = await fetch(sha256Url);
+		if (!res.ok) {
+			console.warn(`⚠️  No .sha256 sidecar found (${res.status}), skipping integrity check`);
+			return true;
+		}
+		const expectedHash = (await res.text()).trim().split(/\s+/)[0].toLowerCase();
+		if (!/^[0-9a-f]{64}$/.test(expectedHash)) {
+			console.warn(`⚠️  Invalid hash format in sidecar, skipping integrity check`);
+			return true;
+		}
+		const actualHash = await new Promise((resolve, reject) => {
+			const hash = createHash("sha256");
+			const stream = createReadStream(binaryPath);
+			stream.on("data", (chunk) => hash.update(chunk));
+			stream.on("end", () => resolve(hash.digest("hex")));
+			stream.on("error", reject);
+		});
+		if (actualHash !== expectedHash) {
+			console.error(`\n❌ Integrity check FAILED!\n   Expected: ${expectedHash}\n   Actual:   ${actualHash}`);
+			rmSync(binaryPath, { force: true });
+			return false;
+		}
+		console.log(`🔒 Integrity verified (SHA-256 match)`);
+		return true;
+	} catch (err) {
+		console.warn(`⚠️  Integrity check unavailable: ${err.message}`);
+		return true;
+	}
+}
+
 // Returns the os cache directory path for storing binaries
 // Linux: $XDG_CACHE_HOME or ~/.cache
 // macOS: ~/Library/Caches
@@ -352,6 +386,11 @@ function formatBytes(bytes) {
 
 		if (!namedVersionFound || !existsSync(binaryPath)) {
 			await downloadBinary(downloadUrls[i], binaryPath);
+			const integrityOk = await verifyBinaryIntegrity(downloadUrls[i], binaryPath);
+			if (!integrityOk) {
+				console.error(`❌ Binary integrity check failed for ${downloadUrls[i]}`);
+				process.exit(1);
+			}
 			console.log(`✅ Downloaded binary to ${binaryPath}`);
 
 			// Add a small delay to ensure file is fully written and not busy
