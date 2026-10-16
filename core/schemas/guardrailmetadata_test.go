@@ -153,3 +153,62 @@ func TestGuardrailMetadataEmptyCloneIsNil(t *testing.T) {
 	assert.Nil(t, (&BifrostGuardrailMetadata{}).Clone())
 	assert.False(t, SetGuardrailMetadataOnContext(NewBifrostContext(nil, NoDeadline), &BifrostGuardrailMetadata{}))
 }
+
+// TestGuardrailMetadataKeepsInterventionOnlyMetadata verifies a block with no judge usage is still stored.
+func TestGuardrailMetadataKeepsInterventionOnlyMetadata(t *testing.T) {
+	ctx := NewBifrostContext(nil, NoDeadline)
+	ruleID := uint(11)
+	intervention := BifrostGuardrailIntervention{
+		Phase:             "output",
+		RuleID:            &ruleID,
+		RuleName:          "block-secrets",
+		GuardrailName:     "azure-content",
+		GuardrailProvider: "azure",
+		Reason:            "Secret detected",
+		Assessments:       []string{"secrets AWS_KEY"},
+	}
+
+	require.True(t, AppendGuardrailInterventionOnContext(ctx, intervention))
+	metadata, ok := GuardrailMetadataFromContext(ctx)
+	require.True(t, ok)
+	assert.Empty(t, metadata.JudgeCalls)
+	assert.Empty(t, metadata.Detections)
+	require.Len(t, metadata.Interventions, 1)
+	assert.Equal(t, intervention, metadata.Interventions[0])
+}
+
+// TestGuardrailMetadataInterventionSnapshotIsOwned verifies nested intervention fields cannot alias context state.
+func TestGuardrailMetadataInterventionSnapshotIsOwned(t *testing.T) {
+	ctx := NewBifrostContext(nil, NoDeadline)
+	ruleID := uint(4)
+	require.True(t, AppendGuardrailInterventionOnContext(ctx, BifrostGuardrailIntervention{
+		RuleID:      &ruleID,
+		Assessments: []string{"pii EMAIL"},
+	}))
+
+	first, ok := GuardrailMetadataFromContext(ctx)
+	require.True(t, ok)
+	*first.Interventions[0].RuleID = 999
+	first.Interventions[0].Assessments[0] = "mutated"
+
+	second, ok := GuardrailMetadataFromContext(ctx)
+	require.True(t, ok)
+	assert.Equal(t, uint(4), *second.Interventions[0].RuleID)
+	assert.Equal(t, "pii EMAIL", second.Interventions[0].Assessments[0])
+}
+
+// TestGuardrailMetadataInterventionsPreserveOtherLists verifies appending a block keeps detections and judge calls.
+func TestGuardrailMetadataInterventionsPreserveOtherLists(t *testing.T) {
+	ctx := NewBifrostContext(nil, NoDeadline)
+	require.True(t, AppendGuardrailDetectionOnContext(ctx, BifrostGuardrailDetection{RuleName: "detect"}))
+	require.True(t, AppendGuardrailJudgeCallOnContext(ctx, BifrostGuardrailJudgeCall{TotalTokens: 5}))
+	require.True(t, AppendGuardrailInterventionOnContext(ctx, BifrostGuardrailIntervention{RuleName: "block"}))
+	assert.False(t, AppendGuardrailInterventionOnContext(nil, BifrostGuardrailIntervention{RuleName: "ignored"}))
+
+	metadata, ok := GuardrailMetadataFromContext(ctx)
+	require.True(t, ok)
+	require.Len(t, metadata.Detections, 1)
+	require.Len(t, metadata.JudgeCalls, 1)
+	require.Len(t, metadata.Interventions, 1)
+	assert.Equal(t, "block", metadata.Interventions[0].RuleName)
+}
