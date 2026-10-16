@@ -4122,6 +4122,12 @@
                     "default": 0,
                     "description": "Delay in milliseconds between consecutive buffered events after block-capable streaming output guardrails allow the response. 0 sends the buffered events immediately."
                   },
+                  "output_mode": {
+                    "type": "string",
+                    "enum": ["enforce", "monitor"],
+                    "default": "enforce",
+                    "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
+                  },
                   "provider_config_ids": {
                     "type": "array",
                     "items": {
