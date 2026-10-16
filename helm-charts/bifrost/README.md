@@ -27,6 +27,7 @@ Official Helm charts for deploying [Bifrost](https://github.com/maximhq/bifrost)
 - `circuitBreakerConfig` policies: `default_cooldown` accepts any Go duration (e.g. `1m30s`) or integer nanoseconds, `condition.operator` is case-insensitive, setting both `header_value` and `header_contains` on a signal is rejected, and name, provider and model fields must be non-empty.
 - Routing rules: targets and object fallbacks accept `key_id`, setting it together with `provider_key_name` is rejected as config load rejects it, a target key selector requires `provider`, rules accept `chain_rule`, and the example in `values.yaml` no longer uses invalid values (`model: ""`, bare `fallbacks: ["openai"]`).
 - A provider key's `weight` is now optional, as documented; the chart already defaults it to 1.
+- Documented `enabled` on provider keys (`bifrost.providers.<name>.keys[].enabled`, renders into `providers.<name>.keys[].enabled`; also added to config.schema.json). Set `false` to keep a key configured but skip it in key selection, the same as the UI's Enabled toggle. New keys default to `true`; omitting it on an existing key keeps the stored value. Bifrost now saves the value from config.json on restart, so a key whose field was previously unset can be disabled from values; previously the stored value won.
 
 ### 2.1.44
 
@@ -951,6 +952,8 @@ vectorStore:
 Configure AI provider API keys:
 
 > **Note:** `keys[].weight` is optional in Helm values. If omitted, the chart renders it as `1`.
+>
+> **Note:** `keys[].enabled` is optional. New keys default to `true`, and omitting it on an existing key keeps its stored value (for example a UI toggle). Set it to `false` to keep a key configured but skip it during key selection (the **Enabled** toggle in the UI).
 
 ```yaml
 bifrost:

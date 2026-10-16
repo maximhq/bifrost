@@ -168,6 +168,7 @@ Tests for key Enabled and UseForBatchAPI field handling.
 |--------------------------------------------------|----------------------------------------------|
 | TestGenerateKeyHash_EnabledField                 | Enabled field affects hash (true/false/nil)  |
 | TestSQLite_Key_EnabledChange_Detected            | Enabled change detected during sync          |
+| TestSQLite_Key_EnabledOmittedToFalse_Detected    | Omitted → enabled:false detected during sync |
 | TestGenerateKeyHash_UseForBatchAPIField          | UseForBatchAPI field affects hash            |
 | TestSQLite_Key_UseForBatchAPIChange_Detected     | UseForBatchAPI change detected during sync   |
 
@@ -18330,7 +18331,7 @@ func TestGenerateKeyHash_EnabledField(t *testing.T) {
 			expectEqual: false,
 		},
 		{
-			name: "enabled_nil_vs_false_same_hash",
+			name: "enabled_nil_vs_false_different_hash",
 			key1: schemas.Key{
 				Name:    "test-key",
 				Value:   *schemas.NewSecretVar("sk-123"),
@@ -18343,7 +18344,7 @@ func TestGenerateKeyHash_EnabledField(t *testing.T) {
 				Weight:  1,
 				Enabled: &enabledFalse,
 			},
-			expectEqual: true,
+			expectEqual: false,
 		},
 		{
 			name: "same_enabled_true_same_hash",
@@ -18447,12 +18448,90 @@ func TestSQLite_Key_EnabledChange_Detected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Second LoadConfig failed: %v", err)
 	}
-	defer config2.Close(context.Background())
 
 	// Verify Enabled changed to false in the in-memory config
 	openaiConfig2 := config2.Providers[schemas.OpenAI]
 	if openaiConfig2.Keys[0].Enabled == nil || *openaiConfig2.Keys[0].Enabled {
 		t.Error("Expected Enabled=false after second load, but got true or nil")
+	}
+	config2.Close(context.Background())
+
+	// Third load with the file unchanged: the stored row is used, so it must hold false too
+	config3, err := LoadConfig(context.Background(), tempDir)
+	if err != nil {
+		t.Fatalf("Third LoadConfig failed: %v", err)
+	}
+	defer config3.Close(context.Background())
+	if enabled := config3.Providers[schemas.OpenAI].Keys[0].Enabled; enabled == nil || *enabled {
+		t.Error("Expected Enabled=false to be persisted and survive a restart, but got true or nil")
+	}
+}
+
+// TestSQLite_Key_EnabledOmittedToFalse_Detected verifies that adding enabled=false to a
+// key that was first loaded without the field disables it on the next load, instead of the
+// stored copy winning because both forms hashed the same.
+func TestSQLite_Key_EnabledOmittedToFalse_Detected(t *testing.T) {
+	initTestLogger()
+	tempDir := createTempDir(t)
+
+	enabledFalse := false
+	keyID := uuid.NewString()
+
+	initialConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{
+					ID:     keyID,
+					Name:   "test-key",
+					Value:  *schemas.NewSecretVar("sk-test-123"),
+					Weight: 1,
+				},
+			},
+		},
+	}, tempDir)
+
+	createConfigFile(t, tempDir, initialConfig)
+	config1, err := LoadConfig(context.Background(), tempDir)
+	if err != nil {
+		t.Fatalf("First LoadConfig failed: %v", err)
+	}
+	if enabled := config1.Providers[schemas.OpenAI].Keys[0].Enabled; enabled != nil && !*enabled {
+		t.Fatal("Expected key to be enabled after first load")
+	}
+	config1.Close(context.Background())
+
+	updatedConfig := makeConfigDataWithProvidersAndDir(map[string]configstore.ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{
+					ID:      keyID,
+					Name:    "test-key",
+					Value:   *schemas.NewSecretVar("sk-test-123"),
+					Weight:  1,
+					Enabled: &enabledFalse,
+				},
+			},
+		},
+	}, tempDir)
+
+	createConfigFile(t, tempDir, updatedConfig)
+	config2, err := LoadConfig(context.Background(), tempDir)
+	if err != nil {
+		t.Fatalf("Second LoadConfig failed: %v", err)
+	}
+	if enabled := config2.Providers[schemas.OpenAI].Keys[0].Enabled; enabled == nil || *enabled {
+		t.Error("Expected Enabled=false after second load, but got true or nil")
+	}
+	config2.Close(context.Background())
+
+	// Third load with the file unchanged: the stored row is used, so it must hold false too
+	config3, err := LoadConfig(context.Background(), tempDir)
+	if err != nil {
+		t.Fatalf("Third LoadConfig failed: %v", err)
+	}
+	defer config3.Close(context.Background())
+	if enabled := config3.Providers[schemas.OpenAI].Keys[0].Enabled; enabled == nil || *enabled {
+		t.Error("Expected Enabled=false to be persisted and survive a restart, but got true or nil")
 	}
 }
 
