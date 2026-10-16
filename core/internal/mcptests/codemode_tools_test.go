@@ -1,12 +1,15 @@
 package mcptests
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -977,4 +980,104 @@ result = {"result": r, "format": "responses"}`
 		assert.Equal(t, "responses", resultObj["format"])
 		assert.Contains(t, fmt.Sprintf("%v", resultObj["result"]), "42")
 	}
+}
+
+// =============================================================================
+// RESULT SHAPES REACHING THE SCRIPT
+// =============================================================================
+
+// buildResultShapesServer serves one tool per result shape code mode has to hand a script:
+// several JSON blocks, structured content, and JSON wrapped in a JSON string.
+func buildResultShapesServer(t *testing.T) *server.MCPServer {
+	t.Helper()
+	s := server.NewMCPServer("result-shapes", "1.0.0", server.WithToolCapabilities(true))
+	add := func(name string, result *mcpgo.CallToolResult) {
+		s.AddTool(mcpgo.NewTool(name, mcpgo.WithDescription(name)), func(context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+			return result, nil
+		})
+	}
+	add("multi_block", &mcpgo.CallToolResult{Content: []mcpgo.Content{
+		mcpgo.NewTextContent(`{"id":1}`),
+		mcpgo.NewTextContent(`{"id":2}`),
+	}})
+	add("structured", &mcpgo.CallToolResult{
+		Content:           []mcpgo.Content{mcpgo.NewTextContent(`{"title":"from text"}`)},
+		StructuredContent: map[string]any{"title": "from structured"},
+	})
+	add("json_string", mcpgo.NewToolResultText(`"{\"title\":\"Example Domain\"}"`))
+	add("quoted_number", mcpgo.NewToolResultText(`"123"`))
+	return s
+}
+
+// runResultShapesCode runs code through executeToolCode with the result-shapes server bound as "shapes".
+func runResultShapesCode(t *testing.T, code string) string {
+	t.Helper()
+	manager := setupMCPManager(t)
+	require.NoError(t, manager.AddClient(context.Background(), &schemas.MCPClientConfig{
+		ID:               "result-shapes-id",
+		Name:             "shapes",
+		ConnectionType:   schemas.MCPConnectionTypeInProcess,
+		InProcessServer:  buildResultShapesServer(t),
+		IsCodeModeClient: true,
+		ToolsToExecute:   []string{"*"},
+	}))
+	bf := setupBifrost(t)
+	bf.SetMCPManager(manager)
+
+	argsJSON, err := json.Marshal(map[string]interface{}{"code": code})
+	require.NoError(t, err)
+	result, bifrostErr := bf.ExecuteChatMCPTool(createTestContext(), &schemas.ChatAssistantMessageToolCall{
+		ID:   schemas.Ptr("call-result-shapes"),
+		Type: schemas.Ptr("function"),
+		Function: schemas.ChatAssistantMessageToolCallFunction{
+			Name:      schemas.Ptr("executeToolCode"),
+			Arguments: string(argsJSON),
+		},
+	})
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, result)
+	require.NotNil(t, result.Content)
+	require.NotNil(t, result.Content.ContentStr)
+	return *result.Content.ContentStr
+}
+
+func TestCodeMode_MultiBlockResultIsAList(t *testing.T) {
+	t.Parallel()
+
+	text := runResultShapesCode(t, "r = shapes.multi_block()\nresult = [type(r)] + ([len(r), r[1][\"id\"]] if type(r) == \"list\" else [])")
+
+	value, hasError, errorMsg := ParseCodeModeResponse(t, text)
+	require.False(t, hasError, errorMsg)
+	assert.Equal(t, []interface{}{"list", float64(2), float64(2)}, value)
+}
+
+func TestCodeMode_StructuredContentWinsOverText(t *testing.T) {
+	t.Parallel()
+
+	text := runResultShapesCode(t, "r = shapes.structured()\nresult = r[\"title\"]")
+
+	value, hasError, errorMsg := ParseCodeModeResponse(t, text)
+	require.False(t, hasError, errorMsg)
+	assert.Equal(t, "from structured", value)
+}
+
+func TestCodeMode_JSONStringResultIsDecoded(t *testing.T) {
+	t.Parallel()
+
+	text := runResultShapesCode(t, "r = shapes.json_string()\nresult = r[\"title\"] if type(r) == \"dict\" else type(r)")
+
+	value, hasError, errorMsg := ParseCodeModeResponse(t, text)
+	require.False(t, hasError, errorMsg)
+	assert.Equal(t, "Example Domain", value)
+}
+
+// Only an object or array is unwrapped: a quoted scalar is the string the server meant to send.
+func TestCodeMode_QuotedScalarResultStaysString(t *testing.T) {
+	t.Parallel()
+
+	text := runResultShapesCode(t, "r = shapes.quoted_number()\nresult = [type(r), r]")
+
+	value, hasError, errorMsg := ParseCodeModeResponse(t, text)
+	require.False(t, hasError, errorMsg)
+	assert.Equal(t, []interface{}{"string", "123"}, value)
 }

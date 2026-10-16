@@ -274000,6 +274000,346 @@
           }
         }
       ]
+    },
+    {
+      "name": "253. Code mode hands tool results to scripts in the shape they expect (code-mode-results) [SERIAL]",
+      "description": "A nested tool call inside executeToolCode hands the script a value, but results arrived in the wrong shape: several JSON text blocks were joined into an unparseable `{...}{...}` string, `structuredContent` was ignored, and JSON wrapped in a JSON string stayed a string. These cases pin each shape end to end through the SSE fixture (examples/mcps/remote-test-server, which serves multi_block, structured_result and json_string for this folder).\n\nSerial, and it provisions its own client for the same reason as folder 210: a code-mode client makes the four meta-tools visible to every MCP-bearing request while it exists.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-results provision a code-mode client on the SSE fixture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Per-run name, so two runs against one gateway never contend, and the sweep below can",
+                  "// reap anything an interrupted run left behind by its prefix.",
+                  "pm.collectionVariables.set('codeModeResultsClient', 'harness_codemode_results_' + Date.now());",
+                  "pm.collectionVariables.set('codeModeResultsQueue', '[]');",
+                  "pm.collectionVariables.set('codeModeResultsSweeps', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeResultsClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"multi_block\",\n    \"structured_result\",\n    \"json_string\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"multi_block\",\n    \"structured_result\",\n    \"json_string\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-results several JSON text blocks reach the script as a list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('several JSON text blocks reach the script as a list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value, 'multi-block result did not arrive as a list: ' + content).to.eql(['list', 2, 'second']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-results\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeResultsClient}}.multi_block()\\\\nresult = [type(r), len(r), r[1][\\\\\\\"title\\\\\\\"]] if type(r) == \\\\\\\"list\\\\\\\" else [type(r)]\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-results structuredContent wins over its text copy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('structuredContent wins over its text copy', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value, 'the script got the text copy, not the structured result: ' + content).to.equal('structured');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-results\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"result = {{codeModeResultsClient}}.structured_result()[\\\\\\\"source\\\\\\\"]\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-results JSON wrapped in a JSON string is decoded",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('JSON wrapped in a JSON string is decoded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value, 'the wrapped object stayed a string: ' + content).to.equal('Example Domain');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-results\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeResultsClient}}.json_string()\\\\nresult = r[\\\\\\\"title\\\\\\\"] if type(r) == \\\\\\\"dict\\\\\\\" else type(r)\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-results queue this run's client, plus any stale leftovers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeResultsClient');",
+                  "var PREFIX = 'harness_codemode_results_';",
+                  "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
+                  "// Anything younger than this belongs to a run that may still be executing: never touch it.",
+                  "var STALE_MS = 3600000;",
+                  "pm.test('this run\\'s code-mode client is listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients || [];",
+                  "  var mine = null, stale = [];",
+                  "  for (var i = 0; i < clients.length; i++) {",
+                  "    var cfg = clients[i].config;",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf(PREFIX) !== 0) { continue; }",
+                  "    if (cfg.name === client) { mine = cfg.client_id; continue; }",
+                  "    var stamp = parseInt(cfg.name.substring(PREFIX.length), 10);",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
+                  "  }",
+                  "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
+                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
+                  "  pm.collectionVariables.set('codeModeResultsQueue', JSON.stringify([mine].concat(stale)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-results remove every queued code-mode client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeResultsQueue') || '[]');",
+                  "// An empty queue means the listing above already failed: skip, rather than add a second failure.",
+                  "if (!queue.length) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('codeModeResultsClientId', queue[0]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "",
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeResultsQueue') || '[]');",
+                  "// Only a removed client leaves the queue: a failed delete stays queued for the next pass.",
+                  "if (pm.response.code === 200) {",
+                  "  queue.shift();",
+                  "  pm.collectionVariables.set('codeModeResultsQueue', JSON.stringify(queue));",
+                  "}",
+                  "",
+                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
+                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeResultsSweeps') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeResultsSweeps', String(sweeps));",
+                  "",
+                  "if (queue.length > 0 && sweeps < 10) {",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
+                  "  pm.test('the sweep drained every queued client', function () {",
+                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{codeModeResultsClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{codeModeResultsClientId}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

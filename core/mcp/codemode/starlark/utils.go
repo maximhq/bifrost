@@ -15,6 +15,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // serverInstructionsComment renders the client's upstream instructions, or "" if it advertises
@@ -38,15 +39,47 @@ func extractResultFromChatMessage(msg *schemas.ChatMessage) interface{} {
 	if msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
 		return nil
 	}
+	return decodeToolResult(*msg.Content.ContentStr)
+}
 
-	rawResult := *msg.Content.ContentStr
-
-	var finalResult interface{}
-	if err := sonic.Unmarshal([]byte(rawResult), &finalResult); err != nil {
-		return rawResult
+// decodeToolResult turns a tool's text result into the value a script receives: the decoded
+// JSON when the text is JSON, the text itself otherwise. Some servers wrap their JSON payload
+// in a JSON string, so a decode that yields a string holding an object or array is decoded
+// once more. A quoted scalar such as "123" stays the string the server sent.
+func decodeToolResult(raw string) interface{} {
+	var value interface{}
+	if err := sonic.Unmarshal([]byte(raw), &value); err != nil {
+		return raw
 	}
+	if wrapped, ok := value.(string); ok {
+		trimmed := strings.TrimSpace(wrapped)
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			var inner interface{}
+			if err := sonic.Unmarshal([]byte(trimmed), &inner); err == nil {
+				return inner
+			}
+		}
+	}
+	return value
+}
 
-	return finalResult
+// joinTextBlocks joins a result's text blocks. Several blocks that are each valid JSON become
+// one JSON array, so a server that sends one result per block still hands the script a list;
+// anything else is joined with newlines so adjacent blocks never run together.
+func joinTextBlocks(texts []string) string {
+	if len(texts) > 1 {
+		allJSON := true
+		for _, text := range texts {
+			if !gjson.Valid(text) {
+				allJSON = false
+				break
+			}
+		}
+		if allJSON {
+			return "[" + strings.Join(texts, ",") + "]"
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 // extractResultFromResponsesMessage extracts the result or error from a ResponsesMessage.
@@ -66,13 +99,7 @@ func extractResultFromResponsesMessage(msg *schemas.ResponsesMessage) (interface
 
 		if msg.ResponsesToolMessage.Output != nil {
 			if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-				rawResult := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
-
-				var finalResult interface{}
-				if err := sonic.Unmarshal([]byte(rawResult), &finalResult); err != nil {
-					return rawResult, nil
-				}
-				return finalResult, nil
+				return decodeToolResult(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr), nil
 			}
 
 			if len(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) > 0 {
@@ -83,12 +110,7 @@ func extractResultFromResponsesMessage(msg *schemas.ResponsesMessage) (interface
 					}
 				}
 				if len(textParts) > 0 {
-					result := strings.Join(textParts, "\n")
-					var finalResult interface{}
-					if err := sonic.Unmarshal([]byte(result), &finalResult); err != nil {
-						return result, nil
-					}
-					return finalResult, nil
+					return decodeToolResult(joinTextBlocks(textParts)), nil
 				}
 			}
 		}
@@ -247,10 +269,23 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 	if toolResponse == nil {
 		return fmt.Sprintf("MCP tool '%s' executed successfully", toolName), nil
 	}
+	// Structured content is the machine-readable result the MCP spec defines; the text
+	// blocks beside it are a copy kept for older clients. An error result keeps its text.
+	if !toolResponse.IsError && toolResponse.StructuredContent != nil {
+		encoded, err := schemas.MarshalSorted(toolResponse.StructuredContent)
+		if err != nil {
+			return "", err
+		}
+		if len(encoded) > valueLimit {
+			return "", fmt.Errorf("code mode tool result exceeds size limit")
+		}
+		return string(encoded), nil
+	}
 	if len(toolResponse.Content) > valueLimit/128 {
 		return "", fmt.Errorf("code mode tool result exceeds size limit")
 	}
-	var result strings.Builder
+	blocks := make([]string, 0, len(toolResponse.Content))
+	size := 0
 	for _, contentBlock := range toolResponse.Content {
 		// Both values and pointers implement MCP's sealed Content interface.
 		switch content := contentBlock.(type) {
@@ -285,11 +320,11 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 		case mcp.TextContent:
 			parts = []string{content.Text}
 		case mcp.ImageContent:
-			parts = []string{"[Image Response: ", content.Data, ", MIME: ", content.MIMEType, "]\n"}
+			parts = []string{"[Image Response: ", content.Data, ", MIME: ", content.MIMEType, "]"}
 		case mcp.AudioContent:
-			parts = []string{"[Audio Response: ", content.Data, ", MIME: ", content.MIMEType, "]\n"}
+			parts = []string{"[Audio Response: ", content.Data, ", MIME: ", content.MIMEType, "]"}
 		case mcp.EmbeddedResource:
-			parts = []string{"[Embedded Resource Response: ", content.Type, "]\n"}
+			parts = []string{"[Embedded Resource Response: ", content.Type, "]"}
 		case mcp.ResourceLink:
 			remaining := valueLimit - 256
 			check := func(value string) bool {
@@ -323,15 +358,19 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 		default:
 			return "", fmt.Errorf("unsupported code mode tool content type %T", contentBlock)
 		}
+		if len(blocks) > 0 {
+			size++ // the separator joinTextBlocks puts between blocks
+		}
 		for _, part := range parts {
-			if len(part) > valueLimit-result.Len() {
+			if len(part) > valueLimit-size {
 				return "", fmt.Errorf("code mode tool result exceeds size limit")
 			}
-			result.WriteString(part)
+			size += len(part)
 		}
+		blocks = append(blocks, strings.Join(parts, ""))
 	}
-	if result.Len() > 0 {
-		return strings.TrimSpace(result.String()), nil
+	if text := strings.TrimSpace(joinTextBlocks(blocks)); text != "" {
+		return text, nil
 	}
 	return fmt.Sprintf("MCP tool '%s' executed successfully", toolName), nil
 }
