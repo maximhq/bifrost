@@ -978,7 +978,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			if req.ResponsesParameters.Reasoning.Effort != nil {
 				// Native field is provided, use it (and clear max_tokens)
 				effort := *req.ResponsesParameters.Reasoning.Effort
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(effort, defaultEffortControl(capModel)))
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(normalizeReasoningEffort(req.Provider, caps, effort))
 				// Clear max_tokens since OpenAI doesn't use it
 				req.ResponsesParameters.Reasoning.MaxTokens = nil
 			} else if req.ResponsesParameters.Reasoning.MaxTokens != nil {
@@ -996,7 +996,7 @@ func ToOpenAIResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.B
 			// A model that always reasons rejects "none"; "minimal" normalizes to its lowest level.
 			if e := req.ResponsesParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone &&
 				!caps.CanDisableReasoning(defaultCanDisableReasoning(capModel)) {
-				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(capModel)))
+				req.ResponsesParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(req.Provider, capModel)))
 			}
 
 			// summary:"none" is Anthropic-specific (maps to display:"omitted"); strip it for OpenAI.
