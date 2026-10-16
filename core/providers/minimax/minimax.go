@@ -431,6 +431,7 @@ func (provider *MiniMaxProvider) VideoDelete(ctx *schemas.BifrostContext, key sc
 	return bifrostResp, nil
 }
 
+// Responses performs a responses request to the MiniMax API by bridging it through chat completions.
 func (provider *MiniMaxProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 	chatResponse, err := provider.ChatCompletion(ctx, key, request.ToChatRequest())
 	if err != nil {

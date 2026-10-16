@@ -9,3 +9,4 @@
 ## 🗄️ Database Migrations
 
 - No new database migrations in this release.
+- **MiniMax Provider** - New `minimax` provider for chat completions, Responses, image generation, async video generation, text-to-speech and speech-to-text, with `thinking` passthrough and the `base_resp` error envelope mapped to HTTP status codes

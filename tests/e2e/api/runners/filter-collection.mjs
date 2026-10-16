@@ -315,10 +315,11 @@ const itemMatchesProvider = (item, ancestorNames, provider = PROVIDER) => {
   if (isMantle) return false;
   // Vertex rows run Gemini models (model "vertex/gemini-..."), so they'd otherwise be claimed
   // by the gemini partition too - same collision class as openrouter/bedrock_mantle above.
-  // Route them exclusively to vertex.
+  // Route them exclusively to vertex. Vertex Model Garden rows ("vertex/minimaxai/minimax-m2-maas")
+  // name the model vendor the same way, so minimax is excluded for the same reason.
   const isVertex = PROVIDER_KEYWORDS.vertex.some((k) => haystack.includes(k));
   if (provider === "vertex") return isVertex;
-  if (isVertex && (provider === "gemini" || provider === "anthropic")) return false;
+  if (isVertex && (provider === "gemini" || provider === "anthropic" || provider === "minimax")) return false;
   // Rows that send a Gemini, OpenAI or Azure model through the Anthropic Messages ingress
   // (POST /anthropic/v1/messages with model "gemini/...", "openai/..." or "azure/...") contain
   // "anthropic" only because of the route or folder name, yet the upstream call goes to the
