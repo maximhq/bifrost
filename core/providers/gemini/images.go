@@ -447,7 +447,12 @@ func ToGeminiImageGenerationRequest(bifrostReq *schemas.BifrostImageGenerationRe
 		if bifrostReq.Params.AspectRatio != nil && *bifrostReq.Params.AspectRatio != "" {
 			imageConfig.AspectRatio = *bifrostReq.Params.AspectRatio
 		}
-		if imageConfig.AspectRatio != "" || imageConfig.ImageSize != "" {
+		if bifrostReq.Params.OutputFormat != nil {
+			if mimeType := convertOutputFormatToMimeType(*bifrostReq.Params.OutputFormat); mimeType != "" {
+				imageConfig.ImageOutputOptions = &GeminiImageOutputOptions{MimeType: mimeType}
+			}
+		}
+		if imageConfig.AspectRatio != "" || imageConfig.ImageSize != "" || imageConfig.ImageOutputOptions != nil {
 			geminiReq.GenerationConfig.ImageConfig = imageConfig
 		}
 
@@ -796,7 +801,12 @@ func ToGeminiImageEditRequest(bifrostReq *schemas.BifrostImageEditRequest) *Gemi
 		if bifrostReq.Params.AspectRatio != nil && *bifrostReq.Params.AspectRatio != "" {
 			imageConfig.AspectRatio = *bifrostReq.Params.AspectRatio
 		}
-		if imageConfig.AspectRatio != "" || imageConfig.ImageSize != "" {
+		if bifrostReq.Params.OutputFormat != nil {
+			if mimeType := convertOutputFormatToMimeType(*bifrostReq.Params.OutputFormat); mimeType != "" {
+				imageConfig.ImageOutputOptions = &GeminiImageOutputOptions{MimeType: mimeType}
+			}
+		}
+		if imageConfig.AspectRatio != "" || imageConfig.ImageSize != "" || imageConfig.ImageOutputOptions != nil {
 			geminiReq.GenerationConfig.ImageConfig = imageConfig
 		}
 

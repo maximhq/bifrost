@@ -307356,6 +307356,131 @@
           "response": []
         }
       ]
+    },
+    {
+      "name": "313. vertex gemini jpeg output format (PR #8627)",
+      "description": "Vertex Gemini previously ignored output_format on the native image generation and edit routes, returning PNG even when JPEG was requested. These cases request JPEG and inspect the decoded image bytes, not just response metadata; the edit sends the existing PNG fixture as multipart input.",
+      "item": [
+        {
+          "name": "vertex/gemini-2.5-flash-image vertex gemini jpeg output format generation - PR #8627",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex Gemini returns JPEG bytes', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var bytes = Buffer.from(data[0].b64_json, 'base64');",
+                  "  pm.expect(bytes.length, 'empty or truncated JPEG').to.be.above(4);",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "  pm.expect(bytes.slice(-2).toString('hex'), 'not a JPEG end marker').to.equal('ffd9');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash-image\",\n  \"prompt\": \"A red apple on a white background\",\n  \"output_format\": \"jpeg\",\n  \"response_format\": \"b64_json\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "vertex/gemini-2.5-flash-image vertex gemini jpeg output format edit - PR #8627",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex Gemini returns JPEG bytes', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, 'failed: ' + text.slice(0, 500)).to.eql(200);",
+                  "  var data = pm.response.json().data;",
+                  "  pm.expect(data, 'missing image data: ' + text.slice(0, 500)).to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(data[0].b64_json, 'missing base64 image: ' + text.slice(0, 500)).to.be.a('string').that.is.not.empty;",
+                  "  var bytes = Buffer.from(data[0].b64_json, 'base64');",
+                  "  pm.expect(bytes.length, 'empty or truncated JPEG').to.be.above(4);",
+                  "  pm.expect(bytes.slice(0, 3).toString('hex'), 'not a JPEG start marker').to.equal('ffd8ff');",
+                  "  pm.expect(bytes.slice(-2).toString('hex'), 'not a JPEG end marker').to.equal('ffd9');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "vertex/gemini-2.5-flash-image",
+                  "type": "text"
+                },
+                {
+                  "key": "prompt",
+                  "value": "Add a small red circle to this image",
+                  "type": "text"
+                },
+                {
+                  "key": "output_format",
+                  "value": "jpeg",
+                  "type": "text"
+                },
+                {
+                  "key": "response_format",
+                  "value": "b64_json",
+                  "type": "text"
+                },
+                {
+                  "key": "image",
+                  "src": "tests/e2e/api/fixtures/sample.png",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
     }
   ]
 }
