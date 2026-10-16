@@ -1,6 +1,8 @@
 import {
 	AddProviderRequest,
 	CreateProviderKeyRequest,
+	GithubCopilotDeviceCode,
+	GithubCopilotSignInPollResult,
 	ListProviderKeysResponse,
 	ListProvidersResponse,
 	ModelProvider,
@@ -204,6 +206,20 @@ export const providersApi = baseApi.injectEndpoints({
 		getProviderKey: builder.query<ModelProviderKey, { provider: string; keyId: string }>({
 			query: ({ provider, keyId }) => `/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(keyId)}`,
 			providesTags: (result, error, { provider }) => [{ type: "ProviderKeys", id: provider }],
+		}),
+
+		// GitHub Copilot "Sign in with GitHub" (device flow). The gateway talks to GitHub; the UI
+		// shows the code and polls, and puts the returned token in the key's value.
+		startGithubCopilotSignIn: builder.mutation<GithubCopilotDeviceCode, { provider: string }>({
+			query: ({ provider }) => ({ url: `/providers/${encodeURIComponent(provider)}/sign-in`, method: "POST" }),
+		}),
+
+		pollGithubCopilotSignIn: builder.mutation<GithubCopilotSignInPollResult, { provider: string; deviceCode: string }>({
+			query: ({ provider, deviceCode }) => ({
+				url: `/providers/${encodeURIComponent(provider)}/sign-in/poll`,
+				method: "POST",
+				body: { device_code: deviceCode },
+			}),
 		}),
 
 		// Create new provider
@@ -556,4 +572,6 @@ export const {
 	useGetModelDetailsQuery,
 	useLazyGetModelDetailsQuery,
 	useUpsertModelCatalogEntriesMutation,
+	useStartGithubCopilotSignInMutation,
+	usePollGithubCopilotSignInMutation,
 } = providersApi;
