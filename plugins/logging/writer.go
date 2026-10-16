@@ -790,10 +790,53 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 	if p.closed.Load() {
 		return
 	}
+	// A row whose output-monitor guardrail result is still pending is written
+	// once that result lands (holdForDeferredGuardrail). The result is taken off
+	// the row here, so the row passes straight through when it comes back.
+	if deferred := entry.DeferredGuardrail; deferred != nil {
+		entry.DeferredGuardrail = nil
+		p.holdForDeferredGuardrail(deferred, entry, callback)
+		return
+	}
 	if !p.tryEnqueueLogEntry(entry, callback) {
 		p.countDrop()
 		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
 	}
+}
+
+// holdForDeferredGuardrail parks a completed row until its output-monitor
+// guardrail result lands, then writes it once with that result: the same
+// detections and redacted content an enforced rule would have recorded, and the
+// evaluation's plugin log lines after the request's own. No
+// goroutine waits; the guardrails plugin runs the callback when its background
+// evaluation finishes, which it always does within its own timeout. Cleanup
+// writes rows still held at shutdown as they were built.
+func (p *LoggerPlugin) holdForDeferredGuardrail(deferred *schemas.DeferredGuardrailResult, entry *logstore.Log, callback func(entry *logstore.Log)) {
+	p.heldGuardrailRows.Store(entry.ID, &writeQueueEntry{log: entry, callback: callback})
+	deferred.OnComplete(func(metadata *schemas.BifrostGuardrailMetadata, redaction schemas.RedactionData, pluginLogs []schemas.PluginLogEntry) {
+		if _, held := p.heldGuardrailRows.LoadAndDelete(entry.ID); !held {
+			return // Cleanup already wrote the row.
+		}
+		entry.GuardrailDebugParsed = metadata
+		entry.PluginLogs = appendPluginLogs(entry.PluginLogs, pluginLogs)
+		// Same rule as attachLogRedactionData: hidden content carries no mappings.
+		if !entry.ContentHidden && redaction.HasReplacements() {
+			entry.RedactionData = &redaction
+		}
+		p.enqueueLogEntry(entry, callback)
+	})
+}
+
+// releaseHeldGuardrailRows writes every row still waiting on an output-monitor
+// result as it was built, so shutdown loses only the late result, never the row.
+func (p *LoggerPlugin) releaseHeldGuardrailRows() {
+	p.heldGuardrailRows.Range(func(key, _ any) bool {
+		if value, held := p.heldGuardrailRows.LoadAndDelete(key); held {
+			row := value.(*writeQueueEntry)
+			p.enqueueLogEntry(row.log, row.callback)
+		}
+		return true
+	})
 }
 
 // tryEnqueueLogEntry pushes a log entry to the write queue without blocking and
