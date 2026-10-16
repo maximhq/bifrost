@@ -321,3 +321,54 @@ func TestSetPassthroughHeaders_OnlyAnthropicReceivesThem(t *testing.T) {
 		}
 	})
 }
+
+// TestSetPassthroughHeaders_ConfiguredExtraHeadersWin reproduces #6587: the provider's
+// network_config.extra_headers are applied before OAuth passthrough, and a caller-sent
+// copy of the same header must not overwrite them.
+func TestSetPassthroughHeaders_ConfiguredExtraHeadersWin(t *testing.T) {
+	callerHeaders := map[string][]string{
+		"user-agent":      {"claude-cli/2.0.8 (external, cli)"},
+		"x-app":           {"cli"},
+		"accept-encoding": {"gzip, deflate, br"},
+		"authorization":   {"Bearer sk-ant-oat01-caller-token"},
+		"x-pinned-empty":  {"caller-value"},
+	}
+	// network_config.extra_headers configured on the provider by the gateway operator.
+	configured := map[string]string{
+		"User-Agent":      "gateway-agent/1.0",
+		"X-App":           "gateway",
+		"Accept-Encoding": "identity",
+		"X-Pinned-Empty":  "", // an empty value still pins the header against the caller's copy
+	}
+
+	for _, streaming := range []bool{false, true} {
+		name := "buffered"
+		if streaming {
+			name = "streaming"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			ctx.SetValue(schemas.BifrostContextKeyPassthroughHeaders, callerHeaders)
+
+			req := fasthttp.AcquireRequest()
+			defer fasthttp.ReleaseRequest(req)
+			// Same order as completeRequest and the streaming handlers: network-config
+			// extra headers first, then the caller's passthrough headers.
+			providerUtils.SetExtraHeaders(ctx, req, configured, []string{AnthropicBetaHeader})
+			if streaming {
+				providerUtils.SetPassthroughHeadersForStreaming(ctx, req, schemas.Anthropic, []string{AnthropicBetaHeader})
+			} else {
+				providerUtils.SetPassthroughHeaders(ctx, req, schemas.Anthropic, []string{AnthropicBetaHeader})
+			}
+
+			for header, want := range configured {
+				if got := string(req.Header.Peek(header)); got != want {
+					t.Errorf("configured extra header %q must win over the caller's copy: got %q, want %q", header, got, want)
+				}
+			}
+			if got := string(req.Header.Peek("authorization")); got != "Bearer sk-ant-oat01-caller-token" {
+				t.Errorf("caller headers without a configured counterpart must still be forwarded, got %q", got)
+			}
+		})
+	}
+}
