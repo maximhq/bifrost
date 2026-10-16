@@ -245,7 +245,7 @@ func TestVideoBackoffStaysInMinutes(t *testing.T) {
 
 func TestVideoSettlerSupportsOnlyRealVideoProviders(t *testing.T) {
 	settler := NewVideoSettler(nil)
-	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Gemini, schemas.Vertex, schemas.Replicate, schemas.Runway, schemas.Runware, schemas.MiniMax} {
+	for _, provider := range []schemas.ModelProvider{schemas.OpenAI, schemas.Gemini, schemas.Vertex, schemas.Replicate, schemas.Runway, schemas.Runware, schemas.MiniMax, schemas.BytePlus} {
 		assert.True(t, settler.SupportsProvider(provider), string(provider))
 	}
 	// Every provider implements the VideoGeneration method, so a real allowlist is
