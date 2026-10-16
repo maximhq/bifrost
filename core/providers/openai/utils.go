@@ -139,7 +139,8 @@ func defaultEffortControl(provider schemas.ModelProvider, model string) *schemas
 	if includeXHighInDefaultLadder(provider, model) {
 		levels = append(levels, schemas.ReasoningEffortXHigh)
 	}
-	if acceptsMaxEffort(model) {
+	// MiniMax accepts "max" on every chat model (and defaults to it); M2.x ignores effort entirely.
+	if acceptsMaxEffort(model) || provider == schemas.MiniMax {
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
 	return &schemas.EffortControl{Levels: levels}
