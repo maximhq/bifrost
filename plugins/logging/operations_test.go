@@ -754,6 +754,40 @@ func TestLogDeleteSubscribersAreToldWhatWasDeleted(t *testing.T) {
 	require.Len(t, second, 2)
 }
 
+// failingDeleteStore fails every log delete with err.
+type failingDeleteStore struct {
+	logstore.LogStore
+	err error
+}
+
+func (s failingDeleteStore) DeleteLog(context.Context, string) error    { return s.err }
+func (s failingDeleteStore) DeleteLogs(context.Context, []string) error { return s.err }
+
+// A delete that removed the logs but not everything derived from them is
+// still announced, so subscribers drop what they hold about logs that are
+// gone, and its error is still returned. A delete that failed before the
+// logs went announces nothing.
+func TestLogDeleteSubscribersAreToldOfAPartialDelete(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err       error
+		announced [][]string
+	}{
+		"partial": {err: fmt.Errorf("%w: pool cleanup failed", logstore.ErrLogsDeletedPartially), announced: [][]string{{"one", "two"}, {"three"}}},
+		"failed":  {err: errors.New("connection refused")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			plugin := &LoggerPlugin{ctx: context.Background(), store: failingDeleteStore{err: tc.err}, logger: testLogger{}}
+			var announced [][]string
+			plugin.SubscribeLogDeleteCallback(func(_ context.Context, ids []string) { announced = append(announced, ids) })
+			manager := plugin.GetPluginLogManager()
+
+			require.ErrorIs(t, manager.DeleteLogs(context.Background(), []string{"one", "two"}), tc.err)
+			require.ErrorIs(t, manager.DeleteLog(context.Background(), "three"), tc.err)
+			require.Equal(t, tc.announced, announced)
+		})
+	}
+}
+
 func TestPostLLMHookStreamingErrorPreservesHeaderMetadata(t *testing.T) {
 	store := newTestStore(t)
 	loggingHeaders := []string{"x-custom-log"}

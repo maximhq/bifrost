@@ -434,28 +434,31 @@ func (p *PluginLogManager) GetAvailableMetadataKeys(ctx context.Context, limit i
 	return p.plugin.store.GetDistinctMetadataKeys(ctx, limit, query)
 }
 
-// DeleteLog deletes a log from the log store
+// DeleteLog deletes a log from the log store. A partial delete removed the
+// log, so it is announced like a whole one and its error still returned.
 func (p *PluginLogManager) DeleteLog(ctx context.Context, id string) error {
 	if p.plugin == nil || p.plugin.store == nil {
 		return fmt.Errorf("log store not initialized")
 	}
-	if err := p.plugin.store.DeleteLog(ctx, id); err != nil {
+	err := p.plugin.store.DeleteLog(ctx, id)
+	if err != nil && !errors.Is(err, logstore.ErrLogsDeletedPartially) {
 		return err
 	}
 	p.plugin.notifyLogDeleteCallbacks(ctx, []string{id})
-	return nil
+	return err
 }
 
-// DeleteLogs deletes multiple logs from the log store
+// DeleteLogs deletes multiple logs from the log store. See DeleteLog.
 func (p *PluginLogManager) DeleteLogs(ctx context.Context, ids []string) error {
 	if p.plugin == nil || p.plugin.store == nil {
 		return fmt.Errorf("log store not initialized")
 	}
-	if err := p.plugin.store.DeleteLogs(ctx, ids); err != nil {
+	err := p.plugin.store.DeleteLogs(ctx, ids)
+	if err != nil && !errors.Is(err, logstore.ErrLogsDeletedPartially) {
 		return err
 	}
 	p.plugin.notifyLogDeleteCallbacks(ctx, ids)
-	return nil
+	return err
 }
 
 func (p *PluginLogManager) RecalculateCosts(ctx context.Context, filters *logstore.SearchFilters, limit int) (*RecalculateCostResult, error) {

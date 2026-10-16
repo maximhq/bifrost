@@ -17,6 +17,10 @@ var (
 	// ErrInvalidWebhookReference marks a submit whose webhook endpoint
 	// reference is unusable — a caller mistake, not a server failure.
 	ErrInvalidWebhookReference = fmt.Errorf("invalid webhook endpoint reference")
+	// ErrLogsDeletedPartially marks a log delete that removed the logs but not
+	// everything derived from them, on a store that cannot do both atomically.
+	// The logs are gone, so the caller still announces the delete.
+	ErrLogsDeletedPartially = errors.New("logs deleted, but not what Warp's topic tables hold about them")
 )
 
 // postgresSQLStateError is the subset of *pgconn.PgError (and any other

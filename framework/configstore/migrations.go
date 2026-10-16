@@ -567,6 +567,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_a2a_private_allowlist_column"}, run: migrationAddA2APrivateAllowlistColumn},
 	{IDs: []string{"add_agent_destination_policy_columns"}, run: migrationAddAgentDestinationPolicyColumns},
 	{IDs: []string{"drop_agent_registration_options"}, run: migrationDropAgentRegistrationOptions},
+	{IDs: []string{"add_warp_topic_discovery_min_requests_column"}, run: migrationAddWarpTopicDiscoveryMinRequestsColumn},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -682,6 +683,30 @@ func migrationAddWarpAdditionalModelsColumn(ctx context.Context, db *gorm.DB, lo
 			// Reversible: the default model lives in its own columns, so dropping
 			// this costs the extra choices and leaves Warp answering.
 			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "additional_models")
+		},
+	})
+}
+
+// migrationAddWarpTopicDiscoveryMinRequestsColumn adds how many requests that
+// matched no topic start a discovery. An existing row reads it as 0, which is
+// the default.
+func migrationAddWarpTopicDiscoveryMinRequestsColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_warp_topic_discovery_min_requests_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			// Only the column this migration owns; see
+			// migrationAddWarpLogEmbeddingColumns.
+			if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "topic_discovery_min_requests"); err != nil {
+				return fmt.Errorf("add topic_discovery_min_requests column: %w", err)
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			// Reversible: without the column discovery runs at the default.
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableWarpConfig{}, "topic_discovery_min_requests")
 		},
 	})
 }

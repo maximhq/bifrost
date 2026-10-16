@@ -700,14 +700,15 @@ func (s *RDBLogStore) DeleteWarpTopics(ctx context.Context, ids []string) error 
 
 // deleteWarpTopicRowsForLogs removes what the topic tables hold about logs
 // that are being deleted: their place among the topics, and their wait in
-// the pool. Called by the log deletes, so a deleted request neither counts
-// toward a topic nor turns up in a discovery.
-func (s *RDBLogStore) deleteWarpTopicRowsForLogs(ctx context.Context, ids []string) error {
+// the pool. Called by the log deletes inside their transaction, so a deleted
+// request neither counts toward a topic nor turns up in a discovery, and a
+// failed cleanup keeps the logs.
+func deleteWarpTopicRowsForLogs(tx *gorm.DB, ids []string) error {
 	for chunk := range slices.Chunk(ids, warpTopicWriteBatch) {
-		if err := s.db.WithContext(ctx).Where("log_id IN ?", chunk).Delete(&WarpTopicAssignment{}).Error; err != nil {
+		if err := tx.Where("log_id IN ?", chunk).Delete(&WarpTopicAssignment{}).Error; err != nil {
 			return err
 		}
-		if err := s.db.WithContext(ctx).Where("log_id IN ?", chunk).Delete(&WarpTopicUnmatched{}).Error; err != nil {
+		if err := tx.Where("log_id IN ?", chunk).Delete(&WarpTopicUnmatched{}).Error; err != nil {
 			return err
 		}
 	}

@@ -576,6 +576,67 @@ func TestLogDeletesTakeTheTopicRowsWithThem(t *testing.T) {
 	})
 }
 
+// A log delete whose topic cleanup fails is never reported as a plain
+// failure while the logs are gone. The SQL stores do both in one transaction,
+// so the logs stay; ClickHouse has no transactions, so it reports the logs
+// deleted and the cleanup not, for the caller to announce the delete anyway.
+func TestLogDeletesWhoseTopicCleanupFails(t *testing.T) {
+	forEachWarpTopicStore(t, func(t *testing.T, store LogStore) {
+		ctx := context.Background()
+		base := warpTopicTestTime()
+		ids := []string{"one", "two", "three"}
+		for _, id := range ids {
+			require.NoError(t, store.Create(ctx, &Log{ID: id, Timestamp: base, CreatedAt: base, Object: "chat.completion", Status: "success"}))
+		}
+		require.NoError(t, store.UpsertWarpTopicAssignments(ctx, []WarpTopicAssignment{
+			warpTestAssignment("one", "billing", base), warpTestAssignment("two", "billing", base),
+		}))
+		var db *gorm.DB
+		rename, partial := "ALTER TABLE %s RENAME TO %s", false
+		switch typed := store.(type) {
+		case *ClickHouseLogStore:
+			db, rename, partial = typed.db, "RENAME TABLE %s TO %s", true
+		case *RDBLogStore:
+			db = typed.db
+		}
+		require.NotNil(t, db)
+		// The pool table is renamed away, so its cleanup fails after the
+		// assignments' has run.
+		require.NoError(t, db.Exec(fmt.Sprintf(rename, "warp_topic_unmatched", "warp_topic_unmatched_away")).Error)
+		restored := false
+		restore := func() {
+			if !restored {
+				restored = true
+				require.NoError(t, db.Exec(fmt.Sprintf(rename, "warp_topic_unmatched_away", "warp_topic_unmatched")).Error)
+			}
+		}
+		t.Cleanup(restore)
+
+		errOne := store.DeleteLog(ctx, "one")
+		errMany := store.DeleteLogs(ctx, []string{"two", "three"})
+		restore()
+		require.Error(t, errOne)
+		require.Error(t, errMany)
+		for _, id := range ids {
+			_, err := store.FindByID(ctx, id)
+			if partial {
+				require.ErrorIs(t, errOne, ErrLogsDeletedPartially)
+				require.ErrorIs(t, errMany, ErrLogsDeletedPartially)
+				require.ErrorIs(t, err, ErrNotFound, "log %s is gone, as the error says", id)
+			} else {
+				require.NotErrorIs(t, errOne, ErrLogsDeletedPartially)
+				require.NotErrorIs(t, errMany, ErrLogsDeletedPartially)
+				require.NoError(t, err, "log %s was rolled back with the cleanup", id)
+			}
+		}
+		if !partial {
+			assignments, err := store.ListWarpTopicAssignments(ctx, WarpTopicAssignmentFilter{}, 10)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, []string{"one", "two"}, warpAssignmentLogIDs(assignments), "the assignments' cleanup was rolled back too")
+		}
+	})
+}
+
 // Once the embedding model changes, the pooled vectors of the old one mean
 // nothing and are dropped; topic rows can be deleted outright.
 func TestWarpTopicStoreDropsWhatAnotherModelLeft(t *testing.T) {
