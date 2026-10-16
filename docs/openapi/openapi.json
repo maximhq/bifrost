@@ -111819,9 +111819,7 @@
             }
           },
           "guardrail_debug": {
-            "type": "object",
-            "description": "Guardrail judge calls and detect-only matches",
-            "additionalProperties": true
+            "$ref": "#/components/schemas/BifrostGuardrailMetadata"
           },
           "parse_errors": {
             "type": "array",
@@ -111911,6 +111909,125 @@
             "type": "integer",
             "format": "int64",
             "description": "Milliseconds spent serving a cache hit. Set only on a hit."
+          }
+        }
+      },
+      "BifrostGuardrailMetadata": {
+        "type": "object",
+        "description": "Guardrail judge calls and matches recorded for a request.",
+        "properties": {
+          "judge_calls": {
+            "type": "array",
+            "description": "Billable guardrail judge invocations (LLM-backed guardrail providers)",
+            "items": {
+              "$ref": "#/components/schemas/BifrostGuardrailJudgeCall"
+            }
+          },
+          "detections": {
+            "type": "array",
+            "description": "Guardrail matches. Enforced rules record detect-only matches; output-monitor rules record every match they see, with the action enforcement would have taken.",
+            "items": {
+              "$ref": "#/components/schemas/BifrostGuardrailDetection"
+            }
+          }
+        }
+      },
+      "BifrostGuardrailDetection": {
+        "type": "object",
+        "properties": {
+          "phase": {
+            "type": "string",
+            "description": "Phase the match was found in (input, output, or mcp-<source>)"
+          },
+          "rule_id": {
+            "type": "integer"
+          },
+          "rule_name": {
+            "type": "string"
+          },
+          "guardrail_name": {
+            "type": "string",
+            "description": "Guardrail profile that matched"
+          },
+          "guardrail_provider": {
+            "type": "string",
+            "description": "Guardrail provider type of the profile (for example regex or bedrock)"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "assessments": {
+            "type": "array",
+            "description": "Sanitized policy categories; never the matched text",
+            "items": {
+              "type": "string"
+            }
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "detect",
+              "block",
+              "redact",
+              "transform"
+            ],
+            "description": "What the guardrail did, or would have done when the rule only monitors"
+          },
+          "enforced": {
+            "type": "boolean",
+            "description": "False when an output-monitor rule recorded the match without acting on it"
+          }
+        }
+      },
+      "BifrostGuardrailJudgeCall": {
+        "type": "object",
+        "properties": {
+          "phase": {
+            "type": "string"
+          },
+          "rule_id": {
+            "type": "integer"
+          },
+          "rule_name": {
+            "type": "string"
+          },
+          "guardrail_name": {
+            "type": "string"
+          },
+          "guardrail_provider": {
+            "type": "string"
+          },
+          "action": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "judge_provider": {
+            "type": "string"
+          },
+          "judge_model": {
+            "type": "string"
+          },
+          "judge_request_type": {
+            "type": "string"
+          },
+          "prompt_tokens": {
+            "type": "integer"
+          },
+          "prompt_tokens_details": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "completion_tokens": {
+            "type": "integer"
+          },
+          "completion_tokens_details": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "total_tokens": {
+            "type": "integer"
           }
         }
       },
@@ -134186,6 +134303,14 @@
               }
             },
             "description": "Phase-scoped placeholder-to-original-value mappings for reversible redactions. Present only on log detail responses when the caller has `Logs:Reveal`."
+          },
+          "guardrail_debug": {
+            "$ref": "#/components/schemas/BifrostGuardrailMetadata",
+            "description": "Guardrail judge calls and matches for the request, including output-monitor results (action, enforced false), which land after the response completes. Present only on log detail responses."
+          },
+          "plugin_logs": {
+            "type": "string",
+            "description": "JSON object of plugin log entries grouped by plugin name. Output-monitor guardrail lines are prefixed `[output-monitor]`. Present only on log detail responses."
           },
           "created_at": {
             "type": "string",

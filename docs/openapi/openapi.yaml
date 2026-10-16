@@ -1796,6 +1796,12 @@ components:
       $ref: "./schemas/inference/common.yaml#/BifrostResponseExtraFields"
     BifrostCacheDebug:
       $ref: "./schemas/inference/common.yaml#/BifrostCacheDebug"
+    BifrostGuardrailMetadata:
+      $ref: "./schemas/inference/common.yaml#/BifrostGuardrailMetadata"
+    BifrostGuardrailDetection:
+      $ref: "./schemas/inference/common.yaml#/BifrostGuardrailDetection"
+    BifrostGuardrailJudgeCall:
+      $ref: "./schemas/inference/common.yaml#/BifrostGuardrailJudgeCall"
     CacheControl:
       $ref: "./schemas/inference/common.yaml#/CacheControl"
 
