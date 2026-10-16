@@ -533,6 +533,10 @@ export function NetworkFormFragment({ provider }: NetworkFormFragmentProps) {
 											disabled={!hasUpdateProviderAccess}
 										/>
 									</FormControl>
+									<FormDescription>
+										Values may be literals or secret references such as <code>env.MY_HEADER_TOKEN</code> or{" "}
+										<code>vault.path/to/secret</code>. References are resolved at load time; resolved secret values are never returned by the API.
+									</FormDescription>
 									<FormMessage />
 								</FormItem>
 							)}
