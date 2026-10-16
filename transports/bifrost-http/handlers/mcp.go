@@ -796,12 +796,17 @@ func (h *MCPHandler) verifyMCPClientExchange(ctx *fasthttp.RequestCtx) {
 	// request has none and must be retried from an identity-authenticated
 	// session.
 	subjectToken := bifrost.GetStringFromContext(bifrostCtx, schemas.BifrostContextKeyMCPInboundBearer)
-	if subjectToken == "" {
+	idJAG := clientConfig.TokenExchange.IsIDJAG()
+	if subjectToken == "" && !idJAG {
 		SendError(ctx, fasthttp.StatusBadRequest, "verification exchanges your own identity-provider token, but this request carries none: sign in with your identity provider and retry")
 		return
 	}
 
 	adminResponse, err := h.store.OAuthProvider.ExchangeAdminCredential(bifrostCtx, clientConfig, subjectToken)
+	if idJAG && errors.Is(err, schemas.ErrExchangeSubjectTokenMissing) {
+		SendError(ctx, fasthttp.StatusBadRequest, "verification requests an identity assertion with your own SSO session, but none is available: sign in to Bifrost with your identity provider and retry")
+		return
+	}
 	if err != nil {
 		SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Admin credential exchange failed: %v", err))
 		return
@@ -2081,6 +2086,12 @@ func mcpClientSecretReferences(headers map[string]schemas.SecretVar, connectionS
 		if isRef(tokenExchange.ClientSecret) {
 			refs = append(refs, "token_exchange.client_secret")
 		}
+		if isRef(tokenExchange.ResourceClientID) {
+			refs = append(refs, "token_exchange.resource_client_id")
+		}
+		if isRef(tokenExchange.ResourceClientSecret) {
+			refs = append(refs, "token_exchange.resource_client_secret")
+		}
 	}
 	if tlsConfig != nil && isRef(tlsConfig.CACertPEM) {
 		refs = append(refs, "tls_config.ca_cert_pem")
@@ -2431,6 +2442,10 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 			SendError(ctx, fasthttp.StatusBadRequest, "token_exchange.client_id is required when auth_type is 'token_exchange' and use_idp_credentials is not set")
 			return
 		}
+		if err := req.TokenExchange.ValidateProfile(); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
 		// Token-exchange clients rely on requests that may carry both an
 		// identity token and a virtual key; the 'error' conflict behavior
 		// would reject exactly those requests, so the two settings are
@@ -2497,21 +2512,30 @@ func (h *MCPHandler) addMCPClient(ctx *fasthttp.RequestCtx) {
 		// credential (see the retention block below).
 		var adminResponse *schemas.OAuth2TokenExchangeResponse
 		sampleSubjectToken, _ := bifrostCtx.Value(schemas.BifrostContextKeyMCPInboundBearer).(string)
-		if sampleSubjectToken != "" {
+		// The id_jag profile's admin subject is the admin's ID or refresh token,
+		// which the provider resolves from the context itself.
+		idJAG := req.TokenExchange.IsIDJAG()
+		if sampleSubjectToken != "" || idJAG {
 			response, exchangeErr := h.store.OAuthProvider.ExchangeAdminCredential(bifrostCtx, schemasConfig, sampleSubjectToken)
+			if idJAG && errors.Is(exchangeErr, schemas.ErrExchangeSubjectTokenMissing) {
+				// No SSO session to verify as: park in pending_verification like a request without a token.
+				response, exchangeErr = nil, nil
+			}
 			if exchangeErr != nil {
 				SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Admin credential exchange failed: %v", exchangeErr))
 				return
 			}
-			adminResponse = response
-			tools, toolNameMapping, serverInstructions, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, schemasConfig, response.AccessToken)
-			if verifyErr != nil {
-				SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
-				return
+			if response != nil {
+				adminResponse = response
+				tools, toolNameMapping, serverInstructions, verifyErr := h.mcpManager.VerifyPerUserOAuthConnection(bifrostCtx, schemasConfig, response.AccessToken)
+				if verifyErr != nil {
+					SendError(ctx, fasthttp.StatusUnprocessableEntity, fmt.Sprintf("Verification failed: %v", verifyErr))
+					return
+				}
+				schemasConfig.DiscoveredTools = tools
+				schemasConfig.DiscoveredToolNameMapping = toolNameMapping
+				schemasConfig.DiscoveredInstructions = serverInstructions
 			}
-			schemasConfig.DiscoveredTools = tools
-			schemasConfig.DiscoveredToolNameMapping = toolNameMapping
-			schemasConfig.DiscoveredInstructions = serverInstructions
 		}
 
 		if err := h.store.ConfigStore.CreateMCPClientConfig(ctx, schemasConfig); err != nil {
@@ -3120,6 +3144,16 @@ func (h *MCPHandler) updateMCPClient(ctx *fasthttp.RequestCtx) {
 			if req.TokenExchange.ClientSecret.IsMaskedPlaceholder() {
 				req.TokenExchange.ClientSecret = existingConfig.TokenExchange.ClientSecret
 			}
+			if req.TokenExchange.ResourceClientID.IsMaskedPlaceholder() {
+				req.TokenExchange.ResourceClientID = existingConfig.TokenExchange.ResourceClientID
+			}
+			if req.TokenExchange.ResourceClientSecret.IsMaskedPlaceholder() {
+				req.TokenExchange.ResourceClientSecret = existingConfig.TokenExchange.ResourceClientSecret
+			}
+		}
+		if err := req.TokenExchange.ValidateProfile(); err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
 		}
 		if !req.TokenExchange.UseIdPCredentials && strings.TrimSpace(req.TokenExchange.ClientID.GetValue()) == "" && !req.TokenExchange.ClientID.IsFromSecret() {
 			SendError(ctx, fasthttp.StatusBadRequest, "token_exchange.client_id must be non-empty unless use_idp_credentials is set")
