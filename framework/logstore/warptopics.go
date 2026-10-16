@@ -636,6 +636,36 @@ func (s *RDBLogStore) DeleteWarpTopicUnmatchedBatch(ctx context.Context, cutoff 
 	return s.deleteExpiredBatchByKey(ctx, "warp_topic_unmatched", "log_id", "created_at", cutoff, batchSize)
 }
 
+// WarpTopicAssignmentFromLog projects a log onto the assignment columns, for a
+// caller that holds the log row already. It is the in-process twin of
+// warpTopicLogColumns and copies exactly what that does, with TopicID,
+// Similarity and AssignedAt left for the caller to fill.
+func WarpTopicAssignmentFromLog(entry *Log) WarpTopicAssignment {
+	if entry == nil {
+		return WarpTopicAssignment{}
+	}
+	value := func(s *string) string {
+		if s == nil {
+			return ""
+		}
+		return *s
+	}
+	number := func(f *float64) float64 {
+		if f == nil {
+			return 0
+		}
+		return *f
+	}
+	return WarpTopicAssignment{
+		LogID: entry.ID, Timestamp: entry.Timestamp, LogCreatedAt: entry.CreatedAt,
+		SessionID: value(entry.SessionID), UserID: value(entry.UserID), TeamID: value(entry.TeamID),
+		VirtualKeyID: value(entry.VirtualKeyID), CustomerID: value(entry.CustomerID), BusinessUnitID: value(entry.BusinessUnitID),
+		TeamIDs: entry.TeamIDs, CustomerIDs: entry.CustomerIDs, BusinessUnitIDs: entry.BusinessUnitIDs,
+		Provider: entry.Provider, Model: entry.Model, App: value(entry.App), Status: entry.Status,
+		Cost: number(entry.Cost), Latency: number(entry.Latency), TotalTokens: entry.TotalTokens,
+	}
+}
+
 // warpTopicLogColumns projects a log onto the assignment columns. The NULLs a
 // log allows become the zero values an assignment stores. The JSON-array owner
 // columns are copied as they are: the enterprise user path records a request's
