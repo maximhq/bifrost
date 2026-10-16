@@ -6364,7 +6364,9 @@ func anthropicToolUseBlockToResponsesMessage(toolBlock *AnthropicContentBlock, i
 		if err := sonic.Unmarshal(toolBlock.Input, &inputMap); err == nil {
 			setResponsesComputerCallAction(bifrostMsg.ResponsesToolMessage, convertAnthropicToResponsesComputerAction(inputMap))
 		}
-	} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebSearch) {
+	} else if toolBlock.Type == AnthropicContentBlockTypeServerToolUse && toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebSearch) {
+		// Client tool_use blocks may reuse the web_search / web_fetch names; only
+		// server_tool_use blocks are Anthropic's server tools.
 		bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebSearchCall)
 		bifrostMsg.ResponsesToolMessage.Name = nil
 		if q := providerUtils.GetJSONField(toolBlock.Input, "query"); q.Exists() && q.Type == gjson.String {
@@ -6377,7 +6379,7 @@ func anthropicToolUseBlockToResponsesMessage(toolBlock *AnthropicContentBlock, i
 				},
 			}
 		}
-	} else if toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebFetch) {
+	} else if toolBlock.Type == AnthropicContentBlockTypeServerToolUse && toolBlock.Name != nil && *toolBlock.Name == string(AnthropicToolNameWebFetch) {
 		bifrostMsg.Type = schemas.Ptr(schemas.ResponsesMessageTypeWebFetchCall)
 		bifrostMsg.ResponsesToolMessage.Name = nil
 		if u := providerUtils.GetJSONField(toolBlock.Input, "url"); u.Exists() && u.Type == gjson.String {
@@ -8666,7 +8668,8 @@ func convertBifrostToolSearchCallToAnthropicBlocks(msg *schemas.ResponsesMessage
 func normalizeOpenAIToolSearchItems(ctx *schemas.BifrostContext, msgs []schemas.ResponsesMessage, isRequestMessage bool) []schemas.ResponsesMessage {
 	isVerbatimToolSearch := func(m *schemas.ResponsesMessage) bool {
 		return m.Type != nil && (*m.Type == schemas.ResponsesMessageTypeToolSearchCall ||
-			*m.Type == schemas.ResponsesMessageTypeToolSearchOutput) && m.IsVerbatimItem()
+			*m.Type == schemas.ResponsesMessageTypeToolSearchOutput) && m.IsVerbatimItem() &&
+			!isAnthropicToolSearchReplay(m)
 	}
 	if !slices.ContainsFunc(msgs, func(m schemas.ResponsesMessage) bool { return isVerbatimToolSearch(&m) }) {
 		return msgs
@@ -8880,6 +8883,12 @@ func isAnthropicToolSearchToolName(name string) bool {
 	default:
 		return false
 	}
+}
+
+// isAnthropicToolSearchReplay reports whether a verbatim tool_search_call is a Claude
+// server search echoed back through /v1/responses; OpenAI search items carry no name.
+func isAnthropicToolSearchReplay(m *schemas.ResponsesMessage) bool {
+	return m.ResponsesToolMessage != nil && m.Name != nil && isAnthropicToolSearchToolName(*m.Name)
 }
 
 func isAnthropicCodeExecutionToolName(name string) bool {

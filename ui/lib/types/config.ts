@@ -842,6 +842,7 @@ export interface CoreConfig {
 	mcp_code_mode_limits?: MCPCodeModeLimits;
 	mcp_enable_temp_token_auth: boolean;
 	mcp_oauth_private_allowlist?: string[];
+	a2a_private_allowlist?: string[];
 	async_job_result_ttl: number;
 	required_headers: string[];
 	logging_headers: string[];

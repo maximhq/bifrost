@@ -382,6 +382,18 @@ type StreamErrorConverter func(ctx *schemas.BifrostContext, err *schemas.Bifrost
 // If it returns an error, the request processing stops.
 type RequestParser func(ctx *fasthttp.RequestCtx, req interface{}) error
 
+// rawBodyForRequest returns the raw body to attach to a Bifrost request. rawBody
+// aliases fasthttp's pooled body buffer, which the next request on the same
+// keep-alive connection reuses; an async job reads it after the 202 is sent, so
+// async requests get their own copy. Synchronous requests finish with the body
+// before fasthttp resets the ctx, so they keep the zero-copy alias.
+func rawBodyForRequest(ctx *fasthttp.RequestCtx, rawBody []byte) []byte {
+	if len(ctx.Request.Header.Peek(schemas.AsyncHeaderCreate)) == 0 {
+		return rawBody
+	}
+	return bytes.Clone(rawBody)
+}
+
 func parseJSONRequestBody(rawBody []byte, req interface{}) error {
 	if len(rawBody) == 0 {
 		return nil
@@ -942,7 +954,7 @@ func (g *GenericRouter) createHandler(config RouteConfig) fasthttp.RequestHandle
 			return
 		}
 		if sendRawRequestBody, ok := (*bifrostCtx).Value(schemas.BifrostContextKeyUseRawRequestBody).(bool); ok && sendRawRequestBody {
-			bifrostReq.SetRawRequestBody(rawBody)
+			bifrostReq.SetRawRequestBody(rawBodyForRequest(ctx, rawBody))
 		}
 
 		// Extract and parse fallbacks from the request if present

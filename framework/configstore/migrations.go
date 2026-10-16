@@ -17,7 +17,9 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/encrypt"
+	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/migrator"
+	"github.com/maximhq/bifrost/framework/postgresconn"
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -38,17 +40,34 @@ var addColumnIfNotExists = migrator.AddColumnIfNotExists
 // same reason as above so call sites can use dropColumnIfExists(tx, ...).
 var dropColumnIfExists = migrator.DropColumnIfExists
 
-const (
-	// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
-	// to serialize migrations across cluster nodes
-	migrationAdvisoryLockKey = 1000001
+// migrationAdvisoryLockKey is used for PostgreSQL advisory locks
+// to serialize migrations across cluster nodes
+const migrationAdvisoryLockKey = 1000001
 
+// Lock-wait tuning. Variables only so tests can shorten them.
+var (
 	// advisoryLockRetryInterval is how long to wait between lock acquisition attempts.
 	advisoryLockRetryInterval = 5 * time.Second
 
-	// advisoryLockTimeout is the maximum time to wait for the advisory lock
-	// before giving up with actionable operator guidance.
+	// advisoryLockTimeout is how long to wait for the advisory lock while its
+	// holder shows no sign of work (a crashed instance's lingering session) before
+	// giving up with actionable operator guidance.
 	advisoryLockTimeout = 1 * time.Minute
+
+	// advisoryLockBusyTimeout is how long to wait while the holder is visibly
+	// running statements: a live instance whose migrations are slow, for example a
+	// CREATE INDEX CONCURRENTLY waiting on another replica's long transaction.
+	// Giving up on it only crash-loops this instance without speeding anything up.
+	advisoryLockBusyTimeout = 20 * time.Minute
+)
+
+// pauseMatViewsForMigrations pauses materialized-view refreshes for a migration
+// run, and migrationMatViewPause is the pause used when the caller configures
+// none (see WithMigrationMatViewPause). Variables so tests can shorten the cancel
+// delay or switch the pause off to reproduce the pre-pause behaviour.
+var (
+	pauseMatViewsForMigrations = logstore.PauseMatViewsForMigrations
+	migrationMatViewPause      = logstore.MatViewPauseOptions{CancelAfter: logstore.DefaultMatViewPauseCancelAfter}
 )
 
 // migrationLock holds a dedicated connection for the advisory lock.
@@ -61,7 +80,8 @@ type migrationLock struct {
 // acquireMigrationLock gets a dedicated connection and acquires an advisory lock
 // using pg_try_advisory_lock with retry + timeout. This prevents pods from
 // blocking indefinitely if a previous pod crashed without releasing the lock
-// (e.g., behind a connection proxy or with slow TCP keepalive detection).
+// (e.g., behind a connection proxy or with slow TCP keepalive detection), while
+// still waiting out a live holder that is doing slow but legitimate work.
 // For non-PostgreSQL databases, returns a no-op lock.
 func acquireMigrationLock(ctx context.Context, db *gorm.DB, logger schemas.Logger) (*migrationLock, error) {
 	if db.Dialector.Name() != "postgres" {
@@ -80,70 +100,18 @@ func acquireMigrationLock(ctx context.Context, db *gorm.DB, logger schemas.Logge
 	}
 
 	logger.Info("[configstore] attempting to get migration lock %d", migrationAdvisoryLockKey)
-	// Try to acquire advisory lock with retry + timeout instead of blocking forever.
-	// pg_try_advisory_lock returns true if acquired, false if held by another session.
-	deadline := time.Now().Add(advisoryLockTimeout)
-	maxAttempts := int(advisoryLockTimeout / advisoryLockRetryInterval)
-	attempt := 0
-
-	for {
-		attempt++
-		// Derive a per-attempt context with the remaining lock budget as timeout,
-		// so a stalled DB round-trip can't block beyond the overall deadline.
-		attemptTimeout := time.Until(deadline)
-		if attemptTimeout <= 0 {
-			attemptTimeout = advisoryLockRetryInterval
-		}
-		attemptCtx, attemptCancel := context.WithTimeout(ctx, attemptTimeout)
-		var acquired bool
-		err = conn.QueryRowContext(attemptCtx, "SELECT pg_try_advisory_lock($1)", migrationAdvisoryLockKey).Scan(&acquired)
-		attemptCancel()
-		if err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("failed to attempt migration advisory lock: %w", err)
-		}
-
-		if acquired {
-			if attempt > 1 {
-				logger.Info("[configstore] migration lock acquired after %d attempts", attempt)
-			}
-			return &migrationLock{conn: conn}, nil
-		}
-
-		// Lock not acquired -- check if we've exceeded the timeout
-		if time.Now().After(deadline) {
-			conn.Close()
-			return nil, fmt.Errorf(
-				"failed to acquire configstore migration lock (key=%d) after %d attempts over %s\n\n"+
-					"This usually means another Bifrost pod (or a previous crashed pod's lingering\n"+
-					"database session) is still holding the lock. To diagnose and resolve:\n\n"+
-					"1. Find who holds the lock:\n"+
-					"   SELECT pid, usename, application_name, client_addr, backend_start, state, query\n"+
-					"   FROM pg_stat_activity\n"+
-					"   WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = %d AND granted = true);\n\n"+
-					"2. If the session belongs to a dead/crashed pod, terminate it:\n"+
-					"   SELECT pg_terminate_backend(<pid_from_step_1>);\n\n"+
-					"3. List all sessions waiting for this lock:\n"+
-					"   SELECT pid, usename, client_addr, state, wait_event\n"+
-					"   FROM pg_stat_activity\n"+
-					"   WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND objid = %d AND granted = false);\n\n"+
-					"After terminating the stale session, restart this pod and it should proceed normally.",
-				migrationAdvisoryLockKey, attempt, advisoryLockTimeout,
-				migrationAdvisoryLockKey, migrationAdvisoryLockKey,
-			)
-		}
-
-		logger.Info("[configstore] waiting for migration lock (attempt %d/%d) — another node is running migrations, retrying in %s...",
-			attempt, maxAttempts, advisoryLockRetryInterval)
-
-		// Wait before retrying, but respect context cancellation
-		select {
-		case <-ctx.Done():
-			conn.Close()
-			return nil, fmt.Errorf("context cancelled while waiting for migration lock: %w", ctx.Err())
-		case <-time.After(advisoryLockRetryInterval):
-		}
+	if err := postgresconn.WaitForAdvisoryLock(ctx, conn, logger, postgresconn.AdvisoryWaitOptions{
+		Key:           migrationAdvisoryLockKey,
+		Label:         "configstore migration",
+		LogPrefix:     "[configstore]",
+		RetryInterval: advisoryLockRetryInterval,
+		Timeout:       advisoryLockTimeout,
+		BusyTimeout:   advisoryLockBusyTimeout,
+	}); err != nil {
+		conn.Close()
+		return nil, err
 	}
+	return &migrationLock{conn: conn}, nil
 }
 
 // release unlocks and closes the dedicated connection
@@ -260,11 +228,23 @@ func pendingMigrationStepIDs(ctx context.Context, db *gorm.DB, steps []migration
 	return migrator.PendingIDs(ctx, db, migrator.DefaultOptions, migrationStepIDs(steps))
 }
 
+// migrationStepLockRetry tunes how runMigrationSteps retries a step that fails
+// on a lock timeout. The zero value takes postgresconn's defaults; a variable
+// only so tests can shrink the budget and backoff.
+var migrationStepLockRetry postgresconn.LockRetryOptions
+
 // runMigrationSteps runs migration steps in their declared order. It reads the
 // pending IDs once and skips steps whose IDs are all recorded, so a deploy with
 // one new migration does not pay a round trip per already-applied step. If the
-// preflight read fails, every step runs and each one checks its own row.
+// preflight read fails, every step runs and each one checks its own row. A step
+// that fails on a lock timeout is retried within postgresconn's retry budget.
 func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep) error {
+	return runMigrationStepsWithRetry(ctx, db, logger, steps, migrationStepLockRetry)
+}
+
+// runMigrationStepsWithRetry is runMigrationSteps with explicit lock-timeout
+// retry options; a zero budget takes postgresconn's default.
+func runMigrationStepsWithRetry(ctx context.Context, db *gorm.DB, logger schemas.Logger, steps []migrationStep, retry postgresconn.LockRetryOptions) error {
 	pending, err := pendingMigrationStepIDs(ctx, db, steps)
 	var pendingSet map[string]struct{}
 	if err != nil {
@@ -279,7 +259,14 @@ func runMigrationSteps(ctx context.Context, db *gorm.DB, logger schemas.Logger, 
 		if pendingSet != nil && !stepHasPendingID(step, pendingSet) {
 			continue
 		}
-		if err := step.run(ctx, db, logger); err != nil {
+		// A step that times out waiting for a table lock (another session holds a
+		// conflicting lock, e.g. a long read on the table being altered) is retried
+		// with backoff instead of failing the boot. Steps are idempotent: the
+		// migrator records completed IDs and the DDL helpers use IF [NOT] EXISTS.
+		label := "[configstore] migration " + strings.Join(step.IDs, ",")
+		if err := postgresconn.RunWithLockRetry(ctx, logger, label, retry, func() error {
+			return step.run(ctx, db, logger)
+		}); err != nil {
 			return err
 		}
 	}
@@ -577,6 +564,9 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_skills_external_client_url_column"}, run: migrationAddSkillsExternalClientURLColumn},
 	{IDs: []string{"backfill_skills_external_client_url"}, run: migrationBackfillSkillsExternalClientURL},
 	{IDs: []string{"add_virtual_key_metadata_column"}, run: migrationAddVirtualKeyMetadataColumn},
+	{IDs: []string{"add_a2a_private_allowlist_column"}, run: migrationAddA2APrivateAllowlistColumn},
+	{IDs: []string{"add_agent_destination_policy_columns"}, run: migrationAddAgentDestinationPolicyColumns},
+	{IDs: []string{"drop_agent_registration_options"}, run: migrationDropAgentRegistrationOptions},
 }
 
 // warpLogEmbeddingColumns are the semantic-search configuration columns added
@@ -1345,8 +1335,24 @@ func areThereAnyPendingMigrations(ctx context.Context, db *gorm.DB, logger schem
 	return err != nil || len(pending) > 0
 }
 
-// Migrate performs the necessary database migrations.
+// triggerMigrations performs the necessary database migrations, pausing
+// materialized-view refreshes with the package default options.
 func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return triggerMigrationsWithPause(ctx, db, logger, migrationMatViewPause)
+}
+
+// triggerMigrationsWithPause is triggerMigrations with explicit matview pause
+// options, so a configured migration_matview_cancel_after (including "off")
+// governs config store migrations as well as log store ones.
+func triggerMigrationsWithPause(ctx context.Context, db *gorm.DB, logger schemas.Logger, pause logstore.MatViewPauseOptions) error {
+	return triggerMigrationsWithOptions(ctx, db, logger, pause, migrationStepLockRetry)
+}
+
+// triggerMigrationsWithOptions is triggerMigrationsWithPause with the lock-timeout
+// retry options too, so a configured migration_lock_retry_budget governs how
+// long a blocked step keeps retrying. A test override of migrationStepLockRetry
+// keeps precedence over the configured budget.
+func triggerMigrationsWithOptions(ctx context.Context, db *gorm.DB, logger schemas.Logger, pause logstore.MatViewPauseOptions, retry postgresconn.LockRetryOptions) error {
 	if !areThereAnyPendingMigrations(ctx, db, logger) {
 		logger.Info("[configstore] no pending migrations; skipping migration run")
 		return nil
@@ -1374,7 +1380,14 @@ func triggerMigrations(ctx context.Context, db *gorm.DB, logger schemas.Logger) 
 			logger.Warn("[configstore] migration preflight after lock failed; running migrations: %v", err)
 		}
 	}
-	return runMigrationSteps(ctx, db, logger, configstoreMigrationSteps)
+	// Pause materialized-view refreshes for the run. The config store often
+	// shares its database with the log store, and CREATE INDEX CONCURRENTLY waits
+	// on every older transaction in the database, so a long refresh of the logs
+	// views from any replica would otherwise stall these index builds. Taken after
+	// the migration lock and released before it (defers run LIFO).
+	releasePause := pauseMatViewsForMigrations(ctx, db, logger, pause)
+	defer releasePause()
+	return runMigrationStepsWithRetry(ctx, db, logger, configstoreMigrationSteps, migrationStepLockRetry.WithBudgetFallback(retry))
 }
 
 // migrationAddClientConfigMetadataColumn adds the metadata_json column to
@@ -15151,9 +15164,11 @@ func waitForPostgresIndexBuild(tx *gorm.DB, index string) (bool, error) {
 }
 
 // ensureIndexConcurrently creates index name on table with the given column
-// definition without blocking writes. On postgres it runs CREATE [UNIQUE] INDEX
-// CONCURRENTLY, which cannot run inside a transaction, so callers must use a
-// migration with UseTransaction=false. An INVALID index left by an interrupted
+// definition without blocking writes for long. On postgres it runs CREATE
+// [UNIQUE] INDEX CONCURRENTLY, which cannot run inside a transaction, so callers
+// must use a migration with UseTransaction=false; a small table instead gets a
+// plain build under a bounded lock wait (see PostgresTableIsSmall). An INVALID
+// index left by an interrupted
 // concurrent build still occupies the name and would make IF NOT EXISTS a silent
 // no-op, so it is dropped and rebuilt; only an index on table itself is ever
 // dropped, by its schema-qualified name. SQLite has no concurrent build and uses
@@ -15196,12 +15211,53 @@ func ensurePartialIndexConcurrently(tx *gorm.DB, table, name, definition, where 
 	if found && valid {
 		return nil
 	}
+	// A small table gets a plain build under a bounded lock wait. CREATE INDEX
+	// CONCURRENTLY waits for every transaction in the database older than it,
+	// whatever table it touches, so on a database shared with a large log store a
+	// tiny config table's index waits out the longest log-table transaction (a
+	// materialized-view refresh can run for many minutes). A plain build only
+	// takes a SHARE lock on this table, which on a small table is held for
+	// milliseconds.
+	small, err := PostgresTableIsSmall(tx, table)
+	if err != nil {
+		return fmt.Errorf("check size of %s: %w", table, err)
+	}
+	if small {
+		stmts := make([]string, 0, 2)
+		if found {
+			stmts = append(stmts, fmt.Sprintf("DROP INDEX IF EXISTS %s", qualified))
+		}
+		stmts = append(stmts, fmt.Sprintf("CREATE %s IF NOT EXISTS %s ON %s (%s)%s", kind, name, table, definition, predicate))
+		return ExecWithBoundedLock(tx, "index "+name, stmts...)
+	}
 	if found {
 		if err := tx.Exec(fmt.Sprintf("DROP INDEX CONCURRENTLY IF EXISTS %s", qualified)).Error; err != nil {
 			return fmt.Errorf("drop invalid index %s: %w", qualified, err)
 		}
 	}
 	return tx.Exec(fmt.Sprintf("CREATE %s CONCURRENTLY IF NOT EXISTS %s ON %s (%s)%s", kind, name, table, definition, predicate)).Error
+}
+
+// smallTableIndexMaxBytes and smallTableIndexMaxRows decide when an index is
+// built without CONCURRENTLY (see postgresconn.TableIsSmall). Variables only so
+// tests can force the concurrent path.
+var (
+	smallTableIndexMaxBytes = postgresconn.DefaultSmallTableMaxBytes
+	smallTableIndexMaxRows  = postgresconn.DefaultSmallTableMaxRows
+)
+
+// PostgresTableIsSmall reports whether table is small enough to index without
+// CONCURRENTLY, under this package's thresholds. Exported so downstream migration
+// helpers (bifrost-enterprise) apply the same rule; see postgresconn.TableIsSmall.
+func PostgresTableIsSmall(tx *gorm.DB, table string) (bool, error) {
+	return postgresconn.TableIsSmall(tx, table, smallTableIndexMaxBytes, smallTableIndexMaxRows)
+}
+
+// ExecWithBoundedLock runs stmts in one short transaction with a bounded lock
+// wait and statement time, retrying lock timeouts. Kept exported for downstream
+// callers; see postgresconn.ExecWithBoundedLock.
+func ExecWithBoundedLock(tx *gorm.DB, label string, stmts ...string) error {
+	return postgresconn.ExecWithBoundedLock(tx, label, stmts...)
 }
 
 // dropIndexConcurrently is the rollback counterpart of ensureIndexConcurrently: it
@@ -16154,4 +16210,71 @@ func setMigrationLockTimeout(tx *gorm.DB) error {
 		return fmt.Errorf("set migration lock_timeout: %w", err)
 	}
 	return nil
+}
+
+// migrationAddA2APrivateAllowlistColumn adds the a2a_private_allowlist_json
+// column to config_client.
+func migrationAddA2APrivateAllowlistColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_a2a_private_allowlist_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			return addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "a2a_private_allowlist_json")
+		},
+		Rollback: func(tx *gorm.DB) error {
+			return dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableClientConfig{}, "a2a_private_allowlist_json")
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running a2a private allowlist column migration: %s", err.Error())
+	}
+	return nil
+}
+
+// migrationAddAgentDestinationPolicyColumns persists credential destinations and the server-owned network restriction.
+func migrationAddAgentDestinationPolicyColumns(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "add_agent_destination_policy_columns",
+		Migrate: func(tx *gorm.DB) error {
+			for _, column := range []string{"credential_origins", "require_public_target"} {
+				if err := addColumnIfNotExists(tx.WithContext(ctx), logger, &tables.TableAgentRegistration{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("add_agent_destination_policy_columns is non-rollbackable: removing destination permissions would discard security policy")
+		},
+	})
+}
+
+// migrationDropAgentRegistrationOptions removes unused tenant and manual extension configuration.
+func migrationDropAgentRegistrationOptions(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	return RunSingleMigration(ctx, nil, db, logger, &migrator.Migration{
+		ID: "drop_agent_registration_options",
+		Migrate: func(tx *gorm.DB) error {
+			for _, column := range []string{"tenant", "extension_uris"} {
+				// SQLite's GORM table reconstruction can silently retain legacy columns.
+				if tx.Dialector.Name() == "sqlite" {
+					if !tx.Migrator().HasColumn(&tables.TableAgentRegistration{}, column) {
+						continue
+					}
+					if err := tx.WithContext(ctx).Exec(dropColumnSQL(tx, "config_agent_registrations", column)).Error; err != nil {
+						return err
+					}
+					continue
+				}
+				if err := dropColumnIfExists(tx.WithContext(ctx), logger, &tables.TableAgentRegistration{}, column); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+		Rollback: func(*gorm.DB) error {
+			return fmt.Errorf("drop_agent_registration_options is non-rollbackable: removed registration values cannot be recovered")
+		},
+	})
 }

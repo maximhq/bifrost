@@ -25,6 +25,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/mcp"
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/network"
@@ -161,6 +162,13 @@ type pluginOrderInfo struct {
 
 type ServerConfig struct {
 	ReadBufferSize int `json:"read_buffer_size,omitempty"`
+
+	// BodyBufferPoolLimitBytes caps the request-body buffer a pooled keep-alive
+	// connection keeps between requests; larger buffers are released after each
+	// request. Not set uses DefaultBodyBufferPoolLimitBytes and 0 means unlimited, so
+	// it is a pointer to tell the two apart. See ApplyBodyBufferPoolLimit. Deploy-time
+	// only - read from config.json at startup.
+	BodyBufferPoolLimitBytes *int `json:"body_buffer_pool_limit_bytes,omitempty"`
 
 	// PluginDownloadPrivateAllowlist lists hostnames, IPs, and CIDR ranges that custom
 	// plugin (.so) downloads may reach even when they resolve to a private/loopback/
@@ -369,14 +377,13 @@ func (w *WebhookEndpointConfig) toTable() *configstoreTables.TableWebhookEndpoin
 type AgentRegistrationFileConfig struct {
 	Name                                   string                `json:"name"`
 	AgentCardURL                           string                `json:"agent_card_url"`
-	Tenant                                 string                `json:"tenant,omitempty"`
 	Enabled                                *bool                 `json:"enabled,omitempty"`
 	AllowByDefault                         bool                  `json:"allow_by_default,omitempty"`
 	ForwardAcceptedCredential              bool                  `json:"forward_accepted_credential,omitempty"`
 	ForwardAcceptedCredentialOverridesAuth bool                  `json:"forward_accepted_credential_overrides_auth,omitempty"`
 	DiscoveryAuth                          *schemas.UpstreamAuth `json:"discovery_auth,omitempty"`
 	RuntimeAuth                            *schemas.UpstreamAuth `json:"runtime_auth,omitempty"`
-	ExtensionURIs                          []string              `json:"extension_uris,omitempty"`
+	CredentialOrigins                      []string              `json:"credential_origins,omitempty"`
 	VirtualKeyIDs                          []string              `json:"virtual_key_ids,omitempty"`
 }
 
@@ -396,7 +403,8 @@ func (a *AgentRegistrationFileConfig) validate() error {
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
 		return errors.New("agent_card_url must be an absolute HTTP(S) URL without user info")
 	}
-	return nil
+	_, err = agent.ValidateCredentialOrigins(a.CredentialOrigins)
+	return err
 }
 
 // toRegistration converts a file declaration into the domain model the
@@ -409,20 +417,18 @@ func (a *AgentRegistrationFileConfig) toRegistration() *schemas.AgentRegistratio
 	}
 	ids := slices.Clone(a.VirtualKeyIDs)
 	sort.Strings(ids)
-	uris := slices.Clone(a.ExtensionURIs)
-	sort.Strings(uris)
+	origins, _ := agent.ValidateCredentialOrigins(a.CredentialOrigins)
 	now := time.Now().UTC()
 	return &schemas.AgentRegistration{
 		Name:                                   strings.TrimSpace(a.Name),
 		AgentCardURL:                           a.AgentCardURL,
-		Tenant:                                 a.Tenant,
 		Enabled:                                enabled,
 		AllowByDefault:                         a.AllowByDefault,
 		ForwardAcceptedCredential:              a.ForwardAcceptedCredential,
 		ForwardAcceptedCredentialOverridesAuth: a.ForwardAcceptedCredentialOverridesAuth,
 		DiscoveryAuth:                          a.DiscoveryAuth,
 		RuntimeAuth:                            a.RuntimeAuth,
-		ExtensionURIs:                          uris,
+		CredentialOrigins:                      origins,
 		VirtualKeyIDs:                          ids,
 		CreatedAt:                              now,
 		UpdatedAt:                              now,
@@ -691,7 +697,12 @@ type Config struct {
 	LogsStore   logstore.LogStore
 	// LogsStoreConfig is the effective logs store configuration used to create LogsStore.
 	LogsStoreConfig *logstore.Config
-	ObjectStore     objectstore.ObjectStore
+	// ConfigStoreConfig is the config.json config store configuration used to
+	// create ConfigStore, or nil when the store was defaulted (SQLite) or is
+	// disabled. Downstream migrations that run against the config store
+	// (bifrost-enterprise) read their migration settings from it.
+	ConfigStoreConfig *configstore.Config
+	ObjectStore       objectstore.ObjectStore
 
 	// oauth2SigningKey caches the immutable OAuth2 signing key used to sign and
 	// verify Bifrost-issued /mcp JWTs. The key is created once via an idempotent
@@ -1127,6 +1138,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 		}
 		logger.Info("loading configuration from: %s", absConfigFilePath)
+		warnMultiUnitCalendarConfig(data, logger.Warn)
 		// Promote deprecated per-budget / per-rate-limit calendar_aligned to the
 		// owning VK / Team. Independent of config version — the deprecation
 		// predates the v1/v2 allow-list split.
@@ -1252,11 +1264,20 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 	var err error
 	// Initialize config store
 	if configData.ConfigStoreConfig != nil && configData.ConfigStoreConfig.Enabled {
-		// Explicit config store configuration from config.json
-		config.ConfigStore, err = configstore.NewConfigStore(ctx, configData.ConfigStoreConfig, logger)
+		// Explicit config store configuration from config.json. Its migrations
+		// pause materialized-view refreshes under the log store's
+		// migration_matview_cancel_after when config.json carries the log store;
+		// a log store configured only in the database is not readable until the
+		// config store has migrated, so the default applies then.
+		var storeOpts []configstore.Option
+		if configData.LogsStoreConfig != nil {
+			storeOpts = append(storeOpts, configstore.WithMigrationMatViewPause(logstore.MigrationMatViewPauseOptions(configData.LogsStoreConfig, logger)))
+		}
+		config.ConfigStore, err = configstore.NewConfigStore(ctx, configData.ConfigStoreConfig, logger, storeOpts...)
 		if err != nil {
 			return err
 		}
+		config.ConfigStoreConfig = configData.ConfigStoreConfig
 		logger.Info("config store initialized")
 	} else if configData.ConfigStoreConfig == nil {
 		// No config store section — create default SQLite store for persistence
@@ -1496,6 +1517,9 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 	// than leave an entry that silently matches nothing.
 	if _, err := network.ValidatePrivateTargetAllowlist(cc.MCPOAuthPrivateAllowlist); err != nil {
 		return fmt.Errorf("mcp_oauth_private_allowlist: %w", err)
+	}
+	if _, err := network.ValidatePrivateTargetAllowlist(cc.A2APrivateAllowlist); err != nil {
+		return fmt.Errorf("a2a_private_allowlist: %w", err)
 	}
 	return nil
 }
@@ -10647,4 +10671,14 @@ func (c *Config) GetSkillsExternalClientURL() string {
 		return ""
 	}
 	return strings.TrimRight(value, "/")
+}
+
+// GetA2APrivateAllowlist returns a copy of the permitted private Agent Gateway destinations.
+func (c *Config) GetA2APrivateAllowlist() []string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return nil
+	}
+	return slices.Clone(c.ClientConfig.A2APrivateAllowlist)
 }

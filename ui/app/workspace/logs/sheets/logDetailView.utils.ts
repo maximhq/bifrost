@@ -1,5 +1,5 @@
 import { isReservedMetadataKey } from "@/lib/registries/logs";
-import type { ResponsesMessage } from "@/lib/types/logs";
+import type { LogEntry, PassthroughLogParams, ResponsesMessage } from "@/lib/types/logs";
 import { isLogLevel, type LogLevel } from "@/lib/utils/logLevel";
 
 /**
@@ -230,4 +230,41 @@ export function decisionQuestions(object: string | undefined, params: unknown): 
 	if (object !== "decisions" || params === null || typeof params !== "object") return null;
 	const count = Array.isArray(params) ? params.length : Object.keys(params).length;
 	return count > 0 ? { value: params, count } : null;
+}
+
+export const isPassthroughOperation = (object: string) => object === "passthrough" || object === "passthrough_stream";
+
+// The fields the passthrough helpers read; a LogEntry satisfies it.
+type PassthroughLogShape = { object: string; is_passthrough?: boolean; params?: object } & Partial<
+	Pick<LogEntry, "input_history" | "responses_input_history" | "output_message" | "responses_output">
+>;
+
+/**
+ * Whether a row came through a passthrough route: tagged is_passthrough (stored under its inferred
+ * type) or, for rows written before the tag existed and for routes with no typed equivalent, stored
+ * as passthrough.
+ */
+export function isPassthroughLog(log: Pick<PassthroughLogShape, "object" | "is_passthrough">): boolean {
+	return Boolean(log.is_passthrough) || isPassthroughOperation(log.object);
+}
+
+/** Whether a row's type badge needs a Passthrough tag: it is a passthrough call shown under its inferred type. */
+export function showsPassthroughTag(log: Pick<PassthroughLogShape, "object" | "is_passthrough">): boolean {
+	return Boolean(log.is_passthrough) && !isPassthroughOperation(log.object);
+}
+
+/** The params of a passthrough row, or null for any other row. */
+export function passthroughLogParams(log: PassthroughLogShape): PassthroughLogParams | null {
+	return isPassthroughLog(log) ? ((log.params as PassthroughLogParams | undefined) ?? {}) : null;
+}
+
+/**
+ * Whether a passthrough row's raw bodies were parsed into conversation fields, so it renders like a
+ * typed request. Parsing is best-effort: a row whose bodies did not decode, or whose route has no
+ * typed equivalent, keeps the raw-body view.
+ */
+export function isParsedPassthroughLog(log: PassthroughLogShape): boolean {
+	const params = passthroughLogParams(log);
+	if (!params?.parsed_type) return false;
+	return Boolean(log.input_history?.length || log.responses_input_history?.length || log.output_message || log.responses_output?.length);
 }

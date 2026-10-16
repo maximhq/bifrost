@@ -148,6 +148,9 @@ func (response *GenerateContentResponse) ToBifrostChatResponse() *schemas.Bifros
 	// Handle empty candidates (filtered/malformed responses)
 	if len(response.Candidates) == 0 {
 		finishReason := ConvertGeminiFinishReasonToBifrost(FinishReasonMalformedFunctionCall)
+		if response.promptBlockError() != nil {
+			finishReason = ConvertGeminiFinishReasonToBifrost(FinishReasonSafety)
+		}
 		return createErrorResponse(response, finishReason, false)
 	}
 
@@ -548,6 +551,9 @@ func (response *GenerateContentResponse) toBifrostChatCompletionStreamDelta(stat
 			return streamResponse, nil, true
 		}
 		finishReason := ConvertGeminiFinishReasonToBifrost(FinishReasonMalformedFunctionCall)
+		if response.promptBlockError() != nil {
+			finishReason = ConvertGeminiFinishReasonToBifrost(FinishReasonSafety)
+		}
 		return createErrorResponse(response, finishReason, true), nil, true
 	}
 

@@ -4,6 +4,11 @@ description: "v2.3.0 changelog - 2026-10-13"
 ---
 
 <Update label="Bifrost Enterprise" description="v2.3.0">
+
+<Warning>
+  For large deployments, schedule upgrades during low-traffic windows (e.g. weekends). Database migrations run on startup and can cause lock contention on PostgreSQL while they complete. Improved migration handling is rolling out at the application level, starting with v2.3.0.
+</Warning>
+
 <Warning>
 **Pass-through routes and file objects now work differently with virtual keys.** Read this changelog in full before you upgrade. Every one of these changes strengthens Bifrost's security posture. If you have questions, reach out to us.
 </Warning>
@@ -561,22 +566,12 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/mattn/go-runewidth v0.0.17 // indirect
 	github.com/mattn/go-sqlite3 v1.14.32 // indirect
-<<<<<<< HEAD
 	github.com/maximhq/bifrost/plugins/compat v0.4.0 // indirect
 	github.com/maximhq/bifrost/plugins/maxim v1.7.10 // indirect
 	github.com/maximhq/bifrost/plugins/mocker v1.6.10 // indirect
 	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.10 // indirect
 	github.com/maximhq/bifrost/plugins/otel v1.6.0 // indirect
 	github.com/maximhq/bifrost/plugins/prompts v1.1.10 // indirect
-=======
-	github.com/maximhq/bifrost/plugins/compat v0.3.6 // indirect
-	github.com/maximhq/bifrost/plugins/maxim v1.7.9 // indirect
-	github.com/maximhq/bifrost/plugins/mocker v1.6.9 // indirect
-	github.com/maximhq/bifrost/plugins/modelcatalogresolver v1.1.9 // indirect
-	github.com/maximhq/bifrost/plugins/otel v1.5.9 // indirect
-	github.com/maximhq/bifrost/plugins/prompts v1.1.9 // indirect
-	github.com/maximhq/bifrost/plugins/telemetry v1.8.5 // indirect
->>>>>>> main
 	github.com/maximhq/maxim-go v0.2.1 // indirect
 	github.com/mholt/archives v0.1.2 // indirect
 	github.com/miekg/dns v1.1.68 // indirect

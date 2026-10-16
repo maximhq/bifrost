@@ -194,6 +194,7 @@ type PrometheusPlugin struct {
 	ActiveRequests                 *prometheus.GaugeVec
 	ProviderKeyUp                  *prometheus.GaugeVec
 	MCPToolDuration                *prometheus.HistogramVec
+	A2AOperationDuration           *prometheus.HistogramVec
 	customLabels                   []string
 
 	defaultHTTPLabels    []string
@@ -698,6 +699,12 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		append(defaultMCPLabels, filteredCustomLabels...),
 	)
 
+	a2aDuration := factory.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "bifrost_a2a_client_operation_duration_seconds",
+		Help:    "Duration of an A2A operation as observed by Bifrost.",
+		Buckets: mcpOperationDurationBuckets,
+	}, a2aMetricLabelNames)
+
 	plugin := &PrometheusPlugin{
 		logger:                         logger,
 		pricingManager:                 pricingManager,
@@ -734,6 +741,7 @@ func Init(config *Config, pricingManager *modelcatalog.ModelCatalog, logger sche
 		ActiveRequests:                 bifrostActiveRequests,
 		ProviderKeyUp:                  bifrostProviderKeyUp,
 		MCPToolDuration:                bifrostMCPToolDuration,
+		A2AOperationDuration:           a2aDuration,
 		customLabels:                   filteredCustomLabels,
 		defaultHTTPLabels:              defaultHTTPLabels,
 		defaultBifrostLabels:           defaultBifrostLabels,
@@ -871,6 +879,10 @@ func (p *PrometheusPlugin) HTTPTransportPreHook(ctx *schemas.BifrostContext, req
 // Running here also makes the observation once-per-request rather than
 // once-per-attempt, so a retried request no longer contributes several times.
 func (p *PrometheusPlugin) HTTPTransportPostHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest, resp *schemas.HTTPResponse) error {
+	// Once-per-HTTP-request safety net for ActiveRequests: core skips LLM post hooks
+	// when a client cancels a stream before it reaches the handler, which would
+	// otherwise leave the gauge incremented forever. This runs after a stream drains.
+	p.releaseActiveRequest(ctx)
 	start, ok := ctx.Value(transportStartTimeKey).(time.Time)
 	if !ok {
 		return nil
@@ -900,6 +912,7 @@ func (p *PrometheusPlugin) Inject(_ context.Context, trace *schemas.Trace) error
 	if trace == nil {
 		return nil
 	}
+	p.recordA2AMetrics(trace)
 	// Always drain the handoff entry so a toggle flip mid-request can't leak it.
 	joinKey := trace.InternalID
 	if joinKey == "" {
@@ -992,9 +1005,32 @@ func (p *PrometheusPlugin) ObserveWarmupRoutingEmbedding(provider, model string,
 // This time is used later in PostLLMHook to calculate request duration.
 func (p *PrometheusPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
 	ctx.SetValue(startTimeKey, time.Now())
-	ctx.SetValue(activeRequestTypeKey, req.RequestType)
-	p.ActiveRequests.WithLabelValues(string(req.RequestType)).Inc()
+	p.acquireActiveRequest(ctx, req.RequestType)
 	return req, nil, nil
+}
+
+// acquireActiveRequest increments ActiveRequests unless this request already holds a
+// slot. The held request type lives on the shared BifrostContext, so a hook that runs
+// twice for the same in-flight attempt cannot count it twice. If the held type differs,
+// the slot moves to the new label so release decrements the label that was counted.
+func (p *PrometheusPlugin) acquireActiveRequest(ctx *schemas.BifrostContext, requestType schemas.RequestType) {
+	if heldType, held := ctx.GetAndSetValue(activeRequestTypeKey, requestType).(schemas.RequestType); held {
+		if heldType != requestType {
+			p.ActiveRequests.WithLabelValues(string(heldType)).Dec()
+			p.ActiveRequests.WithLabelValues(string(requestType)).Inc()
+		}
+		return
+	}
+	p.ActiveRequests.WithLabelValues(string(requestType)).Inc()
+}
+
+// releaseActiveRequest decrements ActiveRequests if this request holds a slot and clears
+// it, so every terminal path can call it and the gauge drops exactly once. A later
+// fallback attempt re-acquires through PreLLMHook, keeping per-attempt inc/dec balanced.
+func (p *PrometheusPlugin) releaseActiveRequest(ctx *schemas.BifrostContext) {
+	if method, held := ctx.GetAndSetValue(activeRequestTypeKey, nil).(schemas.RequestType); held {
+		p.ActiveRequests.WithLabelValues(string(method)).Dec()
+	}
 }
 
 // applyCustomLabels resolves each configured custom label into labelValues.
@@ -1173,15 +1209,14 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// Skip pre-dispatch rejections (no provider and no model) to avoid empty-label
 	// series. Decrement ActiveRequests first, since PreLLMHook incremented it.
 	if provider == "" && model == "" {
-		if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
-			p.ActiveRequests.WithLabelValues(string(method)).Dec()
-		}
+		p.releaseActiveRequest(ctx)
 		return result, bifrostErr, nil
 	}
 
 	startTime, ok := ctx.Value(startTimeKey).(time.Time)
 	if !ok {
 		p.logger.Warn("Warning: startTime not found in context for Prometheus PostLLMHook")
+		p.releaseActiveRequest(ctx)
 		return result, bifrostErr, nil
 	}
 	// Capture the LLM-hook window synchronously, before the goroutine below and its
@@ -1259,12 +1294,12 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	streamEndIndicatorValue := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator)
 	isFinalChunk, hasFinalChunkIndicator := streamEndIndicatorValue.(bool)
 
-	// Decrement active requests on the final (or only) call for this request
+	// Decrement active requests on the final (or only) call for this request. An error
+	// ends a stream attempt even when the end indicator was not set (e.g. a plugin
+	// short-circuit rejecting a stream request before dispatch).
 	isStreamFinal := !bifrost.IsStreamRequestType(requestType) || (hasFinalChunkIndicator && isFinalChunk)
-	if isStreamFinal {
-		if method, ok := ctx.Value(activeRequestTypeKey).(schemas.RequestType); ok {
-			p.ActiveRequests.WithLabelValues(string(method)).Dec()
-		}
+	if isStreamFinal || bifrostErr != nil {
+		p.releaseActiveRequest(ctx)
 	}
 
 	pricingScopes := modelcatalog.PricingLookupScopesFromContext(ctx, string(provider))

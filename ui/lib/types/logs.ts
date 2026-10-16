@@ -718,9 +718,24 @@ export interface OverheadBucket {
 	duration_us: number;
 }
 
+// Params of a passthrough row (object "passthrough" / "passthrough_stream"). parsed_type,
+// base_provider and model_params are present only when the gateway parsed the raw bodies.
+export interface PassthroughLogParams {
+	method?: string;
+	path?: string;
+	raw_query?: string;
+	status_code?: number;
+	model?: string;
+	parsed_type?: string; // typed request kind the bodies were parsed as, e.g. "chat_completion"
+	base_provider?: string; // wire format of a custom provider, when it differs from the row's provider
+	model_params?: ModelParameters; // model parameters parsed from the request body
+	multipart_summary?: boolean; // request body is a summary of the form fields and file sizes, not the raw upload
+}
+
 export interface LogEntry {
 	id: string;
 	object: string; // text.completion, chat.completion, embedding, audio.speech, audio.transcription
+	is_passthrough?: boolean; // came through a passthrough route; object is the inferred type, or passthrough when none is known
 	parent_request_id?: string;
 	timestamp: string; // ISO string format from Go time.Time
 	provider: string;

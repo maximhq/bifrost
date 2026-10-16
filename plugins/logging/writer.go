@@ -476,10 +476,12 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	agentLogs := make([]*logstore.AgentLog, 0, len(batch))
 	for _, entry := range batch {
 		if entry.log != nil {
+			p.applyParsedPassthrough(entry.log)
 			omitBinaryBodies(entry.log)
 			logs = append(logs, entry.log)
 		}
 		if entry.logUpdate != nil {
+			p.applyParsedPassthrough(entry.logUpdate)
 			omitBinaryBodies(entry.logUpdate)
 			logUpdates = append(logUpdates, entry.logUpdate)
 		}

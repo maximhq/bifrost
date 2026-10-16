@@ -1776,9 +1776,10 @@ func (p *GovernancePlugin) PreA2AHook(ctx *schemas.BifrostContext, req *schemas.
 	deny := func(decision Decision, message string) (*schemas.BifrostA2ARequest, *schemas.A2APluginShortCircuit, error) {
 		ctx.SetValue(governanceRejectedContextKey, true)
 		return req, &schemas.A2APluginShortCircuit{Error: &schemas.BifrostError{
-			Type:       bifrost.Ptr(string(decision)),
-			StatusCode: bifrost.Ptr(403),
-			Error:      &schemas.ErrorField{Message: message},
+			IsBifrostError: true,
+			Type:           bifrost.Ptr(string(decision)),
+			StatusCode:     bifrost.Ptr(403),
+			Error:          &schemas.ErrorField{Message: message},
 		}}, nil
 	}
 

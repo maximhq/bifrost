@@ -31,6 +31,14 @@ type PostgresConfig struct {
 	// views go permanently stale while still being served. Empty / unset derives a
 	// budget from MatViewRefreshInterval.
 	MatViewRefreshTimeout string `json:"matview_refresh_timeout,omitempty"`
+
+	// MigrationMatViewCancelAfter is how long schema migrations wait for an
+	// in-flight materialized-view refresh pass (from any replica, of any version)
+	// before cancelling its REFRESH statements. Migrations pause refreshes for
+	// their whole run; a long pass on a large logs table otherwise blocks their
+	// CREATE INDEX CONCURRENTLY and ALTER TABLE logs statements. Accepts a Go
+	// duration string; empty uses 60s; "off" never cancels and only waits.
+	MigrationMatViewCancelAfter string `json:"migration_matview_cancel_after,omitempty"`
 }
 
 // toPostgresConnConfig returns the shared connection config embedded in config,
@@ -150,7 +158,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	// SQLSTATE 0A000 ("cached plan must not change result type") structurally
 	// impossible when a migration mixes DDL with subsequent SELECTs against the
 	// same table. Runtime pool keeps the default cache-statement mode.
-	migrationDSN := dsn + " default_query_exec_mode=simple_protocol"
+	migrationDSN := postgresconn.MigrationDSN(dsn)
 
 	openPool := func(connDSN string) (*gorm.DB, error) {
 		return postgresconn.Open(connDSN, pgConfig, newGormLogger(logger))
@@ -205,7 +213,9 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	}
 	logger.Info("logstore: postgres server_version_num=%d; running schema migrations (may block on a cross-node advisory lock if another pod is migrating)", pgVersionNum)
 
-	if err := triggerMigrations(ctx, mDb, logger); err != nil {
+	pauseOpts := MatViewPauseOptions{CancelAfter: resolveMigrationMatViewCancelAfter(config.MigrationMatViewCancelAfter, logger)}
+	retry := postgresconn.MigrationLockRetryOptions(&config.Config, logger)
+	if err := triggerMigrationsWithOptions(ctx, mDb, logger, pauseOpts, retry); err != nil {
 		logger.Error("logstore: schema migrations failed: %v", err)
 		_ = closePool(mDb)
 		return nil, err
@@ -253,7 +263,9 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 		// The initial refresh gets the same budget as a periodic tick; on a large
 		// logs table it can be slow, and it must not hold the advisory lock forever.
 		initialCtx, cancelInitial := context.WithTimeout(context.Background(), refreshTimeout)
-		err := refreshMatViews(initialCtx, db)
+		// Spaced like a periodic tick: during a rolling restart every new process
+		// runs this, and a view another replica refreshed moments ago is skipped.
+		err := refreshMatViews(initialCtx, db, refreshInterval)
 		cancelInitial()
 		if err != nil {
 			logger.Warn(fmt.Sprintf("logstore: initial matview refresh failed: %s", err))

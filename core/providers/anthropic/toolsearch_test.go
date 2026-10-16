@@ -1125,3 +1125,66 @@ func TestToolSearch_InterleavedHostedSearchesPairInOrder(t *testing.T) {
 	}
 	assert.Equal(t, want, resultsByToolUseID(started), "streaming: %s", mustJSON(t, started))
 }
+
+// anthropicToolSearchReplayCall is a Claude tool_search_call as /v1/responses returns it,
+// echoed back by the client on the next turn.
+const anthropicToolSearchReplayCall = `{"id":"` + tsServerToolUseID + `","arguments":` + tsSearchQuery + `,"call_id":"` + tsServerToolUseID + `","status":"completed","type":"tool_search_call","name":"tool_search_tool_bm25","tool_references":["` + tsDiscoveredTool + `"]}`
+
+// A Claude tool search replayed through /v1/responses arrives JSON-decoded, like the
+// OpenAI items dropped above, but it is Anthropic's own server search: the request must
+// carry the server_tool_use + tool_search_tool_result pair back unchanged.
+func TestToolSearch_RequestPathRebuildsAnthropicReplay(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	history := []schemas.ResponsesMessage{
+		{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("weather?")}},
+		decodeResponsesItem(t, anthropicToolSearchReplayCall),
+		decodeResponsesItem(t, `{"type":"function_call","id":"fc_1","call_id":"`+tsDiscoveredCallID+`","name":"`+tsDiscoveredTool+`","arguments":"{\"location\":\"Tokyo\"}","status":"completed"}`),
+		decodeResponsesItem(t, `{"type":"function_call_output","call_id":"`+tsDiscoveredCallID+`","output":"sunny"}`),
+	}
+	msgs, _ := ConvertBifrostMessagesToAnthropicMessages(ctx, history, true,
+		schemas.ResolveModelCaps(schemas.Anthropic, "claude-sonnet-4-6"))
+	require.Len(t, msgs, 3, "messages=%s", mustJSON(t, msgs))
+	blocks := msgs[1].Content.ContentBlocks
+	require.Len(t, blocks, 3, "assistant=%s", mustJSON(t, msgs[1]))
+
+	use, result, call := blocks[0], blocks[1], blocks[2]
+	assert.Equal(t, AnthropicContentBlockTypeServerToolUse, use.Type)
+	require.NotNil(t, use.ID)
+	assert.Equal(t, tsServerToolUseID, *use.ID)
+	require.NotNil(t, use.Name)
+	assert.Equal(t, string(AnthropicToolNameToolSearchBM25), *use.Name)
+	assert.JSONEq(t, tsSearchQuery, string(use.Input))
+	assert.Equal(t, AnthropicContentBlockTypeToolSearchToolResult, result.Type)
+	require.NotNil(t, result.ToolUseID)
+	assert.Equal(t, tsServerToolUseID, *result.ToolUseID)
+	assertNestedToolSearchResult(t, &result, []string{tsDiscoveredTool})
+	assert.Equal(t, AnthropicContentBlockTypeToolUse, call.Type)
+	require.NotNil(t, call.ID)
+	assert.Equal(t, tsDiscoveredCallID, *call.ID)
+}
+
+// /anthropic/v1/messages renders a Claude tool search back to the client through the
+// same rebuild; the client replays the block verbatim, so it must carry content.
+func TestToolSearch_AnthropicResponseRendersResultContent(t *testing.T) {
+	t.Parallel()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp := ToAnthropicResponsesResponse(ctx, &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{{
+			ID:     new(tsServerToolUseID),
+			Type:   new(schemas.ResponsesMessageTypeToolSearchCall),
+			Status: new("completed"),
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID:                  new(tsServerToolUseID),
+				Name:                    new(string(AnthropicToolNameToolSearchBM25)),
+				Arguments:               new(tsSearchQuery),
+				ResponsesToolSearchCall: &schemas.ResponsesToolSearchCall{ToolReferences: []string{tsDiscoveredTool}},
+			},
+		}},
+	})
+	require.NotNil(t, resp)
+	require.Len(t, resp.Content, 2, "content=%s", mustJSON(t, resp.Content))
+	assert.Equal(t, AnthropicContentBlockTypeServerToolUse, resp.Content[0].Type)
+	assert.Equal(t, AnthropicContentBlockTypeToolSearchToolResult, resp.Content[1].Type)
+	assertNestedToolSearchResult(t, &resp.Content[1], []string{tsDiscoveredTool})
+}

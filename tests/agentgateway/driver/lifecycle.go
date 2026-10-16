@@ -9,6 +9,9 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	a2agrpc "github.com/a2aproject/a2a-go/v2/a2agrpc/v1"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // pushConfigID is the client-chosen ID of the lifecycle push configuration.
@@ -16,6 +19,8 @@ const pushConfigID = "lifecycle-push"
 
 // Lifecycle configures one scenario run against an already registered Agent.
 type Lifecycle struct {
+	// Binding selects one advertised downstream transport for transport-matrix validation.
+	Binding    a2a.TransportProtocol
 	Gateway    *Gateway
 	AgentName  string
 	VirtualKey string
@@ -65,7 +70,23 @@ func (l *Lifecycle) Run(ctx context.Context) (*Result, error) {
 			iface.URL = u.String()
 		}
 	}
-	client, err := a2aclient.NewFromCard(ctx, card, a2aclient.WithCallInterceptors(headerInterceptor{virtualKey: l.VirtualKey, bearer: l.Bearer}))
+	if l.Binding != "" {
+		selected := []*a2a.AgentInterface{}
+		for _, iface := range card.SupportedInterfaces {
+			if iface.ProtocolBinding == l.Binding {
+				selected = append(selected, iface)
+			}
+		}
+		if len(selected) == 0 {
+			return nil, fmt.Errorf("missing binding %s", l.Binding)
+		}
+		card.SupportedInterfaces = selected
+	}
+	options := []a2aclient.FactoryOption{a2aclient.WithCallInterceptors(headerInterceptor{virtualKey: l.VirtualKey, bearer: l.Bearer})}
+	if l.Binding == a2a.TransportProtocolGRPC {
+		options = append(options, a2agrpc.WithGRPCTransport(grpc.WithTransportCredentials(insecure.NewCredentials())))
+	}
+	client, err := a2aclient.NewFromCard(ctx, card, options...)
 	if err != nil {
 		return nil, fmt.Errorf("create A2A client: %w", err)
 	}

@@ -373,10 +373,9 @@ bifrost:
         enabled: true
         cel_expression: "model.startsWith('gpt-')"
         targets:
-          - provider: "azure"
-            model: ""        # empty = use original model name
+          - provider: "azure"   # no model: keep the requested model
             weight: 1.0
-        fallbacks: ["openai"]
+        fallbacks: ["openai/"]  # "provider/" keeps the requested model
         scope: "global"
         priority: 0
 
@@ -390,7 +389,7 @@ bifrost:
             model: "llama-3.3-70b-versatile"
             weight: 1.0
         fallbacks:
-          - "openai"
+          - "openai/gpt-4o"
           - provider: "azure"            # object form pins a provider key for this fallback
             model: "gpt-4o"
             provider_key_name: "azure-eu"
@@ -404,9 +403,8 @@ bifrost:
         cel_expression: "true"    # match all requests for this scope
         targets:
           - provider: "bedrock"
-            model: ""
             weight: 1.0
-        fallbacks: ["openai"]
+        fallbacks: ["openai/"]
         scope: "team"
         scope_id: "team-ml"
         priority: 0

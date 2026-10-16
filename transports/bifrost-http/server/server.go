@@ -2664,8 +2664,9 @@ func (s *BifrostHTTPServer) InitializeAgentGateway(ctx context.Context, registra
 		AuthPolicy: handlers.AgentGatewayAuthPolicy(s.Config),
 		// Read the external URL live so admin config changes (and their cluster
 		// propagation) apply to card generation and push without a restart.
-		ExternalURLProvider: s.Config.GetA2AExternalClientURL,
-		RawCaptureProvider:  s.Config.GetA2AStoreRawRequestResponse,
+		ExternalURLProvider:      s.Config.GetA2AExternalClientURL,
+		RawCaptureProvider:       s.Config.GetA2AStoreRawRequestResponse,
+		PrivateAllowlistProvider: s.Config.GetA2APrivateAllowlist,
 	}
 	if s.Config.ServerConfig != nil {
 		managerConfig.GRPCBaseDomain = s.Config.ServerConfig.A2AGRPCBaseDomain
@@ -3643,6 +3644,7 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 	// Checking if config has server config and use it to set read buffer size
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
+	lib.ApplyBodyBufferPoolLimit(s.Config.ServerConfig, s.Config.ClientConfig.MaxRequestBodySizeMB*1024*1024)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
 		Handler:            handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler),

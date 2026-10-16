@@ -677,18 +677,6 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 					})
 
 					if accumulatedArgs != "" {
-						var doneItem *schemas.ResponsesMessage
-						if prevToolCallID != "" || prevToolName != "" {
-							doneItem = &schemas.ResponsesMessage{
-								ResponsesToolMessage: &schemas.ResponsesToolMessage{},
-							}
-							if prevToolCallID != "" {
-								doneItem.ResponsesToolMessage.CallID = &prevToolCallID
-							}
-							if prevToolName != "" {
-								doneItem.ResponsesToolMessage.Name = &prevToolName
-							}
-						}
 						argsDoneResponse := &schemas.BifrostResponsesStreamResponse{
 							Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
 							SequenceNumber: sequenceNumber + len(responses),
@@ -697,9 +685,6 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 						}
 						if prevItemID != "" {
 							argsDoneResponse.ItemID = &prevItemID
-						}
-						if doneItem != nil {
-							argsDoneResponse.Item = doneItem
 						}
 						responses = append(responses, argsDoneResponse)
 					}
@@ -1427,18 +1412,6 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 				})
 
 				if accumulatedArgs != "" {
-					var doneItem *schemas.ResponsesMessage
-					if toolCallID != "" || toolName != "" {
-						doneItem = &schemas.ResponsesMessage{
-							ResponsesToolMessage: &schemas.ResponsesToolMessage{},
-						}
-						if toolCallID != "" {
-							doneItem.ResponsesToolMessage.CallID = &toolCallID
-						}
-						if toolName != "" {
-							doneItem.ResponsesToolMessage.Name = &toolName
-						}
-					}
 					response := &schemas.BifrostResponsesStreamResponse{
 						Type:           schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDone,
 						SequenceNumber: sequenceNumber + len(responses),
@@ -1447,9 +1420,6 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 					}
 					if itemID != "" {
 						response.ItemID = &itemID
-					}
-					if doneItem != nil {
-						response.Item = doneItem
 					}
 					responses = append(responses, response)
 				}
@@ -2496,6 +2466,16 @@ func (request *BedrockConverseRequest) ToBifrostResponsesRequest(ctx *schemas.Bi
 		bifrostReq.Params.ExtraParams["requestMetadata"] = request.RequestMetadata
 	}
 
+	// An Anthropic-dialect InvokeModel body may carry a top-level cache_control (automatic
+	// caching). Converse has no such field, so it rides ExtraParams to the egress converter,
+	// which turns it into a trailing cachePoint (or restores it on an Anthropic fallback).
+	if cc, ok := request.ExtraParams["cache_control"]; ok && cc != nil {
+		if bifrostReq.Params.ExtraParams == nil {
+			bifrostReq.Params.ExtraParams = make(map[string]interface{})
+		}
+		bifrostReq.Params.ExtraParams["cache_control"] = cc
+	}
+
 	// Convert additional model request fields to extra params
 	if request.AdditionalModelRequestFields.Len() > 0 {
 		fieldsToForward := request.AdditionalModelRequestFields
@@ -2834,7 +2814,7 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 			}
 		}
 		if bifrostReq.Params.ExtraParams != nil {
-			bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
+			bedrockReq.ExtraParams = withoutTopLevelCacheControl(bifrostReq.Params.ExtraParams)
 			if stop, ok := schemas.SafeExtractStringSlice(bifrostReq.Params.ExtraParams["stop"]); ok {
 				delete(bedrockReq.ExtraParams, "stop")
 				// GLM models on Bedrock reject the stopSequences field.
@@ -3048,6 +3028,12 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 
 	if !caps.SupportsConverseToolResultImages(schemas.BedrockModelSupportsToolResultImages(capModel)) {
 		hoistToolResultImages(bedrockReq)
+	}
+
+	if bifrostReq.Params != nil {
+		if err := applyBedrockAutomaticCachePoint(bedrockReq, bedrockTopLevelCacheControl(bifrostReq.Params.ExtraParams)); err != nil {
+			return nil, err
+		}
 	}
 
 	if !caps.SupportsCachePoint(schemas.BedrockModelSupportsCachePoints(capModel)) {

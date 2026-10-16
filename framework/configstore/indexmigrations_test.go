@@ -44,6 +44,16 @@ func indexMigrationDBs(t *testing.T) []namedDB {
 	return append(dbs, namedDB{name: "postgres", db: pgDB})
 }
 
+// forceConcurrentIndexBuilds makes every table read as large for the rest of the
+// test, so ensureIndexConcurrently takes the CREATE INDEX CONCURRENTLY path that
+// the race tests below exercise rather than the small-table plain build.
+func forceConcurrentIndexBuilds(t *testing.T) {
+	t.Helper()
+	prevBytes, prevRows := smallTableIndexMaxBytes, smallTableIndexMaxRows
+	smallTableIndexMaxBytes, smallTableIndexMaxRows = 0, 0
+	t.Cleanup(func() { smallTableIndexMaxBytes, smallTableIndexMaxRows = prevBytes, prevRows })
+}
+
 // indexExists reports whether index name exists on table, on either dialect.
 func indexExists(t *testing.T, db *gorm.DB, table, name string) bool {
 	t.Helper()
@@ -206,6 +216,7 @@ type parkedIndexBuild struct {
 // state the next pod finds after a pod is killed mid-migration.
 func parkIndexBuild(t *testing.T) parkedIndexBuild {
 	t.Helper()
+	forceConcurrentIndexBuilds(t)
 	var pod1 *gorm.DB
 	for _, ndb := range indexMigrationDBs(t) {
 		if ndb.name == "postgres" {
@@ -297,4 +308,91 @@ func TestEnsureIndexConcurrentlyRebuildsAfterPeerBuildFails(t *testing.T) {
 	build.release()
 	require.NoError(t, <-pod2Done)
 	require.True(t, indexExists(t, build.pod2, "race_rows", "idx_race_rows_v"))
+}
+
+// TestEnsureIndexSmallTableDoesNotWaitOnOldSnapshots reproduces the 2.3.0 upgrade
+// stall: an older replica's long transaction (a materialized-view refresh over a
+// large logs table in the same database) held a snapshot, and every CREATE INDEX
+// CONCURRENTLY in the startup migrations, even on a tiny config table, waited for
+// it. A small table must now be indexed with a plain build that only needs its
+// own table lock, so it finishes while the unrelated snapshot is still open.
+func TestEnsureIndexSmallTableDoesNotWaitOnOldSnapshots(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec(`CREATE TABLE small_cfg (id INTEGER PRIMARY KEY, vk VARCHAR(64) NOT NULL)`).Error)
+	require.NoError(t, db.Exec(`CREATE TABLE big_logs (id INTEGER PRIMARY KEY)`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO small_cfg SELECT g, 'vk' || g FROM generate_series(1, 50) g`).Error)
+
+	// The "old replica": a REPEATABLE READ transaction that has taken its snapshot
+	// and touched only an unrelated table, standing in for a long REFRESH.
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	blocker, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	_, err = blocker.ExecContext(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ")
+	require.NoError(t, err)
+	_, err = blocker.ExecContext(ctx, "SELECT count(*) FROM big_logs")
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = blocker.ExecContext(ctx, "COMMIT")
+		_ = blocker.Close()
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- ensureIndexConcurrently(db, "small_cfg", "idx_small_cfg_vk", "vk", false) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("small-table index build waited on an unrelated old snapshot")
+	}
+	require.True(t, indexExists(t, db, "small_cfg", "idx_small_cfg_vk"))
+
+	// Idempotent: a second run is a no-op on the now-valid index.
+	require.NoError(t, ensureIndexConcurrently(db, "small_cfg", "idx_small_cfg_vk", "vk", false))
+}
+
+// TestEnsureIndexSmallTableRetriesLockTimeout pins that the plain small-table
+// build waits out a writer holding a conflicting lock in bounded slices instead
+// of queueing behind it indefinitely or failing on the first lock timeout.
+func TestEnsureIndexSmallTableRetriesLockTimeout(t *testing.T) {
+	var db *gorm.DB
+	for _, ndb := range indexMigrationDBs(t) {
+		if ndb.name == "postgres" {
+			db = ndb.db
+		}
+	}
+	if db == nil {
+		t.Skip("local test Postgres is not reachable")
+	}
+	require.NoError(t, db.Exec(`CREATE TABLE small_locked (id INTEGER PRIMARY KEY, v VARCHAR(64))`).Error)
+
+	ctx := context.Background()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	writer, err := sqlDB.Conn(ctx)
+	require.NoError(t, err)
+	_, err = writer.ExecContext(ctx, "BEGIN")
+	require.NoError(t, err)
+	// ROW EXCLUSIVE conflicts with the SHARE lock CREATE INDEX needs.
+	_, err = writer.ExecContext(ctx, "INSERT INTO small_locked VALUES (1, 'a')")
+	require.NoError(t, err)
+	go func() {
+		time.Sleep(7 * time.Second) // longer than one 5s lock_timeout attempt
+		_, _ = writer.ExecContext(ctx, "COMMIT")
+		_ = writer.Close()
+	}()
+
+	start := time.Now()
+	require.NoError(t, ensureIndexConcurrently(db, "small_locked", "idx_small_locked_v", "v", false))
+	require.GreaterOrEqual(t, time.Since(start), 5*time.Second, "the build should have hit at least one lock timeout")
+	require.True(t, indexExists(t, db, "small_locked", "idx_small_locked_v"))
 }

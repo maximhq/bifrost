@@ -3,8 +3,10 @@ package logging
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -635,6 +637,27 @@ func retryOnNotFound(ctx context.Context, operation func() error) error {
 	return lastErr
 }
 
+// textRequestParamsAndTools returns the logged params and tools of a text completion, chat or
+// Responses request: the request's own params, plus its tools in chat shape (Responses tools are
+// converted with ToChatTool). It returns nil for every other request kind. The request for the
+// type must be set with non-nil Params, as every converter guarantees. PreLLMHook and passthrough log
+// parsing both use it, so a parsed passthrough row records the same fields as a typed request.
+func textRequestParamsAndTools(request *schemas.BifrostRequest) (interface{}, []schemas.ChatTool) {
+	switch request.RequestType {
+	case schemas.TextCompletionRequest, schemas.TextCompletionStreamRequest:
+		return request.TextCompletionRequest.Params, nil
+	case schemas.ChatCompletionRequest, schemas.ChatCompletionStreamRequest:
+		return request.ChatRequest.Params, request.ChatRequest.Params.Tools
+	case schemas.ResponsesRequest, schemas.ResponsesStreamRequest, schemas.WebSocketResponsesRequest:
+		var tools []schemas.ChatTool
+		for _, tool := range request.ResponsesRequest.Params.Tools {
+			tools = append(tools, *tool.ToChatTool())
+		}
+		return request.ResponsesRequest.Params, tools
+	}
+	return nil, nil
+}
+
 // extractInputHistory extracts input history from request input
 func (p *LoggerPlugin) extractInputHistory(request *schemas.BifrostRequest) ([]schemas.ChatMessage, []schemas.ResponsesMessage) {
 	if request.ChatRequest != nil {
@@ -760,7 +783,14 @@ func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 		for _, part := range message.Content.Parts {
 			switch {
 			case part.Type == schemas.DecisionInputPartTypeText && part.Text != nil:
-				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: part.Text})
+				blocks = append(blocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr(decisionPartText(part.Text))})
+			case part.IsAsset() && part.Data != nil:
+				// An image sent by reference carries its file, not a URL: log it as an
+				// image the same way. Its ID is already in the text that references it.
+				blocks = append(blocks, schemas.ChatContentBlock{
+					Type:           schemas.ChatContentBlockTypeImage,
+					ImageURLStruct: &schemas.ChatInputImage{URL: decisionAssetDataURL(part.Data)},
+				})
 			case part.Type == schemas.DecisionInputPartTypeImage && part.ImageURL != nil:
 				blocks = append(blocks, schemas.ChatContentBlock{
 					Type:           schemas.ChatContentBlockTypeImage,
@@ -776,6 +806,26 @@ func decisionInputLog(input schemas.DecisionInput) []schemas.ChatMessage {
 		})
 	}
 	return messages
+}
+
+// decisionAssetDataURL renders an asset's file as a data URL the logs UI shows as
+// an image, with the media type read from the bytes.
+func decisionAssetDataURL(data []byte) string {
+	mediaType, _, _ := strings.Cut(http.DetectContentType(data), ";")
+	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+// decisionPartText renders a text part for the log: its string, or a structured
+// value as JSON, the way a structured input is logged.
+func decisionPartText(text *schemas.DecisionText) string {
+	if text.Text != nil {
+		return *text.Text
+	}
+	raw, err := sonic.Marshal(text.Structured)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 // embeddingMediaDataSize totals the inline media bytes across every item.

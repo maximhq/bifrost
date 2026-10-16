@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/tools/schema-sync
 
-go 1.27.0
+go 1.27.2
 
 require golang.org/x/tools v0.30.0
 

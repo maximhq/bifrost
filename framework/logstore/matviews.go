@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/maximhq/bifrost/framework/queryscope"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -607,6 +608,7 @@ func dropLegacyMatViews(ctx context.Context, conn *sql.Conn) error {
 		if _, err := conn.ExecContext(ctx, "DROP MATERIALIZED VIEW IF EXISTS "+view+" CASCADE"); err != nil {
 			return fmt.Errorf("failed to drop legacy matview %s: %w", view, err)
 		}
+		_ = forgetMatViewRefresh(ctx, conn, view)
 	}
 	return nil
 }
@@ -625,6 +627,8 @@ func repairMatViewShapes(ctx context.Context, conn *sql.Conn) error {
 		if _, err := conn.ExecContext(ctx, "DROP MATERIALIZED VIEW IF EXISTS "+view+" CASCADE"); err != nil {
 			return fmt.Errorf("failed to drop old-shape matview %s: %w", view, err)
 		}
+		// The rebuilt view must not be skipped on the old view's refresh record.
+		_ = forgetMatViewRefresh(ctx, conn, view)
 	}
 	return nil
 }
@@ -877,7 +881,13 @@ func (g *matViewRefreshGate) markRefreshed(activityAtStart int64, activityOK boo
 // Also short-circuits when pg_stat_user_tables reports no INSERT/UPDATE/DELETE
 // on `logs` since the last refresh. A periodic safety-interval refresh runs
 // regardless so the rolling 30-day filter window evicts aged-out rows.
-func refreshMatViews(ctx context.Context, db *gorm.DB) error {
+//
+// minGap is the cluster-wide spacing between refreshes of one view: a view whose
+// last successful refresh, by any replica, finished less than minGap ago is
+// skipped (see matViewRefreshStateDDL). Callers pass matview_refresh_interval;
+// zero refreshes every view regardless, for repair paths that must not trust the
+// record.
+func refreshMatViews(ctx context.Context, db *gorm.DB, minGap time.Duration) error {
 	sqlDB, err := db.DB()
 	if err != nil {
 		return fmt.Errorf("failed to get sql.DB for matview refresh: %w", err)
@@ -967,9 +977,25 @@ func refreshMatViews(ctx context.Context, db *gorm.DB) error {
 	// so the pass continues; it stops only once the deadline has passed, since every
 	// later statement would fail the same way. markRefreshed is skipped on any
 	// failure so the next tick sees a changed activity counter and retries.
+	//
+	// Views another replica refreshed within minGap are skipped, so passes across
+	// the cluster are spaced by the interval instead of running back to back. If
+	// the record cannot be read every view is refreshed and nothing is recorded.
+	fresh, recordOK := recentlyRefreshedMatViews(ctx, conn, minGap)
 	var refreshErrs []error
 	for _, view := range matViewRefreshOrder() {
-		if _, err := conn.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+view); err != nil {
+		if fresh[view] {
+			continue
+		}
+		if recordOK {
+			recordMatViewRefreshStart(ctx, sqlDB, view)
+		}
+		started := time.Now()
+		_, err := conn.ExecContext(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+view)
+		if recordOK {
+			recordMatViewRefreshEnd(ctx, sqlDB, view, time.Since(started), err)
+		}
+		if err != nil {
 			refreshErrs = append(refreshErrs, fmt.Errorf("failed to refresh %s: %w", view, err))
 			if ctx.Err() != nil {
 				break
@@ -1028,7 +1054,7 @@ func runMatViewRefreshTick(ctx context.Context, db *gorm.DB, gate *migrationLock
 	// fails silently, leaving matviews permanently stale.
 	started := time.Now()
 	tickCtx, cancel := context.WithTimeout(ctx, timeout)
-	err := refreshMatViews(tickCtx, db)
+	err := refreshMatViews(tickCtx, db, interval)
 	cancel()
 	elapsed := time.Since(started)
 
@@ -1083,7 +1109,10 @@ func canUseMatViewFilters(f SearchFilters) bool {
 		len(f.UserAgents) == 0 &&
 		len(f.TeamIDs) == 0 &&
 		len(f.BusinessUnitIDs) == 0 &&
-		len(f.CustomerIDs) == 0
+		len(f.CustomerIDs) == 0 &&
+		// The hourly views group by object_type only; a passthrough row stored under its inferred
+		// type is told apart by is_passthrough, which they do not carry.
+		!slices.ContainsFunc(f.Objects, IsPassthroughObjectType)
 }
 
 // canUseMatViewStatusFilter reports whether every requested status is terminal,
@@ -1912,6 +1941,7 @@ func (s *RDBLogStore) getThroughputHistogramFromMatView(ctx context.Context, fil
 	// Successful requests only: status is a matview dimension, so this restricts
 	// the summed tokens/latency/count to success rows (see GetThroughputHistogram).
 	q = q.Where("status = ?", "success")
+	q = q.Where("object_type IN ?", throughputObjectTypes)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		COALESCE(SUM(throughput_completion_tokens), 0) AS completion_tokens,
@@ -1958,6 +1988,7 @@ func (s *RDBLogStore) getProviderThroughputHistogramFromMatView(ctx context.Cont
 	q = s.applyMatViewFilters(q, filters)
 	// Successful requests only — see getThroughputHistogramFromMatView.
 	q = q.Where("status = ?", "success")
+	q = q.Where("object_type IN ?", throughputObjectTypes)
 	if err := q.Select(fmt.Sprintf(`
 		CAST(FLOOR(EXTRACT(EPOCH FROM hour) / %d) * %d AS BIGINT) AS bucket_timestamp,
 		provider,
@@ -2437,8 +2468,8 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 		SUM(total_input_cost) AS total_input_cost,
 		SUM(total_output_cost) AS total_output_cost,
 		SUM(total_additional_cost) AS total_additional_cost,
-		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
-		COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
+		COALESCE(SUM(CASE WHEN status = 'success' AND object_type IN (` + throughputObjectTypesSQL + `) THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
+		COALESCE(SUM(CASE WHEN status = 'success' AND object_type IN (` + throughputObjectTypesSQL + `) THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
 	`).Group("model, provider").
 		Order("total DESC, model ASC, provider ASC")
 	if err := applyRankingLimit(q, filters).Find(&results).Error; err != nil {
@@ -2484,8 +2515,8 @@ func (s *RDBLogStore) getModelRankingsFromMatView(ctx context.Context, filters S
 			CASE WHEN SUM(count) > 0 THEN SUM(avg_latency * count) / SUM(count) ELSE 0 END AS avg_lat,
 			SUM(total_tokens) AS total_tkns,
 			SUM(total_cost) AS total_cost,
-			COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
-			COALESCE(SUM(CASE WHEN status = 'success' THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
+			COALESCE(SUM(CASE WHEN status = 'success' AND object_type IN (` + throughputObjectTypesSQL + `) THEN throughput_completion_tokens ELSE 0 END), 0) AS tp_completion_tokens,
+			COALESCE(SUM(CASE WHEN status = 'success' AND object_type IN (` + throughputObjectTypesSQL + `) THEN throughput_latency_ms ELSE 0 END), 0) AS tp_latency_ms
 		`).Group("model, provider").Find(&prevResults).Error; err != nil {
 			return nil, fmt.Errorf("failed to get previous period rankings: %w", err)
 		}

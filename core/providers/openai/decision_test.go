@@ -70,7 +70,7 @@ func TestToOpenAIDecisionRequestSendsOnlyText(t *testing.T) {
 // images included, reach OpenAI unchanged.
 func TestToOpenAIDecisionRequestKeepsMessages(t *testing.T) {
 	messages := []schemas.DecisionInputMessage{{Type: schemas.Ptr("message"), Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
-		{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr("Damaged?")},
+		{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Damaged?")},
 		{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("https://example.com/box.png"), Detail: schemas.Ptr("high")},
 	}}}}
 	native, err := ToOpenAIDecisionRequest(&schemas.BifrostDecisionRequest{
@@ -84,6 +84,25 @@ func TestToOpenAIDecisionRequestKeepsMessages(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `{"type":"input_image","image_url":"https://example.com/box.png","detail":"high"}`, "the image detail reaches OpenAI")
 	assert.Contains(t, string(body), `{"type":"message","role":"user"`)
+}
+
+// TestToOpenAIDecisionRequestStructuredTextPart pins that a structured text part
+// reaches OpenAI as JSON text, since its input_text carries a string, without
+// changing the caller's request.
+func TestToOpenAIDecisionRequestStructuredTextPart(t *testing.T) {
+	messages := []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+		{Type: schemas.DecisionInputPartTypeText, Text: &schemas.DecisionText{Structured: map[string]any{"ticket": "refund", "id": 7}}},
+	}}}}
+	native, err := ToOpenAIDecisionRequest(&schemas.BifrostDecisionRequest{
+		Model:     "gpt-6-luna",
+		Input:     schemas.DecisionInput{Messages: messages},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Instructions: schemas.NewDecisionText("Refund?")}},
+	})
+	require.NoError(t, err)
+	body, err := json.Marshal(native)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `{"type":"input_text","text":"{\"id\":7,\"ticket\":\"refund\"}"}`)
+	assert.NotNil(t, messages[0].Content.Parts[0].Text.Structured, "the caller's request is not modified")
 }
 
 // TestToOpenAIDecisionRequestRejections pins the requests OpenAI cannot serve:
@@ -105,7 +124,7 @@ func TestToOpenAIDecisionRequestRejections(t *testing.T) {
 		"audio part": {
 			request: &schemas.BifrostDecisionRequest{
 				Input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
-					{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr("listen")},
+					{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("listen")},
 					{Type: "input_audio"},
 				}}}}},
 				Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate}},

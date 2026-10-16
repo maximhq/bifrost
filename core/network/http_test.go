@@ -21,7 +21,12 @@ import (
 
 	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 // TestStaleConnectionRetryIfErr validates the error-matching logic of
@@ -871,6 +876,33 @@ func TestDialViaProxyTLSVerifiesTheProxy(t *testing.T) {
 	}
 }
 
+// TestDialPolicyPreservesConfiguredProxyTLS verifies guarded tunnels honor the
+// operator's HTTPS proxy TLS configuration while pinning the destination IP.
+func TestDialPolicyPreservesConfiguredProxyTLS(t *testing.T) {
+	recorder := proxytest.NewHTTPSRecorder(t, "tls-policy")
+	previous := defaultFactory.Load()
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(previous) })
+	config := &GlobalProxyConfig{Enabled: true, EnableForAPI: true, Type: GlobalProxyTypeHTTP, URL: "https://127.0.0.1:" + recorder.Port(), SkipTLSVerify: true}
+	factory := NewHTTPClientFactory(config, noopTestLogger{})
+	SetDefaultHTTPClientFactory(factory)
+	proxyURL, err := url.Parse(config.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := NewDialPolicy((&net.Dialer{}).DialContext, func(context.Context, string) ([]net.IP, error) { return []net.IP{net.ParseIP("203.0.113.10")}, nil })
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	conn, err := policy.DialContext(ctx, "tcp", "agent.example:443", proxyURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
+	hits := recorder.Seen()
+	if len(hits) != 1 || hits[0].Target != "203.0.113.10:443" {
+		t.Fatalf("proxy got %+v, want checked IP", hits)
+	}
+}
+
 // TestHTTPClientFactoryClientsAreLive pins that a client handed out before a proxy
 // change follows it: the same object goes direct, then through the proxy, then direct
 // again. Callers keep factory clients for their whole life (alerting senders, JWT
@@ -1356,4 +1388,91 @@ func TestRawPathInnerClientFollowsProxyUpdates(t *testing.T) {
 	if second := factory.currentFasthttpClientFor(key); second == first {
 		t.Error("raw-path inner client survived UpdateProxyConfig")
 	}
+}
+
+// TestGRPCGuardedProxyRebinding uses a real gRPC exchange through CONNECT.
+// The mocked DNS record changes from public to private before a new connection.
+func TestGRPCGuardedProxyRebinding(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	healthServer := health.NewServer()
+	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
+	healthpb.RegisterHealthServer(server, healthServer)
+	go server.Serve(listener)
+	defer server.Stop()
+	var tunnels atomic.Int32
+	var connectTarget atomic.Value
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			t.Error("expected CONNECT")
+			http.Error(w, "CONNECT required", 405)
+			return
+		}
+		tunnels.Add(1)
+		connectTarget.Store(r.Host)
+		upstream, err := net.Dial("tcp", listener.Addr().String())
+		if err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		downstream, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			upstream.Close()
+			return
+		}
+		defer downstream.Close()
+		defer upstream.Close()
+		_, _ = downstream.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		done := make(chan struct{})
+		go func() { _, _ = io.Copy(upstream, downstream); upstream.Close(); close(done) }()
+		_, _ = io.Copy(downstream, upstream)
+		downstream.Close()
+		<-done
+	}))
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+	var private atomic.Bool
+	var resolutions atomic.Int32
+	var blocked atomic.Bool
+	resolve := func(ctx context.Context, host string) ([]net.IP, error) {
+		resolutions.Add(1)
+		ip := net.ParseIP("203.0.113.10")
+		if private.Load() {
+			ip = net.ParseIP("10.0.0.10")
+		}
+		ips, err := publicTargetCheck(hostResolver{host: []net.IP{ip}}, nil)(ctx, host)
+		if err != nil {
+			blocked.Store(true)
+		}
+		return ips, err
+	}
+	policy := NewDialPolicy((&net.Dialer{}).DialContext, resolve)
+	newClient := func() *grpc.ClientConn {
+		conn, err := grpc.NewClient("passthrough:///agent.example:9000", grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithNoProxy(), grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
+			return policy.DialContext(ctx, "tcp", addr, proxyURL)
+		}))
+		require.NoError(t, err)
+		return conn
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	conn := newClient()
+	result, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	require.Equal(t, healthpb.HealthCheckResponse_SERVING, result.Status)
+	require.Equal(t, "203.0.113.10:9000", connectTarget.Load())
+	require.EqualValues(t, 1, tunnels.Load())
+	conn.Close()
+	private.Store(true)
+	conn = newClient()
+	defer conn.Close()
+	ctx2, cancel2 := context.WithTimeout(t.Context(), 200*time.Millisecond)
+	defer cancel2()
+	_, err = healthpb.NewHealthClient(conn).Check(ctx2, &healthpb.HealthCheckRequest{})
+	require.Error(t, err)
+	require.True(t, blocked.Load(), "private DNS answer must be rejected by policy")
+	require.GreaterOrEqual(t, resolutions.Load(), int32(2))
+	require.EqualValues(t, 1, tunnels.Load(), "private answer must not reach CONNECT proxy")
 }
