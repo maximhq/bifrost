@@ -1134,13 +1134,13 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 
 // supportsDecisions reports whether the listed model serves decisions natively,
 // by the rule the provider's Decision call gates on, so the listing neither
-// offers a model the request would reject nor hides one it would serve: none
-// on a custom provider whose allowed requests exclude decisions, every model
-// of a Typesafe-based provider (Typesafe, or a custom provider on its base
-// serving Laya, Nimble, or Clef) or of a custom provider on OpenAI's base whose
-// allowed requests turn decisions on, and otherwise a model the datasheet marks
-// supports_decisions, or without a row the provider's name-based fallback (the
-// gpt-6-luna family on OpenAI or a custom provider on its base, a TypeSafe
+// offers a model the request would reject nor hides one it would serve. A
+// custom provider is gated by its allowed requests alone: every model when it
+// allows decisions on a base that serves them (Typesafe, serving Laya, Nimble,
+// or Clef, or OpenAI, exposing /v1/decisions), since its server rejects a
+// model it does not serve. Typesafe lists every model, and any other provider
+// a model the datasheet marks supports_decisions, or without a row the
+// provider's name-based fallback (the gpt-6-luna family on OpenAI, a TypeSafe
 // System One model on OpenRouter, a Clef model on Cloudflare, a decider model on
 // Perplexity, a System One model on Ollama, a Microsoft decision model on Azure).
 // Any other provider hosting gpt-6-luna serves it as a chat model (OpenRouter
@@ -1149,21 +1149,18 @@ func toPricingOverrideSummary(o modelcatalog.PricingOverride) ModelPricingOverri
 // request path checks it; on Azure the alias is the model name and its target a
 // deployment name of the user's choosing, so the alias name is checked too.
 func (h *ProviderHandler) supportsDecisions(provider schemas.ModelProvider, model string) bool {
-	custom := h.customProviderConfig(provider)
-	if !custom.IsOperationAllowed(schemas.DecisionRequest) {
-		return false
+	if custom := h.customProviderConfig(provider); custom != nil {
+		return custom.IsOperationAllowed(schemas.DecisionRequest) &&
+			(custom.BaseProviderType == schemas.Typesafe || custom.BaseProviderType == schemas.OpenAI)
 	}
-	if provider == schemas.Typesafe || (custom != nil && custom.BaseProviderType == schemas.Typesafe) {
-		return true
-	}
-	if custom != nil && custom.BaseProviderType == schemas.OpenAI && custom.IsOperationExplicitlyAllowed(schemas.DecisionRequest) {
+	if provider == schemas.Typesafe {
 		return true
 	}
 	listed := model
 	model = h.aliasTarget(provider, model)
 	var fallback bool
 	switch {
-	case provider == schemas.OpenAI || (custom != nil && custom.BaseProviderType == schemas.OpenAI):
+	case provider == schemas.OpenAI:
 		fallback = schemas.DefaultSupportsDecisions(model)
 	case provider == schemas.Azure:
 		fallback = schemas.IsMicrosoftDecisionModel(listed) || schemas.IsMicrosoftDecisionModel(model)

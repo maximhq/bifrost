@@ -271,13 +271,13 @@ func TestOpenAIProviderDecisionGating(t *testing.T) {
 	}
 }
 
-// TestOpenAIProviderDecisionCustomProviderOptIn pins that a custom provider on
-// the OpenAI base whose allowed requests explicitly turn decisions on serves
-// every model on /v1/decisions, since the catalog has no rows for it and its
-// models carry names of the user's choosing. Allowed requests left unset grant
-// every operation without saying the upstream serves /v1/decisions, so there
-// the model gate still applies, and decisions turned off is still denied.
-func TestOpenAIProviderDecisionCustomProviderOptIn(t *testing.T) {
+// TestOpenAIProviderDecisionCustomProviderGating pins that a custom provider on
+// the OpenAI base is gated by its allowed requests alone, as one on the
+// Typesafe base is: with decisions allowed (set, or allowed requests unset) it
+// forwards every model to /v1/decisions and the upstream rejects a model it
+// does not serve, and with decisions off it is denied. The model gate describes
+// OpenAI's own catalog, which has no rows for a custom provider's models.
+func TestOpenAIProviderDecisionCustomProviderGating(t *testing.T) {
 	var calls []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.URL.Path)
@@ -308,20 +308,21 @@ func TestOpenAIProviderDecisionCustomProviderOptIn(t *testing.T) {
 		})
 	}
 
-	resp, bifrostErr := decide(&schemas.AllowedRequests{Decision: true}, "my-decider")
-	if bifrostErr != nil {
-		t.Fatalf("decisions opted in on a custom provider must be served for any model, got %s", bifrostErr.Error.Message)
+	for name, allowed := range map[string]*schemas.AllowedRequests{"decisions on": {Decision: true}, "unset": nil} {
+		resp, bifrostErr := decide(allowed, "my-decider")
+		if bifrostErr != nil {
+			t.Fatalf("%s: a custom provider allowing decisions must forward any model, got %s", name, bifrostErr.Error.Message)
+		}
+		require.Len(t, resp.Answers, 1, name)
 	}
-	require.Len(t, resp.Answers, 1)
-	require.Equal(t, []string{"/v1/decisions"}, calls)
+	require.Equal(t, []string{"/v1/decisions", "/v1/decisions"}, calls)
 
-	for name, allowed := range map[string]*schemas.AllowedRequests{"unset": nil, "decisions off": {ChatCompletion: true}} {
-		_, bifrostErr := decide(allowed, "my-decider")
-		require.NotNil(t, bifrostErr, name)
-		require.NotNil(t, bifrostErr.Error.Code, name)
-		assert.Equal(t, "unsupported_operation", *bifrostErr.Error.Code, name)
-	}
-	require.Len(t, calls, 1, "only the opted-in provider reaches the endpoint")
+	_, bifrostErr := decide(&schemas.AllowedRequests{ChatCompletion: true}, "gpt-6-luna")
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Error.Code)
+	assert.Equal(t, "unsupported_operation", *bifrostErr.Error.Code)
+	assert.Contains(t, bifrostErr.Error.Message, "kserve")
+	require.Len(t, calls, 2, "a provider with decisions off never reaches the endpoint")
 }
 
 // TestOpenAIDecisionRequestKeepsUnknownFields pins that a top-level field the

@@ -1509,22 +1509,17 @@ func TestListModels_DecisionsDatabricksListsAIDecide(t *testing.T) {
 	}
 }
 
-// TestListModels_DecisionsGPT6LunaOnlyOnOpenAIBase pins that the gpt-6-luna name rule
-// lists the family only on OpenAI or a custom provider on its base; any other provider
-// hosting it lists it only with a supports_decisions row.
-func TestListModels_DecisionsGPT6LunaOnlyOnOpenAIBase(t *testing.T) {
+// TestListModels_DecisionsGPT6LunaOnlyOnOpenAI pins that the gpt-6-luna name rule
+// lists the family only on OpenAI; any other provider hosting it lists it only
+// with a supports_decisions row.
+func TestListModels_DecisionsGPT6LunaOnlyOnOpenAI(t *testing.T) {
 	SetLogger(&mockLogger{})
 	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
-	for provider, wantListed := range map[schemas.ModelProvider]bool{"my-openai": true, schemas.Groq: false} {
+	for provider, wantListed := range map[schemas.ModelProvider]bool{schemas.OpenAI: true, schemas.Groq: false} {
 		models := []string{"gpt-6-luna", "gpt-4o"}
 		h := providerHandlerForTest(provider, []schemas.Key{{ID: "key-a"}}, models, models)
-		if provider == "my-openai" {
-			config := h.inMemoryStore.Providers[provider]
-			config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true}
-			h.inMemoryStore.Providers[provider] = config
-		}
 
 		ctx := &fasthttp.RequestCtx{}
 		ctx.Request.Header.SetMethod("GET")
@@ -1545,35 +1540,37 @@ func TestListModels_DecisionsGPT6LunaOnlyOnOpenAIBase(t *testing.T) {
 	}
 }
 
-// TestListModels_DecisionsListsEveryModelOnOptedInOpenAIBase pins that a
-// custom provider on OpenAI's base whose allowed requests turn decisions on
-// lists every model under decisions=true, matching its Decision call, which
-// serves any model once the provider opts in.
-func TestListModels_DecisionsListsEveryModelOnOptedInOpenAIBase(t *testing.T) {
+// TestListModels_DecisionsListsEveryModelOnCustomOpenAIBase pins that a
+// custom provider on OpenAI's base allowing decisions (set, or allowed requests
+// unset) lists every model under decisions=true, matching its Decision call,
+// which is gated by its allowed requests alone.
+func TestListModels_DecisionsListsEveryModelOnCustomOpenAIBase(t *testing.T) {
 	SetLogger(&mockLogger{})
 	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
 	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
 
-	models := []string{"my-decider", "gpt-6-luna"}
-	h := providerHandlerForTest("kserve", []schemas.Key{{ID: "key-a"}}, models, models)
-	config := h.inMemoryStore.Providers["kserve"]
-	config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true, AllowedRequests: &schemas.AllowedRequests{ListModels: true, Decision: true}}
-	h.inMemoryStore.Providers["kserve"] = config
+	for name, allowed := range map[string]*schemas.AllowedRequests{"decisions on": {ListModels: true, Decision: true}, "unset": nil} {
+		models := []string{"my-decider", "gpt-6-luna"}
+		h := providerHandlerForTest("kserve", []schemas.Key{{ID: "key-a"}}, models, models)
+		config := h.inMemoryStore.Providers["kserve"]
+		config.CustomProviderConfig = &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, IsKeyLess: true, AllowedRequests: allowed}
+		h.inMemoryStore.Providers["kserve"] = config
 
-	ctx := &fasthttp.RequestCtx{}
-	ctx.Request.Header.SetMethod("GET")
-	ctx.Request.SetRequestURI("/api/models?provider=kserve&decisions=true&limit=10")
-	h.listModels(ctx)
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod("GET")
+		ctx.Request.SetRequestURI("/api/models?provider=kserve&decisions=true&limit=10")
+		h.listModels(ctx)
 
-	if ctx.Response.StatusCode() != fasthttp.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
-	}
-	var resp ListModelsResponse
-	if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
-		t.Fatalf("failed to unmarshal response: %v", err)
-	}
-	if resp.Total != len(models) {
-		t.Fatalf("expected every model listed, got %#v", resp.Models)
+		if ctx.Response.StatusCode() != fasthttp.StatusOK {
+			t.Fatalf("%s: expected 200, got %d: %s", name, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+		}
+		var resp ListModelsResponse
+		if err := json.Unmarshal(ctx.Response.Body(), &resp); err != nil {
+			t.Fatalf("failed to unmarshal response: %v", err)
+		}
+		if resp.Total != len(models) {
+			t.Fatalf("%s: expected every model listed, got %#v", name, resp.Models)
+		}
 	}
 }
 

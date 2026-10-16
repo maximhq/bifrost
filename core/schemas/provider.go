@@ -578,14 +578,6 @@ func (cpc *CustomProviderConfig) IsOperationAllowed(operation RequestType) bool 
 	return cpc.AllowedRequests.IsOperationAllowed(operation)
 }
 
-// IsOperationExplicitlyAllowed reports whether this custom provider's allowed
-// requests are set and turn the operation on. Unlike IsOperationAllowed, unset
-// allowed requests do not count: they grant every operation without saying the
-// upstream serves any particular one.
-func (cpc *CustomProviderConfig) IsOperationExplicitlyAllowed(operation RequestType) bool {
-	return cpc != nil && cpc.AllowedRequests != nil && cpc.AllowedRequests.IsOperationAllowed(operation)
-}
-
 // ProviderConfig represents the complete configuration for a provider.
 // An array of ProviderConfig needs to be provided in GetConfigForProvider
 // in your account interface implementation.
