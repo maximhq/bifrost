@@ -1617,6 +1617,7 @@ func (cm ChatAssistantMessage) MarshalJSON() ([]byte, error) {
 	if cm.Reasoning == nil {
 		return Marshal(Alias(cm))
 	}
+	cm.ReasoningDetails = emittedReasoningDetails(cm.Reasoning, cm.ReasoningDetails)
 	return Marshal(struct {
 		Alias
 		ReasoningContent *string `json:"reasoning_content,omitempty"`
@@ -1680,6 +1681,23 @@ func (cm *ChatAssistantMessage) UnmarshalJSON(data []byte) error {
 	}
 
 	return nil
+}
+
+// emittedReasoningDetails is the reasoning_details a marshaller writes beside reasoning: nil when
+// details is exactly the text-only entry UnmarshalJSON synthesises from reasoning (one
+// reasoning.text entry with no id, signature, data or summary, whose text equals reasoning), so the
+// same text is not sent a third time; details unchanged otherwise. Parsing still synthesises the
+// entry, which the Responses and Anthropic converters read.
+func emittedReasoningDetails(reasoning *string, details []ChatReasoningDetails) []ChatReasoningDetails {
+	if reasoning == nil || len(details) != 1 {
+		return details
+	}
+	d := details[0]
+	if d.Type == BifrostReasoningDetailsTypeText && d.ID == nil && d.Signature == nil && d.Data == nil &&
+		d.Summary == nil && d.Text != nil && *d.Text == *reasoning {
+		return nil
+	}
+	return details
 }
 
 // pruneEmptyReasoningDetails drops reasoning detail entries that carry no
@@ -1869,6 +1887,7 @@ func (d ChatStreamResponseChoiceDelta) MarshalJSON() ([]byte, error) {
 	if d.Reasoning == nil {
 		return Marshal(Alias(d))
 	}
+	d.ReasoningDetails = emittedReasoningDetails(d.Reasoning, d.ReasoningDetails)
 	return Marshal(struct {
 		Alias
 		ReasoningContent *string `json:"reasoning_content,omitempty"`

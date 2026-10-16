@@ -228,3 +228,50 @@ func TestEmptyReasoningNoiseIsNotAmplified(t *testing.T) {
 	})
 }
 
+
+// The text-only reasoning_details entry that UnmarshalJSON synthesises from reasoning is a third copy
+// of the same text; it is not emitted. An entry that carries anything reasoning does not (a
+// signature for replaying Anthropic thinking on a tool turn, encrypted data, other text) is kept.
+func TestSynthesizedReasoningDetailsNotEmitted(t *testing.T) {
+	keys := func(t *testing.T, v any) map[string]json.RawMessage {
+		t.Helper()
+		encoded, err := json.Marshal(v)
+		require.NoError(t, err)
+		var m map[string]json.RawMessage
+		require.NoError(t, json.Unmarshal(encoded, &m))
+		return m
+	}
+	str := func(s string) *string { return &s }
+
+	var delta ChatStreamResponseChoiceDelta
+	require.NoError(t, json.Unmarshal([]byte(`{"reasoning_content":"r"}`), &delta))
+	require.Len(t, delta.ReasoningDetails, 1, "unmarshal still synthesises the entry internal converters read")
+	m := keys(t, delta)
+	assert.JSONEq(t, `"r"`, string(m["reasoning"]))
+	assert.JSONEq(t, `"r"`, string(m["reasoning_content"]))
+	assert.NotContains(t, m, "reasoning_details")
+
+	var msg ChatAssistantMessage
+	require.NoError(t, json.Unmarshal([]byte(`{"reasoning_content":"r"}`), &msg))
+	m = keys(t, msg)
+	assert.JSONEq(t, `"r"`, string(m["reasoning"]))
+	assert.NotContains(t, m, "reasoning_details")
+	m = keys(t, ChatMessage{Role: ChatMessageRoleAssistant, ChatAssistantMessage: &msg})
+	assert.NotContains(t, m, "reasoning_details")
+
+	for name, details := range map[string][]ChatReasoningDetails{
+		"signed":    {{Type: BifrostReasoningDetailsTypeText, Text: str("r"), Signature: str("sig")}},
+		"encrypted": {{Type: BifrostReasoningDetailsTypeEncrypted, Data: str("d")}},
+		"other":     {{Type: BifrostReasoningDetailsTypeText, Text: str("other")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := keys(t, ChatStreamResponseChoiceDelta{Reasoning: str("r"), ReasoningDetails: details})
+			require.Contains(t, m, "reasoning_details")
+			var got []ChatReasoningDetails
+			require.NoError(t, json.Unmarshal(m["reasoning_details"], &got))
+			assert.Equal(t, details, got)
+			m = keys(t, ChatAssistantMessage{Reasoning: str("r"), ReasoningDetails: details})
+			require.Contains(t, m, "reasoning_details")
+		})
+	}
+}
