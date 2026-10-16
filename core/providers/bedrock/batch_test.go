@@ -1,6 +1,7 @@
 package bedrock
 
 import (
+	"context"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
@@ -49,7 +50,7 @@ func TestResolveBedrockBatchModelID(t *testing.T) {
 	withARN := schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{ARN: schemas.NewSecretVar(keyARN)}}
 	noARN := schemas.Key{BedrockKeyConfig: &schemas.BedrockKeyConfig{}}
 
-	aliasCtx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+	aliasCtx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	aliasCtx.SetValue(schemas.BifrostContextKeyResolvedAlias, &schemas.ResolvedAlias{
 		Key: "batch-model",
 		Config: &schemas.AliasConfig{
