@@ -194069,6 +194069,864 @@
           }
         },
         {
+          "name": "openai/gpt-image-1.5 OpenAI image URL edits - native url (/v1/images/edits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-image-1.5\",\n  \"images\": [\n    {\n      \"url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image edit succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('image data returned', function () { pm.expect(j.data && j.data[0] && (j.data[0].b64_json || j.data[0].url), pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty; });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - upstream validation (/v1/images/edits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-image-harness-missing-model\",\n  \"images\": [\n    {\n      \"url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('unknown image model is rejected by OpenAI', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i).and.include('gpt-image-harness-missing-model');",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-image-1.5 OpenAI image URL edits - SDK JSON (/openai/v1/images/edits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json; charset=utf-8"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-image-1.5\",\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('SDK JSON image edit succeeded', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('image data returned', function () { pm.expect(j.data && j.data[0] && (j.data[0].b64_json || j.data[0].url), pm.response.text().slice(0, 300)).to.be.a('string').and.not.empty; });",
+                  "pm.test('URL was not uploaded as an empty multipart image', function () { pm.expect(pm.response.text()).to.not.include('unsupported mimetype'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "openai/gpt-image-1.5 OpenAI image URL edits - SDK JSON streaming (/openai/images/edits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-image-1.5\",\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text();",
+                  "pm.test('SDK JSON image edit streaming succeeded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + raw.slice(0, 500)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type') || '', raw.slice(0, 500)).to.include('text/event-stream');",
+                  "});",
+                  "var events = [];",
+                  "raw.split(/\\r?\\n/).forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) return;",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data && data !== '[DONE]') events.push(JSON.parse(data));",
+                  "});",
+                  "pm.test('completed image edit contains image data', function () {",
+                  "  var completed = events.filter(function (e) { return e.type === 'image_edit.completed'; });",
+                  "  pm.expect(completed.length, 'no completed image edit event: ' + raw.slice(0, 500)).to.be.above(0);",
+                  "  pm.expect(completed[0].b64_json, raw.slice(0, 500)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(events.some(function (e) { return e.error || e.type === 'error'; }), raw.slice(0, 500)).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - SDK JSON upstream validation (/openai/v1/images/edits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-image-harness-missing-model\",\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('SDK JSON URL reference reaches OpenAI model validation', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i);",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - SDK JSON upstream validation (/openai/images/edits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-image-harness-missing-model\",\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('SDK JSON URL reference reaches OpenAI model validation', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i);",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - SDK JSON upstream validation (/litellm/v1/images/edits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-image-harness-missing-model\",\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('SDK JSON URL reference reaches OpenAI model validation', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i);",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - SDK JSON upstream validation (/litellm/images/edits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-image-harness-missing-model\",\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('SDK JSON URL reference reaches OpenAI model validation', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i);",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - SDK JSON upstream validation (/langchain/v1/images/edits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-image-harness-missing-model\",\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('SDK JSON URL reference reaches OpenAI model validation', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i);",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - SDK JSON upstream validation (/langchain/images/edits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-image-harness-missing-model\",\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('SDK JSON URL reference reaches OpenAI model validation', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i);",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - SDK JSON upstream validation (/pydanticai/v1/images/edits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-image-harness-missing-model\",\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('SDK JSON URL reference reaches OpenAI model validation', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i);",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - SDK JSON upstream validation (/pydanticai/images/edits)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-image-harness-missing-model\",\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('SDK JSON URL reference reaches OpenAI model validation', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i);",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - SDK JSON deployment without body model (/openai/openai/deployments/openai/gpt-image-harness-missing-model/images/edits)",
+          "description": "The deployment wildcard supplies the OpenAI provider and model, so JSON omits model as deployment clients do. The request must reach upstream model validation; default Azure deployment URLs remain outside URL-edit support.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/openai/deployments/openai/gpt-image-harness-missing-model/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "openai",
+                "deployments",
+                "openai",
+                "gpt-image-harness-missing-model",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deployment JSON without body model reaches OpenAI with the path model', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i).and.include('gpt-image-harness-missing-model');",
+                  "  pm.expect(text).to.not.include('model field is required');",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - SDK JSON deployment without body model (/litellm/openai/deployments/openai/gpt-image-harness-missing-model/images/edits)",
+          "description": "The deployment wildcard supplies the OpenAI provider and model, so JSON omits model as deployment clients do. The request must reach upstream model validation; default Azure deployment URLs remain outside URL-edit support.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/litellm/openai/deployments/openai/gpt-image-harness-missing-model/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "litellm",
+                "openai",
+                "deployments",
+                "openai",
+                "gpt-image-harness-missing-model",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deployment JSON without body model reaches OpenAI with the path model', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i).and.include('gpt-image-harness-missing-model');",
+                  "  pm.expect(text).to.not.include('model field is required');",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - SDK JSON deployment without body model (/langchain/openai/deployments/openai/gpt-image-harness-missing-model/images/edits)",
+          "description": "The deployment wildcard supplies the OpenAI provider and model, so JSON omits model as deployment clients do. The request must reach upstream model validation; default Azure deployment URLs remain outside URL-edit support.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/langchain/openai/deployments/openai/gpt-image-harness-missing-model/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "langchain",
+                "openai",
+                "deployments",
+                "openai",
+                "gpt-image-harness-missing-model",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deployment JSON without body model reaches OpenAI with the path model', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i).and.include('gpt-image-harness-missing-model');",
+                  "  pm.expect(text).to.not.include('model field is required');",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-4XX] openai/gpt-image-harness-missing-model OpenAI image URL edits - SDK JSON deployment without body model (/pydanticai/openai/deployments/openai/gpt-image-harness-missing-model/images/edits)",
+          "description": "The deployment wildcard supplies the OpenAI provider and model, so JSON omits model as deployment clients do. The request must reach upstream model validation; default Azure deployment URLs remain outside URL-edit support.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"images\": [\n    {\n      \"image_url\": \"https://storage.googleapis.com/generativeai-downloads/images/scones.jpg\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/pydanticai/openai/deployments/openai/gpt-image-harness-missing-model/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "pydanticai",
+                "openai",
+                "deployments",
+                "openai",
+                "gpt-image-harness-missing-model",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deployment JSON without body model reaches OpenAI with the path model', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.be.oneOf([400, 404]);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.not.empty;",
+                  "  pm.expect(j.error.message, text).to.match(/model/i).and.include('gpt-image-harness-missing-model');",
+                  "  pm.expect(text).to.not.include('model field is required');",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] openai/gpt-image-harness-missing-model OpenAI image URL edits - blank URL with bytes upstream validation (/v1/images/edits)",
+          "description": "A whitespace-only URL is empty even when image bytes are present. The gateway must upload the valid 256x256 PNG as multipart and forward OpenAI model validation, rather than reject both input arms locally. This intentional missing-model request does not generate an image.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-image-harness-missing-model\",\n  \"images\": [\n    {\n      \"url\": \"   \",\n      \"image\": \"iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAACWUlEQVR42u3UMQEAAAzCMPybBgNzsERCj6bAW5EADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMALgPmUDvF0QYlBwAAAABJRU5ErkJggg==\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('blank URL with bytes reaches OpenAI model validation', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.equal(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.param, text).to.equal('model');",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.include('gpt-image-harness-missing-model');",
+                  "  pm.expect(text).to.not.include('contains both a URL and image bytes');",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "[EXPECT-400] openai/gpt-image-harness-missing-model OpenAI image URL edits - blank URL with bytes streaming upstream validation (/v1/images/edits)",
+          "description": "A whitespace-only URL is empty even when image bytes are present. The gateway must upload the valid 256x256 PNG as multipart and forward OpenAI model validation, rather than reject both input arms locally. This intentional missing-model request does not generate an image.",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-image-harness-missing-model\",\n  \"images\": [\n    {\n      \"url\": \" \\t\\r\\n \",\n      \"image\": \"iVBORw0KGgoAAAANSUhEUgAAAQAAAAEACAYAAABccqhmAAACWUlEQVR42u3UMQEAAAzCMPybBgNzsERCj6bAW5EADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwAMADAAwAAAAwADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAwAMADAAAADAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMADAAwAMAAAAMALgPmUDvF0QYlBwAAAABJRU5ErkJggg==\"\n    }\n  ],\n  \"prompt\": \"make the image sharper\",\n  \"quality\": \"low\",\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/edits",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "edits"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('blank URL with bytes reaches OpenAI model validation', function () {",
+                  "  var text = pm.response.text();",
+                  "  pm.expect(pm.response.code, text).to.equal(400);",
+                  "  var j = pm.response.json();",
+                  "  pm.expect(j.is_bifrost_error, text).to.equal(false);",
+                  "  pm.expect(j.error && j.error.param, text).to.equal('model');",
+                  "  pm.expect(j.error && j.error.message, text).to.be.a('string').and.include('gpt-image-harness-missing-model');",
+                  "  pm.expect(text).to.not.include('contains both a URL and image bytes');",
+                  "  pm.expect(text).to.not.include('unsupported mimetype');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "150.2 [PREVIEW] openai/dall-e-2 image variation multipart returns image data (image variation)",
           "event": [
             {

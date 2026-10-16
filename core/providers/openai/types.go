@@ -1650,6 +1650,27 @@ func (r *OpenAIImageEditRequest) SetExtraParams(params map[string]interface{}) {
 	r.ImageEditParameters.ExtraParams = params
 }
 
+// OpenAIImageEditJSONRequest is the wire format for URL-based image edits.
+type OpenAIImageEditJSONRequest struct {
+	Model             string                     `json:"model"`
+	Images            []OpenAIImageEditReference `json:"images"`
+	Prompt            string                     `json:"prompt"`
+	Background        *string                    `json:"background,omitempty"`
+	InputFidelity     *string                    `json:"input_fidelity,omitempty"`
+	N                 *int                       `json:"n,omitempty"`
+	OutputCompression *int                       `json:"output_compression,omitempty"`
+	OutputFormat      *string                    `json:"output_format,omitempty"`
+	PartialImages     *int                       `json:"partial_images,omitempty"`
+	Quality           *string                    `json:"quality,omitempty"`
+	Size              *string                    `json:"size,omitempty"`
+	User              *string                    `json:"user,omitempty"`
+	Stream            *bool                      `json:"stream,omitempty"`
+}
+
+type OpenAIImageEditReference struct {
+	ImageURL string `json:"image_url"`
+}
+
 // OpenAIImageVariationRequest is the struct for Image Variation requests in OpenAI format.
 type OpenAIImageVariationRequest struct {
 	Model string                       `json:"model"`

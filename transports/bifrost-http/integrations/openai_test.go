@@ -4,16 +4,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/fasthttp/router"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
@@ -137,6 +142,19 @@ func TestParseOpenAIFileUploadMultipartRequest_ExpiresAfter(t *testing.T) {
 	}
 }
 
+func BenchmarkParseOpenAIImageEditJSONRequest(b *testing.B) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentType("application/json; charset=utf-8")
+	ctx.Request.SetBodyString(`{"model":"gpt-image-1.5","images":[{"image_url":"https://example.com/image.png"}],"prompt":"Improve clarity","quality":"low"}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		request := &openai.OpenAIImageEditRequest{}
+		if err := parseOpenAIImageEditRequest(ctx, request); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 // buildTranscriptionMultipartCtx builds a fasthttp request context carrying
 // a multipart transcription upload body with the given extra form fields.
 // Fields with multiple values (e.g. repeated "timestamp_granularities[]")
@@ -257,6 +275,300 @@ func findOpenAIRoute(prefix, path string) *RouteConfig {
 		}
 	}
 	return nil
+}
+
+// runImageEditSDKRoute drives the registered SDK ingress and its real converter,
+// then stops before provider execution so these tests need no API key or listener.
+func runImageEditSDKRoute(t *testing.T, prefix, path string, ctx *fasthttp.RequestCtx) (*openai.OpenAIImageEditRequest, *schemas.BifrostImageEditRequest) {
+	t.Helper()
+	store := &mockHandlerStore{}
+	logger := &testLogger{}
+	var integration *GenericRouter
+	switch prefix {
+	case "/openai":
+		integration = NewOpenAIRouter(nil, store, nil, logger).GenericRouter
+	case "/litellm":
+		integration = NewLiteLLMRouter(nil, store, nil, logger).GenericRouter
+	case "/langchain":
+		integration = NewLangChainRouter(nil, store, nil, logger).GenericRouter
+	case "/pydanticai":
+		integration = NewPydanticAIRouter(nil, store, nil, logger).GenericRouter
+	default:
+		t.Fatalf("unknown SDK prefix %q", prefix)
+	}
+	var route *RouteConfig
+	for _, candidate := range integration.routes {
+		deploymentRoute := prefix + "/openai/deployments/{deploymentPath:*}"
+		matchesDeployment := strings.HasPrefix(path, "/openai/deployments/") && candidate.Path == deploymentRoute
+		if (candidate.Path == prefix+path || matchesDeployment) && candidate.Method == fasthttp.MethodPost {
+			route = &candidate
+			break
+		}
+	}
+	require.NotNil(t, route, "image edit route %s%s must be registered", prefix, path)
+	require.NotNil(t, route.StreamConfig, "image edits must retain their streaming configuration")
+	var parsed *openai.OpenAIImageEditRequest
+	var converted *schemas.BifrostImageEditRequest
+	converter := route.RequestConverter
+	route.RequestConverter = func(bifrostCtx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+		result, err := converter(bifrostCtx, req)
+		if err != nil {
+			return nil, err
+		}
+		parsed = req.(*openai.OpenAIImageEditRequest)
+		converted = result.ImageEditRequest
+		return nil, errors.New("image edit captured before provider execution")
+	}
+	integration.routes = []RouteConfig{*route}
+	r := router.New()
+	integration.RegisterRoutes(r)
+	ctx.Request.Header.SetMethod(fasthttp.MethodPost)
+	ctx.Request.SetRequestURI(prefix + path)
+	r.Handler(ctx)
+	return parsed, converted
+}
+
+func captureImageEditSDKWire(t *testing.T, request *schemas.BifrostImageEditRequest, stream, passthrough bool) (string, []byte) {
+	t.Helper()
+	type wireRequest struct {
+		contentType string
+		body        []byte
+	}
+	requests := make(chan wireRequest, 1)
+	client := &fasthttp.Client{
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+		Dial: func(_ string) (net.Conn, error) {
+			clientConn, serverConn := net.Pipe()
+			go func() {
+				defer serverConn.Close()
+				_ = fasthttp.ServeConn(serverConn, func(ctx *fasthttp.RequestCtx) {
+					requests <- wireRequest{string(ctx.Request.Header.ContentType()), bytes.Clone(ctx.Request.Body())}
+					ctx.SetConnectionClose()
+					ctx.SetStatusCode(fasthttp.StatusBadRequest)
+					ctx.SetBodyString(`{"error":{"message":"captured image edit wire"}}`)
+				})
+			}()
+			return clientConn, nil
+		},
+	}
+	t.Cleanup(client.CloseIdleConnections)
+	ctx := schemas.NewBifrostContext(t.Context(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, passthrough)
+	var err *schemas.BifrostError
+	if stream {
+		_, err = openai.HandleOpenAIImageEditStreamRequest(ctx, client, "http://upstream.test/v1/images/edits", request,
+			nil, nil, 5, false, false, schemas.OpenAI, nil, nil, nil, nil, nil, nil)
+	} else {
+		_, err = openai.HandleOpenAIImageEditRequest(ctx, client, "http://upstream.test/v1/images/edits", request,
+			schemas.Key{}, nil, nil, false, false, schemas.OpenAI, nil)
+	}
+	require.NotNil(t, err)
+	require.NotNil(t, err.Error)
+	require.Equal(t, "captured image edit wire", err.Error.Message, "request must reach the mock upstream")
+	wire := <-requests
+	return wire.contentType, wire.body
+}
+
+func TestOpenAIImageEditSDKRoutesJSON(t *testing.T) {
+	t.Parallel()
+	for _, prefix := range []string{"/openai", "/litellm", "/langchain", "/pydanticai"} {
+		for _, path := range []string{"/v1/images/edits", "/images/edits"} {
+			for _, stream := range []bool{false, true} {
+				for _, passthrough := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%s%s/stream=%t/passthrough=%t", prefix, path, stream, passthrough), func(t *testing.T) {
+						t.Parallel()
+						var ctx fasthttp.RequestCtx
+						contentType := "application/json; charset=utf-8"
+						if passthrough {
+							contentType = "application/json"
+							ctx.Request.Header.Set("x-bf-passthrough-extra-params", "true")
+						}
+						ctx.Request.Header.SetContentType(contentType)
+						ctx.Request.SetBodyString(fmt.Sprintf(`{
+							"model":"openai/gpt-image-2", "prompt":"保持构图，提高画面清晰度。",
+							"images":[{"image_url":"https://example.com/first.png"},{"image_url":"https://example.com/second.png"}],
+							"background":"transparent", "input_fidelity":"high", "n":2,
+							"output_compression":80, "output_format":"webp", "partial_images":1,
+							"quality":"low", "size":"1024x1024", "user":"image-edit-test", "response_format":"b64_json", "mask":null,
+							"stream":%t, "fallbacks":["openai/gpt-image-1"],
+							"extra_params":{"future_option":{"mode":"strict"}}
+						}`, stream))
+						parsed, converted := runImageEditSDKRoute(t, prefix, path, &ctx)
+						require.NotNil(t, parsed, "JSON must reach the SDK converter: %s", ctx.Response.Body())
+						require.NotNil(t, converted)
+						assert.Equal(t, stream, parsed.IsStreamingRequested())
+						assert.Equal(t, schemas.OpenAI, converted.Provider)
+						assert.Equal(t, "gpt-image-2", converted.Model)
+						require.NotNil(t, converted.Input)
+						assert.Equal(t, "保持构图，提高画面清晰度。", converted.Input.Prompt)
+						assert.Equal(t, []schemas.ImageInput{{URL: "https://example.com/first.png"}, {URL: "https://example.com/second.png"}}, converted.Input.Images)
+						assert.Equal(t, []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-image-1"}}, converted.Fallbacks)
+						require.NotNil(t, converted.Params)
+						assert.Equal(t, schemas.Ptr("transparent"), converted.Params.Background)
+						assert.Equal(t, schemas.Ptr("high"), converted.Params.InputFidelity)
+						assert.Equal(t, schemas.Ptr(2), converted.Params.N)
+						assert.Equal(t, schemas.Ptr(80), converted.Params.OutputCompression)
+						assert.Equal(t, schemas.Ptr("webp"), converted.Params.OutputFormat)
+						assert.Equal(t, schemas.Ptr(1), converted.Params.PartialImages)
+						assert.Equal(t, schemas.Ptr("low"), converted.Params.Quality)
+						assert.Equal(t, schemas.Ptr("1024x1024"), converted.Params.Size)
+						assert.Equal(t, schemas.Ptr("image-edit-test"), converted.Params.User)
+						assert.Equal(t, schemas.Ptr("b64_json"), converted.Params.ResponseFormat)
+						if passthrough {
+							assert.Equal(t, map[string]interface{}{"future_option": map[string]interface{}{"mode": "strict"}}, converted.Params.ExtraParams)
+						} else {
+							assert.Empty(t, converted.Params.ExtraParams)
+						}
+						contentType, outgoing := captureImageEditSDKWire(t, converted, stream, passthrough)
+						assert.Equal(t, "application/json", contentType)
+						var wire map[string]json.RawMessage
+						require.NoError(t, json.Unmarshal(outgoing, &wire))
+						assert.Equal(t, `"gpt-image-2"`, string(wire["model"]))
+						assert.Equal(t, `"保持构图，提高画面清晰度。"`, string(wire["prompt"]))
+						assert.JSONEq(t, `[{"image_url":"https://example.com/first.png"},{"image_url":"https://example.com/second.png"}]`, string(wire["images"]))
+						for _, field := range []string{"input", "url", "image", "fallbacks", "extra_params", "mask", "response_format"} {
+							assert.NotContains(t, wire, field)
+						}
+						if stream {
+							assert.Equal(t, "true", string(wire["stream"]))
+						} else {
+							assert.NotContains(t, wire, "stream")
+						}
+						if passthrough {
+							assert.JSONEq(t, `{"mode":"strict"}`, string(wire["future_option"]))
+						} else {
+							assert.NotContains(t, wire, "future_option")
+						}
+					})
+				}
+			}
+		}
+	}
+}
+
+func TestOpenAIImageEditSDKDeploymentRouteJSON(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, modelField string }{
+		{"omitted body model", ""},
+		{"empty body model", `"model":"",`},
+		{"path overrides body model", `"model":"ignored-model",`},
+	}
+	for _, prefix := range []string{"/openai", "/litellm", "/langchain", "/pydanticai"} {
+		for _, tc := range tests {
+			t.Run(prefix+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				var ctx fasthttp.RequestCtx
+				ctx.Request.Header.SetContentType("application/json")
+				ctx.Request.SetBodyString(`{` + tc.modelField + `"prompt":"Edit the image.","images":[{"image_url":"https://example.com/image.png"}]}`)
+				parsed, converted := runImageEditSDKRoute(t, prefix, "/openai/deployments/openai/gpt-image-2/images/edits", &ctx)
+				require.NotNil(t, parsed, "deployment JSON must reach the SDK converter: %s", ctx.Response.Body())
+				require.NotNil(t, converted)
+				assert.Equal(t, schemas.OpenAI, converted.Provider)
+				assert.Equal(t, "gpt-image-2", converted.Model, "deployment path must supply the model and take precedence over the body")
+				contentType, body := captureImageEditSDKWire(t, converted, false, false)
+				assert.Equal(t, "application/json", contentType)
+				assert.JSONEq(t, `{"model":"gpt-image-2","prompt":"Edit the image.","images":[{"image_url":"https://example.com/image.png"}]}`, string(body))
+			})
+		}
+	}
+}
+
+func TestOpenAIImageEditSDKRoutesRequireBodyModel(t *testing.T) {
+	t.Parallel()
+	for _, prefix := range []string{"/openai", "/litellm", "/langchain", "/pydanticai"} {
+		for _, path := range []string{"/v1/images/edits", "/images/edits"} {
+			t.Run(prefix+path, func(t *testing.T) {
+				t.Parallel()
+				var ctx fasthttp.RequestCtx
+				ctx.Request.Header.SetContentType("application/json")
+				ctx.Request.SetBodyString(`{"prompt":"Edit the image.","images":[{"image_url":"https://example.com/image.png"}]}`)
+				parsed, converted := runImageEditSDKRoute(t, prefix, path, &ctx)
+				assert.Nil(t, parsed)
+				assert.Nil(t, converted)
+				assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+				assert.Contains(t, string(ctx.Response.Body()), "model field is required")
+			})
+		}
+	}
+}
+
+func TestOpenAIImageEditSDKRoutesMultipart(t *testing.T) {
+	t.Parallel()
+	for _, prefix := range []string{"/openai", "/litellm", "/langchain", "/pydanticai"} {
+		for _, path := range []string{"/v1/images/edits", "/images/edits"} {
+			t.Run(prefix+path, func(t *testing.T) {
+				t.Parallel()
+				var body bytes.Buffer
+				writer := multipart.NewWriter(&body)
+				for _, field := range []struct{ name, value string }{
+					{"model", "openai/gpt-image-1"}, {"prompt", "Keep the composition."},
+					{"quality", "low"}, {"n", "2"}, {"stream", "true"},
+					{"fallbacks", "openai/gpt-image-2"},
+				} {
+					require.NoError(t, writer.WriteField(field.name, field.value))
+				}
+				for _, file := range []struct{ name, filename, data string }{
+					{"image[]", "first.png", "first-image-bytes"},
+					{"image[]", "second.png", "second-image-bytes"},
+					{"mask", "mask.png", "mask-bytes"},
+				} {
+					part, err := writer.CreateFormFile(file.name, file.filename)
+					require.NoError(t, err)
+					_, err = part.Write([]byte(file.data))
+					require.NoError(t, err)
+				}
+				require.NoError(t, writer.Close())
+				var ctx fasthttp.RequestCtx
+				ctx.Request.Header.SetContentType(writer.FormDataContentType())
+				ctx.Request.SetBody(body.Bytes())
+				t.Cleanup(ctx.Request.RemoveMultipartFormFiles)
+				parsed, converted := runImageEditSDKRoute(t, prefix, path, &ctx)
+				require.NotNil(t, parsed, "multipart must reach the SDK converter: %s", ctx.Response.Body())
+				require.NotNil(t, converted)
+				assert.True(t, parsed.IsStreamingRequested())
+				assert.Equal(t, schemas.OpenAI, converted.Provider)
+				assert.Equal(t, "gpt-image-1", converted.Model)
+				assert.Equal(t, "Keep the composition.", converted.Input.Prompt)
+				assert.Equal(t, []schemas.ImageInput{{Image: []byte("first-image-bytes")}, {Image: []byte("second-image-bytes")}}, converted.Input.Images)
+				assert.Equal(t, []byte("mask-bytes"), converted.Params.Mask)
+				assert.Equal(t, schemas.Ptr("low"), converted.Params.Quality)
+				assert.Equal(t, schemas.Ptr(2), converted.Params.N)
+				assert.Equal(t, []schemas.Fallback{{Provider: schemas.OpenAI, Model: "gpt-image-2"}}, converted.Fallbacks)
+			})
+		}
+	}
+}
+
+func TestOpenAIImageEditSDKRoutesRejectInvalidJSON(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, body, wantError string }{
+		{"empty body", ``, "failed to parse request"},
+		{"malformed", `{"model":"gpt-image-2",`, "failed to parse request"},
+		{"missing model", `{"prompt":"edit","images":[{"image_url":"https://example.com/image.png"}]}`, "model"},
+		{"missing prompt", `{"model":"gpt-image-2","images":[{"image_url":"https://example.com/image.png"}]}`, "prompt"},
+		{"empty images", `{"model":"gpt-image-2","prompt":"edit","images":[]}`, "image"},
+		{"missing images", `{"model":"gpt-image-2","prompt":"edit"}`, "image"},
+		{"null images", `{"model":"gpt-image-2","prompt":"edit","images":null}`, "image"},
+		{"missing image_url", `{"model":"gpt-image-2","prompt":"edit","images":[{}]}`, "image_url"},
+		{"blank image_url", `{"model":"gpt-image-2","prompt":"edit","images":[{"image_url":"  "}]}`, "image_url"},
+		{"wrong image_url type", `{"model":"gpt-image-2","prompt":"edit","images":[{"image_url":42}]}`, "failed to parse request"},
+		{"JSON mask", `{"model":"gpt-image-2","prompt":"edit","images":[{"image_url":"https://example.com/image.png"}],"mask":{"image_url":"https://example.com/mask.png"}}`, "mask"},
+		{"null body", `null`, "model"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.SetBodyString(tc.body)
+			parsed, converted := runImageEditSDKRoute(t, "/openai", "/v1/images/edits", &ctx)
+			assert.Nil(t, parsed, "invalid JSON must stop before the SDK converter")
+			assert.Nil(t, converted)
+			assert.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+			assert.Contains(t, string(ctx.Response.Body()), tc.wantError)
+		})
+	}
 }
 
 // TestOpenAIDecisionsRouteRegisteredOnEveryPath pins that OpenAI's decisions
