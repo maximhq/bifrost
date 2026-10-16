@@ -899,7 +899,7 @@ export interface LogFilters {
 	objects?: string[]; // For filtering by request type (chat.completion, text.completion, embedding)
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
-	period?: string; // "1h","6h","24h","7d","30d" resolve server-side and take precedence over start_time/end_time; "today","this_week","this_month" are sent as start_time/end_time
+	period?: string; // "1h","6h","24h","7d","30d","today","this_week","this_month"; resolved server-side, takes precedence over start_time/end_time
 	min_latency?: number;
 	max_latency?: number;
 	min_cost?: number;
@@ -1507,7 +1507,7 @@ export interface MCPToolLogFilters {
 	agent_correlation_id?: string;
 	start_time?: string; // RFC3339 format
 	end_time?: string; // RFC3339 format
-	period?: string; // "1h","6h","24h","7d","30d" resolve server-side and take precedence over start_time/end_time; "today","this_week","this_month" are sent as start_time/end_time
+	period?: string; // "1h","6h","24h","7d","30d","today","this_week","this_month"; resolved server-side, takes precedence over start_time/end_time
 	min_latency?: number;
 	max_latency?: number;
 	content_search?: string;

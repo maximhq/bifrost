@@ -547,6 +547,7 @@ logs-histogram:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -989,6 +990,7 @@ logs-histogram-throughput:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -1047,6 +1049,7 @@ logs-histogram-throughput-by-provider:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -1192,7 +1195,19 @@ _histogram-parameters:
   period:
     name: period
     in: query
-    description: Relative time period filter
+    description: >-
+      Time window resolved server-side; takes precedence over start_time and end_time.
+      Sliding periods (1h, 6h, 24h, 7d, 30d) end now. Calendar periods (today, this_week,
+      this_month) start at midnight of the current day, week (Monday) or month in `timezone`.
+    schema:
+      type: string
+      enum: [1h, 6h, 24h, 7d, 30d, today, this_week, this_month]
+  timezone:
+    name: timezone
+    in: query
+    description: >-
+      IANA timezone that calendar periods are measured in (e.g. America/New_York). Empty or
+      unknown values fall back to UTC. Ignored for sliding periods.
     schema:
       type: string
   min_latency:
@@ -1923,6 +1938,7 @@ logs-rankings:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -2003,6 +2019,7 @@ logs-rankings-by-dimension:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"
@@ -2077,6 +2094,7 @@ logs-rankings-users:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_ranking-parameters/limit"
       - $ref: "#/_ranking-parameters/all"
     security:
@@ -2139,6 +2157,7 @@ logs-dashboard:
       - $ref: "#/_histogram-parameters/start_time"
       - $ref: "#/_histogram-parameters/end_time"
       - $ref: "#/_histogram-parameters/period"
+      - $ref: "#/_histogram-parameters/timezone"
       - $ref: "#/_histogram-parameters/min_latency"
       - $ref: "#/_histogram-parameters/max_latency"
       - $ref: "#/_histogram-parameters/min_tokens"

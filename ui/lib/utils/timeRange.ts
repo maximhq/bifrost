@@ -19,8 +19,9 @@ const CALENDAR_PERIODS = new Set(["today", "this_week", "this_month"]);
 
 /**
  * Calendar periods (today, this week, this month) start at a wall-clock boundary,
- * so unlike the sliding periods they depend on the viewer's timezone. The server
- * cannot resolve them, so callers send them as an absolute range instead.
+ * so unlike the sliding periods they depend on the viewer's timezone. Requests
+ * send them with a `timezone` param (see withPeriodTimezone) so the server can
+ * find that midnight.
  */
 export function isCalendarPeriod(period: string | undefined): boolean {
 	return !!period && CALENDAR_PERIODS.has(period);
@@ -67,15 +68,18 @@ export function getRangeForPeriod(period: string, timezone: string = getPreferre
 }
 
 /**
- * Replaces a calendar period with the absolute range it covers right now, since
- * the server only resolves sliding periods. Call it when building a request, not
- * when building cache keys, so every poll re-resolves "now" and a new day rolls
- * over on its own. Other filters pass through unchanged.
+ * Returns the timezone to send with `period` so the server resolves a calendar
+ * period from the same midnight the picker shows: the user's preferred zone for
+ * calendar periods, undefined for sliding periods, which do not depend on it.
  */
-export function withResolvedCalendarPeriod<T extends { period?: string; start_time?: string; end_time?: string }>(filters: T): T {
-	if (!isCalendarPeriod(filters.period)) return filters;
-	const { from, to } = getRangeForPeriod(filters.period as string);
-	return { ...filters, period: undefined, start_time: from.toISOString(), end_time: to.toISOString() };
+export function getPeriodTimezone(period: string | undefined): string | undefined {
+	return isCalendarPeriod(period) ? getPreferredTimezone() : undefined;
+}
+
+/** Adds the period's timezone (see getPeriodTimezone) to filters sent as a JSON body. */
+export function withPeriodTimezone<T extends { period?: string }>(filters: T): T & { timezone?: string } {
+	const timezone = getPeriodTimezone(filters.period);
+	return timezone ? { ...filters, timezone } : filters;
 }
 
 /** Returns unix timestamps (seconds) for the given relative period string. */

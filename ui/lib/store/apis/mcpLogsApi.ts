@@ -8,12 +8,11 @@ import {
 	MCPTopToolsResponse,
 	Pagination,
 } from "@/lib/types/logs";
-import { withResolvedCalendarPeriod } from "@/lib/utils/timeRange";
+import { getPeriodTimezone } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
 
 // Helper function to build MCP filter params
-function buildMCPFilterParams(rawFilters: MCPToolLogFilters): Record<string, string | number> {
-	const filters = withResolvedCalendarPeriod(rawFilters);
+function buildMCPFilterParams(filters: MCPToolLogFilters): Record<string, string | number> {
 	const params: Record<string, string | number> = {};
 	if (filters.user_ids?.length) params.user_ids = filters.user_ids.join(",");
 	if (filters.team_ids?.length) params.team_ids = filters.team_ids.join(",");
@@ -49,6 +48,8 @@ function buildMCPFilterParams(rawFilters: MCPToolLogFilters): Record<string, str
 	}
 	if (filters.period) {
 		params.period = filters.period;
+		const timezone = getPeriodTimezone(filters.period);
+		if (timezone) params.timezone = timezone;
 	} else {
 		if (filters.start_time) params.start_time = filters.start_time;
 		if (filters.end_time) params.end_time = filters.end_time;

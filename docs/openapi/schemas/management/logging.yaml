@@ -712,10 +712,18 @@ RecalculateCostFilters:
       properties:
         period:
           type: string
-          enum: [1h, 6h, 24h, 7d, 30d]
+          enum: [1h, 6h, 24h, 7d, 30d, today, this_week, this_month]
           description: >-
-            Relative time window resolved when the job is created. When recognized, it takes
-            precedence over start_time and end_time.
+            Time window resolved when the job is created; it takes precedence over start_time
+            and end_time. Sliding periods (1h to 30d) end now. Calendar periods start at
+            midnight of the current day, week (Monday) or month in `timezone`. An unrecognized
+            value is rejected with 400.
+        timezone:
+          type: string
+          example: America/New_York
+          description: >-
+            IANA timezone that calendar periods are measured in. Empty or unknown values
+            fall back to UTC. Ignored for sliding periods.
 
 RecalculateCostResponse:
   type: object

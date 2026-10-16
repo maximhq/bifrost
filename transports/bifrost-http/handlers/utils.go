@@ -103,12 +103,19 @@ func TimedMiddleware(name string, mw schemas.BifrostHTTPMiddleware) schemas.Bifr
 	}
 }
 
-// ResolvePeriod converts a relative period string ("1h","6h","24h","7d","30d") to concrete
-// start/end time pointers computed from the current server time. Returns nil, nil for
-// unrecognised values. When used in filter parsing, period takes precedence over any explicit
-// start_time/end_time query parameters so every poll always covers the intended window.
-func ResolvePeriod(period string) (start, end *time.Time) {
-	now := time.Now().UTC()
+// ResolvePeriod converts a period string to concrete start/end time pointers computed from the
+// current server time. Sliding periods ("1h","6h","24h","7d","30d") end now and are
+// timezone-independent. Calendar periods ("today","this_week","this_month") start at midnight
+// of the current day, week (Monday) or month in timezone, an IANA name; an empty or unknown
+// timezone falls back to UTC. Returns nil, nil for unrecognised periods. When used in filter
+// parsing, period takes precedence over any explicit start_time/end_time query parameters so
+// every poll always covers the intended window.
+func ResolvePeriod(period, timezone string) (start, end *time.Time) {
+	return resolvePeriodAt(period, timezone, time.Now())
+}
+
+func resolvePeriodAt(period, timezone string, now time.Time) (start, end *time.Time) {
+	now = now.UTC()
 	var from time.Time
 	switch period {
 	case "1h":
@@ -121,10 +128,43 @@ func ResolvePeriod(period string) (start, end *time.Time) {
 		from = now.AddDate(0, 0, -7)
 	case "30d":
 		from = now.AddDate(0, 0, -30)
+	case "today", "this_week", "this_month":
+		local := now.In(periodLocation(timezone))
+		year, month, day := local.Date()
+		switch period {
+		case "this_week":
+			day -= (int(local.Weekday()) + 6) % 7 // days since Monday
+		case "this_month":
+			day = 1
+		}
+		from = time.Date(year, month, day, 0, 0, 0, 0, local.Location()).UTC()
 	default:
 		return nil, nil
 	}
 	return &from, &now
+}
+
+// periodLocations caches resolved IANA locations for calendar periods, since
+// time.LoadLocation reads and parses zone data on every call. Only successful
+// lookups are stored, so the map is bounded by the IANA zone list no matter
+// what callers send.
+var periodLocations sync.Map // string -> *time.Location
+
+// periodLocation resolves the timezone a calendar period is measured in.
+// Empty and unknown names resolve to UTC.
+func periodLocation(name string) *time.Location {
+	if name == "" || name == "UTC" {
+		return time.UTC
+	}
+	if cached, ok := periodLocations.Load(name); ok {
+		return cached.(*time.Location)
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.UTC
+	}
+	periodLocations.Store(name, loc)
+	return loc
 }
 
 // pluginDisabledKey is a dedicated context key type for marking a plugin as disabled

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { getLiveToggleState, getRangeForPeriod, isCalendarPeriod, TIME_PERIODS, withResolvedCalendarPeriod } from "./timeRange";
+import { getLiveToggleState, getPeriodTimezone, getRangeForPeriod, isCalendarPeriod, TIME_PERIODS, withPeriodTimezone } from "./timeRange";
 
 describe("getLiveToggleState", () => {
 	test("turning live on from an absolute range switches to the default period", () => {
@@ -76,15 +76,16 @@ describe("calendar periods", () => {
 		expect(getRangeForPeriod("24h", "Asia/Kolkata")).toEqual(getRangeForPeriod("24h", "UTC"));
 	});
 
-	test("withResolvedCalendarPeriod turns a calendar period into an absolute range", () => {
-		// The range is resolved in the timezone the user picked, persisted by useTimezonePreference.
-		vi.stubGlobal("localStorage", { getItem: (key: string) => (key === "bifrost.timezone" ? "Asia/Kolkata" : null) });
+	test("calendar periods are sent with the timezone the user picked", () => {
+		// The server resolves the period; the timezone persisted by useTimezonePreference tells it whose midnight.
+		vi.stubGlobal("localStorage", { getItem: (key: string) => (key === "bifrost.timezone" ? "America/New_York" : null) });
 		try {
-			expect(withResolvedCalendarPeriod({ period: "today", models: ["gpt-4o"] })).toEqual({
-				period: undefined,
+			expect(getPeriodTimezone("today")).toBe("America/New_York");
+			expect(getPeriodTimezone("this_month")).toBe("America/New_York");
+			expect(withPeriodTimezone({ period: "this_week", models: ["gpt-4o"] })).toEqual({
+				period: "this_week",
 				models: ["gpt-4o"],
-				start_time: "2026-10-14T18:30:00.000Z",
-				end_time: "2026-10-15T03:30:00.000Z",
+				timezone: "America/New_York",
 			});
 		} finally {
 			vi.unstubAllGlobals();
@@ -114,10 +115,15 @@ describe("calendar periods", () => {
 		}
 	});
 
-	test("withResolvedCalendarPeriod leaves sliding periods and absolute ranges to the server", () => {
+	test("sliding periods and absolute ranges carry no timezone", () => {
+		expect(getPeriodTimezone("24h")).toBeUndefined();
+		expect(getPeriodTimezone(undefined)).toBeUndefined();
 		const sliding = { period: "24h" };
-		expect(withResolvedCalendarPeriod(sliding)).toBe(sliding);
-		const absolute = { start_time: "2026-10-01T00:00:00Z", end_time: "2026-10-02T00:00:00Z" };
-		expect(withResolvedCalendarPeriod(absolute)).toBe(absolute);
+		expect(withPeriodTimezone(sliding)).toBe(sliding);
+		const absolute: { period?: string; start_time: string; end_time: string } = {
+			start_time: "2026-10-01T00:00:00Z",
+			end_time: "2026-10-02T00:00:00Z",
+		};
+		expect(withPeriodTimezone(absolute)).toBe(absolute);
 	});
 });
