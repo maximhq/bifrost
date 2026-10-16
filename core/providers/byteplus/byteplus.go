@@ -3,6 +3,10 @@ package byteplus
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -236,39 +240,261 @@ func (provider *BytePlusProvider) doBytePlusRequest(ctx *schemas.BifrostContext,
 	return append([]byte(nil), body...), latency, nil
 }
 
-// ImageGeneration is not supported by the BytePlus provider.
+// ImageGeneration performs a Seedream image generation request to Ark's /images/generations API.
 func (provider *BytePlusProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationRequest, provider.GetProviderKey())
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToBytePlusImageGenerationRequest(request)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return provider.doImageRequest(ctx, key, jsonData, request.Model)
 }
 
-// ImageEdit is not supported by the BytePlus provider.
+// ImageEdit performs a Seedream image-to-image request. Seedream edits through the same
+// /images/generations endpoint, with the source images sent as reference images.
 func (provider *BytePlusProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditRequest, provider.GetProviderKey())
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToBytePlusImageEditRequest(request)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return provider.doImageRequest(ctx, key, jsonData, request.Model)
 }
 
-// VideoGeneration is not supported by the BytePlus provider.
-func (provider *BytePlusProvider) VideoGeneration(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoGenerationRequest, provider.GetProviderKey())
+// doImageRequest posts a Seedream body and converts the response.
+func (provider *BytePlusProvider) doImageRequest(ctx *schemas.BifrostContext, key schemas.Key, jsonData []byte, model string) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	body, latency, bifrostErr := provider.doBytePlusRequest(ctx, key, http.MethodPost, "/api/v3/images/generations", "", jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	var bytePlusResp BytePlusImageGenerationResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &bytePlusResp, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
+	}
+
+	bifrostResp, bifrostErr := ToBifrostImageGenerationResponse(&bytePlusResp, model)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+	return bifrostResp, nil
 }
 
-// VideoRetrieve is not supported by the BytePlus provider.
-func (provider *BytePlusProvider) VideoRetrieve(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoRetrieveRequest, provider.GetProviderKey())
+// VideoGeneration creates a Seedance video generation task.
+func (provider *BytePlusProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return ToBytePlusVideoGenerationRequest(request)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+
+	body, latency, bifrostErr := provider.doBytePlusRequest(ctx, key, http.MethodPost, "/api/v3/contents/generations/tasks", "", jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	var taskResp BytePlusVideoTaskCreationResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &taskResp, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
+	}
+	if taskResp.ID == "" {
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError("byteplus returned no task id", nil), jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	bifrostResp := &schemas.BifrostVideoGenerationResponse{
+		ID:        providerUtils.AddVideoIDProviderSuffix(taskResp.ID, providerName),
+		Model:     request.Model,
+		Object:    "video",
+		Status:    schemas.VideoStatusQueued,
+		CreatedAt: time.Now().Unix(),
+	}
+	if duration := providerUtils.GetJSONField(jsonData, "duration").Int(); duration > 0 {
+		bifrostResp.Seconds = schemas.Ptr(strconv.FormatInt(duration, 10))
+	}
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+	return bifrostResp, nil
 }
 
-// VideoDownload is not supported by the BytePlus provider.
-func (provider *BytePlusProvider) VideoDownload(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDownloadRequest, provider.GetProviderKey())
+// VideoRetrieve queries the status of a Seedance video generation task.
+func (provider *BytePlusProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
+	providerName := provider.GetProviderKey()
+	taskID := providerUtils.StripVideoIDProviderSuffix(request.ID, providerName)
+	escapedTaskID, idErr := providerUtils.EscapeResourceID(taskID, "video_id")
+	if idErr != nil {
+		return nil, idErr
+	}
+
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	body, latency, bifrostErr := provider.doBytePlusRequest(ctx, key, http.MethodGet, "/api/v3/contents/generations/tasks/"+escapedTaskID, "", nil, false, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	var task BytePlusVideoTask
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &task, nil, false, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
+	}
+
+	bifrostResp, bifrostErr := ToBifrostVideoGenerationResponse(&task)
+	if bifrostErr != nil {
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
+	}
+	if bifrostResp.ID == "" {
+		bifrostResp.ID = taskID
+	}
+	bifrostResp.ID = providerUtils.AddVideoIDProviderSuffix(bifrostResp.ID, providerName)
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+	return bifrostResp, nil
 }
 
-// VideoDelete is not supported by the BytePlus provider.
-func (provider *BytePlusProvider) VideoDelete(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoDeleteRequest, provider.GetProviderKey())
+// VideoDownload fetches the generated video from the time-limited URL on a succeeded task.
+func (provider *BytePlusProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
+	task, bifrostErr := provider.VideoRetrieve(ctx, key, &schemas.BifrostVideoRetrieveRequest{Provider: request.Provider, ID: request.ID})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if task.Status != schemas.VideoStatusCompleted {
+		return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("video not ready, current status: %s", task.Status), nil)
+	}
+	if len(task.Videos) == 0 || task.Videos[0].URL == nil || *task.Videos[0].URL == "" {
+		return nil, providerUtils.NewBifrostOperationError("video URL not available", nil)
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+	req.SetRequestURI(*task.Videos[0].URL)
+	req.Header.SetMethod(http.MethodGet)
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(fmt.Sprintf("failed to download video: HTTP %d", resp.StatusCode()), nil), latency)
+	}
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), latency)
+	}
+	contentType := string(resp.Header.ContentType())
+	if contentType == "" {
+		contentType = "video/mp4"
+	}
+	bifrostResp := &schemas.BifrostVideoDownloadResponse{
+		VideoID:     request.ID,
+		Content:     append([]byte(nil), body...),
+		ContentType: contentType,
+	}
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	return bifrostResp, nil
 }
 
-// VideoList is not supported by the BytePlus provider.
-func (provider *BytePlusProvider) VideoList(_ *schemas.BifrostContext, _ schemas.Key, _ *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.VideoListRequest, provider.GetProviderKey())
+// VideoDelete cancels a queued Seedance task or deletes the record of a finished one.
+func (provider *BytePlusProvider) VideoDelete(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDeleteRequest) (*schemas.BifrostVideoDeleteResponse, *schemas.BifrostError) {
+	taskID := providerUtils.StripVideoIDProviderSuffix(request.ID, provider.GetProviderKey())
+	escapedTaskID, idErr := providerUtils.EscapeResourceID(taskID, "video_id")
+	if idErr != nil {
+		return nil, idErr
+	}
+
+	_, latency, bifrostErr := provider.doBytePlusRequest(ctx, key, http.MethodDelete, "/api/v3/contents/generations/tasks/"+escapedTaskID, "", nil, false, false)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	bifrostResp := &schemas.BifrostVideoDeleteResponse{
+		ID:      request.ID,
+		Object:  "video.deleted",
+		Deleted: true,
+	}
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	return bifrostResp, nil
+}
+
+// VideoList lists Seedance tasks. Ark pages by number rather than by cursor, so only the first
+// page of size limit is reachable; an after cursor is rejected instead of being silently ignored,
+// which would make a paging client loop on the same page.
+func (provider *BytePlusProvider) VideoList(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoListRequest) (*schemas.BifrostVideoListResponse, *schemas.BifrostError) {
+	if request.After != nil && *request.After != "" {
+		return nil, providerUtils.NewBifrostBadRequestError("byteplus video list pages by number and does not support an after cursor")
+	}
+	values := url.Values{}
+	values.Set("page_num", "1")
+	if request.Limit != nil && *request.Limit > 0 {
+		values.Set("page_size", strconv.Itoa(*request.Limit))
+	}
+
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	body, latency, bifrostErr := provider.doBytePlusRequest(ctx, key, http.MethodGet, "/api/v3/contents/generations/tasks", values.Encode(), nil, false, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	var listResp BytePlusVideoTaskListResponse
+	_, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, body, &listResp, nil, false, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.SetErrorLatency(bifrostErr, latency)
+	}
+
+	providerName := provider.GetProviderKey()
+	bifrostResp := &schemas.BifrostVideoListResponse{
+		Object: "list",
+		Data:   make([]schemas.VideoObject, 0, len(listResp.Items)),
+	}
+	for i := range listResp.Items {
+		bifrostResp.Data = append(bifrostResp.Data, ToBifrostVideoObject(&listResp.Items[i], providerName))
+	}
+	if n := len(bifrostResp.Data); n > 0 {
+		bifrostResp.FirstID = schemas.Ptr(bifrostResp.Data[0].ID)
+		bifrostResp.LastID = schemas.Ptr(bifrostResp.Data[n-1].ID)
+	}
+	bifrostResp.HasMore = schemas.Ptr(listResp.Total > len(listResp.Items))
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+	return bifrostResp, nil
 }
 
 // Speech is not supported by the BytePlus provider.
