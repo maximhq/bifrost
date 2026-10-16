@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { TagInput } from "@/components/ui/tagInput";
 import { IS_ENTERPRISE } from "@/lib/constants/config";
 import { getErrorMessage, useGetCoreConfigQuery, useUpdateCoreConfigMutation } from "@/lib/store";
-import { CoreConfig, DefaultCoreConfig, MCPCodeModeLimits } from "@/lib/types/config";
+import { CoreConfig, DefaultCoreConfig, ManagedAuthConfig, MCPCodeModeLimits } from "@/lib/types/config";
 import { SecretVar } from "@/lib/types/schemas";
 import { isSecretVarSet } from "@/lib/utils/secretVarForm";
 import { RbacOperation, RbacResource, useRbac } from "@enterprise/lib";
@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { codeModeLimitsEqual, validateCodeModeLimits } from "./codeModeLimits.utils";
 import { CodeModeLimitsSection } from "./codeModeLimitsSection";
+import { ManagedAuthSection, managedAuthEquals, validateManagedAuth } from "./managedAuthSection";
 
 const secretVarEquals = (a?: SecretVar, b?: SecretVar) =>
 	(a?.value ?? "") === (b?.value ?? "") && (a?.ref ?? "") === (b?.ref ?? "") && (a?.type ?? "plain_text") === (b?.type ?? "plain_text");
@@ -98,7 +99,8 @@ export default function MCPView() {
 			(localConfig.oauth2_server_config?.auth_code_ttl ?? 300) !== (config.oauth2_server_config?.auth_code_ttl ?? 300) ||
 			(localConfig.oauth2_server_config?.access_token_ttl ?? 600) !== (config.oauth2_server_config?.access_token_ttl ?? 600) ||
 			(localConfig.oauth2_server_config?.disable_vk_identity ?? false) !== (config.oauth2_server_config?.disable_vk_identity ?? false) ||
-			!stringListEquals(localConfig.oauth2_server_config?.allowed_redirect_uris, config.oauth2_server_config?.allowed_redirect_uris)
+			!stringListEquals(localConfig.oauth2_server_config?.allowed_redirect_uris, config.oauth2_server_config?.allowed_redirect_uris) ||
+			!managedAuthEquals(localConfig.oauth2_server_config?.managed_auth, config.oauth2_server_config?.managed_auth)
 		);
 	}, [config, localConfig]);
 
@@ -189,7 +191,14 @@ export default function MCPView() {
 				// disable_vk_identity is oauth-only and its toggle is hidden outside oauth
 				// mode; clear it on the way out so a hidden-stale value can't be saved and
 				// rejected by the backend (400) on the next save.
-				oauth2_server_config: value === "oauth" ? prev.oauth2_server_config : { ...prev.oauth2_server_config, disable_vk_identity: false },
+				oauth2_server_config: {
+					...prev.oauth2_server_config,
+					...(value === "oauth" ? {} : { disable_vk_identity: false }),
+					// Managed auth needs discovery; the backend rejects it in headers mode.
+					...(value === "headers" && prev.oauth2_server_config?.managed_auth
+						? { managed_auth: { ...prev.oauth2_server_config.managed_auth, enabled: false } }
+						: {}),
+				},
 			}));
 		}
 	}, []);
@@ -227,6 +236,13 @@ export default function MCPView() {
 		setLocalConfig((prev) => ({
 			...prev,
 			oauth2_server_config: { ...prev.oauth2_server_config, disable_vk_identity: checked },
+		}));
+	}, []);
+
+	const handleManagedAuthChange = useCallback((value: ManagedAuthConfig) => {
+		setLocalConfig((prev) => ({
+			...prev,
+			oauth2_server_config: { ...prev.oauth2_server_config, managed_auth: value },
 		}));
 	}, []);
 
@@ -300,6 +316,16 @@ export default function MCPView() {
 
 			if (oauthModeActive && !isSecretVarSet(localConfig.oauth2_server_config?.issuer_url)) {
 				toast.error("Issuer URL is required when MCP auth mode is OAuth or Both.");
+				return;
+			}
+
+			// The backend validates a stored block regardless of mode, and refuses an enabled one outside OAuth/Both.
+			const managedAuth = localConfig.oauth2_server_config?.managed_auth;
+			const managedAuthError =
+				validateManagedAuth(managedAuth) ??
+				(managedAuth?.enabled && !oauthModeActive ? "Enterprise-managed authorization requires MCP auth mode OAuth or Both." : null);
+			if (managedAuthError) {
+				toast.error(managedAuthError);
 				return;
 			}
 
@@ -763,6 +789,18 @@ export default function MCPView() {
 											</Alert>
 										)}
 									</div>
+
+									<ManagedAuthSection
+										value={localConfig.oauth2_server_config?.managed_auth}
+										onChange={handleManagedAuthChange}
+										canEdit={hasSettingsUpdateAccess}
+										issuerURLHint={
+											localConfig.oauth2_server_config?.issuer_url?.value &&
+											!localConfig.oauth2_server_config.issuer_url.value.startsWith("env.")
+												? localConfig.oauth2_server_config.issuer_url.value
+												: "the Issuer URL above"
+										}
+									/>
 
 									{/* Require identity-provider login. Enterprise-only and only
                       meaningful in oauth mode with an IdP configured. Stays visible

@@ -1,4 +1,5 @@
-import { coreConfigApi } from '../../core/actions/api'
+import { coreConfigApi, managedClientsApi, virtualKeysApi } from '../../core/actions/api'
+import { IdJagIssuer } from '../../core/utils/idjagIssuer'
 import { expect, test } from '../../core/fixtures/base.fixture'
 
 test.describe('MCP Settings', () => {
@@ -230,5 +231,137 @@ test.describe('MCP Settings', () => {
       const saved = (await coreConfigApi.get(request)).client_config.oauth2_server_config as { allowed_redirect_uris?: string[] } | undefined
       expect(saved?.allowed_redirect_uris ?? []).toEqual([])
     })
+  })
+})
+
+// Enterprise-managed authorization: a client presents an IdP-signed ID-JAG at
+// /oauth2/token (jwt-bearer grant) and receives an access-only /mcp token.
+test.describe('Enterprise-managed authorization', () => {
+  // Rewrites the shared auth mode and oauth2_server_config, so tests must not interleave.
+  test.describe.configure({ mode: 'serial' })
+  const issuerURL = 'https://bifrost.e2e.test'
+  const idp = new IdJagIssuer()
+  let originalAuthMode: unknown
+  let originalOAuth2Config: Record<string, unknown> | undefined
+  let originalAllowlist: unknown
+  let vkID = ''
+  const createdClients: string[] = []
+  // The UI-created client has no id here, so it is swept by its run-scoped name.
+  const uiClientName = `e2e ui client ${Date.now()}`
+
+  test.beforeAll(async ({ request }) => {
+    await idp.start()
+    const client = (await coreConfigApi.get(request)).client_config
+    originalAuthMode = client.mcp_server_auth_mode
+    originalOAuth2Config = client.oauth2_server_config as Record<string, unknown> | undefined
+    originalAllowlist = client.mcp_oauth_private_allowlist
+    await coreConfigApi.updateClientConfig(request, {
+      mcp_server_auth_mode: 'both',
+      // The fake IdP listens on loopback, which the guarded key fetch refuses unless allowlisted.
+      mcp_oauth_private_allowlist: [...((originalAllowlist as string[] | undefined) ?? []), '127.0.0.1'],
+      oauth2_server_config: {
+        issuer_url: issuerURL,
+        auth_code_ttl: 300,
+        access_token_ttl: 600,
+        managed_auth: { enabled: true, trusted_issuer: idp.issuer },
+      },
+    })
+    const vk = (await virtualKeysApi.create(request, { name: `e2e-managed-auth-${Date.now()}`, is_active: true })) as {
+      virtual_key: { id: string }
+    }
+    vkID = vk.virtual_key.id
+  })
+
+  test.afterAll(async ({ request }) => {
+    const { clients } = await managedClientsApi.list(request)
+    for (const c of clients) if (createdClients.includes(c.id) || c.name === uiClientName) await managedClientsApi.delete(request, c.id)
+    if (vkID) await virtualKeysApi.delete(request, vkID)
+    // Managed auth must be off before the mode can leave both/oauth, and an undefined
+    // original is dropped from the body (which keeps the current block), so restore
+    // in two steps: the original block, else the current one without managed_auth.
+    const current = (await coreConfigApi.get(request)).client_config.oauth2_server_config as Record<string, unknown> | undefined
+    const { managed_auth: _, ...withoutManagedAuth } = current ?? {}
+    await coreConfigApi.updateClientConfig(request, { oauth2_server_config: originalOAuth2Config ?? withoutManagedAuth })
+    await coreConfigApi.updateClientConfig(request, {
+      mcp_server_auth_mode: originalAuthMode ?? 'headers',
+      mcp_oauth_private_allowlist: originalAllowlist ?? [],
+    })
+    await idp.stop()
+  })
+
+  test('advertises the jwt-bearer grant and ID-JAG profile', async ({ request }) => {
+    const meta = await (await request.get('/.well-known/oauth-authorization-server')).json()
+    expect(meta.grant_types_supported).toContain('urn:ietf:params:oauth:grant-type:jwt-bearer')
+    expect(meta.authorization_grant_profiles_supported).toEqual(['urn:ietf:params:oauth:grant-profile:id-jag'])
+    expect(meta.token_endpoint_auth_methods_supported[0]).toBe('none')
+  })
+
+  test('exchanges an ID-JAG for an access-only token that /mcp accepts', async ({ request }) => {
+    const client = await managedClientsApi.create(request, { name: 'e2e confidential', identity: 'vk', virtual_key_id: vkID })
+    createdClients.push(client.id)
+    expect(client.client_secret).toBeTruthy()
+    const basic = Buffer.from(`${encodeURIComponent(client.client_id)}:${encodeURIComponent(client.client_secret!)}`).toString('base64')
+
+    const tokenRes = await request.post('/oauth2/token', {
+      headers: { Authorization: `Basic ${basic}` },
+      form: {
+        grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+        assertion: idp.mint(issuerURL, client.client_id, { resource: `${issuerURL}/mcp` }),
+        resource: `${issuerURL}/mcp`,
+      },
+    })
+    expect(tokenRes.status()).toBe(200)
+    const token = await tokenRes.json()
+    expect(token.refresh_token).toBeUndefined()
+    expect(token.expires_in).toBe(86400)
+    expect(token.token_type).toBe('Bearer')
+
+    const mcpRes = await request.post('/mcp', {
+      headers: { Authorization: `Bearer ${token.access_token}`, Accept: 'application/json, text/event-stream' },
+      data: { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'e2e', version: '1' } } },
+    })
+    expect(mcpRes.status()).toBe(200)
+  })
+
+  test('rejects bad client credentials and foreign assertions', async ({ request }) => {
+    const publicClient = await managedClientsApi.create(request, { name: 'e2e public', public: true, identity: 'vk', virtual_key_id: vkID })
+    createdClients.push(publicClient.id)
+    const exchange = (form: Record<string, string>) =>
+      request.post('/oauth2/token', { form: { grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', ...form } })
+
+    const wrongAudience = await exchange({ client_id: publicClient.client_id, assertion: idp.mint('https://other.example.com', publicClient.client_id) })
+    expect(wrongAudience.status()).toBe(400)
+    expect((await wrongAudience.json()).error).toBe('invalid_grant')
+
+    const otherClient = await exchange({ client_id: publicClient.client_id, assertion: idp.mint(issuerURL, 'someone-else') })
+    expect((await otherClient.json()).error).toBe('invalid_grant')
+
+    const secretOnPublic = await exchange({ client_id: publicClient.client_id, client_secret: 'x', assertion: idp.mint(issuerURL, publicClient.client_id) })
+    expect(secretOnPublic.status()).toBe(401)
+    expect((await secretOnPublic.json()).error).toBe('invalid_client')
+
+    const unknown = await exchange({ client_id: 'not-registered', assertion: idp.mint(issuerURL, 'not-registered') })
+    expect((await unknown.json()).error).toBe('invalid_client')
+  })
+
+  test('creates a managed client from the settings page and shows its secret once', async ({ mcpSettingsPage }) => {
+    await mcpSettingsPage.goto()
+    await mcpSettingsPage.advancedTrigger.click()
+    const page = mcpSettingsPage.page
+    await expect(page.getByTestId('managed-auth-enabled-switch')).toBeChecked()
+    await expect(page.getByTestId('managed-auth-trusted-issuer-input')).toHaveValue(idp.issuer)
+
+    await page.getByTestId('managed-client-add-btn').click()
+    await page.locator('#managed-client-name').fill(uiClientName)
+    await page.getByTestId('managed-client-identity-select').click()
+    await page.getByRole('option', { name: 'A virtual key' }).click()
+    await page.getByTestId('managed-client-create-dialog').getByRole('combobox').last().click()
+    await page.getByRole('option').first().click()
+    await page.getByTestId('managed-client-create-submit').click()
+
+    const secret = page.getByTestId('managed-client-secret')
+    await expect(secret).not.toHaveValue('')
+    await page.getByRole('button', { name: 'Done' }).click()
+    await expect(page.getByTestId('managed-clients-table')).toBeVisible()
   })
 })

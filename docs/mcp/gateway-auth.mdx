@@ -154,6 +154,7 @@ curl -X PUT http://localhost:8080/api/config \
 | `oauth2_server_config.allowed_redirect_uris` | string[] | No | Exact approved remote callback URIs. Remote callbacks are denied unless listed. Loopback callbacks and `cursor://anysphere.cursor-mcp` remain available without entries. A bare `"*"` entry allows any `https` callback; partial wildcards are rejected. API changes require dashboard authentication. |
 | `oauth2_server_config.auth_code_ttl` | integer | No | Authorization code lifetime in seconds (default `300`, max `900` = 15 minutes). |
 | `oauth2_server_config.access_token_ttl` | integer | No | Issued JWT lifetime in seconds (default `600`). |
+| `oauth2_server_config.managed_auth` | object | No | Enterprise-managed authorization (ID-JAG `jwt-bearer` grant). See [Enterprise-Managed Authorization](./enterprise-managed-auth). |
 | `oauth2_server_config.disable_vk_identity` | boolean | No | Require identity-provider login: removes the virtual-key option from consent and cuts off existing vk-mode grants (see [Token Lifetime & Revocation](#token-lifetime--revocation)). Only honored when an identity provider is configured, and only valid when `mcp_server_auth_mode` is `oauth` (400 otherwise). |
 
 </Tab>
@@ -179,6 +180,10 @@ With `both` or `oauth` enabled, point the MCP client at Bifrost's `/mcp` URL —
 4. The client receives a token and connects; aggregated tools become available.
 
 When the access token expires, the client uses its refresh token to obtain a new one silently — the browser step happens only once.
+
+### Enterprise-managed authorization
+
+Clients that support the MCP Enterprise-Managed Authorization extension, such as Claude with Okta Cross App Access, can skip the browser step entirely: they present an identity assertion from your identity provider at `/oauth2/token` and receive a token directly. See [Enterprise-Managed Authorization](./enterprise-managed-auth).
 
 ---
 
