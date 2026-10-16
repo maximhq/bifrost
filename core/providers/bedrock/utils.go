@@ -3750,9 +3750,11 @@ func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
 	// Converse rejects a json document containing an empty-string object key with
 	// "The format of the value at ...toolResult.content.N.json is invalid" (verified live
 	// against us.anthropic.claude-haiku-4-5; Cursor's list_directory results carry such
-	// keys for extensionless files). A text block holding the same JSON string reads
-	// identically to the model, so fall back to text instead of mutating the payload.
-	if len(compacted) > 0 && (compacted[0] == '{' || compacted[0] == '[') && jsonHasEmptyObjectKey(compacted) {
+	// keys for extensionless files). It rejects an object with a repeated key the same
+	// way, and json.Compact accepts duplicates, so they reach this check too. A text block
+	// holding the same JSON string reads identically to the model, so fall back to text
+	// instead of mutating the payload.
+	if len(compacted) > 0 && (compacted[0] == '{' || compacted[0] == '[') && jsonHasConverseUnsafeObjectKey(compacted) {
 		return BedrockContentBlock{Text: schemas.Ptr(text)}
 	}
 
@@ -3777,20 +3779,31 @@ func tryParseJSONIntoContentBlock(text string) BedrockContentBlock {
 	}
 }
 
-// jsonHasEmptyObjectKey reports whether the given JSON document contains an object key
-// that is the empty string, at any nesting depth. Callers only reach this after
-// json.Compact succeeded, so the input is known-valid and gjson's lazy parse is safe.
-// The empty-key check is gated on IsObject because ForEach over an array passes
-// synthetic keys that must not be mistaken for object keys.
-func jsonHasEmptyObjectKey(data []byte) bool {
+// jsonHasConverseUnsafeObjectKey reports whether the given JSON document contains, at any
+// nesting depth, an object key that Converse rejects: the empty string, or a key repeated
+// within the same object. Keys are compared after escape decoding, so {"a":1,"a":2}
+// counts as a duplicate. Callers only reach this after json.Compact succeeded, so the
+// input is known-valid and gjson's lazy parse is safe. The key checks are gated on
+// IsObject because ForEach over an array passes synthetic keys that must not be mistaken
+// for object keys.
+func jsonHasConverseUnsafeObjectKey(data []byte) bool {
 	var walk func(v gjson.Result) bool
 	walk = func(v gjson.Result) bool {
 		found := false
 		isObject := v.IsObject()
+		var seen map[string]struct{}
+		if isObject {
+			seen = make(map[string]struct{})
+		}
 		v.ForEach(func(key, value gjson.Result) bool {
-			if isObject && key.Str == "" {
-				found = true
-			} else if value.IsObject() || value.IsArray() {
+			if isObject {
+				if _, dup := seen[key.Str]; dup || key.Str == "" {
+					found = true
+					return false
+				}
+				seen[key.Str] = struct{}{}
+			}
+			if value.IsObject() || value.IsArray() {
 				found = walk(value)
 			}
 			return !found
