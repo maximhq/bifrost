@@ -84,6 +84,70 @@ func TestToChatMessages_LeavesExistingSupportedRolesUnchanged(t *testing.T) {
 	}
 }
 
+func TestToChatMessages_InlinesMidConversationSystem(t *testing.T) {
+	reminder := "Answer in German."
+	alreadyWrapped := "<system-reminder>\nAlready wrapped.\n</system-reminder>\n"
+	messages := []ResponsesMessage{
+		{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentStr: Ptr("You are concise.")}},
+		{Role: Ptr(ResponsesInputMessageRoleDeveloper), Content: &ResponsesMessageContent{ContentStr: Ptr("Leading developer note.")}},
+		{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("Say hello.")}},
+		{Role: Ptr(ResponsesInputMessageRoleSystem), Content: &ResponsesMessageContent{ContentStr: Ptr(reminder)}},
+		{Role: Ptr(ResponsesInputMessageRoleDeveloper), Content: &ResponsesMessageContent{ContentStr: Ptr(alreadyWrapped)}},
+	}
+
+	chatMessages := ToChatMessages(messages)
+	if len(chatMessages) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(chatMessages))
+	}
+	if chatMessages[0].Role != ChatMessageRoleSystem || chatMessages[1].Role != ChatMessageRoleDeveloper {
+		t.Fatalf("leading instructions changed: %q %q", chatMessages[0].Role, chatMessages[1].Role)
+	}
+	if chatMessages[3].Role != ChatMessageRoleUser {
+		t.Fatalf("mid-conversation system stayed %q", chatMessages[3].Role)
+	}
+	if chatMessages[3].Content == nil || chatMessages[3].Content.ContentStr == nil {
+		t.Fatal("expected text content on the inlined system message")
+	}
+	want := "<system-reminder>\n" + reminder + "\n</system-reminder>\n"
+	if got := *chatMessages[3].Content.ContentStr; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+	if chatMessages[4].Role != ChatMessageRoleUser {
+		t.Fatalf("mid-conversation developer stayed %q", chatMessages[4].Role)
+	}
+	if chatMessages[4].Content == nil || chatMessages[4].Content.ContentStr == nil || *chatMessages[4].Content.ContentStr != alreadyWrapped {
+		t.Fatalf("already wrapped reminder was rewritten: %+v", chatMessages[4].Content)
+	}
+}
+
+func TestToChatMessages_SkipsBlankMidConversationSystem(t *testing.T) {
+	tests := []struct {
+		name    string
+		content *ResponsesMessageContent
+	}{
+		{name: "empty string", content: &ResponsesMessageContent{ContentStr: Ptr("")}},
+		{name: "whitespace string", content: &ResponsesMessageContent{ContentStr: Ptr(" \n ")}},
+		{name: "blank text block", content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+			{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("")},
+		}}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chatMessages := ToChatMessages([]ResponsesMessage{
+				{Role: Ptr(ResponsesInputMessageRoleUser), Content: &ResponsesMessageContent{ContentStr: Ptr("Say hello.")}},
+				{Role: Ptr(ResponsesInputMessageRoleSystem), Content: tt.content},
+			})
+			if len(chatMessages) != 1 {
+				t.Fatalf("expected the blank system message to be skipped, got %+v", chatMessages)
+			}
+			if chatMessages[0].Role != ChatMessageRoleUser {
+				t.Fatalf("expected the user turn, got %q", chatMessages[0].Role)
+			}
+		})
+	}
+}
+
 func TestToChatMessages_AttachesReasoningToNextAssistantMessage(t *testing.T) {
 	reasoningText := "Let me think about this step by step."
 	signature := "sig_abc"
@@ -2302,7 +2366,8 @@ func TestReasoningSummarySurvivesChatResponsesConversion(t *testing.T) {
 // TestToChatMessages_DropsToolChangeBlocks: Responses-to-Chat is the fallback that
 // OpenAI-compatible providers (Groq, Nebius, ...) take. Chat has no tool_addition /
 // tool_removal content part, so the blocks are dropped: text siblings stay, a system message
-// left with nothing is skipped rather than sent as an empty content array.
+// left with nothing is skipped rather than sent as an empty content array. The remaining
+// system message follows a user turn, so it is inlined as a user reminder.
 func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 	removal := &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolReference, Name: Ptr("get_weather")}
 	chat := ToChatMessages([]ResponsesMessage{
@@ -2319,8 +2384,8 @@ func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 		t.Fatalf("chat messages = %d, want 2 (the tool-change-only system message must be dropped): %+v", len(chat), chat)
 	}
 	sys := chat[1]
-	if sys.Role != ChatMessageRoleSystem || sys.Content == nil {
-		t.Fatalf("chat[1] = %+v, want the system message with content", sys)
+	if sys.Role != ChatMessageRoleUser || sys.Content == nil {
+		t.Fatalf("chat[1] = %+v, want the remaining text as a user turn", sys)
 	}
 	var blocks []ChatContentBlock
 	if sys.Content.ContentBlocks != nil {
@@ -2331,11 +2396,12 @@ func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 			t.Fatalf("tool-change block forwarded as an unknown chat content part: %+v", blocks)
 		}
 	}
+	want := "<system-reminder>\nWeather lookups are disabled.\n</system-reminder>\n"
 	if sys.Content.ContentStr != nil {
-		if *sys.Content.ContentStr != "Weather lookups are disabled." {
-			t.Errorf("system text = %q, want the text sibling", *sys.Content.ContentStr)
+		if *sys.Content.ContentStr != want {
+			t.Errorf("system text = %q, want the text sibling wrapped as a reminder", *sys.Content.ContentStr)
 		}
-	} else if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != "Weather lookups are disabled." {
-		t.Errorf("system content = %+v, want only the text sibling", blocks)
+	} else if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != want {
+		t.Errorf("system content = %+v, want only the wrapped text sibling", blocks)
 	}
 }
