@@ -97,7 +97,11 @@ test.describe('Dashboard', () => {
     ] as const) {
       test(`should change time period to ${label.toLowerCase()} and query an absolute range`, async ({ dashboardPage }) => {
         // Calendar periods depend on the viewer's timezone, so the UI resolves them and
-        // sends start_time/end_time; the server never sees the period itself.
+        // sends start_time/end_time; the server never sees the period itself. Pin the
+        // timezone to UTC so the expected midnight below is deterministic.
+        await dashboardPage.page.evaluate(() => localStorage.setItem('bifrost.timezone', 'UTC'))
+        await dashboardPage.goto()
+
         const requestPromise = dashboardPage.page.waitForRequest(
           (req) => req.url().includes('/logs/histogram') && req.url().includes('start_time='),
           { timeout: 15000 }
@@ -114,6 +118,17 @@ test.describe('Dashboard', () => {
         const end = new Date(histogramUrl.searchParams.get('end_time') ?? '')
         expect(Number.isNaN(start.getTime())).toBe(false)
         expect(end.getTime()).toBeGreaterThan(start.getTime())
+
+        // The start must be the calendar boundary itself: midnight today, Monday of this
+        // week, or the 1st of this month, all in UTC. end_time is "now" at resolution.
+        const expectedStart = new Date(end)
+        expectedStart.setUTCHours(0, 0, 0, 0)
+        if (period === 'this_week') {
+          expectedStart.setUTCDate(expectedStart.getUTCDate() - ((expectedStart.getUTCDay() + 6) % 7))
+        } else if (period === 'this_month') {
+          expectedStart.setUTCDate(1)
+        }
+        expect(start.toISOString()).toBe(expectedStart.toISOString())
       })
     }
   })

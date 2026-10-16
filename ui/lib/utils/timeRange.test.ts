@@ -91,6 +91,29 @@ describe("calendar periods", () => {
 		}
 	});
 
+	test("a stored timezone alias the browser does not list is still honoured", () => {
+		// Runtimes list legacy names (Europe/Kiev) and may omit the current one (Europe/Kyiv),
+		// but Intl accepts both. A preference saved under either name must not fall back to
+		// the browser's zone, or "today" silently starts at the wrong midnight.
+		vi.stubGlobal("localStorage", { getItem: (key: string) => (key === "bifrost.timezone" ? "Europe/Kyiv" : null) });
+		try {
+			// Kyiv is UTC+3 in mid October, so its midnight is 21:00 UTC the day before.
+			expect(getRangeForPeriod("today").from).toEqual(new Date("2026-10-14T21:00:00Z"));
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	test("an unknown stored timezone falls back to the browser's zone", () => {
+		vi.stubGlobal("localStorage", { getItem: (key: string) => (key === "bifrost.timezone" ? "Not/AZone" : null) });
+		try {
+			const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+			expect(getRangeForPeriod("today")).toEqual(getRangeForPeriod("today", browserZone));
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
 	test("withResolvedCalendarPeriod leaves sliding periods and absolute ranges to the server", () => {
 		const sliding = { period: "24h" };
 		expect(withResolvedCalendarPeriod(sliding)).toBe(sliding);
