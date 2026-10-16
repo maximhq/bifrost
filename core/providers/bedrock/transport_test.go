@@ -838,6 +838,9 @@ func TestBedrockTransportEnforceHTTP2(t *testing.T) {
 	assert.True(t, transport.ForceAttemptHTTP2)
 	// TLSNextProto should NOT be set when HTTP/2 is enforced, allowing ALPN negotiation
 	assert.Nil(t, transport.TLSNextProto)
+	// Nova Sonic needs HTTP/2, which this transport already speaks, so it shares the pool
+	assert.Same(t, transport, provider.realtimeClient.Transport)
+	assert.Zero(t, provider.realtimeClient.Timeout, "a realtime session outlives the request timeout")
 }
 
 func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
@@ -858,6 +861,12 @@ func TestBedrockTransportEnforceHTTP2Disabled(t *testing.T) {
 	// TLSNextProto must be set to empty map to truly disable HTTP/2 ALPN negotiation
 	assert.NotNil(t, transport.TLSNextProto)
 	assert.Empty(t, transport.TLSNextProto)
+	// Nova Sonic's bidirectional stream is HTTP/2 only, so it gets a transport of its own
+	realtimeTransport, ok := provider.realtimeClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.NotSame(t, transport, realtimeTransport)
+	assert.True(t, realtimeTransport.ForceAttemptHTTP2)
+	assert.Nil(t, realtimeTransport.TLSNextProto)
 }
 
 // TestSignAWSRequest_ExcludesVolatileHeadersFromSignature locks in the fix for the
