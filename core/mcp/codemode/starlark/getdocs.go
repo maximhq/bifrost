@@ -230,14 +230,15 @@ func generateTypeDefinitions(clientName string, tools []schemas.ChatTool, isTool
 
 				for _, propName := range propNames {
 					prop, _ := props.Get(propName)
-					propMap, ok := prop.(map[string]interface{})
+					propSchema, ok := asJSONSchema(prop)
 					if !ok {
 						continue
 					}
 
-					pyType := jsonSchemaToPython(propMap)
+					pyType := jsonSchemaToPython(propSchema)
 					propDesc := ""
-					if desc, ok := propMap["description"].(string); ok && desc != "" {
+					descVal, _ := propSchema.Get("description")
+					if desc, ok := descVal.(string); ok && desc != "" {
 						propDesc = desc
 					} else {
 						propDesc = fmt.Sprintf("%s parameter", propName)
