@@ -192,7 +192,17 @@ export interface MCPTokenExchangeConfig {
 	// issuer, which is correct for providers with one tenant-wide token
 	// endpoint (Entra, Auth0).
 	authorization_server_url?: string;
+	// "id_jag" selects Cross App Access: the identity provider issues an ID-JAG
+	// for `audience` (the upstream authorization server's issuer), which the
+	// upstream authorization server exchanges for its own token.
+	profile?: MCPTokenExchangeProfile;
+	resource?: string; // id_jag: resource indicator sent to the identity provider; omitted when empty
+	resource_token_endpoint?: string; // id_jag: upstream token endpoint; discovered when empty
+	resource_client_id?: SecretVar; // id_jag: Bifrost's client at the upstream authorization server. Redacted on GET.
+	resource_client_secret?: SecretVar; // id_jag: omit for a public client. Redacted on GET.
 }
+
+export type MCPTokenExchangeProfile = "" | "id_jag";
 
 export interface OAuthConfig {
 	client_id: SecretVar;

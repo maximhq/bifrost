@@ -43,7 +43,7 @@ import { OpenAPIPreviewPanel, type OpenAPIBaseUrlChoice } from "./openApiPreview
 import { OpenAPISpecSource } from "./openApiSpecSource";
 import { SectionHeader } from "./sectionHeader";
 import { TLSConfigFields } from "./tlsConfigFields";
-import { TokenExchangeFields } from "./tokenExchangeFields";
+import { TokenExchangeFields, tokenExchangeProfilePayload } from "./tokenExchangeFields";
 
 /**
  * Shared configuration body for creating an MCP client. Rendered identically by
@@ -361,6 +361,13 @@ export function validateMCPClientForm({
 				hasErrors = true;
 			}
 		}
+		if (data.token_exchange?.profile === "id_jag") {
+			const resourceClientId = data.token_exchange?.resource_client_id;
+			if (!resourceClientId?.value && !resourceClientId?.ref) {
+				setError("token_exchange.resource_client_id", { message: "Client ID at the upstream server is required for Cross App Access" });
+				hasErrors = true;
+			}
+		}
 	}
 
 	if (authType === "per_user_headers" && effectivePerUserHeaderKeys(data, satellites).length === 0) {
@@ -507,6 +514,7 @@ export function buildMCPClientPayload(data: CreateMCPClientRequest, satellites: 
 								: undefined,
 						scopes: satellites.tokenExchangeScopesText.trim() ? parseArrayFromText(satellites.tokenExchangeScopesText) : undefined,
 						authorization_server_url: data.token_exchange?.authorization_server_url?.trim() || undefined,
+						...tokenExchangeProfilePayload(data.token_exchange),
 					}
 				: undefined,
 		// Network transports expose every tool the server reports; an openapi
