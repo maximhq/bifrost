@@ -8,6 +8,7 @@ import {
 	visibleSidekiqJobs,
 } from "@/components/notificationCenter.utils";
 import SidekiqJobsSection from "@/components/sidekiqJobsSection";
+import { countAttentionNotices, useLiveNotices, type LiveNotice } from "@/lib/registries/liveNotices";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scrollArea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -33,6 +34,9 @@ import { formatDistanceToNow } from "date-fns";
 import { Check, CheckCircle2, CircleAlert, Inbox, Info, RefreshCw, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+// Side-effect import: registers downstream live-notice sources (enterprise
+// cluster health). A no-op in OSS builds.
+import "@enterprise/lib/registrations/liveNotices";
 
 const severityStyles: Record<NotificationSeverity, string> = {
 	info: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
@@ -74,7 +78,9 @@ export default function NotificationCenter() {
 	useEffect(() => {
 		setPollMs(sidekiqPollInterval({ open, activeCount: activeJobCount }));
 	}, [open, activeJobCount]);
-	const badgeCount = unreadCount + activeJobCount;
+	const liveNotices = useLiveNotices();
+	const liveAttention = countAttentionNotices(liveNotices);
+	const badgeCount = unreadCount + activeJobCount + liveAttention;
 
 	const openNotification = (id: string, actionPath?: string) => {
 		dispatch(markNotificationRead(id));
@@ -84,7 +90,7 @@ export default function NotificationCenter() {
 	// 503 means no config store is configured — a supported deployment that will
 	// never recover, so drop the trigger instead of parking a permanent error in
 	// the topbar. Transient failures still get the in-tray retry below.
-	if (isNotificationsUnavailable(error)) return null;
+	if (isNotificationsUnavailable(error) && liveNotices.length === 0) return null;
 
 	// Hide the trigger until there is something to open. A failed load is the one
 	// empty state that stays visible — see shouldHideNotificationTrigger.
@@ -102,8 +108,8 @@ export default function NotificationCenter() {
 				<button
 					type="button"
 					aria-label={
-						unreadCount || activeJobCount
-							? `Notifications, ${[unreadCount && `${unreadCount} unread`, activeJobCount && `${activeJobCount} running`].filter(Boolean).join(", ")}`
+						unreadCount || activeJobCount || liveAttention
+							? `Notifications, ${[liveAttention && `${liveAttention} ongoing`, unreadCount && `${unreadCount} unread`, activeJobCount && `${activeJobCount} running`].filter(Boolean).join(", ")}`
 							: "Notifications"
 					}
 					data-testid="topbar-notifications-btn"
@@ -134,10 +140,10 @@ export default function NotificationCenter() {
 						<div className="flex min-w-0 flex-1 items-center gap-2">
 							{jobsAvailable ? (
 								// TabsList caches trigger widths on mount; remount when a count badge appears or goes so they are re-measured.
-								<TabsList key={`${unreadCount > 0}-${activeJobCount > 0}`} className="h-8 rounded-sm">
+								<TabsList key={`${unreadCount + liveAttention > 0}-${activeJobCount > 0}`} className="h-8 rounded-sm">
 									<TabsTrigger value="notifications" className="rounded-sm px-2.5 text-xs" data-testid="notification-tab-notifications">
 										Notifications
-										{unreadCount > 0 && <TabCount count={unreadCount} />}
+										{unreadCount + liveAttention > 0 && <TabCount count={unreadCount + liveAttention} />}
 									</TabsTrigger>
 									<TabsTrigger value="jobs" className="rounded-sm px-2.5 text-xs" data-testid="notification-tab-jobs">
 										Background jobs
@@ -190,18 +196,27 @@ export default function NotificationCenter() {
 					)}
 
 					<TabsContent value="notifications">
+						{liveNotices.length > 0 && (
+							<LiveNoticesSection
+								notices={liveNotices}
+								onOpen={(path) => {
+									setOpen(false);
+									navigate({ to: path });
+								}}
+							/>
+						)}
 						{isLoading ? (
 							<div className="text-muted-foreground flex h-44 items-center justify-center gap-2 text-sm">
 								<RefreshCw className="size-4 animate-spin" /> Loading notifications
 							</div>
-						) : isError ? (
+						) : isError && !isNotificationsUnavailable(error) ? (
 							<div className="flex h-44 flex-col items-center justify-center gap-3 px-6 text-center">
 								<p className="text-muted-foreground text-sm">Notifications could not be loaded.</p>
 								<button type="button" onClick={() => refetch()} className="text-primary cursor-pointer text-sm font-medium hover:underline">
 									Try again
 								</button>
 							</div>
-						) : notifications.length === 0 ? (
+						) : notifications.length === 0 && liveNotices.length > 0 ? null : notifications.length === 0 ? (
 							<div
 								className="flex h-44 flex-col items-center justify-center gap-2 px-6 text-center"
 								data-testid="notifications-empty-state"
@@ -293,6 +308,62 @@ export default function NotificationCenter() {
 				</Tabs>
 			</PopoverContent>
 		</Popover>
+	);
+}
+
+/**
+ * LiveNoticesSection lists conditions that hold right now (see lib/registries/liveNotices).
+ * They sit above stored notifications and carry no read or dismiss controls: they clear
+ * themselves when the condition does.
+ */
+function LiveNoticesSection({ notices, onOpen }: { notices: LiveNotice[]; onOpen: (path: string) => void }) {
+	return (
+		<div className="border-b" data-testid="live-notices">
+			<div className="text-muted-foreground px-4 pt-2.5 pb-1 text-[11px] font-medium tracking-wide uppercase">Ongoing</div>
+			<div className="divide-y">
+				{notices.map((notice) => {
+					const Icon = severityIcons[notice.severity];
+					const body = (
+						<>
+							<span className={cn("mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full", severityStyles[notice.severity])}>
+								<Icon className="size-3.5" />
+							</span>
+							<span className="min-w-0 flex-1">
+								<span className="block text-sm font-medium">{notice.title}</span>
+								<span className="text-muted-foreground mt-0.5 line-clamp-3 block text-xs leading-relaxed">{notice.message}</span>
+								{notice.details && notice.details.length > 0 && (
+									<span className="text-muted-foreground mt-1 flex flex-col font-mono text-[11px]">
+										{notice.details.map((line) => (
+											<span key={line} className="truncate">
+												{line}
+											</span>
+										))}
+									</span>
+								)}
+								{notice.actionLabel && notice.actionPath && (
+									<span className="text-primary mt-1.5 block text-[11px] font-medium">{notice.actionLabel}</span>
+								)}
+							</span>
+						</>
+					);
+					return notice.actionPath ? (
+						<button
+							key={notice.id}
+							type="button"
+							onClick={() => onOpen(notice.actionPath!)}
+							data-testid={`live-notice-${notice.id}`}
+							className="hover:bg-accent/60 focus-visible:ring-ring flex w-full cursor-pointer gap-3 px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset"
+						>
+							{body}
+						</button>
+					) : (
+						<div key={notice.id} data-testid={`live-notice-${notice.id}`} className="flex gap-3 px-4 py-3">
+							{body}
+						</div>
+					);
+				})}
+			</div>
+		</div>
 	);
 }
 

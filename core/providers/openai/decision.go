@@ -326,7 +326,7 @@ func HandleOpenAIDecisionRequest(
 	url string,
 	request *schemas.BifrostDecisionRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,

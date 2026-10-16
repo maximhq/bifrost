@@ -837,7 +837,7 @@ export const networkFormConfigSchema = z
 				z.string().length(0),
 			])
 			.optional(),
-		extra_headers: z.record(z.string(), z.string()).optional(),
+		extra_headers: z.record(z.string(), secretVarSchema).optional(),
 		default_request_timeout_in_seconds: z.coerce
 			.number("Timeout must be a number")
 			.min(1, "Timeout must be greater than 0 seconds")

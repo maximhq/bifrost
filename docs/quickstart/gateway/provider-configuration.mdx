@@ -680,7 +680,8 @@ curl --location 'http://localhost:8080/api/providers' \
     "network_config": {
         "extra_headers": {
             "x-custom-org": "my-organization",
-            "x-environment": "production"
+            "x-environment": "production",
+            "x-client-secret": "env.UPSTREAM_CLIENT_SECRET"
         }
     }
 }'
@@ -705,7 +706,8 @@ curl --location 'http://localhost:8080/api/providers' \
       "network_config": {
         "extra_headers": {
           "x-custom-org": "my-organization",
-          "x-environment": "production"
+          "x-environment": "production",
+          "x-client-secret": "env.UPSTREAM_CLIENT_SECRET"
         }
       }
     }

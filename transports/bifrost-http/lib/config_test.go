@@ -4933,9 +4933,9 @@ func TestProviderHashComparison_FieldValueChanges(t *testing.T) {
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
-			ExtraHeaders: map[string]string{
+			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
 				"X-Custom-Header": "value",
-			},
+			}),
 		},
 		SendBackRawResponse: false,
 	}
@@ -4984,9 +4984,9 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
-			ExtraHeaders: map[string]string{
+			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
 				"X-Custom": "value",
-			},
+			}),
 		},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 			Concurrency: 10,
@@ -5027,9 +5027,9 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
-			ExtraHeaders: map[string]string{
+			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
 				"X-Custom": "value",
-			},
+			}),
 		},
 		// ConcurrencyAndBufferSize: nil (removed)
 		ProxyConfig: &schemas.ProxyConfig{
@@ -5050,9 +5050,9 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
-			ExtraHeaders: map[string]string{
+			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
 				"X-Custom": "value",
-			},
+			}),
 		},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 			Concurrency: 10,
@@ -5073,9 +5073,9 @@ func TestProviderHashComparison_FieldRemoved(t *testing.T) {
 		Keys: []schemas.Key{{ID: "key-1", Name: "test", Value: *schemas.NewSecretVar("sk-123"), Weight: 1}},
 		NetworkConfig: &schemas.NetworkConfig{
 			BaseURL: "https://api.example.com",
-			ExtraHeaders: map[string]string{
+			ExtraHeaders: schemas.NewSecretVarMap(map[string]string{
 				"X-Custom": "value",
-			},
+			}),
 		},
 		ConcurrencyAndBufferSize: &schemas.ConcurrencyAndBufferSize{
 			Concurrency: 10,
