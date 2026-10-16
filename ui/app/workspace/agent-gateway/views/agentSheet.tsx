@@ -211,7 +211,6 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 		agent?.forward_accepted_credential_overrides_auth ?? false,
 	);
 	const [virtualKeyIds, setVirtualKeyIds] = useState(agent?.virtual_key_ids ?? []);
-	const [tenant, setTenant] = useState(agent?.tenant ?? "");
 	const [credentialOrigins, setCredentialOrigins] = useState(() => (agent?.credential_origins ?? []).map((value, id) => ({ id, value })));
 	let cardOrigin = "";
 	try {
@@ -232,8 +231,6 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 		credentialOrigins.map((origin) => origin.value.trim()),
 	);
 	const [credentialOriginsOpen, setCredentialOriginsOpen] = useState((agent?.credential_origins?.length ?? 0) > 0);
-	const [extensionUris, setExtensionUris] = useState(agent?.extension_uris ?? []);
-	const [advancedOpen, setAdvancedOpen] = useState(!!agent?.tenant || (agent?.extension_uris?.length ?? 0) > 0);
 	const { data: vksData } = useGetVirtualKeysQuery({ limit: 1000 });
 	const vkById = new Map((vksData?.virtual_keys ?? []).map((virtualKey) => [virtualKey.id, virtualKey]));
 	const { data: coreConfig } = useGetCoreConfigQuery({ fromDB: true });
@@ -302,11 +299,6 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 			expectedSchemes.some((name) => !runtimeAuth.security_schemes?.includes(name)));
 	const isBlocked = !manualMode && ((!isEditing && !inspection) || unsupportedRequirement);
 	const authLocked = isEditing && !inspection && !manualMode;
-	const extensionCount = extensionUris.filter((uri) => uri.trim()).length;
-	const advancedSummary =
-		[tenant.trim() && `Tenant ${tenant.trim()}`, extensionCount && `${extensionCount} extension${extensionCount === 1 ? "" : "s"}`]
-			.filter(Boolean)
-			.join(" · ") || "Not set";
 
 	const handleSave = async () => {
 		const validation = validateAgentName(name);
@@ -331,7 +323,6 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 		}
 		const payload = {
 			agent_card_url: agentCardUrl.trim(),
-			tenant: tenant.trim() || undefined,
 			allow_by_default: allowByDefault,
 			forward_accepted_credential: forwardAcceptedCredential,
 			forward_accepted_credential_overrides_auth: forwardAcceptedCredentialOverridesAuth,
@@ -339,7 +330,6 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 			runtime_auth: normalizeAuth({ ...runtimeAuth, advanced: manualMode }),
 			virtual_key_ids: virtualKeyIds,
 			credential_origins: credentialOrigins.map((origin) => origin.value.trim()).filter(Boolean),
-			extension_uris: extensionUris.map((uri) => uri.trim()).filter(Boolean),
 		};
 		try {
 			if (agent)
@@ -769,52 +759,6 @@ export default function AgentSheet({ agent, onClose, onSaved }: AgentSheetProps)
 						)}
 						{agent && <AgentAccessProfiles agentName={agent.name} active />}
 					</section>
-
-					<OptionGroup
-						title="Advanced"
-						summary={advancedSummary}
-						open={advancedOpen}
-						onOpenChange={setAdvancedOpen}
-						testId="agent-advanced-toggle"
-					>
-						<div className="flex flex-col gap-2">
-							<Label>Tenant</Label>
-							<Input value={tenant} placeholder="tenant-a" onChange={(event) => setTenant(event.target.value)} />
-							<p className="text-muted-foreground text-xs">Advertised on the agent card Bifrost serves.</p>
-						</div>
-						<div className="space-y-3 border-t pt-4">
-							<div className="flex items-center justify-between gap-4">
-								<div className="space-y-0.5">
-									<Label>Extension URIs</Label>
-									<p className="text-muted-foreground text-xs">A2A extensions this agent may advertise and activate.</p>
-								</div>
-								<Button type="button" variant="outline" size="sm" onClick={() => setExtensionUris((current) => [...current, ""])}>
-									<Plus className="h-4 w-4" />
-									Add URI
-								</Button>
-							</div>
-							{extensionUris.map((uri, index) => (
-								<div key={index} className="flex gap-2">
-									<Input
-										value={uri}
-										placeholder="https://example.com/a2a/extensions/audit"
-										onChange={(event) =>
-											setExtensionUris((current) => current.map((value, itemIndex) => (itemIndex === index ? event.target.value : value)))
-										}
-									/>
-									<Button
-										type="button"
-										variant="ghost"
-										size="icon"
-										aria-label="Remove extension URI"
-										onClick={() => setExtensionUris((current) => current.filter((_, itemIndex) => itemIndex !== index))}
-									>
-										<Trash2 className="h-4 w-4" />
-									</Button>
-								</div>
-							))}
-						</div>
-					</OptionGroup>
 
 					{agent && (
 						<>

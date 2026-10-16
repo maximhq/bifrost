@@ -66,6 +66,7 @@ DecisionInputPart:
   oneOf:
     - $ref: '#/DecisionInputText'
     - $ref: '#/DecisionInputImage'
+    - $ref: '#/DecisionInputImageAsset'
 
 DecisionInputText:
   type: object
@@ -75,10 +76,17 @@ DecisionInputText:
       type: string
       enum: [input_text]
     text:
-      type: string
+      description: A string, or structured data that Typesafe-based models read as is and OpenAI receives as JSON text
+      oneOf:
+        - type: string
+        - type: object
+          additionalProperties: true
+        - type: array
+          items: {}
 
 DecisionInputImage:
   type: object
+  description: An inline image, read as evidence
   required: [type, image_url]
   properties:
     type:
@@ -92,6 +100,28 @@ DecisionInputImage:
       enum: [low, high, auto, original]
       description: Image detail level, forwarded to models that read images (OpenAI's defaults to `auto`)
 
+DecisionInputImageAsset:
+  type: object
+  description: Typesafe only. An image sent by reference, as one of Typesafe's `assets`, placed wherever its ID is written in the input, instructions, or criteria instead of as evidence itself. Other providers reject it.
+  required: [type, id]
+  anyOf:
+    - required: [data]
+    - required: [name]
+  properties:
+    type:
+      type: string
+      enum: [input_image]
+    id:
+      type: string
+      description: The reference written where the image belongs
+    data:
+      type: string
+      format: byte
+      description: The image file, base64-encoded, without a `data:` prefix; its format is read from the bytes
+    name:
+      type: string
+      description: In a multipart request, the name of the file part that holds the image. A JSON request cannot use it.
+
 DecisionQuestion:
   type: object
   required:
@@ -99,8 +129,8 @@ DecisionQuestion:
   properties:
     type:
       type: string
-      enum: [predicate, choice, score]
-      description: How the question is decided. `predicate` yields the probability a condition is true (Typesafe's `noul`), `choice` one of the choices, `score` a probability-weighted level index that may fall between levels.
+      enum: [predicate, choice, score, box]
+      description: How the question is decided. `predicate` yields the probability a condition is true (Typesafe's `noul`), `choice` one of the choices, `score` a probability-weighted level index that may fall between levels, `box` the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14).
     name:
       type: string
       description: Optional name; the answer carries it back
@@ -195,6 +225,8 @@ DecisionAnswer:
     score:
       type: number
       description: Score answers. Probability-weighted level index
+    box:
+      $ref: '#/DecisionBox'
     probabilities:
       type: array
       description: Distribution over choices or levels, in question order, when supplied
@@ -235,6 +267,20 @@ DecisionAnswer:
     low_confidence:
       type: boolean
       description: Laya only, when `min_confidence` is set
+
+DecisionBox:
+  type: object
+  description: Box answers. Each edge is a fraction from 0 to 1 of the image's height (`top`, `bottom`) or width (`left`, `right`), measured from its top-left
+  required: [top, bottom, left, right]
+  properties:
+    top:
+      type: number
+    bottom:
+      type: number
+    left:
+      type: number
+    right:
+      type: number
 
 DecisionMapFormRequest:
   type: object
@@ -277,8 +323,8 @@ DecisionMapQuestion:
   properties:
     kind:
       type: string
-      enum: [noul, choice, score]
-      description: How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions.
+      enum: [noul, choice, score, box]
+      description: How the question is decided. `noul` yields a probability between 0 and 1, `choice` yields one option from the criteria, `score` yields a numeric rubric score including fractions, `box` yields the edges of a box around the instructions' subject in an image (Typesafe Jev 1.14).
     instructions:
       description: Instructions for this question. A string, or structured data preserved losslessly.
       oneOf:
@@ -291,7 +337,8 @@ DecisionMapQuestion:
       description: |
         Applicable criteria. Optional `true`/`false` descriptions for `noul`; a
         required map of option to description for `choice` (at most 255 options);
-        a required ordered array of 2-10 level descriptions for `score`.
+        a required ordered array of 2-10 level descriptions for `score`; none
+        for `box`.
       oneOf:
         - type: object
           additionalProperties:
@@ -335,13 +382,14 @@ DecisionMapAnswer:
   properties:
     kind:
       type: string
-      enum: [noul, choice, score]
+      enum: [noul, choice, score, box]
       description: The question's decision kind
     value:
-      description: The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`.
+      description: The decided value. A number in [0,1] for `noul`, an option string for `choice`, a numeric rubric score for `score`, the box's edges for `box`.
       oneOf:
         - type: number
         - type: string
+        - $ref: '#/DecisionBox'
     confidence:
       type: number
       description: Model confidence for this answer, when supplied

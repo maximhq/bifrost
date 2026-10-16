@@ -54,7 +54,8 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	if migrationPause != nil {
 		pause = *migrationPause
 	}
-	if err := triggerMigrationsWithPause(ctx, mDb, logger, pause); err != nil {
+	retry := postgresconn.MigrationLockRetryOptions(config, logger)
+	if err := triggerMigrationsWithOptions(ctx, mDb, logger, pause, retry); err != nil {
 		logger.Error("configstore: schema migrations failed: %v", err)
 		postgresconn.Close(mDb, logger)
 		return nil, err

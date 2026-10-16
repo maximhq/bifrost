@@ -48,6 +48,7 @@ const (
 	maxExtensionURICount     = 32
 	maxExtensionURILength    = 2048
 	oauthFetchTimeout        = 2 * time.Minute
+	maxOAuthCacheEntries     = 1024 // Bounds credentials retained by registration churn and ad hoc inspection.
 )
 
 // upstreamHTTPStatusError preserves the upstream HTTP status that the SDK client
@@ -283,7 +284,6 @@ type runtimeConfig struct {
 	runtimeAuth                            *schemas.UpstreamAuth
 	forwardAcceptedCredential              bool
 	forwardAcceptedCredentialOverridesAuth bool
-	extensionURIs                          []string
 	credentialOrigins                      []string
 	requirePublicTarget                    bool
 }
@@ -300,7 +300,6 @@ func runtimeConfigFromRegistration(reg schemas.AgentRegistration) runtimeConfig 
 		runtimeAuth:                            reg.RuntimeAuth,
 		forwardAcceptedCredential:              reg.ForwardAcceptedCredential,
 		forwardAcceptedCredentialOverridesAuth: reg.ForwardAcceptedCredentialOverridesAuth,
-		extensionURIs:                          slices.Clone(reg.ExtensionURIs),
 		credentialOrigins:                      slices.Clone(reg.CredentialOrigins),
 		requirePublicTarget:                    reg.RequirePublicTarget,
 	}
@@ -418,7 +417,6 @@ type Manager struct {
 type CreateRequest struct {
 	Name                                   string                `json:"name"`
 	AgentCardURL                           string                `json:"agent_card_url"`
-	Tenant                                 string                `json:"tenant,omitempty"`
 	Enabled                                *bool                 `json:"enabled,omitempty"`
 	AllowByDefault                         bool                  `json:"allow_by_default"`
 	ForwardAcceptedCredential              bool                  `json:"forward_accepted_credential"`
@@ -427,7 +425,6 @@ type CreateRequest struct {
 	RuntimeAuth                            *schemas.UpstreamAuth `json:"runtime_auth,omitempty"`
 	VirtualKeyIDs                          []string              `json:"virtual_key_ids,omitempty"`
 	CredentialOrigins                      []string              `json:"credential_origins,omitempty"`
-	ExtensionURIs                          []string              `json:"extension_uris,omitempty"`
 }
 
 type InspectRequest struct {
@@ -449,10 +446,10 @@ type InspectedSecurityScheme struct {
 }
 
 type InspectedAgentInterface struct {
+	Tenant          string `json:"tenant,omitempty"`
 	URL             string `json:"url"`
 	ProtocolBinding string `json:"protocol_binding"`
 	ProtocolVersion string `json:"protocol_version"`
-	Tenant          string `json:"tenant,omitempty"`
 }
 
 type InspectedAgentSkill struct {
@@ -500,7 +497,6 @@ type InspectResponse struct {
 // placeholder preserves the stored secret instead of overwriting it.
 type UpdateRequest struct {
 	AgentCardURL                           *string               `json:"agent_card_url"`
-	Tenant                                 string                `json:"tenant,omitempty"`
 	Enabled                                *bool                 `json:"enabled"`
 	AllowByDefault                         bool                  `json:"allow_by_default"`
 	ForwardAcceptedCredential              bool                  `json:"forward_accepted_credential"`
@@ -509,7 +505,6 @@ type UpdateRequest struct {
 	RuntimeAuth                            *schemas.UpstreamAuth `json:"runtime_auth,omitempty"`
 	VirtualKeyIDs                          []string              `json:"virtual_key_ids,omitempty"`
 	CredentialOrigins                      []string              `json:"credential_origins,omitempty"`
-	ExtensionURIs                          []string              `json:"extension_uris,omitempty"`
 }
 
 // ManagerConfig configures optional Manager behavior.
@@ -799,7 +794,7 @@ func (m *Manager) Update(ctx context.Context, name string, req UpdateRequest) (s
 	if err != nil {
 		return schemas.AgentRegistrationView{}, invalidRegistrationError(err)
 	}
-	reg, err := normalize(CreateRequest{Name: name, AgentCardURL: *req.AgentCardURL, Tenant: req.Tenant, Enabled: req.Enabled, AllowByDefault: req.AllowByDefault, ForwardAcceptedCredential: req.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: req.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: discoveryAuth, RuntimeAuth: runtimeAuth, VirtualKeyIDs: req.VirtualKeyIDs, ExtensionURIs: req.ExtensionURIs, CredentialOrigins: req.CredentialOrigins})
+	reg, err := normalize(CreateRequest{Name: name, AgentCardURL: *req.AgentCardURL, Enabled: req.Enabled, AllowByDefault: req.AllowByDefault, ForwardAcceptedCredential: req.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: req.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: discoveryAuth, RuntimeAuth: runtimeAuth, VirtualKeyIDs: req.VirtualKeyIDs, CredentialOrigins: req.CredentialOrigins})
 	if err != nil {
 		return schemas.AgentRegistrationView{}, invalidRegistrationError(err)
 	}
@@ -1064,7 +1059,7 @@ func (m *Manager) CardHandler(name, requestOrigin string) (http.Handler, bool) {
 				opErr = err
 				return nil, err
 			}
-			card, err = gatewayCardWithExtensions(card, externalURL, name, m.authPolicy, m.pushEnabled(), r.config.extensionURIs, m.grpcInterfaceURL(name))
+			card, err = gatewayCardWithExtensions(card, externalURL, name, m.authPolicy, m.pushEnabled(), m.grpcInterfaceURL(name))
 			if err != nil {
 				opErr = err
 				return nil, err
@@ -1230,7 +1225,7 @@ func (m *Manager) buildGeneration(ctx context.Context, config runtimeConfig) (*c
 	if err != nil {
 		return nil, err
 	}
-	if _, err = allowedExtensions(card.Capabilities.Extensions, extensionSet(config.extensionURIs)); err != nil {
+	if _, err = allowedExtensions(card.Capabilities.Extensions); err != nil {
 		return nil, err
 	}
 	if err = validateAuthCardMatch(card, config.runtimeAuth); err != nil {
@@ -1942,6 +1937,25 @@ func (m *Manager) oauthAccessToken(ctx context.Context, credentialID string, aut
 	if m.oauthFingerprints == nil {
 		m.oauthFingerprints = make(map[string][sha256.Size]byte)
 	}
+	if _, exists := m.oauthFingerprints[credentialID]; !exists && len(m.oauthFingerprints) >= maxOAuthCacheEntries {
+		// Only new credential IDs at capacity scan the cache. Ordinary token hits
+		// stay O(1), while expired credentials are preferred over live entries.
+		for id, token := range m.oauthTokens {
+			if time.Until(token.expiresAt) <= 30*time.Second {
+				delete(m.oauthTokens, id)
+				if m.oauthFingerprints[id] == token.fingerprint {
+					delete(m.oauthFingerprints, id)
+				}
+			}
+		}
+		if len(m.oauthFingerprints) >= maxOAuthCacheEntries {
+			for id := range m.oauthFingerprints {
+				delete(m.oauthFingerprints, id)
+				delete(m.oauthTokens, id)
+				break
+			}
+		}
+	}
 	m.oauthFingerprints[credentialID] = fingerprint
 	cached, ok := m.oauthTokens[credentialID]
 	m.oauthMu.Unlock()
@@ -1962,6 +1976,12 @@ func (m *Manager) oauthAccessToken(ctx context.Context, credentialID string, aut
 		defer cancel()
 		token, expiresAt, err := m.fetchOAuthAccessToken(WithPublicTargetsOnly(fetchCtx, requiresPublicTargets(ctx)), auth)
 		if err != nil {
+			m.oauthMu.Lock()
+			if m.oauthFingerprints[credentialID] == fingerprint {
+				delete(m.oauthFingerprints, credentialID)
+				delete(m.oauthTokens, credentialID)
+			}
+			m.oauthMu.Unlock()
 			return nil, err
 		}
 		m.oauthMu.Lock()
@@ -2116,26 +2136,12 @@ func normalize(req CreateRequest) (schemas.AgentRegistration, error) {
 			return schemas.AgentRegistration{}, errors.New("duplicate virtual key ID: " + id)
 		}
 	}
-	extensions := slices.Clone(req.ExtensionURIs)
-	sort.Strings(extensions)
-	if len(extensions) > maxExtensionURICount {
-		return schemas.AgentRegistration{}, fmt.Errorf("extension_uris cannot contain more than %d entries", maxExtensionURICount)
-	}
-	for i, uri := range extensions {
-		parsed, parseErr := url.ParseRequestURI(uri)
-		if parseErr != nil || parsed.Scheme == "" || len(uri) > maxExtensionURILength {
-			return schemas.AgentRegistration{}, errors.New("extension_uris must contain absolute URIs no longer than 2048 bytes")
-		}
-		if i > 0 && extensions[i-1] == uri {
-			return schemas.AgentRegistration{}, errors.New("duplicate extension URI: " + uri)
-		}
-	}
 	origins, err := ValidateCredentialOrigins(req.CredentialOrigins)
 	if err != nil {
 		return schemas.AgentRegistration{}, err
 	}
 	now := time.Now().UTC()
-	return schemas.AgentRegistration{CredentialOrigins: origins, Name: name, AgentCardURL: req.AgentCardURL, Tenant: req.Tenant, Enabled: enabled, AllowByDefault: req.AllowByDefault, ForwardAcceptedCredential: req.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: req.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: req.DiscoveryAuth, RuntimeAuth: req.RuntimeAuth, ExtensionURIs: extensions, VirtualKeyIDs: ids, CreatedAt: now, UpdatedAt: now}, nil
+	return schemas.AgentRegistration{CredentialOrigins: origins, Name: name, AgentCardURL: req.AgentCardURL, Enabled: enabled, AllowByDefault: req.AllowByDefault, ForwardAcceptedCredential: req.ForwardAcceptedCredential, ForwardAcceptedCredentialOverridesAuth: req.ForwardAcceptedCredentialOverridesAuth, DiscoveryAuth: req.DiscoveryAuth, RuntimeAuth: req.RuntimeAuth, VirtualKeyIDs: ids, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func validateUpstreamAuth(auth *schemas.UpstreamAuth) error {
@@ -2380,7 +2386,7 @@ const (
 // scheme. When authentication is enforced the Bifrost scheme is added to every
 // upstream requirement, combining both identities rather than offering the
 // gateway credential as a weaker alternative.
-func gatewayCardWithExtensions(upstream *a2a.AgentCard, externalURL, id string, policy schemas.AgentGatewayAuthPolicy, pushSupported bool, allowedExtensionURIs []string, grpcURL string) (*a2a.AgentCard, error) {
+func gatewayCardWithExtensions(upstream *a2a.AgentCard, externalURL, id string, policy schemas.AgentGatewayAuthPolicy, pushSupported bool, grpcURL string) (*a2a.AgentCard, error) {
 	card := *upstream
 	card.SupportedInterfaces = nil
 	if externalURL != "" {
@@ -2402,8 +2408,8 @@ func gatewayCardWithExtensions(upstream *a2a.AgentCard, externalURL, id string, 
 	// upstream does not offer it. Push notifications are advertised only when the
 	// gateway's durable relay is operational and the upstream can push at all,
 	// because the two-hop path needs both. Extensions are retained only when the
-	// registration explicitly allows them and their declarations are safe to relay.
-	extensions, err := allowedExtensions(upstream.Capabilities.Extensions, extensionSet(allowedExtensionURIs))
+	// upstream card declares them and their declarations are safe to relay.
+	extensions, err := allowedExtensions(upstream.Capabilities.Extensions)
 	if err != nil {
 		return nil, err
 	}
@@ -2469,19 +2475,16 @@ func cloneSecuritySchemes(source a2a.NamedSecuritySchemes) a2a.NamedSecuritySche
 	return cloned
 }
 
-func extensionSet(uris []string) map[string]struct{} {
-	result := make(map[string]struct{}, len(uris))
-	for _, uri := range uris {
-		result[uri] = struct{}{}
+// allowedExtensions validates extensions declared by the current upstream card.
+func allowedExtensions(upstream []a2a.AgentExtension) ([]a2a.AgentExtension, error) {
+	if len(upstream) > maxExtensionURICount {
+		return nil, errors.New("upstream agent declares more than 32 extensions")
 	}
-	return result
-}
-
-func allowedExtensions(upstream []a2a.AgentExtension, allowed map[string]struct{}) ([]a2a.AgentExtension, error) {
 	result := make([]a2a.AgentExtension, 0, len(upstream))
 	seen := make(map[string]struct{}, len(upstream))
 	for _, extension := range upstream {
-		if extension.URI == "" {
+		parsed, parseErr := url.ParseRequestURI(extension.URI)
+		if parseErr != nil || parsed.Scheme == "" || len(extension.URI) > maxExtensionURILength {
 			if extension.Required {
 				return nil, errors.New("upstream agent requires an extension without a URI")
 			}
@@ -2491,12 +2494,6 @@ func allowedExtensions(upstream []a2a.AgentExtension, allowed map[string]struct{
 			return nil, fmt.Errorf("upstream agent declares duplicate extension %q", extension.URI)
 		}
 		seen[extension.URI] = struct{}{}
-		if _, ok := allowed[extension.URI]; !ok {
-			if extension.Required {
-				return nil, fmt.Errorf("upstream agent requires denied extension %q", extension.URI)
-			}
-			continue
-		}
 		encoded, err := json.Marshal(extension.Params)
 		if err != nil || len(encoded) > maxExtensionPayloadSize {
 			if extension.Required {
@@ -2525,7 +2522,7 @@ func (h *proxyRequestHandler) validateExtensions(ctx context.Context, payload an
 	}
 	defer lease.release()
 
-	advertised, err := allowedExtensions(lease.generation.card.Capabilities.Extensions, extensionSet(h.config.extensionURIs))
+	advertised, err := allowedExtensions(lease.generation.card.Capabilities.Extensions)
 	if err != nil {
 		return a2a.NewError(a2a.ErrExtensionSupportRequired, err.Error())
 	}
@@ -3173,6 +3170,7 @@ func describeSendMessageResult(result a2a.SendMessageResult) *schemas.BifrostA2A
 		if value != nil {
 			resp.BifrostA2ASendMessageResponse.TaskID = string(value.ID)
 			resp.BifrostA2ASendMessageResponse.ContextID = string(value.ContextID)
+			resp.BifrostA2ASendMessageResponse.State = string(value.Status.State)
 		}
 	}
 	return resp
@@ -3259,7 +3257,7 @@ func (h *proxyRequestHandler) GetExtendedAgentCard(ctx context.Context, req *a2a
 		if requestOrigin, _ := ctx.Value(schemas.BifrostContextKeyA2ARequestOrigin).(string); requestOrigin != "" {
 			externalURL = requestOrigin
 		}
-		return gatewayCardWithExtensions(card, externalURL, h.config.name, h.manager.authPolicy, h.manager.pushEnabled(), h.config.extensionURIs, h.manager.grpcInterfaceURL(h.config.name))
+		return gatewayCardWithExtensions(card, externalURL, h.config.name, h.manager.authPolicy, h.manager.pushEnabled(), h.manager.grpcInterfaceURL(h.config.name))
 	}, func(*a2a.AgentCard) *schemas.BifrostA2AResponse {
 		return &schemas.BifrostA2AResponse{BifrostA2AGetAgentCardResponse: &schemas.BifrostA2AGetAgentCardResponse{}}
 	})

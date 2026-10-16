@@ -122,6 +122,21 @@ resources:
     cpu: 500m
     memory: 512Mi
 
+# startupProbe holds off the liveness probe until /health first answers.
+# Bifrost serves HTTP only after its database migrations finish, and on an
+# upgrade against a large log store those can wait (by design, with retries)
+# for other replicas' long queries and for a peer's migration lock: up to 20
+# minutes for the lock alone. Without this probe the liveness probe kills the
+# pod about 2 minutes in and the next pod starts the wait over. 30s x 60 = 30
+# minutes. Set to null to disable.
+startupProbe:
+  httpGet:
+    path: /health
+    port: http
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 60
+
 livenessProbe:
   httpGet:
     path: /health
@@ -363,6 +378,9 @@ bifrost:
   # Server configuration
   server:
     readBufferSize: 65536 # Read buffer size in bytes for reading HTTP headers (default: 64 KiB)
+    # Largest request-body buffer a keep-alive connection keeps for reuse. Larger buffers are freed
+    # after each request (the body is still served). Unset = 4 MiB default, 0 = unlimited (previous behaviour).
+    # bodyBufferPoolLimitBytes: 4194304
     # Hosts/IPs/CIDRs custom plugin (.so) downloads may reach despite resolving to a private address (blocked by default to prevent SSRF).
     # pluginDownloadPrivateAllowlist:
     #   - "artifacts.internal.corp"
@@ -1651,9 +1669,7 @@ bifrost:
   #     allow_by_default: false                        # Reachable by any virtual key without an explicit grant
   #     forward_accepted_credential: false             # Forward the accepted Bifrost credential upstream as x-bf-vk
   #     forward_accepted_credential_overrides_auth: false # Forward it as Authorization, replacing configured runtime auth
-  #     tenant: ""                                     # Optional tenant label
   #     credential_origins: ["https://research.internal:9000"] # Additional origins permitted for runtime requests; card origin is automatic
-  #     extension_uris: []                             # A2A extension URIs to advertise
   #     virtual_key_ids: []                            # Virtual key IDs granted access to this agent
   #     discovery_auth:                                # Auth for fetching the agent card (types: none, headers, oauth)
   #       type: "headers"
@@ -1760,6 +1776,7 @@ storage:
     # connMaxIdleTime: "5m"  # How long an idle connection is kept (config and logs stores use separate pools).
     # statementTimeout: "120s"                  # Server-side statement_timeout per pool connection ("0" keeps the server default)
     # idleInTransactionSessionTimeout: "120s"   # Ends sessions idle inside an open transaction ("0" keeps the server default)
+    # migrationLockRetryBudget: "10m"           # How long a migration step retries lock timeouts (e.g. behind an old replica's long query) before the pod exits. Keep startupProbe at least this long.
 
     # Vault store for external secret management (enterprise).
     # Resolves "vault.<path>" references in config fields at load time.
@@ -1816,6 +1833,7 @@ storage:
     # connMaxIdleTime: "5m"  # How long an idle connection is kept (config and logs stores use separate pools).
     # statementTimeout: "120s"                  # Server-side statement_timeout per pool connection ("0" keeps the server default)
     # idleInTransactionSessionTimeout: "120s"   # Ends sessions idle inside an open transaction ("0" keeps the server default)
+    # migrationLockRetryBudget: "10m"           # How long a migration step retries lock timeouts (e.g. behind an old replica's long query) before the pod exits. Keep startupProbe at least this long.
     # Point the logs store at a SEPARATE external PostgreSQL than the config store (only when the
     # logs store resolves to postgres). When disabled (default), it shares the top-level `postgresql`
     # connection. Fields mirror `postgresql.external`.

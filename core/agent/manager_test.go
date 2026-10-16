@@ -40,7 +40,7 @@ const agentCardPath = "/custom/cards/fixture.json"
 // gatewayCard is a test convenience wrapping gatewayCardWithExtensions with no
 // allowed extensions and no gRPC URL.
 func gatewayCard(upstream *a2a.AgentCard, externalURL, id string, policy schemas.AgentGatewayAuthPolicy, pushSupported bool) *a2a.AgentCard {
-	card, _ := gatewayCardWithExtensions(upstream, externalURL, id, policy, pushSupported, nil, "")
+	card, _ := gatewayCardWithExtensions(upstream, externalURL, id, policy, pushSupported, "")
 	return card
 }
 
@@ -2498,10 +2498,10 @@ func taskUpstreamGateway(t *testing.T) (*taskUpstream, *a2aclient.Client) {
 // taskUpstreamGatewayManager is the same fixture, additionally exposing the
 // manager so a test can reach the gateway's other protocol binding.
 func taskUpstreamGatewayManager(t *testing.T) (*taskUpstream, *a2aclient.Client, *Manager) {
-	return extensionGatewayManager(t, nil, nil)
+	return extensionGatewayManager(t, nil)
 }
 
-func extensionGatewayManager(t *testing.T, extensions []a2a.AgentExtension, allowed []string) (*taskUpstream, *a2aclient.Client, *Manager) {
+func extensionGatewayManager(t *testing.T, extensions []a2a.AgentExtension) (*taskUpstream, *a2aclient.Client, *Manager) {
 	t.Helper()
 	upstreamHandler := &taskUpstream{}
 	mux := http.NewServeMux()
@@ -2514,7 +2514,7 @@ func extensionGatewayManager(t *testing.T, extensions []a2a.AgentExtension, allo
 	m, err := NewManager(context.Background(), &memoryStore{regs: map[string]schemas.AgentRegistration{}}, nil, "http://gateway", nil, ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	t.Cleanup(m.Close)
-	_, err = m.Create(context.Background(), CreateRequest{Name: "tasks", AgentCardURL: upstream.URL + agentCardPath, ExtensionURIs: allowed})
+	_, err = m.Create(context.Background(), CreateRequest{Name: "tasks", AgentCardURL: upstream.URL + agentCardPath})
 	require.NoError(t, err)
 	protocol, ok := m.ProtocolHandler("tasks")
 	require.True(t, ok)
@@ -2554,7 +2554,7 @@ func TestExtensionPassthroughAndValidationAcrossBindings(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			upstream, jsonClient, manager := extensionGatewayManager(t, []a2a.AgentExtension{extension}, []string{extensionURI})
+			upstream, jsonClient, manager := extensionGatewayManager(t, []a2a.AgentExtension{extension})
 			client := test.client(t, manager, jsonClient)
 			ctx := a2aclient.AttachServiceParams(context.Background(), a2aclient.ServiceParams{a2a.SvcParamExtensions: {extensionURI}})
 			request := &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")), Metadata: map[string]any{extensionURI: map[string]any{"trace_id": "abc"}}}
@@ -2569,7 +2569,7 @@ func TestExtensionPassthroughAndValidationAcrossBindings(t *testing.T) {
 	}
 
 	t.Run("unknown requested extension is rejected before upstream", func(t *testing.T) {
-		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{extension}, []string{extensionURI})
+		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{extension})
 		ctx := a2aclient.AttachServiceParams(context.Background(), a2aclient.ServiceParams{a2a.SvcParamExtensions: {"https://example.com/extensions/unknown"}})
 		_, err := client.SendMessage(ctx, &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))})
 		require.Error(t, err)
@@ -2577,14 +2577,14 @@ func TestExtensionPassthroughAndValidationAcrossBindings(t *testing.T) {
 	})
 
 	t.Run("required extension is rejected for extension-unaware client", func(t *testing.T) {
-		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{{URI: extensionURI, Required: true}}, []string{extensionURI})
+		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{{URI: extensionURI, Required: true}})
 		_, err := client.SendMessage(context.Background(), &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi"))})
 		require.ErrorIs(t, err, a2a.ErrExtensionSupportRequired)
 		require.Empty(t, upstream.calls())
 	})
 
 	t.Run("oversized extension metadata is rejected before upstream", func(t *testing.T) {
-		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{extension}, []string{extensionURI})
+		upstream, client, _ := extensionGatewayManager(t, []a2a.AgentExtension{extension})
 		ctx := a2aclient.AttachServiceParams(context.Background(), a2aclient.ServiceParams{a2a.SvcParamExtensions: {extensionURI}})
 		request := &a2a.SendMessageRequest{Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("hi")), Metadata: map[string]any{extensionURI: strings.Repeat("x", maxExtensionPayloadSize)}}
 		_, err := client.SendMessage(ctx, request)
@@ -2600,16 +2600,16 @@ func TestGatewayCardAdvertisesOnlySafeExtensions(t *testing.T) {
 		{URI: "https://example.com/extensions/denied"},
 	}}}
 
-	card, err := gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, []string{allowedURI}, "")
+	card, err := gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, "")
 	require.NoError(t, err)
-	require.Equal(t, []a2a.AgentExtension{{URI: allowedURI, Params: map[string]any{"limit": 10}}}, card.Capabilities.Extensions)
+	require.Equal(t, upstream.Capabilities.Extensions, card.Capabilities.Extensions)
 
 	upstream.Capabilities.Extensions[1].Required = true
-	_, err = gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, []string{allowedURI}, "")
-	require.ErrorContains(t, err, "requires denied extension")
+	_, err = gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, "")
+	require.NoError(t, err)
 
 	upstream.Capabilities.Extensions = []a2a.AgentExtension{{URI: allowedURI, Required: true, Params: map[string]any{"payload": strings.Repeat("x", maxExtensionPayloadSize)}}}
-	_, err = gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, []string{allowedURI}, "")
+	_, err = gatewayCardWithExtensions(upstream, "http://gateway", "agent", schemas.AgentGatewayAuthPolicy{}, false, "")
 	require.ErrorContains(t, err, "requires untranslatable extension")
 }
 
@@ -2620,23 +2620,23 @@ func TestGatewayCardAdvertisesGRPCInterfaceWhenConfigured(t *testing.T) {
 	require.Empty(t, m.grpcInterfaceURL(strings.Repeat("a", MaxGRPCAgentNameLength+1)))
 	require.Empty(t, (&Manager{}).grpcInterfaceURL("agent-1"))
 
-	card, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "http://gateway", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, nil, m.grpcInterfaceURL("agent-1"))
+	card, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "http://gateway", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, m.grpcInterfaceURL("agent-1"))
 	require.NoError(t, err)
 	require.Len(t, card.SupportedInterfaces, 3)
 	require.Equal(t, a2a.TransportProtocolGRPC, card.SupportedInterfaces[2].ProtocolBinding)
 	require.Equal(t, "agent-1.a2a.bifrost.example:9090", card.SupportedInterfaces[2].URL)
 
-	unconfigured, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "http://gateway", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, nil, "")
+	unconfigured, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "http://gateway", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, "")
 	require.NoError(t, err)
 	require.Len(t, unconfigured.SupportedInterfaces, 2)
 }
 
 func TestGatewayCardOmitsRelativeHTTPInterfacesWithoutOrigin(t *testing.T) {
-	card, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, nil, "")
+	card, err := gatewayCardWithExtensions(&a2a.AgentCard{}, "", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, "")
 	require.NoError(t, err)
 	require.Empty(t, card.SupportedInterfaces)
 
-	card, err = gatewayCardWithExtensions(&a2a.AgentCard{}, "", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, nil, "agent-1.a2a.bifrost.example:9090")
+	card, err = gatewayCardWithExtensions(&a2a.AgentCard{}, "", "agent-1", schemas.AgentGatewayAuthPolicy{}, false, "agent-1.a2a.bifrost.example:9090")
 	require.NoError(t, err)
 	require.Equal(t, []*a2a.AgentInterface{a2a.NewAgentInterface("agent-1.a2a.bifrost.example:9090", a2a.TransportProtocolGRPC)}, card.SupportedInterfaces)
 }

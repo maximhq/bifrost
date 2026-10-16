@@ -105,7 +105,7 @@ func TestStripsForwardedAuthorizationWhenAPIKeySet(t *testing.T) {
 			provider := NewGeminiProvider(&schemas.ProviderConfig{
 				NetworkConfig: schemas.NetworkConfig{
 					BaseURL:      ts.URL,
-					ExtraHeaders: extra,
+					ExtraHeaders: schemas.NewSecretVarMap(extra),
 				},
 			}, testNoopLogger{})
 
@@ -145,10 +145,10 @@ func TestHandleGeminiStreams_StripsForwardedAuthorization(t *testing.T) {
 		start func(ctx *schemas.BifrostContext, url string, headers, extra map[string]string) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError)
 	}{
 		{name: "chat", start: func(ctx *schemas.BifrostContext, url string, headers, extra map[string]string) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-			return HandleGeminiChatCompletionStream(ctx, &fasthttp.Client{}, url, []byte(`{}`), headers, extra, 30, false, false, schemas.Gemini, "gemini-2.5-pro", noopPostHook, nil, testNoopLogger{}, func(context.Context) {})
+			return HandleGeminiChatCompletionStream(ctx, &fasthttp.Client{}, url, []byte(`{}`), headers, schemas.NewSecretVarMap(extra), 30, false, false, schemas.Gemini, "gemini-2.5-pro", noopPostHook, nil, testNoopLogger{}, func(context.Context) {})
 		}},
 		{name: "responses", start: func(ctx *schemas.BifrostContext, url string, headers, extra map[string]string) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-			return HandleGeminiResponsesStream(ctx, &fasthttp.Client{}, url, []byte(`{}`), headers, extra, 30, false, false, schemas.Gemini, "gemini-2.5-pro", noopPostHook, nil, testNoopLogger{}, func(context.Context) {})
+			return HandleGeminiResponsesStream(ctx, &fasthttp.Client{}, url, []byte(`{}`), headers, schemas.NewSecretVarMap(extra), 30, false, false, schemas.Gemini, "gemini-2.5-pro", noopPostHook, nil, testNoopLogger{}, func(context.Context) {})
 		}},
 	}
 	cases := []struct {

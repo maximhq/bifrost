@@ -92,7 +92,7 @@ export interface MigrationPlan {
  */
 const buildProviderSettings = (source: ModelProvider): ConvertProviderRequest => {
 	const sourceNetwork: NetworkConfig = source.network_config ?? DefaultNetworkConfig;
-	const { base_url: _baseUrl, extra_headers, ...network } = sourceNetwork;
+	const { base_url: _baseUrl, extra_headers, extra_headers_secret_vars: _headerSecretVars, ...network } = sourceNetwork;
 	const headers = Object.fromEntries(Object.entries(extra_headers ?? {}).filter(([key]) => key.trim().toLowerCase() !== "authorization"));
 	const settings: ConvertProviderRequest = {
 		// Sent as null, not omitted: the update endpoint keeps fields the body leaves out.
@@ -130,6 +130,8 @@ export const buildCloudflareMigrationPlan = (source: ModelProvider, sourceKeys: 
 			warnings.push("No Authorization header was found on the custom provider; enter the API token below.");
 		} else if (auth.problem === "not_bearer") {
 			warnings.push("The Authorization header is not a Bearer token; enter the API token below.");
+		} else if (auth.problem === "masked") {
+			warnings.push("The Authorization header is stored as a literal value and cannot be read; enter the API token below.");
 		}
 		headerToken = { name: `${source.name}-token`, value: auth.token, needsValue: !auth.token };
 	}

@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
 )
 
@@ -80,4 +82,87 @@ func TestRunWithLockRetryStopsOnContextCancel(t *testing.T) {
 	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
 	err := RunWithLockRetry(ctx, nil, "step", opts, func() error { return &pgconn.PgError{Code: "55P03"} })
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+// warnLogger records Warn messages for TestRunWithLockRetryDescribesFirstTimeout.
+type warnLogger struct {
+	schemas.Logger
+	warns []string
+}
+
+// Info drops the message; only warnings matter to these tests.
+func (w *warnLogger) Info(string, ...any) {}
+
+// Warn records the formatted message.
+func (w *warnLogger) Warn(msg string, args ...any) {
+	w.warns = append(w.warns, fmt.Sprintf(msg, args...))
+}
+
+// TestRunWithLockRetryDescribesFirstTimeout pins that the blockers are logged on
+// the first lock timeout, while the operator can still act, and only then.
+func TestRunWithLockRetryDescribesFirstTimeout(t *testing.T) {
+	log := &warnLogger{}
+	opts := fastRetry
+	described := 0
+	opts.Describe = func(context.Context) string { described++; return "pid=42 rel=logs" }
+	calls := 0
+	require.NoError(t, RunWithLockRetry(context.Background(), log, "step", opts, func() error {
+		calls++
+		if calls < 4 {
+			return &pgconn.PgError{Code: "55P03"}
+		}
+		return nil
+	}))
+	require.Equal(t, 1, described, "Describe runs once, on the first timeout")
+	found := false
+	for _, w := range log.warns {
+		if strings.Contains(w, "blocked by:") && strings.Contains(w, "pid=42") {
+			found = true
+		}
+	}
+	require.True(t, found, "the first timeout must log the blockers: %v", log.warns)
+}
+
+// TestMigrationLockRetryOptions pins how migration_lock_retry_budget is read: a
+// valid duration becomes the budget, and empty, invalid or non-positive values
+// fall back to the package default without failing.
+func TestMigrationLockRetryOptions(t *testing.T) {
+	require.Equal(t, LockRetryOptions{}, MigrationLockRetryOptions(nil, nil))
+	require.Equal(t, LockRetryOptions{}, MigrationLockRetryOptions(&Config{}, nil))
+	require.Equal(t, 45*time.Minute, MigrationLockRetryOptions(&Config{MigrationLockRetryBudget: "45m"}, nil).Budget)
+	log := &warnLogger{}
+	require.Equal(t, LockRetryOptions{}, MigrationLockRetryOptions(&Config{MigrationLockRetryBudget: "soon"}, log))
+	require.Equal(t, LockRetryOptions{}, MigrationLockRetryOptions(&Config{MigrationLockRetryBudget: "-1m"}, log))
+	require.Len(t, log.warns, 2)
+}
+
+// TestLockRetryOptionsWithBudgetFallback pins that an explicit budget (a test
+// override) keeps precedence over the configured one, and a zero budget takes it.
+func TestLockRetryOptionsWithBudgetFallback(t *testing.T) {
+	configured := LockRetryOptions{Budget: 45 * time.Minute}
+	require.Equal(t, 45*time.Minute, LockRetryOptions{}.WithBudgetFallback(configured).Budget)
+	require.Equal(t, time.Second, LockRetryOptions{Budget: time.Second}.WithBudgetFallback(configured).Budget)
+	require.Equal(t, time.Duration(0), LockRetryOptions{}.WithBudgetFallback(LockRetryOptions{}).Budget, "no budget anywhere leaves the package default to RunWithLockRetry")
+}
+
+// TestStatementKindNeverEchoesQueryText pins that the lock-holder diagnostic
+// classifies statements through a fixed allowlist: newlines, tabs, literals and
+// leading comments never leak, and only allowlisted constants come back.
+func TestStatementKindNeverEchoesQueryText(t *testing.T) {
+	cases := map[string]string{
+		"SELECT count(*) FROM logs":                 "SELECT",
+		"\n\tselect\n'secret'\nFROM logs":           "SELECT",
+		"INSERT INTO logs VALUES ('secret')":        "INSERT",
+		"REFRESH MATERIALIZED VIEW CONCURRENTLY mv": "REFRESH",
+		"/* secret */ SELECT 1":                     "UNKNOWN",
+		"-- secret\nSELECT 1":                       "UNKNOWN",
+		"(SELECT 'secret')":                         "UNKNOWN",
+		"EXPLAIN SELECT 'secret'":                   "UNKNOWN",
+		"":                                          "UNKNOWN",
+		"SELECT'secret'":                            "SELECT",
+	}
+	for query, want := range cases {
+		require.Equal(t, want, statementKind(query), "query %q", query)
+		require.NotContains(t, statementKind(query), "secret")
+	}
 }

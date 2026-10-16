@@ -28,6 +28,7 @@ type pushTimingTracer struct {
 	traces   []*schemas.Trace
 	active   map[string]*schemas.Trace
 	released []*schemas.Trace
+	contexts []*schemas.BifrostContext
 }
 
 func (t *pushTimingTracer) CreateTrace(_ string, requestID ...string) string {
@@ -49,6 +50,9 @@ func (t *pushTimingTracer) ReleaseTrace(trace *schemas.Trace) {
 }
 
 func (t *pushTimingTracer) StartSpanID(ctx context.Context, name string, kind schemas.SpanKind) (string, schemas.SpanHandle) {
+	if gateCtx, ok := ctx.(*schemas.BifrostContext); ok {
+		t.contexts = append(t.contexts, gateCtx)
+	}
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 	trace := t.active[traceID]
 	if trace == nil {
@@ -1475,4 +1479,38 @@ func TestPushDeliveryNativeProtocolLifecycle(t *testing.T) {
 	_, err = client.GetTaskPushConfig(ctx, &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"})
 	require.Error(t, err)
 	t.Log("5 native CRUD calls, 11 ingress requests, 2 authenticated deduplicated deliveries; exact event bodies and both credential hops verified")
+}
+
+// TestPushRelayReleasesOperationContexts catches idle-poll and delivery watcher
+// leaks without relying on process-wide goroutine counts or manager shutdown.
+func TestPushRelayReleasesOperationContexts(t *testing.T) {
+	for _, operation := range []string{"poll", "prune", "delivery", "poll-error", "prune-error"} {
+		t.Run(operation, func(t *testing.T) {
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			store := &pushMaintenanceStore{memoryPushStore: newMemoryPushStore()}
+			if strings.HasSuffix(operation, "-error") {
+				store.err = errors.New("database unavailable")
+			}
+			tracer := &pushTimingTracer{active: map[string]*schemas.Trace{}}
+			relay := newPushRelay(&Manager{ctx: parent, pushStore: store, tracer: tracer})
+			for range 20 {
+				switch operation {
+				case "poll", "poll-error":
+					relay.processDue()
+				case "prune", "prune-error":
+					relay.prune()
+				case "delivery":
+					// Missing config exercises the failed-delivery/outcome path.
+					relay.deliver(&schemas.AgentPushDelivery{ID: "missing-config", AgentName: "agent", TaskID: "task"}, time.Now().Add(time.Minute))
+				}
+				require.NotEmpty(t, tracer.contexts)
+				for _, ctx := range tracer.contexts {
+					require.ErrorIs(t, ctx.Err(), context.Canceled)
+				}
+				tracer.contexts = nil
+				require.NoError(t, parent.Err(), "operation cleanup must not cancel the manager")
+			}
+		})
+	}
 }

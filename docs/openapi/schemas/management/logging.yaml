@@ -53,7 +53,7 @@ LogEntry:
       type: array
       items:
         type: string
-      description: Array of routing engines used for this request (routing-rule, governance, or loadbalancing)
+      description: Routing engines that acted on this request (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core). core records fallback transitions; loadbalancing and circuit-breaker appear only in Bifrost Enterprise.
     tool_call_names:
       type: array
       items:
@@ -505,7 +505,7 @@ SearchFilters:
       type: array
       items:
         type: string
-      description: Filter by routing engine (routing-rule, governance, or loadbalancing)
+      description: Filter by routing engine (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)
     start_time:
       type: string
       format: date-time
@@ -673,7 +673,7 @@ FilterDataResponse:
       type: array
       items:
         type: string
-      description: Available routing engine types (routing-rule, governance, loadbalancing)
+      description: Available routing engine types (governance, routing-rule, loadbalancing, model-catalog, circuit-breaker, session-affinity, core)
     tool_call_names:
       type: array
       items:

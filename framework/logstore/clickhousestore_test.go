@@ -301,7 +301,8 @@ func TestClickHouseReconcileAgentCorrelation(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	taskID, contextID := "task-clickhouse", "context-clickhouse"
-	request := &AgentLog{ID: "ch-a2a-request", Timestamp: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "ch-request-id"}
+	requestBody, responseBody := `{"message":"original request"}`, `{"message":"original response"}`
+	request := &AgentLog{ID: "ch-a2a-request", Timestamp: now, RecordKind: "request", Status: "success", AgentName: "fixture", RequestID: "ch-request-id", RequestBody: &requestBody, ResponseBody: &responseBody}
 	event := &AgentLog{ID: "ch-a2a-event", Timestamp: now.Add(time.Millisecond), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "ch-request-id", TaskID: &taskID, ContextID: &contextID}
 
 	_, err := store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{request})
@@ -314,6 +315,66 @@ func TestClickHouseReconcileAgentCorrelation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, taskID, *found.TaskID)
 	require.Equal(t, contextID, *found.ContextID)
+	require.Equal(t, &requestBody, found.RequestBody)
+	require.Equal(t, &responseBody, found.ResponseBody)
+	require.Equal(t, request.Timestamp, found.Timestamp)
+
+	// A different request for the same task inherits context through the task
+	// pass. Its event body must survive the metadata-only correlation scan too.
+	eventBody := `{"artifact":"keep this payload"}`
+	taskOnly := &AgentLog{ID: "ch-a2a-task-only", Timestamp: now.Add(2 * time.Millisecond), RecordKind: "event", Status: "success", AgentName: "fixture", RequestID: "another-request", TaskID: &taskID, EventBody: &eventBody, HasObject: true}
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{taskOnly})))
+	require.NoError(t, store.ReconcileAgentCorrelation(ctx, []*AgentLog{taskOnly}))
+	found, err = store.FindAgentLog(ctx, taskOnly.ID)
+	require.NoError(t, err)
+	require.Equal(t, contextID, *found.ContextID)
+	require.Equal(t, &eventBody, found.EventBody)
+	require.True(t, found.HasObject)
+
+	// Complete groups require no rewrite, even when reconciliation repeats.
+	require.NoError(t, store.ReconcileAgentCorrelation(ctx, []*AgentLog{request, event, taskOnly}))
+	found, err = store.FindAgentLog(ctx, request.ID)
+	require.NoError(t, err)
+	require.Equal(t, &requestBody, found.RequestBody)
+	require.Equal(t, &responseBody, found.ResponseBody)
+}
+
+// TestClickHouseReconcileAgentCorrelationReusedID keeps rows with the same ID
+// at different millisecond timestamps isolated in both reconciliation passes.
+func TestClickHouseReconcileAgentCorrelationReusedID(t *testing.T) {
+	store := trySetupClickHouseStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second).Add(123 * time.Millisecond)
+	for _, pass := range []string{"request", "task"} {
+		t.Run(pass, func(t *testing.T) {
+			taskID, contextID := "task-"+pass, "context-"+pass
+			oldBody, targetBody := "old payload", "target payload"
+			old := &AgentLog{ID: "reused-" + pass, Timestamp: now.Add(-time.Hour), RecordKind: "event", Status: "success", AgentName: "other-agent", RequestID: "other-request", EventBody: &oldBody, HasObject: true}
+			target := &AgentLog{ID: old.ID, Timestamp: now, RecordKind: "event", Status: "success", AgentName: "fixture-" + pass, RequestID: "target-" + pass, EventBody: &targetBody}
+			source := &AgentLog{ID: "source-" + pass, Timestamp: now.Add(time.Millisecond), RecordKind: "event", Status: "success", AgentName: target.AgentName, RequestID: target.RequestID, TaskID: &taskID, ContextID: &contextID}
+			if pass == "task" {
+				target.TaskID = &taskID
+				source.RequestID = "different-request"
+			}
+			// Separate creates exercise the API's timestamp-bounded existence check.
+			require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{old})))
+			require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, []*AgentLog{target, source})))
+			require.NoError(t, store.ReconcileAgentCorrelation(ctx, []*AgentLog{target, source}))
+			var rows []AgentLog
+			require.NoError(t, store.db.Where("id = ?", old.ID).Order("timestamp").Find(&rows).Error)
+			require.Len(t, rows, 2)
+			require.Equal(t, old.Timestamp, rows[0].Timestamp)
+			require.Empty(t, rows[0].TaskID)
+			require.Empty(t, rows[0].ContextID)
+			require.Equal(t, &oldBody, rows[0].EventBody)
+			require.True(t, rows[0].HasObject)
+			require.Equal(t, target.Timestamp, rows[1].Timestamp)
+			require.Equal(t, &taskID, rows[1].TaskID)
+			require.Equal(t, &contextID, rows[1].ContextID)
+			require.Equal(t, &targetBody, rows[1].EventBody)
+			require.False(t, rows[1].HasObject)
+		})
+	}
 }
 
 func TestChTTLDays(t *testing.T) {
@@ -945,7 +1006,7 @@ func TestClickHouseDeleteLogsBatchIsSingleLightweightMutation(t *testing.T) {
 }
 
 // TestClickHouseFlushIsLightweightAndSkipsWhenEmpty covers the minute sweep
-// from plugins/logging: Flush and FlushMCPToolLogs must use lightweight
+// from plugins/logging: LLM, MCP and A2A cleanup must use lightweight
 // deletes and must not issue any mutation when nothing is left to flush.
 func TestClickHouseFlushIsLightweightAndSkipsWhenEmpty(t *testing.T) {
 	store := trySetupClickHouseStore(t)
@@ -958,14 +1019,28 @@ func TestClickHouseFlushIsLightweightAndSkipsWhenEmpty(t *testing.T) {
 	require.NoError(t, store.CreateIfNotExists(ctx, stuck))
 	require.NoError(t, store.CreateIfNotExists(ctx, done))
 	require.NoError(t, store.BatchCreateMCPToolLogsIfNotExists(ctx, []*MCPToolLog{chTestMCPToolLog("ch-flush-mcp", old)}))
+	agents := []*AgentLog{
+		{ID: "ch-flush-agent", Timestamp: old, CreatedAt: old, Status: "processing"},
+		{ID: "ch-flush-agent-done", Timestamp: old, CreatedAt: old, Status: "success"},
+		{ID: "ch-flush-agent-fresh", Timestamp: time.Now().UTC(), CreatedAt: time.Now().UTC(), Status: "processing"},
+	}
+	require.NoError(t, agentLogsCreateError(store.BatchCreateAgentLogsIfNotExists(ctx, agents)))
 
 	logsBefore := chMutationIDs(t, store.db, "logs")
 	mcpBefore := chMutationIDs(t, store.db, "mcp_tool_logs")
+	agentBefore := chMutationIDs(t, store.db, "agent_logs")
 	since := time.Now().UTC().Add(-30 * time.Minute)
 	require.NoError(t, store.Flush(ctx, since))
 	require.NoError(t, store.FlushMCPToolLogs(ctx, since))
+	require.NoError(t, store.FlushAgentLogs(ctx, since))
+	_, err := store.FindAgentLog(ctx, "ch-flush-agent")
+	assert.ErrorIs(t, err, ErrNotFound)
+	for _, id := range []string{"ch-flush-agent-done", "ch-flush-agent-fresh"} {
+		_, err := store.FindAgentLog(ctx, id)
+		assert.NoError(t, err, "completed and fresh A2A rows must survive")
+	}
 
-	_, err := store.FindByID(ctx, "ch-flush-stuck")
+	_, err = store.FindByID(ctx, "ch-flush-stuck")
 	assert.ErrorIs(t, err, ErrNotFound, "stale processing row must be flushed")
 	_, err = store.FindByID(ctx, "ch-flush-done")
 	assert.NoError(t, err, "completed rows must survive the flush")
@@ -978,15 +1053,21 @@ func TestClickHouseFlushIsLightweightAndSkipsWhenEmpty(t *testing.T) {
 	mcpCmds := chNewMutationCommands(t, store.db, "mcp_tool_logs", mcpBefore)
 	require.Len(t, mcpCmds, 1, "mcp_tool_logs: one flush must issue exactly one mutation, got %v", mcpCmds)
 	assertLightweightMutations(t, "mcp_tool_logs", mcpCmds)
+	agentCmds := chNewMutationCommands(t, store.db, "agent_logs", agentBefore)
+	require.Len(t, agentCmds, 1)
+	assertLightweightMutations(t, "agent_logs", agentCmds)
 
 	// Nothing left to flush: the once-a-minute sweep must not touch the
 	// tables at all (the issue counted ~1,440 mutations per table per day).
 	logsBefore = chMutationIDs(t, store.db, "logs")
 	mcpBefore = chMutationIDs(t, store.db, "mcp_tool_logs")
+	agentBefore = chMutationIDs(t, store.db, "agent_logs")
 	require.NoError(t, store.Flush(ctx, since))
 	require.NoError(t, store.FlushMCPToolLogs(ctx, since))
+	require.NoError(t, store.FlushAgentLogs(ctx, since))
 	assert.Empty(t, chNewMutationCommands(t, store.db, "logs", logsBefore), "empty flush must not issue a mutation")
 	assert.Empty(t, chNewMutationCommands(t, store.db, "mcp_tool_logs", mcpBefore), "empty flush must not issue a mutation")
+	assert.Empty(t, chNewMutationCommands(t, store.db, "agent_logs", agentBefore), "empty A2A flush must not issue a mutation")
 }
 
 // TestClickHouseFlushSkipsSupersededProcessingRow: a log created as processing

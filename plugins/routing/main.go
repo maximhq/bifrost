@@ -433,10 +433,11 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 
 	_, routedModel, _ := req.GetRequestFields()
 
-	// Downstream routing layers (load balancing, model-catalog resolution) and core
-	// enforcement intersect their candidates with this allowlist, so a later layer cannot
-	// select a provider the request may not use for the routed model. A request that carries no
-	// grants at all has nothing to allow or deny, and the call is a no-op.
+	// Downstream routing layers (load balancing, model-catalog resolution) intersect their
+	// candidates with this allowlist, so a later layer does not select a provider the request may
+	// not use for the routed model. Core never reads it: governance's PreLLMHook refuses a
+	// disallowed provider or model on every routed LLM attempt. A request with no grant, or with no
+	// permits, has nothing to allow or deny, and publishing is a no-op.
 	p.governance.PublishRoutingAllowlist(ctx, routedModel)
 	return p.governance.LoadBalanceProvider(ctx, req)
 }

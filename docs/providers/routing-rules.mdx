@@ -285,7 +285,7 @@ Access routing rules from the dashboard:
 - **Time to first token cutoff (ms)** (optional): For streaming requests, cut off an attempt that has not produced its first token in time and move to the next fallback. See [Time to First Token Cutoff](#time-to-first-token-ttft-cutoff).
 - **Scope**: Where rule applies (global, customer, team, virtual_key)
 - **Scope ID**: Required if scope is not global
-- **Priority**: Lower = evaluated first (default: 0)
+- **Priority**: Lower = evaluated first (default: 0). Must be unique within the scope
 
 ### Visual CEL Builder
 
@@ -470,7 +470,7 @@ Define routing rules in your `config.json` file under the governance configurati
 - **fallbacks** (array[string]): Fallback providers in "provider/model" format
 - **scope** (string): Scope level - "global", "customer", "team", or "virtual_key"
 - **scope_id** (string, optional): ID of scoped entity (null for global scope)
-- **priority** (number): Rule evaluation order within scope (lower = evaluated first)
+- **priority** (number): Rule evaluation order within scope (lower = evaluated first). Each priority can be used once per scope (`scope` plus `scope_id`); a duplicate is rejected with `409 Conflict`
 
 **Loading from config.json:**
 Routes are automatically loaded on startup from the `config.json` governance section. Changes require application restart.
@@ -739,14 +739,14 @@ Every chain step is logged in the routing engine audit trail for full observabil
 
 ### Interaction with Governance Routing
 
-Routing Rules run **BEFORE** governance provider selection and can override it:
+Routing Rules run **BEFORE** the virtual key's weighted provider selection and can override it:
 
 **If a routing rule matches:**
 ```
 1. Routing Rules → CEL expression evaluation (first-match-wins)
 2. Rule matches → target selected probabilistically from targets array
 3. provider/model/key_id/fallbacks overridden from selected target
-4. Governance provider_configs → SKIPPED
+4. Virtual key provider_configs weighted selection → skipped when the target sets a provider
 5. Load Balancing → selects best key (unless key_id was pinned)
 ```
 
@@ -762,7 +762,7 @@ Routing Rules run **BEFORE** governance provider selection and can override it:
 - Governance configures: 70% Azure, 30% OpenAI
 - Routing rule exists: `budget_used > 85 → groq`
 - Request arrives with budget_used = 90%
-- **Result**: Groq selected by routing rule, governance provider_configs **ignored**
+- **Result**: Groq selected by routing rule, the virtual key's weights are **not used**. Groq must still be allowed by the virtual key: governance checks every attempt and refuses a provider the virtual key does not allow with `403`
 
 ### Interaction with Load Balancing
 
@@ -773,7 +773,7 @@ Routing rules determine provider BEFORE adaptive load balancing runs:
    OR
 2. Governance selects provider (if no routing rule matched)
    ↓
-3. Load Balancing Level 1 → skipped (provider already determined by routing rules or governance)
+3. Load Balancing Level 1 (Enterprise) → keeps the chosen provider as primary; appends healthy fallbacks only with the append-fallbacks-to-pinned toggle on, and moves a provider failing for the model only with the re-route toggle on (both off by default)
 4. Load Balancing Level 2 → key selection (performance-based within selected provider)
 ```
 
@@ -810,7 +810,7 @@ Each attempt is pinned independently, so an unpinned fallback later in the chain
 
 A pin stays with its provider when [session affinity](/providers/session-affinity) reorders the chain. A session that moves the primary to another provider carries the target's pin onto that provider's fallback entry, and a fallback the session promotes brings its own pin to the primary attempt.
 
-A target's `key_id` outranks the caller's own key pins: when a rule pins the key, `x-bf-api-key-id` and `x-bf-api-key` do not apply to the primary attempt. Without a target `key_id`, the caller's pin is tried on the first attempt only: on the rule's target, or on the provider [session affinity](/providers/session-affinity) moved the request to, and that attempt fails key selection when its provider does not hold the key. The pin itself never moves the request to another provider, and a pin on the target's own key keeps the session from moving it (see [API Key Selection](/providers/request-options#api-key-selection)). A caller's [direct key](/providers/request-options#direct-api-key) outranks both, since it bypasses the key pool: the attempt on the first provider uses the caller's key, not the pinned one. Fallbacks run on their configured keys, their own pins included.
+A target's `key_id` outranks the caller's own key pins: when a rule pins the key, `x-bf-api-key-id` and `x-bf-api-key` do not apply to the primary attempt. Without a target `key_id`, the caller's pin applies only to the first provider, its retries included: the rule's target, or the provider [session affinity](/providers/session-affinity) moved the request to, and that attempt fails key selection when its provider does not hold the key. The pin itself never moves the request to another provider, and a pin on the target's own key keeps the session from moving it (see [API Key Selection](/providers/request-options#api-key-selection)). A caller's [direct key](/providers/request-options#direct-api-key) outranks both, since it bypasses the key pool: the attempt on the first provider uses the caller's key, not the pinned one. Fallbacks run on their configured keys, their own pins included.
 
 ### Time to First Token (TTFT) Cutoff
 
@@ -874,6 +874,8 @@ Rules within the same scope are evaluated in **ascending priority order**:
 ```
 Priority 0 → Priority 5 → Priority 10 → Priority 100 (first match wins)
 ```
+
+Two rules in the same scope cannot share a priority: creating or updating a rule with a priority already taken in its scope returns `409 Conflict`. Rules in different scopes, or for different virtual keys, teams or customers, can use the same number. Rules synced from `config.json` are checked on the final set, so swapping two priorities in one change works, but two rules in one scope that both omit `priority` (and so both default to `0`) fail the sync.
 
 **Best Practice:** Use priority 0-10 for critical rules, 100+ for fallbacks.
 
@@ -1167,7 +1169,7 @@ curl -X POST http://localhost:8080/api/routing/rules \
       }
     ],
     "scope": "global",
-    "priority": 5
+    "priority": 6
   }'
 ```
 

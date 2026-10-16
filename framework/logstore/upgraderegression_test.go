@@ -237,3 +237,122 @@ func TestUpgradeLogstoreAddColumnRetriesBehindLongReader(t *testing.T) {
 		require.True(t, postgresconn.IsLockNotAvailableError(err), "expected the 2.3.0 lock_timeout failure, got: %v", err)
 	})
 }
+
+// startOldSnapshot opens a REPEATABLE READ transaction that reads a table other
+// than the one being indexed, as an old replica's unrelated long query does.
+// CREATE INDEX CONCURRENTLY waits for every transaction older than it, whatever
+// table that transaction reads. It returns a func that ends the transaction.
+func startOldSnapshot(t *testing.T, db *gorm.DB) func() {
+	t.Helper()
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	conn, err := sqlDB.Conn(context.Background())
+	require.NoError(t, err)
+	_, err = conn.ExecContext(context.Background(), "BEGIN ISOLATION LEVEL REPEATABLE READ")
+	require.NoError(t, err)
+	_, err = conn.ExecContext(context.Background(), "SELECT count(*) FROM migrations")
+	require.NoError(t, err)
+	var once sync.Once
+	end := func() {
+		once.Do(func() {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+			_ = conn.Close()
+		})
+	}
+	t.Cleanup(end)
+	return end
+}
+
+// resetWarpUpdatedAtIndex drops idx_warp_conversations_updated_at and un-records
+// its migration, the state a 2.2.x store is in before the 2.3.0 step runs.
+func resetWarpUpdatedAtIndex(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	require.NoError(t, db.Exec("DROP INDEX IF EXISTS idx_warp_conversations_updated_at").Error)
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = 'logs_add_warp_conversations_updated_at_index'").Error)
+}
+
+// TestUpgradeLogstoreWarpIndexCompletesBehindOldSnapshot pins the small-table
+// path of logs_add_warp_conversations_updated_at_index: the new table's index
+// builds without CONCURRENTLY, so an old replica's open transaction elsewhere in
+// the database cannot stall boot. The control forces the concurrent build and
+// shows it waiting out that transaction.
+func TestUpgradeLogstoreWarpIndexCompletesBehindOldSnapshot(t *testing.T) {
+	t.Run("fixed", func(t *testing.T) {
+		db := setupLogstoreAt225(t)
+		resetWarpUpdatedAtIndex(t, db)
+		startOldSnapshot(t, db)
+
+		start := time.Now()
+		require.NoError(t, migrateLogstorePod(t, time.Minute, MatViewPauseOptions{CancelAfter: time.Second}))
+		require.Less(t, time.Since(start), 20*time.Second, "the warp index must not wait for the old snapshot")
+		var valid bool
+		require.NoError(t, db.Raw(`SELECT COALESCE(bool_and(indisvalid), false) FROM pg_index
+			WHERE indexrelid = to_regclass('idx_warp_conversations_updated_at')`).Scan(&valid).Error)
+		require.True(t, valid, "idx_warp_conversations_updated_at must exist and be valid")
+	})
+
+	t.Run("control_concurrent_build_waits_for_old_snapshot", func(t *testing.T) {
+		db := setupLogstoreAt225(t)
+		resetWarpUpdatedAtIndex(t, db)
+		prev := smallTableForPlainIndex
+		smallTableForPlainIndex = func(*gorm.DB, string) (bool, error) { return false, nil }
+		t.Cleanup(func() { smallTableForPlainIndex = prev })
+		startOldSnapshot(t, db)
+
+		err := migrateLogstorePod(t, 15*time.Second, MatViewPauseOptions{CancelAfter: time.Second})
+		require.Error(t, err, "the concurrent build must still be waiting on the old snapshot")
+		t.Cleanup(func() { _ = db.Exec("DROP INDEX IF EXISTS idx_warp_conversations_updated_at").Error })
+	})
+}
+
+// TestDescribeTableLockHoldersNamesOldReader pins the operator hint logged on the
+// first lock timeout: it names the session holding logs by pid, lock mode and
+// statement kind, never by statement text, and a lookup with no holders stays
+// empty.
+func TestDescribeTableLockHoldersNamesOldReader(t *testing.T) {
+	db := setupLogstoreAt225(t)
+	require.Empty(t, postgresconn.DescribeTableLockHolders(context.Background(), db, "logs"))
+	startLongLogsReader(t, db)
+	// A second holder whose statement hides a literal behind a newline and a
+	// third that opens with a comment: neither may leak into the hint.
+	for _, stmt := range []string{"SELECT\n'secret-literal'\nFROM logs", "/* secret-comment */ SELECT count(*) FROM logs"} {
+		sqlDB, err := db.DB()
+		require.NoError(t, err)
+		conn, err := sqlDB.Conn(context.Background())
+		require.NoError(t, err)
+		_, err = conn.ExecContext(context.Background(), "BEGIN")
+		require.NoError(t, err)
+		_, err = conn.ExecContext(context.Background(), stmt)
+		require.NoError(t, err)
+		t.Cleanup(func() { _, _ = conn.ExecContext(context.Background(), "COMMIT"); _ = conn.Close() })
+	}
+	got := postgresconn.DescribeTableLockHolders(context.Background(), db, "logs")
+	require.Contains(t, got, "AccessShareLock")
+	require.Contains(t, got, "statement=SELECT")
+	require.Contains(t, got, "statement=UNKNOWN", "a statement opening with a comment must classify as UNKNOWN")
+	require.NotContains(t, got, "FROM logs", "the statement text must never be logged; only its kind")
+	require.NotContains(t, got, "secret", "literals and comments must never reach the hint")
+	require.Contains(t, got, "pg_cancel_backend")
+}
+
+// TestUpgradeLogstoreConfiguredLockRetryBudgetApplies pins that the log store's
+// migration_lock_retry_budget reaches the step runner: with a budget of one
+// nanosecond, a step blocked by a long reader fails on its first lock timeout
+// instead of retrying for the default ten minutes.
+func TestUpgradeLogstoreConfiguredLockRetryBudgetApplies(t *testing.T) {
+	db := setupLogstoreAt225(t)
+	setLogstoreStepRetry(t, postgresconn.LockRetryOptions{InitialBackoff: 100 * time.Millisecond, MaxBackoff: 100 * time.Millisecond})
+	startLongLogsReader(t, db)
+
+	pod := openLogstoreUpgradePod(t, "bifrost-migrate:new-pod")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	cfg := &PostgresConfig{}
+	cfg.MigrationLockRetryBudget = "1ns"
+	start := time.Now()
+	err := triggerMigrationsWithOptions(ctx, pod, testLogger{}, MatViewPauseOptions{CancelAfter: time.Second},
+		postgresconn.MigrationLockRetryOptions(&cfg.Config, testLogger{}))
+	require.Error(t, err)
+	require.True(t, postgresconn.IsLockNotAvailableError(err), "expected a lock timeout, got: %v", err)
+	require.Less(t, time.Since(start), 30*time.Second, "the configured budget must end the retries at once")
+}

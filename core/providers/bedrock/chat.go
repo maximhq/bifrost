@@ -84,6 +84,18 @@ func ToBedrockChatCompletionRequest(ctx *schemas.BifrostContext, bifrostReq *sch
 		hoistToolResultImages(bedrockReq)
 	}
 
+	if bifrostReq.Params != nil {
+		// The typed field is what Go SDK callers set; ExtraParams carries the same marker from
+		// HTTP ingress. The typed field wins when both are present.
+		cc := bifrostReq.Params.CacheControl
+		if cc == nil || cc.Type != schemas.CacheControlTypeEphemeral {
+			cc = bedrockTopLevelCacheControl(bifrostReq.Params.ExtraParams)
+		}
+		if err := applyBedrockAutomaticCachePoint(bedrockReq, cc); err != nil {
+			return nil, err
+		}
+	}
+
 	if !caps.SupportsCachePoint(schemas.BedrockModelSupportsCachePoints(capModel)) {
 		stripCachePointsFromBedrockRequest(bedrockReq)
 	} else {
