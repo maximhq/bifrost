@@ -123,3 +123,79 @@ type MiniMaxVideoDeleteResponse struct {
 	Action string `json:"action"` // "cancelled" or "deleted"
 	Status string `json:"status"`
 }
+
+// MiniMaxSpeechRequest is the body for POST /v1/t2a_v2.
+type MiniMaxSpeechRequest struct {
+	Model         string                      `json:"model"`
+	Text          string                      `json:"text"`
+	Stream        bool                        `json:"stream,omitempty"`
+	StreamOptions *MiniMaxSpeechStreamOptions `json:"stream_options,omitempty"`
+	VoiceSetting  MiniMaxVoiceSetting         `json:"voice_setting"`
+	AudioSetting  *MiniMaxAudioSetting        `json:"audio_setting,omitempty"`
+	LanguageBoost *string                     `json:"language_boost,omitempty"`
+	OutputFormat  *string                     `json:"output_format,omitempty"` // "hex" or "url"
+	ExtraParams   map[string]interface{}      `json:"-"`
+}
+
+func (r *MiniMaxSpeechRequest) GetExtraParams() map[string]interface{} {
+	return r.ExtraParams
+}
+
+// MiniMaxSpeechStreamOptions controls streaming TTS; with ExcludeAggregatedAudio the final chunk carries no audio.
+type MiniMaxSpeechStreamOptions struct {
+	ExcludeAggregatedAudio bool `json:"exclude_aggregated_audio"`
+}
+
+type MiniMaxVoiceSetting struct {
+	VoiceID string   `json:"voice_id"`
+	Speed   *float64 `json:"speed,omitempty"`
+	Vol     *float64 `json:"vol,omitempty"`
+	Pitch   *int     `json:"pitch,omitempty"`
+	Emotion *string  `json:"emotion,omitempty"`
+}
+
+type MiniMaxAudioSetting struct {
+	Format     *string `json:"format,omitempty"`
+	SampleRate *int    `json:"sample_rate,omitempty"`
+	Bitrate    *int    `json:"bitrate,omitempty"`
+	Channel    *int    `json:"channel,omitempty"`
+}
+
+// MiniMaxSpeechResponse is one /v1/t2a_v2 response, or one SSE chunk of a streamed one.
+type MiniMaxSpeechResponse struct {
+	Data *struct {
+		Audio  string `json:"audio"`  // hex-encoded
+		Status int    `json:"status"` // 1 while synthesizing, 2 on the final chunk
+	} `json:"data,omitempty"`
+	ExtraInfo *struct {
+		AudioLength     int64 `json:"audio_length"` // milliseconds
+		UsageCharacters int   `json:"usage_characters"`
+	} `json:"extra_info,omitempty"`
+	TraceID  string           `json:"trace_id,omitempty"`
+	BaseResp *MiniMaxBaseResp `json:"base_resp,omitempty"`
+}
+
+// MiniMaxTranscriptionResponse is the json / verbose_json body of POST /v1/speech_to_text.
+type MiniMaxTranscriptionResponse struct {
+	Text      string                        `json:"text"`
+	Duration  *float64                      `json:"duration,omitempty"`
+	NSpeakers int                           `json:"n_speakers,omitempty"`
+	Segments  []MiniMaxTranscriptionSegment `json:"segments,omitempty"`
+	TraceID   string                        `json:"trace_id,omitempty"`
+}
+
+type MiniMaxTranscriptionSegment struct {
+	ID      int     `json:"id"`
+	Start   float64 `json:"start"`
+	End     float64 `json:"end"`
+	Speaker string  `json:"speaker,omitempty"`
+	Text    string  `json:"text"`
+}
+
+// MiniMaxTranscriptionStreamEvent is one SSE event of a streamed /v1/speech_to_text response.
+type MiniMaxTranscriptionStreamEvent struct {
+	Index    int      `json:"index"`
+	Delta    string   `json:"delta"`
+	Finish   bool     `json:"finish"`
+	Duration *float64 `json:"duration,omitempty"`
+}
