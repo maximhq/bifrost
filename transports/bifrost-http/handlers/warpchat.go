@@ -26,6 +26,13 @@ import (
 //
 // If you add anything to this function, add it here rather than reading ctx
 // inside the goroutine.
+//
+// The snapshot carries no grant of its own, only how to settle one
+// (warp.WithGrant): every call Warp makes - each model call, the tool listing
+// and each tool call on Bifrost's MCP server - settles a fresh grant for the
+// dashboard user and is admitted the same way (see warp's admitWarpCaller).
+// The caller's default scope reaches the tools from the agent, on the caller
+// view it stamps each turn, not from here.
 func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration) (context.Context, context.CancelFunc, error) {
 	base := context.Background()
 
@@ -45,6 +52,8 @@ func snapshotWarpContext(ctx *fasthttp.RequestCtx, timeout time.Duration) (conte
 	for _, key := range []any{
 		schemas.IsLocalAdminContextKey,
 		schemas.BifrostContextKeyUserID,
+		schemas.BifrostContextKeyUserName,
+		schemas.BifrostContextKeyUserEmail,
 		schemas.BifrostContextKeyUserRoleID,
 	} {
 		if value := ctx.UserValue(key); value != nil {

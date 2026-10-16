@@ -2,6 +2,7 @@ package warp
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,8 +150,10 @@ func TestWarpCanChatRequiresGatewayClient(t *testing.T) {
 	executor := func(*schemas.BifrostContext, *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		return TextTurn("ok"), nil
 	}
-	require.False(t, NewService(nil, WithLogReader(&fakeLogReader{})).CanChat())
-	require.True(t, NewService(nil, WithLogReader(&fakeLogReader{}), WithResponsesExecutor(executor)).CanChat())
+	mcp := newTestMCP(t, &fakeLogReader{})
+	withMCP := []Option{WithLogReader(&fakeLogReader{}), WithMCPExecutor(mcp.execute), WithMCPToolLister(mcp.list)}
+	require.False(t, NewService(nil, withMCP...).CanChat())
+	require.True(t, NewService(nil, append(withMCP, WithResponsesExecutor(executor))...).CanChat())
 	require.NotNil(t, NewService(nil, WithLogReader(&fakeLogReader{}), WithResponsesExecutor(executor)).chatFuncFor(context.Background(), &schemas.WarpConfig{}, ""))
 }
 
@@ -202,4 +205,38 @@ func TestWarpChatStampsIdentityOnEveryCall(t *testing.T) {
 		require.Nil(t, bifrostErr)
 	}
 	require.Equal(t, []string{"Suresh", "Suresh", "Suresh"}, stamped, "every model call of the turn is attributed to the user who asked")
+}
+
+// Warp lists and calls its tools under a context of its own: the dashboard
+// caller's grant and admission as on a model call, and core/mcp narrowed to
+// Bifrost's own MCP server and Warp's allowed subset of it. The model call
+// carries the exclude-all sentinel instead, so this is the only context that
+// names the server - and it must name exactly the allow-list, or a tool Warp
+// never declared becomes reachable.
+func TestWarpToolContextNarrowsToBifrostMCPServer(t *testing.T) {
+	settled := 0
+	turnCtx := WithGrant(context.Background(), func() schemas.Grant {
+		settled++
+		return grant.New()
+	})
+	bifrostCtx, cancel := warpToolContext(turnCtx)
+	defer cancel()
+
+	require.NotNil(t, bifrostCtx.Grant(), "a tool call without a grant is refused by governance")
+	require.Equal(t, 1, settled, "the tool call settles its own grant")
+	require.Equal(t, true, bifrostCtx.Value(schemas.BifrostContextKeyAdmitUngrantedUser),
+		"a signed-in user with no access profile reaches the tools the same way they reach the model")
+	require.Equal(t, []string{BifrostMCPClientName}, bifrostCtx.Value(schemas.MCPContextKeyIncludeClients),
+		"only Bifrost's own MCP server is reachable from Warp's tool calls")
+	require.Equal(t, allowedMCPToolNames(), bifrostCtx.Value(schemas.MCPContextKeyIncludeTools),
+		"only Warp's allow-listed tools are reachable")
+	for _, name := range bifrostCtx.Value(schemas.MCPContextKeyIncludeTools).([]string) {
+		require.True(t, strings.HasPrefix(name, BifrostMCPClientName+"-"), "core/mcp matches the include filter on prefixed names: %s", name)
+	}
+
+	// No grant on the turn means none is invented; admission still applies.
+	bare, cancelBare := warpToolContext(context.Background())
+	defer cancelBare()
+	require.Nil(t, bare.Grant())
+	require.Equal(t, true, bare.Value(schemas.BifrostContextKeyAdmitUngrantedUser))
 }

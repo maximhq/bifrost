@@ -12,21 +12,19 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 )
 
 const warpSemanticCandidateLimit = 100
 
-// MaxSemanticQueryChars bounds the natural-language query, in characters. The
-// query becomes an embedding request, so an unbounded tool argument is
-// provider capacity and usage budget spent on one call. The tool schema
-// advertises the same figure as maxLength, so the model can stay inside it
-// instead of learning the bound from a refusal.
-const MaxSemanticQueryChars = 2000
+// MaxSemanticQueryChars is the query bound semantic_search_logs advertises;
+// Search enforces the same figure.
+const MaxSemanticQueryChars = mcptools.MaxSemanticQueryChars
 
-// MaxSemanticQueries bounds how many phrasings one search embeds. Each is an
-// embedding request and a vector search per prefilter, so the bound is spend.
-const MaxSemanticQueries = 5
+// MaxSemanticQueries is the phrasing bound semantic_search_logs advertises;
+// Search enforces the same figure.
+const MaxSemanticQueries = mcptools.MaxSemanticQueries
 
 // SemanticSearcher joins the vector index back to the authoritative log store.
 // Vector metadata is only a coarse prefilter: every candidate is reloaded using
@@ -42,16 +40,13 @@ type SemanticSearcher struct {
 	logs SemanticHydrator
 }
 
-type SemanticSearchRow struct {
-	Score float64 `json:"score"`
-	logRow
-}
-
-type SemanticSearchResult struct {
-	Rows      []SemanticSearchRow `json:"rows"`
-	Returned  int                 `json:"returned"`
-	Threshold float64             `json:"threshold"`
-}
+// SemanticSearchRow and SemanticSearchResult are mcptools' shapes: the
+// searcher satisfies mcptools.SemanticSearcher, and semantic_search_logs on
+// the server returns exactly what this produces.
+type (
+	SemanticSearchRow    = mcptools.SemanticSearchRow
+	SemanticSearchResult = mcptools.SemanticSearchResult
+)
 
 func NewSemanticSearcher(store configstore.WarpStore, vectors vectorstore.VectorStore, embed EmbeddingExecutor, logs SemanticHydrator) *SemanticSearcher {
 	return &SemanticSearcher{store: store, vectors: vectors, embed: embed, logs: logs}
@@ -144,7 +139,7 @@ func (s *SemanticSearcher) SearchVisible(ctx context.Context, queries []string, 
 			}
 			result.Rows = append(result.Rows, SemanticSearchRow{
 				Score:  scores[id],
-				logRow: projectLog(entry, true, LogContentChars),
+				LogRow: mcptools.ProjectLog(entry, true, mcptools.LogContentChars),
 			})
 			if len(result.Rows) == limit {
 				break
@@ -189,18 +184,9 @@ func normalizeSemanticQueries(queries []string) ([]string, error) {
 	return out, nil
 }
 
-// LogVisibility is the row ownership row-level access control grants a
-// restricted caller: a log is theirs to read when it matches any one of these
-// sets. It mirrors the store's own predicate, and it only has to be no
-// narrower than it - a set that is too wide costs candidates, one that is too
-// narrow hides rows the caller may see.
-type LogVisibility struct {
-	UserIDs         []string
-	VirtualKeyIDs   []string
-	TeamIDs         []string
-	BusinessUnitIDs []string
-	CustomerIDs     []string
-}
+// LogVisibility is mcptools' shape: the row ownership a restricted caller's
+// reads are narrowed to, which SearchVisible prefilters the index with.
+type LogVisibility = mcptools.LogVisibility
 
 // warpVisibilityPrefilterMaxIDs bounds each visibility set pushed into the
 // vector filter. A caller who may see thousands of users sees a large share of
@@ -424,7 +410,7 @@ func mergeSemanticPages(pages [][]vectorstore.SearchResult, pageLimit int, score
 func warpMaxSemanticLimit() int {
 	// Keep the vector and model-context caps aligned even if the config ceiling
 	// grows independently later.
-	return min(warpSemanticCandidateLimit, MaxLogRows)
+	return min(warpSemanticCandidateLimit, mcptools.MaxLogRows)
 }
 
 func semanticCandidateID(candidate vectorstore.SearchResult) string {

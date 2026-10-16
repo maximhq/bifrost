@@ -3,6 +3,7 @@ package warp
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -11,7 +12,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/framework/logstore"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -100,15 +101,19 @@ func ToolTurn(id, name, arguments string) *schemas.BifrostResponsesResponse {
 	}
 }
 
-// newTestAgent wires an agent around a scripted model and a fake store.
-func newTestAgent(model *scriptedModel, fake *fakeLogReader, maxIterations int) *Agent {
+// newTestAgent wires an agent around a scripted model and a real mcptools
+// server hosted over a fake store (see mcp_test.go).
+func newTestAgent(t testing.TB, model *scriptedModel, fake *fakeLogReader, maxIterations int) *Agent {
+	t.Helper()
+	mcp := newTestMCP(t, fake)
 	return &Agent{
 		chat:  model.respond,
-		tools: buildTools(),
-		deps:  &ToolDeps{logManager: fake},
+		mcp:   mcp.execute,
+		tools: mcp.list,
 		config: &schemas.WarpConfig{
 			Enabled: true, Provider: schemas.OpenAI, Model: "gpt-4o",
 		},
+		charts:        newChartRegistry(),
 		maxIterations: maxIterations,
 	}
 }
@@ -119,16 +124,9 @@ func newTestAgent(model *scriptedModel, fake *fakeLogReader, maxIterations int) 
 func TestWarpAgentAppliesConfiguredTemperatureAndReasoningEffort(t *testing.T) {
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done")}}
 	temperature := 0.2
-	agent := &Agent{
-		chat:  model.respond,
-		tools: buildTools(),
-		deps:  &ToolDeps{logManager: &fakeLogReader{}},
-		config: &schemas.WarpConfig{
-			Enabled: true, Provider: schemas.OpenAI, Model: "gpt-4o",
-			Temperature: &temperature, ReasoningEffort: "low",
-		},
-		maxIterations: 8,
-	}
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
+	agent.config.Temperature = &temperature
+	agent.config.ReasoningEffort = "low"
 
 	collectEvents(t, agent, context.Background())
 
@@ -145,7 +143,7 @@ func TestWarpAgentAppliesConfiguredTemperatureAndReasoningEffort(t *testing.T) {
 // standing in for "unconfigured".
 func TestWarpAgentLeavesTemperatureAndReasoningUnsetByDefault(t *testing.T) {
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done")}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	collectEvents(t, agent, context.Background())
 
@@ -182,7 +180,7 @@ func eventTypes(events []Event) []eventType {
 // again stands, so a turn can still end without tools.
 func TestWarpAgentAnswersWithoutTools(t *testing.T) {
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("You spent $412 last week."), TextTurn("You spent $412 last week.")}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -198,7 +196,7 @@ func TestWarpAgentRunsToolThenAnswers(t *testing.T) {
 		TextTurn("42 requests."),
 	}}
 	fake := &fakeLogReader{}
-	agent := newTestAgent(model, fake, 8)
+	agent := newTestAgent(t, model, fake, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -224,7 +222,7 @@ func TestWarpAgentNamesAGovernanceRefusal(t *testing.T) {
 		}
 	}
 	run := func(err *schemas.BifrostError) Event {
-		events := collectEvents(t, newTestAgent(&scriptedModel{err: err}, &fakeLogReader{}, 8), context.Background())
+		events := collectEvents(t, newTestAgent(t, &scriptedModel{err: err}, &fakeLogReader{}, 8), context.Background())
 		last := events[len(events)-1]
 		require.Equal(t, EventError, last.Type)
 		return last
@@ -271,7 +269,7 @@ func TestWarpAgentNamesAGovernanceRefusal(t *testing.T) {
 // failed request as a successful one with a short answer.
 func TestWarpAgentErrorFrameIsTerminal(t *testing.T) {
 	model := &scriptedModel{err: &schemas.BifrostError{Error: &schemas.ErrorField{Message: "provider exploded"}}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -290,7 +288,7 @@ func TestWarpAgentStopsAtMaxIterations(t *testing.T) {
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
 		ToolTurn("loop", "query_metrics", `{"filters":{},"metrics":["summary"]}`),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 3)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 3)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -311,7 +309,7 @@ func TestWarpAgentReportsToolFailureToModel(t *testing.T) {
 		ToolTurn("bad", "query_logs", `{"filters":{"nonsense":true}}`),
 		TextTurn("Sorry, let me try that differently."),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -329,7 +327,7 @@ func TestWarpAgentHandlesUnknownToolName(t *testing.T) {
 		ToolTurn("ghost", "query_the_vibes", `{}`),
 		TextTurn("Using a real tool instead."),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 	require.True(t, events[2].Failed)
@@ -341,7 +339,7 @@ func TestWarpAgentHandlesMalformedToolArguments(t *testing.T) {
 		ToolTurn("broken", "query_metrics", `{not json`),
 		TextTurn("Retrying."),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 	require.True(t, events[2].Failed)
@@ -354,7 +352,7 @@ func TestWarpAgentStopsOnCancellation(t *testing.T) {
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
 		ToolTurn("loop", "query_metrics", `{"filters":{},"metrics":["summary"]}`),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 100)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 100)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	events := make(chan Event, 8)
@@ -378,7 +376,7 @@ func TestWarpAgentPassesContextThroughToTools(t *testing.T) {
 		TextTurn("done"),
 	}}
 	fake := &fakeLogReader{}
-	agent := newTestAgent(model, fake, 8)
+	agent := newTestAgent(t, model, fake, 8)
 
 	ctx := context.WithValue(context.Background(), scopeKey{}, "caller-scope")
 	collectEvents(t, agent, ctx)
@@ -469,7 +467,7 @@ func TestWarpAgentSurvivesNilContentOnToolTurn(t *testing.T) {
 		}}},
 		TextTurn("42 requests."),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -488,7 +486,7 @@ func TestWarpAgentSurvivesNilContentOnFinalTurn(t *testing.T) {
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
 		{Output: []schemas.ResponsesMessage{{Type: &itemType, Role: &role, Content: nil}}},
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 	require.Equal(t, EventError, events[len(events)-1].Type)
@@ -509,19 +507,6 @@ func TestWarpSystemPromptAdmitsWhatItCannotAnswer(t *testing.T) {
 	// the issue link there would train people to file tickets for their own
 	// typos.
 	require.Contains(t, content, "An empty result is not the same as an unanswerable question")
-}
-
-// The prompt used to say to "filter it out with apps", but apps only includes.
-// Asked "what did I spend on each provider", the model sent apps: ["Warp"] and
-// reported Warp's own spend ($5.72) as the deployment's, against $9.03 on the
-// dashboard beside it.
-func TestWarpSystemPromptDoesNotSuggestExcludingWarpViaApps(t *testing.T) {
-	content := systemInstructions(&schemas.WarpConfig{}, true)
-
-	require.NotContains(t, content, "filter it out with apps")
-	require.Contains(t, content, `"My usage" and "what did I spend" mean the person's traffic through Bifrost, never your own queries`)
-	require.Contains(t, content, "No filter narrows to your own queries")
-	require.NotContains(t, content, `scope "warp"`)
 }
 
 // Nothing stops a generally helpful model from just answering "who is Kanye
@@ -662,6 +647,32 @@ func TestWarpSystemPromptExplainsScopeTag(t *testing.T) {
 	require.Contains(t, content, `pass scope: "all" in filters`, "the tag is only reachable for an identified caller through the filter marker")
 }
 
+// An unidentified session has no default scope, and the escape hatch for a
+// deliberate deployment-wide question used to be broad enough that "my top 5
+// users" read as one: the model answered over everything with a caveat about
+// half the time. Widening silently is the failure that matters here - the number
+// is what gets read and repeated, not the caveat after it - so the prompt has to
+// leave no room for it.
+func TestWarpSystemPromptAsksRatherThanWideningSilently(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+
+	require.Contains(t, content, "you must ask before querying")
+	// ask_user takes at most 8 options, and a mixed list of every team,
+	// customer and business unit overflows it - the prompt has to narrow to
+	// one dimension first, not hand them all over as options.
+	require.Contains(t, content, `ask_user accepts at most 8 options, counting a "whole deployment" option`)
+	require.Contains(t, content, "list only one dimension's values - teams, customers or business units, never a mix")
+	require.Contains(t, content, "ask that first and only list that one dimension's values once they answer")
+	require.NotContains(t, content, "Call ask_user with the teams, customers and business units")
+	require.Contains(t, content, `"my", "we", "our", "I" and "us" do not name a scope`)
+	require.Contains(t, content, "Never widen past the caller's default because no narrower scope was given")
+	require.Contains(t, content, "never answer widely with a caveat")
+	// The whole-deployment answer stays available when it is actually asked for.
+	require.Contains(t, content, "Only treat the whole deployment as settled when the person said so")
+	// Asking every turn would be its own failure; the choice has to stick.
+	require.Contains(t, content, "Ask once per thread, not once per question")
+}
+
 // Warp's calls run on the gateway client in-process, so the request is
 // addressed to the configured provider natively. It used to go out as
 // Provider "openai" with a "provider/model" string for the OpenAI-compatible
@@ -682,7 +693,7 @@ func TestWarpAgentAddressesConfiguredProviderNatively(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done")}}
-			agent := newTestAgent(model, &fakeLogReader{}, 8)
+			agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 			agent.config.Provider = tc.provider
 			agent.config.Model = tc.model
 
@@ -747,21 +758,21 @@ func TestAccumulateWarpUsageIgnoresNil(t *testing.T) {
 }
 
 // MultiToolTurn builds one assistant turn asking for several tools at once.
+// Each call gets distinct arguments so a within-step identical-call refusal
+// does not collapse the batch - these helpers exist to exercise the per-turn
+// cap and concurrent execution, which need that many real store hits.
 func MultiToolTurn(names ...string) *schemas.BifrostResponsesResponse {
 	itemType := schemas.ResponsesMessageTypeFunctionCall
 	output := make([]schemas.ResponsesMessage, 0, len(names))
 	for i, name := range names {
 		callID, callName := fmt.Sprintf("call-%d", i), name
-		// Distinct arguments per call. Identical calls are refused as repeats -
-		// within a step as well as across them - so a batch of clones would
-		// measure the repeat guard rather than the per-turn cap.
-		arguments := fmt.Sprintf(`{"filters":{"models":["m-%d"]},"metrics":["summary"]}`, i)
+		args := fmt.Sprintf(`{"filters":{"start_time":"-%dh"},"metrics":["summary"]}`, i+1)
 		output = append(output, schemas.ResponsesMessage{
 			Type: &itemType,
 			ResponsesToolMessage: &schemas.ResponsesToolMessage{
 				CallID:    &callID,
 				Name:      &callName,
-				Arguments: &arguments,
+				Arguments: new(args),
 			},
 		})
 	}
@@ -815,7 +826,7 @@ func TestWarpAgentAnswersEveryToolCallPastTheCap(t *testing.T) {
 		MultiToolTurn(names...),
 		TextTurn("done."),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -849,7 +860,7 @@ func TestWarpAgentStopsExecutingPastTheCap(t *testing.T) {
 		MultiToolTurn(names...),
 		TextTurn("done."),
 	}}
-	agent := newTestAgent(model, fake, 8)
+	agent := newTestAgent(t, model, fake, 8)
 
 	collectEvents(t, agent, context.Background())
 	require.Equal(t, MaxToolCallsPerTurn, fake.statsCalls, "calls past the cap must not reach the log store")
@@ -861,7 +872,7 @@ func TestWarpAgentStopsExecutingPastTheCap(t *testing.T) {
 // as a user action.
 func TestWarpAgentReportsExpiredDeadlineAsTimeout(t *testing.T) {
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("never reached")}}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
@@ -881,7 +892,7 @@ func TestWarpAgentReportsExpiredDeadlineAsTimeout(t *testing.T) {
 func TestWarpAgentAlwaysDeliversTerminalFrame(t *testing.T) {
 	for attempt := 0; attempt < 50; attempt++ {
 		model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("never reached")}}
-		agent := newTestAgent(model, &fakeLogReader{}, 8)
+		agent := newTestAgent(t, model, &fakeLogReader{}, 8)
 
 		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 		events := collectEvents(t, agent, ctx)
@@ -938,7 +949,7 @@ func TestWarpAgentCarriesUsageOntoTerminalErrors(t *testing.T) {
 		model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
 			withUsage(ToolTurn("call-1", "query_metrics", `{"filters":{},"metrics":["summary"]}`), 100, 10),
 		}}
-		agent := newTestAgent(model, &fakeLogReader{}, 3)
+		agent := newTestAgent(t, model, &fakeLogReader{}, 3)
 
 		events := collectEvents(t, agent, context.Background())
 
@@ -951,7 +962,7 @@ func TestWarpAgentCarriesUsageOntoTerminalErrors(t *testing.T) {
 
 	t.Run("upstream error after a successful call", func(t *testing.T) {
 		model := &failingAfterFirst{first: withUsage(ToolTurn("call-1", "query_metrics", `{"filters":{},"metrics":["summary"]}`), 100, 10)}
-		agent := newTestAgent(&scriptedModel{}, &fakeLogReader{}, 8)
+		agent := newTestAgent(t, &scriptedModel{}, &fakeLogReader{}, 8)
 		agent.chat = model.respond
 
 		events := collectEvents(t, agent, context.Background())
@@ -1091,7 +1102,7 @@ func TestWarpMergePromptDetailsDoesNotAliasTheProviderResponse(t *testing.T) {
 	require.Equal(t, 1, second.CachedWriteTokenDetails.CachedWriteTokens5m)
 }
 
-// buildToolsFor omits semantic_search_logs when there is no searcher, so the
+// RunTurn hides semantic_search_logs when there is no searcher, so the
 // prompt must not name it. Telling the model to use a tool it has not been
 // given costs a step to discover otherwise, on every attempt, because nothing
 // about the prompt changes between them.
@@ -1122,16 +1133,16 @@ func TestWarpSystemInstructionsOmitSemanticSearchWhenUnavailable(t *testing.T) {
 	require.Contains(t, withoutSemantic, "content_search",
 		"without semantic search a topic question still has a sample to take")
 
-	// And the tool list agrees with the prompt in both directions.
-	names := func(tools []Tool) []string {
-		out := make([]string, 0, len(tools))
-		for _, tool := range tools {
-			out = append(out, tool.name)
-		}
-		return out
+	// And the declarations agree with the prompt in both directions: the
+	// prompt reads availability off exactly what the model was offered.
+	mcp := newTestMCP(t, &fakeLogReader{})
+	offered := func(list MCPToolLister) toolAvailability {
+		declared, err := declaredTools(context.Background(), list)
+		require.NoError(t, err)
+		return availabilityFrom(declared)
 	}
-	require.NotContains(t, names(buildToolsFor(nil, false)), SemanticSearchToolName)
-	require.Contains(t, names(buildToolsFor(&SemanticSearcher{}, false)), SemanticSearchToolName)
+	require.False(t, offered(withoutTool(mcp.list, mcptools.SemanticSearchToolName)).semantic)
+	require.True(t, offered(mcp.list).semantic)
 }
 
 // This is the correctness guarantee running a step's tool calls together
@@ -1158,7 +1169,7 @@ func TestWarpAgentPreservesCallOrderRegardlessOfCompletionOrder(t *testing.T) {
 		costHistogramDelay:  50 * time.Millisecond,
 		tokenHistogramDelay: 1 * time.Millisecond,
 	}
-	agent := newTestAgent(model, fake, 8)
+	agent := newTestAgent(t, model, fake, 8)
 
 	collectEvents(t, agent, context.Background())
 
@@ -1193,7 +1204,7 @@ func TestWarpAgentRunsQueuedToolCallsConcurrently(t *testing.T) {
 		entered: make(chan struct{}, MaxToolCallsPerTurn),
 		release: make(chan struct{}),
 	}
-	agent := newTestAgent(model, fake, 8)
+	agent := newTestAgent(t, model, fake, 8)
 
 	// releaseFake is idempotent and deferred before the barrier loop below, so
 	// a t.Fatal timeout - which only unwinds this goroutine via Goexit, not the
@@ -1251,7 +1262,7 @@ func TestWarpAgentAskUserMidBatchStillRunsEarlierCallsButNotLaterOnes(t *testing
 		TextTurn("should never be reached"),
 	}}
 	fake := &fakeLogReader{statsDelay: 20 * time.Millisecond}
-	agent := newTestAgent(model, fake, 8)
+	agent := newTestAgent(t, model, fake, 8)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -1299,7 +1310,7 @@ func TestWarpAgentToolCallCapIsGlobalAcrossConcurrentTurns(t *testing.T) {
 			MultiToolTurn(names...),
 			TextTurn("done."),
 		}}
-		agent := newTestAgent(model, fake, 8)
+		agent := newTestAgent(t, model, fake, 8)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -1341,7 +1352,7 @@ func TestWarpAgentFinalStepAnswersPartially(t *testing.T) {
 		ToolTurn("two", "count_logs", `{"filters":{}}`),
 		TextTurn("About $12 so far. I could not check last week."),
 	}}
-	agent := newTestAgent(model, &fakeLogReader{}, 3)
+	agent := newTestAgent(t, model, &fakeLogReader{}, 3)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -1380,7 +1391,7 @@ func TestWarpAgentRefusesRepeatedToolCall(t *testing.T) {
 		TextTurn("There were 3 requests."),
 	}}
 	fake := &fakeLogReader{}
-	agent := newTestAgent(model, fake, 5)
+	agent := newTestAgent(t, model, fake, 5)
 
 	events := collectEvents(t, agent, context.Background())
 
@@ -1454,13 +1465,15 @@ func TestWarpAgentPinsOneClockPerTurn(t *testing.T) {
 	fake := &fakeLogReader{}
 	var starts []time.Time
 	calls := 0
-	agent := newTestAgent(&scriptedModel{}, fake, 8)
+	agent := newTestAgent(t, &scriptedModel{}, fake, 8)
 	agent.timezone = "Asia/Kolkata"
 	agent.chat = func(_ context.Context, _ *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
 		calls++
+		fake.mu.Lock()
 		if fake.searchFilters != nil {
 			starts = append(starts, *fake.searchFilters.StartTime)
 		}
+		fake.mu.Unlock()
 		// The gateway's clock moves on between the model's steps.
 		clock = clock.Add(30 * time.Second)
 		switch calls {
@@ -1527,17 +1540,17 @@ func TestWarpSystemPromptCarriesUTCOffset(t *testing.T) {
 	defer func() { Now = original }()
 
 	t.Run("positive offset shifts the local time and is labeled", func(t *testing.T) {
-		content := systemInstructions(&schemas.WarpConfig{}, true, timeContext{utcOffsetMinutes: 330}) // IST, UTC+05:30
+		content := systemInstructions(&schemas.WarpConfig{}, true, askerContext{utcOffsetMinutes: 330}) // IST, UTC+05:30
 		require.Contains(t, content, "The current time is Monday 2026-08-17 15:00:00 (UTC+05:30)")
 	})
 
 	t.Run("negative offset shifts the local time and is labeled", func(t *testing.T) {
-		content := systemInstructions(&schemas.WarpConfig{}, true, timeContext{utcOffsetMinutes: -480}) // PST, UTC-08:00
+		content := systemInstructions(&schemas.WarpConfig{}, true, askerContext{utcOffsetMinutes: -480}) // PST, UTC-08:00
 		require.Contains(t, content, "2026-08-17 01:30:00 (UTC-08:00)")
 	})
 
 	t.Run("zero offset reads exactly as before this existed", func(t *testing.T) {
-		content := systemInstructions(&schemas.WarpConfig{}, true, timeContext{utcOffsetMinutes: 0})
+		content := systemInstructions(&schemas.WarpConfig{}, true, askerContext{utcOffsetMinutes: 0})
 		require.Contains(t, content, "2026-08-17 09:30:00 (UTC).")
 		require.NotContains(t, content, "UTC+00:00")
 	})
@@ -1548,12 +1561,12 @@ func TestWarpSystemPromptCarriesUTCOffset(t *testing.T) {
 	})
 
 	t.Run("an out-of-range offset is not trusted", func(t *testing.T) {
-		content := systemInstructions(&schemas.WarpConfig{}, true, timeContext{utcOffsetMinutes: 100000})
+		content := systemInstructions(&schemas.WarpConfig{}, true, askerContext{utcOffsetMinutes: 100000})
 		require.Contains(t, content, "2026-08-17 09:30:00 (UTC).")
 	})
 
 	t.Run("a valid time zone is named", func(t *testing.T) {
-		content := systemInstructions(&schemas.WarpConfig{}, true, timeContext{utcOffsetMinutes: 330, timezone: "Asia/Kolkata"})
+		content := systemInstructions(&schemas.WarpConfig{}, true, askerContext{utcOffsetMinutes: 330, timezone: "Asia/Kolkata"})
 		require.Contains(t, content, "The asker's time zone is Asia/Kolkata.")
 	})
 
@@ -1562,22 +1575,86 @@ func TestWarpSystemPromptCarriesUTCOffset(t *testing.T) {
 	// client that sent a zone and a stale or missing offset was told one time
 	// and had its dates resolved against another.
 	t.Run("a valid time zone decides the stated time, not the offset beside it", func(t *testing.T) {
-		content := systemInstructions(&schemas.WarpConfig{}, true, timeContext{timezone: "Asia/Kolkata"})
+		content := systemInstructions(&schemas.WarpConfig{}, true, askerContext{timezone: "Asia/Kolkata"})
 		require.Contains(t, content, "The current time is Monday 2026-08-17 15:00:00 (UTC+05:30)")
 
-		content = systemInstructions(&schemas.WarpConfig{}, true, timeContext{utcOffsetMinutes: -480, timezone: "Asia/Kolkata"})
+		content = systemInstructions(&schemas.WarpConfig{}, true, askerContext{utcOffsetMinutes: -480, timezone: "Asia/Kolkata"})
 		require.Contains(t, content, "The current time is Monday 2026-08-17 15:00:00 (UTC+05:30)")
 	})
 
 	t.Run("an unrecognized time zone falls back to the offset", func(t *testing.T) {
-		content := systemInstructions(&schemas.WarpConfig{}, true, timeContext{utcOffsetMinutes: 330, timezone: "Not/AZone"})
+		content := systemInstructions(&schemas.WarpConfig{}, true, askerContext{utcOffsetMinutes: 330, timezone: "Not/AZone"})
 		require.Contains(t, content, "2026-08-17 15:00:00 (UTC+05:30)")
 	})
 
 	t.Run("an unrecognized time zone is not trusted", func(t *testing.T) {
-		content := systemInstructions(&schemas.WarpConfig{}, true, timeContext{timezone: "Not/AZone"})
+		content := systemInstructions(&schemas.WarpConfig{}, true, askerContext{timezone: "Not/AZone"})
 		require.NotContains(t, content, "The asker's time zone is")
 	})
+}
+
+// Whether the asker is identified decides whether an unscoped question has a
+// default scope or needs asking. It used to reach the model only through
+// describe_filter_space, so a model that answered without calling it never
+// learned it was in the must-ask case and fell back to the whole deployment.
+// The prompt now states it outright - and states nothing when there is no asker.
+func TestWarpSystemInstructionsStateAskerIdentity(t *testing.T) {
+	const known = "The person asking is identified"
+	const unknown = "The person asking is not identified"
+
+	content := systemInstructions(&schemas.WarpConfig{}, true, askerContext{identity: identityKnown})
+	require.Contains(t, content, known)
+	require.NotContains(t, content, unknown)
+
+	content = systemInstructions(&schemas.WarpConfig{}, true, askerContext{identity: identityUnknown})
+	require.Contains(t, content, unknown)
+	require.NotContains(t, content, known+":")
+
+	content = systemInstructions(&schemas.WarpConfig{}, true)
+	require.NotContains(t, content, known)
+	require.NotContains(t, content, unknown)
+
+	require.Equal(t, identityKnown, identityFor(Scope{HasIdentity: true, UserID: "u1"}))
+	require.Equal(t, identityUnknown, identityFor(Scope{}))
+}
+
+// A caller nothing restricts has the whole deployment as their default, so the
+// prompt must not tell the model to ask whose traffic is meant - that is the
+// unidentified case. Identified or not, the unrestricted caller gets the
+// deployment sentence, and with it how to ask about their own traffic alone.
+func TestWarpSystemInstructionsStateAnUnrestrictedCallersDefault(t *testing.T) {
+	const deployment = "Nothing restricts what the person asking may see, so the whole deployment is their default scope"
+
+	for _, scope := range []Scope{
+		{Unrestricted: true},
+		{HasIdentity: true, UserID: "admin-1", Unrestricted: true},
+	} {
+		require.Equal(t, identityDeployment, identityFor(scope), "%+v", scope)
+		content := systemInstructions(&schemas.WarpConfig{}, true, askerContext{identity: identityFor(scope)})
+		require.Contains(t, content, deployment)
+		require.Contains(t, content, "set user_ids to the caller_user_id describe_filter_space returns")
+		require.NotContains(t, content, "The person asking is identified")
+		require.NotContains(t, content, "The person asking is not identified")
+	}
+	require.NotContains(t, systemInstructions(&schemas.WarpConfig{}, true, askerContext{identity: identityKnown}), deployment)
+}
+
+// The line reaches the model on a real run, taken from the caller's scope.
+func TestWarpAgentSendsAskerIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		scope Scope
+		want  string
+	}{
+		{Scope{HasIdentity: true, UserID: "u1"}, "The person asking is identified"},
+		{Scope{}, "The person asking is not identified"},
+		{Scope{HasIdentity: true, UserID: "admin-1", Unrestricted: true}, "the whole deployment is their default scope"},
+	} {
+		model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done")}}
+		agent := newTestAgent(t, model, &fakeLogReader{}, 4)
+		agent.scope = tc.scope
+		collectEvents(t, agent, context.Background())
+		require.Contains(t, model.lastInstructions, tc.want)
+	}
 }
 
 func TestWarpFormatUTCOffset(t *testing.T) {
@@ -1686,104 +1763,35 @@ func TestWarpSystemPromptNamesExistingTrendFields(t *testing.T) {
 	require.Contains(t, content, "compare_to_previous")
 }
 
-// The links only help if the model uses them. The prompt has to name the two
-// fields and forbid inventing URLs of its own.
-// "Prefer query_metrics for totals" sent a model-wise spend question to
-// query_metrics, which has no per-model split, and the model then reported the
-// question as unsupported after that one call. The prompt names which tool
-// owns each breakdown, and forbids giving up while another tool covers it.
-func TestWarpSystemPromptRoutesBreakdownsToTheirTools(t *testing.T) {
+// An error ranking only helps if the model can get from a row to the requests
+// behind it, and fail_reason counts retry attempts rather than requests. The
+// tool half (query_usage_by's description) is pinned in mcptools.
+func TestWarpSystemPromptGuidesFromAnErrorRankingToItsRows(t *testing.T) {
 	content := systemInstructions(&schemas.WarpConfig{}, true)
-	require.Contains(t, content, "Per-model spend, usage or performance: query_model_performance")
-	require.Contains(t, content, "Per user, team, customer, business unit, project, virtual key or app: query_usage_by")
-	require.Contains(t, content, "Per provider: query_metrics with group_by provider")
-	require.Contains(t, content, "Before saying a traffic question cannot be answered")
+	require.Contains(t, content, "query_logs with error_types")
+	require.Contains(t, content, "status_code")
+	require.Contains(t, content, "fail_reason counts retry attempts")
+}
+
+// Routing dimensions are ranked by query_usage_by, not refused; their links
+// are pinned in mcptools.
+func TestWarpSystemPromptRanksRoutingDimensions(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+	require.Contains(t, content, "Per routing rule, provider key, alias, routing engine, complexity tier or tool call: query_usage_by")
+	require.Contains(t, content, "how a routing rule is configured")
+}
+
+// A key the model has not found by name is not a key that does not exist.
+func TestWarpPromptSendsExistenceChecksForKeysToDescribeVirtualKey(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+	require.Contains(t, content, "describe_virtual_key by exact name is the existence check")
+	require.Contains(t, content, "never say a key does not exist until describe_virtual_key has failed to find it by name")
 }
 
 func TestWarpSystemPromptRequiresDashboardLinks(t *testing.T) {
 	content := systemInstructions(&schemas.WarpConfig{}, true)
 	require.Contains(t, content, "logs_link")
 	require.Contains(t, content, "Never invent a link")
-}
-
-// The repeat guard exists because an identical call returns an identical
-// result - true of a call that succeeded, not of one that failed on a transient
-// store or provider error. Recording the key regardless meant a single blip
-// blocked that exact query for the rest of the run, and the model could never
-// get the data it was refused.
-func TestWarpAgentAllowsRetryAfterAFailedToolCall(t *testing.T) {
-	call := func() *schemas.BifrostResponsesResponse {
-		return ToolTurn("call-1", "query_metrics", `{"filters":{},"metrics":["summary"]}`)
-	}
-	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{call(), call(), TextTurn("42 requests.")}}
-
-	fake := &failTwiceLogReader{}
-	agent := newTestAgent(model, &fakeLogReader{}, 8)
-	agent.deps.logManager = fake
-
-	events := collectEvents(t, agent, context.Background())
-
-	var refusedAsRepeat bool
-	for _, event := range events {
-		if event.Type == EventToolCallEnd && strings.Contains(event.ToolError, "identical to your call") {
-			refusedAsRepeat = true
-		}
-	}
-	require.False(t, refusedAsRepeat, "a call that failed must be retryable, not recorded as already answered")
-	require.GreaterOrEqual(t, fake.calls, 2, "the retry must actually reach the store")
-}
-
-// failTwiceLogReader fails its first stats call and succeeds after, which is
-// what a transient store error looks like.
-type failTwiceLogReader struct {
-	fakeLogReader
-	calls int
-}
-
-func (f *failTwiceLogReader) GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error) {
-	f.calls++
-	if f.calls == 1 {
-		return nil, fmt.Errorf("transient store failure")
-	}
-	return &logstore.SearchStats{}, nil
-}
-
-// An identical call must be refused within a step, not only across steps.
-//
-// executed is written at the end of the step, so a model that asked for the
-// same call twice in one turn ran it twice before the repeat guard ever saw it
-// - two provider calls and two store queries to produce the same bytes, which
-// is exactly the shape a runaway loop takes.
-func TestWarpAgentRefusesRepeatedCallsWithinAStep(t *testing.T) {
-	itemType := schemas.ResponsesMessageTypeFunctionCall
-	arguments := `{"filters":{},"metrics":["summary"]}`
-	call := func(id string) schemas.ResponsesMessage {
-		callID, callName := id, "query_metrics"
-		return schemas.ResponsesMessage{
-			Type: &itemType,
-			ResponsesToolMessage: &schemas.ResponsesToolMessage{
-				CallID: &callID, Name: &callName, Arguments: &arguments,
-			},
-		}
-	}
-
-	fake := &fakeLogReader{}
-	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
-		{Output: []schemas.ResponsesMessage{call("call-0"), call("call-1"), call("call-2")}},
-		TextTurn("done."),
-	}}
-	agent := newTestAgent(model, fake, 8)
-
-	events := collectEvents(t, agent, context.Background())
-	require.Equal(t, 1, fake.statsCalls, "only the first of three identical calls may run")
-
-	refused := 0
-	for _, event := range events {
-		if event.Type == EventToolCallEnd && event.Failed {
-			refused++
-		}
-	}
-	require.Equal(t, 2, refused, "the repeats must be reported as refused, so the model is told why")
 }
 
 // The conversation budget only protects against an oversized upstream request
@@ -1812,6 +1820,535 @@ func TestWarpEstimateMessageTokensSumsAcrossMessages(t *testing.T) {
 	require.Equal(t, sum, estimateMessageTokens(one, two))
 }
 
+// The model is offered exactly Warp's allow-list plus ask_user, under the
+// un-prefixed names the prompt uses - fetched from the MCP server, not kept
+// as a copy here. Anything else the server hosts is withheld.
+func TestWarpAgentOffersAllowedToolsFromMCPServer(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done")}}
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
+
+	collectEvents(t, agent, context.Background())
+
+	offered := make([]string, 0, len(model.lastTools))
+	for _, tool := range model.lastTools {
+		require.NotNil(t, tool.Name)
+		require.False(t, strings.HasPrefix(*tool.Name, mcpToolPrefix), "the client prefix must be stripped before the model sees the name")
+		require.NotNil(t, tool.ResponsesToolFunction, "%s must carry its schema", *tool.Name)
+		require.NotNil(t, tool.ResponsesToolFunction.Parameters, "%s must carry its schema", *tool.Name)
+		offered = append(offered, *tool.Name)
+	}
+	require.Equal(t, append(append([]string{}, allowedTools...), AskUserTool), offered)
+}
+
+// A tool the model names that is not on the allow-list never reaches the
+// server, even if the server happens to host it.
+func TestWarpAgentRefusesToolOutsideAllowList(t *testing.T) {
+	agent := newTestAgent(t, &scriptedModel{}, &fakeLogReader{}, 8)
+	result, failed := agent.executeTool(context.Background(), "drop_all_tables", `{}`)
+	require.True(t, failed)
+	require.Contains(t, result, "drop_all_tables")
+}
+
+// The repeat guard exists because an identical call returns an identical
+// result - true of a call that succeeded, not of one that failed on a transient
+// store or provider error. Recording the key regardless meant a single blip
+// blocked that exact query for the rest of the run, and the model could never
+// get the data it was refused.
+func TestWarpAgentAllowsRetryAfterAFailedToolCall(t *testing.T) {
+	call := func() *schemas.BifrostResponsesResponse {
+		return ToolTurn("call-1", "query_metrics", `{"filters":{},"metrics":["summary"]}`)
+	}
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{call(), call(), TextTurn("42 requests.")}}
+
+	// The first stats read fails, which is what a transient store error looks
+	// like through the MCP server: a failed tool result, not a dead turn.
+	fake := &fakeLogReader{failStats: 1}
+	agent := newTestAgent(t, model, fake, 8)
+
+	events := collectEvents(t, agent, context.Background())
+
+	var refusedAsRepeat, failedFirst bool
+	for _, event := range events {
+		if event.Type == EventToolCallEnd && strings.Contains(event.ToolError, "identical to your call") {
+			refusedAsRepeat = true
+		}
+		if event.Type == EventToolCallEnd && event.Failed {
+			failedFirst = true
+		}
+	}
+	require.True(t, failedFirst, "the transient failure must reach the model as a failed call")
+	require.False(t, refusedAsRepeat, "a call that failed must be retryable, not recorded as already answered")
+	require.GreaterOrEqual(t, fake.statsCalls, 2, "the retry must actually reach the store")
+}
+
+// An identical call must be refused within a step, not only across steps.
+//
+// executed is written at the end of the step, so a model that asked for the
+// same call twice in one turn ran it twice before the repeat guard ever saw it
+// - two provider calls and two store queries to produce the same bytes, which
+// is exactly the shape a runaway loop takes.
+func TestWarpAgentRefusesRepeatedCallsWithinAStep(t *testing.T) {
+	itemType := schemas.ResponsesMessageTypeFunctionCall
+	arguments := `{"filters":{},"metrics":["summary"]}`
+	call := func(id string) schemas.ResponsesMessage {
+		callID, callName := id, "query_metrics"
+		return schemas.ResponsesMessage{
+			Type: &itemType,
+			ResponsesToolMessage: &schemas.ResponsesToolMessage{
+				CallID: &callID, Name: &callName, Arguments: &arguments,
+			},
+		}
+	}
+
+	fake := &fakeLogReader{}
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		{Output: []schemas.ResponsesMessage{call("call-0"), call("call-1"), call("call-2")}},
+		TextTurn("done."),
+	}}
+	agent := newTestAgent(t, model, fake, 8)
+
+	events := collectEvents(t, agent, context.Background())
+	require.Equal(t, 1, fake.statsCalls, "only the first of three identical calls may run")
+
+	refused := 0
+	for _, event := range events {
+		if event.Type == EventToolCallEnd && event.Failed {
+			refused++
+		}
+	}
+	require.Equal(t, 2, refused, "the repeats must be reported as refused, so the model is told why")
+}
+
+// askerLocation is what puts the zone on the clock the tools read. The named
+// zone wins, because only it knows a date months away sits at a different
+// offset; the bare offset is the fallback.
+func TestWarpAskerLocation(t *testing.T) {
+	instant := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
+	hourIn := func(location *time.Location) int { return instant.In(location).Hour() }
+
+	// New York is UTC-5 in January even when the offset sent is July's UTC-4.
+	require.Equal(t, 7, hourIn(askerLocation("America/New_York", -240)))
+	require.Equal(t, 17, hourIn(askerLocation("", 330)), "with no zone name the current offset is all there is")
+	require.Equal(t, 17, hourIn(askerLocation("Not/AZone", 330)))
+	require.Equal(t, time.UTC, askerLocation("", 0))
+}
+
+// declaredNames runs declaredTools over list and returns the offered names in
+// order.
+func declaredNames(t *testing.T, list MCPToolLister) []string {
+	t.Helper()
+	declared, err := declaredTools(context.Background(), list)
+	require.NoError(t, err)
+	names := make([]string, 0, len(declared))
+	for _, tool := range declared {
+		require.NotNil(t, tool.Name)
+		names = append(names, *tool.Name)
+	}
+	return names
+}
+
+// The model is offered what the server hosts, narrowed to the allow-list, in
+// allowedTools order, under the un-prefixed names the prompt uses - plus
+// ask_user, which is Warp's own. A tool RunTurn hides with withoutTool is not
+// offered, and nothing else goes with it.
+func TestWarpDeclaredToolsFollowTheServerAndTheAllowList(t *testing.T) {
+	mcp := newTestMCP(t, &fakeLogReader{})
+
+	all := declaredNames(t, mcp.list)
+	require.Equal(t, append(slices.Clone(allowedTools), AskUserTool), all,
+		"every allowed tool the server hosts is offered, in allow-list order, with ask_user last")
+
+	for _, hidden := range []string{mcptools.SemanticSearchToolName, mcptools.UserLimitsToolName} {
+		names := declaredNames(t, withoutTool(mcp.list, hidden))
+		require.NotContains(t, names, hidden, "a tool this turn cannot use must not be advertised to the model")
+		require.Len(t, names, len(all)-1, "hiding %s hides nothing else", hidden)
+		for _, name := range []string{"query_logs", "query_metrics", "describe_filter_space", AskUserTool} {
+			require.Contains(t, names, name, "%s must still be offered without %s", name, hidden)
+		}
+	}
+
+	// A server tool off the allow-list, or another client's tool, is not offered.
+	extra := func(ctx *schemas.BifrostContext) []schemas.ChatTool {
+		return append(mcp.list(ctx),
+			schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: mcpToolPrefix + "drop_all_tables"}},
+			schemas.ChatTool{Type: schemas.ChatToolTypeFunction, Function: &schemas.ChatToolFunction{Name: "othermcp-query_logs"}},
+		)
+	}
+	require.Equal(t, all, declaredNames(t, extra))
+
+	// No lister leaves only ask_user, rather than failing the turn.
+	require.Equal(t, []string{AskUserTool}, declaredNames(t, nil))
+}
+
+// The lister is asked under the same narrowed context the tools are called
+// under, so core/mcp reports exactly the server and the allow-list.
+func TestWarpDeclaredToolsListUnderTheToolContext(t *testing.T) {
+	var seen *schemas.BifrostContext
+	_, err := declaredTools(context.Background(), func(ctx *schemas.BifrostContext) []schemas.ChatTool {
+		seen = ctx
+		return nil
+	})
+	require.NoError(t, err)
+	require.NotNil(t, seen)
+	require.Equal(t, []string{BifrostMCPClientName}, seen.Value(schemas.MCPContextKeyIncludeClients))
+	require.Equal(t, allowedMCPToolNames(), seen.Value(schemas.MCPContextKeyIncludeTools))
+	require.Equal(t, true, seen.Value(schemas.BifrostContextKeyAdmitUngrantedUser))
+}
+
+// render_chart's server description is written for any client. Warp's model
+// also has to know the chart travels as a block it pastes, so Warp declares
+// it with its own description; every other tool keeps the server's.
+func TestWarpDeclaredRenderChartCarriesWarpsDescription(t *testing.T) {
+	mcp := newTestMCP(t, &fakeLogReader{})
+	declared, err := declaredTools(context.Background(), mcp.list)
+	require.NoError(t, err)
+
+	listCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	server := map[string]string{}
+	for _, tool := range mcp.list(listCtx) {
+		server[strings.TrimPrefix(tool.Function.Name, mcpToolPrefix)] = *tool.Function.Description
+	}
+	for _, tool := range declared {
+		switch *tool.Name {
+		case RenderChartTool:
+			require.Equal(t, renderChartDescription, *tool.Description)
+		case AskUserTool:
+			require.Equal(t, askUserDescription, *tool.Description)
+		default:
+			require.Equal(t, server[*tool.Name], *tool.Description, "%s keeps the server's description", *tool.Name)
+		}
+	}
+}
+
+// The prompt describes exactly the optional tools the declarations carry:
+// availabilityFrom reads them off what the model was given, so a tool RunTurn
+// hid is neither offered nor named.
+func TestWarpAvailabilityFromDrivesTheConditionalGuidance(t *testing.T) {
+	mcp := newTestMCP(t, &fakeLogReader{})
+	availability := func(list MCPToolLister) toolAvailability {
+		declared, err := declaredTools(context.Background(), list)
+		require.NoError(t, err)
+		return availabilityFrom(declared)
+	}
+
+	require.Equal(t, toolAvailability{semantic: true, userLimits: true}, availability(mcp.list))
+	require.Equal(t, toolAvailability{userLimits: true}, availability(withoutTool(mcp.list, mcptools.SemanticSearchToolName)))
+	require.Equal(t, toolAvailability{semantic: true}, availability(withoutTool(mcp.list, mcptools.UserLimitsToolName)))
+	require.Equal(t, toolAvailability{}, availability(nil))
+
+	for name, available := range map[string]toolAvailability{
+		"both": {semantic: true, userLimits: true}, "semantic only": {semantic: true},
+		"user limits only": {userLimits: true}, "neither": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			content := systemInstructionsFor(&schemas.WarpConfig{}, available)
+			require.Equal(t, available.semantic, strings.Contains(content, SemanticSearchGuidance))
+			require.Equal(t, !available.semantic, strings.Contains(content, NoSemanticSampleGuidance),
+				"exactly one topic-sample rule is in front of the model")
+			require.Equal(t, available.userLimits, strings.Contains(content, UserLimitsGuidance))
+			require.Equal(t, available.userLimits, strings.Contains(content, mcptools.UserLimitsToolName),
+				"the prompt names describe_user_limits exactly when it is offered")
+		})
+	}
+	withLimits := systemInstructionsFor(&schemas.WarpConfig{}, toolAvailability{userLimits: true})
+	require.Contains(t, withLimits, "managed by an access profile")
+	require.Contains(t, withLimits, "not a log window")
+}
+
+// On a real run the prompt follows the declarations: a turn whose lister hides
+// a tool gets the guidance for the set it was actually given.
+func TestWarpAgentPromptFollowsTheDeclaredTools(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done")}}
+	agent := newTestAgent(t, model, &fakeLogReader{}, 4)
+	agent.tools = withoutTool(withoutTool(agent.tools, mcptools.SemanticSearchToolName), mcptools.UserLimitsToolName)
+	collectEvents(t, agent, context.Background())
+	require.NotContains(t, model.lastInstructions, SemanticSearchGuidance)
+	require.Contains(t, model.lastInstructions, NoSemanticSampleGuidance)
+	require.NotContains(t, model.lastInstructions, mcptools.UserLimitsToolName)
+
+	model = &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done")}}
+	agent = newTestAgent(t, model, &fakeLogReader{}, 4)
+	collectEvents(t, agent, context.Background())
+	require.Contains(t, model.lastInstructions, SemanticSearchGuidance)
+	require.Contains(t, model.lastInstructions, UserLimitsGuidance)
+}
+
+// The tools run on the MCP server, which learns who is asking only from the
+// caller view Run stamps on the context: the default user, whether any
+// row-level scope applies, what a restricted caller may see, and the turn's
+// one clock in the asker's zone. Without it the server would default to no
+// user and read its own clock.
+func TestWarpAgentStampsTheCallerViewOnToolCalls(t *testing.T) {
+	clock := time.Date(2026, 10, 5, 3, 0, 0, 0, time.UTC)
+	original := Now
+	Now = func() time.Time { return clock }
+	defer func() { Now = original }()
+
+	visible := &LogVisibility{UserIDs: []string{"user-7"}, TeamIDs: []string{"team-1"}}
+	for name, tc := range map[string]struct {
+		scope    Scope
+		wantUser string
+	}{
+		"restricted, identified": {Scope{HasIdentity: true, UserID: "user-7", Visibility: "their teams' traffic", Visible: visible}, "user-7"},
+		"unrestricted admin":     {Scope{HasIdentity: true, UserID: "admin-1", Unrestricted: true}, "admin-1"},
+		"unidentified":           {Scope{}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+				ToolTurn("c-1", "query_metrics", `{"filters":{},"metrics":["summary"]}`),
+				TextTurn("done"),
+			}}
+			agent := newTestAgent(t, model, &fakeLogReader{}, 4)
+			agent.scope = tc.scope
+			agent.timezone = "Asia/Kolkata"
+			var views []mcptools.CallerView
+			var userIDs []any
+			agent.mcp = func(ctx *schemas.BifrostContext, _ *schemas.ChatAssistantMessageToolCall) (*schemas.ChatMessage, *schemas.BifrostError) {
+				view, ok := mcptools.CallerViewFromContext(ctx)
+				require.True(t, ok, "every tool call carries the caller view")
+				views = append(views, view)
+				userIDs = append(userIDs, ctx.Value(schemas.BifrostContextKeyUserID))
+				return &schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr(`{}`)}}, nil
+			}
+			collectEvents(t, agent, context.Background())
+
+			require.Len(t, views, 1)
+			view := views[0]
+			require.Equal(t, tc.wantUser, view.DefaultUserID)
+			require.Equal(t, tc.scope.Unrestricted, view.Unrestricted)
+			require.Equal(t, tc.scope.Visibility, view.Visibility)
+			require.Same(t, tc.scope.Visible, view.Visible)
+			require.True(t, view.Clock.Equal(clock), "the tools read the turn's pinned clock")
+			require.Equal(t, "Asia/Kolkata", view.Clock.Location().String(), "in the asker's zone, so calendar days are theirs")
+			if tc.wantUser != "" {
+				require.Equal(t, tc.wantUser, userIDs[0], "the tool call is attributed to the caller")
+			} else {
+				require.Nil(t, userIDs[0])
+			}
+		})
+	}
+}
+
+// The schemas on Bifrost's MCP server are authored with the fields that steer a
+// query first - the time window, then the provider - and the model reads them in
+// the order it is given. The trip through MCP decodes them into Go maps and
+// hands them back alphabetised, which measurably changed which tool the model
+// picked: "start_time" sank below a dozen unrelated filters and it asked which
+// window to use rather than reading that the field accepts "-7d". This asserts
+// the declared order is the authored one, since nothing about the schema's
+// content reveals when it has been lost.
+func TestWarpDeclaredSchemaKeepsAuthoredPropertyOrder(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done")}}
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
+
+	collectEvents(t, agent, context.Background())
+
+	filterOrder := mcptools.FilterPropertyOrder()
+	require.Equal(t, "start_time", filterOrder[0], "the authored order is the thing under test; a schema that no longer leads with start_time needs this test updated deliberately")
+
+	checked := 0
+	for _, tool := range model.lastTools {
+		if tool.Name == nil || *tool.Name == AskUserTool {
+			continue
+		}
+		params := tool.ResponsesToolFunction.Parameters
+		require.Equal(t, mcptools.PropertyOrder(*tool.Name), params.Properties.Keys(), "%s top-level properties", *tool.Name)
+
+		filters, ok := params.Properties.Get("filters")
+		if !ok {
+			continue
+		}
+		nested, ok := filters.(*schemas.OrderedMap)
+		require.True(t, ok, "%s filters schema", *tool.Name)
+		properties, ok := nested.Get("properties")
+		require.True(t, ok, "%s filters properties", *tool.Name)
+		inner, ok := properties.(*schemas.OrderedMap)
+		require.True(t, ok, "%s filters properties", *tool.Name)
+		require.Equal(t, filterOrder, inner.Keys(), "%s filters properties", *tool.Name)
+		checked++
+	}
+	require.Greater(t, checked, 0, "no tool carried a filters schema; the test asserted nothing")
+}
+
+// The lister hands back the MCP manager's stored declarations, shared by every
+// concurrent turn. Restoring the authored order must work on the turn's own
+// copy: writing into the shared schema raced with every other turn reading it.
+func TestWarpDeclaredToolsLeaveTheSharedSchemaUntouched(t *testing.T) {
+	mcp := newTestMCP(t, &fakeLogReader{})
+	listCtx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	shared := mcp.list(listCtx)
+	snapshot := func() string {
+		data, err := sonic.Marshal(shared)
+		require.NoError(t, err)
+		return string(data)
+	}
+	before := snapshot()
+
+	declared, err := declaredTools(context.Background(), func(*schemas.BifrostContext) []schemas.ChatTool { return shared })
+	require.NoError(t, err)
+	require.Greater(t, len(declared), 1)
+
+	require.Equal(t, before, snapshot(), "declaredTools wrote into the lister's schemas")
+	for _, tool := range shared {
+		name := strings.TrimPrefix(tool.Function.Name, mcpToolPrefix)
+		for _, d := range declared {
+			if d.Name != nil && *d.Name == name && d.ResponsesToolFunction != nil {
+				require.NotSame(t, tool.Function.Parameters, d.ResponsesToolFunction.Parameters, name)
+			}
+		}
+	}
+}
+
+// Without a semantic searcher semantic_search_logs can only refuse, so a turn
+// resolved without one must not offer it; with one, it must.
+func TestWarpTurnOffersSemanticSearchOnlyWhenConfigured(t *testing.T) {
+	offered := func(hasSemantic bool) bool {
+		model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("done")}}
+		service := chatService(t, model, &fakeLogReader{})
+		turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "x"}}}, 10)
+		require.NoError(t, err)
+		turn.hasSemantic = hasSemantic
+		service.RunTurn(ownerCtx("u1"), turn, nil)
+		for _, tool := range model.lastTools {
+			if tool.Name != nil && *tool.Name == mcptools.SemanticSearchToolName {
+				return true
+			}
+		}
+		require.NotEmpty(t, model.lastTools, "the model was offered no tools; the test asserted nothing")
+		return false
+	}
+	require.False(t, offered(false))
+	require.True(t, offered(true))
+}
+
+// The model is offered un-prefixed tool names but sees the prefixed form in
+// results and error text, and sometimes calls it back. It means the tool it was
+// offered, so it dispatches rather than costing an iteration on a naming
+// convention that is Bifrost's own. The allow-list still decides.
+func TestWarpAgentAcceptsThePrefixedToolName(t *testing.T) {
+	agent := newTestAgent(t, &scriptedModel{}, &fakeLogReader{}, 8)
+
+	result, failed := agent.executeTool(context.Background(), mcpToolPrefix+"count_logs", `{"filters":{}}`)
+	require.False(t, failed, "the prefixed name must dispatch: %s", result)
+
+	// Stripping a prefix must not smuggle a tool past the allow-list.
+	result, failed = agent.executeTool(context.Background(), mcpToolPrefix+"drop_all_tables", `{}`)
+	require.True(t, failed)
+	require.Contains(t, result, "drop_all_tables")
+	require.NotContains(t, result, mcpToolPrefix, "the refusal should name the tool, not the wire form")
+}
+
+// narratedToolTurn is a turn that says something AND asks for a tool, which is
+// what a model does when it narrates its own work ("I'll fetch those for you")
+// before querying.
+func narratedToolTurn(text, id, name, arguments string) *schemas.BifrostResponsesResponse {
+	messageType := schemas.ResponsesMessageTypeMessage
+	role := schemas.ResponsesInputMessageRoleAssistant
+	callType := schemas.ResponsesMessageTypeFunctionCall
+	callID, callName, callArgs := id, name, arguments
+	return &schemas.BifrostResponsesResponse{
+		Output: []schemas.ResponsesMessage{
+			{Type: &messageType, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &text}},
+			{Type: &callType, ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: &callID, Name: &callName, Arguments: &callArgs}},
+		},
+	}
+}
+
+// A delta is a whole message from one iteration, not a token. The narration the
+// model writes alongside its tool calls and the answer it writes on the next
+// pass are both deltas, and every consumer concatenates what it receives - so
+// emitted back to back they ran together into one sentence: "I'll fetch the
+// failed requests for you.There are no failed requests." Two steps of the
+// model's work must read as two paragraphs.
+func TestWarpAgentSeparatesNarrationFromTheAnswer(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		narratedToolTurn("I'll fetch the failed requests for you.", "c1", "count_logs", `{"filters":{}}`),
+		TextTurn("There are no failed requests."),
+	}}
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
+
+	f := newFold()
+	for _, event := range collectEvents(t, agent, context.Background()) {
+		f.apply(event)
+	}
+
+	answer := f.result().Answer
+	require.NotContains(t, answer, "you.There", "the narration ran into the answer")
+	require.Equal(t, "I'll fetch the failed requests for you.\n\nThere are no failed requests.", answer)
+}
+
+// One delta on its own must not be padded: the common single-answer turn should
+// read exactly as the model wrote it.
+func TestWarpAgentDoesNotPadASingleAnswer(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("42 requests failed.")}}
+	agent := newTestAgent(t, model, &fakeLogReader{}, 8)
+
+	f := newFold()
+	for _, event := range collectEvents(t, agent, context.Background()) {
+		f.apply(event)
+	}
+	require.Equal(t, "42 requests failed.", f.result().Answer)
+}
+
+// A single turn can carry several message items - the model narrating before it
+// queries, then answering once the result is back - and providers pad neither.
+// responsesText is where they are joined, so it is where they must be kept
+// apart; the emit-time separator above only sees whatever this returned.
+func TestWarpResponsesTextSeparatesMessageItems(t *testing.T) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	role := schemas.ResponsesInputMessageRoleAssistant
+	first, second := "I'll get the failed requests for you.", "There are no failed requests."
+	text := responsesText([]schemas.ResponsesMessage{
+		{Type: &messageType, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &first}},
+		{Type: &messageType, Role: &role, Content: &schemas.ResponsesMessageContent{ContentStr: &second}},
+	})
+	require.Equal(t, first+"\n\n"+second, text)
+	require.NotContains(t, text, "you.There")
+}
+
+// Blocks inside one item are one message split for transport, not separate
+// statements, so they are joined exactly as the model wrote them.
+func TestWarpResponsesTextJoinsBlocksWithinAnItemVerbatim(t *testing.T) {
+	messageType := schemas.ResponsesMessageTypeMessage
+	a, b := "Spend was ", "$4.02 today."
+	text := responsesText([]schemas.ResponsesMessage{{
+		Type: &messageType,
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{
+			{Text: &a}, {Text: &b},
+		}},
+	}})
+	require.Equal(t, "Spend was $4.02 today.", text)
+}
+
+// The prompt used to say to "filter it out with apps", but apps only includes.
+// Asked "what did I spend on each provider", the model sent apps: ["Warp"] and
+// reported Warp's own spend ($5.72) as the deployment's, against $9.03 on the
+// dashboard beside it.
+func TestWarpSystemPromptDoesNotSuggestExcludingWarpViaApps(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+
+	require.NotContains(t, content, "filter it out with apps")
+	require.Contains(t, content, `"My usage" and "what did I spend" mean the person's traffic through Bifrost, never your own queries`)
+	require.Contains(t, content, "No filter narrows to your own queries")
+	require.NotContains(t, content, `scope "warp"`)
+}
+
+// The links only help if the model uses them. The prompt has to name the two
+// fields and forbid inventing URLs of its own.
+// "Prefer query_metrics for totals" sent a model-wise spend question to
+// query_metrics, which has no per-model split, and the model then reported the
+// question as unsupported after that one call. The prompt names which tool
+// owns each breakdown, and forbids giving up while another tool covers it.
+func TestWarpSystemPromptRoutesBreakdownsToTheirTools(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+	require.Contains(t, content, "Per-model spend, usage or performance: query_model_performance")
+	require.Contains(t, content, "Per user, team, customer, business unit, project, virtual key or app: query_usage_by")
+	require.Contains(t, content, "Per provider: query_metrics with group_by provider")
+	require.Contains(t, content, "Before saying a traffic question cannot be answered")
+}
+
 // The model wrote its ranking links as "workspace/logs?..." with the leading
 // slash dropped. sanitizeAnswerLinks repaired them, but only in the folded
 // answer that gets saved - the streamed delta went out raw, and the dashboard's
@@ -1823,7 +2360,7 @@ func TestWarpAgentStreamsRepairedLinks(t *testing.T) {
 		ToolTurn("q-1", "query_model_performance", `{"filters":{"start_time":"-7d"}}`),
 		TextTurn("| [claude-opus-5](workspace/logs?models=claude-opus-5) | $2.92 |"),
 	}}
-	events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	events := collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 
 	var streamed strings.Builder
 	for _, event := range events {
@@ -1856,7 +2393,7 @@ func TestWarpAgentRewritesInventedHostsToTheIssuedLink(t *testing.T) {
 		}
 		return TextTurn("[1,271 requests](https://bifrost-dashboard.example.com" + issued + ")"), nil
 	}
-	agent := newTestAgent(&scriptedModel{}, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, &scriptedModel{}, &fakeLogReader{}, 8)
 	agent.chat = chat
 
 	events := collectEvents(t, agent, context.Background())
@@ -1875,7 +2412,7 @@ func TestWarpAgentRewritesInventedHostsToTheIssuedLink(t *testing.T) {
 	reply := "[The cluster](https://your-bifrost-host/workspace/logs?start_time=1789386139&end_time=1789990939&status=error)"
 	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn(reply), TextTurn(reply)}}
 	out := make(chan Event, 64)
-	go newTestAgent(model, &fakeLogReader{}, 8).Run(context.Background(), history, out)
+	go newTestAgent(t, model, &fakeLogReader{}, 8).Run(context.Background(), history, out)
 	var streamed strings.Builder
 	for event := range out {
 		if event.Type == EventDelta {
@@ -1901,7 +2438,7 @@ func TestWarpAgentRedirectsAfterOnlyFailedToolCalls(t *testing.T) {
 		TextTurn("I need you to choose whose traffic you mean before I can total spend, because there's no default scope here."),
 		ToolTurn("ask-1", AskUserTool, `{"question":"Whose traffic?","kind":"scope","options":[{"label":"Whole deployment"},{"label":"Team A"}]}`),
 	}}
-	events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	events := collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 
 	require.Equal(t, 3, model.calls, "the prose question must be sent back")
 	require.Equal(t, EventQuestion, events[len(events)-2].Type)
@@ -1921,7 +2458,7 @@ func TestWarpAgentRedirectAfterFilterSpaceDoesNotAskForItAgain(t *testing.T) {
 		TextTurn("I need you to pick a scope first: team, customer, or business unit."),
 		ToolTurn("ask-1", AskUserTool, `{"question":"Whose traffic?","kind":"scope","options":[{"label":"Whole deployment"},{"label":"Team A"}]}`),
 	}}
-	collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 
 	require.Equal(t, 3, model.calls)
 	var redirect string
@@ -1936,7 +2473,7 @@ func TestWarpAgentRedirectAfterFilterSpaceDoesNotAskForItAgain(t *testing.T) {
 
 	// With nothing looked up yet, the redirect still sends the model there.
 	model = &scriptedModel{turns: []*schemas.BifrostResponsesResponse{TextTurn("Whose traffic do you mean."), TextTurn("Whose traffic do you mean.")}}
-	collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 	last := model.lastInput[len(model.lastInput)-1]
 	require.Contains(t, *last.Content.ContentStr, "call describe_filter_space first")
 }
@@ -1953,15 +2490,22 @@ func TestWarpPointsFailureQuestionsAtTheErrorTypeRanking(t *testing.T) {
 	require.NotContains(t, content, "is answered with query_logs filtered to status error, tallying",
 		"a 25-row sample must not be the advertised way to count failures")
 
-	tool, ok := toolByName(buildTools(), "query_usage_by")
-	require.True(t, ok)
-	failures := indexOf(tool.description, "failure breakdown")
-	require.GreaterOrEqual(t, failures, 0)
-	require.Less(t, failures, indexOf(tool.description, "Dimensions:"), "said up front, not left to the dimension list")
-	require.Contains(t, tool.description, "what caused the failure spike")
-
+	// The tool's own description is pinned where the tool lives
+	// (mcptools.TestUsageByDescriptionLeadsWithTheFailureBreakdown).
 	redirect := unsupportedReplyRedirect(false, false)
 	require.Contains(t, *redirect.Content.ContentStr, "query_usage_by with dimension error_type")
+}
+
+// The prompt's half of two rules whose tool half lives in mcptools: how to get
+// from an error ranking to its rows, and that traffic through a routing rule is
+// a question about requests, not configuration.
+func TestWarpPromptRoutesErrorAndRoutingQuestions(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+	require.Contains(t, content, "query_logs with error_types")
+	require.Contains(t, content, "status_code")
+	require.Contains(t, content, "fail_reason counts retry attempts")
+	require.Contains(t, content, "Per routing rule, provider key, alias, routing engine, complexity tier or tool call: query_usage_by")
+	require.Contains(t, content, "how a routing rule is configured")
 }
 
 // Each step's text went out back to back, so a turn that narrated between
@@ -1980,7 +2524,7 @@ func TestWarpAgentSeparatesEachStepsText(t *testing.T) {
 		narrated("Now the week before.\n", "c-2", `{"filters":{"start_time":"-14d","end_time":"-7d","status":["error"]}}`),
 		TextTurn("Failures doubled."),
 	}}
-	events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	events := collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 
 	f := newFold()
 	for _, event := range events {
@@ -2012,7 +2556,7 @@ func TestWarpAgentAsksAgainAfterAnEmptyReply(t *testing.T) {
 			EmptyTurn(blank),
 			TextTurn("17 requests failed."),
 		}}
-		events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+		events := collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 
 		require.Equal(t, 3, model.calls, "blank message: %v", blank)
 		last := events[len(events)-1]
@@ -2037,7 +2581,7 @@ func TestWarpAgentAsksAgainAfterAnEmptyReply(t *testing.T) {
 		EmptyTurn(false),
 		TextTurn("17 requests failed."),
 	}}
-	events := collectEvents(t, newTestAgent(model, &fakeLogReader{}, 3), context.Background())
+	events := collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 3), context.Background())
 	last := events[len(events)-1]
 	require.Equal(t, EventDone, last.Type)
 	require.Equal(t, FinishReasonPartial, last.FinishReason)
@@ -2046,7 +2590,7 @@ func TestWarpAgentAsksAgainAfterAnEmptyReply(t *testing.T) {
 
 	// Twice empty is an error, as before - with what it cost.
 	model = &scriptedModel{turns: []*schemas.BifrostResponsesResponse{EmptyTurn(false)}}
-	events = collectEvents(t, newTestAgent(model, &fakeLogReader{}, 8), context.Background())
+	events = collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 	last = events[len(events)-1]
 	require.Equal(t, EventError, last.Type)
 	require.Equal(t, 2, model.calls)
@@ -2061,7 +2605,8 @@ func TestWarpAgentAsksAgainAfterAnEmptyReply(t *testing.T) {
 // was shaped by them, and spent its next step guessing a third. An argument the
 // tool does not take is named, with the ones it does.
 func TestWarpAgentRefusesArgumentsAToolDoesNotTake(t *testing.T) {
-	agent := newTestAgent(&scriptedModel{}, &fakeLogReader{}, 8)
+	// Through the real in-process MCP server, which is where the refusal lives.
+	agent := newTestAgent(t, &scriptedModel{}, &fakeLogReader{}, 8)
 
 	result, failed := agent.executeTool(context.Background(), "query_model_performance",
 		`{"filters":{"start_time":"-1d"},"metrics":["latency_p99"],"include_performance":true,"limit":20,"group_by":"none"}`)
@@ -2071,19 +2616,24 @@ func TestWarpAgentRefusesArgumentsAToolDoesNotTake(t *testing.T) {
 	require.Contains(t, result, "include_performance")
 
 	_, failed = agent.executeTool(context.Background(), "query_model_performance",
-		`{"filters":{"start_time":"-1d"},"include_performance":true}`)
+		`{"filters":{"start_time":"-1d"},"limit":5}`)
 	require.False(t, failed, "the tool's own arguments still run")
+}
 
-	// Every tool's schema has to declare its arguments for this to hold.
-	for _, tool := range buildToolsFor(&SemanticSearcher{}, false) {
-		require.NotEmpty(t, tool.argumentNames(), "tool %s declares no arguments", tool.name)
-	}
+// A model sometimes echoes a tool's MCP-prefixed name back (executeTool accepts
+// it for that reason). Compared by exact name, a prefixed describe_filter_space
+// counted as having fetched data, so the prose question after it was let through
+// with nothing to click.
+func TestWarpAgentTreatsPrefixedFilterSpaceAsNoData(t *testing.T) {
+	model := &scriptedModel{turns: []*schemas.BifrostResponsesResponse{
+		ToolTurn("d-1", mcpToolPrefix+"describe_filter_space", `{}`),
+		TextTurn("I need you to pick a scope first: team, customer, or business unit."),
+		ToolTurn("ask-1", AskUserTool, `{"question":"Whose traffic?","kind":"scope","options":[{"label":"Whole deployment"},{"label":"Team A"}]}`),
+	}}
+	events := collectEvents(t, newTestAgent(t, model, &fakeLogReader{}, 8), context.Background())
 
-	// The unknown-filter error lists what is supported, and that list is not
-	// allowed to fall behind the schema again.
-	_, err := parseFilters(map[string]any{"error_type": []any{"x"}}, Now())
-	require.ErrorContains(t, err, "error_types")
-	require.ErrorContains(t, err, "status_codes")
+	require.Equal(t, 3, model.calls, "the prose question must be sent back")
+	require.Equal(t, EventQuestion, events[len(events)-2].Type)
 }
 
 // The mirror of the refusal above. gpt-5.4-mini called semantic_search_logs
@@ -2092,7 +2642,7 @@ func TestWarpAgentRefusesArgumentsAToolDoesNotTake(t *testing.T) {
 // "limit is in the wrong place". A misplaced argument the tool takes beside
 // filters is named as such, and an unknown key nothing takes is not.
 func TestWarpAgentNamesArgumentMisplacedInsideFilters(t *testing.T) {
-	agent := newTestAgent(&scriptedModel{}, &fakeLogReader{}, 8)
+	agent := newTestAgent(t, &scriptedModel{}, &fakeLogReader{}, 8)
 
 	result, failed := agent.executeTool(context.Background(), "query_logs",
 		`{"filters":{"start_time":"-1d","limit":10}}`)

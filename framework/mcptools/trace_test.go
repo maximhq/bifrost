@@ -1,4 +1,4 @@
-package warp
+package mcptools
 
 import (
 	"context"
@@ -12,13 +12,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestWarpGetRequestTraceRequiresID(t *testing.T) {
-	_, err := runTool(t, "get_request_trace", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{})
+func TestGetRequestTraceRequiresID(t *testing.T) {
+	_, err := runTool(t, "get_request_trace", &Deps{LogManager: &fakeLogReader{}}, map[string]any{})
 	require.ErrorContains(t, err, "log_id is required")
 }
 
-func TestWarpGetRequestTraceNotFound(t *testing.T) {
-	_, err := runTool(t, "get_request_trace", &ToolDeps{logManager: &fakeLogReader{}}, map[string]any{"log_id": "missing"})
+func TestGetRequestTraceNotFound(t *testing.T) {
+	_, err := runTool(t, "get_request_trace", &Deps{LogManager: &fakeLogReader{}}, map[string]any{"log_id": "missing"})
 	require.ErrorContains(t, err, "missing")
 }
 
@@ -26,7 +26,7 @@ func TestWarpGetRequestTraceNotFound(t *testing.T) {
 // Every optional causal field (retries, error, cache, guardrails, plugin and
 // routing logs, overhead) is exercised here so a nil-guard regression on any
 // one of them fails this test rather than surfacing as a panic on real traffic.
-func TestWarpGetRequestTraceSingleNodeProjectsEveryField(t *testing.T) {
+func TestGetRequestTraceSingleNodeProjectsEveryField(t *testing.T) {
 	ts := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
 	failReason := "rate_limit_error"
 	stopReason := "stop"
@@ -81,7 +81,7 @@ func TestWarpGetRequestTraceSingleNodeProjectsEveryField(t *testing.T) {
 		searchResult: &logstore.SearchResult{Logs: nil, Pagination: logstore.PaginationOptions{TotalCount: 0}},
 	}
 
-	result, err := runTool(t, "get_request_trace", &ToolDeps{logManager: fake}, map[string]any{"log_id": "req-root"})
+	result, err := runTool(t, "get_request_trace", &Deps{LogManager: fake}, map[string]any{"log_id": "req-root"})
 	require.NoError(t, err)
 
 	out, ok := result.(map[string]any)
@@ -146,7 +146,7 @@ func TestWarpGetRequestTraceSingleNodeProjectsEveryField(t *testing.T) {
 // more than MaxTraceLogLines lines in total. traceFromLog must flatten across
 // plugins, sort by when each line actually happened, and only then cap once
 // for the whole node.
-func TestWarpGetRequestTracePluginLogsOrderedAcrossPluginsAndCappedNodeWide(t *testing.T) {
+func TestGetRequestTracePluginLogsOrderedAcrossPluginsAndCappedNodeWide(t *testing.T) {
 	base := int64(1700000000000)
 	grouped := map[string][]schemas.PluginLogEntry{}
 	// Two plugins, 15 lines each (30 total, comfortably over MaxTraceLogLines),
@@ -180,7 +180,7 @@ func TestWarpGetRequestTracePluginLogsOrderedAcrossPluginsAndCappedNodeWide(t *t
 // Passing the id of a fallback hop, not the root, must still resolve and
 // return the whole chain - the model has no way to know in advance which one
 // a pasted or previously-seen id refers to.
-func TestWarpGetRequestTraceResolvesFullChainFromAnyHop(t *testing.T) {
+func TestGetRequestTraceResolvesFullChainFromAnyHop(t *testing.T) {
 	ts := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
 	root := &logstore.Log{ID: "req-root", Timestamp: ts, Provider: "openai", Model: "gpt-4o", Status: "error", FallbackIndex: 0}
 	fallback := &logstore.Log{
@@ -204,7 +204,7 @@ func TestWarpGetRequestTraceResolvesFullChainFromAnyHop(t *testing.T) {
 	}
 
 	// Ask about the fallback hop, not the root.
-	result, err := runTool(t, "get_request_trace", &ToolDeps{logManager: fake}, map[string]any{"log_id": "req-fallback-1"})
+	result, err := runTool(t, "get_request_trace", &Deps{LogManager: fake}, map[string]any{"log_id": "req-fallback-1"})
 	require.NoError(t, err)
 
 	out := result.(map[string]any)
@@ -222,7 +222,7 @@ func TestWarpGetRequestTraceResolvesFullChainFromAnyHop(t *testing.T) {
 
 // A chain longer than the tool's cap should be reported as such, so the model
 // does not read a capped list as the complete fallback history.
-func TestWarpGetRequestTraceReportsTruncatedChain(t *testing.T) {
+func TestGetRequestTraceReportsTruncatedChain(t *testing.T) {
 	ts := time.Date(2026, 9, 15, 10, 0, 0, 0, time.UTC)
 	root := &logstore.Log{ID: "req-root", Timestamp: ts, Provider: "openai", Model: "gpt-4o", Status: "error"}
 
@@ -234,7 +234,7 @@ func TestWarpGetRequestTraceReportsTruncatedChain(t *testing.T) {
 		},
 	}
 
-	result, err := runTool(t, "get_request_trace", &ToolDeps{logManager: fake}, map[string]any{"log_id": "req-root"})
+	result, err := runTool(t, "get_request_trace", &Deps{LogManager: fake}, map[string]any{"log_id": "req-root"})
 	require.NoError(t, err)
 	out := result.(map[string]any)
 	require.Equal(t, true, out["truncated_chain"])
