@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -152,4 +153,53 @@ func TestGuardrailMetadataKeepsJudgeCallsAndDetectionsTogether(t *testing.T) {
 func TestGuardrailMetadataEmptyCloneIsNil(t *testing.T) {
 	assert.Nil(t, (&BifrostGuardrailMetadata{}).Clone())
 	assert.False(t, SetGuardrailMetadataOnContext(NewBifrostContext(nil, NoDeadline), &BifrostGuardrailMetadata{}))
+}
+
+// TestDeferredGuardrailResultDeliversFirstResultToEveryCallback verifies the log
+// writer sees the result, plugin log lines included, whether it registers before
+// or after completion, and that a second Complete cannot replace it.
+func TestDeferredGuardrailResultDeliversFirstResultToEveryCallback(t *testing.T) {
+	result := NewDeferredGuardrailResult()
+	var early, late *BifrostGuardrailMetadata
+	var earlyLogs, lateLogs []PluginLogEntry
+	result.OnComplete(func(metadata *BifrostGuardrailMetadata, _ RedactionData, logs []PluginLogEntry) {
+		early, earlyLogs = metadata, logs
+	})
+	require.Nil(t, early, "callback must wait for completion")
+
+	firstLogs := []PluginLogEntry{{PluginName: "guardrails", Message: "first"}}
+	result.Complete(&BifrostGuardrailMetadata{Detections: []BifrostGuardrailDetection{{RuleName: "first"}}}, RedactionData{}, firstLogs)
+	result.Complete(&BifrostGuardrailMetadata{Detections: []BifrostGuardrailDetection{{RuleName: "second"}}}, RedactionData{},
+		[]PluginLogEntry{{PluginName: "guardrails", Message: "second"}})
+	result.OnComplete(func(metadata *BifrostGuardrailMetadata, _ RedactionData, logs []PluginLogEntry) {
+		late, lateLogs = metadata, logs
+	})
+
+	require.NotNil(t, early)
+	require.NotNil(t, late)
+	assert.Equal(t, "first", early.Detections[0].RuleName)
+	assert.Equal(t, "first", late.Detections[0].RuleName)
+	assert.Equal(t, firstLogs, earlyLogs)
+	assert.Equal(t, firstLogs, lateLogs)
+}
+
+// TestGuardrailDetectionActionAndEnforcedSerialize verifies a detection names
+// the action and keeps an explicit enforced=false, so a monitored block reads
+// differently from an enforced one, while an older detection without them
+// serializes as before.
+func TestGuardrailDetectionActionAndEnforcedSerialize(t *testing.T) {
+	monitored := BifrostGuardrailDetection{Phase: "output", RuleName: "r", Action: GuardrailDetectionActionBlock, Enforced: Ptr(false)}
+	data, err := json.Marshal(monitored)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"phase":"output","rule_name":"r","action":"block","enforced":false}`, string(data))
+
+	data, err = json.Marshal(BifrostGuardrailDetection{Phase: "input"})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"phase":"input"}`, string(data))
+
+	cloned := (&BifrostGuardrailMetadata{Detections: []BifrostGuardrailDetection{monitored}}).Clone()
+	require.NotNil(t, cloned.Detections[0].Enforced)
+	assert.False(t, *cloned.Detections[0].Enforced)
+	*cloned.Detections[0].Enforced = true
+	assert.False(t, *monitored.Enforced, "clone must not share enforced with the original")
 }
