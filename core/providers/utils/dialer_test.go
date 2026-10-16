@@ -1,10 +1,13 @@
 package utils
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -13,6 +16,27 @@ import (
 	"github.com/maximhq/bifrost/core/network"
 	"github.com/valyala/fasthttp"
 )
+
+func BenchmarkConfigureDialer(b *testing.B) {
+	b.Run("Setup", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			client := ConfigureDialer(&fasthttp.Client{}, false)
+			if client.Dial == nil {
+				b.Fatal("expected a dial function")
+			}
+		}
+	})
+	b.Run("SSRFRejection", func(b *testing.B) {
+		client := ConfigureDialer(&fasthttp.Client{}, false)
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := client.Dial("10.0.0.1:80"); err == nil {
+				b.Fatal("expected private IP rejection")
+			}
+		}
+	})
+}
 
 // TestConfigureDialer_SetsRetryIfErr verifies that ConfigureDialer installs
 // the StaleConnectionRetryIfErr callback on the client.
@@ -402,20 +426,44 @@ func TestConfigureDialer_SSRFZeroTimeout(t *testing.T) {
 // TestConfigureDialer_SSRFMultiIPAllFail verifies that when all resolved IPs
 // fail to connect, the last dial error is returned (not a generic message).
 func TestConfigureDialer_SSRFMultiIPAllFail(t *testing.T) {
-	// 192.0.2.0/24 is TEST-NET-1 (RFC 5737) — documentation-only, never routed.
-	// A connection attempt to it will fail (refused or timeout) without any
-	// private-IP rejection, letting us exercise the lastErr return path.
-	client := &fasthttp.Client{ReadTimeout: 200 * time.Millisecond}
-	ConfigureDialer(client, false)
+	t.Parallel()
 
-	_, err := client.Dial("192.0.2.1:9")
-	if err == nil {
-		t.Fatal("expected connection error for unroutable TEST-NET address")
+	wantAddrs := []string{"192.0.2.1:9", "192.0.2.2:9"}
+	dialErrors := []error{errors.New("first address refused"), errors.New("second address refused")}
+	var attemptedAddrs []string
+	var lookupCalls int
+	lookupIP := func(_ context.Context, network, host string) ([]net.IP, error) {
+		lookupCalls++
+		if network != "ip" || host != "provider.example" {
+			t.Fatalf("unexpected lookup: network=%q host=%q", network, host)
+		}
+		return []net.IP{net.ParseIP("192.0.2.1"), net.ParseIP("192.0.2.2")}, nil
 	}
-	// Must not be the generic "no usable address" sentinel — a real dial error
-	// was returned.
-	if strings.Contains(err.Error(), "no usable address resolved") {
-		t.Errorf("expected a real dial error, got generic sentinel: %v", err)
+	dial := func(_ *net.Dialer, network, addr string) (net.Conn, error) {
+		if network != "tcp" {
+			t.Fatalf("expected TCP dial, got %q", network)
+		}
+		attemptedAddrs = append(attemptedAddrs, addr)
+		if len(attemptedAddrs) > len(dialErrors) {
+			t.Fatalf("unexpected extra dial attempt: %q", addr)
+		}
+		return nil, dialErrors[len(attemptedAddrs)-1]
+	}
+	client := &fasthttp.Client{ReadTimeout: time.Second}
+	configureDialer(client, false, lookupIP, dial)
+
+	conn, err := client.Dial("provider.example:9")
+	if conn != nil {
+		t.Error("expected no connection when all addresses fail")
+	}
+	if lookupCalls != 1 {
+		t.Errorf("expected one lookup, got %d", lookupCalls)
+	}
+	if !slices.Equal(attemptedAddrs, wantAddrs) {
+		t.Errorf("expected dial attempts %v, got %v", wantAddrs, attemptedAddrs)
+	}
+	if err != dialErrors[1] {
+		t.Errorf("expected the last dial error %v, got %v", dialErrors[1], err)
 	}
 }
 
