@@ -97,7 +97,7 @@ func (m *mockHandlerStore) GetModelCatalog() *modelcatalog.ModelCatalog {
 // Ensure mockHandlerStore implements lib.HandlerStore
 var _ lib.HandlerStore = (*mockHandlerStore)(nil)
 
-func TestGenericRouter_MarkDeprecatedListModelsResponseUsesCatalog(t *testing.T) {
+func TestGenericRouter_ModelCatalogMarksDeprecatedListModels(t *testing.T) {
 	pricingPath := filepath.Join(t.TempDir(), "pricing.json")
 	pricingJSON := []byte(`{
 		"deprecated-model": {"provider":"openai","mode":"chat","base_model":"deprecated-model","is_deprecated":true},
@@ -113,7 +113,7 @@ func TestGenericRouter_MarkDeprecatedListModelsResponseUsesCatalog(t *testing.T)
 		{ID: "openai/provider-deprecated", IsDeprecated: true},
 	}}
 
-	router.markDeprecatedListModelsResponse(resp)
+	router.modelCatalog().EnrichListModelsResponse(resp)
 
 	// No models are removed; deprecated ones are flagged instead.
 	require.Len(t, resp.Data, 3)

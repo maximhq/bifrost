@@ -1830,7 +1830,7 @@ func TestEnrichListModelsResponse_MarksDeprecatedPricingRows(t *testing.T) {
 		{ID: "openai/provider-deprecated", IsDeprecated: true},
 	}}
 
-	enrichListModelsResponse(resp, catalog)
+	catalog.EnrichListModelsResponse(resp)
 
 	if len(resp.Data) != 3 {
 		t.Fatalf("expected all models retained, got %#v", resp.Data)
