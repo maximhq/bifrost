@@ -1076,6 +1076,22 @@ type ConfigStore interface {
 	RescheduleWebhookJob(ctx context.Context, id, runnerID string, leaseUntil, nextAttemptAt time.Time) error
 	DeleteWebhookJob(ctx context.Context, id, runnerID string, leaseUntil time.Time) error
 
+	// GitHub Copilot "Sign in with GitHub" tokens, one row per provider key.
+	GetGithubCopilotSignIns(ctx context.Context) ([]tables.TableGithubCopilotSignIn, error)
+	// GetGithubCopilotSignIn returns nil, nil when the key has never signed in.
+	GetGithubCopilotSignIn(ctx context.Context, keyID string) (*tables.TableGithubCopilotSignIn, error)
+	// ReplaceGithubCopilotSignIn stores a new sign-in for row.KeyID, superseding any earlier
+	// one, and sets row.Version to the stored version.
+	ReplaceGithubCopilotSignIn(ctx context.Context, row *tables.TableGithubCopilotSignIn) error
+	// UpdateGithubCopilotSignInIfVersion writes row only while the stored version still equals
+	// expectedVersion, then sets row.Version to the new version. It returns false, without
+	// error, when another writer got there first.
+	UpdateGithubCopilotSignInIfVersion(ctx context.Context, row *tables.TableGithubCopilotSignIn, expectedVersion int64) (bool, error)
+	// ClaimGithubCopilotSignInRefresh takes the refresh lease on a key at version until leaseUntil.
+	// It returns false when the version moved or another node holds an unexpired lease.
+	ClaimGithubCopilotSignInRefresh(ctx context.Context, keyID string, version int64, leaseUntil time.Time) (bool, error)
+	DeleteGithubCopilotSignIn(ctx context.Context, keyID string) error
+
 	// DB returns the underlying database connection.
 	DB() *gorm.DB
 
