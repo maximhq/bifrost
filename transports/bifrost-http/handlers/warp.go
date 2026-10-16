@@ -33,10 +33,11 @@ type warpBackfillJobStore interface {
 // service errors to status codes and writes responses; everything Warp actually
 // does lives in framework/warp.
 type WarpHandler struct {
-	service         *warp.Service
-	unsubscribeLogs func()
-	sidekiqRunner   *sidekiq.Runner
-	backfillStore   warpBackfillJobStore
+	service            *warp.Service
+	unsubscribeLogs    func()
+	unsubscribeDeletes func()
+	sidekiqRunner      *sidekiq.Runner
+	backfillStore      warpBackfillJobStore
 	// enabled reports the Warp feature flag. It is read per request and per
 	// log rather than once at startup, so toggling the flag takes effect
 	// without a restart. Nil means ungated.
@@ -155,6 +156,7 @@ func NewWarpHandler(store configstore.ConfigStore, loggerPlugin *logging.LoggerP
 	handler.service.RegisterBackfill(runner)
 	if loggerPlugin != nil {
 		handler.unsubscribeLogs = loggerPlugin.SubscribeLogCallback(handler.indexLog)
+		handler.unsubscribeDeletes = loggerPlugin.SubscribeLogDeleteCallback(handler.forgetLogs)
 	}
 	// Retention runs on a timer rather than on write: what expires is age, so a
 	// deployment nobody has chatted on for a month is exactly where a
@@ -171,7 +173,17 @@ func (h *WarpHandler) Shutdown() {
 		h.unsubscribeLogs()
 		h.unsubscribeLogs = nil
 	}
+	if h.unsubscribeDeletes != nil {
+		h.unsubscribeDeletes()
+		h.unsubscribeDeletes = nil
+	}
 	h.service.Shutdown()
+}
+
+// forgetLogs drops the vectors of logs a caller deleted, flag or no flag: a
+// vector left behind by a deleted log is a leak whether or not Warp is on.
+func (h *WarpHandler) forgetLogs(ctx context.Context, ids []string) {
+	h.service.ForgetLogs(ctx, ids)
 }
 
 // isEnabled reports whether the Warp feature flag is on.
@@ -535,6 +547,9 @@ type warpLogIndexStatus struct {
 	VectorStoreConnected bool                `json:"vector_store_connected"`
 	EmbeddingConfigured  bool                `json:"embedding_configured"`
 	Backfill             *warpBackfillStatus `json:"backfill,omitempty"`
+	// Topics is how live topic filing is doing, when the index is usable and
+	// the log store keeps topics.
+	Topics *warp.TopicHealth `json:"topics,omitempty"`
 }
 
 const (
@@ -569,6 +584,15 @@ func (h *WarpHandler) logIndexStatus(ctx *fasthttp.RequestCtx) {
 		status.State = warpIndexStateNotConfigured
 	default:
 		status.State = warpIndexStateReady
+	}
+	if status.State == warpIndexStateReady {
+		// Deployment-wide, so a caller whose reads are narrowed gets
+		// ErrUnavailable and the status carries no topics.
+		if health, err := h.service.TopicHealth(ctx); err == nil {
+			status.Topics = &health
+		} else if !errors.Is(err, warp.ErrUnavailable) {
+			logger.Warn("failed to read Warp topic health for index status: %v", err)
+		}
 	}
 	if h.backfillStore == nil || status.State != warpIndexStateReady {
 		SendJSON(ctx, status)

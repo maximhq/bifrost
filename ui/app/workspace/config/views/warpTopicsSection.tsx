@@ -1,7 +1,12 @@
 import { Button } from "@/components/ui/button";
 import { DateTimePickerWithRange } from "@/components/ui/datePickerWithRange";
 import { getErrorMessage } from "@/lib/store";
-import { useCancelWarpTopicsMutation, useGetWarpTopicsStatusQuery, useStartWarpTopicsMutation } from "@/lib/store/apis/warpApi";
+import {
+	useCancelWarpTopicsMutation,
+	useGetWarpLogIndexStatusQuery,
+	useGetWarpTopicsStatusQuery,
+	useStartWarpTopicsMutation,
+} from "@/lib/store/apis/warpApi";
 import type { WarpBackfillJob } from "@/lib/types/warp";
 import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
 import { Loader2 } from "lucide-react";
@@ -47,6 +52,8 @@ export default function WarpTopicsSection({
 	// rerenders this view every couple of seconds.
 	const range = useMemo(() => ({ from: start, to: end }), [start, end]);
 
+	const { data: indexStatus } = useGetWarpLogIndexStatusQuery(undefined, { pollingInterval: 60000 });
+	const health = indexStatus?.topics;
 	const {
 		data: status,
 		// Until the status request lands, "no job is running" is a guess, and
@@ -187,6 +194,16 @@ export default function WarpTopicsSection({
 
 			{hasChanges && <p className="text-muted-foreground text-xs">Save configuration changes before computing topics.</p>}
 
+			{health && (
+				<p className="text-muted-foreground text-xs" data-testid="warp-topics-health">
+					{health.active_topics} active topic{health.active_topics === 1 ? "" : "s"}
+					{health.themes > 0 ? ` in ${health.themes} theme${health.themes === 1 ? "" : "s"}` : ""} · {health.pooled} request
+					{health.pooled === 1 ? "" : "s"} waiting for a topic
+					{health.requests_24h > 0
+						? ` · ${Math.round(health.unmatched_share_24h * 100)}% of the last day's ${health.requests_24h} request${health.requests_24h === 1 ? "" : "s"} matched no topic`
+						: " · nothing filed in the last day"}
+				</p>
+			)}
 			{shown?.id && (
 				<div className="bg-muted/40 space-y-2 rounded-sm p-3 text-sm" data-testid="warp-topics-status">
 					<div className="flex items-center justify-between gap-3">

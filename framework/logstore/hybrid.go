@@ -2488,6 +2488,17 @@ func (h *HybridLogStore) DeleteWarpTopicUnmatchedBatch(ctx context.Context, cuto
 	return h.inner.DeleteWarpTopicUnmatchedBatch(ctx, cutoff, batchSize)
 }
 
+// DeleteWarpTopicUnmatchedExcept drops the pool rows of every other embedding
+// model.
+func (h *HybridLogStore) DeleteWarpTopicUnmatchedExcept(ctx context.Context, embeddingSignature string) (int64, error) {
+	return h.inner.DeleteWarpTopicUnmatchedExcept(ctx, embeddingSignature)
+}
+
+// DeleteWarpTopics removes topic and theme rows outright.
+func (h *HybridLogStore) DeleteWarpTopics(ctx context.Context, ids []string) error {
+	return h.inner.DeleteWarpTopics(ctx, ids)
+}
+
 // ListLogsForWarpTopics returns the assignment columns of the given logs.
 func (h *HybridLogStore) ListLogsForWarpTopics(ctx context.Context, logIDs []string, from, to time.Time) ([]WarpTopicAssignment, error) {
 	return h.inner.ListLogsForWarpTopics(ctx, logIDs, from, to)

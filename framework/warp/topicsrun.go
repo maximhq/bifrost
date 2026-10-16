@@ -45,7 +45,10 @@ type topicLimits struct {
 	// slice has to stay well under it.
 	slice        int
 	sliceCeiling int
-	page         int64
+	// pruneGrace is how long a retired topic row is kept before upkeep
+	// deletes it. Zero means topicsRetireAfter; tests shorten it.
+	pruneGrace time.Duration
+	page       int64
 	// read is how many requests one run takes in, or zero for no bound. A
 	// window that holds more is not read to the end.
 	read int
