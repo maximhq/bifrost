@@ -1030,6 +1030,13 @@ export default function AppSidebar() {
 						description: "Guardrail providers configuration",
 						hasAccess: hasGuardrailsProvidersAccess,
 					},
+					{
+						title: "Incidents",
+						url: "/workspace/guardrails/incidents",
+						icon: TriangleAlert,
+						description: "Requests blocked or flagged by guardrails",
+						hasAccess: hasGuardrailsConfigAccess && hasLogsAccess,
+					},
 				],
 			},
 			{

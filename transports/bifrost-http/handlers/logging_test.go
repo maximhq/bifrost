@@ -111,6 +111,40 @@ func TestParseToolCallNamesFilter(t *testing.T) {
 	})
 }
 
+// TestParseGuardrailOutcomesFilter verifies guardrail_outcomes reaches the list and histogram filters.
+func TestParseGuardrailOutcomesFilter(t *testing.T) {
+	t.Run("parses comma-separated outcomes", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("guardrail_outcomes", "blocked,detected")
+		filters := &logstore.SearchFilters{}
+
+		parseGuardrailOutcomesFilter(ctx, filters)
+
+		if got, want := filters.GuardrailOutcomes, []string{"blocked", "detected"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("guardrail outcomes = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("leaves filters unchanged when parameter is absent", func(t *testing.T) {
+		filters := &logstore.SearchFilters{}
+
+		parseGuardrailOutcomesFilter(&fasthttp.RequestCtx{}, filters)
+
+		if filters.GuardrailOutcomes != nil {
+			t.Fatalf("guardrail outcomes = %#v, want nil", filters.GuardrailOutcomes)
+		}
+	})
+
+	t.Run("histogram filters honour it", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("guardrail_outcomes", "blocked")
+		filters := parseHistogramFilters(ctx)
+		if got, want := filters.GuardrailOutcomes, []string{"blocked"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("histogram guardrail outcomes = %#v, want %#v", got, want)
+		}
+	})
+}
+
 // TestParseParentRequestIDFilter verifies the explicit parent-request filter
 // does not consume the distinct generic session_id query parameter.
 func TestParseParentRequestIDFilter(t *testing.T) {
