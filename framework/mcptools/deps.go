@@ -23,9 +23,6 @@ import (
 type LogReader interface {
 	Search(ctx context.Context, filters *logstore.SearchFilters, pagination *logstore.PaginationOptions) (*logstore.SearchResult, error)
 	GetLog(ctx context.Context, id string) (*logstore.Log, error)
-	// GetLogsByIDs hydrates vector-search candidates through the ordinary
-	// scoped log reader. Implementations must preserve the input order and omit
-	// rows that are missing or outside the caller's query scope.
 	GetLogsByIDs(ctx context.Context, ids []string) ([]logstore.Log, error)
 	GetStats(ctx context.Context, filters *logstore.SearchFilters) (*logstore.SearchStats, error)
 
@@ -46,30 +43,27 @@ type LogReader interface {
 	GetAvailableModels(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableStopReasons(ctx context.Context, limit int, query string) ([]string, error)
-	// GetAvailableVirtualKeys returns id/name pairs. The type is this package's
-	// own rather than the log manager's: the two are field-identical but carry
-	// different struct tags, and aliasing them would change the JSON an existing
-	// endpoint already serves.
 	GetAvailableVirtualKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
-	// GetAvailableTeams, GetAvailableCustomers and GetAvailableBusinessUnits
-	// list the id/name pairs seen in logged traffic - the same distinct lookups
-	// the Logs filter bar uses. describe_filter_space reads these rather than
-	// ranking each dimension: a ranking on the enterprise hierarchy path fans
-	// every row out through JSON-array columns, which took tens of seconds on a
-	// large table, all to learn which names exist.
 	GetAvailableTeams(ctx context.Context, limit int, query string) ([]KeyPair, error)
 	GetAvailableCustomers(ctx context.Context, limit int, query string) ([]KeyPair, error)
 	GetAvailableBusinessUnits(ctx context.Context, limit int, query string) ([]KeyPair, error)
-	// The routing values that occur in the logs: the same lookups behind the
-	// Logs page's filter dropdowns. They exist so a filter is named from a list
-	// rather than guessed - a guessed id returns an empty result that reads
-	// exactly like a real finding of zero.
 	GetAvailableRoutingRules(ctx context.Context, limit int, query string) ([]KeyPair, error)
 	GetAvailableSelectedKeys(ctx context.Context, limit int, query string) ([]KeyPair, error)
 	GetAvailableAliases(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableRoutingEngines(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableToolCallNames(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableMetadataKeys(ctx context.Context, limit int, query string) (map[string][]string, error)
+
+	GetSessionLogs(ctx context.Context, sessionID string, pagination *logstore.PaginationOptions) (*logstore.SessionDetailResult, error)
+	GetSessionSummary(ctx context.Context, sessionID string) (*logstore.SessionSummaryResult, error)
+	GetDroppedRequests(ctx context.Context) int64
+
+	GetMCPToolLog(ctx context.Context, id string) (*logstore.MCPToolLog, error)
+	SearchMCPToolLogs(ctx context.Context, filters *logstore.MCPToolLogSearchFilters, pagination *logstore.PaginationOptions) (*logstore.MCPToolLogSearchResult, error)
+	GetMCPToolLogStats(ctx context.Context, filters *logstore.MCPToolLogSearchFilters) (*logstore.MCPToolLogStats, error)
+	GetMCPHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPHistogramResult, error)
+	GetMCPCostHistogram(ctx context.Context, filters logstore.MCPToolLogSearchFilters, bucketSizeSeconds int64) (*logstore.MCPCostHistogramResult, error)
+	GetMCPTopTools(ctx context.Context, filters logstore.MCPToolLogSearchFilters, limit int) (*logstore.MCPTopToolsResult, error)
 }
 
 // KeyPair is an id paired with the name it is known by.
@@ -89,6 +83,11 @@ const MaxSemanticQueryChars = 2000
 // MaxSemanticQueries bounds how many phrasings one search embeds. Each is an
 // embedding request and a vector search per prefilter, so the bound is spend.
 const MaxSemanticQueries = 5
+
+// Pinger is a store that can answer whether it is reachable.
+type Pinger interface {
+	Ping(ctx context.Context) error
+}
 
 // SemanticSearcher is semantic_search_logs' dependency: a meaning search over
 // indexed conversations that hydrates its candidates back through a scoped

@@ -45,6 +45,7 @@ var adminDispatchRoutes = []adminRoute{
 	{fasthttp.MethodPost, "/api/providers/{provider}/keys"},
 	{fasthttp.MethodPut, "/api/providers/{provider}/keys/{key_id}"},
 	{fasthttp.MethodPost, "/api/providers/{provider}/refresh-models"},
+	{fasthttp.MethodPost, "/api/providers/{provider}/keys/{key_id}/refresh-models"},
 
 	{fasthttp.MethodPost, "/api/mcp/client"},
 	{fasthttp.MethodPut, "/api/mcp/client/{id}"},
@@ -117,8 +118,13 @@ func adminDispatchRouteAllowed(method, rawPath string) bool {
 // A dispatched request carries the posture of a deployment with dashboard auth
 // off: local admin, with BifrostContextKeyAuthBypassed set. That is the honest
 // description - an admin-level change nobody authenticated as an admin for -
-// and it is what keeps the handlers' own gates on native plugin paths, stdio
-// MCP clients and private-network MCP targets closed to a virtual key.
+// and it is what keeps the handlers' own genuine-auth gates closed to every
+// dispatched request, an admin's included: native plugin paths, stdio MCP
+// clients, private-network MCP targets, plugin endpoints and env./vault.
+// references, private-network webhook delivery, provider base URLs and
+// allow_private_network, and provider-key dial targets. Each is refused with a
+// 403 and the route's reason, which callAdmin hands back to the tool; those
+// changes are made in the dashboard with auth enabled, or in config.json.
 type AdminDispatcher struct {
 	handler func() fasthttp.RequestHandler
 }

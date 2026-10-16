@@ -4,6 +4,7 @@
 package logging
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -24,6 +25,7 @@ import (
 	"github.com/maximhq/bifrost/framework/jobaccounting"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/mcpcatalog"
+	"github.com/maximhq/bifrost/framework/mcptools"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/overhead"
 	"github.com/maximhq/bifrost/framework/passthroughparse"
@@ -229,6 +231,14 @@ func (p *LoggerPlugin) resolveContentPolicy(ctx *schemas.BifrostContext) content
 
 // contentLoggingEnabled returns true if content (messages, params, tool results) should be
 // recorded on the log entry for this request.
+// withholdMCPContent reports whether an MCP tool call's arguments and result
+// stay out of the log whatever the content policy says: the write tools on
+// Bifrost's own MCP server, which carry provider-key values, connection
+// strings and one-time secrets. toolName may still carry its client prefix.
+func withholdMCPContent(clientName, toolName string) bool {
+	return mcptools.IsBuiltinWriteTool(clientName, strings.TrimPrefix(toolName, clientName+"-"))
+}
+
 func (p *LoggerPlugin) contentLoggingEnabled(ctx *schemas.BifrostContext) bool {
 	return p.resolveContentPolicy(ctx).storeContent
 }
@@ -3399,17 +3409,20 @@ func (p *LoggerPlugin) PreMCPHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 		}
 	}
 
-	// Set arguments if content logging is enabled. Governance's PreMCPHook runs after ours, so a
+	// Set arguments if content logging is enabled - never for a write tool on Bifrost's own MCP
+	// server, whose arguments carry secrets. Governance's PreMCPHook runs after ours, so a
 	// request that presents a virtual key governance has not stamped yet has no final content
 	// decision: hold the arguments aside instead of putting them on the pending entry, where the
 	// pre-hook callback and the stale-entry reaper would expose them. PostMCPHook attaches them once
 	// the policy is final; a stale entry never gets them.
 	// The hold does not depend on the current policy: a key that turns content on over a disabled
 	// client flag is entitled to its arguments once PostMCPHook sees the final decision.
-	if virtualKeyStampPending(ctx) {
-		p.provisionalMCPArguments.Store(mcpLogID, arguments)
-	} else if p.contentLoggingEnabled(ctx) {
-		entry.ArgumentsParsed = arguments
+	if !withholdMCPContent(cmp.Or(req.ClientName, serverLabel), toolName) {
+		if virtualKeyStampPending(ctx) {
+			p.provisionalMCPArguments.Store(mcpLogID, arguments)
+		} else if p.contentLoggingEnabled(ctx) {
+			entry.ArgumentsParsed = arguments
+		}
 	}
 
 	// Capture configured logging headers and x-bf-lh-* headers into metadata
@@ -3526,8 +3539,13 @@ func (p *LoggerPlugin) PostMCPHook(ctx *schemas.BifrostContext, resp *schemas.Bi
 	} else if resp != nil {
 		entry.Status = "success"
 		// MCP tool logs have no hidden-content mode, so content is only
-		// stored when it is also visible.
-		if contentVisible {
+		// stored when it is also visible. A write tool on Bifrost's own MCP
+		// server never has its result stored: it can hold a one-time secret.
+		// The response names what actually ran; the entry's label is parsed
+		// from the call's prefix, which an alias can make disagree.
+		clientName := cmp.Or(resp.ExtraFields.ClientName, entry.ServerLabel)
+		toolName := cmp.Or(resp.ExtraFields.ToolName, entry.ToolName)
+		if contentVisible && !withholdMCPContent(clientName, toolName) {
 			var result interface{}
 			if resp.ChatMessage != nil {
 				if resp.ChatMessage.Content != nil && resp.ChatMessage.Content.ContentStr != nil {

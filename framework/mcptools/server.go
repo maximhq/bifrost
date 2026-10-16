@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/maximhq/bifrost/core/schemas"
 )
 
 // NewServer builds the in-process MCP server that hosts every tool in this
@@ -30,12 +32,104 @@ func NewServer(deps func() *Deps) *server.MCPServer {
 		server.WithToolCapabilities(true),
 	)
 	for _, tool := range buildTools() {
-		declaration := mcp.NewToolWithRawSchema(tool.name, tool.description, json.RawMessage(tool.schemaJSON))
-		// Every tool here only reads logs, metrics and governance config.
-		declaration.Annotations.ReadOnlyHint = mcp.ToBoolPtr(true)
+		description := tool.description
+		if tool.mutating {
+			description = writeToolDescriptionPrefix + description
+		}
+		declaration := mcp.NewToolWithRawSchema(tool.name, description, json.RawMessage(tool.schemaJSON))
+		declaration.Annotations.ReadOnlyHint = mcp.ToBoolPtr(!tool.mutating)
 		mcpServer.AddTool(declaration, toolHandler(deps, tool))
 	}
 	return mcpServer
+}
+
+// IsBuiltinWriteTool reports whether toolName on clientName is one of this
+// server's write tools. The logging plugin keeps their arguments and results
+// out of the MCP tool log: that is where provider-key values, connection
+// strings, plugin configs and the one-time secrets from create_virtual_key,
+// rotate_virtual_key and create_webhook travel. Read tools stay fully logged.
+func IsBuiltinWriteTool(clientName, toolName string) bool {
+	return clientName == bifrostMCPClientName && writeToolNames()[toolName]
+}
+
+var writeToolNames = sync.OnceValue(func() map[string]bool {
+	names := map[string]bool{}
+	for _, tool := range buildTools() {
+		if tool.mutating {
+			names[tool.name] = true
+		}
+	}
+	return names
+})
+
+// writeToolDescriptionPrefix tells a model up front who may run a write tool,
+// and how far its change reaches, rather than letting it find out per call.
+const writeToolDescriptionPrefix = "Changes Bifrost configuration: runs only if this tool is granted to the calling virtual key, or for a dashboard admin when no key is sent. A key under a team or customer changes only what that team or customer owns; a key with neither changes deployment-wide configuration. "
+
+// writeAccessKey marks a request the transport allowed to run write tools.
+// Unexported, so only GrantWriteAccess can set it: no header, plugin or
+// context-key mapping can forge it.
+type writeAccessKey struct{}
+
+// userValueSetter is the one method GrantWriteAccess needs; *fasthttp.RequestCtx
+// has it, and naming the interface keeps fasthttp out of this package.
+type userValueSetter interface {
+	SetUserValue(key any, value any)
+}
+
+// GrantWriteAccess marks an ungoverned request - one that carries no virtual
+// key or other identity governance resolves permits for - as allowed to run
+// write tools. The transport follows the admin API's rule: it calls this only
+// when the admin API would admit the same request on a credential it verified
+// - an admin session or password while dashboard auth is on, the operator's
+// setup token or setup session while it is off (OSS only; enterprise has no
+// setup lock). A request the admin API would admit on no credential at all
+// (auth fully off with no setup lock, a whitelisted route) does not get it. A
+// governed request does not need it; see writeAllowed.
+//
+// It is set on the fasthttp request because that is the parent of every
+// BifrostContext built for the request, which is how it reaches the in-process
+// tool handler through core's tool execution.
+func GrantWriteAccess(ctx userValueSetter) {
+	ctx.SetUserValue(writeAccessKey{}, true)
+}
+
+// WithWriteAccess is GrantWriteAccess for a plain context, for callers that do
+// not start from a fasthttp request.
+func WithWriteAccess(ctx context.Context) context.Context {
+	return context.WithValue(ctx, writeAccessKey{}, true)
+}
+
+// writeAllowed decides whether a write tool may run for this call.
+//
+// A governed request - governance resolved permits for its virtual key or user
+// - is allowed: governance already narrowed the tools it may see to its grants
+// and checks the grant again in PreMCPHook before execution, so reaching this
+// handler means the tool was granted. Whatever a key is granted on Bifrost it
+// can do through these tools, and nothing more.
+//
+// A grant is read like any other MCP grant: "bifrostmcp-*" is every tool of
+// this server, write tools included. How far a granted write reaches is the
+// key's tenant, applied after this check (tenantCallContext): a key under a
+// team or customer is refused every deployment-wide tool and changes only rows
+// its tenant owns, while a key with neither changes deployment-wide
+// configuration - granting it this server's write tools makes it an admin.
+//
+// An ungoverned request has no grants to consult, which is exactly the caller
+// the old hole let through with every tool. It falls back to the admin API's
+// rule, carried by GrantWriteAccess.
+func writeAllowed(ctx context.Context) bool {
+	if g := schemas.GrantFromContext(ctx); g != nil && g.Access() != nil {
+		return true
+	}
+	return HasWriteAccess(ctx)
+}
+
+// HasWriteAccess reports whether the transport allowed this ungoverned request
+// to write.
+func HasWriteAccess(ctx context.Context) bool {
+	granted, _ := ctx.Value(writeAccessKey{}).(bool)
+	return granted
 }
 
 // StaticDeps adapts a fixed Deps to NewServer, for callers whose dependencies
@@ -43,13 +137,6 @@ func NewServer(deps func() *Deps) *server.MCPServer {
 func StaticDeps(deps *Deps) func() *Deps {
 	return func() *Deps { return deps }
 }
-
-// logFreeTools are the tools that never touch Deps.LogManager: semantic search
-// goes through its own searcher, and describe_virtual_key and
-// describe_user_limits read governance. Each reports its own dependency
-// missing. Every other tool needs the log store,
-// so a new tool is refused without one unless it is listed here.
-var logFreeTools = []string{SemanticSearchToolName, "describe_virtual_key", UserLimitsToolName}
 
 // toolHandler adapts one Tool's execute closure into the mcp-go handler
 // shape. Everything every result needs regardless of which flow produced it is
@@ -60,6 +147,13 @@ func toolHandler(deps func() *Deps, tool Tool) server.ToolHandlerFunc {
 	// declared, so a refusal can never disagree with what was advertised.
 	accepted := tool.argumentNames()
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		if tool.mutating && !writeAllowed(ctx) {
+			return mcp.NewToolResultError(tool.name + " changes Bifrost's configuration and this request has no permission to: send a virtual key this tool is granted to, or the dashboard admin credentials (the setup token while dashboard auth is not set up)."), nil
+		}
+		ctx, refusal := tenantCallContext(ctx, tool)
+		if refusal != "" {
+			return mcp.NewToolResultError(refusal), nil
+		}
 		if err := refuseUnknownArguments(tool.name, accepted, request.GetArguments()); err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -70,7 +164,7 @@ func toolHandler(deps func() *Deps, tool Tool) server.ToolHandlerFunc {
 		// Logging can be disabled, or its plugin removed at runtime, and the
 		// server stays up either way; the call is refused rather than
 		// dereferencing a reader that is not there.
-		if current.LogManager == nil && !slices.Contains(logFreeTools, tool.name) {
+		if current.LogManager == nil && !tool.noLogs {
 			return mcp.NewToolResultError(tool.name + " is unavailable: logging is not enabled on this deployment"), nil
 		}
 		result, err := tool.execute(ctx, current, request.GetArguments())
@@ -88,7 +182,15 @@ func toolHandler(deps func() *Deps, tool Tool) server.ToolHandlerFunc {
 // query_model_performance, a step at a time.
 func refuseUnknownArguments(tool string, accepted []string, args map[string]any) error {
 	if len(accepted) == 0 {
-		return nil
+		if len(args) == 0 {
+			return nil
+		}
+		unknown := make([]string, 0, len(args))
+		for name := range args {
+			unknown = append(unknown, name)
+		}
+		slices.Sort(unknown)
+		return fmt.Errorf("%s does not take %s", tool, strings.Join(unknown, ", "))
 	}
 	unknown := []string{}
 	for name := range args {

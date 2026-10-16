@@ -350,3 +350,101 @@ func setRankingLogsLink(out map[string]any, result *logstore.DimensionRankingRes
 	out["logs_link_covers"] = covers
 	return out
 }
+
+const mcpLogsViewPath = "/workspace/mcp-logs"
+
+func mcpLogDetailLink(id string) string {
+	if id == "" {
+		return ""
+	}
+	return mcpLogsViewPath + "?" + url.Values{"selected_log": {id}}.Encode()
+}
+
+// linkableInMCPLogsView reports whether the MCP Logs page can show what these
+// filters select. It reads no latency bound, LLM request id or User-Agent
+// parameter (its useQueryStates block in ui/app/workspace/mcp-logs/page.tsx),
+// so a query narrowed by one gets no link rather than one that opens a wider
+// set than the number beside it.
+func linkableInMCPLogsView(filters *logstore.MCPToolLogSearchFilters) bool {
+	return filters.MinLatency == nil && filters.MaxLatency == nil &&
+		len(filters.LLMRequestIDs) == 0 && len(filters.UserAgents) == 0
+}
+
+// mcpLogsViewLink opens the MCP Logs page with the filters a tool ran. Only
+// parameters the page reads are sent; the window as unix seconds, both ends or
+// neither, as on the Logs page.
+func mcpLogsViewLink(filters *logstore.MCPToolLogSearchFilters) string {
+	if filters == nil {
+		return mcpLogsViewPath
+	}
+	if !linkableInMCPLogsView(filters) {
+		return ""
+	}
+	values := url.Values{}
+	lists := []struct {
+		key    string
+		values []string
+	}{
+		{"tool_names", filters.ToolNames},
+		{"server_labels", filters.ServerLabels},
+		{"status", filters.Status},
+		{"virtual_key_ids", filters.VirtualKeyIDs},
+		{"user_ids", filters.UserIDs},
+		{"team_ids", filters.TeamIDs},
+		{"customer_ids", filters.CustomerIDs},
+		{"business_unit_ids", filters.BusinessUnitIDs},
+		{"project_ids", filters.ProjectIDs},
+		{"device_ids", filters.DeviceIDs},
+		{"apps", filters.Apps},
+		{"agent_names", filters.AgentNames},
+	}
+	for _, list := range lists {
+		if len(list.values) > 0 {
+			values.Set(list.key, strings.Join(arrayItems(list.values), ","))
+		}
+	}
+	texts := []struct {
+		key, value string
+	}{
+		{"session_id", filters.SessionID},
+		{"agent_correlation_id", filters.AgentCorrelationID},
+		{"content_search", filters.ContentSearch},
+	}
+	for _, text := range texts {
+		if strings.TrimSpace(text.value) != "" {
+			values.Set(text.key, text.value)
+		}
+	}
+	if filters.StartTime != nil && filters.EndTime != nil {
+		values.Set("start_time", strconv.FormatInt(filters.StartTime.Unix(), 10))
+		values.Set("end_time", strconv.FormatInt(filters.EndTime.Unix(), 10))
+	}
+	if len(values) == 0 {
+		return mcpLogsViewPath
+	}
+	return mcpLogsViewPath + "?" + values.Encode()
+}
+
+// setMCPLogsLink puts logs_link on an MCP result when there is one to give.
+// The key matches the LLM tools' so a consumer reads links the same way on
+// both; the path says which page it opens.
+func setMCPLogsLink(out map[string]any, filters *logstore.MCPToolLogSearchFilters) map[string]any {
+	if link := mcpLogsViewLink(filters); link != "" {
+		out["logs_link"] = link
+	}
+	return out
+}
+
+// mcpFailuresLink is failuresLink for the MCP table: the failed executions,
+// when there are any and the query's own status filter does not exclude them.
+func mcpFailuresLink(filters *logstore.MCPToolLogSearchFilters, total int64, successRate float64) string {
+	if filters == nil || total == 0 || successRate >= 100 {
+		return ""
+	}
+	if len(filters.Status) > 0 && !slices.Contains(filters.Status, "error") {
+		return ""
+	}
+	narrowed := *filters
+	narrowed.Status = []string{"error"}
+	return mcpLogsViewLink(&narrowed)
+}

@@ -427,10 +427,16 @@ func (s *GovernanceInMemoryStore) GetEnabledAgents() map[string]bool {
 	return s.Config.GetEnabledAgents()
 }
 
-// registerBifrostMCPServer hosts Warp's read-only log/metrics/governance query
-// tools (framework/mcptools) as an ordinary MCP client named
-// warp.BifrostMCPClientName, reachable at /mcp/bifrost by any virtual-key-
-// authenticated MCP client. Ordinary is the point: it is persisted like a
+// registerBifrostMCPServer hosts the log/metrics/governance tools
+// (framework/mcptools) as an ordinary MCP client named
+// warp.BifrostMCPClientName, reachable at /mcp/bifrost by whatever MCP caller
+// governance admits. Every tool, read or write, follows the caller's virtual
+// key grants: what a key may do on Bifrost it may do here. A request
+// governance does not govern (no key) gets the write tools only when the OSS
+// admin API would admit the same request on a verified credential (see
+// AuthMiddleware.adminAPIAuthenticates and mcptools.writeAllowed): an admin
+// session or password while dashboard auth is on, the setup token or setup
+// session while it is off. Ordinary is the point: it is persisted like a
 // user-added client, so VK grants, the dashboard's client picker and the
 // pricing lookup all work without special-casing it.
 //
@@ -442,26 +448,13 @@ func (s *GovernanceInMemoryStore) GetEnabledAgents() map[string]bool {
 // the client registered directly. Without a config store nothing persists and
 // the in-memory registration is all there is.
 func (s *BifrostHTTPServer) registerBifrostMCPServer(ctx context.Context) error {
-	warpService := s.WarpHandler.Service()
 	// Resolved per tool call rather than captured here: AddPlugin/RemovePlugin
 	// rebind Warp's log reader and semantic searcher at runtime, and a Deps
 	// snapshotted at boot would keep reading through whatever existed then. A
 	// nil LogReader (logging disabled) still gets a server: every tool that
-	// needs it reports itself unavailable.
-	// Writes go through the admin handlers in this process. The router is read
-	// per call: RegisterAPIRoutes builds it before this runs, but nothing here
-	// should depend on that order.
-	dispatcher := handlers.NewAdminDispatcher(func() fasthttp.RequestHandler {
-		if s.adminRouter == nil {
-			return nil
-		}
-		return s.adminRouter.Handler
-	})
-	server := mcptools.NewServer(func() *mcptools.Deps {
-		deps := warpService.MCPDeps()
-		deps.Admin = dispatcher
-		return deps
-	})
+	// needs it reports itself unavailable. The write dispatcher and the pingers
+	// are attached here because they live on the HTTP server, not on Warp.
+	server := mcptools.NewServer(s.bifrostMCPDeps)
 	if s.Config.MCPConfig != nil {
 		for _, existing := range s.Config.MCPConfig.ClientConfigs {
 			if existing != nil && existing.Name == warp.BifrostMCPClientName {
@@ -484,7 +477,7 @@ func (s *BifrostHTTPServer) registerBifrostMCPServer(ctx context.Context) error 
 		ConnectionType:  schemas.MCPConnectionTypeInProcess,
 		InProcessServer: server,
 		EndpointSlug:    "bifrost",
-		ToolsToExecute:  schemas.WhiteList{"*"}, // narrowed per-VK by governance tool grants
+		ToolsToExecute:  schemas.WhiteList{"*"}, // narrowed per-VK by governance tool grants; keyless writes follow admin-API auth
 	}
 	// A failed persist stops here: registered in memory only, the client would
 	// get a fresh ID on the next boot and every VK grant made against this one
@@ -501,6 +494,78 @@ func (s *BifrostHTTPServer) registerBifrostMCPServer(ctx context.Context) error 
 		return fmt.Errorf("failed to register %s MCP client: %w", warp.BifrostMCPClientName, err)
 	}
 	return nil
+}
+
+// bifrostMCPDeps snapshots Warp's log/governance readers and attaches what
+// lives on this HTTP server: the dispatcher every write goes through, and what
+// the health and catalog reads need.
+func (s *BifrostHTTPServer) bifrostMCPDeps() *mcptools.Deps {
+	var deps *mcptools.Deps
+	if s.WarpHandler != nil {
+		if service := s.WarpHandler.Service(); service != nil {
+			deps = service.MCPDeps()
+		}
+	}
+	if deps == nil {
+		deps = &mcptools.Deps{}
+	}
+	// Writes go through the admin handlers in this process. The router is read
+	// per call: RegisterAPIRoutes builds it before the first tool call, but
+	// nothing here should depend on that order.
+	deps.Admin = handlers.NewAdminDispatcher(func() fasthttp.RequestHandler {
+		if s.adminRouter == nil {
+			return nil
+		}
+		return s.adminRouter.Handler
+	})
+	deps.Version = handlers.GetVersion()
+	// Shared http, sse and openapi clients keep their tools only in the live
+	// MCP manager; list_mcp_client_tools reads them here and falls back to the
+	// stored row when the client is not loaded.
+	deps.MCPTools = func(_ context.Context, clientID string) ([]string, bool) {
+		if s.Client == nil {
+			return nil, false
+		}
+		clients, err := s.Client.GetMCPClients()
+		if err != nil {
+			return nil, false
+		}
+		for _, client := range clients {
+			if client.Config == nil || client.Config.ID != clientID {
+				continue
+			}
+			names := make([]string, 0, len(client.Tools))
+			for _, tool := range client.Tools {
+				names = append(names, tool.Name)
+			}
+			return names, true
+		}
+		return nil, false
+	}
+	if s.Config != nil {
+		// Read per call, so under the config lock: settings updates write
+		// ClientConfig while tool calls are in flight.
+		s.Config.Mu.RLock()
+		if s.Config.ClientConfig != nil {
+			deps.DisableDBPings = s.Config.ClientConfig.DisableDBPingsInHealth
+		}
+		s.Config.Mu.RUnlock()
+		if s.Config.ConfigStore != nil {
+			deps.ConfigPing = s.Config.ConfigStore
+			if warpStore, ok := s.Config.ConfigStore.(configstore.WarpStore); ok {
+				deps.Warp = warpStore
+			}
+		}
+		if s.Config.LogsStore != nil {
+			deps.LogsPing = s.Config.LogsStore
+		}
+		if s.Config.VectorStore != nil {
+			deps.VectorPing = s.Config.VectorStore
+		}
+		deps.ModelCatalog = s.Config.ModelCatalog
+		deps.FeatureFlags = s.Config.FeatureFlags
+	}
+	return deps
 }
 
 // AddMCPClient adds a new MCP client to the in-memory store
