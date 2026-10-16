@@ -275240,6 +275240,136 @@
           }
         }
       ]
+    },
+    {
+      "name": "257. OpenAI ChatGPT Codex passthrough stream dispatch",
+      "description": "Server regression for Codex native responses routed through /chatgpt_passthrough. Requires openaiKey to contain a valid ChatGPT subscription access token, not an OpenAI API key. Input is intentionally invalid so ChatGPT rejects without generating output. Synthetic cases: original Edge logs did not retain raw request or response payloads. Both cases must take passthrough_stream, retain native upstream 400 errors, and never fall back to a normal inference request or operator key. Authentication, policy, rate-limit and upstream failures must fail, not skip.",
+      "item": [
+        {
+          "name": "257.1 OpenAI ChatGPT Codex passthrough stream omitted [EXPECT-400]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.5\",\n  \"store\": false,\n  \"input\": 42\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Native invalid request remains a 400\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test(\"Codex uses streaming passthrough dispatch\", function () {",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough_stream\");",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-passthrough-path\"), pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "257.2 OpenAI ChatGPT Codex passthrough stream false [EXPECT-400]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.5\",\n  \"store\": false,\n  \"input\": 42,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Native invalid request remains a 400\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test(\"Codex uses streaming passthrough dispatch\", function () {",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough_stream\");",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-passthrough-path\"), pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
     }
   ]
 }
