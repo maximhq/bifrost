@@ -1,5 +1,10 @@
 package schemas
 
+import (
+	"slices"
+	"sync"
+)
+
 // BifrostGuardrailMetadata carries request-scoped guardrail execution metadata.
 type BifrostGuardrailMetadata struct {
 	JudgeCalls []BifrostGuardrailJudgeCall `json:"judge_calls,omitempty"`
@@ -16,7 +21,18 @@ type BifrostGuardrailDetection struct {
 	GuardrailProvider string   `json:"guardrail_provider,omitempty"`
 	Reason            string   `json:"reason,omitempty"`
 	Assessments       []string `json:"assessments,omitempty"` // Sanitized policy categories; never matched text.
+	Action            string   `json:"action,omitempty"`      // What the guardrail did, or would do when not enforced (GuardrailDetectionAction*).
+	Enforced          *bool    `json:"enforced,omitempty"`    // False when an output-monitor rule recorded the match without acting on it.
 }
+
+// Guardrail detection actions: what a guardrail did, or would have done when
+// its rule only monitors, with the content it matched.
+const (
+	GuardrailDetectionActionDetect    = "detect"
+	GuardrailDetectionActionBlock     = "block"
+	GuardrailDetectionActionRedact    = "redact"
+	GuardrailDetectionActionTransform = "transform"
+)
 
 // BifrostGuardrailJudgeCall records one billable guardrail judge invocation.
 type BifrostGuardrailJudgeCall struct {
@@ -63,6 +79,9 @@ func (d *BifrostGuardrailMetadata) Clone() *BifrostGuardrailMetadata {
 			clone.Detections[index] = detection
 			clone.Detections[index].RuleID = cloneUint(detection.RuleID)
 			clone.Detections[index].Assessments = append([]string(nil), detection.Assessments...)
+			if detection.Enforced != nil {
+				clone.Detections[index].Enforced = Ptr(*detection.Enforced)
+			}
 		}
 	}
 	return clone
@@ -147,6 +166,72 @@ func AppendGuardrailDetectionOnContext(ctx *BifrostContext, detection BifrostGua
 	}
 	current.Detections = append(current.Detections, detection)
 	return SetGuardrailMetadataOnContext(ctx, current)
+}
+
+// DeferredGuardrailResult carries guardrail results that finish after the
+// response was delivered (output-monitor rules) to the log writer, which holds
+// the request's row until it completes. The result is the request's complete
+// guardrail state, input and output, so the writer stores it in place of what
+// the row was built with, plus the plugin log lines the evaluation wrote, which
+// the writer appends to the row's: the request's own plugin logs were already
+// drained to its trace when the response completed. It completes exactly once.
+type DeferredGuardrailResult struct {
+	mu         sync.Mutex
+	completed  bool
+	metadata   *BifrostGuardrailMetadata
+	redaction  RedactionData
+	pluginLogs []PluginLogEntry
+	onComplete []func(*BifrostGuardrailMetadata, RedactionData, []PluginLogEntry)
+}
+
+// NewDeferredGuardrailResult returns a pending deferred guardrail result.
+func NewDeferredGuardrailResult() *DeferredGuardrailResult {
+	return &DeferredGuardrailResult{}
+}
+
+// Complete publishes the request's final guardrail metadata and redaction data
+// and the evaluation's plugin log lines, and runs the registered callbacks on
+// the caller's goroutine. Only the first call takes effect, so every exit path
+// of the evaluation can call it.
+func (r *DeferredGuardrailResult) Complete(metadata *BifrostGuardrailMetadata, redaction RedactionData, pluginLogs []PluginLogEntry) {
+	r.mu.Lock()
+	if r.completed {
+		r.mu.Unlock()
+		return
+	}
+	r.completed = true
+	r.metadata = metadata.Clone()
+	r.redaction = redaction.Clone()
+	r.pluginLogs = slices.Clone(pluginLogs)
+	callbacks := r.onComplete
+	r.onComplete = nil
+	r.mu.Unlock()
+	for _, fn := range callbacks {
+		fn(r.metadata.Clone(), r.redaction.Clone(), slices.Clone(r.pluginLogs))
+	}
+}
+
+// OnComplete runs fn with owned copies of the result once it completes, right
+// away on the caller's goroutine when it already has. Callbacks run on the
+// completing goroutine, so they must not block.
+func (r *DeferredGuardrailResult) OnComplete(fn func(metadata *BifrostGuardrailMetadata, redaction RedactionData, pluginLogs []PluginLogEntry)) {
+	r.mu.Lock()
+	if !r.completed {
+		r.onComplete = append(r.onComplete, fn)
+		r.mu.Unlock()
+		return
+	}
+	r.mu.Unlock()
+	fn(r.metadata.Clone(), r.redaction.Clone(), slices.Clone(r.pluginLogs))
+}
+
+// DeferredGuardrailResultFromContext returns the request's pending deferred guardrail result, if any.
+func DeferredGuardrailResultFromContext(ctx *BifrostContext) (*DeferredGuardrailResult, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	result, ok := ctx.Value(BifrostContextKeyDeferredGuardrail).(*DeferredGuardrailResult)
+	return result, ok && result != nil
 }
 
 // Deprecated: use BifrostGuardrailMetadata.
