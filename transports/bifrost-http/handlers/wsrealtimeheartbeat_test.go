@@ -288,6 +288,53 @@ func TestRealtimeStopHeartbeatIsIdempotent(t *testing.T) {
 	client.stopHeartbeat()
 }
 
+// fasthttp ignores Close on a hijacked connection, so when the upstream ends the relay reading the
+// client stays blocked; the teardown must release it and tell the client the session is over.
+func TestRunRealtimeRelaysReleasesTheClientWhenTheUpstreamEnds(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		clientAnswer bool // the client reads, so its library answers the close frame
+	}{
+		{name: "client answers the close", clientAnswer: true},
+		{name: "silent client", clientAnswer: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			serverConn, client, cleanup := dialRealtimeTestConn(t)
+			defer cleanup()
+			clientConn := newRealtimeClientConn(serverConn)
+
+			toClient := func() error { return nil } // the upstream ended
+			toProvider := func() error {
+				_, _, err := clientConn.ReadMessage()
+				return err
+			}
+			closeBoth := func() { _ = clientConn.Close() }
+
+			clientClose := make(chan error, 1)
+			if tc.clientAnswer {
+				go func() {
+					_, _, err := client.ReadMessage()
+					clientClose <- err
+				}()
+			}
+			result := make(chan error, 1)
+			go func() { result <- runRealtimeRelays(serverConn, toProvider, toClient, closeBoth) }()
+
+			select {
+			case <-result:
+			case <-time.After(5 * time.Second):
+				t.Fatal("runRealtimeRelays stayed blocked on the client after the upstream ended")
+			}
+			if tc.clientAnswer {
+				err := <-clientClose
+				if !ws.IsCloseError(err, ws.CloseNormalClosure) {
+					t.Fatalf("expected the client to receive a normal close frame, got %v", err)
+				}
+			}
+		})
+	}
+}
+
 // A relay runs on its own goroutine, past the recover deferred by the upgrade callback, so a
 // panic inside it (a plugin hook on the turn pipeline) must be caught by the relay runner
 // itself: it ends the session like any other relay error instead of ending the process.
