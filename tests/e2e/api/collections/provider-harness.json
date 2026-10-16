@@ -274910,6 +274910,8 @@
                   "  var content = String(pm.response.json().content || '');",
                   "  pm.expect(pm.response.json().is_error, 'a script that called fail() must mark the run failed: ' + pm.response.text()).to.equal(true);",
                   "  pm.expect(content, 'the fail() message is missing: ' + content).to.include('fail: lookup failed: required argument');",
+                  "  pm.expect(content, 'the error does not carry a traceback: ' + content).to.include('Traceback (most recent call last):');",
+                  "  pm.expect(content, 'the traceback does not name the line fail() ran on: ' + content).to.include('code.star:3:');",
                   "  pm.expect(content, 'the hint does not say the script stopped itself: ' + content).to.include('The script stopped itself with fail()');",
                   "  pm.expect(content, 'the script kept running after fail(): ' + content).to.not.include('unreachable');",
                   "});"

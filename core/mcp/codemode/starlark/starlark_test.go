@@ -2084,3 +2084,86 @@ func TestStubsExplainFailedCalls(t *testing.T) {
 		}
 	}
 }
+
+// A runtime error names the script lines that led to it, in the Python traceback layout, so
+// the model can fix the right line. Errors raised before the script runs already carry their
+// position and are left as they are.
+func TestCodeModeRuntimeErrorsNameTheFailingLine(t *testing.T) {
+	limits := schemas.MCPCodeModeLimits{}.WithDefaults()
+	bindings := map[string][]string{"crm": {"crm-get_contact"}}
+	errorValue := func(context.Context, string, string, map[string]interface{}, func(string)) (interface{}, error) {
+		return toolErrorValue{message: "contact 7 not found"}, nil
+	}
+	run := func(t *testing.T, code string) *ExecutionError {
+		t.Helper()
+		result := runSandbox(context.Background(), limits, code, bindings, errorValue)
+		if result.Errors == nil {
+			t.Fatalf("expected an error, got result %v", result.Result)
+		}
+		return result.Errors
+	}
+
+	t.Run("an error inside a function", func(t *testing.T) {
+		got := run(t, "def main():\n    r = crm.get_contact(id=7)\n    return r[\"email\"]\nresult = main()")
+		for _, want := range []string{
+			"Traceback (most recent call last):",
+			"code.star:4:", "in <toplevel>",
+			"code.star:3:", "in main",
+			"Error: unhandled index operation struct[string]",
+		} {
+			if !strings.Contains(got.Message, want) {
+				t.Fatalf("message lacks %q:\n%s", want, got.Message)
+			}
+		}
+	})
+
+	t.Run("fail() keeps its message and its hint", func(t *testing.T) {
+		got := run(t, "def main():\n    r = crm.get_contact(id=7)\n    if hasattr(r, \"error\"):\n        fail(\"lookup failed: \" + r.error)\nresult = main()")
+		if !strings.Contains(got.Message, "code.star:4:") || !strings.HasSuffix(got.Message, "Error: fail: lookup failed: contact 7 not found") {
+			t.Fatalf("fail() message:\n%s", got.Message)
+		}
+		if strings.Contains(got.Message, "in fail") {
+			t.Fatalf("the builtin frame leaked into the traceback:\n%s", got.Message)
+		}
+		if len(got.Hints) != 1 || !strings.Contains(got.Hints[0], "fail()") {
+			t.Fatalf("hints = %q", got.Hints)
+		}
+	})
+
+	t.Run("deep recursion keeps the outermost frame and the innermost five", func(t *testing.T) {
+		// 202 frames: <toplevel> and 201 calls of f. The outermost is kept, a marker stands in
+		// for the 196 left out, and the innermost five follow, ending where the error is.
+		got := run(t, "def f(n):\n    if n == 0:\n        return {}[\"k\"]\n    return f(n - 1)\nresult = f(200)")
+		start := strings.Index(got.Message, "Traceback (most recent call last):")
+		if start == -1 {
+			t.Fatalf("no traceback:\n%s", got.Message)
+		}
+		lines := strings.Split(got.Message[start:], "\n")
+		want := []struct{ prefix, suffix string }{
+			{"Traceback (most recent call last):", ""},
+			{"  code.star:5:", " in <toplevel>"},
+			{"  ... 196 more frames ...", ""},
+			{"  code.star:4:", " in f"},
+			{"  code.star:4:", " in f"},
+			{"  code.star:4:", " in f"},
+			{"  code.star:4:", " in f"},
+			{"  code.star:3:", " in f"},
+			{"Error: ", ""},
+		}
+		if len(lines) != len(want) {
+			t.Fatalf("traceback has %d lines, want %d:\n%s", len(lines), len(want), got.Message)
+		}
+		for i, w := range want {
+			if !strings.HasPrefix(lines[i], w.prefix) || !strings.HasSuffix(lines[i], w.suffix) {
+				t.Fatalf("line %d = %q, want %q...%q:\n%s", i, lines[i], w.prefix, w.suffix, got.Message)
+			}
+		}
+	})
+
+	t.Run("a syntax error keeps its own position", func(t *testing.T) {
+		got := run(t, "result = (")
+		if strings.Contains(got.Message, "Traceback") || !strings.Contains(got.Message, "code.star:1:") {
+			t.Fatalf("syntax error message:\n%s", got.Message)
+		}
+	})
+}
