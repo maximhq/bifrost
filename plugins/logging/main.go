@@ -2610,9 +2610,6 @@ func (p *LoggerPlugin) makeReconcileCallback() func(entry *logstore.Log) {
 // cannot wedge the server's overall 30s shutdown budget.
 func (p *LoggerPlugin) Cleanup() error {
 	p.cleanupOnce.Do(func() {
-		// Before closing the writer: an output-monitor result can finish after it
-		// closes, and the held row must not be lost with it.
-		p.releaseHeldGuardrailRows()
 		p.mu.Lock()
 		// Under the same lock as the sweeper cancel, and before anything below can
 		// reach p.wg.Wait(): StartBatchAccountingSweeper reads this flag while holding
@@ -2628,6 +2625,9 @@ func (p *LoggerPlugin) Cleanup() error {
 			p.videoSweeperCancel = nil
 		}
 		p.mu.Unlock()
+		// After closed is set, so no new row can be held behind this pass, and
+		// before the writer stops, so the released rows are drained with the rest.
+		p.releaseHeldGuardrailRows()
 		if p.cleanupTicker != nil {
 			p.cleanupTicker.Stop()
 		}

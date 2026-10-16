@@ -823,20 +823,45 @@ func (p *LoggerPlugin) holdForDeferredGuardrail(deferred *schemas.DeferredGuardr
 		if !entry.ContentHidden && redaction.HasReplacements() {
 			entry.RedactionData = &redaction
 		}
-		p.enqueueLogEntry(entry, callback)
+		p.writeHeldRow(entry, callback)
 	})
 }
 
 // releaseHeldGuardrailRows writes every row still waiting on an output-monitor
 // result as it was built, so shutdown loses only the late result, never the row.
+// Cleanup runs it after setting closed, so no row can be held behind it.
 func (p *LoggerPlugin) releaseHeldGuardrailRows() {
 	p.heldGuardrailRows.Range(func(key, _ any) bool {
 		if value, held := p.heldGuardrailRows.LoadAndDelete(key); held {
 			row := value.(*writeQueueEntry)
-			p.enqueueLogEntry(row.log, row.callback)
+			p.writeHeldRow(row.log, row.callback)
 		}
 		return true
 	})
+}
+
+// writeHeldRow queues a row that was held before Cleanup set closed. It skips
+// the closed check: the row was accepted before shutdown, and Cleanup drains
+// the queue after releasing held rows. A send racing the final channel close
+// is absorbed, as for any other producer.
+func (p *LoggerPlugin) writeHeldRow(entry *logstore.Log, callback func(entry *logstore.Log)) {
+	queued := func() (queued bool) {
+		defer func() {
+			if recover() != nil {
+				queued = false
+			}
+		}()
+		select {
+		case p.writeQueue <- &writeQueueEntry{log: entry, callback: callback}:
+			return true
+		default:
+			return false
+		}
+	}()
+	if !queued {
+		p.countDrop()
+		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
+	}
 }
 
 // tryEnqueueLogEntry pushes a log entry to the write queue without blocking and

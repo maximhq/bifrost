@@ -2356,6 +2356,31 @@ func TestDeferredGuardrailRowAppendsMonitorPluginLogs(t *testing.T) {
 	}
 }
 
+// TestDeferredGuardrailRowWrittenDuringShutdown verifies a held row whose result
+// lands after Cleanup has stopped new producers is still written, and that the
+// shutdown release writes a still-held row even though the writer is closing.
+func TestDeferredGuardrailRowWrittenDuringShutdown(t *testing.T) {
+	t.Run("result lands while closing", func(t *testing.T) {
+		plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 2)}
+		_, deferred := deferredGuardrailRow(t, plugin)
+		plugin.closed.Store(true)
+		metadata, redaction := monitorGuardrailResult()
+		deferred.Complete(metadata, redaction, nil)
+		if len(plugin.writeQueue) != 1 {
+			t.Fatalf("expected the held row to be written after closing, got %d writes", len(plugin.writeQueue))
+		}
+	})
+	t.Run("release while closing", func(t *testing.T) {
+		plugin := &LoggerPlugin{logger: testLogger{}, writeQueue: make(chan *writeQueueEntry, 2)}
+		deferredGuardrailRow(t, plugin)
+		plugin.closed.Store(true)
+		plugin.releaseHeldGuardrailRows()
+		if len(plugin.writeQueue) != 1 {
+			t.Fatalf("expected the release to write the held row after closing, got %d writes", len(plugin.writeQueue))
+		}
+	})
+}
+
 // TestDeferredGuardrailHiddenRowGetsNoRedactionData verifies the result follows
 // the row's content policy: a row whose content is hidden carries no mappings.
 func TestDeferredGuardrailHiddenRowGetsNoRedactionData(t *testing.T) {
