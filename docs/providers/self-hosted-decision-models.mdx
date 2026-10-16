@@ -188,6 +188,78 @@ curl http://localhost:8080/v1/decisions \
 
 ---
 
+## Decision Models (hosted)
+
+[Decision Models](https://decisionmodels.io) is a hosted, Jev-compatible API that serves the same System One shape on `POST https://api.decisionmodels.io/v1/systemone` with a bearer API key. Nothing to run yourself: add it as a custom provider on the **Typesafe** base format, like Laya and Nimble above.
+
+| | Decision Models |
+|---|---|
+| **Models** | `s1-fast`, `s1-pro`, `quyet-1-large` |
+| **Questions per request** | `s1-fast` and `quyet-1-large`: 1. `s1-pro`: up to 3 |
+| **Input** | Text, up to 8,192 tokens per question |
+| **Auth** | Bearer API key (`DECISIONMODELS_API_KEY`) |
+
+<Tabs group="config-method">
+<Tab title="Web UI">
+
+1. Navigate to **Models** > **Model Providers** and click **Add New Provider**.
+2. In **Add Custom Provider**, set **Name** (for example `decisionmodels`) and **Base Format** to **Typesafe**.
+3. Set **Base URL** to `https://api.decisionmodels.io`.
+4. Under **Allowed Request Types**, turn on **Decisions** and turn **List Models** off.
+5. Add a key with your Decision Models API key, and in **Allowed Models** type `s1-fast`, `s1-pro`, `quyet-1-large`.
+6. Save.
+
+</Tab>
+<Tab title="config.json">
+
+```json
+{
+  "providers": {
+    "decisionmodels": {
+      "keys": [
+        {
+          "name": "decisionmodels-key",
+          "value": "env.DECISIONMODELS_API_KEY",
+          "models": ["s1-fast", "s1-pro", "quyet-1-large"],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "base_url": "https://api.decisionmodels.io"
+      },
+      "custom_provider_config": {
+        "base_provider_type": "typesafe",
+        "allowed_requests": {
+          "list_models": false,
+          "decisions": true
+        }
+      }
+    }
+  }
+}
+```
+
+</Tab>
+</Tabs>
+
+Then send a decision with one question:
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "decisionmodels/s1-fast",
+    "input": "Customer message: I was double charged and nobody replied to my two emails.",
+    "questions": [
+      { "type": "predicate", "name": "is_frustrated", "instructions": "Is the customer frustrated?" }
+    ]
+  }'
+```
+
+Input prices are in USD per 1 million input tokens on the Peer-to-Peer tier, with output tokens free: `s1-fast` 0.019, `s1-pro` 0.08, `quyet-1-large` 0.035 (current list at `https://api.decisionmodels.io/v1/models`). Add a [pricing override](#pricing) to see them in Bifrost's cost tracking. Images go through a separate `/v1/multimodal` endpoint that this provider does not use.
+
+---
+
 ## Pricing
 
 A custom provider has no price in Bifrost's model catalog, so its decisions cost `$0` until you add a [pricing override](/providers/custom-pricing):
