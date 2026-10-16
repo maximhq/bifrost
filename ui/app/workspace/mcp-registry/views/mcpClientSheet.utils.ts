@@ -5,11 +5,6 @@ import type { VirtualMCP } from "@/lib/types/virtualMcps";
  */
 export const VIRTUAL_MCPS_PAGE_SIZE = 100;
 
-/**
- * Upper safety limit for consecutive pagination requests to prevent runaways.
- */
-export const MAX_VIRTUAL_MCPS_PAGES = 20;
-
 export interface MemberVirtualMCP {
 	vmcp: VirtualMCP;
 	toolNames: string[];

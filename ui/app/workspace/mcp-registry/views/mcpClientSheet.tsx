@@ -77,7 +77,6 @@ import {
 	deriveMemberVirtualMCPs,
 	getNextVirtualMCPPageOffset,
 	mergeVirtualMCPPages,
-	MAX_VIRTUAL_MCPS_PAGES,
 	VIRTUAL_MCPS_PAGE_SIZE,
 } from "./mcpClientSheet.utils";
 import { ConnectionFailureBlock } from "./mcpConnectionFailure";
@@ -176,6 +175,13 @@ function toolExecutionTimeoutToSeconds(v: string | number | undefined | null): n
 	return Math.ceil(total);
 }
 
+/**
+ * Slide-out drawer sheet component for inspecting and managing an individual MCP client server,
+ * including tool permissions, OAuth/header configuration, OpenAPI previews, and Virtual MCP membership.
+ *
+ * @param props MCPClientSheetProps containing client data, callbacks, and navigation state.
+ * @returns React component representing the MCP client details and configuration drawer.
+ */
 export default function MCPClientSheet({
 	mcpClient,
 	onClose,
@@ -294,7 +300,6 @@ export default function MCPClientSheet({
 			setVirtualMcpsPaginationError(false);
 
 			const total = firstPageVirtualMcps.total_count ?? 0;
-			let iterations = 0;
 
 			setIsLoadingMorePages(true);
 			try {
@@ -303,17 +308,17 @@ export default function MCPClientSheet({
 					if (nextOffset === null) {
 						break;
 					}
-					if (iterations >= MAX_VIRTUAL_MCPS_PAGES) {
-						if (!cancelled) setVirtualMcpsPaginationError(true);
-						break;
-					}
 
-					iterations++;
 					try {
 						const res = await fetchVirtualMCPsPage({ limit: VIRTUAL_MCPS_PAGE_SIZE, offset: nextOffset }).unwrap();
 						if (cancelled) break;
 						const incoming = res.virtual_mcps ?? [];
-						if (incoming.length === 0) break;
+						if (incoming.length === 0) {
+							if (consumedRows < total) {
+								setVirtualMcpsPaginationError(true);
+							}
+							break;
+						}
 						consumedRows += incoming.length;
 						current = mergeVirtualMCPPages(current, incoming);
 						setAllVirtualMcps(current);

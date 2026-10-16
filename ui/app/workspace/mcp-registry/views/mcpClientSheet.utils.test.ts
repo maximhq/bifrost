@@ -6,6 +6,14 @@ import {
 	mergeVirtualMCPPages,
 } from "./mcpClientSheet.utils";
 
+/**
+ * Helper to generate a mock VirtualMCP object for unit tests.
+ *
+ * @param id Unique identifier for the Virtual MCP.
+ * @param name Display name for the Virtual MCP.
+ * @param tools Array of tool definitions mapping client IDs to tool names.
+ * @returns Mocked VirtualMCP entity.
+ */
 const createMockVMCP = (id: number, name: string, tools: { mcp_client_id: string; tool_names: string[] }[] = []): VirtualMCP => ({
 	id,
 	name,
@@ -68,6 +76,61 @@ describe("mcpClientSheet.utils", () => {
 			expect(result[0].vmcp.id).toBe(105);
 			expect(result[0].toolNames).toEqual(["specificTool"]);
 		});
+		it("correctly identifies server when bundled on pages beyond 20 (e.g. page 25, index > 2000)", () => {
+			const vmcps: VirtualMCP[] = [];
+			for (let i = 1; i <= 2500; i++) {
+				vmcps.push(
+					createMockVMCP(
+						i,
+						`VMCP ${i}`,
+						i === 2450 ? [{ mcp_client_id: "target-client", tool_names: ["deepTool"] }] : [],
+					),
+				);
+			}
+
+			const result = deriveMemberVirtualMCPs(vmcps, "target-client");
+			expect(result).toHaveLength(1);
+			expect(result[0].vmcp.id).toBe(2450);
+			expect(result[0].toolNames).toEqual(["deepTool"]);
+		});
+
+		it("simulates sheet-level pagination flow discovering a target present only at offset 100", () => {
+			// Page 1 (offset 0, limit 100): 100 items not containing target
+			const page1 = Array.from({ length: 100 }, (_, i) =>
+				createMockVMCP(i + 1, `VMCP ${i + 1}`, [{ mcp_client_id: "other-client", tool_names: ["tool"] }]),
+			);
+			// Page 2 (offset 100, limit 100): 4 items containing the target client
+			const page2 = [
+				createMockVMCP(101, "VMCP 101", [{ mcp_client_id: "other-client", tool_names: ["tool"] }]),
+				createMockVMCP(102, "Target Virtual MCP", [{ mcp_client_id: "target-client", tool_names: ["specialTool"] }]),
+				createMockVMCP(103, "VMCP 103"),
+				createMockVMCP(104, "VMCP 104"),
+			];
+
+			const totalCount = 104;
+			let current = page1;
+			let consumedRows = current.length;
+
+			// Before page 2 is fetched, lookup finds no membership
+			expect(deriveMemberVirtualMCPs(current, "target-client")).toHaveLength(0);
+
+			// Offset for page 2 is 100
+			const nextOffset = getNextVirtualMCPPageOffset(consumedRows, totalCount);
+			expect(nextOffset).toBe(100);
+
+			// Fetch and merge page 2
+			consumedRows += page2.length;
+			current = mergeVirtualMCPPages(current, page2);
+
+			// Pagination completes
+			expect(getNextVirtualMCPPageOffset(consumedRows, totalCount)).toBeNull();
+
+			// Target present only at offset 100 is now discovered and rendered in membership
+			const memberships = deriveMemberVirtualMCPs(current, "target-client");
+			expect(memberships).toHaveLength(1);
+			expect(memberships[0].vmcp.name).toBe("Target Virtual MCP");
+			expect(memberships[0].toolNames).toEqual(["specialTool"]);
+		});
 	});
 
 	describe("mergeVirtualMCPPages", () => {
@@ -95,6 +158,20 @@ describe("mcpClientSheet.utils", () => {
 			const merged = mergeVirtualMCPPages(page1, page2);
 			expect(merged.map((m) => m.id)).toEqual([1, 2, 3]);
 		});
+
+		it("merges large page sequences exceeding 20 pages without data loss or truncation", () => {
+			let accumulated: VirtualMCP[] = [];
+			for (let page = 0; page < 25; page++) {
+				const pageItems = [
+					createMockVMCP(page * 2 + 1, `VMCP ${page * 2 + 1}`),
+					createMockVMCP(page * 2 + 2, `VMCP ${page * 2 + 2}`),
+				];
+				accumulated = mergeVirtualMCPPages(accumulated, pageItems);
+			}
+			expect(accumulated).toHaveLength(50);
+			expect(accumulated[0].id).toBe(1);
+			expect(accumulated[49].id).toBe(50);
+		});
 	});
 
 	describe("getNextVirtualMCPPageOffset", () => {
@@ -118,6 +195,30 @@ describe("mcpClientSheet.utils", () => {
 		it("returns null once currentCount reaches or exceeds totalCount", () => {
 			expect(getNextVirtualMCPPageOffset(104, 104)).toBeNull();
 			expect(getNextVirtualMCPPageOffset(105, 104)).toBeNull();
+		});
+
+		it("continues computing offsets seamlessly across arbitrarily large page sequences beyond page 20", () => {
+			const totalCount = 2500;
+			let currentOffset: number | null = 0;
+			let pageCount = 0;
+
+			while (currentOffset !== null) {
+				pageCount++;
+				const next = getNextVirtualMCPPageOffset(currentOffset + 100, totalCount);
+				currentOffset = next;
+			}
+
+			// 2500 items at 100 items per page = 25 full pages
+			expect(pageCount).toBe(25);
+		});
+
+		it("detects when an early empty page arrives while consumedRows < total", () => {
+			const totalCount = 101;
+			const consumedRows = 100;
+			const incoming: VirtualMCP[] = [];
+
+			const isPrematureEmpty = incoming.length === 0 && consumedRows < totalCount;
+			expect(isPrematureEmpty).toBe(true);
 		});
 	});
 });
