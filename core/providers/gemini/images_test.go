@@ -2,11 +2,13 @@ package gemini
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"testing"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // The image converters run once per retry/fallback attempt on the same Bifrost
@@ -234,4 +236,103 @@ func TestToImagenImageEditRequest_ExtraParamsSurviveRetries(t *testing.T) {
 
 	assert.Len(t, bifrostReq.Params.ExtraParams, 14)
 	assert.Contains(t, bifrostReq.Params.ExtraParams, "maskMode")
+}
+
+const geminiImageMimeTypePath = "generationConfig.imageConfig.imageOutputOptions.mimeType"
+
+// Bifrost output_format must reach the Vertex Gemini wire body as
+// generationConfig.imageConfig.imageOutputOptions.mimeType.
+func TestToGeminiImageGenerationRequest_OutputFormatMapsToMimeType(t *testing.T) {
+	cases := map[string]struct {
+		format string
+		want   string
+	}{
+		"png":       {format: "png", want: "image/png"},
+		"jpeg":      {format: "jpeg", want: "image/jpeg"},
+		"jpg_upper": {format: "JPG", want: "image/jpeg"},
+		"webp":      {format: "webp", want: "image/webp"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			format := tc.format
+			bifrostReq := &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.Vertex,
+				Model:    "gemini-2.5-flash-image",
+				Input:    &schemas.ImageGenerationInput{Prompt: "a red apple"},
+				Params:   &schemas.ImageGenerationParameters{OutputFormat: &format},
+			}
+			body := geminiImageWireBody(t, ToGeminiImageGenerationRequest(bifrostReq))
+			assert.Equal(t, tc.want, gjson.GetBytes(body, geminiImageMimeTypePath).String(), "body %s", body)
+		})
+	}
+}
+
+func TestToGeminiImageEditRequest_OutputFormatMapsToMimeType(t *testing.T) {
+	cases := map[string]struct {
+		format string
+		want   string
+	}{
+		"png":       {format: "png", want: "image/png"},
+		"jpeg":      {format: "jpeg", want: "image/jpeg"},
+		"jpg_upper": {format: "JPG", want: "image/jpeg"},
+		"webp":      {format: "webp", want: "image/webp"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			format := tc.format
+			bifrostReq := &schemas.BifrostImageEditRequest{
+				Provider: schemas.Vertex,
+				Model:    "gemini-2.5-flash-image",
+				Input: &schemas.ImageEditInput{
+					Prompt: "make it pop",
+					Images: []schemas.ImageInput{{Image: imageTestPNG(t)}},
+				},
+				Params: &schemas.ImageEditParameters{OutputFormat: &format},
+			}
+			body := geminiImageWireBody(t, ToGeminiImageEditRequest(bifrostReq))
+			assert.Equal(t, tc.want, gjson.GetBytes(body, geminiImageMimeTypePath).String(), "body %s", body)
+		})
+	}
+}
+
+// An absent or unmappable output_format must not fail the request or emit an imageOutputOptions block.
+func TestGeminiImageRequests_UnsupportedOrUnsetOutputFormatOmitsImageOutputOptions(t *testing.T) {
+	tiff := "tiff"
+	cases := map[string]*string{
+		"unset":       nil,
+		"unsupported": &tiff,
+	}
+	for name, format := range cases {
+		t.Run("generation_"+name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.Vertex,
+				Model:    "gemini-2.5-flash-image",
+				Input:    &schemas.ImageGenerationInput{Prompt: "a red apple"},
+				Params:   &schemas.ImageGenerationParameters{OutputFormat: format},
+			}
+			body := geminiImageWireBody(t, ToGeminiImageGenerationRequest(bifrostReq))
+			assert.False(t, gjson.GetBytes(body, "generationConfig.imageConfig.imageOutputOptions").Exists(), "body %s", body)
+		})
+		t.Run("edit_"+name, func(t *testing.T) {
+			bifrostReq := &schemas.BifrostImageEditRequest{
+				Provider: schemas.Vertex,
+				Model:    "gemini-2.5-flash-image",
+				Input: &schemas.ImageEditInput{
+					Prompt: "make it pop",
+					Images: []schemas.ImageInput{{Image: imageTestPNG(t)}},
+				},
+				Params: &schemas.ImageEditParameters{OutputFormat: format},
+			}
+			body := geminiImageWireBody(t, ToGeminiImageEditRequest(bifrostReq))
+			assert.False(t, gjson.GetBytes(body, "generationConfig.imageConfig.imageOutputOptions").Exists(), "body %s", body)
+		})
+	}
+}
+
+func geminiImageWireBody(t *testing.T, geminiReq *GeminiGenerationRequest) []byte {
+	t.Helper()
+	require.NotNil(t, geminiReq)
+	body, err := json.Marshal(geminiReq)
+	require.NoError(t, err)
+	return body
 }
