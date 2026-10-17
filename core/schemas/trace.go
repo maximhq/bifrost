@@ -35,6 +35,9 @@ const (
 	// TraceAttrDimensions holds the map[string]string of request dimensions
 	// parsed from x-bf-dim-* headers, keyed by bare dimension name.
 	TraceAttrDimensions = "bifrost.dimensions"
+	// TraceAttrTraceState holds the inbound W3C tracestate. Vendor data such as Datadog's
+	// propagating tags lives there, not in traceparent.
+	TraceAttrTraceState = "tracestate"
 )
 
 // GetStringAttr returns a string attribute, or "" when absent or another type.
@@ -100,6 +103,12 @@ func GetFloat64Attr(attrs map[string]any, key string) float64 {
 // TraceSessionID returns the session ID trace attribute, or "" when absent.
 func TraceSessionID(attrs map[string]any) string {
 	v, _ := attrs[TraceAttrSessionID].(string)
+	return v
+}
+
+// TraceTraceState returns the inbound W3C tracestate, or "" when absent.
+func TraceTraceState(attrs map[string]any) string {
+	v, _ := attrs[TraceAttrTraceState].(string)
 	return v
 }
 
