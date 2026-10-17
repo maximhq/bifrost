@@ -1278,6 +1278,11 @@ const (
 	AttrBifrostComplexityScore     = "bifrost.complexity_score"     // semantic similarity used to classify the tier; decision-model confidence is log-only
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
 
+	// Stored prompt the prompts plugin applied.
+	AttrBifrostPromptID      = "bifrost.prompt.id"
+	AttrBifrostPromptName    = "bifrost.prompt.name"
+	AttrBifrostPromptVersion = "bifrost.prompt.version"
+
 	// AttrBifrostErrorType is the normalized ErrorType, so span-derived connectors
 	// classify identically to the metrics. Absent on success.
 	AttrBifrostErrorType = "bifrost.error.type"
