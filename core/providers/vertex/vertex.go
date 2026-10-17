@@ -3609,10 +3609,14 @@ func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
 	if err := sonic.Unmarshal(metaBytes, &meta); err != nil {
 		return body
 	}
+	completionTokens := meta.CandidatesTokenCount + meta.ThoughtsTokenCount
 	usage := map[string]any{
 		"prompt_tokens":     meta.PromptTokenCount,
-		"completion_tokens": meta.CandidatesTokenCount,
+		"completion_tokens": completionTokens,
 		"total_tokens":      meta.TotalTokenCount,
+	}
+	if meta.ThoughtsTokenCount > 0 {
+		usage["completion_tokens_details"] = map[string]any{"reasoning_tokens": meta.ThoughtsTokenCount}
 	}
 	if meta.CachedContentTokenCount > 0 {
 		usage["prompt_tokens_details"] = map[string]any{

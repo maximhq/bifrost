@@ -12,6 +12,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestVertexNormalizeBatchUsageIncludesThoughtsTokens(t *testing.T) {
+	body := map[string]any{"usageMetadata": map[string]any{
+		"promptTokenCount": 3, "candidatesTokenCount": 5, "thoughtsTokenCount": 7, "totalTokenCount": 15,
+	}}
+
+	got := vertexNormalizeBatchUsage(body)["usage"].(map[string]any)
+	assert.Equal(t, int32(12), got["completion_tokens"])
+	assert.Equal(t, int32(15), got["total_tokens"])
+	assert.Equal(t, int32(7), got["completion_tokens_details"].(map[string]any)["reasoning_tokens"])
+}
+
 // parseVertexJSONLLines splits the JSONL output into one decoded map per line.
 func parseVertexJSONLLines(t *testing.T, data []byte) []map[string]interface{} {
 	t.Helper()

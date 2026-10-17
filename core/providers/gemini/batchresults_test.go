@@ -231,15 +231,19 @@ func TestGeminiGenerateContentToBatchResultBody(t *testing.T) {
 			UsageMetadata: &GenerateContentResponseUsageMetadata{
 				PromptTokenCount:     1,
 				CandidatesTokenCount: 2,
-				TotalTokenCount:      3,
+				ThoughtsTokenCount:   4,
+				TotalTokenCount:      7,
 			},
 		}
 
 		body := geminiGenerateContentToBatchResultBody(resp)
 		assert.Equal(t, "foobar", body["text"])
 		assert.Equal(t, "STOP", body["finish_reason"])
-		_, ok := body["usage"].(map[string]interface{})
-		assert.True(t, ok)
+		usage, ok := body["usage"].(map[string]interface{})
+		require.True(t, ok)
+		assert.Equal(t, int32(6), usage["completion_tokens"])
+		assert.Equal(t, int32(7), usage["total_tokens"])
+		assert.Equal(t, int32(4), usage["completion_tokens_details"].(map[string]interface{})["reasoning_tokens"])
 	})
 
 	t.Run("NoUsageNoText", func(t *testing.T) {
