@@ -179,6 +179,38 @@ would turn a Business token into a 401 that reads like a bad credential. The Git
 needs no `base_url` because it learns the host from the exchange.
 </Warning>
 
+### Getting a GitHub token with the device flow
+
+Bifrost can run GitHub's OAuth device flow, which needs no redirect URL. You need the client
+ID of a GitHub OAuth app that has **Enable Device Flow** turned on.
+
+```bash
+curl -X POST http://localhost:8080/api/providers/github-copilot/device-login/initiate \
+  -H "Content-Type: application/json" \
+  -d '{ "client_id": "<client ID of your OAuth app>" }'
+```
+
+The response has a `user_code`, a `verification_uri`, a `device_code` and an `interval`.
+Open the URI, enter the code, then poll every `interval` seconds:
+
+```bash
+curl -X POST http://localhost:8080/api/providers/github-copilot/device-login/poll \
+  -H "Content-Type: application/json" \
+  -d '{ "client_id": "<client ID of your OAuth app>", "device_code": "<device_code>" }'
+```
+
+| `status` | Meaning |
+| -------- | ------- |
+| `pending` | Not approved yet. Poll again. If the response has an `interval`, use that one. |
+| `complete` | `access_token` is the GitHub token. Put it in the key `value`. |
+| `expired` | The code expired. Start again. |
+| `error` | GitHub refused the login. `error` has the reason. |
+
+<Note>
+Whether Copilot accepts the token, and which models it can call, depends on the OAuth app
+that issued it.
+</Note>
+
 ---
 
 # 1. Chat Completions
