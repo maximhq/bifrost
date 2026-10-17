@@ -4,3 +4,4 @@
 - feat: gateway-run tool search for deferred tools on models with no tool search of their own (Gemini, older GPT, Bedrock non-Claude, ...) — the deferred tools are held back behind a bifrost_tool_search function that Bifrost resolves in the gateway (select: or BM25), at most 3 model calls per request (non-streaming)
 - feat: the gateway-run tool search also serves streaming Responses requests, splicing the search turns into one client stream
 - fix: preserve xhigh reasoning effort for OpenAI-compatible destinations (vLLM, Ollama, SGL, and custom providers) instead of rewriting it to high using OpenAI model-name rules [@pranavthakur0-0](https://github.com/pranavthakur0-0) (#6193)
+- [fix]: send developer messages as system to models whose datasheet row sets supports_developer_role to false (Fireworks Qwen by default) [@salarali](https://github.com/salarali)
