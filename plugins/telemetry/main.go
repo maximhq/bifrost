@@ -1251,6 +1251,9 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 	// A request is scoped to at most one project, so there is no plural form to canonicalize.
 	projectID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectID)
 	projectName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyGovernanceProjectName)
+	promptID := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptID)
+	promptName := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptName)
+	promptVersion := bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeySelectedPromptVersion)
 	app := schemas.DetectAppFromUserAgent(bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserAgent))
 
 	// Extract ALL context values BEFORE spawning the goroutine.
@@ -1278,6 +1281,9 @@ func (p *PrometheusPlugin) PostLLMHook(ctx *schemas.BifrostContext, result *sche
 		"business_unit_name":   businessUnitName,
 		"project_id":           projectID,
 		"project_name":         projectName,
+		"prompt_id":            promptID,
+		"prompt_name":          promptName,
+		"prompt_version":       promptVersion,
 	}
 	if p.userLabelsEnabled.Load() {
 		labelValues["user_id"] = bifrost.GetStringFromContext(ctx, schemas.BifrostContextKeyUserID)
