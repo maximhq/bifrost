@@ -4,6 +4,7 @@
 - **Spend by Virtual Key Metadata** - Each log entry now carries a snapshot of its virtual key's metadata, so logs and dashboard spend can be filtered with the existing metadata filters (for example `metadata_cost_center=cc-42`). On a key collision the virtual key's value overrides `x-bf-lh-*` headers, configured logging headers and `x-bf-dim-*` dimensions, so callers cannot spoof attribution [@jimseiwert](https://github.com/jimseiwert)
 - **Virtual Key Metadata API** - Create and update virtual keys with a `metadata` object (on update, omit to keep, `{}` to clear); invalid metadata returns a 400 naming the key. The virtual key list accepts `metadata_<key>=<value>` filters (AND-ed) and `search` also matches metadata [@jimseiwert](https://github.com/jimseiwert)
 - **Virtual Key Metadata in the UI** - The virtual key sheet has a Metadata editor (validated like the API, editable on access-profile-managed keys too), the details sheet lists entries with a "View spend" link to the filtered logs, and the virtual keys table has a metadata filter [@jimseiwert](https://github.com/jimseiwert)
+- **Key Selection Hooks for Embedders** - `BifrostHTTPServer` gains `KeySelector` and `KeyPoolFilter`, passed to core on `Bootstrap`, so a program embedding the HTTP server can supply its own key-selection policy. Unset, core's defaults apply [@jeremym-tanium](https://github.com/jeremym-tanium)
 
 ## 🐞 Fixed
 
