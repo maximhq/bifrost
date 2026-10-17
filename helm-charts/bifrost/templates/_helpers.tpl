@@ -1877,6 +1877,12 @@ false
 {{- if hasKey $inputConfig "enable_llm_obs" }}
 {{- $_ := set $datadogConfig "enable_llm_obs" $inputConfig.enable_llm_obs }}
 {{- end }}
+{{- if $inputConfig.otel_llmobs_conversion }}
+{{- $_ := set $datadogConfig "otel_llmobs_conversion" $inputConfig.otel_llmobs_conversion }}
+{{- end }}
+{{- if hasKey $inputConfig "llmobs_gateway_mode" }}
+{{- $_ := set $datadogConfig "llmobs_gateway_mode" $inputConfig.llmobs_gateway_mode }}
+{{- end }}
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $datadogConfig "disable_content_logging" $inputConfig.disable_content_logging }}
 {{- end }}
@@ -1900,6 +1906,9 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "metric_dimensions" }}
 {{- $_ := set $datadogConfig "metric_dimensions" $inputConfig.metric_dimensions }}
+{{- end }}
+{{- if hasKey $inputConfig "cost_tags" }}
+{{- $_ := set $datadogConfig "cost_tags" $inputConfig.cost_tags }}
 {{- end }}
 {{- if $inputConfig.plugin_span_filter }}
 {{- $_ := set $datadogConfig "plugin_span_filter" $inputConfig.plugin_span_filter }}
