@@ -1118,6 +1118,12 @@ TASK_CAPABILITY_APP_DIR=$(mktemp -d "$PWD/tmp/custom-profile-capability.XXXXXX")
 cp tests/e2e/api/provider_config/provider-error-fixture.config.json "$TASK_CAPABILITY_APP_DIR/config.json"
 printf '%s\n' '{"values":[{"key":"providerErrorFixture","value":"1","enabled":true}]}' > tmp/custom-profile-capability.env.json
 make dev PORT=8790 APP_DIR="$TASK_CAPABILITY_APP_DIR"
+```
+
+`make dev` stays in the foreground. Once `/health` is ready, run the scoped
+harness from a third terminal:
+
+```bash
 make run-provider-harness-test PROVIDER=gemini FEATURE="custom profile capabilities" BASE_URL=http://localhost:8790 ENV_FILE=tmp/custom-profile-capability.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 HARNESS_MAX_REQUESTS=20
 ```
 
