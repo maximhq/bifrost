@@ -276067,6 +276067,190 @@
           }
         }
       ]
+    },
+    {
+      "name": "259. Gemini 3/3.5 thinking level mapping, regional tool combinations, and split stream usage (PR #7829) (gemini-3-5-thinking-and-usage)",
+      "description": "Regression pins for PR #7829: (1) cross-provider reasoning parameters (e.g. Anthropic thinking.budget_tokens or Responses reasoning) on Gemini 3/3.5 models map to generationConfig.thinkingConfig.thinkingLevel instead of thinkingBudget and respect reasoning summary/display suppression; (2) regional Vertex Gemini 3+ models (e.g. au.gemini-3.5-flash) allow combining function declarations with Google Search; (3) Gemini streaming chat completions preserve both finish_reason and usage when delivered across split SSE chunks. Run with FEATURE=\"gemini-3-5-thinking-and-usage\".",
+      "item": [
+        {
+          "name": "gemini/gemini-3-flash-preview /anthropic/v1/messages thinking budget_tokens maps to thinkingLevel on the wire - #7829",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || \"\";",
+                  "pm.test(\"gemini/gemini-3-flash-preview thinking level mapping: HTTP 200\", function () {",
+                  "  pm.expect(pm.response.code, \"failed: \" + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === \"string\") { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test(\"gemini/gemini-3-flash-preview thinking level mapping: raw_request uses thinkingLevel without thinkingBudget and suppresses includeThoughts - #7829\", function () {",
+                  "  pm.expect(rr, \"raw_request missing: \" + txt.slice(0, 800)).to.be.an(\"object\");",
+                  "  var tc = ((rr || {}).generationConfig || {}).thinkingConfig || {};",
+                  "  pm.expect(tc.thinkingLevel, \"thinkingConfig: \" + JSON.stringify(tc)).to.be.a(\"string\").and.not.be.empty;",
+                  "  pm.expect(tc.thinkingBudget, \"thinkingBudget must be omitted on Gemini 3+: \" + JSON.stringify(tc)).to.be.undefined;",
+                  "  pm.expect(Boolean(tc.includeThoughts), \"includeThoughts must be absent or false when display is omitted: \" + JSON.stringify(tc)).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3-flash-preview\",\n  \"max_tokens\": 1024,\n  \"thinking\": {\n    \"type\": \"enabled\",\n    \"budget_tokens\": 1024,\n    \"display\": \"omitted\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "vertex/au.gemini-3.5-flash /v1/responses combines web_search and function tools on regional Gemini 3+ - #7829",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || \"\";",
+                  "pm.test(\"vertex/au.gemini-3.5-flash regional tool combination: HTTP 200\", function () {",
+                  "  pm.expect(pm.response.code, \"failed: \" + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === \"string\") { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "pm.test(\"vertex/au.gemini-3.5-flash regional tool combination: both functionDeclarations and googleSearch reach the wire - #7829\", function () {",
+                  "  pm.expect(rr, \"raw_request missing: \" + txt.slice(0, 800)).to.be.an(\"object\");",
+                  "  var tools = (rr || {}).tools || [];",
+                  "  var dump = JSON.stringify(tools);",
+                  "  pm.expect(dump, \"tools on wire: \" + dump).to.include(\"functionDeclarations\");",
+                  "  pm.expect(dump, \"tools on wire: \" + dump).to.include(\"googleSearch\");",
+                  "  var tc = ((rr || {}).generationConfig || {}).thinkingConfig || {};",
+                  "  pm.expect(Boolean(tc.includeThoughts), \"includeThoughts must be absent or false when summary is none: \" + JSON.stringify(tc)).to.equal(false);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/au.gemini-3.5-flash\",\n  \"max_output_tokens\": 64,\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"summary\": \"none\"\n  },\n  \"tools\": [\n    {\n      \"type\": \"web_search\"\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"get_weather\",\n      \"description\": \"Get weather for a city\",\n      \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"city\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"city\"\n        ]\n      }\n    }\n  ],\n  \"input\": \"Reply with OK.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "gemini/gemini-3-flash-preview /v1/chat/completions stream emits both finish_reason and usage - #7829",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || \"\";",
+                  "pm.test(\"gemini/gemini-3-flash-preview stream finish_reason and usage: HTTP 200\", function () {",
+                  "  pm.expect(pm.response.code, \"failed: \" + txt.slice(0, 800)).to.equal(200);",
+                  "});",
+                  "var chunks = [];",
+                  "txt.split(\"\\n\").forEach(function (line) {",
+                  "  var trimmed = line.trim();",
+                  "  if (trimmed.indexOf(\"data:\") !== 0) { return; }",
+                  "  var payload = trimmed.slice(5).trim();",
+                  "  if (!payload || payload === \"[DONE]\") { return; }",
+                  "  try { chunks.push(JSON.parse(payload)); } catch (e) {}",
+                  "});",
+                  "var finishReasons = [];",
+                  "var usages = [];",
+                  "chunks.forEach(function (c) {",
+                  "  ((c || {}).choices || []).forEach(function (ch) {",
+                  "    if (ch && ch.finish_reason) { finishReasons.push(ch.finish_reason); }",
+                  "  });",
+                  "  if (c && c.usage && c.usage.total_tokens > 0) { usages.push(c.usage); }",
+                  "});",
+                  "pm.test(\"gemini/gemini-3-flash-preview stream emits non-empty finish_reason and usage - #7829\", function () {",
+                  "  pm.expect(finishReasons.length, \"missing finish_reason in SSE stream: \" + txt.slice(0, 1200)).to.be.above(0);",
+                  "  pm.expect(usages.length, \"missing usage in SSE stream: \" + txt.slice(0, 1200)).to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3-flash-preview\",\n  \"max_tokens\": 64,\n  \"reasoning_effort\": \"low\",\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word OK.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
