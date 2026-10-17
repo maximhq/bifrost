@@ -12,6 +12,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestToOpenAIResponsesRequest_PreservesOutputTokenBound covers native Responses
+// ingress and its Chat fallback without changing the caller's token allowance.
+func TestToOpenAIResponsesRequest_PreservesOutputTokenBound(t *testing.T) {
+	for _, limit := range []*int{nil, schemas.Ptr(0), schemas.Ptr(1), schemas.Ptr(8), schemas.Ptr(15), schemas.Ptr(16), schemas.Ptr(64)} {
+		ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+		request := &OpenAIResponsesRequest{Model: "openai/gpt-4o-mini",
+			Input:               OpenAIResponsesRequestInput{OpenAIResponsesRequestInputStr: schemas.Ptr("A bounded answer")},
+			ResponsesParameters: schemas.ResponsesParameters{MaxOutputTokens: limit}}
+		neutral := request.ToBifrostResponsesRequest(ctx)
+		wire := ToOpenAIResponsesRequest(ctx, neutral)
+		require.Equal(t, limit, wire.MaxOutputTokens, "Responses output allowance changed")
+		chat := ToOpenAIChatRequest(ctx, neutral.ToChatRequest())
+		require.Equal(t, limit, chat.MaxCompletionTokens, "Responses-to-Chat output allowance changed")
+		require.Equal(t, limit, neutral.Params.MaxOutputTokens, "caller request mutated")
+		cancel()
+	}
+}
+
 func TestToOpenAIResponsesRequest_ReasoningOnlyMessageSkip(t *testing.T) {
 	tests := []struct {
 		name                     string
