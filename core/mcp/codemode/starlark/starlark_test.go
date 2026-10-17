@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1532,8 +1533,13 @@ func TestCodeModeUnsupportedStatementHint(t *testing.T) {
 		if result.Errors == nil {
 			t.Fatalf("expected a parse error for %q", code)
 		}
-		if !strings.Contains(strings.Join(result.Errors.Hints, "\n"), "does NOT support try/except") {
+		hints := strings.Join(result.Errors.Hints, "\n")
+		if !strings.Contains(hints, "does NOT support try/except") {
 			t.Fatalf("missing try/except hint for %q: %+v", code, result.Errors)
+		}
+		// The parse error says nothing about dicts or tool calls, so generic advice only buries the hint.
+		if strings.Contains(hints, "Access dict values with brackets") {
+			t.Fatalf("generic hints follow the try/except hint for %q:\n%s", code, hints)
 		}
 	}
 }
@@ -2064,6 +2070,49 @@ func TestCodeModeFailedCallIsAToolErrorValue(t *testing.T) {
 	})
 }
 
+// The try/except hint hands the model a check to copy. Running that exact check against a failed
+// call and a successful result keeps the hint from drifting away from what a failed call is.
+func TestExceptionHandlingHintCatchesAFailedCall(t *testing.T) {
+	var variable, check string
+	for _, line := range exceptionHandlingHints() {
+		line = strings.TrimSpace(line)
+		if name, _, ok := strings.Cut(line, " = server.tool("); ok {
+			variable = name
+		}
+		if strings.HasPrefix(line, "if ") && strings.HasSuffix(line, ":") {
+			check = strings.TrimSuffix(strings.TrimPrefix(line, "if "), ":")
+		}
+	}
+	if variable == "" || check == "" {
+		t.Fatalf("the hint shows no call and check to copy: %q", exceptionHandlingHints())
+	}
+
+	limits := schemas.MCPCodeModeLimits{}.WithDefaults()
+	bindings := map[string][]string{"srv": {"srv-get"}}
+	for _, tc := range []struct {
+		name  string
+		value interface{}
+		want  bool
+	}{
+		{name: "a failed call", value: toolErrorValue{message: "contact 7 not found"}, want: true},
+		{name: "a dict result", value: map[string]interface{}{"id": 7}, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := func(context.Context, string, string, map[string]interface{}, func(string)) (interface{}, error) {
+				return tc.value, nil
+			}
+			code := variable + " = srv.get()\nfailed = bool(" + check + ")\nresult = failed"
+			result := runSandbox(context.Background(), limits, code, bindings, call)
+			if result.Errors != nil {
+				t.Fatalf("the hint's check raised: %s", result.Errors.Message)
+			}
+			if result.Result != tc.want {
+				t.Fatalf("the hint's check %q gave %v, want %v", check, result.Result, tc.want)
+			}
+		})
+	}
+}
+
 // A script that calls fail() chose to stop: the hints say so instead of generic code advice.
 func TestGeneratePythonErrorHintsForFail(t *testing.T) {
 	hints := generatePythonErrorHints("fail: update failed: permission denied", []string{"crm"})
@@ -2082,6 +2131,41 @@ func TestStubsExplainFailedCalls(t *testing.T) {
 				t.Errorf("%s does not mention %s, got:\n%s", name, want, content)
 			}
 		}
+	}
+}
+
+// The executeToolCode description is the one text every model reads before its first script, so
+// it must describe failed calls as values and list only names the sandbox resolves.
+func TestExecuteToolCodeDescriptionMatchesTheSandbox(t *testing.T) {
+	description := *newSearchCodeMode(searchToolSchema()).createExecuteToolCodeTool().Function.Description
+
+	for _, want := range []string{`hasattr(r, "error")`, "fail(r.error)", "json.decode", "math."} {
+		if !strings.Contains(description, want) {
+			t.Errorf("description does not mention %s:\n%s", want, description)
+		}
+	}
+	// A server bound under a module's name takes it, so the fixed text must say that for every module.
+	if shadowing := "a server named " + strings.Join(sandboxModules.Keys(), " or ") + " takes that name"; !strings.Contains(description, shadowing) {
+		t.Errorf("description does not say %q:\n%s", shadowing, description)
+	}
+	if strings.Contains(description, "cannot be caught") {
+		t.Errorf("description still says tool failures cannot be caught:\n%s", description)
+	}
+
+	_, rest, ok := strings.Cut(description, "AVAILABLE BUILTINS: ")
+	if !ok {
+		t.Fatalf("description lists no builtins:\n%s", description)
+	}
+	// Cut at the next section's label, not at a period, so a sentence inside the list fails below.
+	listedWithDot, _, _ := strings.Cut(rest, " MODULES:")
+	listed := strings.TrimSuffix(listedWithDot, ".")
+	names := strings.Split(listed, ", ")
+	if !slices.Contains(names, "fail") {
+		t.Errorf("builtins %q leave out fail", names)
+	}
+	result := runSandbox(context.Background(), schemas.MCPCodeModeLimits{}.WithDefaults(), "result = len(["+listed+"])", nil, nil)
+	if result.Errors != nil {
+		t.Fatalf("a listed builtin does not exist in the sandbox: %s", result.Errors.Message)
 	}
 }
 
