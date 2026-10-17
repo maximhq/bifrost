@@ -1161,6 +1161,12 @@ const (
 	// OTel MCP semconv.
 	AttrBifrostMCPToolDurationMs = "bifrost.mcp.tool.duration_ms"
 
+	// MCP client this span talked to; the span name carries it only as a composite.
+	AttrBifrostMCPClientName = "bifrost.mcp.client.name"
+
+	// A tool call that reported failure in its result; the span status stays ok.
+	AttrBifrostMCPToolIsError = "bifrost.mcp.tool.is_error"
+
 	// A2A (Agent Gateway) span attributes. There is no A2A semconv yet. The
 	// Bifrost operation name covers protocol and gateway-owned operations, while
 	// a2a.method.name is present only for strict-v1 JSON-RPC methods.
