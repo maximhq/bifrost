@@ -54,6 +54,35 @@ test("a model that is not a string is an unknown model and the fixture keeps ser
   assert.equal(ok.status, 200, "a valid request after the malformed ones");
 });
 
+test("usage fixtures preserve ordered payloads and missing versus zero receipts", async (t) => {
+  const post = await startFixture(t);
+  for (const [model, expected] of [
+    ["upstream-usage-missing", undefined],
+    ["upstream-usage-zero", { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }],
+    ["upstream-ok", { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 }],
+  ]) {
+    const response = await post({ model, messages: [{ role: "user", content: "hi" }] });
+    assert.equal(response.status, 200);
+    const completion = await response.json();
+    assert.deepEqual(Object.keys(completion), ["id", "object", "created", "model", "choices", ...(expected ? ["usage"] : [])]);
+    assert.equal(completion.model, model);
+    assert.deepEqual(completion.usage, expected);
+    assert.equal(completion.choices[0].message.content, "hello");
+
+    const streamed = await post({ model, messages: [{ role: "user", content: "hi" }], stream: true, stream_options: { include_usage: true } });
+    assert.equal(streamed.status, 200);
+    const raw = await streamed.text();
+    assert.ok(raw.endsWith("data: [DONE]\n\n"));
+    const receipts = raw.split(/\r?\n\r?\n/).flatMap((frame) => {
+      const data = frame.startsWith("data:") ? frame.slice(5).trim() : "";
+      if (!data || data === "[DONE]") return [];
+      const chunk = JSON.parse(data);
+      return chunk.usage === undefined ? [] : [chunk.usage];
+    });
+    assert.deepEqual(receipts, expected ? [expected] : []);
+  }
+});
+
 test("filtered Live create checks accounting events and unchanged command permissions", async (t) => {
   const post = await startFixture(t);
   const top = ["session.started", "session.updated", "session.closed", "session.usage.updated", "session.delegation.created", "session.input_transcript.delta", "session.output_transcript.delta", "error"];
