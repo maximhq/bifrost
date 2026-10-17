@@ -47,7 +47,7 @@ func TestXAIRealtimeMint(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			provider := &XAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: server.URL, ExtraHeaders: map[string]string{"authorization": "wrong"}}}
+			provider := &XAIProvider{client: &fasthttp.Client{}, networkConfig: schemas.NetworkConfig{BaseURL: server.URL, ExtraHeaders: schemas.NewSecretVarMap(map[string]string{"authorization": "wrong"})}}
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 			out, err := provider.CreateRealtimeClientSecret(ctx, schemas.Key{Value: *schemas.NewSecretVar("synthetic-key")}, json.RawMessage(`{"session":{"type":"realtime","model":"grok-voice-latest"},"expires_after":{"seconds":123},"future":{"n":9007199254740993}}`))
 			if calls != 1 {
@@ -66,7 +66,7 @@ func TestXAIRealtimeMint(t *testing.T) {
 
 // TestXAIRealtimeURLHeaders checks selected-key authentication, model escaping, native transport boundaries and absence of generated settings.
 func TestXAIRealtimeURLHeaders(t *testing.T) {
-	provider := &XAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: "https://voice.example/base/", ExtraHeaders: map[string]string{"authorization": "wrong", "X-Trace": "test"}}}
+	provider := &XAIProvider{networkConfig: schemas.NetworkConfig{BaseURL: "https://voice.example/base/", ExtraHeaders: schemas.NewSecretVarMap(map[string]string{"authorization": "wrong", "X-Trace": "test"})}}
 	endpoint, err := provider.RealtimeWebSocketURL(schemas.Key{}, "grok voice+test", "")
 	if err != nil || endpoint != "wss://voice.example/base/v1/realtime?model=grok+voice%2Btest" {
 		t.Fatal(endpoint, err)

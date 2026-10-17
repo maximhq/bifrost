@@ -999,6 +999,8 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 		model    string
 	}{
 		{name: "deepseek", provider: schemas.DeepSeek, model: "deepseek-v4-pro"},
+		{name: "mistral", provider: schemas.Mistral, model: "zai-glm-5-3"},
+		{name: "vertex mistral", provider: schemas.Vertex, model: "mistral-medium-3"},
 	}
 
 	for _, tt := range tests {
@@ -1828,8 +1830,10 @@ func TestToOpenAIChatRequest_ToolCallCacheControl_OpenRouterOnly(t *testing.T) {
 						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
 					}},
 				}},
-				{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_paris")},
-					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("18C")}},
+				{
+					Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_paris")},
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("18C")},
+				},
 			},
 		}
 	}

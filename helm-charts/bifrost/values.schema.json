@@ -4122,6 +4122,12 @@
                     "default": 0,
                     "description": "Delay in milliseconds between consecutive buffered events after block-capable streaming output guardrails allow the response. 0 sends the buffered events immediately."
                   },
+                  "output_mode": {
+                    "type": "string",
+                    "enum": ["enforce", "monitor"],
+                    "default": "enforce",
+                    "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
+                  },
                   "provider_config_ids": {
                     "type": "array",
                     "items": {
@@ -7085,6 +7091,11 @@
           "default": 1,
           "description": "Routing weight for this key. Optional; defaults to 1 when omitted."
         },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether this key is used for routing. Set to false to keep the key configured but skip it during key selection. Optional; new keys default to true, and omitting it on an existing key keeps the stored value."
+        },
         "use_for_batch_api": {
           "type": "boolean"
         },
@@ -7159,6 +7170,11 @@
             "force_single_region": {
               "type": "boolean",
               "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
+              "default": false
+            },
+            "use_session_routing": {
+              "type": "boolean",
+              "description": "Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.",
               "default": false
             },
             "aws_workload_identity": {
@@ -8603,6 +8619,11 @@
                   "force_single_region": {
                     "type": "boolean",
                     "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
+                    "default": false
+                  },
+                  "use_session_routing": {
+                    "type": "boolean",
+                    "description": "Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.",
                     "default": false
                   },
                   "aws_workload_identity": {

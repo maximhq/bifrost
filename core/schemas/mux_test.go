@@ -299,6 +299,35 @@ func TestToResponsesMessages_ToolResultBlocksUseResponsesInputTypes(t *testing.T
 	check(t, "ToResponsesMessages", &msgs[0])
 }
 
+func TestToResponsesRequest_EmptyToolContentKeepsOutput(t *testing.T) {
+	// A tool that ran but printed nothing sends content "". OpenAI and Azure reject a
+	// function_call_output without output: "Missing required parameter: 'input[N].output'".
+	req := &BifrostChatRequest{
+		Provider: OpenAI,
+		Model:    "gpt-6-luna",
+		Input: []ChatMessage{
+			{Role: ChatMessageRoleUser, Content: &ChatMessageContent{ContentStr: Ptr("What is the weather in Berlin?")}},
+			{Role: ChatMessageRoleAssistant, ChatAssistantMessage: &ChatAssistantMessage{ToolCalls: []ChatAssistantMessageToolCall{{
+				ID: Ptr("call_1"), Type: Ptr("function"),
+				Function: ChatAssistantMessageToolCallFunction{Name: Ptr("get_weather"), Arguments: `{"location":"Berlin"}`},
+			}}}},
+			{Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_1")}, Content: &ChatMessageContent{ContentStr: Ptr("")}},
+		},
+	}
+
+	input := req.ToResponsesRequest().Input
+	if len(input) != 3 {
+		t.Fatalf("expected 3 input items, got %d", len(input))
+	}
+	data, err := MarshalSorted(input[2])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"output":""`) {
+		t.Fatalf(`function_call_output must carry "output":"", got %s`, data)
+	}
+}
+
 func TestToResponsesMessages_EmitsReasoningMessageBeforeTextContent(t *testing.T) {
 	reasoning := "Thinking about how to summarize."
 	cm := &ChatMessage{

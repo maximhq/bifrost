@@ -6525,7 +6525,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Additional headers to send with requests"
+          "description": "Additional headers to send with requests. A value may be a literal, an env.VAR_NAME reference, or a vault.path reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400."
         },
         "default_request_timeout_in_seconds": {
           "type": "integer",
@@ -6606,7 +6606,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Additional headers to send with requests"
+          "description": "Additional headers to send with requests. A value may be a literal, an env.VAR_NAME reference, or a vault.path reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400."
         },
         "default_request_timeout_in_seconds": {
           "type": "integer",
@@ -6958,6 +6958,11 @@
           "type": "number",
           "minimum": 0,
           "description": "Weight for load balancing"
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this key is used for routing. Set to false to keep the key configured but skip it during key selection. New keys default to true; omitting it on an existing key keeps the stored value",
+          "default": true
         },
         "use_for_batch_api": {
           "type": "boolean",
@@ -7665,6 +7670,11 @@
                 "force_single_region": {
                   "type": "boolean",
                   "description": "When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint. Enable for provisioned throughput.",
+                  "default": false
+                },
+                "use_session_routing": {
+                  "type": "boolean",
+                  "description": "Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.",
                   "default": false
                 },
                 "aws_workload_identity": {
@@ -11188,6 +11198,15 @@
                 "maximum": 1000,
                 "default": 0,
                 "description": "Delay in milliseconds between consecutive buffered events after block-capable streaming output guardrails allow the response. 0 sends the buffered events immediately."
+              },
+              "output_mode": {
+                "type": "string",
+                "enum": [
+                  "enforce",
+                  "monitor"
+                ],
+                "default": "enforce",
+                "description": "What the rule's output phase does with a match. 'enforce' (default) blocks, redacts, or transforms the response before the client receives it, holding a stream when the rule needs the whole response. 'monitor' delivers the response untouched and never pauses the stream; once the response completes it is evaluated in the background and matches are recorded on the request's log (guardrail_debug detections with enforced: false, redacted stored content, and [output-monitor] plugin logs), never enforced. Monitor requires target 'llm' and apply_to 'output' or 'both'; the input phase of a 'both' rule is always enforced."
               },
               "provider_config_ids": {
                 "type": "array",

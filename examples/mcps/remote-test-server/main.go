@@ -126,7 +126,56 @@ func newMCPServer(instructions string) *server.MCPServer {
 		mcp.WithString("query", mcp.Required(), mcp.Description("Search query")),
 	), webSearchHandler)
 
+	// Back the provider-harness code mode result cases. Each returns one shape a nested call
+	// has to hand a script as a value: several JSON blocks, structured content beside a
+	// different text copy, and a JSON object wrapped in a JSON string.
+	s.AddTool(mcp.NewTool(
+		"multi_block",
+		mcp.WithDescription("Return two results as two JSON text blocks"),
+	), multiBlockHandler)
+
+	s.AddTool(mcp.NewTool(
+		"structured_result",
+		mcp.WithDescription("Return a structured result next to a text copy that differs from it"),
+	), structuredResultHandler)
+
+	s.AddTool(mcp.NewTool(
+		"json_string",
+		mcp.WithDescription("Return a JSON object wrapped in a JSON string"),
+	), jsonStringHandler)
+
+	// Backs the provider-harness code mode failed-call case for a failure flagged with isError
+	// whose text opens with "Error: ", the way Bifrost's own in-process tools report one.
+	s.AddTool(mcp.NewTool(
+		"prefixed_error",
+		mcp.WithDescription("Fail with isError and text that opens with \"Error: \""),
+	), prefixedErrorHandler)
+
 	return s
+}
+
+func prefixedErrorHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return mcp.NewToolResultError("Error: contact not found"), nil
+}
+
+func multiBlockHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{Content: []mcp.Content{
+		mcp.NewTextContent(`{"id":1,"title":"first"}`),
+		mcp.NewTextContent(`{"id":2,"title":"second"}`),
+	}}, nil
+}
+
+// The text copy differs from the structured result on purpose, so a case can tell which one
+// reached the script.
+func structuredResultHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{
+		Content:           []mcp.Content{mcp.NewTextContent(`{"source":"text"}`)},
+		StructuredContent: map[string]any{"source": "structured"},
+	}, nil
+}
+
+func jsonStringHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return mcp.NewToolResultText(`"{\"title\":\"Example Domain\"}"`), nil
 }
 
 // Handlers return JSON objects rather than prose. Code mode parses a tool's

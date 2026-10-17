@@ -1730,3 +1730,85 @@ func TestToGeminiResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
 		})
 	}
 }
+
+// /genai clients send Vertex's string session_id or the Gemini API's int64 one. Either form rides
+// as prompt_cache_key, so only a Vertex key with session routing puts it back on the wire.
+func TestGenAISessionIDRidesAsPromptCacheKey(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	const contents = `"model":"vertex/gemini-3.8-flash","contents":[{"role":"user","parts":[{"text":"hi"}]}]`
+	for _, tc := range []struct {
+		name, field, want string
+	}{
+		{"string", `"session_id":"prefix-1"`, "prefix-1"},
+		{"camelCase is not read", `"sessionId":"prefix-2"`, ""},
+		{"Gemini API number", `"session_id":12345`, "12345"},
+		{"null", `"session_id":null`, ""},
+		{"empty", `"session_id":""`, ""},
+		{"absent", `"labels":{}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var in GeminiGenerationRequest
+			if err := sonic.Unmarshal([]byte("{"+contents+","+tc.field+"}"), &in); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got := ""
+			if key := in.ToBifrostResponsesRequest(ctx).Params.PromptCacheKey; key != nil {
+				got = *key
+			}
+			if got != tc.want {
+				t.Fatalf("prompt_cache_key = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("a non-string, non-number value is rejected", func(t *testing.T) {
+		var in GeminiGenerationRequest
+		if err := sonic.Unmarshal([]byte(`{"session_id":true}`), &in); err == nil {
+			t.Fatal("want an error for a boolean session_id")
+		}
+	})
+
+	t.Run("marshals in the form it was received", func(t *testing.T) {
+		for body, want := range map[string]string{
+			`{"session_id":12345}`: `"session_id":12345`,
+			`{"session_id":"abc"}`: `"session_id":"abc"`,
+		} {
+			var in GeminiGenerationRequest
+			if err := sonic.Unmarshal([]byte(body), &in); err != nil {
+				t.Fatalf("unmarshal %s: %v", body, err)
+			}
+			out, err := providerUtils.MarshalSorted(&in)
+			if err != nil || !strings.Contains(string(out), want) {
+				t.Fatalf("marshal %s = %s, %v; want it to contain %s", body, out, err, want)
+			}
+		}
+	})
+
+	// The Gemini API's session_id is an int64, so a string prompt_cache_key must never reach it.
+	t.Run("Gemini API requests never carry it", func(t *testing.T) {
+		chat, err := ToGeminiChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.8-flash",
+			Input:    []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: new("hi")}}},
+			Params:   &schemas.ChatParameters{PromptCacheKey: new("prefix-1")},
+		})
+		if err != nil {
+			t.Fatalf("chat: %v", err)
+		}
+		responses, err := ToGeminiResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+			Provider: schemas.Gemini,
+			Model:    "gemini-3.8-flash",
+			Input:    []schemas.ResponsesMessage{{Role: new(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: new("hi")}}},
+			Params:   &schemas.ResponsesParameters{PromptCacheKey: new("prefix-1")},
+		})
+		if err != nil {
+			t.Fatalf("responses: %v", err)
+		}
+		for name, req := range map[string]*GeminiGenerationRequest{"chat": chat, "responses": responses} {
+			body, err := providerUtils.MarshalSorted(req)
+			if err != nil || strings.Contains(string(body), "ession") {
+				t.Fatalf("%s body = %s, %v; want no session id", name, body, err)
+			}
+		}
+	})
+}

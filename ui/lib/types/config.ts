@@ -113,6 +113,7 @@ export interface VertexKeyConfig {
 	region: SecretVar;
 	auth_credentials?: SecretVar;
 	force_single_region?: boolean;
+	use_session_routing?: boolean;
 	aws_workload_identity?: VertexAWSWorkloadIdentityConfig;
 }
 
@@ -133,6 +134,7 @@ export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	region: { value: "", ref: "" },
 	auth_credentials: { value: "", ref: "" },
 	force_single_region: false,
+	use_session_routing: false,
 } as const satisfies Required<Omit<VertexKeyConfig, "aws_workload_identity">>;
 
 export interface S3BucketConfig {
@@ -400,6 +402,7 @@ export interface NetworkConfig {
 	base_url?: string;
 	is_key_less?: boolean;
 	extra_headers?: Record<string, string>;
+	extra_headers_secret_vars?: Record<string, SecretVar>; // Response only: extra_headers as SecretVar objects
 	default_request_timeout_in_seconds: number;
 	max_retries: number;
 	retry_backoff_initial: number; // Duration in milliseconds

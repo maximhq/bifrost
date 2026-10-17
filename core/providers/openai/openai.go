@@ -165,7 +165,7 @@ func ListModelsByKey(
 	url string,
 	key schemas.Key,
 	unfiltered bool,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -251,7 +251,7 @@ func HandleOpenAIListModelsRequest(
 	request *schemas.BifrostListModelsRequest,
 	url string,
 	keys []schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -305,7 +305,7 @@ func HandleOpenAIModelRetrieveRequest(
 	client *fasthttp.Client,
 	url string,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -400,7 +400,7 @@ func HandleOpenAITextCompletionRequest(
 	url string,
 	request *schemas.BifrostTextCompletionRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -574,7 +574,7 @@ func HandleOpenAITextCompletionStreaming(
 	url string,
 	request *schemas.BifrostTextCompletionRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -1050,7 +1050,7 @@ func HandleOpenAIChatCompletionRequest(
 	url string,
 	request *schemas.BifrostChatRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -1186,6 +1186,7 @@ func HandleOpenAIChatCompletionRequest(
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
+	response.Usage.NormalizeReasoningTokens()
 
 	// A 200 is not proof of success on every OpenAI-compatible provider: some report
 	// failures in-band once the status line is already committed. Left unchecked those
@@ -1271,7 +1272,7 @@ func HandleOpenAIChatCompletionStreaming(
 	url string,
 	request *schemas.BifrostChatRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -1622,6 +1623,7 @@ func HandleOpenAIChatCompletionStreaming(
 			if response.Choices == nil {
 				response.Choices = []schemas.BifrostResponseChoice{}
 			}
+			response.Usage.NormalizeReasoningTokens()
 
 			// ModelScope-style upstreams put a full `message` object next to
 			// `delta` in every stream chunk, and BifrostResponseChoice decodes
@@ -2013,7 +2015,7 @@ func HandleOpenAIResponsesRequest(
 	url string,
 	request *schemas.BifrostResponsesRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -2217,7 +2219,7 @@ func HandleOpenAIResponsesStreaming(
 	url string,
 	request *schemas.BifrostResponsesRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -2558,7 +2560,7 @@ func HandleOpenAIEmbeddingRequest(
 	url string,
 	request *schemas.BifrostEmbeddingRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -2742,7 +2744,7 @@ func HandleOpenAISpeechRequest(
 	url string,
 	request *schemas.BifrostSpeechRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -2891,7 +2893,7 @@ func HandleOpenAISpeechStreamRequest(
 	url string,
 	request *schemas.BifrostSpeechRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -3188,7 +3190,7 @@ func HandleOpenAITranscriptionRequest(
 	url string,
 	request *schemas.BifrostTranscriptionRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawResponse bool,
@@ -3464,7 +3466,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	url string,
 	request *schemas.BifrostTranscriptionRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawResponse bool,
 	accumulateText bool,
@@ -3776,7 +3778,7 @@ func HandleOpenAIImageGenerationRequest(
 	url string,
 	request *schemas.BifrostImageGenerationRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -3944,7 +3946,7 @@ func HandleOpenAIImageGenerationStreaming(
 	url string,
 	request *schemas.BifrostImageGenerationRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -4357,13 +4359,17 @@ func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 // with no row a known decisions family (DefaultSupportsDecisions, such as
 // gpt-6-luna) does. Any other model is reported as unsupported, so core
 // answers the request through emulation on the model's chat API instead.
+// A custom provider is gated by its allowed requests alone, as on the Typesafe
+// base: the server it points at rejects a model it does not serve.
 func (provider *OpenAIProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
-	if !schemas.ResolveModelCaps(request.Provider, capModel).SupportsDecisions(schemas.DefaultSupportsDecisions(capModel)) {
-		return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
-	}
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.DecisionRequest); err != nil {
 		return nil, err
+	}
+	if provider.customProviderConfig == nil {
+		capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+		if !schemas.ResolveModelCaps(request.Provider, capModel).SupportsDecisions(schemas.DefaultSupportsDecisions(capModel)) {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+		}
 	}
 	key, keyErr := provider.resolveKey(ctx, key)
 	if keyErr != nil {
@@ -4391,7 +4397,7 @@ func HandleOpenAIRerankRequest(
 	url string,
 	request *schemas.BifrostRerankRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -4698,7 +4704,7 @@ func HandleOpenAIVideoGenerationRequest(
 	url string,
 	request *schemas.BifrostVideoGenerationRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -4810,7 +4816,7 @@ func HandleOpenAIVideoEditRequest(
 	url string,
 	request *schemas.BifrostVideoEditRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -4921,7 +4927,7 @@ func HandleOpenAIVideoRetrieveRequest(
 	url string,
 	request *schemas.BifrostVideoRetrieveRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -5021,7 +5027,7 @@ func HandleOpenAIVideoDeleteRequest(
 	url string,
 	videoID string,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -5101,7 +5107,7 @@ func HandleOpenAIVideoListRequest(
 	baseURL string,
 	request *schemas.BifrostVideoListRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -5255,7 +5261,7 @@ func HandleOpenAICompactionRequest(
 	url string,
 	request *schemas.BifrostCompactionRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -5362,7 +5368,7 @@ func HandleOpenAICountTokensRequest(
 	url string,
 	request *schemas.BifrostResponsesRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -5504,7 +5510,7 @@ func HandleOpenAIImageEditRequest(
 	url string,
 	request *schemas.BifrostImageEditRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -5670,7 +5676,7 @@ func HandleOpenAIImageEditStreamRequest(
 	url string,
 	request *schemas.BifrostImageEditRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -6087,7 +6093,7 @@ func HandleOpenAIImageVariationRequest(
 	url string,
 	request *schemas.BifrostImageVariationRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,

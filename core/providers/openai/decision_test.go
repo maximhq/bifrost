@@ -271,6 +271,60 @@ func TestOpenAIProviderDecisionGating(t *testing.T) {
 	}
 }
 
+// TestOpenAIProviderDecisionCustomProviderGating pins that a custom provider on
+// the OpenAI base is gated by its allowed requests alone, as one on the
+// Typesafe base is: with decisions allowed (set, or allowed requests unset) it
+// forwards every model to /v1/decisions and the upstream rejects a model it
+// does not serve, and with decisions off it is denied. The model gate describes
+// OpenAI's own catalog, which has no rows for a custom provider's models.
+func TestOpenAIProviderDecisionCustomProviderGating(t *testing.T) {
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"dec_1","model":"m","answers":[{"type":"predicate","name":"q","probability":0.5}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}`))
+	}))
+	defer server.Close()
+
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+	decide := func(allowed *schemas.AllowedRequests, model string) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+		provider := NewOpenAIProvider(&schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+			CustomProviderConfig: &schemas.CustomProviderConfig{
+				CustomProviderKey: "kserve",
+				BaseProviderType:  schemas.OpenAI,
+				AllowedRequests:   allowed,
+			},
+		}, testNoopLogger{})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		return provider.Decision(ctx, key, &schemas.BifrostDecisionRequest{
+			Provider:  "kserve",
+			Model:     model,
+			Input:     schemas.DecisionInput{Text: schemas.Ptr("state")},
+			Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Q?")}},
+		})
+	}
+
+	for name, allowed := range map[string]*schemas.AllowedRequests{"decisions on": {Decision: true}, "unset": nil} {
+		resp, bifrostErr := decide(allowed, "my-decider")
+		if bifrostErr != nil {
+			t.Fatalf("%s: a custom provider allowing decisions must forward any model, got %s", name, bifrostErr.Error.Message)
+		}
+		require.Len(t, resp.Answers, 1, name)
+	}
+	require.Equal(t, []string{"/v1/decisions", "/v1/decisions"}, calls)
+
+	_, bifrostErr := decide(&schemas.AllowedRequests{ChatCompletion: true}, "gpt-6-luna")
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Error.Code)
+	assert.Equal(t, "unsupported_operation", *bifrostErr.Error.Code)
+	assert.Contains(t, bifrostErr.Error.Message, "kserve")
+	require.Len(t, calls, 2, "a provider with decisions off never reaches the endpoint")
+}
+
 // TestOpenAIDecisionRequestKeepsUnknownFields pins that a top-level field the
 // request does not model is kept, compacted, for the provider wire, and that
 // the route's fallbacks stay off it.

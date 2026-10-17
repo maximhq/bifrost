@@ -132,6 +132,7 @@ export const vertexKeyConfigSchema = z
 		region: secretVarSchema.optional(),
 		auth_credentials: secretVarSchema.optional(),
 		force_single_region: z.boolean().optional(),
+		use_session_routing: z.boolean().optional(),
 		aws_workload_identity: vertexAWSWorkloadIdentitySchema.optional(),
 	})
 	.refine((data) => isSecretVarSet(data.project_id), {
@@ -837,7 +838,7 @@ export const networkFormConfigSchema = z
 				z.string().length(0),
 			])
 			.optional(),
-		extra_headers: z.record(z.string(), z.string()).optional(),
+		extra_headers: z.record(z.string(), secretVarSchema).optional(),
 		default_request_timeout_in_seconds: z.coerce
 			.number("Timeout must be a number")
 			.min(1, "Timeout must be greater than 0 seconds")
