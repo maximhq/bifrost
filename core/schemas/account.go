@@ -151,7 +151,6 @@ type Key struct {
 	OllamaKeyConfig        *OllamaKeyConfig        `json:"ollama_key_config,omitempty"`         // Ollama-specific key configuration
 	SGLKeyConfig           *SGLKeyConfig           `json:"sgl_key_config,omitempty"`            // SGLang-specific key configuration
 	DatabricksKeyConfig    *DatabricksKeyConfig    `json:"databricks_key_config,omitempty"`     // Databricks-specific key configuration
-	GithubCopilotKeyConfig *GithubCopilotKeyConfig `json:"github_copilot_key_config,omitempty"` // GitHub Copilot-specific key configuration
 	CloudflareKeyConfig    *CloudflareKeyConfig    `json:"cloudflare_key_config,omitempty"`     // Cloudflare Workers AI-specific key configuration
 	OAuthKeyConfig         *OAuthKeyConfig         `json:"oauth_key_config,omitempty"`          // OAuth-minted bearer for OpenAI-compatible providers; used when Value is empty
 	Enabled                *bool                   `json:"enabled,omitempty"`                   // Whether the key is active (default:true)
@@ -1182,25 +1181,6 @@ func (c *OAuthKeyConfig) Validate() error {
 		return fmt.Errorf("oauth_key_config.grant_type must be client_credentials or jwt_bearer")
 	}
 	return nil
-}
-
-// GithubCopilotKeyConfig holds GitHub App credentials for server-to-server Copilot access.
-//
-// A GitHub App carrying the "Copilot Requests" permission mints short-lived installation
-// tokens, and Copilot usage is billed to the account that owns the installation. No
-// individual Copilot seat is involved, which is what makes this the correct auth mode for
-// a shared gateway.
-//
-// The organization must also have the "Allow use of Copilot CLI billed to the
-// organization" policy enabled, and the installation needs All repositories access.
-//
-// See https://docs.github.com/en/copilot/how-tos/copilot-sdk/auth/server-to-server-tokens
-type GithubCopilotKeyConfig struct {
-	AppID          SecretVar `json:"app_id"`                  // GitHub App ID or Client ID; the App JWT issuer (required)
-	InstallationID SecretVar `json:"installation_id"`         // Installation to mint tokens for; digits only (required)
-	RepositoryID   SecretVar `json:"repository_id"`           // Repository the installation token is scoped to; digits only (required)
-	PrivateKey     SecretVar `json:"private_key"`             // GitHub App private key, PKCS#1 or PKCS#8 PEM (required)
-	GithubDomain   SecretVar `json:"github_domain,omitempty"` // GitHub Enterprise domain, e.g. "acme.ghe.com". Empty means github.com.
 }
 
 // Account defines the interface for managing provider accounts and their configurations.

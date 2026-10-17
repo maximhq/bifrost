@@ -98,6 +98,47 @@ func TestResolveCredentials(t *testing.T) {
 		assert.Equal(t, "https://copilot.ghe.acme.com", creds.BaseURL)
 	})
 
+	t.Run("refuses a plain http base URL unless it is loopback", func(t *testing.T) {
+		for _, token := range []string{"tid=abc", "github_pat_x", "ghu_x"} {
+			for _, baseURL := range []string{"http://copilot.example.com", "ftp://copilot.example.com", "copilot.example.com"} {
+				key := schemas.Key{Value: *schemas.NewSecretVar(token)}
+
+				creds, bErr := resolveCredentials(nil, key, nil, baseURL, nil)
+
+				require.Nil(t, creds, token+" "+baseURL)
+				require.NotNil(t, bErr, token+" "+baseURL)
+				assert.Contains(t, bErr.Error.Message, "network_config.base_url", token+" "+baseURL)
+			}
+		}
+		for baseURL, want := range map[string]string{
+			"http://localhost:8080":  "http://localhost:8080",
+			"http://127.0.0.1:9000/": "http://127.0.0.1:9000",
+			"http://[::1]:9000":      "http://[::1]:9000",
+		} {
+			key := schemas.Key{Value: *schemas.NewSecretVar("tid=abc")}
+
+			creds, bErr := resolveCredentials(nil, key, nil, baseURL, nil)
+
+			require.Nil(t, bErr, baseURL)
+			assert.Equal(t, want, creds.BaseURL)
+		}
+	})
+
+	t.Run("names the unsupported GitHub token type instead of asking for base_url", func(t *testing.T) {
+		for _, token := range []string{"ghp_classic", "ghs_installation"} {
+			for _, baseURL := range []string{"", "https://api.business.githubcopilot.com"} {
+				key := schemas.Key{Value: *schemas.NewSecretVar(token)}
+
+				creds, bErr := resolveCredentials(nil, key, nil, baseURL, nil)
+
+				require.Nil(t, creds, token)
+				require.NotNil(t, bErr, token)
+				assert.NotContains(t, bErr.Error.Message, "base_url", token)
+				assert.Contains(t, bErr.Error.Message, "not supported", token)
+			}
+		}
+	})
+
 	t.Run("trims surrounding whitespace on the token", func(t *testing.T) {
 		key := schemas.Key{Value: *schemas.NewSecretVar("  tid=abc\n")}
 
@@ -251,17 +292,6 @@ func TestParseCopilotError(t *testing.T) {
 			"draining a revoked-token failure onto a paid fallback key is the wrong outcome")
 		assert.Contains(t, bErr.Error.Message, "expired or was revoked")
 		assert.Contains(t, bErr.Error.Message, "Bad credentials")
-	})
-
-	t.Run("403 for the wrong credential layer says which token goes where", func(t *testing.T) {
-		resp := newResponse(fasthttp.StatusForbidden, `{"message":"Resource not accessible by integration"}`)
-		defer fasthttp.ReleaseResponse(resp)
-
-		bErr := parseCopilotError(resp)
-
-		require.NotNil(t, bErr.AllowFallbacks)
-		assert.False(t, *bErr.AllowFallbacks)
-		assert.Contains(t, bErr.Error.Message, "wrong credential")
 	})
 
 	t.Run("other 403s point at access and policy", func(t *testing.T) {
