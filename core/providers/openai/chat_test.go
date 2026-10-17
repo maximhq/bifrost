@@ -15,6 +15,70 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestToOpenAIChatRequest_PreservesOutputTokenBound covers SDK and native Chat ingress,
+// including the legacy max_tokens spelling and Responses fallback conversion.
+func TestToOpenAIChatRequest_PreservesOutputTokenBound(t *testing.T) {
+	for _, limit := range []*int{nil, schemas.Ptr(0), schemas.Ptr(1), schemas.Ptr(8), schemas.Ptr(15), schemas.Ptr(16), schemas.Ptr(64)} {
+		for _, legacy := range []bool{false, true} {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			request := &OpenAIChatRequest{
+				Model:    "openai/gpt-4o-mini",
+				Messages: []OpenAIMessage{{Role: schemas.ChatMessageRoleUser}},
+			}
+			if legacy {
+				request.MaxTokens = limit
+			} else {
+				request.ChatParameters.MaxCompletionTokens = limit
+			}
+			neutral := request.ToBifrostChatRequest(ctx)
+			wire := ToOpenAIChatRequest(ctx, neutral)
+			require.Equal(t, limit, wire.MaxCompletionTokens, "Chat output allowance changed")
+			responses := ToOpenAIResponsesRequest(ctx, neutral.ToResponsesRequest())
+			require.Equal(t, limit, responses.MaxOutputTokens, "Chat-to-Responses output allowance changed")
+			require.Equal(t, limit, neutral.Params.MaxCompletionTokens, "caller request mutated")
+			cancel()
+		}
+	}
+}
+
+// BenchmarkOutputTokenBound measures the existing converter for absent, low and
+// ordinary bounds; it creates no cross-request state or cache.
+func BenchmarkOutputTokenBound(b *testing.B) {
+	for _, tc := range []struct {
+		name  string
+		limit *int
+	}{
+		{"absent", nil}, {"low", schemas.Ptr(8)}, {"ordinary", schemas.Ptr(64)},
+	} {
+		b.Run("chat/"+tc.name, func(b *testing.B) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			request := &schemas.BifrostChatRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+				Input:  []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser}},
+				Params: &schemas.ChatParameters{MaxCompletionTokens: tc.limit}}
+			b.ReportAllocs()
+			for b.Loop() {
+				if ToOpenAIChatRequest(ctx, request) == nil {
+					b.Fatal("missing request")
+				}
+			}
+		})
+		b.Run("responses/"+tc.name, func(b *testing.B) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			request := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "gpt-4o-mini",
+				Input:  []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser)}},
+				Params: &schemas.ResponsesParameters{MaxOutputTokens: tc.limit}}
+			b.ReportAllocs()
+			for b.Loop() {
+				if ToOpenAIResponsesRequest(ctx, request) == nil {
+					b.Fatal("missing request")
+				}
+			}
+		})
+	}
+}
+
 func TestToOpenAIChatRequest_ToolNormalization(t *testing.T) {
 	// Create tool parameters with keys in non-alphabetical order:
 	// "required" before "properties" before "type" — Normalized() should reorder to

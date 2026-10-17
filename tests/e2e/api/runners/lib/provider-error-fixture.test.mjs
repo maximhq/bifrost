@@ -79,3 +79,22 @@ test("filtered Live create checks accounting events and unchanged command permis
   assert.equal(complete.status, 201);
   assert.equal((await complete.json()).transport.sdp, "invalid SDP answer");
 });
+
+// The fixture rejects even the correct bound so streaming and buffered requests
+// expose the same provider-observed result without a paid model or SSE simulator.
+test("output bound fixture distinguishes eight from an inflated limit on both wires", async (t) => {
+  const post = await startFixture(t);
+  for (const path of ["/v1/chat/completions", "/v1/responses"]) {
+    for (const stream of [false, true]) {
+      for (const limit of [8, 16]) {
+        const response = await post({ model: path.endsWith("responses") ? "gpt-5-pro" : "upstream-ok",
+          user: "output-token-bound-fixture", stream,
+          ...(path.endsWith("responses") ? { input: "Bounded proof", max_output_tokens: limit }
+            : { messages: [{ role: "user", content: "Bounded proof" }], max_completion_tokens: limit }),
+        }, path);
+        assert.equal(response.status, 400);
+        assert.equal((await response.json()).error.code, limit === 8 ? "output_bound_preserved" : "output_bound_changed");
+      }
+    }
+  }
+});
