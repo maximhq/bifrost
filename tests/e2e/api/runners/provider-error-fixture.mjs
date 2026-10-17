@@ -9,6 +9,16 @@ const port = Number(process.env.PROVIDER_ERROR_FIXTURE_PORT || "8791");
 // tag (through a key alias) counts its own attempts without resetting anyone else's.
 const errorBody = (message, type, code) => JSON.stringify({ error: { message, type, code } });
 
+// Build success and usage variants in the same intentional API field order.
+const completionPayload = (model, usage) => ({
+	id: "chatcmpl-upstream-ok",
+	object: "chat.completion",
+	created: 1,
+	model,
+	choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+	usage,
+});
+
 // How long upstream-slow waits before it answers, long enough that a 500ms first-token
 // deadline always fires first and short enough to stay inside any request timeout.
 const SLOW_MS = 2000;
@@ -21,14 +31,7 @@ const behaviours = {
 	"upstream-ok": () => ({
 		status: 200,
 		headers: {},
-		body: JSON.stringify({
-			id: "chatcmpl-upstream-ok",
-			object: "chat.completion",
-			created: 1,
-			model: "upstream-ok",
-			choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
-			usage: { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 },
-		}),
+		body: JSON.stringify(completionPayload("upstream-ok", { prompt_tokens: 10, completion_tokens: 1, total_tokens: 11 })),
 	}),
 };
 // upstream-slow answers as upstream-ok does, after SLOW_MS.
@@ -36,6 +39,15 @@ behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: 
 // upstream-cut starts answering as upstream-ok does and drops the connection partway: a stream gets its first
 // content chunk and then a closed socket, a non-streamed request a closed socket.
 behaviours["upstream-cut"] = () => ({ ...behaviours["upstream-ok"](), cut: true });
+
+for (const measured of [false, true]) {
+	const name = measured ? "upstream-usage-zero" : "upstream-usage-missing";
+	behaviours[name] = () => ({
+		status: 200,
+		headers: {},
+		body: JSON.stringify(completionPayload(name, measured ? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } : undefined)),
+	});
+}
 
 // A streamed chat request (stream: true) that a behaviour answers with a completion gets the same
 // answer as server-sent chunks: the role, the content, the finish reason, the usage when
@@ -48,7 +60,7 @@ const streamChunks = (completion, includeUsage) => {
 		{ ...base, choices: [{ index: 0, delta: { content: choice.message.content }, finish_reason: null }] },
 		{ ...base, choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason }] },
 	];
-	if (includeUsage) chunks.push({ ...base, choices: [], usage: completion.usage });
+	if (includeUsage && completion.usage !== undefined) chunks.push({ ...base, choices: [], usage: completion.usage });
 	return chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n";
 };
 

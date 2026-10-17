@@ -19,6 +19,8 @@
             "upstream-ok",
             "upstream-fixed-length-short",
             "upstream-fixed-length-ok",
+            "upstream-usage-missing",
+            "upstream-usage-zero",
             "gpt-5-pro"
           ],
           "weight": 1

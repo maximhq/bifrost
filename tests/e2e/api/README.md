@@ -116,6 +116,40 @@ make run-provider-harness-test PROVIDER=openai FEATURE="content-length truncatio
 
 Stop the fixture and isolated gateway with Ctrl+C after testing.
 
+## Stream usage presence
+
+Folder 259 uses the existing local provider error fixture to distinguish a
+completed stream with no usage receipt from an explicit zero receipt. Both native
+chat and OpenAI SDK chat routes are covered. It is skipped unless
+`providerErrorFixture=1`; all upstream responses use dummy keys and local HTTP.
+
+Check that ports 8790 and 8791 are free, then start the fixture:
+
+```bash
+lsof -nP -iTCP:8790 -iTCP:8791 -sTCP:LISTEN
+node tests/e2e/api/runners/provider-error-fixture.mjs
+```
+
+In another terminal, prepare an isolated profile and start this checkout:
+
+```bash
+mkdir -p tmp
+TASK_STREAM_USAGE_APP_DIR=$(mktemp -d "$PWD/tmp/stream-usage.XXXXXX")
+cp tests/e2e/api/provider_config/provider-error-fixture.config.json "$TASK_STREAM_USAGE_APP_DIR/config.json"
+printf '%s\n' '{"values":[{"key":"providerErrorFixture","value":"1","enabled":true}]}' > tmp/stream-usage.env.json
+make dev PORT=8790 APP_DIR="$TASK_STREAM_USAGE_APP_DIR"
+```
+
+After `/health` responds, run the four fixture cases:
+
+```bash
+make run-provider-harness-test PROVIDER=openai FEATURE="stream usage presence" BASE_URL=http://localhost:8790 ENV_FILE=tmp/stream-usage.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 HARNESS_MAX_REQUESTS=4
+```
+
+This profile does not require the backing services or keys used by live-provider
+tests. Go-level coverage also checks that the retained cancellation usage handle
+stays absent until the provider reports usage. An explicit zero remains observed.
+
 ## Provider 5xx failover and 429 retry-hint propagation
 
 These deterministic cases use a local HTTP fixture and an isolated gateway. They make no live
