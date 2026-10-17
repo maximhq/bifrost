@@ -55,7 +55,7 @@ const proxy = createInterceptProxy({
 			let parsed;
 			try { parsed = JSON.parse(body); }
 			catch { return { status: 400, body: JSON.stringify({ error: { code: 400, message: "invalid embedding JSON", status: "INVALID_ARGUMENT" } }) }; }
-			const text = parsed.content?.parts?.[0]?.text;
+			const text = parsed?.content?.parts?.[0]?.text;
 			if (typeof text === "string" && text.startsWith("fixture-empty-embedding-usage:")) {
 				return { status: 200, body: JSON.stringify({ usageMetadata: { promptTokenCount: 12, totalTokenCount: 12 } }) };
 			}

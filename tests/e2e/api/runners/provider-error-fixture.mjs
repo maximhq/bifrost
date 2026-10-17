@@ -146,7 +146,7 @@ const server = http.createServer((req, res) => {
 			let body;
 			try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
 			catch { return send(400, {}, errorBody("invalid JSON", "invalid_request_error", "invalid_json")); }
-			const text = body.requests?.[0]?.content?.parts?.[0]?.text;
+			const text = body?.requests?.[0]?.content?.parts?.[0]?.text;
 			if (typeof text !== "string") return send(400, {}, errorBody("embedding text required", "invalid_request_error", "missing_input"));
 			hits["embedding:" + text] = (hits["embedding:" + text] || 0) + 1;
 			if (text.startsWith("fixture-empty-embedding-usage:")) {
