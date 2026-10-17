@@ -276067,6 +276067,272 @@
           }
         }
       ]
+    },
+    {
+      "name": "259. OpenAI stream usage presence (stream usage presence)",
+      "description": "Local fixture regression with no live provider calls. Use provider-error-fixture.mjs and provider-error-fixture.config.json; enable providerErrorFixture=1. The fixture returns complete streams either without any usage or with an explicit zero receipt. Both the native and OpenAI SDK chat routes must preserve this distinction. The former unconditional accumulator attached a synthetic zero receipt when the provider disclosed no measurements. SDK cancellation accounting must also keep that absence, covered by TestChatStreamUsagePresence. Run FEATURE=\"stream usage presence\".",
+      "item": [
+        {
+          "name": "259.1 openai missing usage on /v1/chat/completions (stream usage presence)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var usage = [];",
+                  "pm.test('the fixture stream completes successfully', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, raw).to.include('hello');",
+                  "  pm.expect(raw, raw).to.include('[DONE]');",
+                  "  pm.expect(raw, raw).to.not.match(/\"error\"\\s*:/);",
+                  "});",
+                  "raw.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "  var data = frame.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) { return line.slice(5).trim(); }).join('\\n');",
+                  "  if (!data || data === '[DONE]') return;",
+                  "  var chunk = JSON.parse(data);",
+                  "  if (chunk.usage !== undefined && chunk.usage !== null) usage.push(chunk.usage);",
+                  "});",
+                  "pm.test('missing provider usage is never synthesized as zero', function () {",
+                  "  pm.expect(usage.length, raw).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-missing\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "259.2 openai explicit zero on /v1/chat/completions (stream usage presence)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var usage = [];",
+                  "pm.test('the fixture stream completes successfully', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, raw).to.include('hello');",
+                  "  pm.expect(raw, raw).to.include('[DONE]');",
+                  "  pm.expect(raw, raw).to.not.match(/\"error\"\\s*:/);",
+                  "});",
+                  "raw.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "  var data = frame.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) { return line.slice(5).trim(); }).join('\\n');",
+                  "  if (!data || data === '[DONE]') return;",
+                  "  var chunk = JSON.parse(data);",
+                  "  if (chunk.usage !== undefined && chunk.usage !== null) usage.push(chunk.usage);",
+                  "});",
+                  "pm.test('an explicit zero receipt stays present', function () {",
+                  "  pm.expect(usage.length, raw).to.be.above(0);",
+                  "  pm.expect(usage[usage.length - 1].total_tokens, raw).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "259.3 openai missing usage on /openai/v1/chat/completions (stream usage presence)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var usage = [];",
+                  "pm.test('the fixture stream completes successfully', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, raw).to.include('hello');",
+                  "  pm.expect(raw, raw).to.include('[DONE]');",
+                  "  pm.expect(raw, raw).to.not.match(/\"error\"\\s*:/);",
+                  "});",
+                  "raw.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "  var data = frame.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) { return line.slice(5).trim(); }).join('\\n');",
+                  "  if (!data || data === '[DONE]') return;",
+                  "  var chunk = JSON.parse(data);",
+                  "  if (chunk.usage !== undefined && chunk.usage !== null) usage.push(chunk.usage);",
+                  "});",
+                  "pm.test('missing provider usage is never synthesized as zero', function () {",
+                  "  pm.expect(usage.length, raw).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-missing\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "259.4 openai explicit zero on /openai/v1/chat/completions (stream usage presence)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var usage = [];",
+                  "pm.test('the fixture stream completes successfully', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type'), raw).to.include('text/event-stream');",
+                  "  pm.expect(raw, raw).to.include('hello');",
+                  "  pm.expect(raw, raw).to.include('[DONE]');",
+                  "  pm.expect(raw, raw).to.not.match(/\"error\"\\s*:/);",
+                  "});",
+                  "raw.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "  var data = frame.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) { return line.slice(5).trim(); }).join('\\n');",
+                  "  if (!data || data === '[DONE]') return;",
+                  "  var chunk = JSON.parse(data);",
+                  "  if (chunk.usage !== undefined && chunk.usage !== null) usage.push(chunk.usage);",
+                  "});",
+                  "pm.test('an explicit zero receipt stays present', function () {",
+                  "  pm.expect(usage.length, raw).to.be.above(0);",
+                  "  pm.expect(usage[usage.length - 1].total_tokens, raw).to.equal(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-zero\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

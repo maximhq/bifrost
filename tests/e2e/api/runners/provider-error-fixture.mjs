@@ -37,6 +37,18 @@ behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: 
 // content chunk and then a closed socket, a non-streamed request a closed socket.
 behaviours["upstream-cut"] = () => ({ ...behaviours["upstream-ok"](), cut: true });
 
+for (const measured of [false, true]) {
+	const name = measured ? "upstream-usage-zero" : "upstream-usage-missing";
+	behaviours[name] = () => {
+		const response = behaviours["upstream-ok"]();
+		const completion = JSON.parse(response.body);
+		completion.model = name;
+		if (measured) completion.usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+		else delete completion.usage;
+		return { ...response, body: JSON.stringify(completion) };
+	};
+}
+
 // A streamed chat request (stream: true) that a behaviour answers with a completion gets the same
 // answer as server-sent chunks: the role, the content, the finish reason, the usage when
 // stream_options.include_usage asks for it, then [DONE].
@@ -48,7 +60,7 @@ const streamChunks = (completion, includeUsage) => {
 		{ ...base, choices: [{ index: 0, delta: { content: choice.message.content }, finish_reason: null }] },
 		{ ...base, choices: [{ index: 0, delta: {}, finish_reason: choice.finish_reason }] },
 	];
-	if (includeUsage) chunks.push({ ...base, choices: [], usage: completion.usage });
+	if (includeUsage && completion.usage !== undefined) chunks.push({ ...base, choices: [], usage: completion.usage });
 	return chunks.map((c) => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n";
 };
 
