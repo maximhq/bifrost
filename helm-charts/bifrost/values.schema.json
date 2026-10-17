@@ -7460,38 +7460,6 @@
           },
           "additionalProperties": false
         },
-        "github_copilot_key_config": {
-          "type": "object",
-          "description": "GitHub App credentials for a github-copilot provider key. Set this instead of value to mint installation tokens from a GitHub App.",
-          "properties": {
-            "app_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "GitHub App ID or Client ID; the App JWT issuer (can use env. prefix)"
-            },
-            "installation_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Installation to mint tokens for, digits only (can use env. prefix)"
-            },
-            "repository_id": {
-              "type": "string",
-              "minLength": 1,
-              "description": "Repository the installation token is scoped to, digits only (can use env. prefix)"
-            },
-            "private_key": {
-              "type": "string",
-              "minLength": 1,
-              "description": "GitHub App private key in PKCS#1 or PKCS#8 PEM form (can use env. prefix)"
-            },
-            "github_domain": {
-              "type": "string",
-              "description": "GitHub Enterprise domain, e.g. acme.ghe.com. Leave unset for github.com."
-            }
-          },
-          "required": ["app_id", "installation_id", "repository_id", "private_key"],
-          "additionalProperties": false
-        },
         "cloudflare_key_config": {
           "type": "object",
           "description": "Cloudflare key configuration. Required on every key of a cloudflare provider.",

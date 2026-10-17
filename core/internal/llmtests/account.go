@@ -566,19 +566,11 @@ func (account *ComprehensiveTestAccount) GetKeysForProvider(ctx context.Context,
 			},
 		}, nil
 	case schemas.GithubCopilot:
-		// Server-to-server auth: the credential is the GitHub App bundle, not a key value.
-		// GITHUB_COPILOT_API_KEY is the alternative direct-token mode and is left unset here.
 		return []schemas.Key{
 			{
 				Value:  *schemas.NewSecretVar("env.GITHUB_COPILOT_API_KEY"),
 				Models: []string{"*"},
 				Weight: 1.0,
-				GithubCopilotKeyConfig: &schemas.GithubCopilotKeyConfig{
-					AppID:          *schemas.NewSecretVar("env.GITHUB_COPILOT_APP_ID"),
-					InstallationID: *schemas.NewSecretVar("env.GITHUB_COPILOT_INSTALLATION_ID"),
-					RepositoryID:   *schemas.NewSecretVar("env.GITHUB_COPILOT_REPOSITORY_ID"),
-					PrivateKey:     *schemas.NewSecretVar("env.GITHUB_COPILOT_PRIVATE_KEY"),
-				},
 			},
 		}, nil
 	case schemas.Gemini:
@@ -1036,6 +1028,9 @@ func (account *ComprehensiveTestAccount) GetConfigForProvider(providerKey schema
 	case schemas.GithubCopilot:
 		return &schemas.ProviderConfig{
 			NetworkConfig: schemas.NetworkConfig{
+				// Only needed when GITHUB_COPILOT_API_KEY is a raw Copilot API token; a PAT or
+				// GitHub token has its host looked up.
+				BaseURL:                        os.Getenv("GITHUB_COPILOT_API_URL"),
 				DefaultRequestTimeoutInSeconds: 120,
 				MaxRetries:                     10,
 				RetryBackoffInitial:            5 * time.Second,
