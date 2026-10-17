@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
+	"github.com/canonical/starlark/starlarkstruct"
 	"github.com/canonical/starlark/syntax"
 	"github.com/mark3labs/mcp-go/mcp"
 	codemcp "github.com/maximhq/bifrost/core/mcp"
@@ -186,9 +187,39 @@ func unsupportedStatement(code string, err error) string {
 	return ""
 }
 
+// The patterns below capture at most 80 characters of a name or key, which the hints repeat. A
+// script can take a name from tool data (getattr(d, name)), and the error line already carries it
+// once, so a longer one is not matched and its error gets the generic hints instead.
+var (
+	// serverMemberPattern matches a missing tool on a server object: besides a failed call's
+	// tool_error, a server is the only struct a script can hold.
+	serverMemberPattern = regexp.MustCompile(`"([^"]{1,80})" struct has no \.([A-Za-z_][A-Za-z0-9_]{0,79}) attribute`)
+	// missingMemberPattern matches Starlark's message for a method or field a built-in type lacks.
+	missingMemberPattern = regexp.MustCompile(`\b(string|dict|module) has no \.([A-Za-z_][A-Za-z0-9_]{0,79}) field or method`)
+	// missingKeyPattern matches Starlark's message for a dict lookup that misses.
+	missingKeyPattern = regexp.MustCompile(`key (.{1,80}) not in dict`)
+)
+
+// dictMethods are the methods a script calls on a value it took for a dict.
+var dictMethods = []string{"get", "items", "keys", "values"}
+
+// moduleMemberHints names what each sandbox module offers, read from the modules themselves so
+// the hint cannot drift from them.
+var moduleMemberHints = func() map[string]string {
+	hints := map[string]string{}
+	for name, value := range sandboxModules {
+		if module, ok := value.(*starlarkstruct.Module); ok {
+			hints[name] = fmt.Sprintf("The %s module has %s.", name, strings.Join(module.Members.Keys(), ", "))
+		}
+	}
+	return hints
+}()
+
 // generatePythonErrorHints generates helpful hints for Python/Starlark errors.
 func generatePythonErrorHints(errorMessage string, serverKeys []string) []string {
 	hints := []string{}
+	missingMember := missingMemberPattern.FindStringSubmatch(errorMessage)
+	serverMember := serverMemberPattern.FindStringSubmatch(errorMessage)
 
 	if strings.HasPrefix(errorMessage, "fail: ") {
 		// The script chose to stop; generic advice about the code would only mislead.
@@ -197,15 +228,36 @@ func generatePythonErrorHints(errorMessage string, serverKeys []string) []string
 		strings.Contains(errorMessage, "value of type struct has no len") || strings.Contains(errorMessage, "struct value is not iterable") {
 		hints = append(hints, "If this value came from a tool call, the call failed: its result is an error value, not a dict or list.")
 		hints = append(hints, "Check it first: if hasattr(r, \"error\"): ... (r.error holds the message)")
-	} else if strings.Contains(errorMessage, "string index") || strings.Contains(errorMessage, "string has no .") {
+	} else if serverMember != nil && slices.Contains(serverKeys, serverMember[1]) {
+		hints = append(hints, fmt.Sprintf("%s has no tool %s. readToolFile lists the exact tool names of %s.", serverMember[1], serverMember[2], serverMember[1]))
+	} else if strings.Contains(errorMessage, " not in dict") {
+		key := "key"
+		if match := missingKeyPattern.FindStringSubmatch(errorMessage); match != nil {
+			key = match[1]
+			hints = append(hints, fmt.Sprintf("The dict has no key %s.", key))
+		}
+		hints = append(hints, fmt.Sprintf("List its keys with sorted(r.keys()), or read it with r.get(%s, default).", key))
+	} else if strings.Contains(errorMessage, "string index") ||
+		(missingMember != nil && missingMember[1] == "string" && slices.Contains(dictMethods, missingMember[2])) {
 		hints = append(hints, "The value is a str, not a dict: the server's text was not JSON, or was JSON wrapped in a string.")
 		if !slices.Contains(serverKeys, "json") {
 			hints = append(hints, "If it holds JSON, parse it first: data = json.decode(result)")
 		}
 		hints = append(hints, "Check the shape with type(result) before indexing a tool result.")
-	} else if strings.Contains(errorMessage, "got try") || strings.Contains(errorMessage, "got except") ||
-		strings.Contains(errorMessage, "got finally") || strings.Contains(errorMessage, "got raise") {
-		hints = append(hints, exceptionHandlingHints()...)
+	} else if missingMember != nil {
+		switch name := missingMember[2]; missingMember[1] {
+		case "string":
+			hints = append(hints, fmt.Sprintf("Starlark's str has no .%s method; it lacks some Python string methods.", name))
+		case "dict":
+			hints = append(hints, fmt.Sprintf("A dict is read with brackets: r[%q] or r.get(%q, default), never r.%s.", name, name, name))
+		case "module":
+			// The message does not name the module, so list each one a server does not shadow.
+			for _, module := range sandboxModules.Keys() {
+				if !slices.Contains(serverKeys, module) {
+					hints = append(hints, moduleMemberHints[module])
+				}
+			}
+		}
 	} else if strings.Contains(errorMessage, "undefined") || strings.Contains(errorMessage, "not defined") {
 		var undefinedVar string
 		if match := regexp.MustCompile(`name ['"]([^'"]+)['"] is not defined`).FindStringSubmatch(errorMessage); len(match) > 1 {
@@ -223,27 +275,11 @@ func generatePythonErrorHints(errorMessage string, serverKeys []string) []string
 				hints = append(hints, "Access tools using: server_name.tool_name(param=\"value\")")
 			}
 		}
-	} else if strings.Contains(errorMessage, "not within a function") {
-		hints = append(hints, "Starlark requires for/if/while statements to be inside functions at the top level.")
-		hints = append(hints, "Wrap your code in a function, then call it:")
-		hints = append(hints, "  def fetch_all():")
-		hints = append(hints, "    results = []")
-		hints = append(hints, "    for id in ids:")
-		hints = append(hints, "      results.append(server.get(id=id))")
-		hints = append(hints, "    return results")
-		hints = append(hints, "  result = fetch_all()")
 	} else if strings.Contains(errorMessage, "syntax error") {
 		hints = append(hints, "Python syntax error detected.")
 		hints = append(hints, "Check for proper indentation (use spaces, not tabs).")
 		hints = append(hints, "Ensure colons after if/for/def statements.")
 		hints = append(hints, "Check for matching parentheses and brackets.")
-	} else if strings.Contains(errorMessage, "has no") && strings.Contains(errorMessage, "attribute") {
-		hints = append(hints, "You're trying to access an attribute that doesn't exist.")
-		hints = append(hints, "Use dict access syntax: result[\"key\"] instead of result.key")
-		hints = append(hints, "Check the shape with print(type(result)), and print(sorted(result.keys())) for a dict.")
-		if len(serverKeys) > 0 {
-			hints = append(hints, fmt.Sprintf("Available server keys: %s", strings.Join(serverKeys, ", ")))
-		}
 	} else if strings.Contains(errorMessage, "not callable") {
 		hints = append(hints, "You're trying to call something that is not a function.")
 		hints = append(hints, "Ensure you're using the correct tool name.")
@@ -251,10 +287,6 @@ func generatePythonErrorHints(errorMessage string, serverKeys []string) []string
 			hints = append(hints, fmt.Sprintf("Available server keys: %s", strings.Join(serverKeys, ", ")))
 		}
 		hints = append(hints, "Use readToolFile to see available tools for a server.")
-	} else if strings.Contains(errorMessage, "key") && strings.Contains(errorMessage, "not found") {
-		hints = append(hints, "Dictionary key not found.")
-		hints = append(hints, "Check which keys exist with print(sorted(result.keys())) before indexing.")
-		hints = append(hints, "Use .get(\"key\", default) for safe access.")
 	} else {
 		hints = append(hints, "Check the error message above for details.")
 		if len(serverKeys) > 0 {

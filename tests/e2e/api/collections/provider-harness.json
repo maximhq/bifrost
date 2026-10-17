@@ -274521,6 +274521,8 @@
                   "  pm.expect(docs, 'docs still label every response a dict:\\n' + docs).to.not.include('dict: Response from the tool');",
                   "  pm.expect(docs, 'docs do not say a bare JSON value arrives as a scalar:\\n' + docs).to.include('a number, bool or None');",
                   "  pm.expect(docs, 'docs do not limit json.decode to a str holding JSON:\\n' + docs).to.include('json.decode(r[\"body\"]); plain text raises.');",
+                  "  pm.expect(docs, 'docs still say top-level loops must be wrapped in a function:\\n' + docs).to.not.include('MUST be inside a function');",
+                  "  pm.expect(docs, 'docs do not quote the missing-key message Starlark produces:\\n' + docs).to.include('key \"x\" not in dict');",
                   "});"
                 ]
               }
@@ -274537,6 +274539,145 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"getToolDocs\",\n    \"arguments\": \"{\\\"server\\\":\\\"{{codeModeGuidanceClient}}\\\",\\\"tool\\\":\\\"echo\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance a missing dict key names the key and suggests get",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Starlark reports a missing key as 'key \"x\" not in dict'; the hint used to look for 'not found' and never fired.",
+                  "pm.test('a missing dict key names the key and suggests get', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'the script must fail: ' + pm.response.text()).to.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(content, 'the hint does not name the missing key: ' + content).to.include('The dict has no key \\\"x\\\".');",
+                  "  pm.expect(content, 'the hint does not suggest get: ' + content).to.include('r.get(\\\"x\\\", default)');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {\\\\\\\"a\\\\\\\": 1}\\\\nx = r[\\\\\\\"x\\\\\\\"]\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance a misspelled tool points at the server tools, not dict access",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A misspelled tool used to draw 'Use dict access syntax', advice meant for a dict.",
+                  "pm.test('a misspelled tool points at the server tools, not dict access', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'the script must fail: ' + pm.response.text()).to.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(content, 'the hint does not name the missing tool: ' + content).to.include(' has no tool ech.');",
+                  "  pm.expect(content, 'the error lost the did-you-mean suggestion: ' + content).to.include('did you mean .echo?');",
+                  "  pm.expect(content, 'the hint still blames dict access: ' + content).to.not.include('Use dict access syntax');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeGuidanceClient}}.ech(message=\\\\\\\"hi\\\\\\\")\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance a str method Starlark lacks is not blamed on JSON from the server",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Any missing str method used to draw advice about JSON tool results, even on a string the script wrote.",
+                  "pm.test('a str method Starlark lacks is not blamed on JSON from the server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'the script must fail: ' + pm.response.text()).to.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(content, 'the hint does not name the missing method: ' + content).to.include('str has no .ljust method');",
+                  "  pm.expect(content, 'the hint still blames JSON from the server: ' + content).to.not.include('json.decode');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"x = \\\\\\\"name\\\\\\\".ljust(10)\\\"}\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/mcp/tool/execute",
@@ -274918,6 +275059,8 @@
                   "  pm.expect(content, 'the traceback does not name the line fail() ran on: ' + content).to.include('code.star:3:');",
                   "  pm.expect(content, 'the hint does not say the script stopped itself: ' + content).to.include('The script stopped itself with fail()');",
                   "  pm.expect(content, 'the script kept running after fail(): ' + content).to.not.include('unreachable');",
+                  "  pm.expect(content, 'print output on a failed run is labelled differently: ' + content).to.include('Print output:');",
+                  "  pm.expect(content, 'print output on a failed run is labelled differently: ' + content).to.not.include('Print Output:');",
                   "});"
                 ]
               }
