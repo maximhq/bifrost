@@ -969,6 +969,16 @@ func (p *ProviderConfig) ConfigHashMatchesLegacyOverrideOrder(providerName, stor
 	})
 }
 
+// ConfigHashLegacyOverrideOrderUnverifiable reports whether storedHash could have been written
+// by an older build with unsorted request_path_overrides, yet ConfigHashMatchesLegacyOverrideOrder
+// cannot say so because the provider has more overrides than maxLegacyMapPermutations. For such
+// a provider a hash mismatch does not prove that config.json was edited, so reconciliation
+// must not treat it as proof either.
+func (p *ProviderConfig) ConfigHashLegacyOverrideOrderUnverifiable(storedHash string) bool {
+	return storedHash != "" && p.CustomProviderConfig != nil &&
+		len(p.CustomProviderConfig.RequestPathOverrides) > maxLegacyMapPermutations
+}
+
 // legacyCustomProviderConfigBytes rebuilds the bytes the unsorted encoder fed the hasher for
 // cfg with its request_path_overrides in the given order. The struct's other fields hold no
 // map, so its sorted encoding differs from the legacy one only inside that field.

@@ -1998,7 +1998,15 @@ func mergeProviderWithHash(
 			hashMatches = true
 		}
 	}
-	if !hashMatches {
+	if !hashMatches && providerCfgInFile.ConfigHashLegacyOverrideOrderUnverifiable(existingCfg.ConfigHash) {
+		// Too many overrides to tell an older build's unsorted hash from a file edit. The provider's
+		// own settings come from the file, as they did on every boot before the hash was sorted, but
+		// keys are reconciled one by one so those added through the API or dashboard are not dropped.
+		// The new hash is stored, so this runs once and later edits are detected normally.
+		logger.Warn("provider %s has too many request_path_overrides to verify its stored config hash, syncing settings from config file and keeping API-added keys", provider)
+		providerCfgInFile.Keys = reconcileProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)
+		providersInConfigStore[provider] = providerCfgInFile
+	} else if !hashMatches {
 		// Hash mismatch - config.json was changed, sync from file
 		logger.Debug("config hash mismatch for provider %s, syncing from config file", provider)
 		mergedKeys := mergeProviderKeys(provider, providerCfgInFile.Keys, existingCfg.Keys)

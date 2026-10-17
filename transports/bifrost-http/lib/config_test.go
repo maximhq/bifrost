@@ -25521,6 +25521,101 @@ func TestMergeProviderWithHash_LegacyOverrideHashKeepsStoredKeys(t *testing.T) {
 	})
 }
 
+// TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys covers a provider with
+// more request_path_overrides than the legacy hash search can enumerate. Its stored hash may
+// come from an older build, so a mismatch is not proof of a file edit: the file's provider
+// settings still apply, as they did on every boot before the hash was sorted, but keys added
+// through the API survive and the new hash is stored so later edits are detected normally.
+func TestMergeProviderWithHash_UnverifiableLegacyOverrideHashKeepsAPIKeys(t *testing.T) {
+	SetLogger(&testLogger{})
+	provider := schemas.ModelProvider("custom-openai")
+	requestTypes := []schemas.RequestType{
+		schemas.TextCompletionRequest, schemas.ChatCompletionRequest, schemas.EmbeddingRequest,
+		schemas.SpeechRequest, schemas.TranscriptionRequest, schemas.ImageGenerationRequest,
+		schemas.RerankRequest, schemas.ResponsesRequest, schemas.CountTokensRequest,
+	}
+	fileKey := schemas.Key{ID: "file-key", Name: "file", Value: *schemas.NewSecretVar("sk"), Weight: 1}
+	build := func() configstore.ProviderConfig {
+		overrides := map[schemas.RequestType]string{}
+		for _, rt := range requestTypes {
+			overrides[rt] = "/v1/" + string(rt)
+		}
+		return configstore.ProviderConfig{
+			Keys:                 []schemas.Key{fileKey},
+			CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI, RequestPathOverrides: overrides},
+		}
+	}
+	stored := func(t *testing.T) configstore.ProviderConfig {
+		cfg := build()
+		order := append([]schemas.RequestType{}, requestTypes...)
+		slices.Reverse(order)
+		legacy, err := cfg.LegacyOverrideOrderConfigHash(string(provider), order)
+		require.NoError(t, err)
+		fileKeyHash, err := configstore.GenerateKeyHash(fileKey)
+		require.NoError(t, err)
+		storedFileKey := fileKey
+		storedFileKey.ConfigHash = fileKeyHash
+		apiKey := schemas.Key{ID: "api-key", Name: "added-through-api", Value: *schemas.NewSecretVar("sk-api"), Weight: 1}
+		cfg.Keys = []schemas.Key{storedFileKey, apiKey}
+		cfg.ConfigHash = legacy
+		return cfg
+	}
+	keyNames := func(cfg configstore.ProviderConfig) []string {
+		names := []string{}
+		for _, k := range cfg.Keys {
+			names = append(names, k.Name)
+		}
+		return names
+	}
+
+	t.Run("unchanged file keeps API-added keys and upgrades the hash", func(t *testing.T) {
+		fileCfg := build()
+		current, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = current
+		dbCfg := stored(t)
+		require.NotEqual(t, current, dbCfg.ConfigHash)
+
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: dbCfg}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		merged := providers[provider]
+		require.Equal(t, current, merged.ConfigHash, "the stored hash must move to the sorted form so this runs once")
+		require.ElementsMatch(t, []string{"file", "added-through-api"}, keyNames(merged), "the API-added key must survive")
+	})
+
+	t.Run("edited file still applies its provider settings", func(t *testing.T) {
+		fileCfg := build()
+		fileCfg.CustomProviderConfig.IsKeyLess = true
+		edited, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = edited
+
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		merged := providers[provider]
+		require.Equal(t, edited, merged.ConfigHash)
+		require.True(t, merged.CustomProviderConfig.IsKeyLess, "a changed config.json must still replace the provider settings")
+		require.ElementsMatch(t, []string{"file", "added-through-api"}, keyNames(merged))
+	})
+
+	t.Run("edited file key is still updated", func(t *testing.T) {
+		fileCfg := build()
+		fileCfg.Keys = []schemas.Key{fileKey}
+		fileCfg.Keys[0].Weight = 2
+		current, err := fileCfg.GenerateConfigHash(string(provider))
+		require.NoError(t, err)
+		fileCfg.ConfigHash = current
+
+		providers := map[schemas.ModelProvider]configstore.ProviderConfig{provider: stored(t)}
+		mergeProviderWithHash(provider, fileCfg, providers)
+		for _, k := range providers[provider].Keys {
+			if k.Name == "file" {
+				require.Equal(t, float64(2), k.Weight, "a key edited in config.json must still replace the stored key")
+			}
+		}
+	})
+}
+
 // TestPrepareOpenAPIClientFromFile covers how an openapi client declared in
 // config.json is normalized at load: spec_file is read relative to the config
 // directory and inlined, the server-computed metadata is filled from a parse,

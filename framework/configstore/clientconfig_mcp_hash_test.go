@@ -326,6 +326,24 @@ func TestConfigHashMatchesLegacyOverrideOrder(t *testing.T) {
 	require.False(t, ok, "above maxLegacyMapPermutations the search is skipped and the file wins")
 }
 
+// TestConfigHashLegacyOverrideOrderUnverifiable pins when reconciliation must stop trusting a
+// hash mismatch: only for a stored hash on a custom provider with more overrides than the
+// legacy search covers. Within the bound the search decides, and a provider without overrides
+// never had an unsorted encoding.
+func TestConfigHashLegacyOverrideOrderUnverifiable(t *testing.T) {
+	names := func(n int) []schemas.RequestType {
+		out := make([]schemas.RequestType, n)
+		for i := range out {
+			out[i] = schemas.RequestType(string(rune('a' + i)))
+		}
+		return out
+	}
+	require.False(t, customProviderWithOverrides(names(maxLegacyMapPermutations)...).ConfigHashLegacyOverrideOrderUnverifiable("stored"), "the search covers up to the bound")
+	require.True(t, customProviderWithOverrides(names(maxLegacyMapPermutations+1)...).ConfigHashLegacyOverrideOrderUnverifiable("stored"), "above the bound the stored hash cannot be verified")
+	require.False(t, customProviderWithOverrides(names(maxLegacyMapPermutations+1)...).ConfigHashLegacyOverrideOrderUnverifiable(""), "a provider with no stored hash has nothing to verify")
+	require.False(t, (&ProviderConfig{}).ConfigHashLegacyOverrideOrderUnverifiable("stored"), "a provider that is not custom has no overrides")
+}
+
 func mustLegacyConfigHash(t *testing.T, p *ProviderConfig, providerName string, order ...schemas.RequestType) string {
 	t.Helper()
 	h, err := p.LegacyOverrideOrderConfigHash(providerName, order)
