@@ -1088,3 +1088,44 @@ Two are worth calling out:
   per-second model, so video-to-video under-bills. Run it to measure the gap.
 - **`expect_job_params`** (the Gemini cases) needs `--config-db-url`; without it those checks report
   as skipped rather than failing, so every other check still works against hosted Bifrost.
+
+## Custom profile capabilities
+
+The local provider-error fixture also pins Gemini capability lookup behind a
+custom provider profile. `profile-schema-on` explicitly supports schema plus
+tools despite its opaque name. `gemini-3.5-flash` explicitly disallows the
+combination despite the built-in name heuristic. The fixture returns 422 when
+an outbound request ignores either override. It serves both the capability
+snapshot and synthetic Gemini responses; no paid provider is contacted.
+
+Twenty fixture-gated cases cover native Chat/Responses, OpenAI SDK Chat/Responses
+and GenAI ingress, buffered and streamed. Converter units additionally cover
+custom Vertex bases; live Vertex authentication is outside this fixture.
+The converter change preserves the custom route identity and wire model.
+
+Check that ports 8790 and 8791 are free, then start the fixture in one terminal:
+
+```bash
+node tests/e2e/api/runners/provider-error-fixture.mjs
+```
+
+Start the exact checkout under test in another terminal, then run the scoped
+harness after `/health` is ready:
+
+```bash
+mkdir -p tmp
+TASK_CAPABILITY_APP_DIR=$(mktemp -d "$PWD/tmp/custom-profile-capability.XXXXXX")
+cp tests/e2e/api/provider_config/provider-error-fixture.config.json "$TASK_CAPABILITY_APP_DIR/config.json"
+printf '%s\n' '{"values":[{"key":"providerErrorFixture","value":"1","enabled":true}]}' > tmp/custom-profile-capability.env.json
+make dev PORT=8790 APP_DIR="$TASK_CAPABILITY_APP_DIR"
+```
+
+`make dev` stays in the foreground. Once `/health` is ready, run the scoped
+harness from a third terminal:
+
+```bash
+make run-provider-harness-test PROVIDER=gemini FEATURE="custom profile capabilities" BASE_URL=http://localhost:8790 ENV_FILE=tmp/custom-profile-capability.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 HARNESS_MAX_REQUESTS=20
+```
+
+The agent validates the Go regressions, fixture tests and collection selection;
+the provider harness remains a separate user-triggered run.

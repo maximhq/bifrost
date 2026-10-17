@@ -30,6 +30,11 @@
         "default_request_timeout_in_seconds": 10
       }
     },
+    "provider-error-gemini": {
+      "custom_provider_config": { "base_provider_type": "gemini" },
+      "keys": [{ "name": "local-capability-fixture", "value": "test-key", "models": ["profile-schema-on", "gemini-3.5-flash"], "weight": 1 }],
+      "network_config": { "base_url": "http://127.0.0.1:8791/v1beta", "max_retries": 0, "default_request_timeout_in_seconds": 10 }
+    },
     "azure": {
       "keys": [
         {
