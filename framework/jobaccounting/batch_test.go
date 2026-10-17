@@ -620,6 +620,8 @@ func TestAccountBatchResults_BedrockIncludesCacheDetailsInPromptUsage(t *testing
 	assert.InDelta(t, 0.00031, summary.Cost, 1e-12)
 }
 
+// TestAccountBatchResults_GeminiAggregatesUsageFromResponseBody verifies that usage metrics
+// from Gemini batch response bodies are correctly aggregated.
 func TestAccountBatchResults_GeminiAggregatesUsageFromResponseBody(t *testing.T) {
 	store := newFakeAccountingStore()
 
@@ -699,6 +701,8 @@ func TestAccountBatchResults_GeminiWithThinkingTokensPricesAtParityWithChat(t *t
 	assert.InDelta(t, expectedChatCost, summary.Cost, 1e-12)
 }
 
+// TestAccountBatchResults_UsesAggregateWriterAndUsageReporter verifies that batch accounting
+// routes usage records through the provided aggregate writer and usage reporter.
 func TestAccountBatchResults_UsesAggregateWriterAndUsageReporter(t *testing.T) {
 	store := newFakeAccountingStore()
 	writer := &fakeAggregateLogWriter{}

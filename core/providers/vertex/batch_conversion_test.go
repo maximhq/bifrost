@@ -410,6 +410,7 @@ func TestToBifrostBatchCreateRequestModelLookup(t *testing.T) {
 	})
 }
 
+// mustMarshal serializes v to JSON bytes, failing the test if serialization fails.
 func mustMarshal(t *testing.T, v interface{}) []byte {
 	t.Helper()
 	b, err := sonic.Marshal(v)

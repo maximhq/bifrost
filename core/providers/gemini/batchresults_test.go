@@ -375,6 +375,7 @@ func TestGeminiBatchResult_ThinkingTokens(t *testing.T) {
 	})
 }
 
+// TestGeminiResourcePath verifies URI resource path formatting for Gemini models and batch operations.
 func TestGeminiResourcePath(t *testing.T) {
 	t.Parallel()
 
