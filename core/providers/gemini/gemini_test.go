@@ -246,6 +246,38 @@ func TestToBifrostEmbeddingResponsePreservesPrecision(t *testing.T) {
 }
 
 func TestToBifrostEmbeddingResponseUsage(t *testing.T) {
+	t.Run("usage survives an empty embedding batch", func(t *testing.T) {
+		var upstream gemini.GeminiEmbeddingResponse
+		require.NoError(t, json.Unmarshal([]byte(`{"embeddings":[],"usageMetadata":{"promptTokenCount":12,"totalTokenCount":12}}`), &upstream))
+
+		resp := gemini.ToBifrostEmbeddingResponse(&upstream, "gemini-embedding-001")
+
+		require.NotNil(t, resp)
+		assert.Empty(t, resp.Data, "usage must not fabricate a usable embedding")
+		assert.Equal(t, "gemini-embedding-001", resp.Model)
+		assert.Equal(t, "list", resp.Object)
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 12, resp.Usage.PromptTokens)
+		assert.Equal(t, 12, resp.Usage.TotalTokens)
+	})
+
+	t.Run("an absent single embedding also retains measured usage", func(t *testing.T) {
+		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
+			UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{PromptTokenCount: 4, TotalTokenCount: 4},
+		}, "gemini-embedding-2-preview")
+
+		require.NotNil(t, resp)
+		assert.Empty(t, resp.Data)
+		require.NotNil(t, resp.Usage)
+		assert.Equal(t, 4, resp.Usage.PromptTokens)
+		assert.Equal(t, 4, resp.Usage.TotalTokens)
+	})
+
+	t.Run("empty responses without usable usage stay absent", func(t *testing.T) {
+		assert.Nil(t, gemini.ToBifrostEmbeddingResponse(nil, "gemini-embedding-001"))
+		assert.Nil(t, gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{}, "gemini-embedding-001"))
+	})
+
 	// Vertex :embedContent reports usage here and omits Statistics entirely.
 	t.Run("usageMetadata is surfaced", func(t *testing.T) {
 		resp := gemini.ToBifrostEmbeddingResponse(&gemini.GeminiEmbeddingResponse{
@@ -331,6 +363,25 @@ func TestToBifrostEmbeddingResponseUsage(t *testing.T) {
 
 		assert.Nil(t, resp.Usage)
 	})
+}
+
+func BenchmarkToBifrostEmbeddingResponse(b *testing.B) {
+	for _, tc := range []struct {
+		name     string
+		response *gemini.GeminiEmbeddingResponse
+	}{
+		{"single", &gemini.GeminiEmbeddingResponse{Embedding: &gemini.GeminiEmbedding{Values: []float64{0.1, 0.2}}, UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{PromptTokenCount: 12, TotalTokenCount: 12}}},
+		{"batch", &gemini.GeminiEmbeddingResponse{Embeddings: []gemini.GeminiEmbedding{{Values: []float64{0.1, 0.2}}, {Values: []float64{0.3, 0.4}}}, UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{PromptTokenCount: 12, TotalTokenCount: 12}}},
+		{"empty_with_usage", &gemini.GeminiEmbeddingResponse{UsageMetadata: &gemini.GenerateContentResponseUsageMetadata{PromptTokenCount: 12, TotalTokenCount: 12}}},
+		{"empty_without_usage", &gemini.GeminiEmbeddingResponse{}},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = gemini.ToBifrostEmbeddingResponse(tc.response, "gemini-embedding-001")
+			}
+		})
+	}
 }
 
 // TestThoughtSignatureInToolCalls tests that thought signatures are properly embedded in tool call IDs

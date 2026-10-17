@@ -51,6 +51,16 @@ const proxy = createInterceptProxy({
 	},
 	// The path decides the body shape.
 	respond: (req, body) => {
+		if (/\/models\/gemini-embedding-2-preview:embedContent(?:\?|$)/.test(req.url)) {
+			let parsed;
+			try { parsed = JSON.parse(body); }
+			catch { return { status: 400, body: JSON.stringify({ error: { code: 400, message: "invalid embedding JSON", status: "INVALID_ARGUMENT" } }) }; }
+			const text = parsed.content?.parts?.[0]?.text;
+			if (typeof text === "string" && text.startsWith("fixture-empty-embedding-usage:")) {
+				return { status: 200, body: JSON.stringify({ usageMetadata: { promptTokenCount: 12, totalTokenCount: 12 } }) };
+			}
+			return { status: 400, body: JSON.stringify({ error: { code: 400, message: "unknown embedding fixture input", status: "INVALID_ARGUMENT" } }) };
+		}
 		if (/:generateContent/.test(req.url)) return { status: 200, body: geminiBody };
 		if (/:rawPredict/.test(req.url)) return { status: 200, body: claudeBody };
 		// The video is inline so download needs no second fetch; the WebM magic marks it binary to the harness shape check.

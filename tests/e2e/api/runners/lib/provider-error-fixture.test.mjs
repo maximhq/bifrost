@@ -27,11 +27,11 @@ async function startFixture(t) {
     });
     child.on("exit", (code) => reject(new Error(`the fixture exited (${code}) before it listened: ${output}`)));
   });
-  const post = async (body, path = "/v1/chat/completions") => {
+  const post = async (body, path = "/v1/chat/completions", headers = {}) => {
     try {
       return await fetch(`http://127.0.0.1:${port}${path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...headers },
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -52,6 +52,35 @@ test("a model that is not a string is an unknown model and the fixture keeps ser
   }
   const ok = await post({ model: "upstream-ok", messages: [{ role: "user", content: "hi" }] });
   assert.equal(ok.status, 200, "a valid request after the malformed ones");
+});
+
+test("Gemini embedding fixtures require the selected key and keep per-input witnesses", async (t) => {
+  const post = await startFixture(t);
+  const path = "/models/gemini-embedding-001:batchEmbedContents";
+  const body = (text) => ({ requests: [{ content: { parts: [{ text }] } }] });
+  const headers = { "x-goog-api-key": "test-key" };
+  for (const selected of [{}, { "x-goog-api-key": "wrong-key" }]) {
+    const refused = await post(body("fixture-empty-embedding-usage:isolated"), path, selected);
+    assert.equal(refused.status, 401);
+  }
+  const malformed = await post({}, path, headers);
+  assert.equal(malformed.status, 400);
+  const measured = await post(body("fixture-empty-embedding-usage:isolated"), path, headers);
+  assert.equal(measured.status, 200);
+  assert.deepEqual(await measured.json(), { embeddings: [], usageMetadata: { promptTokenCount: 12, totalTokenCount: 12 } });
+  const unmeasured = await post(body("fixture-unmeasured-empty-embedding:isolated"), path, headers);
+  assert.equal(unmeasured.status, 200);
+  assert.deepEqual(await unmeasured.json(), { embeddings: [] });
+  const valid = await post(body("fixture-valid-embedding:isolated"), path, headers);
+  assert.equal(valid.status, 200);
+  assert.deepEqual((await valid.json()).embeddings, [{ values: [0.1, 0.2] }]);
+  const witness = await fetch(new URL("/__hits", measured.url));
+  assert.equal(witness.status, 200);
+  assert.deepEqual((await witness.json()).data[0].hits, {
+    "embedding:fixture-empty-embedding-usage:isolated": 1,
+    "embedding:fixture-unmeasured-empty-embedding:isolated": 1,
+    "embedding:fixture-valid-embedding:isolated": 1,
+  });
 });
 
 test("filtered Live create checks accounting events and unchanged command permissions", async (t) => {

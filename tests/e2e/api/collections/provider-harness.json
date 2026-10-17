@@ -276067,6 +276067,346 @@
           }
         }
       ]
+    },
+    {
+      "name": "259. Empty embedding results retain reported usage (empty-embedding-usage)",
+      "description": "Controlled local upstream regression; no paid model calls. Gemini cases reuse provider-error-fixture.mjs and provider-error-fixture.config.json with providerErrorFixture=1. Vertex cases reuse vertex-endpoint-fixture.mjs --app-dir and its generated config with vertexEndpointFixture=1. Run each fixture profile separately. The neutral /v1/embeddings and OpenAI drop-in must preserve measured usage from an empty result without inventing vectors; each request has a nonce and a recorded one-contact witness. The unmeasured-empty negative control stays a conversion error; a valid-vector control remains usable. Go SDK provider ingress and the shared Vertex Gemini converter have focused Go tests. GenAI single/batch response egress is a separate, still-unqualified converter and is not claimed fixed here; legacy Vertex :predict and passthrough bypass the changed converter.",
+      "item": [
+        {
+          "name": "259.1 gemini/gemini-embedding-001 /v1/embeddings empty result (empty-embedding-usage)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
+                  "pm.variables.set('hEmptyEmbeddingInput1', 'fixture-empty-embedding-usage:' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('expected status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('embedding arity is preserved', function () { pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(0); });",
+                  "pm.test('reported usage reaches the client', function () { pm.expect(j.usage, pm.response.text()).to.be.an('object'); pm.expect(j.usage.prompt_tokens).to.equal(12); pm.expect(j.usage.total_tokens).to.equal(12); });",
+                  "var input = pm.variables.get('hEmptyEmbeddingInput1');",
+                  "pm.sendRequest('http://127.0.0.1:8791/__hits', function (err, res) {",
+                  "  pm.test('one real upstream batch contact', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(res.json().data[0].hits['embedding:' + input], res.text()).to.equal(1); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": \"{{hEmptyEmbeddingInput1}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "259.2 gemini/gemini-embedding-001 /openai/v1/embeddings empty result (empty-embedding-usage)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
+                  "pm.variables.set('hEmptyEmbeddingInput2', 'fixture-empty-embedding-usage:' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('expected status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('embedding arity is preserved', function () { pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(0); });",
+                  "pm.test('reported usage reaches the client', function () { pm.expect(j.usage, pm.response.text()).to.be.an('object'); pm.expect(j.usage.prompt_tokens).to.equal(12); pm.expect(j.usage.total_tokens).to.equal(12); });",
+                  "var input = pm.variables.get('hEmptyEmbeddingInput2');",
+                  "pm.sendRequest('http://127.0.0.1:8791/__hits', function (err, res) {",
+                  "  pm.test('one real upstream batch contact', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(res.json().data[0].hits['embedding:' + input], res.text()).to.equal(1); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": \"{{hEmptyEmbeddingInput2}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "259.3 vertex/gemini-embedding-2-preview /v1/embeddings empty result (empty-embedding-usage)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); return; }",
+                  "pm.variables.set('hEmptyEmbeddingInput3', 'fixture-empty-embedding-usage:' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('expected status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('embedding arity is preserved', function () { pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(0); });",
+                  "pm.test('reported usage reaches the client', function () { pm.expect(j.usage, pm.response.text()).to.be.an('object'); pm.expect(j.usage.prompt_tokens).to.equal(12); pm.expect(j.usage.total_tokens).to.equal(12); });",
+                  "var input = pm.variables.get('hEmptyEmbeddingInput3');",
+                  "pm.sendRequest('http://127.0.0.1:8792/__connects', function (err, res) {",
+                  "  pm.test('one real Vertex embedContent contact', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); var matching = res.json().data[0].requests.filter(function (r) { return r.body.indexOf(input) !== -1; }); pm.expect(matching, res.text()).to.have.lengthOf(1); pm.expect(matching[0].path).to.include('/models/gemini-embedding-2-preview:embedContent'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-embedding-2-preview\",\n  \"input\": \"{{hEmptyEmbeddingInput3}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "259.4 vertex/gemini-embedding-2-preview /openai/v1/embeddings empty result (empty-embedding-usage)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); return; }",
+                  "pm.variables.set('hEmptyEmbeddingInput4', 'fixture-empty-embedding-usage:' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('expected status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('embedding arity is preserved', function () { pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(0); });",
+                  "pm.test('reported usage reaches the client', function () { pm.expect(j.usage, pm.response.text()).to.be.an('object'); pm.expect(j.usage.prompt_tokens).to.equal(12); pm.expect(j.usage.total_tokens).to.equal(12); });",
+                  "var input = pm.variables.get('hEmptyEmbeddingInput4');",
+                  "pm.sendRequest('http://127.0.0.1:8792/__connects', function (err, res) {",
+                  "  pm.test('one real Vertex embedContent contact', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); var matching = res.json().data[0].requests.filter(function (r) { return r.body.indexOf(input) !== -1; }); pm.expect(matching, res.text()).to.have.lengthOf(1); pm.expect(matching[0].path).to.include('/models/gemini-embedding-2-preview:embedContent'); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-embedding-2-preview\",\n  \"input\": \"{{hEmptyEmbeddingInput4}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "259.5 [EXPECT-500] gemini/gemini-embedding-001 /v1/embeddings unmeasured result (empty-embedding-usage)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
+                  "pm.variables.set('hEmptyEmbeddingInput5', 'fixture-unmeasured-empty-embedding:' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('expected status 500', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(500); });",
+                  "var j = pm.response.json();",
+                  "pm.test('unmeasured empty output is not fabricated as free success', function () { pm.expect(j.error, pm.response.text()).to.be.an('object'); });",
+                  "var input = pm.variables.get('hEmptyEmbeddingInput5');",
+                  "pm.sendRequest('http://127.0.0.1:8791/__hits', function (err, res) {",
+                  "  pm.test('one real upstream batch contact', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(res.json().data[0].hits['embedding:' + input], res.text()).to.equal(1); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": \"{{hEmptyEmbeddingInput5}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "259.6 gemini/gemini-embedding-001 /v1/embeddings valid result (empty-embedding-usage)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); return; }",
+                  "pm.variables.set('hEmptyEmbeddingInput6', 'fixture-valid-embedding:' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('expected status 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200); });",
+                  "var j = pm.response.json();",
+                  "pm.test('embedding arity is preserved', function () { pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(1); });",
+                  "pm.test('reported usage reaches the client', function () { pm.expect(j.usage, pm.response.text()).to.be.an('object'); pm.expect(j.usage.prompt_tokens).to.equal(12); pm.expect(j.usage.total_tokens).to.equal(12); });",
+                  "pm.test('the positive control retains the real vector', function () { pm.expect(j.data[0].embedding, pm.response.text()).to.deep.equal([0.1, 0.2]); });",
+                  "var input = pm.variables.get('hEmptyEmbeddingInput6');",
+                  "pm.sendRequest('http://127.0.0.1:8791/__hits', function (err, res) {",
+                  "  pm.test('one real upstream batch contact', function () { pm.expect(err, String(err)).to.equal(null); pm.expect(res.code, res.text()).to.equal(200); pm.expect(res.json().data[0].hits['embedding:' + input], res.text()).to.equal(1); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-001\",\n  \"input\": \"{{hEmptyEmbeddingInput6}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
