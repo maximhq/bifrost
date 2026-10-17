@@ -1576,6 +1576,12 @@ bifrost:
       config:
         dimension: 1
         cache_tool_call_responses: true
+    datadog:
+      enabled: true
+      config:
+        agent_addr: "dd-agent:8126"
+        otel_llmobs_conversion: "inherit"
+        llmobs_gateway_mode: true
   scim:
     enabled: true
     provider: "generic"
@@ -1602,6 +1608,8 @@ assert_field_value 'governance.virtual_keys[0].business_unit_id' '.governance.vi
 assert_field_value 'governance.routing_rules[0].fallbacks[0] (string)' '.governance.routing_rules.[0].fallbacks.[0]' '"anthropic/claude-sonnet-4-5"'
 assert_field_value 'governance.routing_rules[0].fallbacks[1].provider_key_name (object)' '.governance.routing_rules.[0].fallbacks.[1].provider_key_name' '"azure-eu"'
 assert_field_value 'plugins: semantic_cache cache_tool_call_responses' '.plugins.[0].config.cache_tool_call_responses' 'true'
+assert_field_value 'plugins: datadog otel_llmobs_conversion' '.plugins.[1].config.otel_llmobs_conversion' '"inherit"'
+assert_field_value 'plugins: datadog llmobs_gateway_mode' '.plugins.[1].config.llmobs_gateway_mode' 'true'
 assert_field_value 'scim_config.config.displayName (generic)' '.scim_config.config.displayName' '"Acme SSO"'
 
 # config.schema.json makes delete_after_expire depend on expires_at; the values schema must refuse it too.
