@@ -874,6 +874,8 @@ bifrost:
         # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name, supports env.VAR_NAME)
         # enable_metrics: true
         # enable_llm_obs: true
+        # otel_llmobs_conversion: "disabled"  # Whether Datadog builds its own LLM Observability spans from Bifrost's trace: disabled, inherit or enabled
+        # llmobs_gateway_mode: false  # Datadog's proxy-service pattern: a workflow span per request plus MCP tool spans. Changes the exported span shape
         # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
         # disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
@@ -883,6 +885,7 @@ bifrost:
         # api_key: "env.DD_API_KEY"   # Required for agentless mode (supports env.VAR_NAME)
         # site: "datadoghq.com"       # Datadog site/region (e.g. datadoghq.eu)
         # metric_dimensions: []        # x-bf-dim-* names to add as metric tags; each multiplies series
+        # cost_tags: []                # span tag keys to group cost and token metrics by (e.g. team_name); each multiplies cost-metric cardinality
         # plugin_span_filter:         # Optional: filter which plugin hook spans are exported
         #   mode: "exclude"           # "include" or "exclude"
         #   plugins: ["logging"]
