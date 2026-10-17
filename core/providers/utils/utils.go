@@ -1518,11 +1518,13 @@ func ExtractProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 
 // ExtractPassthroughProviderResponseHeaders extracts and filters response headers from a
 // fasthttp response. Transport-level and credential-bearing headers are excluded, except
-// content-type, which the passthrough response must retain.
+// content-type, which the passthrough response must retain. A content-type the upstream did
+// not send stays absent: fasthttp otherwise reports text/plain for it, which mislabels streams.
 func ExtractPassthroughProviderResponseHeaders(resp *fasthttp.Response) map[string]string {
 	if resp == nil {
 		return nil
 	}
+	resp.Header.SetNoDefaultContentType(true)
 	headers := make(map[string]string)
 	resp.Header.VisitAll(func(key, value []byte) {
 		k := string(key)
