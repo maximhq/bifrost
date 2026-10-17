@@ -1,6 +1,11 @@
 package githubcopilot
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -333,5 +338,169 @@ func TestUnsupportedOperations(t *testing.T) {
 		_, bErr := provider.ListModels(ctx, nil, &schemas.BifrostListModelsRequest{})
 		require.NotNil(t, bErr)
 		assert.Contains(t, bErr.Error.Message, "no keys configured")
+	})
+}
+
+const stubResponsesResponse = `{
+	"id": "resp-1",
+	"object": "response",
+	"created_at": 1700000000,
+	"model": "m",
+	"status": "completed",
+	"output": [{"type": "message", "id": "msg-1", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "ok", "annotations": []}]}],
+	"usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+}`
+
+const stubChatResponse = `{
+	"id": "chatcmpl-1",
+	"object": "chat.completion",
+	"created": 1700000000,
+	"model": "m",
+	"choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+	"usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+}`
+
+const stubChatStream = `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}` + "\n\n" +
+	`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}` + "\n\n" +
+	"data: [DONE]\n\n"
+
+// unsupportedAPIBody is what Copilot answers when a model is not served on the Responses API.
+const unsupportedAPIBody = `{"error":{"message":"model gpt-4.1 is not supported via Responses API.","code":"unsupported_api_for_model"}}`
+
+// copilotStub answers /responses according to responsesStatus, serves chat completions
+// normally, and remembers every path it was asked for.
+type copilotStub struct {
+	mu              sync.Mutex
+	paths           []string
+	responsesStatus int
+	responsesBody   string
+}
+
+func (s *copilotStub) provider(t *testing.T) *githubCopilotProvider {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.paths = append(s.paths, r.URL.Path)
+		s.mu.Unlock()
+
+		switch r.URL.Path {
+		case "/responses":
+			w.Header().Set("Content-Type", "application/json")
+			if s.responsesStatus != http.StatusOK {
+				w.WriteHeader(s.responsesStatus)
+				_, _ = fmt.Fprint(w, s.responsesBody)
+				return
+			}
+			_, _ = fmt.Fprint(w, stubResponsesResponse)
+		case "/chat/completions":
+			if r.Header.Get("Accept") == "text/event-stream" {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprint(w, stubChatStream)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, stubChatResponse)
+		default:
+			t.Errorf("unexpected path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	provider, err := NewGithubCopilotProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true},
+	}, noopLogger{})
+	require.NoError(t, err)
+	return provider
+}
+
+func (s *copilotStub) seen() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.paths...)
+}
+
+func responsesRequest(model string) *schemas.BifrostResponsesRequest {
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.GithubCopilot,
+		Model:    model,
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+		}},
+	}
+}
+
+func noopPostHook(_ *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return result, err
+}
+
+func TestResponses(t *testing.T) {
+	key := schemas.Key{Value: *schemas.NewSecretVar("tid=abc")}
+
+	t.Run("uses the native Responses endpoint", func(t *testing.T) {
+		stub := &copilotStub{responsesStatus: http.StatusOK}
+		provider := stub.provider(t)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		response, bErr := provider.Responses(ctx, key, responsesRequest("gpt-5.5"))
+		require.Nil(t, bErr)
+		require.NotEmpty(t, response.Output)
+		_, bErr = provider.Responses(ctx, key, responsesRequest("gpt-5.5"))
+		require.Nil(t, bErr)
+
+		assert.Equal(t, []string{"/responses", "/responses"}, stub.seen())
+	})
+
+	t.Run("falls back to chat completions when the model is not served on Responses", func(t *testing.T) {
+		stub := &copilotStub{responsesStatus: http.StatusBadRequest, responsesBody: unsupportedAPIBody}
+		provider := stub.provider(t)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		response, bErr := provider.Responses(ctx, key, responsesRequest("gpt-4.1"))
+		require.Nil(t, bErr)
+		require.NotEmpty(t, response.Output)
+		assert.Equal(t, []string{"/responses", "/chat/completions"}, stub.seen())
+
+		// Once a model has declined, later requests skip the failing round trip.
+		_, bErr = provider.Responses(ctx, key, responsesRequest("gpt-4.1"))
+		require.Nil(t, bErr)
+		assert.Equal(t, []string{"/responses", "/chat/completions", "/chat/completions"}, stub.seen())
+
+		// The decision is per model.
+		_, bErr = provider.Responses(ctx, key, responsesRequest("claude-haiku-4.5"))
+		require.Nil(t, bErr)
+		assert.Equal(t, []string{"/responses", "/chat/completions", "/chat/completions", "/responses", "/chat/completions"}, stub.seen())
+	})
+
+	t.Run("the stream falls back the same way", func(t *testing.T) {
+		stub := &copilotStub{responsesStatus: http.StatusBadRequest, responsesBody: unsupportedAPIBody}
+		provider := stub.provider(t)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		stream, bErr := provider.ResponsesStream(ctx, noopPostHook, nil, key, responsesRequest("gpt-4.1"))
+		require.Nil(t, bErr)
+		chunks := 0
+		for range stream {
+			chunks++
+		}
+
+		assert.NotZero(t, chunks)
+		assert.Equal(t, []string{"/responses", "/chat/completions"}, stub.seen())
+	})
+
+	t.Run("other errors are returned without a chat retry", func(t *testing.T) {
+		stub := &copilotStub{
+			responsesStatus: http.StatusBadRequest,
+			responsesBody:   `{"error":{"message":"The requested model is not supported.","code":"model_not_supported"}}`,
+		}
+		provider := stub.provider(t)
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+		_, bErr := provider.Responses(ctx, key, responsesRequest("gpt-5.5"))
+
+		require.NotNil(t, bErr)
+		assert.Equal(t, "The requested model is not supported.", bErr.Error.Message)
+		assert.Equal(t, []string{"/responses"}, stub.seen())
 	})
 }

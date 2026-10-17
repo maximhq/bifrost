@@ -21,6 +21,7 @@ package githubcopilot
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -38,6 +39,9 @@ type githubCopilotProvider struct {
 	networkConfig       schemas.NetworkConfig
 	sendBackRawRequest  bool
 	sendBackRawResponse bool
+	// responsesUnsupported records "<base URL>|<model>" pairs for which Copilot declined the
+	// Responses API. See emulateResponses.
+	responsesUnsupported sync.Map
 }
 
 // NewGithubCopilotProvider creates a new GitHub Copilot provider instance.
@@ -215,22 +219,128 @@ func (p *githubCopilotProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	)
 }
 
-// Responses performs a responses request by converting through chat completions.
+// Responses performs a responses request to the Copilot API.
 //
-// Copilot may expose a native /responses endpoint, but only for some model families, so
-// converting is the shape that works for every account.
+// Copilot serves the Responses API only for some models, and some models only on it. A
+// model that is not served there answers with unsupported_api_for_model (HTTP 400). In that
+// case the request is emulated through chat completions; see emulateResponses for the rule.
 func (p *githubCopilotProvider) Responses(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostResponsesRequest) (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
-	chatResponse, err := p.ChatCompletion(ctx, key, request.ToChatRequest())
-	if err != nil {
-		return nil, err
+	emulate := func() (*schemas.BifrostResponsesResponse, *schemas.BifrostError) {
+		chatResponse, bErr := p.ChatCompletion(ctx, key, request.ToChatRequest())
+		if bErr != nil {
+			return nil, bErr
+		}
+		return chatResponse.ToBifrostResponsesResponse(), nil
 	}
-	return chatResponse.ToBifrostResponsesResponse(), nil
+
+	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
+	if bErr != nil {
+		return nil, bErr
+	}
+	if p.emulateResponses(creds, request.Model) {
+		return emulate()
+	}
+
+	response, bErr := openai.HandleOpenAIResponsesRequest(
+		ctx,
+		p.client,
+		creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/responses"),
+		request,
+		buildAuthHeaders(creds, responsesRequestHasImageContent(request)),
+		p.networkConfig.ExtraHeaders,
+		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
+		p.GetProviderKey(),
+		nil,
+		parseCopilotError,
+		nil,
+		p.logger,
+	)
+	if isResponsesUnsupported(bErr) {
+		p.markResponsesUnsupported(creds, request.Model)
+		return emulate()
+	}
+	return response, bErr
 }
 
-// ResponsesStream performs a streaming responses request by converting through chat completions.
+// ResponsesStream performs a streaming responses request to the Copilot API. See Responses
+// for the fallback. The native call fails before any chunk is produced when the model is not
+// served on the Responses API, so the retry through chat is safe.
 func (p *githubCopilotProvider) ResponsesStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostResponsesRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
-	return p.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	emulate := func() (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+		ctx.SetValue(schemas.BifrostContextKeyIsResponsesToChatCompletionFallback, true)
+		return p.ChatCompletionStream(ctx, postHookRunner, postHookSpanFinalizer, key, request.ToChatRequest())
+	}
+
+	creds, bErr := resolveCredentials(ctx, key, p.exchangeClient, p.networkConfig.BaseURL, p.logger)
+	if bErr != nil {
+		return nil, bErr
+	}
+	if p.emulateResponses(creds, request.Model) {
+		return emulate()
+	}
+
+	stream, bErr := openai.HandleOpenAIResponsesStreaming(
+		ctx,
+		p.streamingClient,
+		creds.BaseURL+providerUtils.GetPathFromContext(ctx, "/responses"),
+		request,
+		buildAuthHeaders(creds, responsesRequestHasImageContent(request)),
+		p.networkConfig.ExtraHeaders,
+		p.networkConfig.StreamIdleTimeoutInSeconds,
+		providerUtils.ShouldSendBackRawRequest(ctx, p.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, p.sendBackRawResponse),
+		p.GetProviderKey(),
+		postHookRunner,
+		nil,
+		parseCopilotError,
+		nil,
+		nil,
+		nil,
+		p.logger,
+		postHookSpanFinalizer,
+	)
+	if isResponsesUnsupported(bErr) {
+		p.markResponsesUnsupported(creds, request.Model)
+		return emulate()
+	}
+	return stream, bErr
+}
+
+// copilotUnsupportedAPICode is the error code Copilot returns when a model is not served on
+// the API that the request used.
+const copilotUnsupportedAPICode = "unsupported_api_for_model"
+
+// isResponsesUnsupported reports whether an upstream error is Copilot declining the
+// Responses API for the model, as opposed to rejecting this particular request.
+func isResponsesUnsupported(bErr *schemas.BifrostError) bool {
+	if bErr == nil || bErr.Error == nil || bErr.Error.Code == nil {
+		return false
+	}
+	if bErr.StatusCode != nil && *bErr.StatusCode != fasthttp.StatusBadRequest {
+		return false
+	}
+	return *bErr.Error.Code == copilotUnsupportedAPICode
+}
+
+// emulateResponses reports whether Copilot has already declined the Responses API for this
+// model, so the request goes through chat completions without the failing round trip.
+func (p *githubCopilotProvider) emulateResponses(creds *copilotCredentials, model string) bool {
+	_, unsupported := p.responsesUnsupported.Load(responsesCacheKey(creds, model))
+	return unsupported
+}
+
+// markResponsesUnsupported remembers that Copilot declined the Responses API for a model.
+// The decision is per host and model, because the model catalog differs by plan.
+func (p *githubCopilotProvider) markResponsesUnsupported(creds *copilotCredentials, model string) {
+	cacheKey := responsesCacheKey(creds, model)
+	if _, loaded := p.responsesUnsupported.LoadOrStore(cacheKey, struct{}{}); !loaded && p.logger != nil {
+		p.logger.Info("[github-copilot] native Responses API declined for %s; emulating through chat completions from now on", cacheKey)
+	}
+}
+
+func responsesCacheKey(creds *copilotCredentials, model string) string {
+	return creds.BaseURL + "|" + model
 }
 
 // Embedding is not supported by GitHub Copilot.
