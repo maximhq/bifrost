@@ -1,6 +1,7 @@
 package gemini_test
 
 import (
+	"context"
 	"math"
 	"strings"
 	"testing"
@@ -544,4 +545,106 @@ func TestToGeminiChatCompletionRequest_ToolResultRefKeyStaysOpaque(t *testing.T)
 		resp := functionResponse(t, build(&schemas.ChatMessageContent{ContentStr: schemas.Ptr(plainOutput)}))
 		assert.JSONEq(t, plainOutput, string(resp), "plain JSON tool output must still be forwarded as a structured object")
 	})
+}
+
+// Custom profiles preserve their route identity while reading capabilities from
+// the configured SDK base. Both structured-output and message converters use it.
+func TestCustomProviderCapabilityLookupUsesBaseProvider(t *testing.T) {
+	for _, scope := range []struct {
+		name           string
+		provider, base schemas.ModelProvider
+	}{
+		{"native", schemas.Gemini, schemas.Gemini}, {"custom-gemini", "published-gemini", schemas.Gemini},
+		{"custom-vertex", "published-vertex", schemas.Vertex},
+	} {
+		for _, model := range []struct {
+			name      string
+			supported bool
+		}{{"schema-tools-on", true}, {"gemini-3.5-flash", false}} {
+			for _, operation := range []string{"chat", "responses"} {
+				t.Run(scope.name+"/"+model.name+"/"+operation, func(t *testing.T) {
+					var seen []schemas.ModelProvider
+					schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, name string) *schemas.ModelCapabilities {
+						seen = append(seen, provider)
+						if provider != scope.base || name != model.name {
+							return nil
+						}
+						return &schemas.ModelCapabilities{SupportsResponseSchemaWithTools: schemas.Ptr(model.supported)}
+					})
+					t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+					ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+					defer cancel()
+					ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, scope.base)
+					var out *gemini.GeminiGenerationRequest
+					var err error
+					if operation == "chat" {
+						req := schemaCapabilityChatRequest(scope.provider, model.name)
+						out, err = gemini.ToGeminiChatCompletionRequest(ctx, req)
+						require.Equal(t, scope.provider, req.Provider, "capability lookup must preserve the route identity")
+					} else {
+						req := &schemas.BifrostResponsesRequest{Provider: scope.provider, Model: model.name,
+							Params: &schemas.ResponsesParameters{MaxOutputTokens: schemas.Ptr(64),
+								Tools: []schemas.ResponsesTool{{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("lookup")}},
+								Text: &schemas.ResponsesTextConfig{Format: &schemas.ResponsesTextConfigFormat{
+									Type: "json_schema", Name: schemas.Ptr("proof"), JSONSchema: &schemas.ResponsesTextConfigFormatJSONSchema{Type: schemas.Ptr("object")},
+								}},
+							}}
+						out, err = gemini.ToGeminiResponsesRequest(ctx, req)
+						require.Equal(t, scope.provider, req.Provider, "capability lookup must preserve the route identity")
+					}
+					require.NoError(t, err)
+					require.NotNil(t, out)
+					require.Equal(t, model.name, out.Model, "capability identity must not replace the wire model")
+					require.Len(t, out.Tools, 1)
+					require.Equal(t, model.supported, out.GenerationConfig.ResponseJSONSchema != nil, "datasheet override must control schema plus tools")
+					require.Equal(t, model.supported, out.GenerationConfig.ResponseMIMEType == "application/json")
+					require.NotEmpty(t, seen)
+					for _, provider := range seen {
+						require.Equal(t, scope.base, provider, "every capability gate must use the configured base")
+					}
+				})
+			}
+		}
+	}
+}
+
+func schemaCapabilityChatRequest(provider schemas.ModelProvider, model string) *schemas.BifrostChatRequest {
+	return &schemas.BifrostChatRequest{Provider: provider, Model: model, Params: &schemas.ChatParameters{
+		MaxCompletionTokens: schemas.Ptr(64), Tools: []schemas.ChatTool{{Type: "function", Function: &schemas.ChatToolFunction{Name: "lookup"}}},
+		ResponseFormat: schemas.Ptr[any](map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "proof", "schema": map[string]any{"type": "object"}}}),
+	}}
+}
+
+func BenchmarkCustomProviderCapabilityLookup(b *testing.B) {
+	caps := &schemas.ModelCapabilities{SupportsResponseSchemaWithTools: schemas.Ptr(true)}
+	schemas.SetCapabilityResolver(func(provider schemas.ModelProvider, model string) *schemas.ModelCapabilities {
+		if provider != schemas.Gemini {
+			return nil
+		}
+		return caps
+	})
+	b.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+	for _, structured := range []bool{false, true} {
+		name := "ordinary"
+		if structured {
+			name = "schema-tools"
+		}
+		b.Run(name, func(b *testing.B) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			ctx.SetValue(schemas.BifrostContextKeyBaseProviderType, schemas.Gemini)
+			req := schemaCapabilityChatRequest("published-gemini", "schema-tools-on")
+			if !structured {
+				req.Params.ResponseFormat = nil
+				req.Params.Tools = nil
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				if _, err := gemini.ToGeminiChatCompletionRequest(ctx, req); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
 }

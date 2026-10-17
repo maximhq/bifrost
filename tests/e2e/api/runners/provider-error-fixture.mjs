@@ -123,7 +123,19 @@ const server = http.createServer((req, res) => {
 	}
 	if (req.method === "GET" && path === "/model-parameters.json") {
 		// supported_endpoints/mode feed the catalog's per-model request types: gpt-5-pro answers on /v1/responses only.
-		return send(200, {}, JSON.stringify({ "gpt-5-pro": { provider: "openai", mode: "responses", supported_endpoints: ["/v1/responses"] } }));
+		return send(200, {}, JSON.stringify({
+            "gpt-5-pro": { provider: "openai", mode: "responses", supported_endpoints: ["/v1/responses"] },
+            "profile-schema-on": {
+                provider: "gemini", mode: "chat", supported_endpoints: ["/v1/chat/completions", "/v1/responses"],
+                supports_function_calling: true, supports_response_schema: true, supports_response_schema_with_tools: true,
+                model_parameters: ["max_tokens", "max_completion_tokens", "max_output_tokens", "tools", "tool_choice", "response_format", "text"].map((id) => ({ id })),
+            },
+            "gemini-3.5-flash": {
+                provider: "gemini", mode: "chat", supported_endpoints: ["/v1/chat/completions", "/v1/responses"],
+                supports_function_calling: true, supports_response_schema: true, supports_response_schema_with_tools: false,
+                model_parameters: ["max_tokens", "max_completion_tokens", "max_output_tokens", "tools", "tool_choice", "response_format", "text"].map((id) => ({ id })),
+            },
+        }));
 	}
 	if (req.method === "POST" && path === "/__reset") {
 		for (const k of Object.keys(hits)) delete hits[k];
@@ -132,6 +144,32 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
 	}
+    const gemini = path.match(/^\/v1beta\/models\/(profile-schema-on|gemini-3\.5-flash):(generateContent|streamGenerateContent)$/);
+    if (req.method === "POST" && gemini) {
+        const chunks = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => {
+            let body;
+            try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+            catch { return send(400, {}, errorBody("invalid JSON", "invalid_request_error", "invalid_json")); }
+            if (req.headers["x-goog-api-key"] !== "test-key") {
+                return send(401, {}, errorBody("fixture key required", "invalid_request_error", "invalid_api_key"));
+            }
+            const supported = gemini[1] === "profile-schema-on";
+            const formatted = body.generationConfig?.responseMimeType === "application/json" && body.generationConfig?.responseJsonSchema?.type === "object";
+            if (formatted !== supported || body.generationConfig?.maxOutputTokens !== 64 || body.tools?.[0]?.functionDeclarations?.[0]?.name !== "lookup") {
+                return send(422, {}, errorBody("custom provider capability override was not honored", "invalid_request_error", "capability_override_lost"));
+            }
+            const payload = { candidates: [{ content: { role: "model", parts: [{ text: supported ? '{"answer":"schema present"}' : '{"answer":"schema absent"}' }] }, finishReason: "STOP", index: 0 }],
+                usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 1, totalTokenCount: 2 }, modelVersion: gemini[1] };
+            if (gemini[2] === "streamGenerateContent") {
+                res.writeHead(200, { "Content-Type": "text/event-stream" });
+                return res.end(`data: ${JSON.stringify(payload)}\n\n`);
+            }
+            return send(200, {}, JSON.stringify(payload));
+        });
+        return;
+    }
 	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
