@@ -153,3 +153,59 @@ variable "volume_size_gb" {
   description = "Persistent volume size in GB for SQLite storage."
   type        = number
 }
+
+# --- PostgreSQL ---
+variable "create_postgresql" {
+  description = "Create a managed Cloud SQL PostgreSQL instance."
+  type        = bool
+  default     = false
+}
+
+variable "postgresql_engine_version" {
+  description = "PostgreSQL engine version."
+  type        = string
+  default     = "16"
+}
+
+variable "postgresql_instance_class" {
+  description = "Cloud SQL machine tier."
+  type        = string
+  default     = null
+}
+
+variable "postgresql_storage_gb" {
+  description = "Disk size in GB."
+  type        = number
+  default     = 20
+}
+
+variable "postgresql_database_name" {
+  description = "Name of the initial database."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "postgresql_username" {
+  description = "Database username."
+  type        = string
+  default     = "bifrost"
+}
+
+variable "postgresql_password" {
+  description = "Database password. If null, a random password is generated."
+  type        = string
+  default     = null
+  sensitive   = true
+}
+
+variable "postgresql_backup_retention_days" {
+  description = "Backup retention period in days."
+  type        = number
+  default     = 7
+}
+
+variable "postgresql_multi_az" {
+  description = "Enable high availability (regional) configuration."
+  type        = bool
+  default     = false
+}
