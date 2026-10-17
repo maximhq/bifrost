@@ -696,6 +696,7 @@ false
 {{- if .expires_at }}{{- $_ := set $vk "expires_at" .expires_at }}{{- end }}
 {{- if hasKey . "delete_after_expire" }}{{- $_ := set $vk "delete_after_expire" .delete_after_expire }}{{- end }}
 {{- if hasKey . "disable_content_logging" }}{{- $_ := set $vk "disable_content_logging" .disable_content_logging }}{{- end }}
+{{- if .metadata }}{{- $_ := set $vk "metadata" .metadata }}{{- end }}
 {{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
 {{- if .business_unit_id }}{{- $_ := set $vk "business_unit_id" .business_unit_id }}{{- end }}

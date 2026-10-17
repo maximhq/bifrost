@@ -1062,6 +1062,8 @@ bifrost:
       #   expires_at: "2026-12-31T23:59:59Z"  # Optional RFC3339 expiry; requests rejected once passed. Omit for no expiry
       #   delete_after_expire: true  # Delete the key once expires_at passes; omit to follow client.deleteExpiredVirtualKeys
       #   disable_content_logging: true  # Per-key override of client.disableContentLogging; omit to inherit
+      #   metadata:                # Custom key/value metadata copied onto every log entry this key produces
+      #     cost_center: "cc-42"
       #   calendar_aligned: false  # Snap all budget resets for this key to calendar boundaries
       #   allow_all_providers: false  # Grant access to every provider (incl. ones added later); provider_configs still apply per-provider limits
       #   team_id: "team-1"        # Mutually exclusive with customer_id and business_unit_id
