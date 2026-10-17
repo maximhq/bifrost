@@ -405,6 +405,7 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 - `team_id` / `team_name` - Team identifiers (empty when governance is not used)
 - `customer_id` / `customer_name` - Customer identifiers (empty when governance is not used)
 - `project_id` / `project_name` - Project the request was scoped to (empty when the request named no project). A request is scoped to at most one project, so these stay singular where team and customer identifiers can fan out
+- `prompt_id` / `prompt_name` / `prompt_version` - Stored prompt the request ran (empty when the request named no prompt), so cost and latency can be compared across prompt versions
 
 `user_id` / `user_name` are **not** included by default — see [User Labels](#user-labels).
 

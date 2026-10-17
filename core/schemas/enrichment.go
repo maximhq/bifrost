@@ -81,6 +81,11 @@ var EnrichmentDims = []EnrichmentDim{
 	// unit there is no array form of this dimension.
 	{Name: "project_id", SpanAttr: AttrBifrostProjectID, Tier: TierMetric},
 	{Name: "project_name", SpanAttr: AttrBifrostProjectName, Tier: TierMetric},
+	// The stored prompt a request ran. Operator-curated like the routing rules above, so
+	// bounded by the prompt repo rather than by traffic.
+	{Name: "prompt_id", SpanAttr: AttrBifrostPromptID, Tier: TierMetric},
+	{Name: "prompt_name", SpanAttr: AttrBifrostPromptName, Tier: TierMetric},
+	{Name: "prompt_version", SpanAttr: AttrBifrostPromptVersion, Tier: TierMetric},
 	{Name: "fallback_index", SpanAttr: AttrBifrostFallbackIndex, Tier: TierMetric},
 
 	// --- High cardinality. ---
