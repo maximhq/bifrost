@@ -263,6 +263,7 @@ type BifrostHTTPServer struct {
 
 	WebSocketHandler     *handlers.WebSocketHandler
 	NotificationService  *handlers.NotificationService
+	RSSFeedsHandler      *handlers.RSSFeedsHandler
 	WarpHandler          *handlers.WarpHandler
 	MCPServerHandler     *handlers.MCPServerHandler
 	AgentGatewayHandler  *handlers.AgentGatewayHandler
@@ -2890,6 +2891,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		s.Config.NotificationPublisher = s.NotificationService.Publish
 		s.NotificationService.Start(s.Ctx)
 	}
+	if s.RSSFeedsHandler == nil {
+		s.RSSFeedsHandler = handlers.NewRSSFeedsHandler(s.Config.ConfigStore, nil)
+		s.RSSFeedsHandler.Start(s.Ctx)
+	}
 	// This is the first point in Bootstrap where the logging plugin - and so
 	// the log manager Warp's chat route needs - is known, which is why Warp is
 	// built here rather than earlier.
@@ -3003,6 +3008,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if s.NotificationService != nil {
 		s.NotificationService.RegisterRoutes(s.Router, middlewares...)
+	}
+	if s.RSSFeedsHandler != nil {
+		s.RSSFeedsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if s.WarpHandler != nil {
 		s.WarpHandler.RegisterRoutes(s.Router, middlewares...)
