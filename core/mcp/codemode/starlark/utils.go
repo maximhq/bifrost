@@ -152,10 +152,10 @@ func truncateDiagnostic(text string) string {
 func exceptionHandlingHints() []string {
 	return []string{
 		"Starlark does NOT support try/except/finally/raise — there is no exception handling.",
-		"Instead, check return values for errors:",
-		"  result = server.tool(param=\"value\")",
-		"  if result == None or (type(result) == \"dict\" and \"error\" in result):",
-		"    print(\"Error:\", result)",
+		"A failed tool call returns an error value instead of raising. Check it:",
+		"  r = server.tool(param=\"value\")",
+		"  if hasattr(r, \"error\"):",
+		"    fail(r.error)  # or handle it and carry on",
 	}
 }
 
