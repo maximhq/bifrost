@@ -2587,6 +2587,20 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 				}
 			}
 
+			// The OpenAI Responses spec makes `delta` required on
+			// response.reasoning_summary_text.delta, and a provider leaves it nil on the
+			// event that carries only a thinking signature. This route marshals the chunk
+			// verbatim, so without this the field is dropped and strict SDKs abort the
+			// stream. Being a superset of the OpenAI shape still means carrying the fields
+			// it requires. Returns the same pointer unless a fill is actually needed.
+			if chunk.BifrostResponsesStreamResponse != nil {
+				if filled := chunk.BifrostResponsesStreamResponse.WithOpenAIRequiredDelta(); filled != chunk.BifrostResponsesStreamResponse {
+					chunkCopy := *chunk
+					chunkCopy.BifrostResponsesStreamResponse = filled
+					chunk = &chunkCopy
+				}
+			}
+
 			// Convert response to JSON (transport-goroutine CPU).
 			cpuStart := time.Now()
 			chunkJSON, err := sonic.Marshal(chunk)
