@@ -9004,9 +9004,26 @@ func (bifrost *Bifrost) dispatchResponsesStream(ctx *schemas.BifrostContext, pro
 	return provider.ResponsesStream(ctx, providerUtils.WrapNamespaceRestorePostHookRunner(postHookRunner, preparedRequest.NamespaceToolAliases), postHookSpanFinalizer, key, preparedRequest)
 }
 
+// customProviderOperationError enforces the admitted operation before any
+// provider conversion or dispatch, including providers that share converters.
+func customProviderOperationError(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage) *schemas.BifrostError {
+	if config == nil || config.CustomProviderConfig == nil || config.CustomProviderConfig.AllowedRequests == nil {
+		return nil
+	}
+	err := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), config.CustomProviderConfig, req.RequestType)
+	if err != nil {
+		_, model, _ := req.BifrostRequest.GetRequestFields()
+		err.ExtraFields.OriginalModelRequested = model
+	}
+	return err
+}
+
 // handleProviderRequest handles the request to the provider based on the request type
 // key is used for single-key operations, keys is used for batch/file operations that need multiple keys
 func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, keys []schemas.Key) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	if err := customProviderOperationError(provider, config, req); err != nil {
+		return nil, err
+	}
 	response := &schemas.BifrostResponse{}
 	switch req.RequestType {
 	case schemas.ListModelsRequest:
@@ -9421,6 +9438,9 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 
 // handleProviderStreamRequest handles the stream request to the provider based on the request type
 func (bifrost *Bifrost) handleProviderStreamRequest(provider schemas.Provider, config *schemas.ProviderConfig, req *ChannelMessage, key schemas.Key, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context)) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	if err := customProviderOperationError(provider, config, req); err != nil {
+		return nil, err
+	}
 	switch req.RequestType {
 	case schemas.TextCompletionStreamRequest:
 		if changeType, ok := req.Context.Value(schemas.BifrostContextKeyChangeRequestType).(schemas.RequestType); ok && changeType == schemas.ChatCompletionRequest {

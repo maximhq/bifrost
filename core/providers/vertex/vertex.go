@@ -176,6 +176,8 @@ type VertexProvider struct {
 	sendBackRawRequest  bool                  // Whether to include raw request in BifrostResponse
 	sendBackRawResponse bool                  // Whether to include raw response in BifrostResponse
 
+	customProviderConfig *schemas.CustomProviderConfig
+
 	// tokenSources caches oauth2.TokenSource instances keyed by a hash of the auth
 	// credentials. The Google TokenSource handles token refresh and expiry, so caching
 	// the source avoids re-parsing credentials JSON on every request. It is per provider
@@ -213,6 +215,8 @@ func NewVertexProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 		networkConfig:       config.NetworkConfig,
 		sendBackRawRequest:  config.SendBackRawRequest,
 		sendBackRawResponse: config.SendBackRawResponse,
+
+		customProviderConfig: config.CustomProviderConfig,
 	}, nil
 }
 
@@ -321,7 +325,7 @@ func (provider *VertexProvider) getAuthTokenSource(key schemas.Key) (oauth2.Toke
 
 // GetProviderKey returns the provider identifier for Vertex.
 func (provider *VertexProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Vertex
+	return providerUtils.GetProviderName(schemas.Vertex, provider.customProviderConfig)
 }
 
 // listModelsByKey performs a list models request for a single key.

@@ -1183,6 +1183,53 @@
       "network_config": {
         "default_request_timeout_in_seconds": 300
       }
+    },
+    "vertex_custom": {
+      "keys": [
+        {
+          "name": "Vertex custom fixture",
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "env.GOOGLE_LOCATION",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          },
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 120
+      },
+      "custom_provider_config": {
+        "base_provider_type": "vertex"
+      }
+    },
+    "vertex_custom_gated": {
+      "keys": [
+        {
+          "name": "Vertex custom fixture",
+          "vertex_key_config": {
+            "project_id": "env.VERTEX_PROJECT_ID",
+            "region": "env.GOOGLE_LOCATION",
+            "auth_credentials": "env.VERTEX_CREDENTIALS"
+          },
+          "models": [
+            "*"
+          ],
+          "weight": 1
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 120
+      },
+      "custom_provider_config": {
+        "base_provider_type": "vertex",
+        "allowed_requests": {
+          "embedding": true
+        }
+      }
     }
   },
   "config_store": {
