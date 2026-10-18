@@ -1877,6 +1877,12 @@ false
 {{- if hasKey $inputConfig "enable_llm_obs" }}
 {{- $_ := set $datadogConfig "enable_llm_obs" $inputConfig.enable_llm_obs }}
 {{- end }}
+{{- if $inputConfig.otel_llmobs_conversion }}
+{{- $_ := set $datadogConfig "otel_llmobs_conversion" $inputConfig.otel_llmobs_conversion }}
+{{- end }}
+{{- if hasKey $inputConfig "llmobs_gateway_mode" }}
+{{- $_ := set $datadogConfig "llmobs_gateway_mode" $inputConfig.llmobs_gateway_mode }}
+{{- end }}
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $datadogConfig "disable_content_logging" $inputConfig.disable_content_logging }}
 {{- end }}
