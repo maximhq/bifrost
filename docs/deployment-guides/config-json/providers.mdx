@@ -43,6 +43,7 @@ Every key object supports these fields:
 | `value` | string | API key value or `env.VAR_NAME` reference |
 | `models` | array | Models this key serves. `["*"]` = all models |
 | `weight` | float | Load balancing weight. Higher = more traffic |
+| `enabled` | boolean | Set to `false` to keep the key configured but skip it during key selection. Same as the **Enabled** toggle in the UI. New keys default to `true`; omitting it on an existing key keeps the stored value (for example a UI toggle) |
 | `aliases` | object | Map logical name → actual model name for this key |
 | `use_for_batch_api` | boolean | Mark key as eligible for batch API calls |
 | `oauth_key_config` | object | Mint the bearer from an OAuth token endpoint instead of carrying a static `value`. `openai` and custom providers on the `openai` base only. See below |

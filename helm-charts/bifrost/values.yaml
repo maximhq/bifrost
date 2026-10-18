@@ -415,6 +415,7 @@ bifrost:
   #     - name: "primary-key"         # Key name (required, must be unique)
   #       value: "sk-..."             # Direct value
   #       weight: 1
+  #       enabled: true               # false = keep the key configured but skip it in routing (new keys default to true; omitted keeps the stored value)
   #       models: ["gpt-4o", "gpt-4o-mini"]  # Restrict key to specific models
   #       use_for_batch_api: false    # Whether this key can be used for batch API
   #       # use_anthropic_endpoints: false  # deepseek/fireworks/vllm/sgl keys only: route chat completions
@@ -492,6 +493,7 @@ bifrost:
   #         region: "us-central1"
   #         auth_credentials: "env.GOOGLE_CREDENTIALS"
   #         force_single_region: false  # Set true for provisioned throughput to skip multi-region promotion
+  #         use_session_routing: false  # Set true only on projects where Google enabled Vertex session routing
   #
   # # AWS Bedrock example (requires bedrock_key_config)
   # bedrock:
@@ -872,6 +874,8 @@ bifrost:
         # ml_app: ""                  # ML app name for LLM Observability (defaults to service_name, supports env.VAR_NAME)
         # enable_metrics: true
         # enable_llm_obs: true
+        # otel_llmobs_conversion: "disabled"  # Whether Datadog builds its own LLM Observability spans from Bifrost's trace: disabled, inherit or enabled
+        # llmobs_gateway_mode: false  # Datadog's proxy-service pattern: a workflow span per request plus MCP tool spans. Changes the exported span shape
         # group_traces_by_session: false  # Group requests sharing x-bf-session-id into one APM trace (agent mode only)
         # disable_content_logging: false
         # request_headers: []         # Header name patterns (exact or wildcard like "x-custom-*")
@@ -1057,6 +1061,8 @@ bifrost:
       #   expires_at: "2026-12-31T23:59:59Z"  # Optional RFC3339 expiry; requests rejected once passed. Omit for no expiry
       #   delete_after_expire: true  # Delete the key once expires_at passes; omit to follow client.deleteExpiredVirtualKeys
       #   disable_content_logging: true  # Per-key override of client.disableContentLogging; omit to inherit
+      #   metadata:                # Custom key/value metadata copied onto every log entry this key produces
+      #     cost_center: "cc-42"
       #   calendar_aligned: false  # Snap all budget resets for this key to calendar boundaries
       #   allow_all_providers: false  # Grant access to every provider (incl. ones added later); provider_configs still apply per-provider limits
       #   team_id: "team-1"        # Mutually exclusive with customer_id and business_unit_id
@@ -1516,6 +1522,7 @@ bifrost:
       #   max_turns_to_send: 8   # With the switch false: current input + 8 previous turns; 0 = current input only
       #   evaluation_mode: "bundled"   # "bundled" (default) | "per_turn" (each turn scanned in isolation; avoids cross-turn false positives, more provider calls)
       #   stream_replay_event_interval_ms: 25  # Delay between buffered events after an allowed response; 0 sends them immediately
+      #   output_mode: "enforce"   # "enforce" (default) | "monitor" (deliver the response untouched, evaluate it in the background, log matches without enforcing; needs apply_to output|both)
       #   provider_config_ids: [1]   # Links this rule to guardrails.providers[].id above
 
   # Declarative Skills Repository. Rendered verbatim as top-level `skills_registry`

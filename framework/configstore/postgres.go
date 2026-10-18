@@ -7,6 +7,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/postgresconn"
+	"github.com/maximhq/bifrost/framework/storehooks"
 	"gorm.io/gorm"
 )
 
@@ -23,7 +24,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	if err := postgresconn.Validate(config, false); err != nil {
 		return nil, err
 	}
-	dsn := postgresconn.BuildDSN(config)
+	dsn := postgresconn.WithApplicationName(postgresconn.BuildDSN(config), string(storehooks.RoleConfig))
 	logger.Debug("configstore: postgres target host=%s port=%s db=%s sslmode=%s",
 		config.Host.GetValue(), config.Port.GetValue(), config.DBName.GetValue(), config.SSLMode.GetValue())
 
@@ -79,6 +80,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	// plaintext SecretVar fields are rewritten to vault refs before persistence
 	// and owned vault secrets are cleaned up on delete.
 	RegisterVaultCallbacks(db)
+	storehooks.PoolOpened(storehooks.RoleConfig, db)
 	logger.Info("configstore: runtime connection pool ready")
 
 	d := &RDBConfigStore{logger: logger}
@@ -114,6 +116,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 			return fmt.Errorf("failed to tune fresh runtime pool: %w", err)
 		}
 		RegisterVaultCallbacks(newDB)
+		storehooks.PoolOpened(storehooks.RoleConfig, newDB)
 		oldDB := d.db.Swap(newDB)
 		if oldDB != nil {
 			postgresconn.Close(oldDB, logger)

@@ -108,6 +108,7 @@ const VertexKeyConfigSchema = z.object({
 			message: "Auth Credentials must be a valid JSON object or env.VAR format when provided",
 		}),
 	force_single_region: z.boolean().optional(),
+	use_session_routing: z.boolean().optional(),
 	aws_workload_identity: VertexAWSWorkloadIdentitySchema.optional(),
 });
 

@@ -239,6 +239,23 @@ Input guardrails still check the request before Bifrost sends it to the LLM prov
 
 ---
 
+## Monitor Mode
+
+Set a rule's `output_mode` to `monitor` to see what its output guardrails would do before you enforce them.
+
+- The response reaches the client untouched, and a stream is never paused, so time to first token is unchanged.
+- Once the response completes, Bifrost evaluates it in the background with the rule's profiles and records the result on the request's log. Nothing is blocked, redacted, or transformed for the client.
+- Each match becomes a `guardrail_debug.detections[]` entry with `action` (`block`, `redact`, `transform`, or `detect`) and `enforced: false`. The stored response is redacted as enforcement would have left it, and the plugin logs carry `[output-monitor]` lines with each provider's verdict.
+- The log entry is written once the evaluation finishes, so it can appear a few seconds after the response.
+
+Monitor mode applies to the output phase only: the rule needs `target` `llm` and `apply_to` `output` or `both`, and the input phase of a `both` rule is still enforced. When enforce and monitor rules match the same request, the enforce rules decide what the client receives and the monitor rules add their findings to the log.
+
+<Note>
+  Every monitored response is evaluated; there is no limit on how many evaluations run at once. Each one holds a copy of the response and its log entry until it finishes, for at most 90 seconds, so memory grows with monitored traffic multiplied by the guardrail provider's latency. Use the rule's sampling rate to monitor a share of high-volume traffic.
+</Note>
+
+---
+
 ## Guardrail Rules
 
 Guardrail Rules are custom policies that define when and how content validation occurs. Rules use CEL (Common Expression Language) expressions to evaluate requests and can be linked to one or more profiles for execution.
@@ -264,6 +281,7 @@ Guardrail Rules are custom policies that define when and how content validation 
 | `max_turns_to_send` | integer | No | Used when `send_all_conversation_turns` is `false`: number of preceding conversation turns to include. `0` sends only the current input. |
 | `evaluation_mode` | enum | No | `bundled` (default) sends selected turns in one guardrail call; `per_turn` evaluates each turn in isolation and uses more provider calls |
 | `stream_replay_event_interval_ms` | integer | No | Delay in milliseconds between buffered events after block-capable streaming output guardrails allow the response. `0` sends buffered events immediately; maximum `1000` |
+| `output_mode` | enum | No | `enforce` (default) acts on output matches; `monitor` delivers the response untouched and only logs what the output guardrails would do. Requires `apply_to` `output` or `both`. See [Monitor Mode](#monitor-mode) |
 | `provider_config_ids` | array | No | IDs of profiles to use for evaluation |
 
 ### Creating Rules

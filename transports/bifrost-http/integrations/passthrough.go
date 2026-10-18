@@ -203,6 +203,11 @@ func NewChatGPTPassthroughRouter(client *bifrost.Bifrost, handlerStore lib.Handl
 	return NewPassthroughRouter(client, handlerStore, accessResolver, logger, &PassthroughConfig{
 		Provider:    schemas.OpenAI,
 		UpstreamURL: "https://chatgpt.com",
+		// The Codex endpoint owns an event stream even when a WebSocket bridge
+		// omits the HTTP stream flag. Relay incrementally without changing its body.
+		StreamingPath: func(method, path string) bool {
+			return method == fasthttp.MethodPost && path == "/backend-api/codex/responses"
+		},
 		StripPrefix: []string{
 			"/chatgpt_passthrough",
 		},

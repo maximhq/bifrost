@@ -448,6 +448,7 @@ func (a *MyAccount) GetKeysForProvider(ctx *context.Context, provider schemas.Mo
 | `auth_credentials`    | No       | Service account JSON string (leave empty for ADC)                                                  |
 | `project_number`      | No       | GCP project number (required for fine-tuned models)                                                |
 | `force_single_region` | No       | When `true`, always call `region` and skip multi-region promotion of multi-region-only models     |
+| `use_session_routing`     | No       | When `true`, send `prompt_cache_key` to Gemini models as `session_id` (see [Session routing](#session-routing)) |
 
 **Key-level fields:**
 

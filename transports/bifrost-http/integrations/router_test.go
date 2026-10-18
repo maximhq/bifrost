@@ -1672,3 +1672,93 @@ func TestResponseForConverterDropsRawAfterInjectedTools(t *testing.T) {
 		t.Fatal("the OpenAI route answered with the last turn's raw bytes")
 	}
 }
+
+// codexPassthroughAccount initializes only the provider needed by the synthetic relay test.
+type codexPassthroughAccount struct{}
+
+// GetConfiguredProviders keeps the test independent of installed provider configuration.
+func (codexPassthroughAccount) GetConfiguredProviders() ([]schemas.ModelProvider, error) {
+	return []schemas.ModelProvider{schemas.OpenAI}, nil
+}
+
+// GetKeysForProvider supplies a synthetic key that must never replace the caller's subscription token.
+func (codexPassthroughAccount) GetKeysForProvider(context.Context, schemas.ModelProvider) ([]schemas.Key, error) {
+	return []schemas.Key{{ID: "synthetic-key", Value: *schemas.NewSecretVar("synthetic-key"), Models: schemas.WhiteList{"*"}, Weight: 1}}, nil
+}
+
+// GetConfigForProvider uses defaults; the short circuit guarantees no live upstream is contacted.
+func (codexPassthroughAccount) GetConfigForProvider(schemas.ModelProvider) (*schemas.ProviderConfig, error) {
+	return &schemas.ProviderConfig{}, nil
+}
+
+// codexPassthroughReceipt witnesses the real router-to-core request before an explicit synthetic policy denial.
+type codexPassthroughReceipt struct {
+	request          *schemas.BifrostRequest
+	skipKeySelection bool
+}
+
+// GetName identifies the isolated test plugin.
+func (*codexPassthroughReceipt) GetName() string { return "synthetic-codex-receipt" }
+
+// Cleanup has no resources to release.
+func (*codexPassthroughReceipt) Cleanup() error { return nil }
+
+// PreRequestHook leaves native passthrough state unchanged.
+func (*codexPassthroughReceipt) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+
+// PreLLMHook captures native dispatch and rejects before any live upstream or operator key can be used.
+func (p *codexPassthroughReceipt) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	snapshot := *req
+	p.request = &snapshot
+	p.skipKeySelection, _ = ctx.Value(schemas.BifrostContextKeySkipKeySelection).(bool)
+	status := 403
+	return req, &schemas.LLMPluginShortCircuit{Error: &schemas.BifrostError{StatusCode: &status, Error: &schemas.ErrorField{Message: "synthetic policy denial"}}}, nil
+}
+
+// PostLLMHook preserves the synthetic receipt unchanged.
+func (*codexPassthroughReceipt) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	return resp, err, nil
+}
+
+// TestChatGPTPassthroughStreamsWithoutBodyFlag reproduces a server buffering a Codex WebSocket bridge's native response when stream is omitted.
+// The reported logs contain no raw body: these requests and the policy denial are synthetic, not captured production payloads.
+func TestChatGPTPassthroughStreamsWithoutBodyFlag(t *testing.T) {
+	for _, flag := range []string{"", `,"stream":true`, `,"stream":false`} {
+		t.Run(flag, func(t *testing.T) {
+			plugin := &codexPassthroughReceipt{}
+			client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: codexPassthroughAccount{}, LLMPlugins: []schemas.LLMPlugin{plugin}, Logger: bifrost.NewNoOpLogger()})
+			require.NoError(t, err)
+			defer client.Shutdown()
+			r := router.New()
+			NewChatGPTPassthroughRouter(client, &mockHandlerStore{}, nil, &testLogger{}).RegisterRoutes(r)
+			body := `{"model":"gpt-5.5","input":[],"future":9007199254740993` + flag + `}`
+			var ctx fasthttp.RequestCtx
+			ctx.Request.Header.SetMethod("POST")
+			ctx.Request.SetRequestURI("/chatgpt_passthrough/backend-api/codex/responses")
+			ctx.Request.Header.SetContentType("application/json")
+			ctx.Request.Header.Set("Authorization", "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeW50aGV0aWMifQ.signature")
+			ctx.Request.SetBodyString(body)
+			r.Handler(&ctx)
+			require.Equal(t, 403, ctx.Response.StatusCode())
+			require.Contains(t, string(ctx.Response.Body()), "synthetic policy denial")
+			require.NotNil(t, plugin.request)
+			require.Equal(t, schemas.PassthroughStreamRequest, plugin.request.RequestType, "native Codex responses must not use the buffered API path")
+			require.True(t, plugin.skipKeySelection)
+			require.Equal(t, "https://chatgpt.com", plugin.request.PassthroughRequest.UpstreamURL)
+			require.Equal(t, "/backend-api/codex/responses", plugin.request.PassthroughRequest.Path)
+			require.Equal(t, body, string(plugin.request.PassthroughRequest.Body))
+			require.Equal(t, "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeW50aGV0aWMifQ.signature", plugin.request.PassthroughRequest.SafeHeaders["authorization"])
+		})
+	}
+}
+
+// BenchmarkChatGPTPassthroughStreamDecision measures the route predicate without touching provider execution.
+func BenchmarkChatGPTPassthroughStreamDecision(b *testing.B) {
+	cfg := NewChatGPTPassthroughRouter(nil, nil, nil, &testLogger{}).passthroughCfg
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = cfg.streams("POST", "/backend-api/codex/responses", false)
+	}
+}

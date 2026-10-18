@@ -45,6 +45,7 @@ type TableKey struct {
 	VertexRegion                  *schemas.SecretVar `gorm:"type:text" json:"vertex_region,omitempty"`
 	VertexAuthCredentials         *schemas.SecretVar `gorm:"type:text" json:"vertex_auth_credentials,omitempty"`
 	VertexForceSingleRegion       *bool              `gorm:"column:vertex_force_single_region" json:"vertex_force_single_region,omitempty"`
+	VertexUseSessionRouting       *bool              `gorm:"column:vertex_use_session_routing" json:"vertex_use_session_routing,omitempty"`
 	VertexAWSWorkloadIdentityJSON *string            `gorm:"type:text" json:"-"` // JSON serialized schemas.VertexAWSWorkloadIdentityConfig
 
 	// Bedrock config fields (embedded)
@@ -260,6 +261,8 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		}
 		fsr := k.VertexKeyConfig.ForceSingleRegion
 		k.VertexForceSingleRegion = &fsr
+		sr := k.VertexKeyConfig.UseSessionRouting
+		k.VertexUseSessionRouting = &sr
 		wif, err := MarshalVertexAWSWorkloadIdentityJSON(k.VertexKeyConfig.AWSWorkloadIdentity)
 		if err != nil {
 			return err
@@ -271,6 +274,7 @@ func (k *TableKey) BeforeSave(tx *gorm.DB) error {
 		k.VertexRegion = nil
 		k.VertexAuthCredentials = nil
 		k.VertexForceSingleRegion = nil
+		k.VertexUseSessionRouting = nil
 		k.VertexAWSWorkloadIdentityJSON = nil
 	}
 	if k.BedrockKeyConfig != nil {
@@ -1009,7 +1013,7 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		k.AzureKeyConfig = azureConfig
 	}
 	// Reconstruct Vertex config if fields are present
-	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil || (k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "") {
+	if k.VertexProjectID != nil || k.VertexProjectNumber != nil || k.VertexRegion != nil || k.VertexAuthCredentials != nil || k.VertexForceSingleRegion != nil || k.VertexUseSessionRouting != nil || (k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "") {
 		config := &schemas.VertexKeyConfig{}
 
 		if k.VertexProjectID != nil {
@@ -1028,6 +1032,9 @@ func (k *TableKey) AfterFind(tx *gorm.DB) error {
 		}
 		if k.VertexForceSingleRegion != nil {
 			config.ForceSingleRegion = *k.VertexForceSingleRegion
+		}
+		if k.VertexUseSessionRouting != nil {
+			config.UseSessionRouting = *k.VertexUseSessionRouting
 		}
 		if k.VertexAWSWorkloadIdentityJSON != nil && *k.VertexAWSWorkloadIdentityJSON != "" {
 			var wif schemas.VertexAWSWorkloadIdentityConfig
