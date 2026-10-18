@@ -276284,6 +276284,247 @@
           }
         }
       ]
+    },
+    {
+      "name": "260. Vertex custom profile routing and operation admission (vertex-custom-profile)",
+      "description": "A Vertex custom base must load and retain its selected profile identity. These cases cover neutral Chat/Responses, streaming and GenAI ingress, then deny buffered/streamed operations before provider work. Uses the inert vertex_custom and vertex_custom_gated fixture profiles. No special client routing header is available on the neutral routes.",
+      "item": [
+        {
+          "name": "/v1/chat/completions - Vertex custom profile - vertex_custom/{{vertexModel}}",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex custom profile status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('custom Vertex identity retained',function(){var body=pm.response.json();var extra=body.extra_fields||(body.extra_body&&body.extra_body.extra_fields)||{};pm.expect(extra.provider,pm.response.text()).to.eql('vertex_custom');});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex_custom/{{vertexModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK.\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - Vertex custom profile stream - vertex_custom/{{vertexModel}}",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex custom profile status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('custom Vertex stream terminates',function(){pm.expect(pm.response.text()).to.include('[DONE]');});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex_custom/{{vertexModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "/v1/responses - Vertex custom profile - vertex_custom/{{vertexModel}}",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex custom profile status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('custom Vertex identity retained',function(){var body=pm.response.json();var extra=body.extra_fields||(body.extra_body&&body.extra_body.extra_fields)||{};pm.expect(extra.provider,pm.response.text()).to.eql('vertex_custom');});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex_custom/{{vertexModel}}\",\n  \"input\": \"Say OK.\",\n  \"max_output_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "/genai/v1beta/models/vertex_custom/{{vertexModel}}:generateContent - Vertex custom profile - vertex_custom/{{vertexModel}}",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex custom profile status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "pm.test('native GenAI response retained',function(){pm.expect(pm.response.json().candidates,pm.response.text()).to.be.an('array').that.is.not.empty;});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex_custom/{{vertexModel}}:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex_custom",
+                "{{vertexModel}}:generateContent"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"Say OK.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 16\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - Vertex custom profile [EXPECT-400] - vertex_custom_gated/{{vertexModel}}",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex custom profile status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); });",
+                  "pm.test('operation refused for the selected custom profile', function () { var body=pm.response.json(); pm.expect(body.error.code,pm.response.text()).to.eql('unsupported_operation'); pm.expect(body.error.message).to.include('vertex_custom_gated'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex_custom_gated/{{vertexModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK.\"\n    }\n  ],\n  \"max_tokens\": 16\n}"
+            }
+          }
+        },
+        {
+          "name": "/v1/chat/completions - Vertex custom profile stream [EXPECT-400] - vertex_custom_gated/{{vertexModel}}",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Vertex custom profile status', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(400); });",
+                  "pm.test('operation refused for the selected custom profile', function () { var body=pm.response.json(); pm.expect(body.error.code,pm.response.text()).to.eql('unsupported_operation'); pm.expect(body.error.message).to.include('vertex_custom_gated'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex_custom_gated/{{vertexModel}}\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say OK.\"\n    }\n  ],\n  \"max_tokens\": 16,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            }
+          }
+        }
+      ]
     }
   ]
 }

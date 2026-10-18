@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/core/keyselectors"
 	"github.com/maximhq/bifrost/core/mcp"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
+	vertexprovider "github.com/maximhq/bifrost/core/providers/vertex"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/tidwall/gjson"
 	"golang.org/x/text/cases"
@@ -591,11 +592,11 @@ func TestCreateBaseProvider_CustomTypesafeBase(t *testing.T) {
 		t.Fatalf("expected custom provider key my-typesafe, got %q", provider.GetProviderKey())
 	}
 
-	_, err = bifrost.createBaseProvider("my-vertex", &schemas.ProviderConfig{
-		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex},
+	_, err = bifrost.createBaseProvider("my-azure", &schemas.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Azure},
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported base provider type") {
-		t.Fatalf("vertex is not a supported base provider, got err=%v", err)
+		t.Fatalf("azure is not a supported base provider, got err=%v", err)
 	}
 }
 
@@ -7950,5 +7951,107 @@ func TestResponsesRequest_GatewayToolSearch(t *testing.T) {
 	}
 	if resp.Usage == nil || resp.Usage.InputTokens != 30 || resp.Usage.OutputTokens != 5 {
 		t.Errorf("want usage summed across both calls, got %+v", resp.Usage)
+	}
+}
+
+func TestCreateBaseProvider_CustomVertexKeepsItsProfileIdentity(t *testing.T) {
+	client := &Bifrost{logger: NewDefaultLogger(schemas.LogLevelError)}
+	provider, err := client.createBaseProvider("custom-vertex-profile", &schemas.ProviderConfig{
+		CustomProviderConfig: &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex},
+	})
+	if err != nil {
+		t.Fatalf("Vertex custom profile refused: %v", err)
+	}
+	if provider.GetProviderKey() != "custom-vertex-profile" {
+		t.Fatalf("custom Vertex identity collapsed to %q", provider.GetProviderKey())
+	}
+	native, err := client.createBaseProvider(schemas.Vertex, &schemas.ProviderConfig{})
+	if err != nil || native.GetProviderKey() != schemas.Vertex {
+		t.Fatal("built-in Vertex identity changed")
+	}
+}
+
+type customOperationProbe struct {
+	schemas.Provider
+	calls int
+}
+
+func (p *customOperationProbe) GetProviderKey() schemas.ModelProvider { return "custom-vertex-profile" }
+func (p *customOperationProbe) Embedding(*schemas.BifrostContext, schemas.Key, *schemas.BifrostEmbeddingRequest) (*schemas.BifrostEmbeddingResponse, *schemas.BifrostError) {
+	p.calls++
+	return nil, nil
+}
+func (p *customOperationProbe) SpeechStream(*schemas.BifrostContext, schemas.PostHookRunner, func(context.Context), schemas.Key, *schemas.BifrostSpeechRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	p.calls++
+	c := make(chan *schemas.BifrostStreamChunk)
+	close(c)
+	return c, nil
+}
+
+func TestCustomProviderOperationAdmissionPrecedesBufferedAndStreamDispatch(t *testing.T) {
+	client := &Bifrost{}
+	config := &schemas.ProviderConfig{CustomProviderConfig: &schemas.CustomProviderConfig{CustomProviderKey: "custom-vertex-profile", BaseProviderType: schemas.Vertex, AllowedRequests: &schemas.AllowedRequests{}}}
+	for _, kind := range []schemas.RequestType{schemas.EmbeddingRequest, schemas.SpeechStreamRequest} {
+		probe := &customOperationProbe{}
+		message := &ChannelMessage{BifrostRequest: schemas.BifrostRequest{RequestType: kind, EmbeddingRequest: &schemas.BifrostEmbeddingRequest{Model: "proof-model"}, SpeechRequest: &schemas.BifrostSpeechRequest{Model: "proof-model"}}}
+		var err *schemas.BifrostError
+		if kind == schemas.EmbeddingRequest {
+			_, err = client.handleProviderRequest(probe, config, message, schemas.Key{}, nil)
+		} else {
+			_, err = client.handleProviderStreamRequest(probe, config, message, schemas.Key{}, nil, nil)
+		}
+		if err == nil || probe.calls != 0 {
+			t.Fatalf("%s reached a custom provider that denies that operation", kind)
+		}
+		if err.Error == nil || err.Error.Code == nil || *err.Error.Code != "unsupported_operation" || err.ExtraFields.Provider != "custom-vertex-profile" || err.ExtraFields.OriginalModelRequested != "proof-model" {
+			t.Fatalf("operation denial lost its selected identity: %#v", err)
+		}
+	}
+}
+
+func BenchmarkCustomProviderOperationAdmission(b *testing.B) {
+	client := &Bifrost{}
+	for _, test := range []struct {
+		name   string
+		config *schemas.CustomProviderConfig
+	}{
+		{"builtin", nil}, {"unrestricted", &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex}},
+		{"restricted", &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex, AllowedRequests: &schemas.AllowedRequests{Embedding: true}}},
+	} {
+		b.Run(test.name, func(b *testing.B) {
+			config := &schemas.ProviderConfig{CustomProviderConfig: test.config}
+			probe := &customOperationProbe{}
+			message := &ChannelMessage{BifrostRequest: schemas.BifrostRequest{RequestType: schemas.EmbeddingRequest, EmbeddingRequest: &schemas.BifrostEmbeddingRequest{Model: "proof-model"}}}
+			b.ReportAllocs()
+			for b.Loop() {
+				_, err := client.handleProviderRequest(probe, config, message, schemas.Key{}, nil)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+var benchmarkVertexProfileIdentity schemas.ModelProvider
+
+func BenchmarkVertexProfileIdentity(b *testing.B) {
+	for _, custom := range []bool{false, true} {
+		name := "builtin"
+		var config *schemas.CustomProviderConfig
+		if custom {
+			name = "custom"
+			config = &schemas.CustomProviderConfig{BaseProviderType: schemas.Vertex, CustomProviderKey: "custom-vertex-profile"}
+		}
+		b.Run(name, func(b *testing.B) {
+			provider, err := vertexprovider.NewVertexProvider(&schemas.ProviderConfig{CustomProviderConfig: config}, NewNoOpLogger())
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				benchmarkVertexProfileIdentity = provider.GetProviderKey()
+			}
+		})
 	}
 }

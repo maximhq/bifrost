@@ -92,6 +92,7 @@ var SupportedBaseProviders = []ModelProvider{
 	HuggingFace,
 	Replicate,
 	Typesafe,
+	Vertex,
 }
 
 // StandardProviders is the list of all built-in (non-custom) providers.
