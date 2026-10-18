@@ -384,7 +384,7 @@ Get detailed documentation for a specific tool when the compact signature from `
 # A call that fails returns an error value, not a result: hasattr(r, "error") is True and
 # r.error holds the message. Call fail(r.error) to stop the run, or skip it and carry on.
 #
-# Common errors: "key not found", "has no attribute", "string index"
+# Common errors: key "x" not in dict, dict has no .x field or method, string index
 # Fix: check type(r) first, then index the shape you actually got
 # ============================================================================
 
@@ -763,12 +763,16 @@ err := client.UpdateCodeModeLimits(&schemas.MCPCodeModeLimits{MaxToolCalls: 500}
 
 Bifrost provides detailed error messages with hints:
 
-```python
-# Error: youtube is not defined
-# Hints:
-# - Variable or identifier 'youtube' is not defined
-# - Available server keys: youtubeAPI, filesystem
-# - Use one of the available server keys as the object name
+```
+Execution runtime error:
+
+code.star:1:10: undefined: youtube
+
+Hints:
+Variable 'youtube' is not defined.
+Note: Each executeToolCode call runs in a fresh scope — no variables persist between calls.
+Available server keys: filesystem, youtubeAPI
+Access tools using: server_name.tool_name(param="value")
 ```
 
 A runtime error also names the script lines that led to it, in the Python traceback layout, one frame per line. Deep recursion keeps only the outermost frame and the innermost five frames, and a `... N more frames ...` line stands in for the N frames left out between them:

@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -746,6 +748,104 @@ func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	req.ChatParameters = params
 
 	return nil
+}
+
+// openAIChatRequestKnownFields are the top-level keys OpenAIChatRequest decodes,
+// read from its JSON tags so a field added to the type is never taken for an
+// unknown one, plus the reasoning_* shorthands ChatParameters accepts and
+// Bifrost's own extra_params wrapper.
+var openAIChatRequestKnownFields = func() map[string]bool {
+	known := map[string]bool{
+		"reasoning_effort":     true,
+		"reasoning_max_tokens": true,
+		"reasoning_display":    true,
+		"extra_params":         true,
+	}
+	addJSONFieldNames(reflect.TypeOf(OpenAIChatRequest{}), known)
+	return known
+}()
+
+// openAIChatRequestKnownFieldsFolded holds the known names lowercased. sonic, like
+// encoding/json, matches a key to a field case-insensitively, so "Messages" is decoded
+// and must not also be forwarded as an unknown field.
+var openAIChatRequestKnownFieldsFolded = func() map[string]bool {
+	folded := make(map[string]bool, len(openAIChatRequestKnownFields))
+	for name := range openAIChatRequestKnownFields {
+		folded[strings.ToLower(name)] = true
+	}
+	return folded
+}()
+
+// isKnownOpenAIChatRequestField reports whether the decoder takes name: an exact match,
+// else an ASCII case-folded one, lowered into a stack buffer so the lookup does not allocate.
+func isKnownOpenAIChatRequestField(name string) bool {
+	if openAIChatRequestKnownFields[name] {
+		return true
+	}
+	var buf [64]byte
+	if len(name) > len(buf) {
+		return openAIChatRequestKnownFieldsFolded[strings.ToLower(name)]
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf[i] = c
+	}
+	return openAIChatRequestKnownFieldsFolded[string(buf[:len(name)])]
+}
+
+// addJSONFieldNames adds the JSON names of t's fields to names, descending
+// into untagged embedded structs as encoding/json does.
+func addJSONFieldNames(t reflect.Type, names map[string]bool) {
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		tag := field.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if field.Anonymous && name == "" && field.Type.Kind() == reflect.Struct {
+			addJSONFieldNames(field.Type, names)
+			continue
+		}
+		if !field.IsExported() {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		names[name] = true
+	}
+}
+
+// OpenAIChatRequestUnknownFields returns the top-level fields of a chat body
+// that OpenAIChatRequest does not decode, each compacted, or nil when there are
+// none. A body with only known fields costs a scan and no allocation: the body
+// is read in place and only the fields kept are copied out of it.
+func OpenAIChatRequestUnknownFields(data []byte) map[string]interface{} {
+	if len(data) == 0 {
+		return nil
+	}
+	var unknown map[string]interface{}
+	gjson.Parse(unsafe.String(unsafe.SliceData(data), len(data))).ForEach(func(key, value gjson.Result) bool {
+		name := key.String()
+		if isKnownOpenAIChatRequestField(name) {
+			return true
+		}
+		if unknown == nil {
+			unknown = make(map[string]interface{})
+		}
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, []byte(value.Raw)); err == nil {
+			unknown[strings.Clone(name)] = json.RawMessage(compact.Bytes())
+		} else {
+			unknown[strings.Clone(name)] = json.RawMessage(value.Raw)
+		}
+		return true
+	})
+	return unknown
 }
 
 // IsStreamingRequested implements the StreamingRequest interface

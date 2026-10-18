@@ -1126,6 +1126,33 @@ func TestReloadProvider_KeylessProviderRetainsSentinelEntry(t *testing.T) {
 	}
 }
 
+// TestReloadProvider_ZeroKeyProviderClaimsModelsOnlyWhenKeyless pins that a
+// custom provider reloaded with zero keys is a catalog candidate for a bare
+// model name only when it is keyless. One that needs keys (its only key was
+// rejected at save) used to claim every model and win the resolver's
+// alphabetical pick, so POST /openai/v1/embeddings {"model":"text-embedding-005"}
+// failed with no_key_supports_model instead of reaching vertex.
+func TestReloadProvider_ZeroKeyProviderClaimsModelsOnlyWhenKeyless(t *testing.T) {
+	prevLogger := logger
+	logger = noopTestLogger{}
+	defer func() { logger = prevLogger }()
+
+	const provider schemas.ModelProvider = "harness-oauthkey-run"
+	for _, keyless := range []bool{false, true} {
+		t.Run(fmt.Sprintf("keyless=%v", keyless), func(t *testing.T) {
+			catalog := modelcatalog.NewTestCatalog(nil)
+			server := newReloadProviderServer(catalog, provider, nil, keyless)
+			if _, err := server.ReloadProvider(context.Background(), provider, false); err != nil {
+				t.Fatalf("ReloadProvider returned unexpected error: %v", err)
+			}
+			got := slices.Contains(catalog.GetProvidersForModel("text-embedding-005"), provider)
+			if got != keyless {
+				t.Fatalf("zero-key provider (keyless=%v) is a candidate for text-embedding-005: %v, want %v", keyless, got, keyless)
+			}
+		})
+	}
+}
+
 // TestReloadProvider_KeylessPrunesResidualKeyEntries pins that a keyless
 // provider keeps only its "" sentinel entry across a reload. Entries cached
 // under a residual key's ID (written before issue #8500's fix, when keyless
