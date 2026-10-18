@@ -90,11 +90,15 @@ type scopedDBLogStore interface {
 // moveErrorRawBodiesToObject sends to object storage. Content-hidden rows
 // still offload it with everything else.
 //
+// guardrail_debug backs the guardrail outcome filter (the Guardrails incidents
+// list) the same way. It holds sanitized rule metadata - rule, guardrail,
+// phase, reason, policy categories - and never matched request text.
+//
 // This applies to logs written from this change on. Rows written before it
 // hold error_details only in their object, so they stay out of the error
 // breakdowns: restoring them means one object read per failed log, with no
 // bound on the count, and is not done automatically.
-var databaseResidentPayloadFields = []string{"error_details"}
+var databaseResidentPayloadFields = []string{"error_details", "guardrail_debug"}
 
 // newHybridLogStore creates a HybridLogStore wrapping the given inner store.
 // excludeFields lists payload field DB column names that should be kept in the
