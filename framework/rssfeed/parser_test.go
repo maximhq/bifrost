@@ -144,3 +144,25 @@ func TestParseDateFormats(t *testing.T) {
 		t.Errorf("unparseable date should be zero, got %v", got)
 	}
 }
+
+// TestParseDropsUnsafeLinks pins the per-item link limits: a link longer than
+// maxLinkBytes or carrying credentials (user@host) is dropped, and an
+// oversized GUID falls back to the link.
+func TestParseDropsUnsafeLinks(t *testing.T) {
+	long := "https://example.com/" + strings.Repeat("a", maxLinkBytes)
+	doc := `<rss version="2.0"><channel>
+<item><title>Long</title><link>` + long + `</link></item>
+<item><title>Creds</title><link>https://example.com@evil.example/phish</link></item>
+<item><title>Big guid</title><link>https://example.com/ok</link><guid>` + strings.Repeat("g", maxLinkBytes+1) + `</guid></item>
+</channel></rss>`
+	items, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Big guid" {
+		t.Fatalf("expected only the safe item, got %+v", items)
+	}
+	if items[0].GUID != "https://example.com/ok" {
+		t.Fatalf("an oversized GUID should fall back to the link, got %d bytes", len(items[0].GUID))
+	}
+}

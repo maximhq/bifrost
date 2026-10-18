@@ -65,7 +65,7 @@ func htmlCardItem(a *html.Node, base *url.URL) (Item, bool) {
 		return Item{}, false
 	}
 	link := base.ResolveReference(ref)
-	if (link.Scheme != "http" && link.Scheme != "https") || !strings.EqualFold(link.Hostname(), base.Hostname()) {
+	if (link.Scheme != "http" && link.Scheme != "https") || link.User != nil || !strings.EqualFold(link.Hostname(), base.Hostname()) || len(link.String()) > maxLinkBytes {
 		return Item{}, false
 	}
 	// The listing page itself (and its own anchors) is never an entry.

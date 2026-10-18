@@ -75,3 +75,27 @@ func TestManagerFallsBackToHTMLListing(t *testing.T) {
 		t.Fatalf("expected the listing's same-host cards, got %+v", items)
 	}
 }
+
+// TestParseHTMLPageDropsCredentialedLinks pins that a same-host card link
+// carrying userinfo is not turned into an entry.
+func TestParseHTMLPageDropsCredentialedLinks(t *testing.T) {
+	base, _ := url.Parse("https://www.example.com/news")
+	page := `<html><body>
+<a href="/news/one"><h2>One</h2></a>
+<a href="/news/two"><h2>Two</h2></a>
+<a href="/news/three"><h2>Three</h2></a>
+<a href="https://evil@www.example.com/news/creds"><h2>Creds</h2></a>
+</body></html>`
+	items, err := ParseHTMLPage([]byte(page), base)
+	if err != nil {
+		t.Fatalf("ParseHTMLPage: %v", err)
+	}
+	for _, item := range items {
+		if item.Title == "Creds" {
+			t.Fatalf("a credentialed link must be dropped, got %q", item.Link)
+		}
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected the 3 plain cards, got %d", len(items))
+	}
+}

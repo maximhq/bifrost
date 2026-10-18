@@ -65,7 +65,8 @@ Bifrost fetches a custom feed once before saving it, and rejects the URL if it r
 
 Each custom feed can have its own logo. When you add a feed, either enter an image URL or click **Upload** to pick a file. For an existing feed, use the image button on its row to upload a new logo or remove the current one.
 
-- Accepted uploads: PNG, JPEG, GIF, WebP, SVG or ICO, up to 96 KB. Uploads are stored with the feed.
+- Accepted uploads: PNG or JPEG, up to 96 KB. Bifrost checks that the file's bytes really are that image type, and stores uploads with the feed.
+- A logo URL must be an `http` or `https` address on a public host. Every dashboard user's browser loads it, so private and loopback addresses are refused.
 - Without a logo, the tray shows the favicon of the feed's site.
 - Built-in feeds always use their bundled icons.
 
@@ -93,7 +94,7 @@ A page qualifies only if it has at least three such cards. Links to other hosts 
 | Maximum feed size | 2 MB |
 | Summary length | 280 characters of plain text, HTML stripped |
 
-Feeds are fetched through Bifrost's SSRF-guarded HTTP client, so private, loopback, link-local, and cloud metadata addresses are refused. Entries whose link is not an `http` or `https` URL are dropped. When a feed fails to load, the rest of the tab still renders, and the failed feed is named at the bottom of the list. The Bifrost Announcements feed is the exception: its failures are only logged on the gateway.
+Feeds are fetched through Bifrost's SSRF-guarded HTTP client, so private, loopback, link-local, and cloud metadata addresses are refused. Bifrost checks this when you save a feed, again when it connects (which defeats DNS rebinding), and on every redirect, up to 5. Through an outbound proxy, a redirect to a host name Bifrost cannot resolve itself is refused too. Feed and logo URLs cannot contain credentials (`user:pass@host`), and entries whose link contains credentials or is longer than 2,048 characters are dropped. Entries whose link is not an `http` or `https` URL are dropped. When a feed fails to load, the rest of the tab still renders, and the failed feed is named at the bottom of the list. The Bifrost Announcements feed is the exception: its failures are only logged on the gateway.
 
 ---
 

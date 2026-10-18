@@ -137477,7 +137477,7 @@
             },
             "icon_url": {
               "type": "string",
-              "description": "Custom feeds only: the logo shown for the feed, as an http(s) image URL\nor a base64 `data:image/...` URI (PNG, JPEG, GIF, WebP, SVG or ICO,\nunder 96 KB). When empty, the feed site's favicon is shown.\n"
+              "description": "Custom feeds only: the logo shown for the feed, as an http(s) image URL\non a public host, or a base64 `data:image/png` or `data:image/jpeg` URI\nof at most 96 KB whose bytes match the declared type. When empty, the\nfeed site's favicon is shown.\n"
             },
             "source": {
               "type": "string",
@@ -137527,11 +137527,11 @@
             "url": {
               "type": "string",
               "maxLength": 2048,
-              "description": "Public http or https URL of an RSS 2.0, RSS 1.0 or Atom feed, or of a news listing page that publishes no feed (its article cards are read instead)."
+              "description": "Public http or https URL of an RSS 2.0, RSS 1.0 or Atom feed, or of a news listing page that publishes no feed (its article cards are read instead). Credentials (`user:pass@host`) are not allowed."
             },
             "icon_url": {
               "type": "string",
-              "description": "Optional logo, as an http(s) image URL or a base64 `data:image/...` URI under 96 KB."
+              "description": "Optional logo, as an http(s) image URL on a public host without credentials, or a base64 `data:image/png` or `data:image/jpeg` URI of at most 96 KB whose bytes match the declared type."
             },
             "enabled": {
               "type": "boolean",
@@ -137554,7 +137554,7 @@
             },
             "icon_url": {
               "type": "string",
-              "description": "Custom feeds only. An empty string removes the logo."
+              "description": "Custom feeds only, with the same rules as on create. An empty string removes the logo."
             },
             "enabled": {
               "type": "boolean"

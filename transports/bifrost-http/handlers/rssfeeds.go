@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
+	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
@@ -26,9 +28,9 @@ const (
 	rssItemsMaxLimit     = 100
 	rssFeedNameMaxLen    = 120
 	rssFeedURLMaxLen     = 2048
-	// A data: URI logo is stored inline in the row, so it is kept small: 128 KB
-	// of URI is roughly a 96 KB image, far more than a tray icon needs.
-	rssFeedIconURLMaxLen = 128 << 10
+	// A data: URI logo is stored inline in the row, so it is kept small: at
+	// most 96 KB of image, far more than a tray icon needs.
+	rssFeedIconMaxBytes = 96 << 10
 	// Custom feeds are unbounded in number, so the items fan-out is capped.
 	rssItemsMaxConcurrentFetches = 8
 	// The opaque per-feed error surfaced to the UI. The underlying error stays
@@ -453,15 +455,23 @@ func (h *RSSFeedsHandler) probeFeed(feedURL string) string {
 	defer cancel()
 	if _, err := h.manager.Fetch(probeCtx, feedURL); err != nil {
 		logger.Debug("rss feed probe for %s failed: %v", feedURL, err)
-		if errors.Is(err, rssfeed.ErrNotAFeed) || strings.HasPrefix(err.Error(), "parse feed:") {
-			return "URL did not return a valid RSS or Atom feed"
-		}
-		if strings.HasPrefix(err.Error(), "invalid feed url:") || strings.Contains(err.Error(), "non-public address") {
-			return "URL must be a public http or https address"
-		}
-		return "Feed could not be fetched from this URL"
+		return probeErrorMessage(err)
 	}
 	return ""
+}
+
+// probeErrorMessage maps a probe failure to the message shown to the admin.
+func probeErrorMessage(err error) string {
+	if errors.Is(err, rssfeed.ErrNotAFeed) || strings.HasPrefix(err.Error(), "parse feed:") {
+		return "URL did not return a valid RSS or Atom feed"
+	}
+	// Only the admin's own URL, refused before anything is sent, is reported as
+	// non-public. A refusal at dial time or on a redirect hop gets the generic
+	// message, so the probe cannot be used to learn which internal names resolve.
+	if strings.HasPrefix(err.Error(), "invalid feed url:") {
+		return "URL must be a public http or https address"
+	}
+	return "Feed could not be fetched from this URL"
 }
 
 func (h *RSSFeedsHandler) sendStoreError(ctx *fasthttp.RequestCtx, err error) {
@@ -480,39 +490,53 @@ func validateRSSFeedInput(name, feedURL string) (string, string, error) {
 		return "", "", errors.New("name is required and must not exceed 120 characters")
 	}
 	if feedURL == "" || len(feedURL) > rssFeedURLMaxLen || !isWebURL(feedURL) {
-		return "", "", errors.New("url must be an http or https URL")
+		return "", "", errors.New("url must be an http or https URL without credentials")
 	}
 	return name, feedURL, nil
 }
 
-var rssFeedIconDataURIPattern = regexp.MustCompile(`^data:image/(png|jpeg|gif|webp|svg\+xml|x-icon|vnd\.microsoft\.icon);base64,[A-Za-z0-9+/]+={0,2}$`)
+// rssFeedIconDataURIPattern matches an uploaded logo: a PNG or JPEG data URI
+// whose base64 payload fits rssFeedIconMaxBytes once decoded.
+var rssFeedIconDataURIPattern = regexp.MustCompile(`^data:(image/png|image/jpeg);base64,([A-Za-z0-9+/]+={0,2})$`)
 
-// validateRSSFeedIconURL accepts an empty value (no custom logo), an http(s)
-// image URL, or a base64 data:image URI for an uploaded logo. The dashboard
-// only ever renders it as an <img> src, where SVG scripts do not run.
+// validateRSSFeedIconURL accepts an empty value (no custom logo), an uploaded
+// PNG or JPEG as a base64 data URI, or a linked http(s) image. An upload is
+// decoded and its bytes must match the declared type, so a script or SVG
+// cannot be stored under an image type. A link must pass the same public-host
+// check as a feed URL, since every dashboard viewer's browser loads it.
 func validateRSSFeedIconURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	switch {
 	case raw == "":
 		return "", nil
 	case strings.HasPrefix(raw, "data:"):
-		if len(raw) > rssFeedIconURLMaxLen || !rssFeedIconDataURIPattern.MatchString(raw) {
-			return "", errors.New("icon_url must be a base64 PNG, JPEG, GIF, WebP, SVG or ICO image under 96 KB")
+		if base64.StdEncoding.EncodedLen(rssFeedIconMaxBytes)+len("data:image/jpeg;base64,") < len(raw) {
+			return "", errRSSFeedIconUpload
+		}
+		match := rssFeedIconDataURIPattern.FindStringSubmatch(raw)
+		if match == nil {
+			return "", errRSSFeedIconUpload
+		}
+		image, err := base64.StdEncoding.DecodeString(match[2])
+		if err != nil || len(image) > rssFeedIconMaxBytes || http.DetectContentType(image) != match[1] {
+			return "", errRSSFeedIconUpload
 		}
 		return raw, nil
-	case len(raw) <= rssFeedURLMaxLen && isWebURL(raw):
+	case len(raw) <= rssFeedURLMaxLen && isWebURL(raw) && rssfeed.ValidatePublicURL(raw) == nil:
 		return raw, nil
 	default:
-		return "", errors.New("icon_url must be an http or https image URL or an uploaded image")
+		return "", errors.New("icon_url must be an http or https image URL on a public host, without credentials, or an uploaded image")
 	}
 }
+
+var errRSSFeedIconUpload = errors.New("icon_url must be a base64 PNG or JPEG image under 96 KB")
 
 func isWebURL(raw string) bool {
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return false
 	}
-	return (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != ""
+	return (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil
 }
 
 var slugUnsafe = regexp.MustCompile(`[^a-z0-9]+`)

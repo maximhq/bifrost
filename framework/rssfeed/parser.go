@@ -9,6 +9,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"html"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -23,6 +24,7 @@ const (
 	MaxItemsPerFeed = 20
 	maxSummaryRunes = 280
 	maxTitleRunes   = 300
+	maxLinkBytes    = 2048 // longer item links are dropped; matches the feed URL cap
 )
 
 // ErrNotAFeed is returned when the document parses as XML but is neither an
@@ -120,7 +122,7 @@ func Parse(data []byte) ([]Item, error) {
 func normalizeRSSItem(raw *rssItem) (Item, bool) {
 	link := strings.TrimSpace(raw.Link)
 	title := cleanText(raw.Title, maxTitleRunes)
-	if link == "" || title == "" {
+	if !linkAllowed(link) || title == "" {
 		return Item{}, false
 	}
 	summary := raw.Description
@@ -128,7 +130,7 @@ func normalizeRSSItem(raw *rssItem) (Item, bool) {
 		summary = raw.Content
 	}
 	guid := strings.TrimSpace(raw.GUID)
-	if guid == "" {
+	if guid == "" || len(guid) > maxLinkBytes {
 		guid = link
 	}
 	date := raw.PubDate
@@ -150,7 +152,7 @@ func normalizeAtomEntry(raw *atomEntry) (Item, bool) {
 		link = strings.TrimSpace(raw.Links[0].Href)
 	}
 	title := cleanText(raw.Title, maxTitleRunes)
-	if link == "" || title == "" {
+	if !linkAllowed(link) || title == "" {
 		return Item{}, false
 	}
 	summary := raw.Summary
@@ -158,7 +160,7 @@ func normalizeAtomEntry(raw *atomEntry) (Item, bool) {
 		summary = raw.Content
 	}
 	guid := strings.TrimSpace(raw.ID)
-	if guid == "" {
+	if guid == "" || len(guid) > maxLinkBytes {
 		guid = link
 	}
 	date := raw.Published
@@ -166,6 +168,18 @@ func normalizeAtomEntry(raw *atomEntry) (Item, bool) {
 		date = raw.Updated
 	}
 	return Item{GUID: guid, Title: title, Link: link, Summary: cleanText(summary, maxSummaryRunes), PublishedAt: parseDate(date)}, true
+}
+
+// linkAllowed keeps an item only when its link is present, at most
+// maxLinkBytes long, parseable, and free of credentials, so a feed cannot
+// smuggle a look-alike host such as https://example.com@evil.example into the
+// tray. The scheme is checked where items are served.
+func linkAllowed(link string) bool {
+	if link == "" || len(link) > maxLinkBytes {
+		return false
+	}
+	parsed, err := url.Parse(link)
+	return err == nil && parsed.User == nil
 }
 
 var (
