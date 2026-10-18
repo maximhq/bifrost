@@ -44,7 +44,7 @@ func NewNebiusProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
+	client = providerUtils.ConfigureDialerFor(client, config.NetworkConfig)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	// Set default BaseURL if not provided
@@ -66,6 +66,18 @@ func NewNebiusProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*
 // GetProviderKey returns the provider identifier for Nebius.
 func (provider *NebiusProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.Nebius
+}
+
+// ForRequest implements schemas.RequestScopedProvider. The provider authenticates with the
+// key alone, so it serves every request type. A base URL yields a copy that shares the
+// receiver's clients.
+func (provider *NebiusProvider) ForRequest(_ schemas.RequestType, _ schemas.Key, baseURL string) (schemas.Provider, error) {
+	if baseURL == "" {
+		return provider, nil
+	}
+	scoped := *provider
+	scoped.networkConfig.BaseURL = baseURL
+	return &scoped, nil
 }
 
 // ListModels performs a list models request to Nebius's API.

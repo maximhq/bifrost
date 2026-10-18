@@ -180,7 +180,7 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 		ConnPoolStrategy:       fasthttp.FIFO,
 	}
 	mantleFasthttpClient = providerUtils.ConfigureProxy(mantleFasthttpClient, config.ProxyConfig, logger)
-	mantleFasthttpClient = providerUtils.ConfigureDialer(mantleFasthttpClient, config.NetworkConfig.AllowPrivateNetwork)
+	mantleFasthttpClient = providerUtils.ConfigureDialerFor(mantleFasthttpClient, config.NetworkConfig)
 	mantleFasthttpClient = providerUtils.ConfigureTLS(mantleFasthttpClient, config.NetworkConfig, logger)
 	mantleStreamingFasthttpClient := providerUtils.BuildStreamingClient(mantleFasthttpClient)
 
@@ -205,6 +205,40 @@ func NewBedrockProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 // GetProviderKey returns the provider identifier for Bedrock.
 func (provider *BedrockProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.Bedrock, provider.customProviderConfig)
+}
+
+// ForRequest implements schemas.RequestScopedProvider. Bedrock is served with an API key or a
+// static access key and secret key, in the region on the key: an attempt never falls back to
+// the AWS default credential chain or assumes a role, whose credentials are cached per role.
+// File and batch operations always sign with SigV4, so they need the static keys. Regions are
+// checked and endpoint overrides rejected, because they choose the host Bifrost connects to.
+func (provider *BedrockProvider) ForRequest(requestType schemas.RequestType, key schemas.Key, baseURL string) (schemas.Provider, error) {
+	if baseURL != "" {
+		return nil, errors.New("bedrock takes its endpoint from the key's region, not a base URL")
+	}
+	cfg := key.BedrockKeyConfig
+	if cfg == nil || !awsRegionRegex.MatchString(cfg.Region.GetValue()) {
+		return nil, errors.New("bedrock requires a valid bedrock_key_config.region")
+	}
+	for _, alias := range key.Aliases {
+		if region := alias.Region.GetValue(); region != "" && !awsRegionRegex.MatchString(region) {
+			return nil, errors.New("bedrock alias regions must be valid AWS regions")
+		}
+	}
+	if cfg.RoleARN.GetValue() != "" || cfg.Endpoints != nil {
+		return nil, errors.New("bedrock role assumption and endpoint overrides are not supported")
+	}
+	if cfg.AccessKey.GetValue() == "" || cfg.SecretKey.GetValue() == "" {
+		if key.Value.GetValue() == "" {
+			return nil, errors.New("bedrock requires an API key, or an access key and secret key")
+		}
+		switch requestType {
+		case schemas.FileUploadRequest, schemas.FileListRequest, schemas.FileRetrieveRequest, schemas.FileDeleteRequest, schemas.FileContentRequest,
+			schemas.BatchCreateRequest, schemas.BatchListRequest, schemas.BatchRetrieveRequest, schemas.BatchCancelRequest, schemas.BatchResultsRequest, schemas.BatchDeleteRequest:
+			return nil, errors.New("bedrock file and batch operations require an access key and secret key")
+		}
+	}
+	return provider, nil
 }
 
 // isStreamTransportError reports whether err is a transport-level connection

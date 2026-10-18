@@ -88,7 +88,7 @@ func NewHuggingFaceProvider(config *schemas.ProviderConfig, logger schemas.Logge
 	}
 
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
+	client = providerUtils.ConfigureDialerFor(client, config.NetworkConfig)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	if config.NetworkConfig.BaseURL == "" {
@@ -111,6 +111,18 @@ func NewHuggingFaceProvider(config *schemas.ProviderConfig, logger schemas.Logge
 // GetProviderKey returns the provider key, taking custom providers into account.
 func (provider *HuggingFaceProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.HuggingFace, provider.customProviderConfig)
+}
+
+// ForRequest implements schemas.RequestScopedProvider. The provider authenticates with the
+// key alone, so it serves every request type. A base URL yields a copy that shares the
+// receiver's clients.
+func (provider *HuggingFaceProvider) ForRequest(_ schemas.RequestType, _ schemas.Key, baseURL string) (schemas.Provider, error) {
+	if baseURL == "" {
+		return provider, nil
+	}
+	scoped := *provider
+	scoped.networkConfig.BaseURL = baseURL
+	return &scoped, nil
 }
 
 // buildRequestURL composes the final request URL based on context overrides.

@@ -44,7 +44,7 @@ func NewVLLMProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*VL
 	}
 
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
+	client = providerUtils.ConfigureDialerFor(client, config.NetworkConfig)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 	config.NetworkConfig.BaseURL = strings.TrimRight(config.NetworkConfig.BaseURL, "/")
@@ -63,6 +63,16 @@ func NewVLLMProvider(config *schemas.ProviderConfig, logger schemas.Logger) (*VL
 // GetProviderKey returns the provider identifier for vLLM.
 func (provider *VLLMProvider) GetProviderKey() schemas.ModelProvider {
 	return schemas.VLLM
+}
+
+// ForRequest implements schemas.RequestScopedProvider. vLLM authenticates with the key alone
+// and takes its endpoint from the key's vllm_key_config.url, so a base URL is rejected
+// rather than ignored.
+func (provider *VLLMProvider) ForRequest(_ schemas.RequestType, _ schemas.Key, baseURL string) (schemas.Provider, error) {
+	if baseURL != "" {
+		return nil, errors.New("vllm takes its endpoint from vllm_key_config.url, not a base URL")
+	}
+	return provider, nil
 }
 
 // getBaseURL resolves the base URL for a request from the per-key vllm_key_config.

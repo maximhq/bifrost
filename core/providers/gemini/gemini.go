@@ -90,7 +90,7 @@ func NewGeminiProvider(config *schemas.ProviderConfig, logger schemas.Logger) *G
 
 	// Configure proxy and retry policy
 	client = providerUtils.ConfigureProxy(client, config.ProxyConfig, logger)
-	client = providerUtils.ConfigureDialer(client, config.NetworkConfig.AllowPrivateNetwork)
+	client = providerUtils.ConfigureDialerFor(client, config.NetworkConfig)
 	client = providerUtils.ConfigureTLS(client, config.NetworkConfig, logger)
 	streamingClient := providerUtils.BuildStreamingClient(client)
 
@@ -114,6 +114,18 @@ func NewGeminiProvider(config *schemas.ProviderConfig, logger schemas.Logger) *G
 // GetProviderKey returns the provider identifier for Gemini.
 func (provider *GeminiProvider) GetProviderKey() schemas.ModelProvider {
 	return providerUtils.GetProviderName(schemas.Gemini, provider.customProviderConfig)
+}
+
+// ForRequest implements schemas.RequestScopedProvider. The provider authenticates with the
+// key alone, so it serves every request type. A base URL yields a copy that shares the
+// receiver's clients.
+func (provider *GeminiProvider) ForRequest(_ schemas.RequestType, _ schemas.Key, baseURL string) (schemas.Provider, error) {
+	if baseURL == "" {
+		return provider, nil
+	}
+	scoped := *provider
+	scoped.networkConfig.BaseURL = baseURL
+	return &scoped, nil
 }
 
 // completeRequest handles the common HTTP request pattern for Gemini API calls.
