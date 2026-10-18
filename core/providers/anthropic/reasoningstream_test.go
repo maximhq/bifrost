@@ -158,6 +158,21 @@ func TestConvertBifrostReasoning_SignaturePresent(t *testing.T) {
 		}
 	})
 
+	t.Run("OpenAI does not embed synthetic bridged ids", func(t *testing.T) {
+		msg := newMsg()
+		msg.ID = schemas.Ptr("msg_chatcmpl-abc_reasoning")
+		blocks := convertBifrostReasoningToAnthropicThinking(schemas.NewBifrostContext(nil, schemas.NoDeadline), msg, schemas.OpenAI, "gpt-4o")
+		if len(blocks) != 1 {
+			t.Fatalf("expected 1 thinking block, got %d", len(blocks))
+		}
+		if blocks[0].Signature == nil {
+			t.Fatal("thinking block signature is nil")
+		}
+		if *blocks[0].Signature != "" {
+			t.Errorf("expected empty signature for synthetic bridged id, got %q", *blocks[0].Signature)
+		}
+	})
+
 	// A custom provider reports its own key, so the gate has to resolve it back to
 	// the base provider type Bifrost recorded on the context -- otherwise OpenAI
 	// models served through an openai-based custom provider silently lose the id.

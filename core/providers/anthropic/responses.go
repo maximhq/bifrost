@@ -476,6 +476,10 @@ func (s *anthropicToResponsesStreamState) reasoningPayloadSent(key string) bool 
 //
 // It returns the prefix events to emit ahead of the delta, plus the index the delta
 // must now target. When no upgrade is needed it returns (nil, idx) unchanged.
+func shouldEmbedReasoningID(embedID bool, id *string) bool {
+	return embedID && id != nil && *id != "" && !strings.HasPrefix(*id, "msg_") && !strings.HasPrefix(*id, "item_")
+}
+
 func upgradeLateSummaryToThinkingBlock(
 	ctx *schemas.BifrostContext,
 	state *anthropicToResponsesStreamState,
@@ -502,7 +506,7 @@ func upgradeLateSummaryToThinkingBlock(
 	// client replaying this turn folds the thinking half back together with the
 	// redacted half (see reasoningIndexByID in the ingress converter).
 	signature := ""
-	if providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), bifrostResp.ExtraFields.RoutingInfo.Model) {
+	if shouldEmbedReasoningID(providerUtils.ShouldEmbedReasoningItemID(ctx, attemptProvider(bifrostResp.ExtraFields), attemptModel(bifrostResp.ExtraFields)), bifrostResp.ItemID) {
 		signature = providerUtils.EmbedReasoningItemID(bifrostResp.ItemID, "")
 	}
 	events = append(events, &AnthropicStreamEvent{
@@ -3320,7 +3324,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 							contentBlock.Type = AnthropicContentBlockTypeThinking
 							contentBlock.Thinking = schemas.Ptr("")
 							signature := ""
-							if embedID {
+							if shouldEmbedReasoningID(embedID, bifrostResp.Item.ID) {
 								signature = providerUtils.EmbedReasoningItemID(bifrostResp.Item.ID, "")
 							}
 							contentBlock.Signature = &signature
@@ -3352,7 +3356,7 @@ func toAnthropicResponsesStreamEvents(ctx *schemas.BifrostContext, bifrostResp *
 								contentBlock.Type = AnthropicContentBlockTypeThinking
 								contentBlock.Thinking = schemas.Ptr("")
 								signature := ""
-								if embedID {
+								if shouldEmbedReasoningID(embedID, bifrostResp.Item.ID) {
 									signature = providerUtils.EmbedReasoningItemID(bifrostResp.Item.ID, "")
 								}
 								contentBlock.Signature = &signature
@@ -7915,7 +7919,7 @@ func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg
 				if signature == nil {
 					signature = schemas.Ptr("")
 				}
-				if embedID {
+				if shouldEmbedReasoningID(embedID, msg.ID) {
 					embedded := providerUtils.EmbedReasoningItemID(msg.ID, *signature)
 					signature = &embedded
 				}
@@ -7943,7 +7947,7 @@ func convertBifrostReasoningToAnthropicThinking(ctx *schemas.BifrostContext, msg
 		if len(msg.ResponsesReasoning.Summary) > 0 {
 			for _, reasoningContent := range msg.ResponsesReasoning.Summary {
 				signature := ""
-				if embedID {
+				if shouldEmbedReasoningID(embedID, msg.ID) {
 					signature = providerUtils.EmbedReasoningItemID(msg.ID, "")
 				}
 				thinkingBlock := AnthropicContentBlock{
