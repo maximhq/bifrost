@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/anthropic"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
@@ -954,5 +955,85 @@ func TestSupportsResponsesNamespaceToolsDatasheetRow(t *testing.T) {
 	// Cross-region id pins Converse; neither row applies.
 	if provider.SupportsResponsesNamespaceTools(surfaceTestCtx(), schemas.Key{}, "global.openai.gpt-5.6-luna") {
 		t.Error("a Converse-routed attempt must answer false regardless of rows")
+	}
+}
+
+// ---- the clamped total and an explicit thinking budget (#8060 follow-up) ----
+
+// Converse requires budget_tokens strictly below max_tokens, so lowering the
+// total to the model ceiling while leaving an explicit budget above it simply
+// trades one Bedrock 400 for another. The direct Anthropic path already refits
+// (fitThinkingBudget); this is the Converse twin.
+func TestToBedrockResponsesRequestRefitsThinkingBudgetUnderTheClampedTotal(t *testing.T) {
+	// claude-haiku-4-5 has a 64000 ceiling, so the 100000 total is clamped and
+	// the caller's 65000 budget no longer fits beneath it.
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-haiku-4-5",
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(100000),
+			Reasoning:       &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(65000)},
+		},
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(surfaceTestCtx(), bifrostReq)
+	if err != nil {
+		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+	}
+	if bedrockReq.InferenceConfig == nil || bedrockReq.InferenceConfig.MaxTokens == nil {
+		t.Fatalf("expected an inference config carrying max_tokens, got %+v", bedrockReq.InferenceConfig)
+	}
+	total := *bedrockReq.InferenceConfig.MaxTokens
+	if total != 64000 {
+		t.Fatalf("precondition: max_tokens should be clamped to the 64000 ceiling, got %d", total)
+	}
+
+	raw, ok := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+	if !ok {
+		t.Fatalf("expected a `thinking` field, got none")
+	}
+	thinking, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected `thinking` to be a map, got %T: %+v", raw, raw)
+	}
+	budget, ok := thinking["budget_tokens"].(int)
+	if !ok {
+		t.Fatalf("expected an int budget_tokens, got %T: %+v", thinking["budget_tokens"], thinking)
+	}
+
+	// The assertion that matters: strictly below, not merely lowered.
+	if budget >= total {
+		t.Errorf("budget_tokens %d is not below the clamped max_tokens %d, so Bedrock still answers 400",
+			budget, total)
+	}
+	if budget < anthropic.MinimumReasoningMaxTokens {
+		t.Errorf("budget_tokens %d fell below the anthropic minimum %d",
+			budget, anthropic.MinimumReasoningMaxTokens)
+	}
+}
+
+// The control: a budget that already fits is passed through untouched, so the
+// refit cannot be quietly rewriting every request.
+func TestToBedrockResponsesRequestLeavesAFittingThinkingBudgetAlone(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-haiku-4-5",
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(32000),
+			Reasoning:       &schemas.ResponsesParametersReasoning{MaxTokens: schemas.Ptr(8000)},
+		},
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(surfaceTestCtx(), bifrostReq)
+	if err != nil {
+		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+	}
+	raw, _ := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+	thinking, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected `thinking` to be a map, got %T: %+v", raw, raw)
+	}
+	if got := thinking["budget_tokens"]; got != 8000 {
+		t.Errorf("a budget that already fits under max_tokens was rewritten: want 8000, got %v", got)
 	}
 }
