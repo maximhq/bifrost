@@ -5589,7 +5589,9 @@ func (bifrost *Bifrost) getProviderByKey(providerKey schemas.ModelProvider) sche
 // error classed as FailureClassCallerFault: a 400/409/413/415/422 with a provider error body,
 // or a 404 naming a request field. That error says the request itself is malformed, so the
 // caller gets it back instead of an answer from a provider nobody asked for. A model this
-// provider cannot reach (FailureClassModelAccess, e.g. 404 model_not_found), a rejected key,
+// provider cannot reach (FailureClassModelAccess, e.g. 404 model_not_found), a primary whose
+// key pool has no key for the model (no_key_supports_model, a 400 built before any upstream
+// call that says nothing about the request), a rejected key,
 // a rate limit, a 5xx or a network failure still falls back, since another provider can
 // succeed. Chains the caller or a routing config named keep falling back on any error.
 // The extra cost is one bool load on the first fallback, and classification only on that path.
@@ -5620,7 +5622,7 @@ func (bifrost *Bifrost) shouldTryFallbacks(ctx *schemas.BifrostContext, req *sch
 		return false
 	}
 
-	if fallbacks[0].Inferred && ClassifyFailure(primaryErr) == schemas.FailureClassCallerFault {
+	if fallbacks[0].Inferred && !isNoKeySupportsModel(primaryErr) && ClassifyFailure(primaryErr) == schemas.FailureClassCallerFault {
 		bifrost.logger.Debug("primary refused the request itself, not trying %d inferred fallbacks", len(fallbacks))
 		if ctx != nil {
 			ctx.AppendRoutingEngineLog(schemas.RoutingEngineCore, schemas.LogLevelInfo, fmt.Sprintf("Primary refused the request itself (%s); skipping %d model-catalog fallback(s) the caller did not name", routingErrorSummary(primaryErr), len(fallbacks)))
@@ -5630,6 +5632,12 @@ func (bifrost *Bifrost) shouldTryFallbacks(ctx *schemas.BifrostContext, req *sch
 
 	// Should proceed with fallbacks
 	return true
+}
+
+// isNoKeySupportsModel reports whether the error is the key pool's refusal for a model none of
+// the provider's keys can serve.
+func isNoKeySupportsModel(err *schemas.BifrostError) bool {
+	return err.Type != nil && *err.Type == schemas.NoKeySupportsModel
 }
 
 // prepareFallbackRequest creates a fallback request and validates the provider config

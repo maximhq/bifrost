@@ -276289,6 +276289,159 @@
           ]
         }
       ]
+    },
+    {
+      "name": "260. Zero-key custom provider does not hijack provider inference (keyless provider inference)",
+      "description": "A custom provider with no keys that is not marked is_key_less used to be treated as serving every model. Provider inference for a bare model sorts candidates by name, so such a provider (every custom provider starts with zero keys until one is added, and the harness leaves several pointed at dead base URLs) won the pick over the real provider; its key pool then failed with 400 no_key_supports_model, which counted as a caller error, so the inferred fallbacks never ran. Seen as /openai/v1/embeddings {model: text-embedding-005} answered by harness-oauthkey-run-... instead of Vertex. The fix: only a keyless provider is unrestricted with zero keys, and no_key_supports_model no longer stops an inferred fallback chain. Rows: (1) create a zero-key, non-keyless openai-based custom provider whose name sorts before vertex; (2) the bare-model embedding is served by vertex, not by it; (3) delete it. Red before the fix: row 2 returns 400 no_key_supports_model naming the harness provider. Run with FEATURE=\"keyless provider inference\".",
+      "item": [
+        {
+          "name": "260.1 vertex/text-embedding-005 setup: create a zero-key custom provider that sorts before vertex (keyless provider inference)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('zeroKeyProvider', 'harness-zerokey-run-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created the zero-key provider', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"{{zeroKeyProvider}}\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": false\n  },\n  \"network_config\": {\n    \"base_url\": \"http://127.0.0.1:9\",\n    \"max_retries\": 0\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "260.2 vertex/text-embedding-005 bare model on /openai/v1/embeddings is served by vertex, not the zero-key provider (keyless provider inference)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No provider prefix, so the gateway infers one from the catalog."
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "var zk = pm.collectionVariables.get('zeroKeyProvider');",
+                  "pm.test('the bare-model embedding succeeds', function () { pm.expect(pm.response.code, text.slice(0, 600)).to.eql(200); });",
+                  "pm.test('vertex served it, not the zero-key provider', function () {",
+                  "  pm.expect(text, 'the zero-key provider was picked: ' + text.slice(0, 600)).to.not.include(zk);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'x-bifrost-provider').to.eql('vertex');",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.data || [])[0] && (j.data[0].embedding || []).length, 'embedding vector').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"text-embedding-005\",\n  \"input\": \"hello\"\n}"
+            }
+          }
+        },
+        {
+          "name": "260.3 vertex/text-embedding-005 cleanup: delete the zero-key provider (keyless provider inference)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted the zero-key provider', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{zeroKeyProvider}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{zeroKeyProvider}}"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
