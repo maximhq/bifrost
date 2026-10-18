@@ -3652,12 +3652,15 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 	// Checking if config has server config and use it to set read buffer size
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
-	lib.ApplyBodyBufferPoolLimit(s.Config.ServerConfig, s.Config.ClientConfig.MaxRequestBodySizeMB*1024*1024)
+	maxRequestBodySizeMB := s.Config.ClientConfig.MaxRequestBodySizeMB
+	lib.ApplyBodyBufferPoolLimit(s.Config.ServerConfig, maxRequestBodySizeMB*1024*1024)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
 		Handler:            handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler),
-		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
+		MaxRequestBodySize: maxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
+		// Explain an oversized body (413 naming the configured limit) instead of fasthttp's generic 400.
+		ErrorHandler: lib.RequestErrorHandler(maxRequestBodySizeMB, logger.Warn),
 	}
 	startSkillsOrphanCleanupWorker(s.Ctx, s.Config, nil)
 	// Keep the live model catalog current after boot. Without this, a model an
