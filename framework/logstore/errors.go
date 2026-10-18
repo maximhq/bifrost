@@ -9,6 +9,7 @@ import (
 	"net"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/mattn/go-sqlite3"
 )
 
 var (
@@ -104,9 +105,11 @@ func isPostgresTransientError(err error) bool {
 // Coverage by store: the context, net.Error, driver.ErrBadConn and EOF checks
 // apply to every SQL driver. The server-side classification (SQLSTATE classes,
 // lock_timeout, pgx connect and timeout errors) is Postgres only, via
-// isPostgresTransientError; SQLite's busy/locked codes and ClickHouse exception
-// codes are not recognised, so on those stores only the driver-agnostic checks
-// fire and everything else takes the row-isolating fallback.
+// isPostgresTransientError. SQLite's SQLITE_BUSY and SQLITE_LOCKED ("database
+// is locked": another connection holds the single writer lock) are recognised
+// via isSQLiteTransientError. ClickHouse exception codes are not recognised, so
+// on that store only the driver-agnostic checks fire and everything else takes
+// the row-isolating fallback.
 //
 // Anything not recognised here (including data errors such as SQLSTATE class
 // 22 and constraint violations in class 23, serialization failures from the
@@ -124,5 +127,29 @@ func IsTransientWriteError(err error) bool {
 	if errors.As(err, &netErr) {
 		return true
 	}
-	return isPostgresTransientError(err)
+	return isPostgresTransientError(err) || isSQLiteTransientError(err)
+}
+
+// isSQLiteTransientError reports whether err is SQLITE_BUSY or SQLITE_LOCKED
+// (any extended variant, e.g. SQLITE_BUSY_SNAPSHOT) from the SQLite driver.
+// Both mean another connection holds the lock the write needs; they say nothing
+// about the rows, so the batch can be retried whole once the holder commits.
+// Falling back to per-row inserts instead makes every row wait out the
+// connection's busy_timeout again.
+func isSQLiteTransientError(err error) bool {
+	var sqliteErr sqlite3.Error
+	if errors.As(err, &sqliteErr) {
+		return sqliteErr.Code == sqlite3.ErrBusy || sqliteErr.Code == sqlite3.ErrLocked
+	}
+	var code sqlite3.ErrNo
+	if errors.As(err, &code) {
+		return code == sqlite3.ErrBusy || code == sqlite3.ErrLocked
+	}
+	// An extended code carries its primary code in the low byte (ErrNo.Extend).
+	var extended sqlite3.ErrNoExtended
+	if errors.As(err, &extended) {
+		base := sqlite3.ErrNo(int(extended) & 0xff)
+		return base == sqlite3.ErrBusy || base == sqlite3.ErrLocked
+	}
+	return false
 }
