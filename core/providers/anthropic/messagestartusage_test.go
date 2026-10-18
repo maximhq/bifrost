@@ -238,6 +238,48 @@ func TestMessageDeltaKeepsCacheCountsFromMessageStart(t *testing.T) {
 // TestMessageDeltaPrefersItsOwnInputTokens guards the direction of the fill:
 // real Claude repeats the input count on the final delta, and that value — not
 // the one from message_start — has to win.
+// A fully cached request reports input_tokens: 0 alongside a non-zero
+// cache_read_input_tokens, so zero does not mean "omitted" once any input
+// counter is present. Filling input_tokens from message_start there would be
+// counted twice, because ConvertAnthropicUsageToBifrostUsage adds cache-read on
+// top of it: a 100-token cached request would bill as 200. Raised in review on
+// #7977.
+func TestMessageDeltaWithCachedInputSideIsLeftAlone(t *testing.T) {
+	start := `{"type":"message_start","message":{"id":"msg_c","type":"message","role":"assistant",` +
+		`"model":"claude-sonnet-4-6","content":[],"usage":{"input_tokens":100,"output_tokens":1}}}`
+	// The delta restates the input side as fully cached.
+	delta := `{"type":"message_delta","delta":{"stop_reason":"end_turn"},` +
+		`"usage":{"input_tokens":0,"cache_read_input_tokens":100,"output_tokens":20}}`
+
+	usage := messageDeltaUsage(t, replayNativeStream(t, []string{start, delta}))
+
+	if got := usage.Get("input_tokens").Int(); got != 0 {
+		t.Errorf("input_tokens = %d, want 0 (the delta reported its own input side); got %s", got, usage.Raw)
+	}
+	if got := usage.Get("cache_read_input_tokens").Int(); got != 100 {
+		t.Errorf("cache_read_input_tokens = %d, want 100; got %s", got, usage.Raw)
+	}
+}
+
+// The same shape via the Bifrost conversion, which is where the double count
+// would actually show up as a number a caller is billed for.
+func TestCachedInputSideIsNotDoubleCounted(t *testing.T) {
+	start := &AnthropicUsage{InputTokens: 100, OutputTokens: 1}
+	delta := &AnthropicUsage{InputTokens: 0, CacheReadInputTokens: 100, OutputTokens: 20}
+
+	usage := ConvertAnthropicUsageToBifrostUsage(usageWithStartInputTokens(delta, start))
+	if usage == nil {
+		t.Fatal("expected a converted usage")
+	}
+	// 0 fresh input + 100 cached = 100, not 100 + 100.
+	if usage.InputTokens != 100 {
+		t.Errorf("InputTokens = %d, want 100 (0 fresh + 100 cached)", usage.InputTokens)
+	}
+	if usage.InputTokensDetails == nil || usage.InputTokensDetails.CachedReadTokens != 100 {
+		t.Errorf("cached read detail not preserved: %+v", usage.InputTokensDetails)
+	}
+}
+
 func TestMessageDeltaPrefersItsOwnInputTokens(t *testing.T) {
 	delta := `{"type":"message_delta","delta":{"stop_reason":"end_turn"},` +
 		`"usage":{"input_tokens":150,"output_tokens":20}}`
