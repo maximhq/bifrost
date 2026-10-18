@@ -132,12 +132,32 @@ const server = http.createServer((req, res) => {
 	if (req.method === "GET" && path === "/__hits") {
 		return send(200, {}, JSON.stringify({ data: [{ hits: { ...hits } }] }));
 	}
-	if (req.method !== "POST" || (path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
+	const geminiEmbedding = path === "/models/gemini-embedding-001:batchEmbedContents";
+	if (req.method !== "POST" || (!geminiEmbedding && path !== "/v1/chat/completions" && path !== "/openai/v1/chat/completions" && path !== "/v1/responses" && path !== "/v1/live/sessions")) {
 		return send(404, {}, errorBody("not found", "invalid_request_error", "not_found"));
 	}
 	const chunks = [];
 	req.on("data", (c) => chunks.push(c));
 	req.on("end", () => {
+		if (geminiEmbedding) {
+			if (req.headers["x-goog-api-key"] !== "test-key") {
+				return send(401, {}, errorBody("Incorrect API key provided", "invalid_request_error", "invalid_api_key"));
+			}
+			let body;
+			try { body = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+			catch { return send(400, {}, errorBody("invalid JSON", "invalid_request_error", "invalid_json")); }
+			const text = body?.requests?.[0]?.content?.parts?.[0]?.text;
+			if (typeof text !== "string") return send(400, {}, errorBody("embedding text required", "invalid_request_error", "missing_input"));
+			hits["embedding:" + text] = (hits["embedding:" + text] || 0) + 1;
+			if (text.startsWith("fixture-empty-embedding-usage:")) {
+				return send(200, {}, JSON.stringify({ embeddings: [], usageMetadata: { promptTokenCount: 12, totalTokenCount: 12 } }));
+			}
+			if (text.startsWith("fixture-unmeasured-empty-embedding:")) return send(200, {}, JSON.stringify({ embeddings: [] }));
+			if (text.startsWith("fixture-valid-embedding:")) {
+				return send(200, {}, JSON.stringify({ embeddings: [{ values: [0.1, 0.2] }], usageMetadata: { promptTokenCount: 12, totalTokenCount: 12 } }));
+			}
+			return send(400, {}, errorBody("unknown embedding fixture input", "invalid_request_error", "unknown_input"));
+		}
 		// Creating a session incurs the WebRTC minimum before the relay validates this answer.
 		if (path === "/v1/live/sessions") {
 			let body;
