@@ -1950,3 +1950,24 @@ export const setupTokenFormSchema = z.object({
 });
 
 export type SetupTokenFormSchema = z.infer<typeof setupTokenFormSchema>;
+// RSS feed added from the notification tray's Sources sheet. The server also
+// fetches the URL once and rejects anything that is not an RSS or Atom feed.
+export const rssFeedFormSchema = z.object({
+	name: z.string().trim().min(1, "Give the feed a name").max(120, "Name must be 120 characters or fewer"),
+	url: z
+		.string()
+		.trim()
+		.min(1, "Enter the feed URL")
+		.max(2048, "URL is too long")
+		.refine((value) => /^https?:\/\/[^\s/]+/i.test(value), "URL must start with http:// or https://"),
+	// Optional logo: an image URL typed in, or the data: URI of an uploaded file.
+	icon_url: z
+		.string()
+		.trim()
+		.refine(
+			(value) => value === "" || value.startsWith("data:image/") || /^https?:\/\/[^\s/]+/i.test(value),
+			"Logo must be an http(s) image URL or an uploaded image",
+		),
+});
+
+export type RSSFeedFormSchema = z.infer<typeof rssFeedFormSchema>;

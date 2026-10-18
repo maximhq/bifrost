@@ -263,6 +263,7 @@ type BifrostHTTPServer struct {
 
 	WebSocketHandler     *handlers.WebSocketHandler
 	NotificationService  *handlers.NotificationService
+	RSSFeedsHandler      *handlers.RSSFeedsHandler
 	WarpHandler          *handlers.WarpHandler
 	MCPServerHandler     *handlers.MCPServerHandler
 	AgentGatewayHandler  *handlers.AgentGatewayHandler
@@ -2890,6 +2891,10 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 		s.Config.NotificationPublisher = s.NotificationService.Publish
 		s.NotificationService.Start(s.Ctx)
 	}
+	if s.RSSFeedsHandler == nil {
+		s.RSSFeedsHandler = handlers.NewRSSFeedsHandler(s.Config.ConfigStore, nil)
+		s.RSSFeedsHandler.Start(s.Ctx)
+	}
 	// This is the first point in Bootstrap where the logging plugin - and so
 	// the log manager Warp's chat route needs - is known, which is why Warp is
 	// built here rather than earlier.
@@ -3003,6 +3008,9 @@ func (s *BifrostHTTPServer) RegisterAPIRoutes(ctx context.Context, callbacks Ser
 	}
 	if s.NotificationService != nil {
 		s.NotificationService.RegisterRoutes(s.Router, middlewares...)
+	}
+	if s.RSSFeedsHandler != nil {
+		s.RSSFeedsHandler.RegisterRoutes(s.Router, middlewares...)
 	}
 	if s.WarpHandler != nil {
 		s.WarpHandler.RegisterRoutes(s.Router, middlewares...)
@@ -3644,12 +3652,15 @@ func (s *BifrostHTTPServer) Bootstrap(ctx context.Context) error {
 
 	// Checking if config has server config and use it to set read buffer size
 	logger.Debug("server read buffer size: %d", s.Config.ServerConfig.ReadBufferSize)
-	lib.ApplyBodyBufferPoolLimit(s.Config.ServerConfig, s.Config.ClientConfig.MaxRequestBodySizeMB*1024*1024)
+	maxRequestBodySizeMB := s.Config.ClientConfig.MaxRequestBodySizeMB
+	lib.ApplyBodyBufferPoolLimit(s.Config.ServerConfig, maxRequestBodySizeMB*1024*1024)
 	// Create fasthttp server instance
 	s.Server = &fasthttp.Server{
 		Handler:            handlers.ServerRootHandler(s.CORSMiddleware, s.Config, s.Router.Handler),
-		MaxRequestBodySize: s.Config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024,
+		MaxRequestBodySize: maxRequestBodySizeMB * 1024 * 1024,
 		ReadBufferSize:     s.Config.ServerConfig.ReadBufferSize,
+		// Explain an oversized body (413 naming the configured limit) instead of fasthttp's generic 400.
+		ErrorHandler: lib.RequestErrorHandler(maxRequestBodySizeMB, logger.Warn),
 	}
 	startSkillsOrphanCleanupWorker(s.Ctx, s.Config, nil)
 	// Keep the live model catalog current after boot. Without this, a model an

@@ -201481,10 +201481,14 @@
                 "type": "text/javascript",
                 "exec": [
                   "// Canonical's parser reports try as an illegal token; the hint must still explain that Starlark has no exception handling.",
+                  "// It must also show the check that catches a failed call, which reaches the script as an error value, never a dict.",
                   "pm.test('code-mode-budget try-except-hint', function () {",
                   "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
                   "  pm.expect(pm.response.json().is_error, pm.response.text()).to.equal(true);",
                   "  pm.expect(pm.response.text()).to.include('does NOT support try/except');",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(content, 'the hint does not show the failed-call check: ' + content).to.include('if hasattr(r, \"error\"):');",
+                  "  pm.expect(content, 'the hint still checks for a dict: ' + content).to.not.include('\"error\" in result');",
                   "});"
                 ]
               }
@@ -206706,6 +206710,90 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Call get_weather for Paris. Do not answer directly.\"\n    }\n  ],\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get current weather for a city\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ],\n          \"additionalProperties\": false\n        },\n        \"strict\": true\n      }\n    }\n  ],\n  \"tool_choice\": \"required\",\n  \"max_tokens\": 64\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "168.5 openai/gpt-6-sol chat stream without tools keeps one id on every chunk - reasoning-only-to-responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('168.5 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var text = pm.response.text();",
+                  "var chunks = [], badEvents = [], sawDone = false, converted = false, content = '';",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { sawDone = true; return; }",
+                  "  var chunk;",
+                  "  try { chunk = JSON.parse(data); } catch (e) { badEvents.push(data.slice(0, 200)); return; }",
+                  "  if (chunk.object !== 'chat.completion.chunk') { return; }",
+                  "  chunks.push(chunk);",
+                  "  if ((chunk.extra_fields || {}).converted_request_type === 'responses') { converted = true; }",
+                  "  (chunk.choices || []).forEach(function (ch) {",
+                  "    if (ch.delta && typeof ch.delta.content === 'string') { content += ch.delta.content; }",
+                  "  });",
+                  "});",
+                  "pm.test('168.5 every data event is valid JSON', function () {",
+                  "  pm.expect(badEvents, 'unparseable data events: ' + JSON.stringify(badEvents)).to.be.empty;",
+                  "});",
+                  "pm.test('168.5 stream terminates with [DONE]', function () {",
+                  "  pm.expect(sawDone, 'missing [DONE]: ' + text.slice(-800)).to.equal(true);",
+                  "});",
+                  "pm.test('168.5 chat stream was served through Responses', function () {",
+                  "  pm.expect(converted, 'no chunk carried converted_request_type=responses, so this case no longer exercises the conversion: ' + text.slice(0, 1500)).to.equal(true);",
+                  "});",
+                  "pm.test('168.5 every chunk carries the stream id, model and created of the first chunk', function () {",
+                  "  pm.expect(chunks.length, 'no chat.completion.chunk events: ' + text.slice(0, 1500)).to.be.above(1);",
+                  "  var first = chunks[0];",
+                  "  pm.expect(first.id, 'first chunk has no id: ' + JSON.stringify(first)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(first.model, 'first chunk has no model: ' + JSON.stringify(first)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(first.created, 'first chunk has no created timestamp: ' + JSON.stringify(first)).to.be.a('number').and.above(0);",
+                  "  chunks.forEach(function (c, i) {",
+                  "    pm.expect(c.id, 'chunk ' + i + ' id differs from the stream id (OpenAI SDK accumulators drop it): ' + JSON.stringify(c)).to.eql(first.id);",
+                  "    pm.expect(c.model, 'chunk ' + i + ' model: ' + JSON.stringify(c)).to.eql(first.model);",
+                  "    pm.expect(c.created, 'chunk ' + i + ' created: ' + JSON.stringify(c)).to.eql(first.created);",
+                  "  });",
+                  "});",
+                  "pm.test('168.5 streamed assistant text is not empty', function () {",
+                  "  pm.expect(content, 'no delta.content in the stream: ' + text.slice(0, 1500)).to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"force_reasoning_only_models_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with just: ok\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 256,\n  \"stream\": true\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -274517,6 +274605,8 @@
                   "  pm.expect(docs, 'docs still label every response a dict:\\n' + docs).to.not.include('dict: Response from the tool');",
                   "  pm.expect(docs, 'docs do not say a bare JSON value arrives as a scalar:\\n' + docs).to.include('a number, bool or None');",
                   "  pm.expect(docs, 'docs do not limit json.decode to a str holding JSON:\\n' + docs).to.include('json.decode(r[\"body\"]); plain text raises.');",
+                  "  pm.expect(docs, 'docs still say top-level loops must be wrapped in a function:\\n' + docs).to.not.include('MUST be inside a function');",
+                  "  pm.expect(docs, 'docs do not quote the missing-key message Starlark produces:\\n' + docs).to.include('key \"x\" not in dict');",
                   "});"
                 ]
               }
@@ -274533,6 +274623,145 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"getToolDocs\",\n    \"arguments\": \"{\\\"server\\\":\\\"{{codeModeGuidanceClient}}\\\",\\\"tool\\\":\\\"echo\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance a missing dict key names the key and suggests get",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Starlark reports a missing key as 'key \"x\" not in dict'; the hint used to look for 'not found' and never fired.",
+                  "pm.test('a missing dict key names the key and suggests get', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'the script must fail: ' + pm.response.text()).to.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(content, 'the hint does not name the missing key: ' + content).to.include('The dict has no key \\\"x\\\".');",
+                  "  pm.expect(content, 'the hint does not suggest get: ' + content).to.include('r.get(\\\"x\\\", default)');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {\\\\\\\"a\\\\\\\": 1}\\\\nx = r[\\\\\\\"x\\\\\\\"]\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance a misspelled tool points at the server tools, not dict access",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A misspelled tool used to draw 'Use dict access syntax', advice meant for a dict.",
+                  "pm.test('a misspelled tool points at the server tools, not dict access', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'the script must fail: ' + pm.response.text()).to.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(content, 'the hint does not name the missing tool: ' + content).to.include(' has no tool ech.');",
+                  "  pm.expect(content, 'the error lost the did-you-mean suggestion: ' + content).to.include('did you mean .echo?');",
+                  "  pm.expect(content, 'the hint still blames dict access: ' + content).to.not.include('Use dict access syntax');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeGuidanceClient}}.ech(message=\\\\\\\"hi\\\\\\\")\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance a str method Starlark lacks is not blamed on JSON from the server",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Any missing str method used to draw advice about JSON tool results, even on a string the script wrote.",
+                  "pm.test('a str method Starlark lacks is not blamed on JSON from the server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'the script must fail: ' + pm.response.text()).to.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(content, 'the hint does not name the missing method: ' + content).to.include('str has no .ljust method');",
+                  "  pm.expect(content, 'the hint still blames JSON from the server: ' + content).to.not.include('json.decode');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"x = \\\\\\\"name\\\\\\\".ljust(10)\\\"}\"\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/mcp/tool/execute",
@@ -274914,6 +275143,8 @@
                   "  pm.expect(content, 'the traceback does not name the line fail() ran on: ' + content).to.include('code.star:3:');",
                   "  pm.expect(content, 'the hint does not say the script stopped itself: ' + content).to.include('The script stopped itself with fail()');",
                   "  pm.expect(content, 'the script kept running after fail(): ' + content).to.not.include('unreachable');",
+                  "  pm.expect(content, 'print output on a failed run is labelled differently: ' + content).to.include('Print output:');",
+                  "  pm.expect(content, 'print output on a failed run is labelled differently: ' + content).to.not.include('Print Output:');",
                   "});"
                 ]
               }
@@ -274998,6 +275229,76 @@
                 "mcp",
                 "tool",
                 "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies the executeToolCode description says a failed call is a value to check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Every model reads this description before its first script. It used to say tool failures",
+                  "// cannot be caught, so a model never checked for the error value a failed call returns.",
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  var body;",
+                  "  try { body = JSON.parse(line); }",
+                  "  catch (e) { throw new Error('invalid JSON-RPC response: ' + text); }",
+                  "  if (!body || !body.result) { throw new Error('invalid JSON-RPC response: ' + text); }",
+                  "  return body.result;",
+                  "}",
+                  "",
+                  "pm.test('the executeToolCode description says a failed call is a value to check', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result.tools, 'tools missing: ' + pm.response.text()).to.be.an('array');",
+                  "  var tool = result.tools.filter(function (t) { return t.name === 'executeToolCode'; })[0];",
+                  "  pm.expect(tool, 'executeToolCode is not listed: ' + pm.response.text()).to.be.an('object');",
+                  "  var description = String(tool.description || '');",
+                  "  pm.expect(description, 'no failed-call check: ' + description).to.include('hasattr(r, \"error\")');",
+                  "  pm.expect(description, 'no fail(): ' + description).to.include('fail(r.error)');",
+                  "  pm.expect(description, 'still says failures cannot be caught: ' + description).to.not.include('cannot be caught');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
               ]
             }
           }
@@ -276065,6 +276366,245 @@
               ]
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "259. Responses configuration_update input item keeps its reasoning effort (configuration-update)",
+      "description": "Pins #8616. OpenAI's configuration_update input item changes reasoning effort mid-conversation without changing the request-level reasoning.effort, so the prompt prefix stays cacheable. Codex sends it for gpt-6-astra and gpt-6.1-sol when the user changes effort during a session.\n\nPre-fix the typed decode kept only the item's type, so OpenAI answered 400 \"Missing required parameter: 'input[0].reasoning'.\". Bedrock and Bedrock Mantle reject the item outright (\"The 'configuration_update' item type is not supported with this model.\"), so on those routes it is dropped. The Responses->Chat fallback has no equivalent and drops it too, instead of emitting a roleless chat message.",
+      "item": [
+        {
+          "name": "259.1 openai/gpt-6-astra configuration_update forwarded with reasoning on /openai/v1/responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-astra\",\"reasoning\":{\"effort\":\"low\"},\"input\":[{\"type\":\"configuration_update\",\"reasoning\":{\"effort\":\"high\"}},{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('openai native configuration_update: provider did not reject the configuration_update item', function () {",
+                  "  pm.expect(body, 'pre-fix signature: ' + body).to.not.include(\"input[0].reasoning\");",
+                  "});",
+                  "pm.test('openai native configuration_update: 200', function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('openai native configuration_update: request-level reasoning.effort is unchanged', function () {",
+                  "  var json = pm.response.json();",
+                  "  if (json.reasoning) { pm.expect(json.reasoning.effort, 'response reasoning: ' + JSON.stringify(json.reasoning)).to.equal('low'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "259.2 openai/gpt-6-astra configuration_update forwarded with reasoning on /v1/responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-6-astra\",\"reasoning\":{\"effort\":\"low\"},\"input\":[{\"type\":\"configuration_update\",\"reasoning\":{\"effort\":\"high\"}},{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('openai configuration_update: provider did not reject the configuration_update item', function () {",
+                  "  pm.expect(body, 'pre-fix signature: ' + body).to.not.include(\"input[0].reasoning\");",
+                  "});",
+                  "pm.test('openai configuration_update: 200', function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('openai configuration_update: request-level reasoning.effort is unchanged', function () {",
+                  "  var json = pm.response.json();",
+                  "  if (json.reasoning) { pm.expect(json.reasoning.effort, 'response reasoning: ' + JSON.stringify(json.reasoning)).to.equal('low'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "259.3 bedrock/openai.gpt-6-astra configuration_update dropped on /v1/responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock/openai.gpt-6-astra\",\"reasoning\":{\"effort\":\"low\"},\"input\":[{\"type\":\"configuration_update\",\"reasoning\":{\"effort\":\"high\"}},{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('bedrock configuration_update: provider did not reject the configuration_update item', function () {",
+                  "  pm.expect(body, 'pre-fix signature: ' + body).to.not.include(\"item type is not supported\");",
+                  "});",
+                  "pm.test('bedrock configuration_update: 200', function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('bedrock configuration_update: request-level reasoning.effort is unchanged', function () {",
+                  "  var json = pm.response.json();",
+                  "  if (json.reasoning) { pm.expect(json.reasoning.effort, 'response reasoning: ' + JSON.stringify(json.reasoning)).to.equal('low'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "259.4 bedrock_mantle/openai.gpt-6-astra configuration_update dropped on /v1/responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-6-astra\",\"reasoning\":{\"effort\":\"low\"},\"input\":[{\"type\":\"configuration_update\",\"reasoning\":{\"effort\":\"high\"}},{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('bedrock_mantle configuration_update: provider did not reject the configuration_update item', function () {",
+                  "  pm.expect(body, 'pre-fix signature: ' + body).to.not.include(\"item type is not supported\");",
+                  "});",
+                  "pm.test('bedrock_mantle configuration_update: 200', function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('bedrock_mantle configuration_update: request-level reasoning.effort is unchanged', function () {",
+                  "  var json = pm.response.json();",
+                  "  if (json.reasoning) { pm.expect(json.reasoning.effort, 'response reasoning: ' + JSON.stringify(json.reasoning)).to.equal('low'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "259.5 mistral/mistral-small-latest configuration_update dropped on the chat fallback of /v1/responses",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/mistral-small-latest\",\"reasoning\":{\"effort\":\"low\"},\"input\":[{\"type\":\"configuration_update\",\"reasoning\":{\"effort\":\"high\"}},{\"role\":\"user\",\"content\":\"Reply with exactly: OK\"}],\"max_output_tokens\":256}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text();",
+                  "pm.test('mistral configuration_update: 200', function () {",
+                  "  pm.expect(pm.response.code, 'status ' + pm.response.code + ': ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('mistral configuration_update: request-level reasoning.effort is unchanged', function () {",
+                  "  var json = pm.response.json();",
+                  "  if (json.reasoning) { pm.expect(json.reasoning.effort, 'response reasoning: ' + JSON.stringify(json.reasoning)).to.equal('low'); }",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

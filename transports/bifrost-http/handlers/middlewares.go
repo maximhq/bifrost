@@ -2262,6 +2262,11 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			parentSpanID := tracing.ExtractTraceParentSpanID(&ctx.Request.Header)
 			if parentSpanID != "" {
 				ctx.SetUserValue(schemas.BifrostContextKeyParentSpanID, parentSpanID)
+				// Vendor trace state, for connectors that rebuild the parent context. Only
+				// alongside a parent span ID, since there is nothing to parent to without one.
+				if traceState := tracing.ExtractTraceState(&ctx.Request.Header); traceState != "" {
+					tracer.SetTraceAttribute(traceID, schemas.TraceAttrTraceState, traceState)
+				}
 			}
 			// Store a trace completion callback for streaming handlers to use.
 			// Accepts transport plugin logs as a parameter so it never reads from

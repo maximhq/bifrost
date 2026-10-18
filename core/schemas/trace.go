@@ -35,6 +35,9 @@ const (
 	// TraceAttrDimensions holds the map[string]string of request dimensions
 	// parsed from x-bf-dim-* headers, keyed by bare dimension name.
 	TraceAttrDimensions = "bifrost.dimensions"
+	// TraceAttrTraceState holds the inbound W3C tracestate. Vendor data such as Datadog's
+	// propagating tags lives there, not in traceparent.
+	TraceAttrTraceState = "tracestate"
 )
 
 // GetStringAttr returns a string attribute, or "" when absent or another type.
@@ -100,6 +103,12 @@ func GetFloat64Attr(attrs map[string]any, key string) float64 {
 // TraceSessionID returns the session ID trace attribute, or "" when absent.
 func TraceSessionID(attrs map[string]any) string {
 	v, _ := attrs[TraceAttrSessionID].(string)
+	return v
+}
+
+// TraceTraceState returns the inbound W3C tracestate, or "" when absent.
+func TraceTraceState(attrs map[string]any) string {
+	v, _ := attrs[TraceAttrTraceState].(string)
 	return v
 }
 
@@ -1161,6 +1170,12 @@ const (
 	// OTel MCP semconv.
 	AttrBifrostMCPToolDurationMs = "bifrost.mcp.tool.duration_ms"
 
+	// MCP client this span talked to; the span name carries it only as a composite.
+	AttrBifrostMCPClientName = "bifrost.mcp.client.name"
+
+	// A tool call that reported failure in its result; the span status stays ok.
+	AttrBifrostMCPToolIsError = "bifrost.mcp.tool.is_error"
+
 	// A2A (Agent Gateway) span attributes. There is no A2A semconv yet. The
 	// Bifrost operation name covers protocol and gateway-owned operations, while
 	// a2a.method.name is present only for strict-v1 JSON-RPC methods.
@@ -1277,6 +1292,11 @@ const (
 	AttrBifrostComplexityMechanism = "bifrost.complexity_mechanism" // how the complexity tier was classified (semantic, decision, llm, session, skipped)
 	AttrBifrostComplexityScore     = "bifrost.complexity_score"     // semantic similarity used to classify the tier; decision-model confidence is log-only
 	AttrBifrostStopSequencesJoined = "bifrost.request.stop_sequences"
+
+	// Stored prompt the prompts plugin applied.
+	AttrBifrostPromptID      = "bifrost.prompt.id"
+	AttrBifrostPromptName    = "bifrost.prompt.name"
+	AttrBifrostPromptVersion = "bifrost.prompt.version"
 
 	// AttrBifrostErrorType is the normalized ErrorType, so span-derived connectors
 	// classify identically to the metrics. Absent on success.
