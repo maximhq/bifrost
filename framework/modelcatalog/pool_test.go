@@ -255,6 +255,57 @@ func TestGetModelsForProvider_PartialListModelsProviderUnionsDatasheet(t *testin
 }
 
 // ptrBool returns a pointer to b, for building schemas.Key fixtures.
+// TestGetProvidersForModel_ZeroKeyCustomProviderNotCandidate pins that a
+// custom provider that is not keyless and has no keys (its only key was
+// rejected at save) does not claim a bare model name. Before the fix it did,
+// and the resolver's alphabetical pick routed text-embedding-005 to it ahead
+// of vertex, failing with no_key_supports_model.
+func TestGetProvidersForModel_ZeroKeyCustomProviderNotCandidate(t *testing.T) {
+	const custom schemas.ModelProvider = "harness-oauthkey-run"
+	vertexKeys := []schemas.Key{{ID: "v1", Models: schemas.WhiteList{"text-embedding-005"}}}
+	for name, seed := range map[string]func(*ModelCatalog){
+		"ReplaceKeyConfig": func(mc *ModelCatalog) {
+			mc.ReplaceKeyConfig(map[schemas.ModelProvider][]schemas.Key{schemas.Vertex: vertexKeys, custom: nil})
+		},
+		"SetKeyConfigForProvider": func(mc *ModelCatalog) {
+			mc.SetKeyConfigForProvider(schemas.Vertex, vertexKeys)
+			mc.SetKeyConfigForProvider(custom, nil)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mc := NewTestCatalog(nil)
+			seed(mc)
+			got := mc.GetProvidersForModel("text-embedding-005")
+			if !slices.Equal(got, []schemas.ModelProvider{schemas.Vertex}) {
+				t.Fatalf("GetProvidersForModel = %v, want [vertex] (zero-key custom provider must not be a candidate)", got)
+			}
+		})
+	}
+}
+
+// TestGetProvidersForModel_ZeroKeyKeylessProviderStillCandidate pins the
+// other side: a keyless custom provider (is_key_less) with no keys keeps
+// claiming any model, since it authenticates without a key.
+func TestGetProvidersForModel_ZeroKeyKeylessProviderStillCandidate(t *testing.T) {
+	const custom schemas.ModelProvider = "keyless-custom"
+	for name, seed := range map[string]func(*ModelCatalog){
+		"ReplaceKeyConfig": func(mc *ModelCatalog) {
+			mc.ReplaceKeyConfig(map[schemas.ModelProvider][]schemas.Key{custom: nil}, custom)
+		},
+		"SetKeyConfigForKeylessProvider": func(mc *ModelCatalog) {
+			mc.SetKeyConfigForKeylessProvider(custom, nil)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mc := NewTestCatalog(nil)
+			seed(mc)
+			if got := mc.GetProvidersForModel("any-model"); !slices.Equal(got, []schemas.ModelProvider{custom}) {
+				t.Fatalf("GetProvidersForModel = %v, want [%s]", got, custom)
+			}
+		})
+	}
+}
+
 func ptrBool(b bool) *bool { return &b }
 
 // TestExtractModelIDs_StripsOwningProviderPrefix verifies the canonical

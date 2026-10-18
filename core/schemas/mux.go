@@ -710,7 +710,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 		// For function_call_output, get content from cm.Content since rm.Content is not set
 		if messageType == ResponsesMessageTypeFunctionCallOutput && cm.Content != nil {
 			// Prefer ContentStr if present
-			if cm.Content.ContentStr != nil && *cm.Content.ContentStr != "" {
+			if cm.Content.ContentStr != nil {
 				rm.ResponsesToolMessage.Output = &ResponsesToolMessageOutputStruct{
 					ResponsesToolCallOutputStr: cm.Content.ContentStr,
 				}
@@ -819,6 +819,11 @@ func ToChatMessages(rms []ResponsesMessage) []ChatMessage {
 	}
 
 	for _, rm := range rms {
+		// Chat Completions has no mid-conversation effort item; emitting it would produce a
+		// roleless, contentless chat message.
+		if rm.Type != nil && *rm.Type == ResponsesMessageTypeConfigurationUpdate {
+			continue
+		}
 		if rm.Type != nil && *rm.Type == ResponsesMessageTypeReasoning {
 			// Buffer reasoning so it attaches to the next assistant message.
 			if rm.Content != nil {

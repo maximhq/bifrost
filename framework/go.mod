@@ -14,6 +14,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/mark3labs/mcp-go v0.43.2
+	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/parquet-go/parquet-go v0.32.0
 	github.com/maximhq/bifrost/core v1.12.0
 	github.com/philippgille/chromem-go v0.7.0
@@ -28,6 +29,7 @@ require (
 	github.com/weaviate/weaviate-go-client/v5 v5.7.1
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.55.0
+	golang.org/x/net v0.58.0
 	golang.org/x/sync v0.22.0
 	google.golang.org/api v0.282.0
 	google.golang.org/grpc v1.83.2
@@ -128,7 +130,6 @@ require (
 	github.com/mailru/easyjson v0.9.1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
-	github.com/mattn/go-sqlite3 v1.14.32 // indirect
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
@@ -164,7 +165,6 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.45.0 // indirect
 	go.opentelemetry.io/otel/trace v1.45.0 // indirect
 	golang.org/x/arch v0.23.0 // indirect
-	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect

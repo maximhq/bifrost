@@ -735,6 +735,101 @@ func TestWrapConvertedStreamPostHookRunnerSendsAssistantRoleOnce(t *testing.T) {
 	}
 }
 
+// Only the response.created, in_progress and completed events carry the Response
+// object, so the deltas between them convert with no id, model or created. OpenAI
+// SDK stream accumulators drop a chunk whose id differs from the stream's, which
+// left the streamed text empty.
+func TestWrapConvertedStreamPostHookRunnerKeepsStreamIdentityOnEveryChunk(t *testing.T) {
+	message := schemas.ResponsesMessageTypeMessage
+	functionCall := schemas.ResponsesMessageTypeFunctionCall
+	upstream := &schemas.BifrostResponsesResponse{ID: schemas.Ptr("resp_0dd8"), Model: "gpt-6-luna", CreatedAt: 1760000000}
+	tests := []struct {
+		name   string
+		events []*schemas.BifrostResponsesStreamResponse
+	}{
+		{
+			name: "text turn",
+			events: []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated, Response: upstream},
+				{Type: schemas.ResponsesStreamResponseTypeInProgress, Response: upstream},
+				{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: &message}},
+				{Type: schemas.ResponsesStreamResponseTypeContentPartAdded},
+				{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("ok")},
+				{Type: schemas.ResponsesStreamResponseTypeOutputTextDone},
+				{Type: schemas.ResponsesStreamResponseTypeOutputItemDone},
+				{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: upstream},
+			},
+		},
+		{
+			name: "tool call turn",
+			events: []*schemas.BifrostResponsesStreamResponse{
+				{Type: schemas.ResponsesStreamResponseTypeCreated, Response: upstream},
+				{
+					Type: schemas.ResponsesStreamResponseTypeOutputItemAdded,
+					Item: &schemas.ResponsesMessage{
+						Type:                 &functionCall,
+						ResponsesToolMessage: &schemas.ResponsesToolMessage{CallID: schemas.Ptr("call_1"), Name: schemas.Ptr("get_weather")},
+					},
+				},
+				{Type: schemas.ResponsesStreamResponseTypeFunctionCallArgumentsDelta, Delta: schemas.Ptr("{}")},
+				{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: upstream},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var chunks []*schemas.BifrostChatResponse
+			runner := wrapConvertedStreamPostHookRunner(func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+				require.NotNil(t, result.ChatResponse)
+				chunks = append(chunks, result.ChatResponse)
+				return result, bifrostErr
+			}, schemas.ResponsesRequest)
+
+			ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+			for _, event := range tt.events {
+				runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+			}
+
+			require.Len(t, chunks, len(tt.events))
+			for i, chunk := range chunks {
+				assert.Equal(t, "resp_0dd8", chunk.ID, "chunk %d (%s) id", i, tt.events[i].Type)
+				assert.Equal(t, "gpt-6-luna", chunk.Model, "chunk %d (%s) model", i, tt.events[i].Type)
+				assert.Equal(t, 1760000000, chunk.Created, "chunk %d (%s) created", i, tt.events[i].Type)
+			}
+		})
+	}
+}
+
+// BenchmarkWrapConvertedStreamPostHookRunner measures one converted text turn,
+// created through completed, as a chat stream served through Responses sees it.
+func BenchmarkWrapConvertedStreamPostHookRunner(b *testing.B) {
+	message := schemas.ResponsesMessageTypeMessage
+	upstream := &schemas.BifrostResponsesResponse{ID: schemas.Ptr("resp_0dd8"), Model: "gpt-6-luna", CreatedAt: 1760000000}
+	events := []*schemas.BifrostResponsesStreamResponse{
+		{Type: schemas.ResponsesStreamResponseTypeCreated, Response: upstream},
+		{Type: schemas.ResponsesStreamResponseTypeInProgress, Response: upstream},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemAdded, Item: &schemas.ResponsesMessage{Type: &message}},
+		{Type: schemas.ResponsesStreamResponseTypeContentPartAdded},
+		{Type: schemas.ResponsesStreamResponseTypeOutputTextDelta, Delta: schemas.Ptr("ok")},
+		{Type: schemas.ResponsesStreamResponseTypeOutputTextDone},
+		{Type: schemas.ResponsesStreamResponseTypeOutputItemDone},
+		{Type: schemas.ResponsesStreamResponseTypeCompleted, Response: upstream},
+	}
+	noop := func(_ *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+		return result, bifrostErr
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		runner := wrapConvertedStreamPostHookRunner(noop, schemas.ResponsesRequest)
+		for _, event := range events {
+			runner(ctx, &schemas.BifrostResponse{ResponsesStreamResponse: event}, nil)
+		}
+	}
+}
+
 // A converted stream chunk still carries the upstream API's raw bytes, so it must
 // say it was converted: integrations echo RawResponse only for unconverted chunks.
 func TestWrapConvertedStreamPostHookRunnerMarksConvertedChunks(t *testing.T) {

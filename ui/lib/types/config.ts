@@ -113,6 +113,7 @@ export interface VertexKeyConfig {
 	region: SecretVar;
 	auth_credentials?: SecretVar;
 	force_single_region?: boolean;
+	use_session_routing?: boolean;
 	aws_workload_identity?: VertexAWSWorkloadIdentityConfig;
 }
 
@@ -133,6 +134,7 @@ export const DefaultVertexKeyConfig: VertexKeyConfig = {
 	region: { value: "", ref: "" },
 	auth_credentials: { value: "", ref: "" },
 	force_single_region: false,
+	use_session_routing: false,
 } as const satisfies Required<Omit<VertexKeyConfig, "aws_workload_identity">>;
 
 export interface S3BucketConfig {

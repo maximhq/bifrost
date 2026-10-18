@@ -89,6 +89,34 @@ test.describe('Dashboard', () => {
       const url = dashboardPage.page.url()
       expect(url).toMatch(/period=30d|start_time=\d+&end_time=\d+/)
     })
+
+    for (const [period, label] of [
+      ['today', 'Today'],
+      ['this_week', 'This week'],
+      ['this_month', 'This month'],
+    ] as const) {
+      test(`should change time period to ${label.toLowerCase()} and send it with the timezone`, async ({ dashboardPage }) => {
+        // Calendar periods depend on the viewer's timezone. The server resolves them, so the
+        // request carries the period plus the timezone picked in the date picker.
+        await dashboardPage.page.evaluate(() => localStorage.setItem('bifrost.timezone', 'America/New_York'))
+        await dashboardPage.goto()
+
+        const requestPromise = dashboardPage.page.waitForRequest(
+          (req) => req.url().includes('/logs/histogram') && req.url().includes(`period=${period}`),
+          { timeout: 15000 }
+        )
+
+        await dashboardPage.selectTimePeriod(period)
+
+        expect(await dashboardPage.getSelectedPeriodLabel()).toContain(label)
+        expect(dashboardPage.page.url()).toContain(`period=${period}`)
+
+        const histogramUrl = new URL((await requestPromise).url())
+        expect(histogramUrl.searchParams.get('period')).toBe(period)
+        expect(histogramUrl.searchParams.get('timezone')).toBe('America/New_York')
+        expect(histogramUrl.searchParams.get('start_time')).toBeNull()
+      })
+    }
   })
 
   test.describe('Chart Type Toggling', () => {

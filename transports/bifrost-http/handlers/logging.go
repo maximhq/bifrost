@@ -707,7 +707,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := ResolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period, string(ctx.QueryArgs().Peek("timezone"))); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 		}
@@ -750,6 +750,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if cacheHitTypes := string(ctx.QueryArgs().Peek("cache_hit_types")); cacheHitTypes != "" {
 		filters.CacheHitTypes = parseCommaSeparated(cacheHitTypes)
 	}
+	parseGuardrailOutcomesFilter(ctx, filters)
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
@@ -997,7 +998,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := ResolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period, string(ctx.QueryArgs().Peek("timezone"))); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 		}
@@ -1040,6 +1041,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if cacheHitTypes := string(ctx.QueryArgs().Peek("cache_hit_types")); cacheHitTypes != "" {
 		filters.CacheHitTypes = parseCommaSeparated(cacheHitTypes)
 	}
+	parseGuardrailOutcomesFilter(ctx, filters)
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
@@ -1179,6 +1181,15 @@ func parseToolCallNamesFilter(ctx *fasthttp.RequestCtx, filters *logstore.Search
 	}
 }
 
+// parseGuardrailOutcomesFilter reads the comma-separated guardrail_outcomes
+// query param ("blocked", "detected") into filters. Shared like
+// parseToolCallNamesFilter so the guardrail incidents list and its counts agree.
+func parseGuardrailOutcomesFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	if outcomes := string(ctx.QueryArgs().Peek("guardrail_outcomes")); outcomes != "" {
+		filters.GuardrailOutcomes = parseCommaSeparated(outcomes)
+	}
+}
+
 // parseHistogramFilters extracts common filter parameters from query args
 func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	filters := &logstore.SearchFilters{}
@@ -1255,7 +1266,7 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := ResolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period, string(ctx.QueryArgs().Peek("timezone"))); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 		}
@@ -1298,6 +1309,7 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if cacheHitTypes := string(ctx.QueryArgs().Peek("cache_hit_types")); cacheHitTypes != "" {
 		filters.CacheHitTypes = parseCommaSeparated(cacheHitTypes)
 	}
+	parseGuardrailOutcomesFilter(ctx, filters)
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
@@ -2458,10 +2470,15 @@ func (h *LoggingHandler) recalculateLogCosts(ctx *fasthttp.RequestCtx) {
 
 	filters := payload.Filters.SearchFilters
 	if payload.Filters.Period != "" {
-		if start, end := ResolvePeriod(payload.Filters.Period); start != nil {
-			filters.StartTime = start
-			filters.EndTime = end
+		// An unknown period must not fall through to an unbounded window: that
+		// would recalculate every log instead of the range the caller meant.
+		start, end := ResolvePeriod(payload.Filters.Period, payload.Filters.Timezone)
+		if start == nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid period: %s", payload.Filters.Period))
+			return
 		}
+		filters.StartTime = start
+		filters.EndTime = end
 	}
 	// MissingCostOnly is driven by the request payload:
 	//   true  -> only logs that currently have no cost are recalculated
@@ -2796,7 +2813,8 @@ type recalculateCostRequest struct {
 
 type recalculateCostFilters struct {
 	logstore.SearchFilters
-	Period string `json:"period,omitempty"`
+	Period   string `json:"period,omitempty"`
+	Timezone string `json:"timezone,omitempty"` // IANA zone for calendar periods; empty means UTC
 }
 
 func parseMCPCorrelationFilters(ctx *fasthttp.RequestCtx, filters *logstore.MCPToolLogSearchFilters) {
@@ -2859,7 +2877,7 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := ResolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period, string(ctx.QueryArgs().Peek("timezone"))); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 			startTimeErr = nil
@@ -2994,7 +3012,7 @@ func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilter
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := ResolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period, string(ctx.QueryArgs().Peek("timezone"))); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 			timeParseErr = nil

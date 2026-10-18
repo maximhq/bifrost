@@ -111,6 +111,40 @@ func TestParseToolCallNamesFilter(t *testing.T) {
 	})
 }
 
+// TestParseGuardrailOutcomesFilter verifies guardrail_outcomes reaches the list and histogram filters.
+func TestParseGuardrailOutcomesFilter(t *testing.T) {
+	t.Run("parses comma-separated outcomes", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("guardrail_outcomes", "blocked,detected")
+		filters := &logstore.SearchFilters{}
+
+		parseGuardrailOutcomesFilter(ctx, filters)
+
+		if got, want := filters.GuardrailOutcomes, []string{"blocked", "detected"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("guardrail outcomes = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("leaves filters unchanged when parameter is absent", func(t *testing.T) {
+		filters := &logstore.SearchFilters{}
+
+		parseGuardrailOutcomesFilter(&fasthttp.RequestCtx{}, filters)
+
+		if filters.GuardrailOutcomes != nil {
+			t.Fatalf("guardrail outcomes = %#v, want nil", filters.GuardrailOutcomes)
+		}
+	})
+
+	t.Run("histogram filters honour it", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("guardrail_outcomes", "blocked")
+		filters := parseHistogramFilters(ctx)
+		if got, want := filters.GuardrailOutcomes, []string{"blocked"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("histogram guardrail outcomes = %#v, want %#v", got, want)
+		}
+	})
+}
+
 // TestParseParentRequestIDFilter verifies the explicit parent-request filter
 // does not consume the distinct generic session_id query parameter.
 func TestParseParentRequestIDFilter(t *testing.T) {
@@ -421,6 +455,93 @@ func TestRecalculateLogCostsResolvesPeriodFilter(t *testing.T) {
 	}
 	if store.createdCount() != 1 {
 		t.Fatalf("expected exactly one job to be enqueued, got %d", store.createdCount())
+	}
+}
+
+// TestRecalculateLogCostsResolvesCalendarPeriodInTimezone verifies a calendar
+// period in the body starts at midnight in the body's timezone.
+func TestRecalculateLogCostsResolvesCalendarPeriodInTimezone(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	mgr := &dashboardLogManager{}
+	store := newFakeSidekiqStore()
+	runner := sidekiq.New(store, &mockLogger{}, 1, "")
+	h := &LoggingHandler{logManager: mgr}
+	h.SetSidekiqBackend(runner, store)
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetRequestURI("/api/logs/recalculate-cost")
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"filters":{"period":"today","timezone":"Asia/Kolkata"}}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.recalculateLogCosts(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusAccepted {
+		t.Fatalf("expected status 202, got %d: %s", got, string(ctx.Response.Body()))
+	}
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	require.NoError(t, err)
+	filters := mgr.lastRecalculateFilters
+	require.NotNil(t, filters.StartTime)
+	require.NotNil(t, filters.EndTime)
+	local := filters.StartTime.In(loc)
+	if local.Hour() != 0 || local.Minute() != 0 || local.Second() != 0 {
+		t.Fatalf("expected start at Kolkata midnight, got %s", local)
+	}
+	if elapsed := filters.EndTime.Sub(*filters.StartTime); elapsed < 0 || elapsed >= 24*time.Hour {
+		t.Fatalf("expected start within the last day, got start=%s end=%s", filters.StartTime, filters.EndTime)
+	}
+}
+
+// TestRecalculateLogCostsRejectsUnknownPeriod verifies an unknown period is a
+// 400 and enqueues nothing, rather than recalculating every log.
+func TestRecalculateLogCostsRejectsUnknownPeriod(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	mgr := &dashboardLogManager{}
+	store := newFakeSidekiqStore()
+	runner := sidekiq.New(store, &mockLogger{}, 1, "")
+	h := &LoggingHandler{logManager: mgr}
+	h.SetSidekiqBackend(runner, store)
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetRequestURI("/api/logs/recalculate-cost")
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"filters":{"period":"yesterday"}}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.recalculateLogCosts(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", got, string(ctx.Response.Body()))
+	}
+	if store.createdCount() != 0 {
+		t.Fatalf("expected no job to be enqueued, got %d", store.createdCount())
+	}
+}
+
+// TestParseHistogramFiltersResolvesCalendarPeriodInTimezone verifies the
+// timezone query param reaches calendar period resolution on query-string
+// endpoints.
+func TestParseHistogramFiltersResolvesCalendarPeriodInTimezone(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("period", "this_month")
+	ctx.QueryArgs().Set("timezone", "America/New_York")
+	filters := parseHistogramFilters(ctx)
+
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	require.NotNil(t, filters.StartTime)
+	local := filters.StartTime.In(loc)
+	if local.Day() != 1 || local.Hour() != 0 || local.Minute() != 0 {
+		t.Fatalf("expected start at New York midnight on the 1st, got %s", local)
 	}
 }
 

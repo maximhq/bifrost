@@ -159,9 +159,13 @@ type SearchFilters struct {
 	// (error_details.status_code). It is the error field every provider
 	// populates: error.code is empty for most of them, so "what kind of 400s are
 	// these" is usually a question about the status, not the code.
-	StatusCodes     []int             `json:"status_codes,omitempty"`
-	ContentSearch   string            `json:"content_search,omitempty"`
-	MetadataFilters map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	StatusCodes []int `json:"status_codes,omitempty"`
+	// GuardrailOutcomes keeps requests a guardrail acted on: "blocked" matches
+	// a guardrail_intervention error or a recorded intervention, "detected" a
+	// detect-only match in guardrail_debug. Several values are OR-ed together.
+	GuardrailOutcomes []string          `json:"guardrail_outcomes,omitempty"`
+	ContentSearch     string            `json:"content_search,omitempty"`
+	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
@@ -432,6 +436,8 @@ type Log struct {
 	SessionChildCount  int64   `gorm:"-" json:"session_child_count,omitempty"`
 	SessionTotalCost   float64 `gorm:"-" json:"session_total_cost,omitempty"`
 	SessionTotalTokens int64   `gorm:"-" json:"session_total_tokens,omitempty"`
+
+	DeferredGuardrail *schemas.DeferredGuardrailResult `gorm:"-" json:"-"` // Transient: pending output-monitor guardrail result; the writer holds the row until it completes
 
 	RedactionData            *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
 	PassthroughParseFormat   schemas.ModelProvider         `gorm:"-" json:"-"`                           // Transient: base provider whose wire format the log writer parses passthrough bodies with; empty skips parsing

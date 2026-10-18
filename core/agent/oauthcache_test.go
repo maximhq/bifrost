@@ -170,3 +170,40 @@ func BenchmarkAgentOAuthCacheHit(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkAgentOAuthCacheNewCredentialAtCapacity measures the request-path cost
+// of a new credential ID when the cache is full of live tokens: the expiry scan
+// over every entry plus one eviction. The new ID's token is pre-placed so no
+// fetch runs and only the cache work is timed.
+func BenchmarkAgentOAuthCacheNewCredentialAtCapacity(b *testing.B) {
+	m := &Manager{}
+	auth := &schemas.UpstreamAuth{Type: schemas.MCPAuthTypeOauth, OAuth: &schemas.UpstreamOAuthConfig{
+		TokenURL: "https://agent.example/token", ClientID: schemas.NewSecretVar("client"), ClientSecret: schemas.NewSecretVar("secret"),
+	}}
+	fingerprint := oauthConfigFingerprint(auth.OAuth)
+	policy, err := m.outboundPolicy(context.Background())
+	require.NoError(b, err)
+	fingerprint = sha256.Sum256(append(fingerprint[:], policy.fingerprint[:]...))
+	live := oauthToken{accessToken: "cached-token", expiresAt: time.Now().Add(time.Hour), fingerprint: fingerprint}
+	m.oauthTokens = make(map[string]oauthToken, maxOAuthCacheEntries+1)
+	m.oauthFingerprints = make(map[string][sha256.Size]byte, maxOAuthCacheEntries+1)
+	for i := range maxOAuthCacheEntries {
+		id := fmt.Sprintf("live-%d", i)
+		m.oauthTokens[id] = live
+		m.oauthFingerprints[id] = fingerprint
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	i := 0
+	for b.Loop() {
+		id := fmt.Sprintf("new-%d", i)
+		i++
+		m.oauthMu.Lock()
+		m.oauthTokens[id] = live
+		m.oauthMu.Unlock()
+		token, err := m.oauthAccessToken(context.Background(), id, auth)
+		if err != nil || token != "cached-token" {
+			b.Fatalf("unexpected cached token %q: %v", token, err)
+		}
+	}
+}

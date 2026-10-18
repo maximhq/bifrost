@@ -7,6 +7,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/postgresconn"
+	"github.com/maximhq/bifrost/framework/storehooks"
 
 	"gorm.io/gorm"
 )
@@ -151,7 +152,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	if err := postgresconn.Validate(pgConfig, true); err != nil {
 		return nil, err
 	}
-	dsn := postgresconn.BuildDSN(pgConfig)
+	dsn := postgresconn.WithApplicationName(postgresconn.BuildDSN(pgConfig), string(storehooks.RoleLogs))
 
 	// Migration-only DSN. Forces pgx into simple-query protocol on the throwaway
 	// migration pool so no statement plan is ever cached server-side; that makes
@@ -239,6 +240,7 @@ func newPostgresLogStore(ctx context.Context, config *PostgresConfig, logger sch
 	}
 	logger.Info("logstore: runtime connection pool ready")
 	registerPGTextSafetyCallbacks(db)
+	storehooks.PoolOpened(storehooks.RoleLogs, db)
 	refreshInterval := resolveMatViewRefreshInterval(config.MatViewRefreshInterval, logger)
 	d := &RDBLogStore{db: db, logger: logger, matViewMaintenanceDisabled: refreshInterval <= 0}
 

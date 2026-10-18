@@ -162,3 +162,59 @@ func TestChatParametersReasoningMode(t *testing.T) {
 		t.Fatalf("reasoning.effort should decode alongside mode, got %+v", cp.Reasoning)
 	}
 }
+
+func TestBifrostLLMUsageNormalizeReasoningTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want *int
+	}{
+		{"sgl top-level", `{"completion_tokens":300,"reasoning_tokens":180}`, Ptr(180)},
+		{"openai nested", `{"completion_tokens":300,"completion_tokens_details":{"reasoning_tokens":180}}`, Ptr(180)},
+		{"nested wins over top-level", `{"completion_tokens_details":{"reasoning_tokens":180},"reasoning_tokens":7}`, Ptr(180)},
+		{"zero top-level leaves details nil", `{"completion_tokens":300,"reasoning_tokens":0}`, nil},
+		{"absent", `{"completion_tokens":300}`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var u BifrostLLMUsage
+			if err := Unmarshal([]byte(tc.in), &u); err != nil {
+				t.Fatal(err)
+			}
+			u.NormalizeReasoningTokens()
+			if u.ReasoningTokens != 0 {
+				t.Fatalf("expected top-level reasoning_tokens cleared, got %d", u.ReasoningTokens)
+			}
+			if tc.want == nil {
+				if u.CompletionTokensDetails != nil {
+					t.Fatalf("expected nil completion_tokens_details, got %+v", u.CompletionTokensDetails)
+				}
+				return
+			}
+			if u.CompletionTokensDetails == nil || u.CompletionTokensDetails.ReasoningTokens != *tc.want {
+				t.Fatalf("expected reasoning_tokens=%d, got %+v", *tc.want, u.CompletionTokensDetails)
+			}
+		})
+	}
+	var nilUsage *BifrostLLMUsage
+	nilUsage.NormalizeReasoningTokens()
+}
+
+func BenchmarkBifrostLLMUsageUnmarshal(b *testing.B) {
+	cases := map[string][]byte{
+		"openai": []byte(`{"prompt_tokens":1200,"completion_tokens":300,"total_tokens":1500,"prompt_tokens_details":{"cached_tokens":1024,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":180,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}`),
+		"sgl":    []byte(`{"prompt_tokens":1200,"completion_tokens":300,"total_tokens":1500,"prompt_tokens_details":{"cached_tokens":1024},"reasoning_tokens":180}`),
+	}
+	for name, data := range cases {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				var u BifrostLLMUsage
+				if err := Unmarshal(data, &u); err != nil {
+					b.Fatal(err)
+				}
+				u.NormalizeReasoningTokens()
+			}
+		})
+	}
+}

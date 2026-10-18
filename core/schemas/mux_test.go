@@ -299,6 +299,35 @@ func TestToResponsesMessages_ToolResultBlocksUseResponsesInputTypes(t *testing.T
 	check(t, "ToResponsesMessages", &msgs[0])
 }
 
+func TestToResponsesRequest_EmptyToolContentKeepsOutput(t *testing.T) {
+	// A tool that ran but printed nothing sends content "". OpenAI and Azure reject a
+	// function_call_output without output: "Missing required parameter: 'input[N].output'".
+	req := &BifrostChatRequest{
+		Provider: OpenAI,
+		Model:    "gpt-6-luna",
+		Input: []ChatMessage{
+			{Role: ChatMessageRoleUser, Content: &ChatMessageContent{ContentStr: Ptr("What is the weather in Berlin?")}},
+			{Role: ChatMessageRoleAssistant, ChatAssistantMessage: &ChatAssistantMessage{ToolCalls: []ChatAssistantMessageToolCall{{
+				ID: Ptr("call_1"), Type: Ptr("function"),
+				Function: ChatAssistantMessageToolCallFunction{Name: Ptr("get_weather"), Arguments: `{"location":"Berlin"}`},
+			}}}},
+			{Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_1")}, Content: &ChatMessageContent{ContentStr: Ptr("")}},
+		},
+	}
+
+	input := req.ToResponsesRequest().Input
+	if len(input) != 3 {
+		t.Fatalf("expected 3 input items, got %d", len(input))
+	}
+	data, err := MarshalSorted(input[2])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"output":""`) {
+		t.Fatalf(`function_call_output must carry "output":"", got %s`, data)
+	}
+}
+
 func TestToResponsesMessages_EmitsReasoningMessageBeforeTextContent(t *testing.T) {
 	reasoning := "Thinking about how to summarize."
 	cm := &ChatMessage{
@@ -2308,5 +2337,23 @@ func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 		}
 	} else if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != "Weather lookups are disabled." {
 		t.Errorf("system content = %+v, want only the text sibling", blocks)
+	}
+}
+
+// TestToChatMessages_DropsConfigurationUpdateItem pins #8616 on the Responses->Chat fallback:
+// Chat Completions has no mid-conversation effort item, so a configuration_update must be
+// dropped rather than emitted as a roleless, contentless chat message.
+func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"user","content":"Say hi."}]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	got := ToChatMessages(input)
+	if len(got) != 1 {
+		t.Fatalf("expected only the user message, got %d messages: %+v", len(got), got)
+	}
+	if got[0].Role != ChatMessageRoleUser {
+		t.Fatalf("expected the surviving message to be the user turn, got role %q", got[0].Role)
 	}
 }

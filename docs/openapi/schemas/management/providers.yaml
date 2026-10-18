@@ -111,6 +111,10 @@ VertexKeyConfig:
       type: boolean
       default: false
       description: When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint.
+    use_session_routing:
+      type: boolean
+      default: false
+      description: Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.
     aws_workload_identity:
       type: object
       description: >-
