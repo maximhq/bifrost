@@ -1,5 +1,5 @@
 import RSSFeedIcon from "@/components/rssFeedIcon";
-import { readRSSFeedLogoFile, RSS_FEED_LOGO_TYPES, rssFeedLogoFileError } from "@/components/rssFeedIcon.utils";
+import { checkRSSFeedLogoFile, readRSSFeedLogoFile, RSS_FEED_LOGO_TYPES } from "@/components/rssFeedIcon.utils";
 import { rssFeedFormErrorField, rssNewsSwitchState } from "@/components/rssSourcesSheet.utils";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdownMenu";
@@ -234,7 +234,7 @@ function FeedLogoMenu({ feed, onSetLogo }: { feed: RSSFeed; onSetLogo: (feed: RS
 
 	const onFile = async (file: File | undefined) => {
 		if (!file) return;
-		const error = rssFeedLogoFileError(file);
+		const error = await checkRSSFeedLogoFile(file);
 		if (error) {
 			toast.error(error);
 			return;
@@ -307,7 +307,7 @@ function AddFeedForm() {
 
 	const onLogoFile = async (file: File | undefined) => {
 		if (!file) return;
-		const error = rssFeedLogoFileError(file);
+		const error = await checkRSSFeedLogoFile(file);
 		if (error) {
 			setError("icon_url", { message: error });
 			return;

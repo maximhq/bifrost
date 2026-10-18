@@ -1,3 +1,5 @@
+import { isSafeWebURL, RSS_FEED_LOGO_DATA_URI_PATTERN } from "@/lib/utils/validation";
+
 /** Builtin icon keys rendered from bundled assets rather than fetched from the feed's site. */
 const PROVIDER_ICON_KEYS = ["openai", "anthropic", "gemini"] as const;
 
@@ -24,7 +26,7 @@ export function rssFeedIconSource(icon: string | undefined, feedUrl: string, ico
 	if (icon && (PROVIDER_ICON_KEYS as readonly string[]).includes(icon)) {
 		return { kind: "provider", provider: icon as RSSFeedIconProviderKey };
 	}
-	if (icon && FAVICON_HOSTS[icon]) return { kind: "image", url: `https://${FAVICON_HOSTS[icon]}/favicon.ico` };
+	if (icon && Object.hasOwn(FAVICON_HOSTS, icon)) return { kind: "image", url: `https://${FAVICON_HOSTS[icon]}/favicon.ico` };
 	if (iconUrl && isRSSFeedLogoValue(iconUrl)) return { kind: "image", url: iconUrl };
 	try {
 		const parsed = new URL(feedUrl);
@@ -36,32 +38,42 @@ export function rssFeedIconSource(icon: string | undefined, feedUrl: string, ico
 }
 
 /** Image types accepted for an uploaded logo; mirrors the server's data: URI check. */
-export const RSS_FEED_LOGO_TYPES = [
-	"image/png",
-	"image/jpeg",
-	"image/gif",
-	"image/webp",
-	"image/svg+xml",
-	"image/x-icon",
-	"image/vnd.microsoft.icon",
-];
+export const RSS_FEED_LOGO_TYPES = ["image/png", "image/jpeg"];
+
+/** Leading bytes of each accepted logo type; the server checks the same signatures. */
+const RSS_FEED_LOGO_SIGNATURES: Record<string, number[]> = {
+	"image/png": [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+	"image/jpeg": [0xff, 0xd8, 0xff],
+};
 
 /** Uploaded logos are stored inline in the feed row, so they are capped well below anything a tray icon needs. */
 export const RSS_FEED_LOGO_MAX_BYTES = 96 * 1024;
 
-/** True for a value the server accepts as a logo: an http(s) URL or a base64 data:image URI of an accepted type. */
+/** True for a value the server accepts as a logo: an http(s) URL without credentials, or a base64 PNG or JPEG data URI. */
 export function isRSSFeedLogoValue(value: string): boolean {
-	if (value.startsWith("data:")) {
-		return RSS_FEED_LOGO_TYPES.some((type) => value.startsWith(`data:${type};base64,`));
-	}
-	return /^https?:\/\/[^\s/]+/i.test(value);
+	if (value.startsWith("data:")) return RSS_FEED_LOGO_DATA_URI_PATTERN.test(value);
+	return isSafeWebURL(value);
 }
 
 /** Why an uploaded logo file is refused, or undefined when it is acceptable. */
 export function rssFeedLogoFileError(file: Pick<File, "type" | "size">): string | undefined {
-	if (!RSS_FEED_LOGO_TYPES.includes(file.type)) return "Logo must be a PNG, JPEG, GIF, WebP, SVG or ICO image";
+	if (!RSS_FEED_LOGO_TYPES.includes(file.type)) return "Logo must be a PNG or JPEG image";
 	if (file.size > RSS_FEED_LOGO_MAX_BYTES) return "Logo must be 96 KB or smaller";
 	return undefined;
+}
+
+/** Why an uploaded logo's leading bytes are refused, or undefined when they match an accepted image type. */
+export function rssFeedLogoBytesError(bytes: Uint8Array, type: string): string | undefined {
+	const signature = RSS_FEED_LOGO_SIGNATURES[type];
+	if (!signature || signature.some((byte, i) => bytes[i] !== byte)) return "This file is not a valid PNG or JPEG image";
+	return undefined;
+}
+
+/** Why an uploaded logo file is refused (declared type, size, then its leading bytes), or undefined when it is acceptable. */
+export async function checkRSSFeedLogoFile(file: File): Promise<string | undefined> {
+	const error = rssFeedLogoFileError(file);
+	if (error) return error;
+	return rssFeedLogoBytesError(new Uint8Array(await file.slice(0, 8).arrayBuffer()), file.type);
 }
 
 /** Reads an uploaded logo into the data: URI the API stores. */

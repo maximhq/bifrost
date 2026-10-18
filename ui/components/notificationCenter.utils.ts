@@ -1,3 +1,4 @@
+import { isSafeWebURL } from "@/lib/utils/validation";
 import type { SidekiqJob } from "@/lib/types/sidekiq";
 
 /**
@@ -150,4 +151,12 @@ export function visibleRSSItems<T extends { id: string }>(items: T[], dismissedI
 /** The custom logo for an item's feed; the items response sends each logo once, keyed by feed id. */
 export function rssItemIconUrl(feedIcons: Record<string, string> | undefined, feedId: number): string | undefined {
 	return feedIcons?.[String(feedId)];
+}
+/**
+ * The href to render for a news item, or undefined when it must not be a link.
+ * The server already drops non-http(s) links; this keeps a javascript: or
+ * credential-bearing link inert even if one ever reaches the client.
+ */
+export function safeRSSLink(link: string): string | undefined {
+	return isSafeWebURL(link) ? link : undefined;
 }

@@ -1,5 +1,5 @@
 import { KnownProvidersNames } from "@/lib/constants/logs";
-import { isRedacted } from "@/lib/utils/validation";
+import { isRedacted, isSafeWebURL, RSS_FEED_LOGO_DATA_URI_PATTERN } from "@/lib/utils/validation";
 import { z } from "zod";
 
 // Global error map - turns Zod's default messages into readable, human-friendly ones.
@@ -1959,14 +1959,16 @@ export const rssFeedFormSchema = z.object({
 		.trim()
 		.min(1, "Enter the feed URL")
 		.max(2048, "URL is too long")
-		.refine((value) => /^https?:\/\/[^\s/]+/i.test(value), "URL must start with http:// or https://"),
+		.refine(isSafeWebURL, "URL must be an http:// or https:// address without a username or password"),
 	// Optional logo: an image URL typed in, or the data: URI of an uploaded file.
 	icon_url: z
 		.string()
 		.trim()
 		.refine(
-			(value) => value === "" || value.startsWith("data:image/") || /^https?:\/\/[^\s/]+/i.test(value),
-			"Logo must be an http(s) image URL or an uploaded image",
+			(value) =>
+				value === "" ||
+				(value.startsWith("data:") ? RSS_FEED_LOGO_DATA_URI_PATTERN.test(value) : value.length <= 2048 && isSafeWebURL(value)),
+			"Logo must be an http(s) image URL without a username or password, or an uploaded PNG or JPEG",
 		),
 });
 
