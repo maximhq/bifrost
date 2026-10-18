@@ -496,7 +496,7 @@ func HandleGeminiChatCompletionStream(
 	url string,
 	jsonBody []byte,
 	headers map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -1028,7 +1028,7 @@ func HandleGeminiResponsesStream(
 	url string,
 	jsonBody []byte,
 	headers map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -1263,7 +1263,8 @@ func HandleGeminiResponsesStream(
 
 					// Check if this is the last chunk
 					isLastChunk := false
-					if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete {
+					if response.Type == schemas.ResponsesStreamResponseTypeCompleted || response.Type == schemas.ResponsesStreamResponseTypeIncomplete ||
+						response.Type == schemas.ResponsesStreamResponseTypeFailed {
 						isLastChunk = true
 					}
 

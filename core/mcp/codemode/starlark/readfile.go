@@ -189,7 +189,7 @@ func (s *StarlarkCodeMode) handleReadToolFile(ctx context.Context, toolCall sche
 	}
 
 	// Generate compact Python signatures
-	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel)
+	fileContent := generateCompactSignatures(matchedClientName, matchedTools, isToolLevel, s.serverInstructionsComment(matchedClientName), !s.jsonModuleShadowed(availableToolsPerClient))
 	lines := strings.Split(fileContent, "\n")
 	totalLines := len(lines)
 
@@ -282,7 +282,8 @@ func parseVFSFilePath(fileName string) (serverName, toolName string, isToolLevel
 }
 
 // generateCompactSignatures generates compact Python function signatures for tools.
-func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isToolLevel bool) string {
+// jsonModuleAvailable says whether the sandbox's json module is reachable (see generateTypeDefinitions).
+func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isToolLevel bool, instructions string, jsonModuleAvailable bool) string {
 	var sb strings.Builder
 
 	// Minimal header
@@ -295,8 +296,18 @@ func generateCompactSignatures(clientName string, tools []schemas.ChatTool, isTo
 	sb.WriteString(fmt.Sprintf("# Usage: %s.tool_name(param=value)\n", clientName))
 	sb.WriteString("# The def names below are the exact callable names to use in executeToolCode.\n")
 	sb.WriteString("# Read this file before executeToolCode to confirm parameters and return shape.\n")
+	sb.WriteString("# Results: the decoded JSON when the server sends JSON (a dict or list, or a number, bool or None), otherwise a str.\n")
+	if jsonModuleAvailable {
+		sb.WriteString("# json.decode(s) parses a str that holds JSON; plain text raises.\n")
+	}
+	sb.WriteString("# A call that fails returns an error value: check hasattr(r, \"error\"); r.error holds the message, and fail(r.error) stops the run.\n")
 	sb.WriteString(fmt.Sprintf("# For detailed docs: use getToolDocs(server=\"%s\", tool=\"tool_name\")\n", clientName))
-	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n\n")
+	sb.WriteString("# Note: Descriptions may be truncated. Use getToolDocs for full details.\n")
+	if instructions != "" {
+		sb.WriteString("#\n")
+		sb.WriteString(instructions)
+	}
+	sb.WriteString("\n")
 
 	for _, tool := range tools {
 		if tool.Function == nil || tool.Function.Name == "" {
@@ -377,32 +388,63 @@ func formatPythonParams(params *schemas.ToolFunctionParameters) string {
 	// Add required params first
 	for _, propName := range requiredNames {
 		prop, _ := props.Get(propName)
-		propMap, ok := prop.(map[string]interface{})
+		propSchema, ok := asJSONSchema(prop)
 		if !ok {
 			continue
 		}
-		pyType := jsonSchemaToPython(propMap)
+		pyType := jsonSchemaToPython(propSchema)
 		parts = append(parts, fmt.Sprintf("%s: %s", propName, pyType))
 	}
 
 	// Add optional params with default None
 	for _, propName := range optionalNames {
 		prop, _ := props.Get(propName)
-		propMap, ok := prop.(map[string]interface{})
+		propSchema, ok := asJSONSchema(prop)
 		if !ok {
 			continue
 		}
-		pyType := jsonSchemaToPython(propMap)
+		pyType := jsonSchemaToPython(propSchema)
 		parts = append(parts, fmt.Sprintf("%s: %s = None", propName, pyType))
 	}
 
 	return strings.Join(parts, ", ")
 }
 
+// jsonSchema is a read-only view of one JSON Schema object.
+type jsonSchema interface {
+	Get(key string) (interface{}, bool)
+}
+
+// plainSchema adapts a decoded map[string]interface{} to jsonSchema.
+type plainSchema map[string]interface{}
+
+func (s plainSchema) Get(key string) (interface{}, bool) {
+	v, ok := s[key]
+	return v, ok
+}
+
+// asJSONSchema returns v as a jsonSchema without copying it. Live discovery keeps property
+// schemas as map[string]interface{}, but a per-call client restores its tools from the config
+// store after a restart, and that decode turns every nested object into *OrderedMap. Both
+// shapes have to render the same stub.
+func asJSONSchema(v interface{}) (jsonSchema, bool) {
+	switch node := v.(type) {
+	case map[string]interface{}:
+		return plainSchema(node), true
+	case *schemas.OrderedMap:
+		if node == nil {
+			return nil, false
+		}
+		return node, true
+	}
+	return nil, false
+}
+
 // jsonSchemaToPython converts a JSON Schema type definition to a Python type string.
-func jsonSchemaToPython(prop map[string]interface{}) string {
+func jsonSchemaToPython(prop jsonSchema) string {
 	// Check for enum first - takes precedence over type to show allowed values
-	if enum, ok := prop["enum"].([]interface{}); ok && len(enum) > 0 {
+	enumVal, _ := prop.Get("enum")
+	if enum, ok := enumVal.([]interface{}); ok && len(enum) > 0 {
 		enumStrs := make([]string, 0, len(enum))
 		for _, e := range enum {
 			enumStrs = append(enumStrs, fmt.Sprintf("%q", e))
@@ -411,12 +453,13 @@ func jsonSchemaToPython(prop map[string]interface{}) string {
 	}
 
 	// Check for const (single fixed value)
-	if constVal, ok := prop["const"]; ok {
+	if constVal, ok := prop.Get("const"); ok {
 		return fmt.Sprintf("Literal[%q]", constVal)
 	}
 
 	// Fall back to type-based conversion
-	if typeVal, ok := prop["type"].(string); ok {
+	typeField, _ := prop.Get("type")
+	if typeVal, ok := typeField.(string); ok {
 		switch typeVal {
 		case "string":
 			return "str"
@@ -428,7 +471,8 @@ func jsonSchemaToPython(prop map[string]interface{}) string {
 			return "bool"
 		case "array":
 			itemsType := "Any"
-			if items, ok := prop["items"].(map[string]interface{}); ok {
+			itemsVal, _ := prop.Get("items")
+			if items, ok := asJSONSchema(itemsVal); ok {
 				itemsType = jsonSchemaToPython(items)
 			}
 			return fmt.Sprintf("list[%s]", itemsType)

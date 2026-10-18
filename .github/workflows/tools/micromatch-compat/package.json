@@ -1,0 +1,11 @@
+{
+  "name": "micromatch-compat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Braces-free glob matching for the Micromatch API used by the Newman HTML reporter",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "picomatch": "4.0.7"
+  }
+}

@@ -7,7 +7,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -150,4 +150,66 @@ func TestInitializeResolvesInstructionsForSlugNarrowedRequests(t *testing.T) {
 	require.NotNil(t, tm.seenCtx)
 	assert.Equal(t, []string{"alpha-echo"}, tm.seenCtx.Value(schemas.MCPContextKeyIncludeTools),
 		"the slug's served tool list must reach the instructions resolver")
+}
+
+// slugAdmitter admits everything and resolves slugs from fixed maps.
+type slugAdmitter struct {
+	vmcps   map[string][]string
+	clients map[string][]string
+}
+
+func (slugAdmitter) AdmitMCPGatewayRequest(*schemas.BifrostContext) (schemas.Access, *schemas.BifrostError) {
+	return nil, nil
+}
+
+func (a slugAdmitter) VirtualMCPToolAccess(_ *schemas.BifrostContext, slug string, _ schemas.Access) ([]string, bool) {
+	served, ok := a.vmcps[slug]
+	return served, ok
+}
+
+func (a slugAdmitter) MCPClientToolAccess(_ *schemas.BifrostContext, slug string, _ schemas.Access) ([]string, bool) {
+	served, ok := a.clients[slug]
+	return served, ok
+}
+
+// admitBySlug answers 403 for a real refusal, stamps the served tools when the slug names a granted
+// Virtual MCP or client, and without an admitter serves a configured client whole, as /mcp does.
+func TestAdmitBySlug(t *testing.T) {
+	resolver := slugAdmitter{
+		vmcps:   map[string][]string{"research-tools": {"alpha-search"}},
+		clients: map[string][]string{"context7": {"context7-*"}},
+	}
+	cases := []struct {
+		name       string
+		admitter   MCPGatewayAdmitter
+		slug       string
+		wantStatus int
+		wantTools  []string
+	}{
+		{name: "nil admitter serves a configured client unrestricted", slug: "context7", wantTools: []string{"context7-*"}},
+		{name: "nil admitter refuses an unknown slug", slug: "definitely-does-not-exist", wantStatus: 403},
+		{name: "granted virtual mcp", admitter: resolver, slug: "research-tools", wantTools: []string{"alpha-search"}},
+		{name: "granted mcp client", admitter: resolver, slug: "context7", wantTools: []string{"context7-*"}},
+		{name: "unknown slug", admitter: resolver, slug: "definitely-does-not-exist", wantStatus: 403},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &lib.Config{MCPConfig: &schemas.MCPConfig{ClientConfigs: []*schemas.MCPClientConfig{
+				{ID: "c7", Name: "context7", EndpointSlug: "context7"},
+			}}}
+			h := &MCPServerHandler{admitter: tc.admitter, config: cfg}
+			bctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			refusal := h.admitBySlug(bctx, tc.slug, nil)
+			if tc.wantStatus != 0 {
+				require.NotNil(t, refusal)
+				assert.Equal(t, tc.wantStatus, refusal.status)
+				if tc.wantStatus == 403 {
+					assert.Equal(t, "access_denied", refusal.message)
+				}
+				return
+			}
+			require.Nil(t, refusal)
+			assert.Equal(t, tc.wantTools, bctx.Value(schemas.MCPContextKeyIncludeTools))
+		})
+	}
 }

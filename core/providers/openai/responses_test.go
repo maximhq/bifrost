@@ -963,17 +963,18 @@ func TestToOpenAIResponsesRequest_GPTOSS_SummaryToContentBlocks(t *testing.T) {
 					}
 				}
 
-				// Verify that original message fields are preserved.
-				// Note: Status is stripped by the sanitizer for all item types,
-				// including message types, since OpenAI rejects status on input.
+				// Verify that original message fields are preserved. An assistant message
+				// that keeps its id is a ResponseOutputMessageParam, so its status is
+				// required and kept alongside the id (#8593).
 				if tt.message.ID != nil && (resultMsg.ID == nil || *resultMsg.ID != *tt.message.ID) {
 					t.Errorf("Expected ID to be preserved")
 				}
 				if tt.message.Type != nil && (resultMsg.Type == nil || *resultMsg.Type != *tt.message.Type) {
 					t.Errorf("Expected Type to be preserved")
 				}
-				if resultMsg.Status != nil {
-					t.Errorf("Expected Status to be stripped (OpenAI rejects status on input)")
+				if tt.message.ID != nil && tt.message.Status != nil &&
+					(resultMsg.Status == nil || *resultMsg.Status != *tt.message.Status) {
+					t.Errorf("Expected Status to be preserved with the ID on an assistant output message")
 				}
 			} else {
 				// For other cases, verify message is preserved as-is
@@ -2778,6 +2779,32 @@ func TestToOpenAIResponsesRequest_StripsGeminiResidueFromResponsesInput(t *testi
 			origMutable: true,
 		},
 		{
+			// An assistant message with an id is a ResponseOutputMessageParam, where id and
+			// status are both required. Keeping the id while dropping the status leaves an
+			// item that matches neither input shape, which strict validators reject (#8593).
+			name: "status kept on assistant output message with id",
+			input: schemas.ResponsesMessage{
+				Type:   &messageType,
+				Role:   &assistant,
+				ID:     schemas.Ptr("msg_replayed"),
+				Status: schemas.Ptr("completed"),
+				Content: &schemas.ResponsesMessageContent{
+					ContentBlocks: []schemas.ResponsesMessageContentBlock{
+						{Type: schemas.ResponsesOutputMessageContentTypeText, Text: schemas.Ptr("hello")},
+					},
+				},
+			},
+			wantWire: func(t *testing.T, item map[string]json.RawMessage) {
+				if string(item["id"]) != `"msg_replayed"` {
+					t.Errorf("id: got %s, want \"msg_replayed\"", item["id"])
+				}
+				if string(item["status"]) != `"completed"` {
+					t.Errorf("status: got %s, want \"completed\" (id without status is not a valid input item)", item["status"])
+				}
+			},
+			origMutable: true,
+		},
+		{
 			name: "status stripped from reasoning",
 			input: schemas.ResponsesMessage{
 				Type:   &reasoningType,
@@ -3517,6 +3544,18 @@ func TestSamplingParamGateReadsDatasheet(t *testing.T) {
 			require.False(t, samplingParamUnsupported(caps, field, model, "none"))
 			require.True(t, samplingParamUnsupported(caps, field, model, "low"), "rejected once reasoning is on")
 		}
+	})
+
+	t.Run("default_reasoning_effort_row_drives_omitted_effort", func(t *testing.T) {
+		const sol = "gpt-5.6-sol"
+		installCapabilityRecord(t, sol, &schemas.ModelCapabilities{DefaultReasoningEffort: schemas.Ptr(schemas.ReasoningEffortNone)})
+		require.False(t, samplingParamUnsupported(schemas.ResolveModelCaps(schemas.OpenAI, sol), schemas.FieldTemperature, sol, ""),
+			"a row defaulting to none keeps sampling fields when effort is omitted")
+
+		const g54 = "gpt-5.4"
+		installCapabilityRecord(t, g54, &schemas.ModelCapabilities{DefaultReasoningEffort: schemas.Ptr(schemas.ReasoningEffortMedium)})
+		require.True(t, samplingParamUnsupported(schemas.ResolveModelCaps(schemas.OpenAI, g54), schemas.FieldTemperature, g54, ""),
+			"a row defaulting to medium strips them")
 	})
 
 	t.Run("outright_entry_beats_name_fallback", func(t *testing.T) {
@@ -4691,5 +4730,107 @@ func TestResponsesToolBareTypesRoundTrip(t *testing.T) {
 		if string(encoded) != input {
 			t.Errorf("round trip changed %s -> %s", input, string(encoded))
 		}
+	}
+}
+
+// TestToOpenAIResponsesRequest_ToolChangeBlocksDropped (#8207): Anthropic's mid-conversation
+// tool_addition / tool_removal blocks have no OpenAI equivalent and OpenAI rejects unknown
+// block types, so they are dropped from a system item on the OpenAI-shaped egress. Text
+// siblings survive; an item left with no blocks is skipped entirely.
+func TestToOpenAIResponsesRequest_ToolChangeBlocksDropped(t *testing.T) {
+	t.Parallel()
+	var input []schemas.ResponsesMessage
+	if err := schemas.Unmarshal([]byte(`[
+		{"type":"message","role":"user","content":"hi"},
+		{"type":"message","role":"system","content":[
+			{"type":"tool_removal","tool":{"type":"tool_reference","name":"get_weather"}},
+			{"type":"input_text","text":"Tool set updated."}
+		]},
+		{"type":"message","role":"system","content":[
+			{"type":"tool_addition","tool":{"type":"tool_definition","definition":{"type":"function","name":"get_weather"}}}
+		]}
+	]`), &input); err != nil {
+		t.Fatalf("decode input: %v", err)
+	}
+	out := ToOpenAIResponsesRequest(&schemas.BifrostContext{}, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o-mini",
+		Input:    input,
+	})
+	if out == nil {
+		t.Fatal("ToOpenAIResponsesRequest returned nil")
+	}
+	items := out.Input.OpenAIResponsesRequestInputArray
+	raw, err := sonic.Marshal(items)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	wire := string(raw)
+	if strings.Contains(wire, "tool_addition") || strings.Contains(wire, "tool_removal") {
+		t.Fatalf("tool-change blocks must not reach an OpenAI-shaped wire: %s", wire)
+	}
+	if len(items) != 2 {
+		t.Fatalf("input items = %d, want 2 (user + the text-bearing system item; the tool-only item is skipped): %s", len(items), wire)
+	}
+	if !strings.Contains(wire, "Tool set updated.") {
+		t.Fatalf("text sibling of a dropped tool-change block must survive: %s", wire)
+	}
+}
+
+// TestToOpenAIResponsesRequest_StripsMCPToolsetConfig: the Anthropic mcp_toolset configuration
+// carried on the neutral MCP tool (default_config / tool_configs) is not an OpenAI field and
+// must not reach the OpenAI-shaped wire.
+func TestToOpenAIResponsesRequest_StripsMCPToolsetConfig(t *testing.T) {
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.5",
+		Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{{
+			Type: schemas.ResponsesToolTypeMCP,
+			ResponsesToolMCP: &schemas.ResponsesToolMCP{
+				ServerLabel:   "calendar",
+				ServerURL:     schemas.Ptr("https://mcp.example.com/calendar"),
+				DefaultConfig: &schemas.ResponsesToolMCPToolConfig{Enabled: schemas.Ptr(true)},
+				ToolConfigs:   map[string]*schemas.ResponsesToolMCPToolConfig{"delete_event": {Enabled: schemas.Ptr(false)}},
+			},
+		}}},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	out := ToOpenAIResponsesRequest(ctx, req)
+	data, err := out.MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, leaked := range []string{`"default_config"`, `"tool_configs"`} {
+		if strings.Contains(string(data), leaked) {
+			t.Errorf("%s leaked onto the OpenAI wire: %s", leaked, data)
+		}
+	}
+	if !strings.Contains(string(data), `"server_label":"calendar"`) {
+		t.Errorf("mcp tool itself must still be forwarded: %s", data)
+	}
+}
+
+// TestToOpenAIResponsesRequest_StripsTextEditorMaxCharacters: max_characters is an Anthropic
+// text_editor setting and must not reach the OpenAI-shaped wire.
+func TestToOpenAIResponsesRequest_StripsTextEditorMaxCharacters(t *testing.T) {
+	req := &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-5.5",
+		Input:    []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{
+			{Type: schemas.ResponsesToolType("text_editor_20250728"), Name: schemas.Ptr("str_replace_based_edit_tool"), MaxCharacters: schemas.Ptr(10000)},
+			{Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr("echo"), ResponsesToolFunction: &schemas.ResponsesToolFunction{}},
+		}},
+	}
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	data, err := ToOpenAIResponsesRequest(ctx, req).MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(data), `"max_characters"`) {
+		t.Errorf("max_characters leaked onto the OpenAI wire: %s", data)
 	}
 }

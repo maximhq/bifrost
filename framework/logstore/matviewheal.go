@@ -113,7 +113,8 @@ func (s *RDBLogStore) triggerMatViewSelfHeal() {
 		if s.matViewRefreshTimeout > 0 {
 			refreshCtx, cancel = context.WithTimeout(ctx, s.matViewRefreshTimeout)
 		}
-		err := refreshMatViews(refreshCtx, s.db)
+		// minGap 0: a heal follows a shape error, so the record cannot be trusted.
+		err := refreshMatViews(refreshCtx, s.db, 0)
 		cancel()
 		if err != nil {
 			if s.logger != nil {

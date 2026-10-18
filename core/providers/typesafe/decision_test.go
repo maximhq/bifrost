@@ -1,10 +1,14 @@
 package typesafe
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -15,32 +19,85 @@ import (
 	"testing"
 
 	"github.com/bytedance/sonic"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 )
 
-// decisionRequest builds a BifrostDecisionRequest around the given questions.
-func decisionRequest(state interface{}, questions map[string]schemas.DecisionQuestion) *schemas.BifrostDecisionRequest {
+// fromNative normalizes a native state and questions the way the map-form
+// routes do, into a request for Typesafe.
+func fromNative(state interface{}, questions map[string]TypesafeQuestion) (*schemas.BifrostDecisionRequest, error) {
+	normalized, err := ToBifrostDecisionQuestions(questions)
+	if err != nil {
+		return nil, err
+	}
 	return &schemas.BifrostDecisionRequest{
 		Provider:  schemas.Typesafe,
 		Model:     "jev-1.13.0",
-		State:     state,
-		Questions: questions,
+		Input:     ToBifrostDecisionInput(state),
+		Questions: normalized,
+	}, nil
+}
+
+// decisionRequest is fromNative for questions that must normalize.
+func decisionRequest(t *testing.T, state interface{}, questions map[string]TypesafeQuestion) *schemas.BifrostDecisionRequest {
+	t.Helper()
+	req, err := fromNative(state, questions)
+	if err != nil {
+		t.Fatalf("questions did not normalize: %v", err)
 	}
+	return req
+}
+
+// toNative sends a native state and questions through normalization and back
+// to Typesafe's wire shape, returning the first error.
+func toNative(state interface{}, questions map[string]TypesafeQuestion) (*TypesafeDecisionRequest, error) {
+	req, err := fromNative(state, questions)
+	if err != nil {
+		return nil, err
+	}
+	return ToTypesafeDecisionRequest(req)
+}
+
+// answersByName indexes a response's answers by name.
+func answersByName(resp *schemas.BifrostDecisionResponse) map[string]schemas.DecisionAnswer {
+	byName := make(map[string]schemas.DecisionAnswer, len(resp.Answers))
+	for _, answer := range resp.Answers {
+		if answer.Name != nil {
+			byName[*answer.Name] = answer
+		}
+	}
+	return byName
+}
+
+// answerValue is an answer's value as the map form reports it: the
+// probability, the chosen option, or the score.
+func answerValue(answer schemas.DecisionAnswer) interface{} {
+	switch {
+	case answer.Probability != nil:
+		return *answer.Probability
+	case answer.Choice != nil:
+		if key, ok := answer.Choice.Key(); ok {
+			return key
+		}
+	case answer.Score != nil:
+		return *answer.Score
+	}
+	return nil
 }
 
 func TestToTypesafeDecisionRequestMixedKinds(t *testing.T) {
-	req := decisionRequest("the user asked for a refund", map[string]schemas.DecisionQuestion{
+	req := decisionRequest(t, "the user asked for a refund", map[string]TypesafeQuestion{
 		"is_angry": {
-			Kind:         schemas.DecisionKindNoul,
+			Type:         TypesafeQuestionTypeNoul,
 			Instructions: "Is the user angry?",
 		},
 		"category": {
-			Kind:         schemas.DecisionKindChoice,
+			Type:         TypesafeQuestionTypeChoice,
 			Instructions: "Pick the ticket category",
 			Criteria:     map[string]interface{}{"billing": "money issues", "bug": "product defects", "other": "anything else"},
 		},
 		"severity": {
-			Kind:         schemas.DecisionKindScore,
+			Type:         TypesafeQuestionTypeScore,
 			Instructions: "Rate the severity",
 			Criteria:     []interface{}{"cosmetic", "annoying", "blocking"},
 		},
@@ -90,8 +147,8 @@ func TestToTypesafeDecisionRequestMixedKinds(t *testing.T) {
 func TestToTypesafeDecisionRequestStructuredStateAndInstructions(t *testing.T) {
 	state := map[string]interface{}{"ticket": map[string]interface{}{"id": 42, "body": "hello"}}
 	structured := map[string]interface{}{"goal": "judge tone", "steps": []interface{}{"read", "decide"}}
-	req := decisionRequest(state, map[string]schemas.DecisionQuestion{
-		"tone_ok": {Kind: schemas.DecisionKindNoul, Instructions: structured},
+	req := decisionRequest(t, state, map[string]TypesafeQuestion{
+		"tone_ok": {Type: TypesafeQuestionTypeNoul, Instructions: structured},
 	})
 
 	native, err := ToTypesafeDecisionRequest(req)
@@ -124,10 +181,10 @@ func TestToTypesafeDecisionRequestStructuredCriteria(t *testing.T) {
 		map[string]any{"level": "annoying", "examples": []any{"slow load"}},
 		[]any{"blocking", "data loss"},
 	}
-	req := decisionRequest("state", map[string]schemas.DecisionQuestion{
-		"approve":  {Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: noulCriteria},
-		"category": {Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: choiceCriteria},
-		"severity": {Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: scoreCriteria},
+	req := decisionRequest(t, "state", map[string]TypesafeQuestion{
+		"approve":  {Type: TypesafeQuestionTypeNoul, Instructions: "d", Criteria: noulCriteria},
+		"category": {Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: choiceCriteria},
+		"severity": {Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: scoreCriteria},
 	})
 
 	native, err := ToTypesafeDecisionRequest(req)
@@ -145,6 +202,30 @@ func TestToTypesafeDecisionRequestStructuredCriteria(t *testing.T) {
 	}
 }
 
+// TestToTypesafeDecisionRequestKeepsNullCriteriaSide pins that a predicate
+// side sent as null in the normalized body reaches Typesafe as null, as it does
+// from the map form, while an absent side stays absent.
+func TestToTypesafeDecisionRequestKeepsNullCriteriaSide(t *testing.T) {
+	var questions []schemas.DecisionQuestion
+	if err := schemas.Unmarshal([]byte(`[
+		{"type":"predicate","name":"refund","instructions":"Refund?","criteria":{"true":"asks for money back","false":null}},
+		{"type":"predicate","name":"angry","instructions":"Angry?","criteria":{"true":"upset"}}
+	]`), &questions); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	native, err := ToTypesafeDecisionRequest(&schemas.BifrostDecisionRequest{Model: "jev-1.13.0", Input: schemas.DecisionInput{Text: schemas.Ptr("state")}, Questions: questions})
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	refund := native.Questions["refund"].Criteria.(map[string]any)
+	if side, present := refund["false"]; !present || side != nil {
+		t.Errorf("a side sent as null must reach Typesafe as null, got %#v", refund)
+	}
+	if _, present := native.Questions["angry"].Criteria.(map[string]any)["false"]; present {
+		t.Errorf("an absent side must stay absent, got %#v", native.Questions["angry"].Criteria)
+	}
+}
+
 // TestToTypesafeDecisionRequestCriteriaTypeMatrix exercises every allowed
 // value type in every criteria slot: string | object | array for noul keys
 // and score levels, plus null for choice options, and the rejected types
@@ -156,18 +237,18 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 	allowed := map[string]any{"string": str, "object": obj, "array": arr}
 	rejectedNoNull := map[string]any{"number": 7, "boolean": true, "float": 3.5, "func": func() {}}
 
-	accept := func(t *testing.T, q schemas.DecisionQuestion) *TypesafeQuestion {
+	accept := func(t *testing.T, q TypesafeQuestion) *TypesafeQuestion {
 		t.Helper()
-		native, err := ToTypesafeDecisionRequest(decisionRequest("state", map[string]schemas.DecisionQuestion{"q": q}))
+		native, err := toNative("state", map[string]TypesafeQuestion{"q": q})
 		if err != nil {
 			t.Fatalf("expected acceptance, got %v", err)
 		}
 		question := native.Questions["q"]
 		return &question
 	}
-	reject := func(t *testing.T, q schemas.DecisionQuestion, wantSub string) {
+	reject := func(t *testing.T, q TypesafeQuestion, wantSub string) {
 		t.Helper()
-		_, err := ToTypesafeDecisionRequest(decisionRequest("state", map[string]schemas.DecisionQuestion{"q": q}))
+		_, err := toNative("state", map[string]TypesafeQuestion{"q": q})
 		if err == nil || !strings.Contains(err.Error(), wantSub) {
 			t.Fatalf("expected rejection containing %q, got %v", wantSub, err)
 		}
@@ -178,24 +259,24 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 			for falseName, falseValue := range allowed {
 				t.Run("true="+trueName+"/false="+falseName, func(t *testing.T) {
 					criteria := map[string]any{"true": trueValue, "false": falseValue}
-					got := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: criteria})
+					got := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeNoul, Instructions: "d", Criteria: criteria})
 					if !reflect.DeepEqual(got.Criteria, any(criteria)) {
 						t.Errorf("criteria not lossless: %#v", got.Criteria)
 					}
 				})
 			}
 			t.Run("single key true="+trueName, func(t *testing.T) {
-				accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]any{"true": trueValue}})
+				accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeNoul, Instructions: "d", Criteria: map[string]any{"true": trueValue}})
 			})
 		}
 		for name, value := range rejectedNoNull {
 			t.Run("rejects "+name, func(t *testing.T) {
-				reject(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]any{"true": value}}, "must be a string, object, or array")
+				reject(t, TypesafeQuestion{Type: TypesafeQuestionTypeNoul, Instructions: "d", Criteria: map[string]any{"true": value}}, "must be a string, object, or array")
 			})
 		}
 		t.Run("accepts null", func(t *testing.T) {
 			// SDK types: noul true/false descriptions may be null (#7599).
-			native := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]any{"false": nil}})
+			native := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeNoul, Instructions: "d", Criteria: map[string]any{"false": nil}})
 			if got := native.Criteria.(map[string]any)["false"]; got != nil {
 				t.Fatalf("null description must stay null, got %#v", got)
 			}
@@ -206,7 +287,7 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 		for name, value := range allowed {
 			t.Run("option="+name, func(t *testing.T) {
 				criteria := map[string]any{"opt": value, "alt": "plain"}
-				got := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: criteria})
+				got := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: criteria})
 				if !reflect.DeepEqual(got.Criteria, any(criteria)) {
 					t.Errorf("criteria not lossless: %#v", got.Criteria)
 				}
@@ -214,21 +295,21 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 		}
 		t.Run("option=null", func(t *testing.T) {
 			criteria := map[string]any{"opt": nil, "alt": "plain"}
-			got := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: criteria})
+			got := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: criteria})
 			if !reflect.DeepEqual(got.Criteria, any(criteria)) {
 				t.Errorf("criteria not lossless: %#v", got.Criteria)
 			}
 		})
 		t.Run("all four types in one map", func(t *testing.T) {
 			criteria := map[string]any{"s": str, "o": obj, "a": arr, "n": nil}
-			got := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: criteria})
+			got := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: criteria})
 			if !reflect.DeepEqual(got.Criteria, any(criteria)) {
 				t.Errorf("criteria not lossless: %#v", got.Criteria)
 			}
 		})
 		for name, value := range rejectedNoNull {
 			t.Run("rejects "+name, func(t *testing.T) {
-				reject(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: map[string]any{"opt": value}}, "must be a string, object, or array")
+				reject(t, TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: map[string]any{"opt": value}}, "must be a string, object, or array")
 			})
 		}
 	})
@@ -240,7 +321,7 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 				t.Run(fmt.Sprintf("%s at level %d", name, position), func(t *testing.T) {
 					levels := []any{"base low", "base mid", "base high"}
 					levels[position] = value
-					got := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: levels})
+					got := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: levels})
 					if !reflect.DeepEqual(got.Criteria, any(levels)) {
 						t.Errorf("levels not lossless: %#v", got.Criteria)
 					}
@@ -249,19 +330,19 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 		}
 		t.Run("all three types in one array", func(t *testing.T) {
 			levels := []any{str, obj, arr}
-			got := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: levels})
+			got := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: levels})
 			if !reflect.DeepEqual(got.Criteria, any(levels)) {
 				t.Errorf("levels not lossless: %#v", got.Criteria)
 			}
 		})
 		for name, value := range rejectedNoNull {
 			t.Run("rejects "+name, func(t *testing.T) {
-				reject(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []any{"low", value}}, "level 1 must be a string, object, or array")
+				reject(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []any{"low", value}}, "level 1 must be a string, object, or array")
 			})
 		}
 		t.Run("accepts null level", func(t *testing.T) {
 			// SDK types: score levels may be null (#7599).
-			native := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []any{"low", nil}})
+			native := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []any{"low", nil}})
 			if levels := native.Criteria.([]any); len(levels) != 2 || levels[1] != nil {
 				t.Fatalf("null level must stay null, got %#v", native.Criteria)
 			}
@@ -275,7 +356,7 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 		type rubric struct {
 			Meaning string `json:"meaning"`
 		}
-		got := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: map[string]rubric{
+		got := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: map[string]rubric{
 			"billing": {Meaning: "money issues"},
 			"bug":     {Meaning: "defects"},
 		}})
@@ -286,17 +367,17 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 		if r, ok := m["billing"].(rubric); !ok || r.Meaning != "money issues" {
 			t.Errorf("typed value not carried losslessly: %#v", m["billing"])
 		}
-		accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: map[string][]string{
+		accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: map[string][]string{
 			"billing": {"charges", "refunds"},
 			"bug":     {"crash"},
 		}})
-		accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string][]string{
+		accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeNoul, Instructions: "d", Criteria: map[string][]string{
 			"true": {"clearly upset"},
 		}})
 		// Non-string keys stay rejected: not a map of named descriptions.
-		reject(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: map[int]string{1: "first"}}, "must be a map of descriptions")
+		reject(t, TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: map[int]string{1: "first"}}, "must be a map of descriptions")
 		// String-keyed but invalid values still fail per value.
-		reject(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: map[string]int{"a": 1}}, "must be a string, object, or array")
+		reject(t, TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: map[string]int{"a": 1}}, "must be a string, object, or array")
 	})
 
 	t.Run("typed slices accepted for score criteria", func(t *testing.T) {
@@ -306,7 +387,7 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 		type rubric struct {
 			Level string `json:"level"`
 		}
-		got := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []rubric{
+		got := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []rubric{
 			{Level: "low"}, {Level: "high"},
 		}})
 		levels, ok := got.Criteria.([]any)
@@ -316,14 +397,16 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 		if r, ok := levels[0].(rubric); !ok || r.Level != "low" {
 			t.Errorf("typed level not carried losslessly: %#v", levels[0])
 		}
-		accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: [][]string{
+		accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: [][]string{
 			{"can wait"}, {"needs reply", "churn risk"},
 		}})
 		type namedLevels []string
-		accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: namedLevels{"low", "high"}})
+		accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: namedLevels{"low", "high"}})
 		// Element validation still applies to typed slices.
-		reject(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []int{1, 2}}, "level 0 must be a string, object, or array")
-		reject(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []rubric{{Level: "only one"}}}, "between 2 and 10")
+		reject(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []int{1, 2}}, "level 0 must be a string, object, or array")
+		// The level count is the endpoint's rule: one level and more than ten are forwarded.
+		accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []rubric{{Level: "only one"}}})
+		accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"}})
 	})
 
 	t.Run("typed nil pointers are JSON null descriptions", func(t *testing.T) {
@@ -333,7 +416,7 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 		type rubric struct {
 			Meaning string `json:"meaning"`
 		}
-		got := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: map[string]*rubric{
+		got := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: map[string]*rubric{
 			"billing": {Meaning: "money issues"},
 			"other":   nil,
 		}})
@@ -341,7 +424,7 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 		if !ok || len(m) != 2 {
 			t.Fatalf("typed pointer map not normalized: %#v", got.Criteria)
 		}
-		noul := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]*rubric{
+		noul := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeNoul, Instructions: "d", Criteria: map[string]*rubric{
 			"true": nil,
 		}})
 		if !isJSONNull(noul.Criteria.(map[string]any)["true"]) {
@@ -351,8 +434,8 @@ func TestToTypesafeDecisionRequestCriteriaTypeMatrix(t *testing.T) {
 
 	t.Run("typed string maps accepted for noul and choice", func(t *testing.T) {
 		// Go SDK callers pass map[string]string; both map input branches must work.
-		accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]string{"true": "yes means this", "false": "no means this"}})
-		got := accept(t, schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: map[string]string{"a": "first", "b": "second"}})
+		accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeNoul, Instructions: "d", Criteria: map[string]string{"true": "yes means this", "false": "no means this"}})
+		got := accept(t, TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: map[string]string{"a": "first", "b": "second"}})
 		m, ok := got.Criteria.(map[string]any)
 		if !ok || m["a"] != "first" || m["b"] != "second" {
 			t.Errorf("typed string map not normalized losslessly: %#v", got.Criteria)
@@ -405,70 +488,66 @@ func TestIsJSONNull(t *testing.T) {
 func TestToTypesafeDecisionRequestRejections(t *testing.T) {
 	cases := []struct {
 		name     string
-		question schemas.DecisionQuestion
+		question TypesafeQuestion
 		wantSub  string
 	}{
 		{
 			name:     "unsupported kind",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKind("ranking"), Instructions: "d"},
+			question: TypesafeQuestion{Type: "ranking", Instructions: "d"},
 			wantSub:  "unsupported kind",
 		},
 		{
 			name:     "noul criteria with bad key",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]interface{}{"maybe": "x"}},
+			question: TypesafeQuestion{Type: TypesafeQuestionTypeNoul, Instructions: "d", Criteria: map[string]interface{}{"maybe": "x"}},
 			wantSub:  `allows only "true" and "false" keys`,
 		},
 		{
 			name:     "choice without criteria",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d"},
+			question: TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d"},
 			wantSub:  "requires criteria options",
 		},
 		{
 			name:     "choice criteria wrong shape",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: []interface{}{"a", "b"}},
+			question: TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: []interface{}{"a", "b"}},
 			wantSub:  "must be a map of descriptions",
 		},
 		{
 			name:     "choice criteria non-string description",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: map[string]interface{}{"a": 1}},
+			question: TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: map[string]interface{}{"a": 1}},
 			wantSub:  "must be a string",
 		},
 		{
 			name:     "score criteria missing",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d"},
+			question: TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d"},
 			wantSub:  "ordered array",
 		},
 		{
-			name:     "score criteria too short",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []interface{}{"only one"}},
-			wantSub:  "between 2 and 10",
-		},
-		{
 			name:     "score criteria non-string level",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []interface{}{"low", 2, "high"}},
+			question: TypesafeQuestion{Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []interface{}{"low", 2, "high"}},
 			wantSub:  "level 1 must be a string",
 		},
 		{
 			name:     "instructions with unsupported shape",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: 42},
+			question: TypesafeQuestion{Type: TypesafeQuestionTypeNoul, Instructions: 42},
 			wantSub:  "instructions must be a string, object, or array",
 		},
 		{
 			name:     "noul criteria number description",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]any{"true": 7}},
+			question: TypesafeQuestion{Type: TypesafeQuestionTypeNoul, Instructions: "d", Criteria: map[string]any{"true": 7}},
 			wantSub:  "must be a string, object, or array",
 		},
 		{
 			name:     "choice criteria unmarshalable description",
-			question: schemas.DecisionQuestion{Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: map[string]any{"a": func() {}}},
+			question: TypesafeQuestion{Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: map[string]any{"a": func() {}}},
 			wantSub:  "must be a string, object, or array",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			req := decisionRequest("state", map[string]schemas.DecisionQuestion{"q": tc.question})
-			_, err := ToTypesafeDecisionRequest(req)
+			// The question is rejected whether normalizing or converting it
+			// fails, with the same message either way.
+			_, err := toNative("state", map[string]TypesafeQuestion{"q": tc.question})
 			if err == nil {
 				t.Fatalf("expected rejection containing %q, got nil error", tc.wantSub)
 			}
@@ -484,8 +563,8 @@ func TestToTypesafeDecisionRequestRejections(t *testing.T) {
 		// nil is SDK-valid (EntryType null) and forwarded, see the SDK
 		// fidelity tests.
 		for _, bad := range []interface{}{true, 42, 3.14, new(42), func() {}} {
-			req := decisionRequest(bad, map[string]schemas.DecisionQuestion{
-				"q": {Kind: schemas.DecisionKindNoul, Instructions: "d"},
+			req := decisionRequest(t, bad, map[string]TypesafeQuestion{
+				"q": {Type: TypesafeQuestionTypeNoul, Instructions: "d"},
 			})
 			_, err := ToTypesafeDecisionRequest(req)
 			if err == nil || !strings.Contains(err.Error(), "state must be a string, object, or array") {
@@ -499,18 +578,17 @@ func TestToTypesafeDecisionRequestRejections(t *testing.T) {
 			Goal string `json:"goal"`
 		}
 		for _, good := range []interface{}{rubric{Goal: "judge tone"}, []string{"read", "decide"}, map[string]string{"goal": "judge"}} {
-			req := decisionRequest("state", map[string]schemas.DecisionQuestion{
-				"q": {Kind: schemas.DecisionKindNoul, Instructions: good},
+			req := decisionRequest(t, "state", map[string]TypesafeQuestion{
+				"q": {Type: TypesafeQuestionTypeNoul, Instructions: good},
 			})
 			if _, err := ToTypesafeDecisionRequest(req); err != nil {
 				t.Fatalf("expected %T instructions to be accepted, got %v", good, err)
 			}
 		}
 		for _, bad := range []interface{}{7, new(3.5), func() {}} {
-			req := decisionRequest("state", map[string]schemas.DecisionQuestion{
-				"q": {Kind: schemas.DecisionKindNoul, Instructions: bad},
+			_, err := toNative("state", map[string]TypesafeQuestion{
+				"q": {Type: TypesafeQuestionTypeNoul, Instructions: bad},
 			})
-			_, err := ToTypesafeDecisionRequest(req)
 			if err == nil || !strings.Contains(err.Error(), "instructions must be a string, object, or array") {
 				t.Fatalf("expected instructions shape rejection for %T, got %v", bad, err)
 			}
@@ -518,8 +596,8 @@ func TestToTypesafeDecisionRequestRejections(t *testing.T) {
 	})
 
 	t.Run("typed string slice score criteria accepted", func(t *testing.T) {
-		req := decisionRequest("state", map[string]schemas.DecisionQuestion{
-			"q": {Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []string{"low", "medium", "high"}},
+		req := decisionRequest(t, "state", map[string]TypesafeQuestion{
+			"q": {Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []string{"low", "medium", "high"}},
 		})
 		native, err := ToTypesafeDecisionRequest(req)
 		if err != nil {
@@ -544,8 +622,8 @@ func TestToTypesafeDecisionRequestRejections(t *testing.T) {
 			[]string{"a", "b"},
 			ticket{ID: 1, Body: "hello"},
 		} {
-			req := decisionRequest(good, map[string]schemas.DecisionQuestion{
-				"q": {Kind: schemas.DecisionKindNoul, Instructions: "d"},
+			req := decisionRequest(t, good, map[string]TypesafeQuestion{
+				"q": {Type: TypesafeQuestionTypeNoul, Instructions: "d"},
 			})
 			if _, err := ToTypesafeDecisionRequest(req); err != nil {
 				t.Fatalf("expected %T to be a valid state shape, got %v", good, err)
@@ -555,10 +633,10 @@ func TestToTypesafeDecisionRequestRejections(t *testing.T) {
 }
 
 func TestToBifrostDecisionResponseAllKindsWithZeroAndFractionalValues(t *testing.T) {
-	req := decisionRequest("state", map[string]schemas.DecisionQuestion{
-		"is_spam": {Kind: schemas.DecisionKindNoul, Instructions: "d"},
-		"lang":    {Kind: schemas.DecisionKindChoice, Instructions: "d", Criteria: map[string]interface{}{"en": "", "de": ""}},
-		"quality": {Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []interface{}{"bad", "ok", "good"}},
+	req := decisionRequest(t, "state", map[string]TypesafeQuestion{
+		"is_spam": {Type: TypesafeQuestionTypeNoul, Instructions: "d"},
+		"lang":    {Type: TypesafeQuestionTypeChoice, Instructions: "d", Criteria: map[string]interface{}{"en": "", "de": ""}},
+		"quality": {Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []interface{}{"bad", "ok", "good"}},
 	})
 
 	zero := 0.0
@@ -584,25 +662,26 @@ func TestToBifrostDecisionResponseAllKindsWithZeroAndFractionalValues(t *testing
 		t.Errorf("model = %q", resp.Model)
 	}
 
-	spam := resp.Answers["is_spam"]
-	if spam.Kind != schemas.DecisionKindNoul || spam.Value != 0.0 {
+	answers := answersByName(resp)
+	spam := answers["is_spam"]
+	if spam.Type != schemas.DecisionTypePredicate || answerValue(spam) != 0.0 {
 		t.Errorf("zero-valued noul answer lost: %+v", spam)
 	}
-	if spam.Probabilities["false"] != 1.0 {
+	if providerUtils.DecisionKeyedProbabilities(spam.Probabilities)["false"] != 1.0 {
 		t.Errorf("noul probabilities lost: %+v", spam.Probabilities)
 	}
 
-	langAnswer := resp.Answers["lang"]
-	if langAnswer.Value != "de" {
-		t.Errorf("choice value = %v", langAnswer.Value)
+	langAnswer := answers["lang"]
+	if answerValue(langAnswer) != "de" {
+		t.Errorf("choice value = %v", answerValue(langAnswer))
 	}
 	if langAnswer.Confidence == nil || *langAnswer.Confidence != 0.9 {
 		t.Errorf("confidence lost: %+v", langAnswer)
 	}
 
-	quality := resp.Answers["quality"]
-	if quality.Value != 1.75 {
-		t.Errorf("fractional score lost: %v", quality.Value)
+	quality := answers["quality"]
+	if answerValue(quality) != 1.75 {
+		t.Errorf("fractional score lost: %v", answerValue(quality))
 	}
 	if quality.Legend["3"] != "good" {
 		t.Errorf("legend lost: %+v", quality.Legend)
@@ -635,8 +714,8 @@ func TestToBifrostDecisionResponseStructuredLegendDecodes(t *testing.T) {
 		t.Fatalf("structured legend failed to decode: %v", err)
 	}
 
-	req := decisionRequest("state", map[string]schemas.DecisionQuestion{
-		"urgency": {Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []any{
+	req := decisionRequest(t, "state", map[string]TypesafeQuestion{
+		"urgency": {Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []any{
 			"low",
 			map[string]any{"examples": []any{"outage"}, "level": "high"},
 			[]any{"critical", "churn risk"},
@@ -646,7 +725,7 @@ func TestToBifrostDecisionResponseStructuredLegendDecodes(t *testing.T) {
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
-	legend := resp.Answers["urgency"].Legend
+	legend := answersByName(resp)["urgency"].Legend
 	if legend["0"] != "low" {
 		t.Errorf("string legend level lost: %#v", legend["0"])
 	}
@@ -668,8 +747,8 @@ func TestToBifrostDecisionResponseStructuredLegendDecodes(t *testing.T) {
 }
 
 func TestToBifrostDecisionResponseFailures(t *testing.T) {
-	req := decisionRequest("state", map[string]schemas.DecisionQuestion{
-		"is_spam": {Kind: schemas.DecisionKindNoul, Instructions: "d"},
+	req := decisionRequest(t, "state", map[string]TypesafeQuestion{
+		"is_spam": {Type: TypesafeQuestionTypeNoul, Instructions: "d"},
 	})
 
 	t.Run("missing answer", func(t *testing.T) {
@@ -768,8 +847,12 @@ func TestToTypesafeNativeDecisionResponse(t *testing.T) {
 	answerConfidence, abstention, truncated := 0.75, "passed", true
 	resp := &schemas.BifrostDecisionResponse{
 		Model: "jev-1.13.0",
-		Answers: map[string]schemas.DecisionAnswer{
-			"approve": {Kind: schemas.DecisionKindNoul, Value: 0.25, Probabilities: map[string]float64{"true": 0.25, "false": 0.75},
+		Answers: []schemas.DecisionAnswer{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("approve"), Probability: schemas.Ptr(0.25),
+				Probabilities: []schemas.DecisionProbability{
+					{Value: schemas.DecisionScalar{Bool: schemas.Ptr(true)}, Probability: 0.25},
+					{Value: schemas.DecisionScalar{Bool: schemas.Ptr(false)}, Probability: 0.75},
+				},
 				AnswerConfidence: &answerConfidence, Abstention: &abstention, Action: json.RawMessage(`{"act_probability":1.0}`)},
 		},
 		Usage:   &schemas.BifrostLLMUsage{PromptTokens: 10, CompletionTokens: 0, TotalTokens: 10, Truncated: &truncated, TruncatedQuestions: []string{"approve"}},
@@ -904,8 +987,8 @@ func TestSDKFidelityNativeSuccessBodyRelayed(t *testing.T) {
 		_, _ = w.Write([]byte(fixtureSuccessBody))
 	})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	resp, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
-		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	resp, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest(t, "fixture", map[string]TypesafeQuestion{
+		"q": {Type: TypesafeQuestionTypeNoul, Instructions: "Evaluate this state."},
 	}))
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %v", bifrostErr)
@@ -913,8 +996,8 @@ func TestSDKFidelityNativeSuccessBodyRelayed(t *testing.T) {
 	if string(resp.NativeResponse) != fixtureSuccessBody {
 		t.Errorf("native body not kept verbatim:\n got %s\nwant %s", resp.NativeResponse, fixtureSuccessBody)
 	}
-	if resp.Answers["q"].Value != 0.25 {
-		t.Errorf("shared shape must still be built: %+v", resp.Answers["q"])
+	if answerValue(answersByName(resp)["q"]) != 0.25 {
+		t.Errorf("shared shape must still be built: %+v", resp.Answers)
 	}
 }
 
@@ -973,8 +1056,8 @@ func TestSDKFidelityNullStateDistinctFromMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("null state is SDK-valid and must be accepted, got %v", err)
 	}
-	if shared.State != nil {
-		t.Errorf("null state must stay null, got %#v", shared.State)
+	if !shared.Input.IsEmpty() {
+		t.Errorf("null state must stay null, got %#v", shared.Input)
 	}
 
 	var missing TypesafeDecisionRequest
@@ -991,9 +1074,9 @@ func TestSDKFidelityNullStateDistinctFromMissing(t *testing.T) {
 // score levels. Choice options already accepted null.
 func TestSDKFidelityAcceptsNullables(t *testing.T) {
 	t.Run("null state serializes as null", func(t *testing.T) {
-		native, err := ToTypesafeDecisionRequest(decisionRequest(nil, map[string]schemas.DecisionQuestion{
-			"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
-		}))
+		native, err := toNative(nil, map[string]TypesafeQuestion{
+			"q": {Type: TypesafeQuestionTypeNoul, Instructions: "Evaluate this state."},
+		})
 		if err != nil {
 			t.Fatalf("null state must be accepted, got %v", err)
 		}
@@ -1007,9 +1090,9 @@ func TestSDKFidelityAcceptsNullables(t *testing.T) {
 	})
 
 	t.Run("nil instructions accepted", func(t *testing.T) {
-		native, err := ToTypesafeDecisionRequest(decisionRequest("fixture", map[string]schemas.DecisionQuestion{
-			"q": {Kind: schemas.DecisionKindChoice, Criteria: map[string]any{"a": nil, "b": nil}},
-		}))
+		native, err := toNative("fixture", map[string]TypesafeQuestion{
+			"q": {Type: TypesafeQuestionTypeChoice, Criteria: map[string]any{"a": nil, "b": nil}},
+		})
 		if err != nil {
 			t.Fatalf("optional instructions must be accepted, got %v", err)
 		}
@@ -1019,9 +1102,9 @@ func TestSDKFidelityAcceptsNullables(t *testing.T) {
 	})
 
 	t.Run("null noul descriptions accepted", func(t *testing.T) {
-		native, err := ToTypesafeDecisionRequest(decisionRequest("fixture", map[string]schemas.DecisionQuestion{
-			"q": {Kind: schemas.DecisionKindNoul, Instructions: "d", Criteria: map[string]any{"true": nil, "false": "no"}},
-		}))
+		native, err := toNative("fixture", map[string]TypesafeQuestion{
+			"q": {Type: TypesafeQuestionTypeNoul, Instructions: "d", Criteria: map[string]any{"true": nil, "false": "no"}},
+		})
 		if err != nil {
 			t.Fatalf("null noul description must be accepted, got %v", err)
 		}
@@ -1035,9 +1118,9 @@ func TestSDKFidelityAcceptsNullables(t *testing.T) {
 	})
 
 	t.Run("null score levels accepted", func(t *testing.T) {
-		native, err := ToTypesafeDecisionRequest(decisionRequest("fixture", map[string]schemas.DecisionQuestion{
-			"q": {Kind: schemas.DecisionKindScore, Instructions: "d", Criteria: []any{nil, "high"}},
-		}))
+		native, err := toNative("fixture", map[string]TypesafeQuestion{
+			"q": {Type: TypesafeQuestionTypeScore, Instructions: "d", Criteria: []any{nil, "high"}},
+		})
 		if err != nil {
 			t.Fatalf("null score level must be accepted, got %v", err)
 		}
@@ -1147,8 +1230,8 @@ func TestSDKFidelityFixtureHeaders(t *testing.T) {
 		_, _ = w.Write([]byte(fixtureSuccessBody))
 	})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	resp, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
-		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	resp, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest(t, "fixture", map[string]TypesafeQuestion{
+		"q": {Type: TypesafeQuestionTypeNoul, Instructions: "Evaluate this state."},
 	}))
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %v", bifrostErr)
@@ -1175,8 +1258,8 @@ func TestSDKFidelityFixtureNativeError(t *testing.T) {
 		_, _ = w.Write([]byte(`{"detail":{"error_type":"quota_exceeded","message":"Daily evaluation limit reached"},"billing":{"charged":false}}`))
 	})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
-		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest(t, "fixture", map[string]TypesafeQuestion{
+		"q": {Type: TypesafeQuestionTypeNoul, Instructions: "Evaluate this state."},
 	}))
 	if bifrostErr == nil {
 		t.Fatal("expected upstream 429 to surface as an error")
@@ -1336,8 +1419,8 @@ func TestCustomProviderAllowedRequestsGate(t *testing.T) {
 	}, writeFixtureSuccess)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 
-	_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
-		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest(t, "fixture", map[string]TypesafeQuestion{
+		"q": {Type: TypesafeQuestionTypeNoul, Instructions: "Evaluate this state."},
 	}))
 	if bifrostErr == nil || bifrostErr.Error == nil || bifrostErr.Error.Code == nil || *bifrostErr.Error.Code != "unsupported_operation" {
 		t.Fatalf("decision must be refused as unsupported_operation, got %+v", bifrostErr)
@@ -1360,8 +1443,8 @@ func TestCustomProviderAllowedRequestsGate(t *testing.T) {
 	_, allowed := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{
 		AllowedRequests: &schemas.AllowedRequests{Decision: true},
 	}, writeFixtureSuccess)
-	if _, bifrostErr := allowed.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
-		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	if _, bifrostErr := allowed.Decision(ctx, fixtureKey(), decisionRequest(t, "fixture", map[string]TypesafeQuestion{
+		"q": {Type: TypesafeQuestionTypeNoul, Instructions: "Evaluate this state."},
 	})); bifrostErr != nil {
 		t.Fatalf("decision allowed by allowed_requests must succeed: %v", bifrostErr)
 	}
@@ -1374,8 +1457,8 @@ func TestCustomProviderRequestPathOverride(t *testing.T) {
 		RequestPathOverrides: map[schemas.RequestType]string{schemas.DecisionRequest: "gateway/systemone"},
 	}, writeFixtureSuccess)
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	if _, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
-		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	if _, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest(t, "fixture", map[string]TypesafeQuestion{
+		"q": {Type: TypesafeQuestionTypeNoul, Instructions: "Evaluate this state."},
 	})); bifrostErr != nil {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
@@ -1390,8 +1473,8 @@ func TestCustomProviderRequestPathOverride(t *testing.T) {
 	_, redirected := newCustomTypesafeFixture(t, schemas.CustomProviderConfig{
 		RequestPathOverrides: map[schemas.RequestType]string{schemas.DecisionRequest: absolute.URL + "/elsewhere/systemone"},
 	}, writeFixtureSuccess)
-	if _, bifrostErr := redirected.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
-		"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate this state."},
+	if _, bifrostErr := redirected.Decision(ctx, fixtureKey(), decisionRequest(t, "fixture", map[string]TypesafeQuestion{
+		"q": {Type: TypesafeQuestionTypeNoul, Instructions: "Evaluate this state."},
 	})); bifrostErr != nil {
 		t.Fatalf("unexpected error: %v", bifrostErr)
 	}
@@ -1459,17 +1542,17 @@ const layaBody = `{"model":"laya-rl-agent",` +
 	`"routing":{"model":"english","reason":"explicit model='english'"}}`
 
 // layaQuestions are the questions layaBody answers, one per kind.
-func layaQuestions() map[string]schemas.DecisionQuestion {
-	return map[string]schemas.DecisionQuestion{
-		"frustrated": {Kind: schemas.DecisionKindNoul, Instructions: "Is the customer frustrated?"},
-		"category":   {Kind: schemas.DecisionKindChoice, Instructions: "Ticket category", Criteria: map[string]any{"billing": "charges", "bug": "defects"}},
-		"urgency":    {Kind: schemas.DecisionKindScore, Instructions: "How urgent?", Criteria: []any{"low", "mid", "high"}},
+func layaQuestions() map[string]TypesafeQuestion {
+	return map[string]TypesafeQuestion{
+		"frustrated": {Type: TypesafeQuestionTypeNoul, Instructions: "Is the customer frustrated?"},
+		"category":   {Type: TypesafeQuestionTypeChoice, Instructions: "Ticket category", Criteria: map[string]any{"billing": "charges", "bug": "defects"}},
+		"urgency":    {Type: TypesafeQuestionTypeScore, Instructions: "How urgent?", Criteria: []any{"low", "mid", "high"}},
 	}
 }
 
 // decideFixture serves body from a fixture endpoint and returns the shared
 // response alongside its wire encoding decoded into a generic map.
-func decideFixture(t *testing.T, body string, questions map[string]schemas.DecisionQuestion) (*schemas.BifrostDecisionResponse, map[string]any) {
+func decideFixture(t *testing.T, body string, questions map[string]TypesafeQuestion) (*schemas.BifrostDecisionResponse, map[string]any) {
 	t.Helper()
 	_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, _ []byte) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1477,7 +1560,7 @@ func decideFixture(t *testing.T, body string, questions map[string]schemas.Decis
 		_, _ = w.Write([]byte(body))
 	})
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-	resp, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", questions))
+	resp, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest(t, "fixture", questions))
 	if bifrostErr != nil {
 		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
 	}
@@ -1497,7 +1580,7 @@ func decideFixture(t *testing.T, body string, questions map[string]schemas.Decis
 func TestDecisionLayaFieldsPerKind(t *testing.T) {
 	resp, wire := decideFixture(t, layaBody, layaQuestions())
 
-	frustrated := resp.Answers["frustrated"]
+	frustrated := answersByName(resp)["frustrated"]
 	if frustrated.AnswerConfidence == nil || *frustrated.AnswerConfidence != 0.84 ||
 		frustrated.Abstention == nil || *frustrated.Abstention != "abstained" ||
 		frustrated.AbstentionThreshold == nil || *frustrated.AbstentionThreshold != 0.9 ||
@@ -1506,15 +1589,26 @@ func TestDecisionLayaFieldsPerKind(t *testing.T) {
 		t.Errorf("noul Laya fields not mapped: %+v", frustrated)
 	}
 
-	answers := wire["answers"].(map[string]any)
-	want := map[string]map[string]any{
-		"frustrated": {"kind": "noul", "value": 0.84, "confidence": 0.84, "answer_confidence": 0.84, "action": map[string]any{"act_probability": 1.0}, "abstention": "abstained", "abstention_threshold": 0.9, "low_confidence": true},
-		"category":   {"kind": "choice", "value": "billing", "confidence": 0.84, "probabilities": map[string]any{"billing": 0.97, "bug": 0.03}, "answer_confidence": 0.97, "action": map[string]any{"act_probability": 1.0}, "abstention": "passed", "abstention_threshold": 0.9},
-		"urgency":    {"kind": "score", "value": 1.93, "confidence": 0.75, "probabilities": map[string]any{"0": 0.01, "1": 0.06, "2": 0.93}, "legend": map[string]any{"0": "low", "1": "mid", "2": "high"}, "answer_confidence": 0.93, "action": map[string]any{"act_probability": 0.5}},
+	answers := wire["answers"].([]any)
+	want := []map[string]any{
+		{"type": "choice", "name": "category", "choice": "billing", "confidence": 0.84,
+			"probabilities":     []any{map[string]any{"value": "billing", "probability": 0.97}, map[string]any{"value": "bug", "probability": 0.03}},
+			"answer_confidence": 0.97, "action": map[string]any{"act_probability": 1.0}, "abstention": "passed", "abstention_threshold": 0.9},
+		{"type": "predicate", "name": "frustrated", "probability": 0.84, "confidence": 0.84, "answer_confidence": 0.84, "action": map[string]any{"act_probability": 1.0}, "abstention": "abstained", "abstention_threshold": 0.9, "low_confidence": true},
+		{"type": "score", "name": "urgency", "score": 1.93, "confidence": 0.75,
+			"probabilities": []any{
+				map[string]any{"value": 0.0, "label": "0", "probability": 0.01},
+				map[string]any{"value": 1.0, "label": "1", "probability": 0.06},
+				map[string]any{"value": 2.0, "label": "2", "probability": 0.93},
+			},
+			"legend": map[string]any{"0": "low", "1": "mid", "2": "high"}, "answer_confidence": 0.93, "action": map[string]any{"act_probability": 0.5}},
 	}
-	for name, expected := range want {
-		if !reflect.DeepEqual(answers[name], any(expected)) {
-			t.Errorf("answer %q:\n got %v\nwant %v", name, answers[name], expected)
+	if len(answers) != len(want) {
+		t.Fatalf("answers = %v", answers)
+	}
+	for i, expected := range want {
+		if !reflect.DeepEqual(answers[i], any(expected)) {
+			t.Errorf("answer %d:\n got %v\nwant %v", i, answers[i], expected)
 		}
 	}
 }
@@ -1534,10 +1628,10 @@ func TestDecisionLayaFieldsRoutingAndUsage(t *testing.T) {
 }
 
 // TestDecisionWithoutLayaFieldsUnchanged pins that a Jev response, which
-// carries none of Laya's fields, encodes with exactly the keys it had before.
+// carries none of Laya's fields, encodes no Laya keys.
 func TestDecisionWithoutLayaFieldsUnchanged(t *testing.T) {
 	_, wire := decideFixture(t, `{"model":"jev-1.13.0","answers":{"q":{"type":"choice","choice":"a","probabilities":{"a":0.9,"b":0.1},"confidence":0.8}},"usage":{"input_tokens":3,"output_tokens":1}}`,
-		map[string]schemas.DecisionQuestion{"q": {Kind: schemas.DecisionKindChoice, Instructions: "Pick", Criteria: map[string]any{"a": "first", "b": "second"}}})
+		map[string]TypesafeQuestion{"q": {Type: TypesafeQuestionTypeChoice, Instructions: "Pick", Criteria: map[string]any{"a": "first", "b": "second"}}})
 
 	keys := func(m any) []string {
 		var out []string
@@ -1550,7 +1644,7 @@ func TestDecisionWithoutLayaFieldsUnchanged(t *testing.T) {
 	if got := keys(wire); !reflect.DeepEqual(got, []string{"answers", "extra_fields", "model", "usage"}) {
 		t.Errorf("top-level keys = %v", got)
 	}
-	if got := keys(wire["answers"].(map[string]any)["q"]); !reflect.DeepEqual(got, []string{"confidence", "kind", "probabilities", "value"}) {
+	if got := keys(wire["answers"].([]any)[0]); !reflect.DeepEqual(got, []string{"choice", "confidence", "name", "probabilities", "type"}) {
 		t.Errorf("answer keys = %v", got)
 	}
 	if got := keys(wire["usage"]); !reflect.DeepEqual(got, []string{"completion_tokens", "prompt_tokens", "total_tokens"}) {
@@ -1569,23 +1663,24 @@ const clefEnvelopeBody = `{"result":{"model":"clef","answers":{` +
 // TestDecisionCloudflareEnvelope pins that a Cloudflare-enveloped systemone body
 // is unwrapped: every kind maps, usage maps, and the native relay is the inner body.
 func TestDecisionCloudflareEnvelope(t *testing.T) {
-	questions := map[string]schemas.DecisionQuestion{
-		"frustrated": {Kind: schemas.DecisionKindNoul, Instructions: "Is the customer frustrated?"},
-		"category":   {Kind: schemas.DecisionKindChoice, Instructions: "Ticket category", Criteria: map[string]any{"billing": "charges", "bug": "defects", "other": "else"}},
-		"urgency":    {Kind: schemas.DecisionKindScore, Instructions: "How urgent?", Criteria: []any{"can wait", "soon", "today"}},
+	questions := map[string]TypesafeQuestion{
+		"frustrated": {Type: TypesafeQuestionTypeNoul, Instructions: "Is the customer frustrated?"},
+		"category":   {Type: TypesafeQuestionTypeChoice, Instructions: "Ticket category", Criteria: map[string]any{"billing": "charges", "bug": "defects", "other": "else"}},
+		"urgency":    {Type: TypesafeQuestionTypeScore, Instructions: "How urgent?", Criteria: []any{"can wait", "soon", "today"}},
 	}
 	resp, _ := decideFixture(t, clefEnvelopeBody, questions)
 
 	if resp.Model != "clef" {
 		t.Errorf("model = %q, want clef", resp.Model)
 	}
-	if v := resp.Answers["frustrated"].Value; v != 0.9894 {
+	answers := answersByName(resp)
+	if v := answerValue(answers["frustrated"]); v != 0.9894 {
 		t.Errorf("noul value = %v", v)
 	}
-	if a := resp.Answers["category"]; a.Value != "billing" || a.Confidence == nil || *a.Confidence != 0.9029 || a.Probabilities["bug"] != 0.0136 {
+	if a := answers["category"]; answerValue(a) != "billing" || a.Confidence == nil || *a.Confidence != 0.9029 || providerUtils.DecisionKeyedProbabilities(a.Probabilities)["bug"] != 0.0136 {
 		t.Errorf("choice answer = %+v", a)
 	}
-	if a := resp.Answers["urgency"]; a.Value != 1.9729 || a.Legend["2"] != "today" || a.Probabilities["2"] != 0.9781 {
+	if a := answers["urgency"]; answerValue(a) != 1.9729 || a.Legend["2"] != "today" || providerUtils.DecisionKeyedProbabilities(a.Probabilities)["2"] != 0.9781 {
 		t.Errorf("score answer = %+v", a)
 	}
 	if resp.Usage == nil || resp.Usage.PromptTokens != 313 {
@@ -1600,8 +1695,8 @@ func TestDecisionCloudflareEnvelope(t *testing.T) {
 // top level is parsed as is, even if it also carries a "result" key.
 func TestDecisionTopLevelAnswersNotUnwrapped(t *testing.T) {
 	resp, _ := decideFixture(t, `{"model":"jev-1.13.0","answers":{"q":{"type":"noul","noul":0.25}},"result":{"answers":{"q":{"type":"noul","noul":0.99}}}}`,
-		map[string]schemas.DecisionQuestion{"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate."}})
-	if v := resp.Answers["q"].Value; v != 0.25 {
+		map[string]TypesafeQuestion{"q": {Type: TypesafeQuestionTypeNoul, Instructions: "Evaluate."}})
+	if v := answerValue(answersByName(resp)["q"]); v != 0.25 {
 		t.Errorf("value = %v, want the top-level 0.25", v)
 	}
 }
@@ -1627,8 +1722,8 @@ func TestDecisionCloudflareEnvelopeError(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			})
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
-				"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate."},
+			_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest(t, "fixture", map[string]TypesafeQuestion{
+				"q": {Type: TypesafeQuestionTypeNoul, Instructions: "Evaluate."},
 			}))
 			if bifrostErr == nil {
 				t.Fatal("expected an error")
@@ -1663,8 +1758,8 @@ func TestDecisionCloudflareEnvelopeSuccessFalseOn200(t *testing.T) {
 				_, _ = w.Write([]byte(body))
 			})
 			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
-			_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest("fixture", map[string]schemas.DecisionQuestion{
-				"q": {Kind: schemas.DecisionKindNoul, Instructions: "Evaluate."},
+			_, bifrostErr := provider.Decision(ctx, fixtureKey(), decisionRequest(t, "fixture", map[string]TypesafeQuestion{
+				"q": {Type: TypesafeQuestionTypeNoul, Instructions: "Evaluate."},
 			}))
 			if bifrostErr == nil {
 				t.Fatal("expected an error")
@@ -1676,5 +1771,569 @@ func TestDecisionCloudflareEnvelopeSuccessFalseOn200(t *testing.T) {
 				t.Errorf("status = %v, want 502", bifrostErr.StatusCode)
 			}
 		})
+	}
+}
+
+// TestToTypesafeDecisionRequestListOnlyDetails pins how what only a
+// list-shaped request carries reaches Typesafe's map shape, and comes back:
+// an unnamed question is sent under a generated name and answered without
+// one, boolean choices are keyed "true"/"false" and answered with booleans,
+// level labels fold into the level descriptions and return on the
+// probabilities, text messages are sent as structured state, and the safety
+// identifier stays off the wire.
+func TestToTypesafeDecisionRequestListOnlyDetails(t *testing.T) {
+	req := &schemas.BifrostDecisionRequest{
+		Provider:         schemas.Typesafe,
+		Model:            "jev-1.13.0",
+		Input:            schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Text: schemas.Ptr("The app crashes on login.")}}}},
+		SafetyIdentifier: schemas.Ptr("user-1"),
+		Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Instructions: schemas.NewDecisionText("Is this urgent?")},
+			{Type: schemas.DecisionTypeChoice, Name: schemas.Ptr("refund"), Instructions: schemas.NewDecisionText("Refund?"), Choices: []schemas.DecisionChoice{
+				{Value: schemas.DecisionScalar{Bool: schemas.Ptr(true)}, Description: schemas.NewDecisionText("refund now")},
+				{Value: schemas.DecisionScalar{Bool: schemas.Ptr(false)}},
+			}},
+			{Type: schemas.DecisionTypeScore, Name: schemas.Ptr("severity"), Instructions: schemas.NewDecisionText("Rate"), Levels: []schemas.DecisionLevel{
+				{Label: "Cosmetic"}, {Label: "Blocked", Description: schemas.NewDecisionText("nothing works")},
+			}},
+		},
+	}
+
+	native, err := ToTypesafeDecisionRequest(req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := native.Questions["question_1"]; got.Type != TypesafeQuestionTypeNoul || got.Instructions != "Is this urgent?" {
+		t.Errorf("unnamed question not sent under its generated name: %#v", native.Questions)
+	}
+	if got := native.Questions["refund"].Criteria; !reflect.DeepEqual(got, any(map[string]any{"true": "refund now", "false": nil})) {
+		t.Errorf("boolean choices not keyed true/false: %#v", got)
+	}
+	if got := native.Questions["severity"].Criteria; !reflect.DeepEqual(got, any([]any{"Cosmetic", "Blocked: nothing works"})) {
+		t.Errorf("level labels not folded into descriptions: %#v", got)
+	}
+	body, err := sonic.Marshal(native)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(body, &wire); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !reflect.DeepEqual(wire["state"], any([]any{map[string]any{"role": "user", "content": "The app crashes on login."}})) {
+		t.Errorf("messages not sent as structured state: %v", wire["state"])
+	}
+	if _, ok := wire["safety_identifier"]; ok {
+		t.Errorf("safety identifier must not reach Typesafe: %s", body)
+	}
+
+	refund, urgent, severity := "false", 0.7, 0.9
+	resp, bifrostErr := ToBifrostDecisionResponse(&TypesafeDecisionResponse{
+		Model: "jev-1.13.0",
+		Answers: map[string]TypesafeAnswer{
+			"question_1": {Type: TypesafeQuestionTypeNoul, Noul: &urgent},
+			"refund":     {Type: TypesafeQuestionTypeChoice, Choice: &refund, Probabilities: map[string]float64{"true": 0.3, "false": 0.7}},
+			"severity":   {Type: TypesafeQuestionTypeScore, Score: &severity, Probabilities: map[string]float64{"0": 0.1, "1": 0.9}},
+		},
+	}, req)
+	if bifrostErr != nil {
+		t.Fatalf("unexpected error: %v", bifrostErr.Error.Message)
+	}
+	if first := resp.Answers[0]; first.Name != nil || *first.Probability != 0.7 {
+		t.Errorf("unnamed answer = %+v", first)
+	}
+	if answer := resp.Answers[1]; answer.Choice.Bool == nil || *answer.Choice.Bool || *answer.Probabilities[0].Value.Bool != true {
+		t.Errorf("boolean choice not restored: %+v", answer)
+	}
+	if answer := resp.Answers[2]; *answer.Probabilities[1].Label != "Blocked" {
+		t.Errorf("score labels not restored: %+v", answer)
+	}
+}
+
+// TestToTypesafeDecisionRequestRejectsNonTextInput pins that an image, or a
+// part of a type Bifrost does not model such as audio, is a 400 for the
+// Typesafe attempt rather than its encoding sent as state, so a fallback that
+// reads it can serve the request. The audio part is synthetic.
+func TestToTypesafeDecisionRequestRejectsNonTextInput(t *testing.T) {
+	for partType, input := range map[string]string{
+		"input_image": `[{"role":"user","content":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]`,
+		"input_audio": `[{"role":"user","content":[{"type":"input_text","text":"listen"},{"type":"input_audio","input_audio":{"data":"AAAA","format":"wav"}}]}]`,
+		"untyped":     `[{"role":"user","content":[{"image_url":"data:image/png;base64,AAAA"}]}]`,
+	} {
+		req := &schemas.BifrostDecisionRequest{
+			Model:     "jev-1.13.0",
+			Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("damaged"), Instructions: schemas.NewDecisionText("Damaged?")}},
+		}
+		if err := sonic.Unmarshal([]byte(input), &req.Input); err != nil {
+			t.Fatalf("decode %s: %v", partType, err)
+		}
+		if _, err := ToTypesafeDecisionRequest(req); err == nil || !strings.Contains(err.Error(), partType) {
+			t.Errorf("expected %s rejection, got %v", partType, err)
+		}
+	}
+}
+
+// TestToTypesafeNativeDecisionResponseOtherProviderAnswers pins how the
+// /v1/systemone route renders answers only another provider produces: a
+// boolean choice as its option, and a refusal as its type with no value. The
+// payloads are synthetic.
+func TestToTypesafeNativeDecisionResponseOtherProviderAnswers(t *testing.T) {
+	native, err := ToTypesafeNativeDecisionResponse(&schemas.BifrostDecisionResponse{
+		Model: "gpt-6-luna",
+		Answers: []schemas.DecisionAnswer{
+			{Type: schemas.DecisionTypeChoice, Name: schemas.Ptr("refund"), Choice: &schemas.DecisionScalar{Bool: schemas.Ptr(true)}},
+			{Type: schemas.DecisionTypeRefusal, Name: schemas.Ptr("declined")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	body, err := sonic.Marshal(native.Answers)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var answers map[string]any
+	if err := json.Unmarshal(body, &answers); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := map[string]any{
+		"refund":   map[string]any{"type": "choice", "choice": "true"},
+		"declined": map[string]any{"type": "refusal"},
+	}
+	if !reflect.DeepEqual(answers, want) {
+		t.Errorf("answers:\n got %v\nwant %v", answers, want)
+	}
+}
+
+// TestTypesafeQuestionReadsKindAsType pins that a question written with
+// "kind" (the deprecated /v1/decisions map body) decodes as the same native
+// question, and that "type" wins when both are present.
+func TestTypesafeQuestionReadsKindAsType(t *testing.T) {
+	var questions map[string]TypesafeQuestion
+	if err := sonic.Unmarshal([]byte(`{
+		"legacy": {"kind": "noul", "instructions": "Angry?", "criteria": {"true": "upset"}},
+		"native": {"type": "choice", "criteria": {"a": "first"}},
+		"both":   {"type": "score", "kind": "noul", "criteria": ["low", "high"]}
+	}`), &questions); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := questions["legacy"]; got.Type != TypesafeQuestionTypeNoul || got.Instructions != "Angry?" || !reflect.DeepEqual(got.Criteria, any(map[string]any{"true": "upset"})) {
+		t.Errorf("kind not read as type: %#v", got)
+	}
+	if got := questions["native"].Type; got != TypesafeQuestionTypeChoice {
+		t.Errorf("type = %q", got)
+	}
+	if got := questions["both"].Type; got != TypesafeQuestionTypeScore {
+		t.Errorf("type must win over kind, got %q", got)
+	}
+}
+
+// galleryRequest is the gesture classifier from Typesafe's image docs: a camera
+// frame as the state, and example images inside the choice criteria and a noul
+// criterion, so it covers a reference as a whole value, nested in an object,
+// and inside an array.
+const galleryRequest = `{
+	"model": "jev-latest",
+	"state": {"camera": "r-cam"},
+	"assets": {
+		"r-cam":   {"type": "image", "format": "png", "data_base64": "iVBORw0KGgpDQU0="},
+		"r-thumb": {"format": "png", "data_base64": "iVBORw0KGgpUSFVNQg=="},
+		"r-palm":  {"format": "jpg", "data_base64": "/9j/4FBBTE0="}
+	},
+	"questions": {
+		"gesture": {"type": "choice", "instructions": "Which gesture is the hand in ` + "`camera`" + ` making?",
+			"criteria": {"thumbs_up": "r-thumb", "open_palm": {"description": "Palm facing the camera", "examples": ["r-palm"]}, "none": "No hand."}},
+		"assembled": {"type": "noul", "instructions": "Same pose as r-thumb?", "criteria": {"true": {"examples": ["r-thumb"]}, "false": "Parts missing."}}
+	}
+}`
+
+// TestTypesafeAssetsRoundTrip pins that a request with assets reaches Typesafe
+// as it was sent: the state, every asset, and every reference in instructions
+// and criteria come back unchanged, so example images never become evidence.
+func TestTypesafeAssetsRoundTrip(t *testing.T) {
+	var native TypesafeDecisionRequest
+	if err := sonic.Unmarshal([]byte(galleryRequest), &native); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(native.ExtraParams) != 0 {
+		t.Fatalf("assets decoded as extensions: %v", native.ExtraParams)
+	}
+	shared, err := native.ToBifrostDecisionRequest(nil)
+	if err != nil {
+		t.Fatalf("to shared: %v", err)
+	}
+
+	// The shared input is one message: the state as a structured text part, then
+	// one asset part per image, sorted by ID.
+	if len(shared.Input.Messages) != 1 {
+		t.Fatalf("input messages = %d, want 1", len(shared.Input.Messages))
+	}
+	parts := shared.Input.Messages[0].Content.Parts
+	if len(parts) != 4 || parts[0].Type != schemas.DecisionInputPartTypeText || !reflect.DeepEqual(parts[0].Text.Value(), map[string]interface{}{"camera": "r-cam"}) {
+		t.Fatalf("state part = %+v", parts)
+	}
+	for i, want := range []string{"r-cam", "r-palm", "r-thumb"} {
+		part := parts[i+1]
+		if !part.IsAsset() || *part.ID != want || part.Name != nil {
+			t.Errorf("part %d = %+v, want asset %q", i+1, part, want)
+		}
+	}
+	if string(parts[2].Data) != "\xff\xd8\xff\xe0PALM" || parts[2].ImageURL != nil {
+		t.Errorf("asset part = %+v, want the decoded bytes", parts[2])
+	}
+
+	out, err := ToTypesafeDecisionRequest(shared)
+	if err != nil {
+		t.Fatalf("to typesafe: %v", err)
+	}
+	if !reflect.DeepEqual(out.State, native.State) {
+		t.Errorf("state = %#v, want %#v", out.State, native.State)
+	}
+	// The format is read from the bytes, so a JPEG sent as "jpg" goes back as "jpeg",
+	// which Typesafe reads as the same format.
+	want := map[string]TypesafeAsset{
+		"r-cam":   {Type: "image", Format: "png", DataBase64: "iVBORw0KGgpDQU0="},
+		"r-thumb": {Type: "image", Format: "png", DataBase64: "iVBORw0KGgpUSFVNQg=="},
+		"r-palm":  {Type: "image", Format: "jpeg", DataBase64: "/9j/4FBBTE0="},
+	}
+	if !reflect.DeepEqual(out.Assets, want) {
+		t.Errorf("assets = %#v, want %#v", out.Assets, want)
+	}
+	if !reflect.DeepEqual(out.Questions["gesture"].Criteria, native.Questions["gesture"].Criteria) ||
+		!reflect.DeepEqual(out.Questions["assembled"].Criteria, native.Questions["assembled"].Criteria) ||
+		out.Questions["assembled"].Instructions != "Same pose as r-thumb?" {
+		t.Errorf("references in questions changed: %+v", out.Questions)
+	}
+}
+
+// TestTypesafeAssetsStateShapes pins that a string, array, or null state sent
+// with assets comes back in the same shape.
+func TestTypesafeAssetsStateShapes(t *testing.T) {
+	for name, state := range map[string]string{
+		"string": `"Camera shot: r-cam taken today."`,
+		"array":  `[{"frame":"r-cam"}]`,
+		"null":   `null`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var native TypesafeDecisionRequest
+			body := `{"model":"jev-latest","state":` + state + `,"assets":{"r-cam":{"format":"png","data_base64":"Q0FN"}},"questions":{"q":{"type":"noul","instructions":"Is a hand in r-cam?"}}}`
+			if err := sonic.Unmarshal([]byte(body), &native); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			shared, err := native.ToBifrostDecisionRequest(nil)
+			if err != nil {
+				t.Fatalf("to shared: %v", err)
+			}
+			out, err := ToTypesafeDecisionRequest(shared)
+			if err != nil {
+				t.Fatalf("to typesafe: %v", err)
+			}
+			got, _ := sonic.Marshal(out.State)
+			if string(got) != state {
+				t.Errorf("state = %s, want %s", got, state)
+			}
+		})
+	}
+}
+
+// TestTypesafeAssetsFromInputParts pins how /v1/decisions input parts with an id
+// reach Typesafe: data becomes data_base64 with the format read from its bytes,
+// the parts leave the state, and an asset without data is a 400.
+func TestTypesafeAssetsFromInputParts(t *testing.T) {
+	const jpeg, png, gif = "\xff\xd8\xff\xe0CAM", "\x89PNG\r\n\x1a\nCAM", "GIF89aCAM"
+	asset := func(id, data string) schemas.DecisionInputPart {
+		return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr(id), Data: []byte(data)}
+	}
+	text := func(s string) schemas.DecisionInputPart {
+		return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(s)}
+	}
+	request := func(messages ...schemas.DecisionInputMessage) *schemas.BifrostDecisionRequest {
+		return &schemas.BifrostDecisionRequest{Model: "jev-latest", Input: schemas.DecisionInput{Messages: messages}, Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Is a hand in r-cam?")},
+		}}
+	}
+	message := func(parts ...schemas.DecisionInputPart) schemas.DecisionInputMessage {
+		return schemas.DecisionInputMessage{Role: "user", Content: schemas.DecisionInputContent{Parts: parts}}
+	}
+
+	out, err := ToTypesafeDecisionRequest(request(message(text("The frame is r-cam."), asset("r-cam", jpeg))))
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if out.State != "The frame is r-cam." {
+		t.Errorf("state = %#v, want the text part", out.State)
+	}
+	if want := (TypesafeAsset{Type: "image", Format: "jpeg", DataBase64: "/9j/4ENBTQ=="}); !reflect.DeepEqual(out.Assets["r-cam"], want) {
+		t.Errorf("asset = %+v, want %+v", out.Assets["r-cam"], want)
+	}
+
+	// More than one message stays a message state, without the asset parts.
+	out, err = ToTypesafeDecisionRequest(request(
+		message(text("first")),
+		message(text("second"), asset("r-cam", png)),
+	))
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if state, _ := sonic.Marshal(out.State); string(state) != `[{"role":"user","content":[{"type":"input_text","text":"first"}]},{"role":"user","content":[{"type":"input_text","text":"second"}]}]` {
+		t.Errorf("state = %s", state)
+	}
+
+	// Typesafe judges the image itself, so a GIF is sent on for it to reject.
+	out, err = ToTypesafeDecisionRequest(request(message(text("x"), asset("r-cam", gif))))
+	if err != nil || out.Assets["r-cam"].Format != "gif" {
+		t.Errorf("gif asset = %+v, %v; want sent with format gif", out.Assets["r-cam"], err)
+	}
+
+	urlOnly := schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-cam"), ImageURL: schemas.Ptr("https://example.com/cam.jpg")}
+	namedOnly := schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-cam"), Name: schemas.Ptr("photo")}
+	for name, req := range map[string]*schemas.BifrostDecisionRequest{
+		"image_url without data": request(message(text("x"), urlOnly)),
+		"name without data":      request(message(text("x"), namedOnly)),
+		"duplicate id":           request(message(text("x"), asset("r-cam", png), asset("r-cam", png))),
+	} {
+		if _, err := ToTypesafeDecisionRequest(req); err == nil {
+			t.Errorf("%s: expected a 400", name)
+		}
+	}
+}
+
+// TestTypesafeAssetsNativeRejections pins the 400s for what the shared request
+// cannot carry, each of which Typesafe also rejects.
+func TestTypesafeAssetsNativeRejections(t *testing.T) {
+	for name, assets := range map[string]string{
+		"non-image type":           `{"r":{"type":"video","format":"png","data_base64":"QQ=="}}`,
+		"part outside a multipart": `{"r":{"part":"photo"}}`,
+		"invalid base64":           `{"r":{"format":"png","data_base64":"data:image/png;base64,QQ=="}}`,
+	} {
+		var native TypesafeDecisionRequest
+		body := `{"model":"jev-latest","state":"r","assets":` + assets + `,"questions":{"q":{"type":"noul","instructions":"x"}}}`
+		if err := sonic.Unmarshal([]byte(body), &native); err != nil {
+			t.Fatalf("%s: unmarshal: %v", name, err)
+		}
+		if _, err := native.ToBifrostDecisionRequest(nil); err == nil {
+			t.Errorf("%s: expected a 400", name)
+		}
+	}
+}
+
+// TestTypesafeBoxQuestionAndAnswer pins a box question through both directions:
+// criteria are dropped (Typesafe ignores them), instructions are optional, and
+// the box answer keeps its edges and confidence.
+func TestTypesafeBoxQuestionAndAnswer(t *testing.T) {
+	questions, err := ToBifrostDecisionQuestions(map[string]TypesafeQuestion{
+		"mug":  {Type: TypesafeQuestionTypeBox, Instructions: "the mug in `photo`", Criteria: map[string]any{"true": "x"}},
+		"bare": {Type: TypesafeQuestionTypeBox},
+	})
+	if err != nil {
+		t.Fatalf("questions: %v", err)
+	}
+	for _, question := range questions {
+		if question.Type != schemas.DecisionTypeBox || question.Criteria != nil {
+			t.Errorf("question = %+v, want a box without criteria", question)
+		}
+	}
+	request := &schemas.BifrostDecisionRequest{Model: "jev-preview", Input: schemas.DecisionInput{Text: schemas.Ptr("photo")}, Questions: questions}
+	native, err := ToTypesafeDecisionRequest(request)
+	if err != nil {
+		t.Fatalf("to typesafe: %v", err)
+	}
+	if got := native.Questions["mug"]; got.Type != "box" || got.Instructions != "the mug in `photo`" || got.Criteria != nil {
+		t.Errorf("native mug = %+v", got)
+	}
+	if got := native.Questions["bare"]; got.Type != "box" || got.Instructions != nil {
+		t.Errorf("native bare = %+v", got)
+	}
+
+	var resp TypesafeDecisionResponse
+	if err := sonic.Unmarshal([]byte(`{"model":"jev-1.14.0","answers":{"mug":{"type":"box","box":{"top":0.25,"bottom":0.82,"left":0.44,"right":0.84},"confidence":0.92},"bare":{"type":"box","box":{"top":0,"bottom":1,"left":0,"right":1},"confidence":0.1}},"usage":{"input_tokens":290,"output_tokens":21}}`), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	shared, bifrostErr := ToBifrostDecisionResponse(&resp, request)
+	if bifrostErr != nil {
+		t.Fatalf("to shared: %v", bifrostErr.Error)
+	}
+	mug := shared.Answers[1]
+	if *mug.Name != "mug" || mug.Box == nil || *mug.Box != (schemas.DecisionBox{Top: 0.25, Bottom: 0.82, Left: 0.44, Right: 0.84}) || *mug.Confidence != 0.92 {
+		t.Errorf("mug answer = %+v", mug)
+	}
+	back := ToTypesafeAnswers(shared.Answers)["mug"]
+	if back.Type != "box" || back.Box == nil || *back.Box != (TypesafeBox{Top: 0.25, Bottom: 0.82, Left: 0.44, Right: 0.84}) {
+		t.Errorf("native mug answer = %+v", back)
+	}
+
+	resp.Answers["mug"] = TypesafeAnswer{Type: "box"}
+	if _, bifrostErr := ToBifrostDecisionResponse(&resp, request); bifrostErr == nil {
+		t.Error("a box answer without a box was accepted")
+	}
+}
+
+// TestTypesafeImagesHeaderAndMultipart pins what reaches Typesafe on the wire: the
+// images header only for assets or a box question, a JSON body for base64
+// assets, and a multipart body, JSON first as "request", for assets that arrived
+// as file parts, each sent under its own name and content type.
+func TestTypesafeImagesHeaderAndMultipart(t *testing.T) {
+	type sent struct {
+		header      string
+		contentType string
+		body        []byte
+	}
+	requests := make(chan sent, 1)
+	_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		requests <- sent{header: r.Header.Get("TypeSafe-Danger-Zone-Images"), contentType: r.Header.Get("Content-Type"), body: body}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"jev-1.14.0","answers":{"q":{"type":"noul","noul":0.5},"mug":{"type":"box","box":{"top":0.1,"bottom":0.5,"left":0.2,"right":0.6},"confidence":0.9}}}`))
+	})
+	decide := func(native string) sent {
+		t.Helper()
+		var req TypesafeDecisionRequest
+		if err := sonic.Unmarshal([]byte(native), &req); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if asset, ok := req.Assets["r-cam"]; ok && asset.Part != "" {
+			asset.Data = []byte("\x89PNG\r\n\x1a\nbytes")
+			req.Assets["r-cam"] = asset
+		}
+		shared, err := req.ToBifrostDecisionRequest(nil)
+		if err != nil {
+			t.Fatalf("to shared: %v", err)
+		}
+		if _, bifrostErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), fixtureKey(), shared); bifrostErr != nil {
+			t.Fatalf("decision: %v", bifrostErr.Error)
+		}
+		return <-requests
+	}
+
+	last := decide(`{"model":"jev-latest","state":"text","questions":{"q":{"type":"noul","instructions":"x"}}}`)
+	if last.header != "" || !strings.HasPrefix(last.contentType, "application/json") {
+		t.Errorf("text request: header %q, content type %q", last.header, last.contentType)
+	}
+
+	last = decide(`{"model":"jev-preview","state":"text","questions":{"mug":{"type":"box","instructions":"the mug"}}}`)
+	if last.header != "true" {
+		t.Errorf("box request: header %q, want true", last.header)
+	}
+
+	last = decide(`{"model":"jev-latest","state":"r-cam","assets":{"r-cam":{"format":"png","data_base64":"iVBORw0KGgo="}},"questions":{"q":{"type":"noul","instructions":"x"}}}`)
+	if last.header != "true" || !strings.HasPrefix(last.contentType, "application/json") || !strings.Contains(string(last.body), `"assets":{"r-cam":{"type":"image","format":"png","data_base64":"iVBORw0KGgo="}}`) {
+		t.Errorf("base64 request: header %q, content type %q, body %s", last.header, last.contentType, last.body)
+	}
+
+	last = decide(`{"model":"jev-latest","state":"r-cam","assets":{"r-cam":{"type":"image","part":"door"}},"questions":{"q":{"type":"noul","instructions":"x"}}}`)
+	if last.header != "true" {
+		t.Errorf("multipart request: header %q, want true", last.header)
+	}
+	_, params, err := mime.ParseMediaType(last.contentType)
+	if err != nil || !strings.HasPrefix(last.contentType, "multipart/form-data") {
+		t.Fatalf("multipart request: content type %q", last.contentType)
+	}
+	reader := multipart.NewReader(bytes.NewReader(last.body), params["boundary"])
+	first, err := reader.NextPart()
+	if err != nil || first.FormName() != "request" || first.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("first part = %v, %v; want request as JSON", first, err)
+	}
+	requestJSON, _ := io.ReadAll(first)
+	if !strings.Contains(string(requestJSON), `"assets":{"r-cam":{"type":"image","part":"door"}}`) || strings.Contains(string(requestJSON), "data_base64") {
+		t.Errorf("request part = %s", requestJSON)
+	}
+	file, err := reader.NextPart()
+	if err != nil || file.FormName() != "door" || file.Header.Get("Content-Type") != "image/png" {
+		t.Fatalf("file part = %v, %v; want door as image/png", file, err)
+	}
+	if data, _ := io.ReadAll(file); string(data) != "\x89PNG\r\n\x1a\nbytes" {
+		t.Errorf("file bytes = %q", data)
+	}
+	if _, err := reader.NextPart(); err != io.EOF {
+		t.Errorf("unexpected extra part: %v", err)
+	}
+}
+
+// BenchmarkTypesafeSystemOneRequestWithoutImages measures the converter and the
+// images header check on a request without images, the common case images
+// support must not slow down.
+func BenchmarkTypesafeSystemOneRequestWithoutImages(b *testing.B) {
+	request := &schemas.BifrostDecisionRequest{
+		Model: "jev-latest",
+		Input: schemas.DecisionInput{Structured: map[string]any{"ticket": "I was double charged.", "plan": "pro"}},
+		Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("angry"), Instructions: schemas.NewDecisionText("Is the customer angry?")},
+			{Type: schemas.DecisionTypeChoice, Name: schemas.Ptr("team"), Instructions: schemas.NewDecisionText("Which team?"), Choices: []schemas.DecisionChoice{
+				{Value: schemas.DecisionScalar{Str: schemas.Ptr("billing")}}, {Value: schemas.DecisionScalar{Str: schemas.Ptr("support")}},
+			}},
+		},
+	}
+	b.Run("ToTypesafeDecisionRequest", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := ToTypesafeDecisionRequest(request); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("usesTypesafeImages", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = usesTypesafeImages(request)
+		}
+	})
+}
+
+// TestTypesafeImagesHeaderOverride pins the provider's Beta Headers setting for
+// TypeSafe-Danger-Zone-Images: sent by default when a request needs it, and never
+// sent once beta_header_overrides turns it off.
+func TestTypesafeImagesHeaderOverride(t *testing.T) {
+	for name, tc := range map[string]struct {
+		overrides map[string]bool
+		want      string
+	}{
+		"default":     {nil, "true"},
+		"supported":   {map[string]bool{"typesafe-danger-zone-images": true}, "true"},
+		"unsupported": {map[string]bool{"typesafe-danger-zone-images": false}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			headers := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				headers <- r.Header.Get("TypeSafe-Danger-Zone-Images")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"model":"jev-1.14.0","answers":{"mug":{"type":"box","box":{"top":0.1,"bottom":0.5,"left":0.2,"right":0.6},"confidence":0.9}}}`))
+			}))
+			defer server.Close()
+			provider, err := NewTypesafeProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, BetaHeaderOverrides: tc.overrides},
+			}, noopLogger{})
+			if err != nil {
+				t.Fatalf("NewTypesafeProvider: %v", err)
+			}
+			request := &schemas.BifrostDecisionRequest{Provider: schemas.Typesafe, Model: "jev-preview", Input: schemas.DecisionInput{Text: schemas.Ptr("photo")},
+				Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypeBox, Name: schemas.Ptr("mug"), Instructions: schemas.NewDecisionText("the mug")}}}
+			if _, bifrostErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), fixtureKey(), request); bifrostErr != nil {
+				t.Fatalf("decision: %v", bifrostErr.Error)
+			}
+			if got := <-headers; got != tc.want {
+				t.Errorf("TypeSafe-Danger-Zone-Images = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTypesafeMultipartBodyPartNames pins that a file part's name reaches Typesafe
+// exactly as the asset's part names it, including characters Go and MIME quote
+// differently, such as a newline or a quote.
+func TestTypesafeMultipartBodyPartNames(t *testing.T) {
+	for _, name := range []string{"door", "door photo", `door"photo`, "door\nphoto", "café"} {
+		body, contentType, err := typesafeMultipartBody([]byte(`{}`), []typesafeFilePart{{name: name, contentType: "image/png", data: []byte("x")}})
+		if err != nil {
+			t.Fatalf("%q: %v", name, err)
+		}
+		_, params, _ := mime.ParseMediaType(contentType)
+		reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+		if _, err := reader.NextPart(); err != nil {
+			t.Fatalf("%q: request part: %v", name, err)
+		}
+		file, err := reader.NextPart()
+		if err != nil || file.FormName() != name {
+			t.Errorf("part name = %q (%v), want %q", file.FormName(), err, name)
+		}
 	}
 }

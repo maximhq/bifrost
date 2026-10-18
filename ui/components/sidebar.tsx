@@ -12,6 +12,7 @@ import {
 	ChartColumnBig,
 	ChevronsLeftRightEllipsis,
 	CircuitBoard,
+	Database,
 	Construction,
 	DatabaseZap,
 	Flag,
@@ -39,6 +40,7 @@ import {
 	Search,
 	SearchCheck,
 	Settings,
+	Server,
 	Settings2Icon,
 	ShieldCheck,
 	Shuffle,
@@ -263,7 +265,7 @@ const SidebarItemView = ({
 
 	const isHighlighted = !hasSubItems && highlightedUrl === item.url;
 
-	const buttonClassName = `group/nav-item relative h-7.5 cursor-pointer rounded-sm border px-3 transition-all duration-200 ${
+	const buttonClassName = `group/nav-item relative h-7 cursor-pointer rounded-sm border px-2 transition-all duration-200 ${
 		isHighlighted
 			? "bg-sidebar-accent text-accent-foreground border-primary/20"
 			: isActive || isAnySubItemActive
@@ -275,13 +277,9 @@ const SidebarItemView = ({
 
 	const innerContent = (
 		<div className="flex w-full min-w-0 items-center justify-between">
-			<div className="flex w-full min-w-0 items-center gap-2">
-				<item.icon className={`h-4 w-4 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-				<span
-					className={`min-w-0 truncate text-sm group-data-[collapsible=icon]:hidden ${isActive || isAnySubItemActive ? "font-medium" : "font-normal"}`}
-				>
-					{item.title}
-				</span>
+			<div className="flex w-full min-w-0 items-center gap-2.5">
+				<item.icon className={`h-3.5 w-3.5 shrink-0 ${isActive || isAnySubItemActive ? "text-primary" : "text-foreground"}`} />
+				<span className="min-w-0 truncate text-[13px] font-medium group-data-[collapsible=icon]:hidden">{item.title}</span>
 				{item.new && (
 					<Badge data-new-badge="true" className={`${newBadgeClassName} ml-auto ${hasSubItems ? "mr-2" : ""}`}>
 						New
@@ -318,7 +316,7 @@ const SidebarItemView = ({
 				className={buttonClassName}
 				onClick={handleClick}
 				aria-label={item.title}
-				data-testid={`sidebar-item-btn-${slug(item.title)}`}
+				data-testid={`sidebar-item-btn-${item.testId ?? slug(item.title)}`}
 			>
 				{innerContent}
 			</SidebarMenuButton>
@@ -370,7 +368,7 @@ const SidebarItemView = ({
 		<SidebarMenuItem key={item.title}>
 			{isSidebarCollapsed && hasSubItems ? (
 				<Popover open={flyoutOpen} onOpenChange={setFlyoutOpen}>
-					<div data-testid={`sidebar-flyout-trigger-${slug(item.title)}`}>
+					<div data-testid={`sidebar-flyout-trigger-${item.testId ?? slug(item.title)}`}>
 						{/* The trigger must be the button itself: aria-haspopup/aria-expanded are invalid on a role-less div. */}
 						<PopoverTrigger asChild onMouseEnter={openFlyout} onMouseLeave={closeFlyout}>
 							{menuButton}
@@ -383,9 +381,9 @@ const SidebarItemView = ({
 						className="w-48 p-1"
 						onMouseEnter={openFlyout}
 						onMouseLeave={closeFlyout}
-						data-testid={`sidebar-flyout-content-${slug(item.title)}`}
+						data-testid={`sidebar-flyout-content-${item.testId ?? slug(item.title)}`}
 					>
-						<div className="text-muted-foreground px-2 py-1.5 text-xs font-medium">{item.title}</div>
+						<div className="text-muted-foreground px-2 py-1.5 text-xs font-normal">{item.title}</div>
 						{item.subItems?.map((subItem) => {
 							const baseHref = getSidebarItemHref(subItem);
 							const href = preserveTimeFilters(baseHref, subItem.url, pathname, search);
@@ -393,12 +391,12 @@ const SidebarItemView = ({
 							const SubItemIcon = subItem.icon;
 							const subSlug = subItem.testId ?? slug(subItem.title);
 							const inner = (
-								<div className="flex min-w-0 items-center gap-2">
+								<div className="flex min-w-0 items-center gap-2.5">
 									{SubItemIcon && (
-										<SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />
+										<SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-foreground"}`} />
 									)}
 									<span
-										className={`min-w-0 truncate text-sm ${isSubItemActive ? "text-primary font-medium" : "text-slate-600 dark:text-zinc-400"}`}
+										className={`min-w-0 truncate text-[13px] font-medium ${isSubItemActive ? "text-primary" : "text-slate-600 dark:text-zinc-400"}`}
 									>
 										{subItem.title}
 									</span>
@@ -461,11 +459,9 @@ const SidebarItemView = ({
 										: "hover:bg-sidebar-accent hover:text-accent-foreground text-slate-600 dark:text-zinc-400"
 						}`;
 						const subInner = (
-							<div className="flex w-full min-w-0 items-center gap-2">
-								{SubItemIcon && (
-									<SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-muted-foreground"}`} />
-								)}
-								<span className={`min-w-0 truncate text-sm ${isSubItemActive ? "font-medium" : "font-normal"}`}>{subItem.title}</span>
+							<div className="flex w-full min-w-0 items-center gap-2.5">
+								{SubItemIcon && <SubItemIcon className={`h-3.5 w-3.5 shrink-0 ${isSubItemActive ? "text-primary" : "text-foreground"}`} />}
+								<span className="min-w-0 truncate text-[13px] font-medium">{subItem.title}</span>
 								{subItem.tag && (
 									<Badge variant="secondary" className="text-muted-foreground ml-auto text-xs">
 										{subItem.tag}
@@ -801,7 +797,8 @@ export default function AppSidebar() {
 				],
 			},
 			{
-				title: "MCP Gateway",
+				title: "MCP Servers",
+				testId: "mcp-gateway", // keep the pre-rename E2E selector stable
 				icon: MCPIcon,
 				description: "MCP configuration",
 				url: "/workspace/mcp-gateway",
@@ -1069,11 +1066,42 @@ export default function AppSidebar() {
 				],
 			},
 			{
-				title: "Cluster Config",
+				title: "Cluster",
 				url: "/workspace/cluster",
 				icon: Network,
-				description: "Manage Bifrost cluster",
+				description: "Monitor the Bifrost cluster",
 				hasAccess: hasClusterConfigAccess,
+				subItems: [
+					{
+						title: "Nodes",
+						url: "/workspace/cluster/overview",
+						icon: Server,
+						description: "Node health, CPU, memory and request rate",
+						hasAccess: hasClusterConfigAccess,
+					},
+					{
+						title: "Storage",
+						url: "/workspace/cluster/storage",
+						icon: Database,
+						description: "Config and logs store databases, pools and slow queries",
+						hasAccess: hasClusterConfigAccess,
+					},
+					{
+						title: "Incidents",
+						url: "/workspace/cluster/incidents",
+						icon: TriangleAlert,
+						description: "Memory, message delivery and database incidents",
+						hasAccess: hasClusterConfigAccess,
+					},
+					{
+						title: "Settings",
+						url: "/workspace/cluster/settings",
+						icon: Settings2Icon,
+						description: "Monitoring, sample retention and memory threshold",
+						// The settings API sits under the Settings resource; saving also needs Settings update.
+						hasAccess: hasClusterConfigAccess && hasSettingsAccess,
+					},
+				],
 			},
 			{
 				title: "Adaptive Routing",
@@ -1115,11 +1143,27 @@ export default function AppSidebar() {
 							hasAccess: hasPromptRepositoryAccess,
 						},
 						{
-							title: "Skills Repository",
+							title: "Skills",
 							url: "/workspace/skills-repo",
 							icon: BookOpenText,
-							description: "Skills repository",
-							hasAccess: hasSkillsRepositoryAccess,
+							description: "Manage skills and marketplace settings",
+							hasAccess: hasSkillsRepositoryAccess || hasSettingsAccess,
+							subItems: [
+								{
+									title: "Skills Repository",
+									url: "/workspace/skills-repo",
+									icon: BookOpenText,
+									description: "Skills repository",
+									hasAccess: hasSkillsRepositoryAccess,
+								},
+								{
+									title: "Skills Settings",
+									url: "/workspace/config/skills",
+									icon: Settings,
+									description: "Skills marketplace configuration",
+									hasAccess: hasSettingsAccess,
+								},
+							],
 						},
 					]
 				: []),
@@ -1453,7 +1497,7 @@ export default function AppSidebar() {
 		});
 	};
 
-	const configExceptions = ["/workspace/config/logging"];
+	const configExceptions = ["/workspace/config/logging", "/workspace/config/skills"];
 
 	const isActiveRoute = (url: string) => {
 		if (url === "/" && pathname === "/") return true;

@@ -820,6 +820,103 @@ func TestResponsesMessagePreservesToolSearchExecution(t *testing.T) {
 	}
 }
 
+// A verbatim tool_search item surfaces its id, call_id and status, so converters can
+// pair a call with its output and give rebuilt blocks a stable id, while the bytes
+// still round-trip unchanged.
+func TestResponsesMessageSurfacesToolSearchIdentity(t *testing.T) {
+	raw := `{"id":"tsc_1","type":"tool_search_call","status":"completed","arguments":{"query":"loki"},"call_id":"call_1","execution":"client"}`
+	var msg ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(raw), &msg))
+	require.NotNil(t, msg.ID)
+	assert.Equal(t, "tsc_1", *msg.ID)
+	require.NotNil(t, msg.Status)
+	assert.Equal(t, "completed", *msg.Status)
+	require.NotNil(t, msg.ResponsesToolMessage)
+	require.NotNil(t, msg.CallID)
+	assert.Equal(t, "call_1", *msg.CallID)
+	require.NotNil(t, msg.Arguments)
+	assert.True(t, msg.IsVerbatimItem())
+	assert.True(t, msg.IsClientToolSearchItem())
+	encoded, err := MarshalSorted(msg)
+	require.NoError(t, err)
+	assert.Equal(t, raw, string(encoded))
+
+	// Hosted search sends call_id null: no CallID, no client execution.
+	var hosted ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(`{"id":"tsc_2","type":"tool_search_call","execution":"server","call_id":null,"arguments":{}}`), &hosted))
+	assert.Equal(t, "tsc_2", *hosted.ID)
+	assert.Nil(t, hosted.CallID)
+	assert.False(t, hosted.IsClientToolSearchItem())
+}
+
+// An Anthropic tool_search_call replayed through /v1/responses (Bifrost's own output
+// echoed back) surfaces its name and tool_references, so the Anthropic rebuild keeps
+// the search variant and the discovered tools; the bytes still round-trip unchanged.
+func TestResponsesMessageSurfacesAnthropicToolSearchReplay(t *testing.T) {
+	raw := `{"id":"srvtoolu_bdrk_01","arguments":{"query":"summarize_source_1"},"call_id":"srvtoolu_bdrk_01","status":"completed","type":"tool_search_call","name":"tool_search_tool_bm25","tool_references":["summarize_source_1"]}`
+	var msg ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(raw), &msg))
+	require.NotNil(t, msg.ResponsesToolMessage)
+	require.NotNil(t, msg.CallID)
+	assert.Equal(t, "srvtoolu_bdrk_01", *msg.CallID)
+	require.NotNil(t, msg.Name)
+	assert.Equal(t, "tool_search_tool_bm25", *msg.Name)
+	require.NotNil(t, msg.ResponsesToolSearchCall)
+	assert.Equal(t, []string{"summarize_source_1"}, msg.ResponsesToolSearchCall.ToolReferences)
+	require.NotNil(t, msg.Arguments)
+	assert.JSONEq(t, `{"query":"summarize_source_1"}`, *msg.Arguments)
+	assert.False(t, msg.IsClientToolSearchItem())
+	encoded, err := MarshalSorted(msg)
+	require.NoError(t, err)
+	assert.Equal(t, raw, string(encoded))
+
+	// OpenAI items carry neither field.
+	var openai ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(`{"id":"tsc_1","type":"tool_search_call","status":"completed","arguments":{},"call_id":"call_1","execution":"client"}`), &openai))
+	assert.Nil(t, openai.Name)
+	assert.Nil(t, openai.ResponsesToolSearchCall)
+}
+
+func TestResponsesMessageToolSearchOutputToolNames(t *testing.T) {
+	var msg ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(`{"type":"tool_search_output","tools":[{"type":"function","name":"get_weather"},{"type":"namespace","name":"crm","tools":[{"type":"function","name":"list_orders"},{"type":"function","name":"get_order"}]}]}`), &msg))
+	assert.Equal(t, []string{"get_weather", "list_orders", "get_order"}, msg.ToolSearchOutputToolNames())
+	assert.Nil(t, (&ResponsesMessage{}).ToolSearchOutputToolNames())
+}
+
+func TestClientToolSearchFunctionName(t *testing.T) {
+	function := func(name string, deferred bool) ResponsesTool {
+		tool := ResponsesTool{Type: ResponsesToolTypeFunction, Name: Ptr(name), ResponsesToolFunction: &ResponsesToolFunction{}}
+		if deferred {
+			tool.DeferLoading = Ptr(true)
+		}
+		return tool
+	}
+	referenceHistory := []ResponsesMessage{
+		{Type: Ptr(ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr("c1"), Name: Ptr("find_tools")}},
+		{Type: Ptr(ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr("c1"), Output: &ResponsesToolMessageOutputStruct{
+			ResponsesFunctionToolCallOutputBlocks: []ResponsesMessageContentBlock{{Type: ResponsesInputMessageContentBlockTypeToolReference, ToolName: Ptr("get_weather")}},
+		}}},
+	}
+	for _, tc := range []struct {
+		name  string
+		tools []ResponsesTool
+		input []ResponsesMessage
+		want  string
+	}{
+		{"claude code name", []ResponsesTool{function("ToolSearch", false), function("get_weather", true)}, nil, "ToolSearch"},
+		{"docs name", []ResponsesTool{function("tool_search", false), function("get_weather", true)}, nil, "tool_search"},
+		{"history signal", []ResponsesTool{function("find_tools", false), function("get_weather", true)}, referenceHistory, "find_tools"},
+		{"nothing deferred", []ResponsesTool{function("tool_search", false), function("get_weather", false)}, nil, ""},
+		{"deferred search name is not the search", []ResponsesTool{function("tool_search", true)}, nil, ""},
+		{"no search function", []ResponsesTool{function("lookup", false), function("get_weather", true)}, nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ClientToolSearchFunctionName(tc.tools, tc.input))
+		})
+	}
+}
+
 func TestResponsesMessageRoundTripsToolSearchOutputTools(t *testing.T) {
 	raw := []byte(`{"id":"tso_1","type":"tool_search_output","call_id":"call_1","tools":[{"type":"namespace","name":"telemetry","tools":[{"type":"function","name":"query_loki_logs","description":"query loki","parameters":{"type":"object","properties":{"run_id":{"type":"string"}}}}]}]}`)
 
@@ -978,7 +1075,7 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 					ResponsesCodeInterpreterOutputLogs: &ResponsesCodeInterpreterOutputLogs{Type: "logs", Logs: "hello"},
 				}},
 			},
-			ResponsesMCPToolCall: &ResponsesMCPToolCall{ServerLabel: "repo"},
+			ServerLabel: Ptr("repo"),
 			ResponsesImageGenerationCall: &ResponsesImageGenerationCall{
 				Result:        "image",
 				Background:    Ptr("transparent"),
@@ -987,7 +1084,7 @@ func TestDeepCopyResponsesMessagePreservesExtendedFields(t *testing.T) {
 				RevisedPrompt: Ptr("draw a cat"),
 				Size:          Ptr("1024x1024"),
 			},
-			ResponsesMCPListTools: &ResponsesMCPListTools{ServerLabel: "repo", Tools: []ResponsesMCPTool{{
+			ResponsesMCPListTools: &ResponsesMCPListTools{Tools: []ResponsesMCPTool{{
 				Name:        "read_file",
 				InputSchema: map[string]any{"type": "object", "properties": map[string]any{"path": "string"}},
 				Description: Ptr("read a file"),
@@ -1324,6 +1421,33 @@ func TestStreamWithDefaultsStripsCodeExecutionCarry(t *testing.T) {
 			t.Errorf("%s: normalized stream JSON still has code_execution_*:\n%s", typ, encoded)
 		}
 	}
+}
+
+// TestStreamWithDefaultsPreservesExtraFields pins parity with the non-streaming
+// WithDefaults: provider-format stream routes must not zero the chunk's extra_fields.
+func TestStreamWithDefaultsPreservesExtraFields(t *testing.T) {
+	extra := BifrostResponseExtraFields{
+		RequestType: ResponsesStreamRequest,
+		RoutingInfo: RoutingInfo{Provider: Vertex, Model: "claude-sonnet-5-5", Key: "vertex-key"},
+		Provider:    Vertex,
+		Latency:     42,
+		ChunkIndex:  5,
+	}
+	src := &BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeOutputTextDelta,
+		Delta:       new("hi"),
+		ExtraFields: extra,
+	}
+
+	out := src.WithDefaults()
+	require.NotNil(t, out)
+	assert.Equal(t, extra, out.ExtraFields)
+
+	encoded, err := Marshal(out)
+	require.NoError(t, err)
+	assert.Equal(t, string(ResponsesStreamRequest), gjson.GetBytes(encoded, "extra_fields.request_type").String(), string(encoded))
+	assert.Equal(t, string(Vertex), gjson.GetBytes(encoded, "extra_fields.routing_info.provider").String(), string(encoded))
+	assert.Equal(t, int64(5), gjson.GetBytes(encoded, "extra_fields.chunk_index").Int(), string(encoded))
 }
 
 // TestCustomToolInputDoneRoundTrip preserves the terminal input clients compare with streamed custom-tool deltas.
@@ -2314,4 +2438,85 @@ func TestResponsesComputerCallSingularActionStillWorks(t *testing.T) {
 	if got := msg.ResponsesToolMessage.Action.ResponsesComputerToolCallAction.Type; got != "screenshot" {
 		t.Fatalf("action type = %q, want screenshot", got)
 	}
+}
+
+// TestDeepCopyResponsesMessagePreservesToolChanges: cache-breakpoint injection copies the whole
+// message, so a tool_addition / tool_removal block must keep its tool target (and a compaction
+// block its tool_changes) through DeepCopyResponsesMessage, without sharing pointers.
+func TestDeepCopyResponsesMessagePreservesToolChanges(t *testing.T) {
+	def := &ResponsesTool{Type: ResponsesToolTypeFunction, Name: Ptr("get_weather"), ResponsesToolFunction: &ResponsesToolFunction{}}
+	msg := ResponsesMessage{
+		Role: Ptr(ResponsesInputMessageRoleSystem),
+		Content: &ResponsesMessageContent{ContentBlocks: []ResponsesMessageContentBlock{
+			{Type: ResponsesInputMessageContentBlockTypeToolAddition, ToolChange: &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolDefinition, Definition: def}},
+			{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolReference, Name: Ptr("echo")}},
+			{Type: ResponsesInputMessageContentBlockTypeText, Text: Ptr("Weather lookups are disabled.")},
+			{Type: ResponsesOutputMessageContentTypeCompaction, ResponsesOutputMessageContentCompaction: &ResponsesOutputMessageContentCompaction{
+				Summary:     "summary",
+				ToolChanges: []ResponsesMessageContentBlock{{Type: ResponsesInputMessageContentBlockTypeToolRemoval, ToolChange: &ResponsesToolChangeTarget{Type: ResponsesToolChangeTargetTypeToolReference, Name: Ptr("echo")}}},
+			}},
+		}},
+	}
+	copied := DeepCopyResponsesMessage(msg)
+	blocks := copied.Content.ContentBlocks
+	if blocks[0].ToolChange == nil || blocks[0].ToolChange.Type != ResponsesToolChangeTargetTypeToolDefinition {
+		t.Fatalf("tool_addition lost its tool target on copy: %+v", blocks[0])
+	}
+	if blocks[0].ToolChange == msg.Content.ContentBlocks[0].ToolChange {
+		t.Errorf("tool_addition target pointer shared with the original")
+	}
+	if blocks[0].ToolChange.Definition == nil || blocks[0].ToolChange.Definition.Name == nil || *blocks[0].ToolChange.Definition.Name != "get_weather" {
+		t.Errorf("tool_addition definition not copied: %+v", blocks[0].ToolChange)
+	}
+	if blocks[1].ToolChange == nil || blocks[1].ToolChange.Name == nil || *blocks[1].ToolChange.Name != "echo" {
+		t.Fatalf("tool_removal lost its tool reference on copy: %+v", blocks[1])
+	}
+	cmp := blocks[3].ResponsesOutputMessageContentCompaction
+	if cmp == nil || len(cmp.ToolChanges) != 1 || cmp.ToolChanges[0].ToolChange == nil {
+		t.Fatalf("compaction tool_changes lost on copy: %+v", cmp)
+	}
+}
+
+// server_label sat on two embedded structs (ResponsesMCPListTools and
+// ResponsesMCPToolCall) at the same depth, so encoding/json and sonic treated it
+// as ambiguous and dropped it both ways; replaying an mcp_list_tools or mcp_call
+// item then reached OpenAI without server_label and 400ed.
+func TestResponsesMCPItemsKeepServerLabel(t *testing.T) {
+	items := []string{
+		`{"type":"mcp_list_tools","id":"mcpl_1","server_label":"deepwiki","tools":[{"name":"ask","input_schema":{"type":"object"}}]}`,
+		`{"type":"mcp_call","id":"mcp_1","server_label":"deepwiki","name":"ask","arguments":"{}","output":"ok"}`,
+		`{"type":"mcp_approval_request","id":"mcpr_1","server_label":"deepwiki","name":"ask","arguments":"{}"}`,
+	}
+	for _, raw := range items {
+		t.Run(gjson.Get(raw, "type").String(), func(t *testing.T) {
+			for name, roundTrip := range map[string]func([]byte, *ResponsesMessage) ([]byte, error){
+				"sonic": func(b []byte, m *ResponsesMessage) ([]byte, error) {
+					if err := Unmarshal(b, m); err != nil {
+						return nil, err
+					}
+					return Marshal(m)
+				},
+				"encoding/json": func(b []byte, m *ResponsesMessage) ([]byte, error) {
+					if err := json.Unmarshal(b, m); err != nil {
+						return nil, err
+					}
+					return json.Marshal(m)
+				},
+			} {
+				var msg ResponsesMessage
+				out, err := roundTrip([]byte(raw), &msg)
+				require.NoError(t, err, name)
+				assert.Equal(t, "deepwiki", gjson.GetBytes(out, "server_label").String(), "%s dropped server_label: %s", name, out)
+			}
+		})
+	}
+
+	// Built in Go (no decode), the label must still reach the wire exactly once.
+	msg := ResponsesMessage{
+		Type:                 Ptr(ResponsesMessageTypeMCPListTools),
+		ResponsesToolMessage: &ResponsesToolMessage{ServerLabel: Ptr("deepwiki"), ResponsesMCPListTools: &ResponsesMCPListTools{}},
+	}
+	out, err := Marshal(msg)
+	require.NoError(t, err)
+	assert.Equal(t, "deepwiki", gjson.GetBytes(out, "server_label").String(), string(out))
 }

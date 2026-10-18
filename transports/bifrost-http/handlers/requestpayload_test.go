@@ -1,9 +1,11 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"maps"
+	"mime/multipart"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +15,8 @@ import (
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 )
 
@@ -723,25 +727,277 @@ func BenchmarkSingleFullBodyParse(b *testing.B) {
 }
 
 // TestSDKFidelityPrepareDecisionRequestNullState pins #7599 on the Bifrost-native
-// /v1/decisions route: {"state": null} is a valid decision input (TypeSafe's
-// EntryType allows null) and must not be confused with an absent state, which
-// stays a 400.
+// /v1/decisions route: {"state": null} is a valid map-form decision input
+// (TypeSafe's EntryType allows null) and must not be confused with an absent
+// state, which stays a 400. The normalized body follows the same rule for
+// "input".
 func TestSDKFidelityPrepareDecisionRequestNullState(t *testing.T) {
 	questions := `"questions":{"q":{"kind":"noul","instructions":"Evaluate this state."}}`
 
 	ctx := &fasthttp.RequestCtx{}
 	ctx.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0","state":null,` + questions + `}`)
-	_, req, err := prepareDecisionRequest(ctx, nil)
+	req, err := prepareDecisionMapFormRequest(ctx, nil)
 	if err != nil {
 		t.Fatalf("null state must be accepted, got %v", err)
 	}
-	if req.State != nil {
-		t.Errorf("null state must stay null, got %#v", req.State)
+	if !req.Input.IsEmpty() {
+		t.Errorf("null state must stay null, got %#v", req.Input)
 	}
 
 	missing := &fasthttp.RequestCtx{}
 	missing.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0",` + questions + `}`)
-	if _, _, err := prepareDecisionRequest(missing, nil); err == nil || !strings.Contains(err.Error(), "state is required") {
+	if _, err := prepareDecisionMapFormRequest(missing, nil); err == nil || !strings.Contains(err.Error(), "state is required") {
 		t.Fatalf("absent state must still be rejected, got %v", err)
 	}
+
+	listQuestions := `"questions":[{"type":"predicate","name":"q","instructions":"Evaluate this input."}]`
+	nullInput := &fasthttp.RequestCtx{}
+	nullInput.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0","input":null,` + listQuestions + `}`)
+	if req, _, err := prepareDecisionRequest(nullInput, nil); err != nil || !req.Input.IsEmpty() {
+		t.Fatalf("null input must be accepted and stay null, got %v %#v", err, req)
+	}
+	missingInput := &fasthttp.RequestCtx{}
+	missingInput.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0",` + listQuestions + `}`)
+	if _, _, err := prepareDecisionRequest(missingInput, nil); err == nil || !strings.Contains(err.Error(), "input is required") {
+		t.Fatalf("absent input must be rejected, got %v", err)
+	}
+}
+
+// decisionMultipart builds a multipart /v1/decisions body from the request JSON and
+// file parts, given in order as name and bytes pairs.
+func decisionMultipart(t *testing.T, request string, files ...string) *fasthttp.RequestCtx {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	part, err := writer.CreateFormField("request")
+	require.NoError(t, err)
+	_, _ = part.Write([]byte(request))
+	for i := 0; i+1 < len(files); i += 2 {
+		file, err := writer.CreateFormFile(files[i], files[i]+".png")
+		require.NoError(t, err)
+		_, _ = file.Write([]byte(files[i+1]))
+	}
+	require.NoError(t, writer.Close())
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentType(writer.FormDataContentType())
+	ctx.Request.SetBody(buf.Bytes())
+	return ctx
+}
+
+// TestPrepareDecisionRequestMultipart pins multipart on /v1/decisions: the request
+// part decodes as a JSON body does, and each image part sent by reference takes the
+// bytes of the file part its name points at. A name in a JSON request, a name with
+// no file part, two parts naming one file, and a file nothing names are each a 400.
+func TestPrepareDecisionRequestMultipart(t *testing.T) {
+	request := func(parts string) string {
+		return `{"model":"typesafe/jev-1.14.0","input":[{"role":"user","content":[{"type":"input_text","text":{"photo":"r-a"}},` + parts + `]}],"questions":[{"type":"predicate","name":"q"}]}`
+	}
+	named := request(`{"type":"input_image","id":"r-a","name":"photo"}`)
+
+	req, mapForm, err := prepareDecisionRequest(decisionMultipart(t, named, "photo", "PNG-BYTES"), nil)
+	require.NoError(t, err)
+	assert.False(t, mapForm)
+	image := req.Input.Messages[0].Content.Parts[1]
+	assert.Equal(t, "PNG-BYTES", string(image.Data))
+	assert.Equal(t, "photo", *image.Name)
+	assert.Equal(t, schemas.Typesafe, req.Provider)
+
+	_, _, err = prepareDecisionRequest(decisionMultipart(t, request(`{"type":"input_image","id":"r-a","name":"photo","data":"QUJD"}`), "photo", "FILE"), nil)
+	require.NoError(t, err, "a file part takes precedence over data")
+
+	for name, ctx := range map[string]*fasthttp.RequestCtx{
+		"needs a multipart request":            jsonDecisionCtx(named),
+		"which the request does not carry":     decisionMultipart(t, named, "other", "x"),
+		"is not named by any input_image part": decisionMultipart(t, request(`{"type":"input_image","id":"r-a","data":"QUJD"}`), "photo", "x"),
+		"both name part":                       decisionMultipart(t, request(`{"type":"input_image","id":"r-a","name":"photo"},{"type":"input_image","id":"r-b","name":"photo"}`), "photo", "x"),
+		`requires a "request" part`:            decisionMultipartWithoutRequest(t),
+	} {
+		_, _, err := prepareDecisionRequest(ctx, nil)
+		assert.ErrorContains(t, err, name)
+	}
+}
+
+func jsonDecisionCtx(body string) *fasthttp.RequestCtx {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(body)
+	return ctx
+}
+
+func decisionMultipartWithoutRequest(t *testing.T) *fasthttp.RequestCtx {
+	t.Helper()
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	file, err := writer.CreateFormFile("photo", "photo.png")
+	require.NoError(t, err)
+	_, _ = file.Write([]byte("x"))
+	require.NoError(t, writer.Close())
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.Header.SetContentType(writer.FormDataContentType())
+	ctx.Request.SetBody(buf.Bytes())
+	return ctx
+}
+
+// TestPrepareDecisionRequestPicksBodyForm pins how /v1/decisions reads its two
+// bodies: the normalized body first, and the deprecated map form only when the
+// body does not decode as it (map-form questions are an object, not a list).
+// A "state" sent with the normalized body is dropped, not forwarded.
+func TestPrepareDecisionRequestPicksBodyForm(t *testing.T) {
+	const model = `"model":"typesafe/jev-1.13.0",`
+	cases := map[string]struct {
+		body    string
+		mapForm bool
+		wantErr string
+	}{
+		"normalized":               {body: `{` + model + `"input":"s","questions":[{"type":"predicate","name":"q"}]}`},
+		"map form":                 {body: `{` + model + `"state":"s","questions":{"q":{"kind":"noul"}}}`, mapForm: true},
+		"map form without state":   {body: `{` + model + `"questions":{"q":{"kind":"noul"}}}`, wantErr: "state is required"},
+		"state without questions":  {body: `{` + model + `"state":"s"}`, wantErr: "input is required"},
+		"normalized without input": {body: `{` + model + `"questions":[{"type":"predicate","name":"q"}]}`, wantErr: "input is required"},
+		"malformed normalized":     {body: `{` + model + `"input":7,"questions":[{"type":"predicate","name":"q"}]}`, wantErr: "Invalid request payload"},
+		"state with input":         {body: `{` + model + `"state":"s","input":"s","questions":[{"type":"predicate"}]}`},
+		"state with a list":        {body: `{` + model + `"state":"s","questions":[{"type":"predicate"}]}`, wantErr: "input is required"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBodyString(tc.body)
+			_, mapForm, err := prepareDecisionRequest(ctx, nil)
+			if tc.wantErr != "" {
+				assert.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.mapForm, mapForm)
+		})
+	}
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{` + model + `"state":"stale","input":"s","questions":[{"type":"predicate"}]}`)
+	req, _, err := prepareDecisionRequest(ctx, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "s", *req.Input.Text)
+	assert.NotContains(t, req.ExtraParams, "state", "a stray state must not reach the provider as an extension")
+}
+
+// TestPrepareDecisionMapFormRequestNormalizes pins that a map-form body
+// becomes the normalized request: questions sorted by name and named after
+// their keys, noul as predicate keeping its criteria, options as choices, and
+// score levels labelled by index, with the state as the input.
+func TestPrepareDecisionMapFormRequestNormalizes(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0","state":{"ticket":"refund"},"questions":{
+		"urgency":{"kind":"score","instructions":"How urgent?","criteria":["low","high"]},
+		"angry":{"kind":"noul","instructions":"Angry?","criteria":{"true":"upset"}},
+		"category":{"kind":"choice","criteria":{"billing":"money","bug":null}}
+	}}`)
+	req, err := prepareDecisionMapFormRequest(ctx, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, schemas.Typesafe, req.Provider)
+	assert.Equal(t, map[string]any{"ticket": "refund"}, req.Input.Structured)
+	require.Len(t, req.Questions, 3)
+	angry, category, urgency := req.Questions[0], req.Questions[1], req.Questions[2]
+	assert.Equal(t, "angry", *angry.Name)
+	assert.Equal(t, schemas.DecisionTypePredicate, angry.Type)
+	assert.Equal(t, &schemas.DecisionCriteria{True: schemas.NewDecisionText("upset")}, angry.Criteria)
+	require.Len(t, category.Choices, 2)
+	assert.Equal(t, "billing", *category.Choices[0].Value.Str)
+	assert.Nil(t, category.Choices[1].Description)
+	require.Len(t, urgency.Levels, 2)
+	assert.Equal(t, schemas.DecisionLevel{Label: "1", Description: schemas.NewDecisionText("high")}, urgency.Levels[1])
+
+	bad := &fasthttp.RequestCtx{}
+	bad.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0","state":"s","questions":{"q":{"kind":"ranking"}}}`)
+	_, err = prepareDecisionMapFormRequest(bad, nil)
+	assert.ErrorContains(t, err, "unsupported kind")
+}
+
+// TestPrepareDecisionRequestReadsNormalizedBody pins the normalized body: a
+// string input is text, an array is messages, an object is structured input,
+// and questions keep their order and list-only details.
+func TestPrepareDecisionRequestReadsNormalizedBody(t *testing.T) {
+	questions := `"questions":[
+		{"type":"choice","name":"refund","instructions":"Refund?","choices":[{"value":true,"description":"yes"},{"value":false}]},
+		{"type":"score","instructions":"Rate","levels":[{"label":"Low"},{"label":"High","description":"urgent"}]}
+	]`
+	for name, tc := range map[string]struct {
+		input string
+		check func(t *testing.T, input schemas.DecisionInput)
+	}{
+		"text": {`"I was charged twice."`, func(t *testing.T, input schemas.DecisionInput) {
+			assert.Equal(t, "I was charged twice.", *input.Text)
+		}},
+		"messages": {`[{"role":"user","content":[{"type":"input_text","text":"look"},{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}]`, func(t *testing.T, input schemas.DecisionInput) {
+			require.Len(t, input.Messages, 1)
+			assert.Equal(t, schemas.DecisionInputPartTypeImage, input.NonTextPartType())
+		}},
+		"structured": {`{"ticket":"refund"}`, func(t *testing.T, input schemas.DecisionInput) {
+			assert.Equal(t, map[string]interface{}{"ticket": "refund"}, input.Structured)
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBodyString(`{"model":"typesafe/jev-1.13.0","safety_identifier":"user-1","input":` + tc.input + `,` + questions + `}`)
+			req, mapForm, err := prepareDecisionRequest(ctx, nil)
+			require.NoError(t, err)
+			assert.False(t, mapForm)
+			tc.check(t, req.Input)
+			assert.Equal(t, "user-1", *req.SafetyIdentifier)
+			require.Len(t, req.Questions, 2)
+			assert.True(t, *req.Questions[0].Choices[0].Value.Bool)
+			assert.Nil(t, req.Questions[1].Name)
+			assert.Equal(t, "High", req.Questions[1].Levels[1].Label)
+		})
+	}
+}
+
+// TestDecisionMapFormResponseWire pins the exact map-form response callers
+// parse: answers keyed by name with kind and value, probabilities keyed by
+// option or level index, and Laya fields under their own names. A refusal
+// keeps its kind with a null value. The payloads are synthetic.
+func TestDecisionMapFormResponseWire(t *testing.T) {
+	answerConfidence := 0.97
+	resp := &schemas.BifrostDecisionResponse{
+		Model: "jev-1.13.0",
+		Answers: []schemas.DecisionAnswer{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("angry"), Probability: schemas.Ptr(0.25)},
+			{Type: schemas.DecisionTypeChoice, Name: schemas.Ptr("category"), Choice: &schemas.DecisionScalar{Str: schemas.Ptr("billing")}, Confidence: schemas.Ptr(0.8),
+				Probabilities: []schemas.DecisionProbability{
+					{Value: schemas.DecisionScalar{Str: schemas.Ptr("billing")}, Probability: 0.9},
+					{Value: schemas.DecisionScalar{Str: schemas.Ptr("bug")}, Probability: 0.1},
+				}, AnswerConfidence: &answerConfidence},
+			{Type: schemas.DecisionTypeScore, Name: schemas.Ptr("urgency"), Score: schemas.Ptr(1.5),
+				Probabilities: []schemas.DecisionProbability{
+					{Value: schemas.DecisionScalar{Num: schemas.Ptr(0.0)}, Label: schemas.Ptr("0"), Probability: 0.5},
+					{Value: schemas.DecisionScalar{Num: schemas.Ptr(2.0)}, Label: schemas.Ptr("2"), Probability: 0.5},
+				}, Legend: map[string]any{"0": "low", "2": "high"}},
+			{Type: schemas.DecisionTypeRefusal, Name: schemas.Ptr("declined")},
+			{Type: schemas.DecisionTypeBox, Name: schemas.Ptr("mug"), Box: &schemas.DecisionBox{Top: 0.25, Bottom: 0.82, Left: 0.44, Right: 0.84}, Confidence: schemas.Ptr(0.92)},
+		},
+		Usage: &schemas.BifrostLLMUsage{PromptTokens: 3, TotalTokens: 3},
+	}
+
+	encoded, err := schemas.MarshalSorted(toDecisionMapFormResponse(resp))
+	require.NoError(t, err)
+	var wire map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &wire))
+	assert.ElementsMatch(t, []string{"model", "answers", "usage", "extra_fields"}, keysOf(wire))
+	assert.Equal(t, map[string]any{
+		"angry":    map[string]any{"kind": "noul", "value": 0.25},
+		"category": map[string]any{"kind": "choice", "value": "billing", "confidence": 0.8, "probabilities": map[string]any{"billing": 0.9, "bug": 0.1}, "answer_confidence": 0.97},
+		"urgency":  map[string]any{"kind": "score", "value": 1.5, "probabilities": map[string]any{"0": 0.5, "2": 0.5}, "legend": map[string]any{"0": "low", "2": "high"}},
+		"declined": map[string]any{"kind": "refusal", "value": nil},
+		"mug":      map[string]any{"kind": "box", "value": map[string]any{"top": 0.25, "bottom": 0.82, "left": 0.44, "right": 0.84}, "confidence": 0.92},
+	}, wire["answers"])
+	assert.False(t, strings.Contains(string(encoded), `"type":"noul"`), "the map form reports kind, not Typesafe's type")
+	assert.Nil(t, toDecisionMapFormResponse(nil))
+}
+
+// keysOf returns a map's keys.
+func keysOf(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	return keys
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -283,6 +282,7 @@ func (p *OAuth2Provider) performExchange(ctx *schemas.BifrostContext, config *sc
 // *schemas.TokenExchangeRejectedError so callers can distinguish "fix the
 // credential" from transient failures.
 func (p *OAuth2Provider) rawExchange(ctx context.Context, config *schemas.MCPClientConfig, form func(*schemas.TokenExchangeIdP) (url.Values, error)) (*schemas.OAuth2TokenExchangeResponse, error) {
+	ctx = withRequirePublicTarget(ctx, config == nil || config.RequirePublicTarget)
 	resolver := p.tokenExchangeIdPResolver()
 	if resolver == nil || !resolver.Available() {
 		return nil, schemas.ErrTokenExchangeUnavailable
@@ -319,17 +319,14 @@ func (p *OAuth2Provider) rawExchange(ctx context.Context, config *schemas.MCPCli
 // traces, internal error pages, unrelated response content some identity
 // providers include — must not pass through verbatim.
 func sanitizeTokenExchangeRejection(rawBody string) string {
-	var oauthErr struct {
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
-	}
-	if err := json.Unmarshal([]byte(rawBody), &oauthErr); err != nil || oauthErr.Error == "" {
+	code, description := parseOAuthErrorBody([]byte(rawBody))
+	if code == "" {
 		return "identity provider rejected the request"
 	}
-	if oauthErr.ErrorDescription == "" {
-		return oauthErr.Error
+	if description == "" {
+		return code
 	}
-	return oauthErr.Error + ": " + oauthErr.ErrorDescription
+	return code + ": " + description
 }
 
 // performExchangeCtx shapes a rawExchange result into a cache entry, with the

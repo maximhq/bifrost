@@ -5,8 +5,6 @@
 package typesafe
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -230,91 +228,25 @@ func (provider *TypesafeProvider) Decision(ctx *schemas.BifrostContext, key sche
 	if err := providerUtils.CheckOperationAllowed(schemas.Typesafe, provider.customProviderConfig, schemas.DecisionRequest); err != nil {
 		return nil, err
 	}
-	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
-		ctx,
-		request,
-		func() (providerUtils.RequestBodyWithExtraParams, error) {
-			return ToTypesafeDecisionRequest(request)
-		})
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
-	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
-
-	req := fasthttp.AcquireRequest()
-	resp := fasthttp.AcquireResponse()
-	defer fasthttp.ReleaseRequest(req)
-	defer fasthttp.ReleaseResponse(resp)
-
-	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
-	req.SetRequestURI(provider.buildRequestURL(ctx, typesafeSystemOnePath, schemas.DecisionRequest))
-	req.Header.SetMethod(http.MethodPost)
-	req.Header.SetContentType("application/json")
+	headers := make(map[string]string, 2)
 	if key.Value.GetValue() != "" {
-		req.Header.Set("Authorization", "Bearer "+key.Value.GetValue())
+		headers["Authorization"] = "Bearer " + key.Value.GetValue()
 	}
-	req.SetBody(jsonData)
-
-	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, provider.client, req, resp)
-	defer wait()
-	if bifrostErr != nil {
-		return nil, bifrostErr
+	if usesTypesafeImages(request) && typesafeImagesHeaderAllowed(provider.networkConfig.BetaHeaderOverrides) {
+		headers[typesafeImagesHeader] = "true"
 	}
-
-	// Captured before the status check so error responses forward them too
-	// (the SDKs read x-typesafe-request-id and Retry-After off every reply).
-	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
-	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
-
-	if resp.StatusCode() != fasthttp.StatusOK {
-		return nil, providerUtils.EnrichError(ctx, parseTypesafeError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-
-	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
-	respBody, err := providerUtils.CheckAndDecodeBody(resp)
-	if ft != nil {
-		if err != nil {
-			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
-		} else {
-			ft.EndSpan(fh, schemas.SpanStatusOk, "")
-		}
-	}
-	if err != nil {
-		rawErrBody := append([]byte(nil), resp.Body()...)
-		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-	respBody, envelopeFailed := unwrapResultEnvelope(respBody)
-	if envelopeFailed {
-		return nil, providerUtils.EnrichError(ctx, parseTypesafeEnvelopeFailure(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-
-	var typesafeResp TypesafeDecisionResponse
-	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &typesafeResp, jsonData, sendBackRawRequest, sendBackRawResponse)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-
-	bifrostResp, bifrostErr := ToBifrostDecisionResponse(&typesafeResp, request)
-	if bifrostErr != nil {
-		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, respBody, sendBackRawRequest, sendBackRawResponse, latency)
-	}
-
-	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
-	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
-	if sendBackRawRequest {
-		bifrostResp.ExtraFields.RawRequest = rawRequest
-	}
-	if sendBackRawResponse {
-		bifrostResp.ExtraFields.RawResponse = rawResponse
-	}
-	// The native /typesafe route relays this verbatim so answer and usage
-	// metadata outside the shared shape survive.
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, respBody); err == nil {
-		bifrostResp.NativeResponse = json.RawMessage(compact.Bytes())
-	}
-
-	return bifrostResp, nil
+	return HandleTypesafeDecisionRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, typesafeSystemOnePath, schemas.DecisionRequest),
+		request,
+		ToTypesafeDecisionRequest,
+		headers,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		parseTypesafeError,
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		true,
+	)
 }

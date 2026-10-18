@@ -18,6 +18,7 @@ import (
 	"github.com/bytedance/sonic"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/providers/utils/tokencache"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
@@ -32,6 +33,8 @@ type OpenAIProvider struct {
 	sendBackRawResponse  bool                          // Whether to include raw response in BifrostResponse
 	customProviderConfig *schemas.CustomProviderConfig // Custom provider config
 	disableStore         bool                          // Whether to force store=false on outgoing requests
+	authHTTPClient       *http.Client                  // Client for oauth_key_config token exchanges, routed through proxy_config
+	tokens               *tokencache.Cache[string]     // Tokens minted from oauth_key_config, one slot per credential
 }
 
 // NewOpenAIProvider creates a new OpenAI provider instance.
@@ -76,7 +79,27 @@ func NewOpenAIProvider(config *schemas.ProviderConfig, logger schemas.Logger) *O
 		sendBackRawResponse:  config.SendBackRawResponse,
 		customProviderConfig: config.CustomProviderConfig,
 		disableStore:         config.OpenAIConfig != nil && config.OpenAIConfig.DisableStore,
+		authHTTPClient:       providerUtils.NewProviderHTTPClient(config.ProxyConfig, config.NetworkConfig, logger),
+		tokens:               tokencache.New[string](tokencache.Options{}),
 	}
+}
+
+// resolveKey returns key unchanged when it carries a value or no oauth_key_config, otherwise a
+// copy whose Value is the bearer minted (or served from cache) for that config. Every method
+// resolves at entry, so the rest of the provider, including the shared HandleOpenAI* helpers
+// and BearerAuthHeader, keeps reading key.Value and needs no knowledge of OAuth. A static key
+// costs two comparisons here; a minted one costs the token cache's warm path.
+func (provider *OpenAIProvider) resolveKey(ctx context.Context, key schemas.Key) (schemas.Key, *schemas.BifrostError) {
+	// Trimmed, as validateKey and key selection treat a whitespace-only value as no value.
+	if key.OAuthKeyConfig == nil || strings.TrimSpace(key.Value.GetValue()) != "" {
+		return key, nil
+	}
+	headers, bErr := tokencache.ResolveBearer(ctx, provider.tokens, "", key.OAuthKeyConfig, provider.authHTTPClient)
+	if bErr != nil {
+		return key, bErr
+	}
+	key.Value = *schemas.NewSecretVar(strings.TrimPrefix(headers["Authorization"], "Bearer "))
+	return key, nil
 }
 
 // GetProviderKey returns the provider identifier for OpenAI.
@@ -127,16 +150,23 @@ func (provider *OpenAIProvider) ListModels(ctx *schemas.BifrostContext, keys []s
 		})
 	}
 
-	return HandleOpenAIListModelsRequest(ctx,
-		provider.client,
-		request,
-		provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest),
-		keys,
-		provider.networkConfig.ExtraHeaders,
-		providerName,
-		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
-		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-	)
+	url := provider.buildRequestURL(ctx, "/v1/models", schemas.ListModelsRequest)
+	sendRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	if len(keys) == 0 {
+		return ListModelsByKey(ctx, provider.client, url, schemas.Key{}, request.Unfiltered, provider.networkConfig.ExtraHeaders, providerName, sendRawRequest, sendRawResponse)
+	}
+	// Each key is resolved inside its own list call rather than up front, so a key whose token
+	// cannot be minted fails that call and is reported in KeyStatuses like any other failing key.
+	// Dropping it beforehand would leave its stored health at the last successful listing.
+	return providerUtils.HandleMultipleListModelsRequests(ctx, keys, request,
+		func(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostListModelsRequest) (*schemas.BifrostListModelsResponse, *schemas.BifrostError) {
+			key, keyErr := provider.resolveKey(ctx, key)
+			if keyErr != nil {
+				return nil, keyErr
+			}
+			return ListModelsByKey(ctx, provider.client, url, key, request.Unfiltered, provider.networkConfig.ExtraHeaders, providerName, sendRawRequest, sendRawResponse)
+		})
 }
 
 // ListModelsByKey performs a list models request for a single key.
@@ -147,7 +177,7 @@ func ListModelsByKey(
 	url string,
 	key schemas.Key,
 	unfiltered bool,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -233,7 +263,7 @@ func HandleOpenAIListModelsRequest(
 	request *schemas.BifrostListModelsRequest,
 	url string,
 	keys []schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -256,6 +286,10 @@ func HandleOpenAIListModelsRequest(
 func (provider *OpenAIProvider) ModelRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostModelRetrieveRequest) (*schemas.BifrostModelRetrieveResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ModelRetrieveRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 	if request == nil || request.Model == "" {
 		return nil, providerUtils.NewBifrostOperationError("model is required", nil)
@@ -283,7 +317,7 @@ func HandleOpenAIModelRetrieveRequest(
 	client *fasthttp.Client,
 	url string,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -351,6 +385,10 @@ func (provider *OpenAIProvider) TextCompletion(ctx *schemas.BifrostContext, key 
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TextCompletionRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 	return HandleOpenAITextCompletionRequest(
 		ctx,
 		provider.client,
@@ -374,7 +412,7 @@ func HandleOpenAITextCompletionRequest(
 	url string,
 	request *schemas.BifrostTextCompletionRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -516,6 +554,10 @@ func (provider *OpenAIProvider) TextCompletionStream(ctx *schemas.BifrostContext
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TextCompletionStreamRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 	return HandleOpenAITextCompletionStreaming(
 		ctx,
 		provider.streamingClient,
@@ -544,7 +586,7 @@ func HandleOpenAITextCompletionStreaming(
 	url string,
 	request *schemas.BifrostTextCompletionRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -961,6 +1003,10 @@ func (provider *OpenAIProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	if provider.disableStore {
 		if request.Params == nil {
@@ -1016,7 +1062,7 @@ func HandleOpenAIChatCompletionRequest(
 	url string,
 	request *schemas.BifrostChatRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -1152,6 +1198,7 @@ func HandleOpenAIChatCompletionRequest(
 	if bifrostErr != nil {
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
+	response.Usage.NormalizeReasoningTokens()
 
 	// A 200 is not proof of success on every OpenAI-compatible provider: some report
 	// failures in-band once the status line is already committed. Left unchecked those
@@ -1194,6 +1241,10 @@ func (provider *OpenAIProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ChatCompletionStreamRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 	if provider.disableStore {
 		if request.Params == nil {
 			request.Params = &schemas.ChatParameters{}
@@ -1233,7 +1284,7 @@ func HandleOpenAIChatCompletionStreaming(
 	url string,
 	request *schemas.BifrostChatRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -1584,6 +1635,7 @@ func HandleOpenAIChatCompletionStreaming(
 			if response.Choices == nil {
 				response.Choices = []schemas.BifrostResponseChoice{}
 			}
+			response.Usage.NormalizeReasoningTokens()
 
 			// ModelScope-style upstreams put a full `message` object next to
 			// `delta` in every stream chunk, and BifrostResponseChoice decodes
@@ -1664,6 +1716,8 @@ func HandleOpenAIChatCompletionStreaming(
 					}
 
 					response.ExtraFields.ChunkIndex = response.SequenceNumber
+					// RawResponse below is the chat frame; integrations must not echo it as Responses.
+					response.ExtraFields.ConvertedRequestType = schemas.ChatCompletionRequest
 
 					// One upstream chat frame spreads into several Responses events.
 					// Stamping every one of them made framework/streaming/responses.go
@@ -1927,12 +1981,19 @@ func (provider *OpenAIProvider) Responses(ctx *schemas.BifrostContext, key schem
 		if err != nil {
 			return nil, err
 		}
-		return chatResponse.ToBifrostResponsesResponse(), nil
+		responsesResponse := chatResponse.ToBifrostResponsesResponse()
+		// RawResponse is still the chat body; integrations must not echo it as Responses.
+		responsesResponse.ExtraFields.ConvertedRequestType = schemas.ChatCompletionRequest
+		return responsesResponse, nil
 	}
 
 	// Check if chat completion is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 
 	if provider.disableStore {
@@ -1966,7 +2027,7 @@ func HandleOpenAIResponsesRequest(
 	url string,
 	request *schemas.BifrostResponsesRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -2096,6 +2157,11 @@ func HandleOpenAIResponsesRequest(
 		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, body, sendBackRawRequest, sendBackRawResponse, latency)
 	}
 
+	// Custom tools sent as function tools come back as function calls; restore them.
+	if names := customToolNamesToRestore(ctx, request); names != nil {
+		restoreCustomToolCalls(response.Output, names)
+	}
+
 	response.ExtraFields.Latency = latency.Milliseconds()
 	response.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
 
@@ -2122,6 +2188,10 @@ func (provider *OpenAIProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 	// Check if chat completion stream is allowed for this provider
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ResponsesStreamRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 	if provider.disableStore {
 		if request.Params == nil {
@@ -2161,7 +2231,7 @@ func HandleOpenAIResponsesStreaming(
 	url string,
 	request *schemas.BifrostResponsesRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -2204,6 +2274,8 @@ func HandleOpenAIResponsesStreaming(
 	if bifrostErr != nil {
 		return nil, bifrostErr
 	}
+	// Restores custom tools that were sent as function tools; nil when none were.
+	customToolRestorer := newCustomToolStreamRestorer(customToolNamesToRestore(ctx, request))
 
 	// Create HTTP request for streaming
 	req := fasthttp.AcquireRequest()
@@ -2407,6 +2479,13 @@ func HandleOpenAIResponsesStreaming(
 				}
 			}
 
+			if prefix, drop := customToolRestorer.restore(&response); drop {
+				continue
+			} else if prefix != nil {
+				prefix.ExtraFields.ChunkIndex = prefix.SequenceNumber
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner, providerUtils.GetBifrostResponseForStreamResponse(nil, nil, prefix, nil, nil, nil), responseChan, postHookSpanFinalizer)
+			}
+
 			if response.Type == schemas.ResponsesStreamResponseTypeError {
 				bifrostErr := responsesStreamError(&response)
 
@@ -2463,6 +2542,10 @@ func (provider *OpenAIProvider) Embedding(ctx *schemas.BifrostContext, key schem
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.EmbeddingRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	// Use the shared embedding request handler
 	return HandleOpenAIEmbeddingRequest(
@@ -2489,7 +2572,7 @@ func HandleOpenAIEmbeddingRequest(
 	url string,
 	request *schemas.BifrostEmbeddingRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -2644,6 +2727,10 @@ func (provider *OpenAIProvider) Speech(ctx *schemas.BifrostContext, key schemas.
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.SpeechRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	return HandleOpenAISpeechRequest(
 		ctx,
@@ -2669,7 +2756,7 @@ func HandleOpenAISpeechRequest(
 	url string,
 	request *schemas.BifrostSpeechRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -2780,6 +2867,10 @@ func (provider *OpenAIProvider) SpeechStream(ctx *schemas.BifrostContext, postHo
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.SpeechStreamRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	for _, model := range providerUtils.UnsupportedSpeechStreamModels {
 		if model == request.Model {
@@ -2814,7 +2905,7 @@ func HandleOpenAISpeechStreamRequest(
 	url string,
 	request *schemas.BifrostSpeechRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -3069,6 +3160,10 @@ func (provider *OpenAIProvider) Transcription(ctx *schemas.BifrostContext, key s
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TranscriptionRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	return HandleOpenAITranscriptionRequest(
 		ctx,
@@ -3107,7 +3202,7 @@ func HandleOpenAITranscriptionRequest(
 	url string,
 	request *schemas.BifrostTranscriptionRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawResponse bool,
@@ -3350,6 +3445,10 @@ func (provider *OpenAIProvider) TranscriptionStream(ctx *schemas.BifrostContext,
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.TranscriptionStreamRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	return HandleOpenAITranscriptionStreamRequest(
 		ctx,
@@ -3379,7 +3478,7 @@ func HandleOpenAITranscriptionStreamRequest(
 	url string,
 	request *schemas.BifrostTranscriptionRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawResponse bool,
 	accumulateText bool,
@@ -3663,6 +3762,10 @@ func (provider *OpenAIProvider) ImageGeneration(ctx *schemas.BifrostContext, key
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	return HandleOpenAIImageGenerationRequest(
 		ctx,
@@ -3687,7 +3790,7 @@ func HandleOpenAIImageGenerationRequest(
 	url string,
 	request *schemas.BifrostImageGenerationRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -3823,6 +3926,10 @@ func (provider *OpenAIProvider) ImageGenerationStream(
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageGenerationStreamRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	// Use shared streaming logic
 	return HandleOpenAIImageGenerationStreaming(
@@ -3851,7 +3958,7 @@ func HandleOpenAIImageGenerationStreaming(
 	url string,
 	request *schemas.BifrostImageGenerationRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -4240,6 +4347,10 @@ func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.RerankRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	return HandleOpenAIRerankRequest(
 		ctx,
@@ -4255,9 +4366,40 @@ func (provider *OpenAIProvider) Rerank(ctx *schemas.BifrostContext, key schemas.
 	)
 }
 
-// Decision is not supported by the OpenAI provider.
+// Decision answers a decision request on OpenAI's POST /v1/decisions when the
+// model is served there: the datasheet's supports_decisions row decides, and
+// with no row a known decisions family (DefaultSupportsDecisions, such as
+// gpt-6-luna) does. Any other model is reported as unsupported, so core
+// answers the request through emulation on the model's chat API instead.
+// A custom provider is gated by its allowed requests alone, as on the Typesafe
+// base: the server it points at rejects a model it does not serve.
 func (provider *OpenAIProvider) Decision(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostDecisionRequest) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.DecisionRequest); err != nil {
+		return nil, err
+	}
+	if provider.customProviderConfig == nil {
+		capModel := schemas.ResolveCanonicalModel(ctx, request.Model)
+		if !schemas.ResolveModelCaps(request.Provider, capModel).SupportsDecisions(schemas.DefaultSupportsDecisions(capModel)) {
+			return nil, providerUtils.NewUnsupportedOperationError(schemas.DecisionRequest, provider.GetProviderKey())
+		}
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
+
+	return HandleOpenAIDecisionRequest(
+		ctx,
+		provider.client,
+		provider.buildRequestURL(ctx, openAIDecisionsPath, schemas.DecisionRequest),
+		request,
+		key,
+		provider.networkConfig.ExtraHeaders,
+		provider.GetProviderKey(),
+		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
+		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
+		provider.logger,
+	)
 }
 
 // HandleOpenAIRerankRequest handles rerank requests for custom OpenAI-compatible APIs.
@@ -4267,7 +4409,7 @@ func HandleOpenAIRerankRequest(
 	url string,
 	request *schemas.BifrostRerankRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -4362,6 +4504,10 @@ func (provider *OpenAIProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoGenerationRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	return HandleOpenAIVideoGenerationRequest(
 		ctx,
@@ -4382,6 +4528,10 @@ func (provider *OpenAIProvider) VideoGeneration(ctx *schemas.BifrostContext, key
 func (provider *OpenAIProvider) VideoRetrieve(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRetrieveRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoRetrieveRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 
 	providerName := provider.GetProviderKey()
@@ -4414,6 +4564,10 @@ func (provider *OpenAIProvider) VideoRetrieve(ctx *schemas.BifrostContext, key s
 func (provider *OpenAIProvider) VideoDownload(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoDownloadRequest) (*schemas.BifrostVideoDownloadResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoDownloadRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 
 	providerName := provider.GetProviderKey()
@@ -4498,6 +4652,10 @@ func (provider *OpenAIProvider) VideoDelete(ctx *schemas.BifrostContext, key sch
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoDeleteRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	providerName := provider.GetProviderKey()
 
@@ -4530,6 +4688,10 @@ func (provider *OpenAIProvider) VideoList(ctx *schemas.BifrostContext, key schem
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoListRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	return HandleOpenAIVideoListRequest(
 		ctx,
@@ -4554,7 +4716,7 @@ func HandleOpenAIVideoGenerationRequest(
 	url string,
 	request *schemas.BifrostVideoGenerationRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -4666,7 +4828,7 @@ func HandleOpenAIVideoEditRequest(
 	url string,
 	request *schemas.BifrostVideoEditRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -4777,7 +4939,7 @@ func HandleOpenAIVideoRetrieveRequest(
 	url string,
 	request *schemas.BifrostVideoRetrieveRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -4877,7 +5039,7 @@ func HandleOpenAIVideoDeleteRequest(
 	url string,
 	videoID string,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -4957,7 +5119,7 @@ func HandleOpenAIVideoListRequest(
 	baseURL string,
 	request *schemas.BifrostVideoListRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	providerName schemas.ModelProvider,
 	sendBackRawRequest bool,
@@ -5061,6 +5223,10 @@ func (provider *OpenAIProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.CountTokensRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	return HandleOpenAICountTokensRequest(
 		ctx,
@@ -5080,6 +5246,10 @@ func (provider *OpenAIProvider) CountTokens(ctx *schemas.BifrostContext, key sch
 func (provider *OpenAIProvider) Compaction(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostCompactionRequest) (*schemas.BifrostCompactionResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.CompactionRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 
 	return HandleOpenAICompactionRequest(
@@ -5103,7 +5273,7 @@ func HandleOpenAICompactionRequest(
 	url string,
 	request *schemas.BifrostCompactionRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -5210,7 +5380,7 @@ func HandleOpenAICountTokensRequest(
 	url string,
 	request *schemas.BifrostResponsesRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -5326,6 +5496,10 @@ func (provider *OpenAIProvider) ImageEdit(ctx *schemas.BifrostContext, key schem
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageEditRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	return HandleOpenAIImageEditRequest(
 		ctx,
@@ -5348,7 +5522,7 @@ func HandleOpenAIImageEditRequest(
 	url string,
 	request *schemas.BifrostImageEditRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	authHeaders map[string]string,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -5483,6 +5657,10 @@ func (provider *OpenAIProvider) ImageEditStream(ctx *schemas.BifrostContext, pos
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageEditStreamRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	return HandleOpenAIImageEditStreamRequest(
 		ctx,
@@ -5510,7 +5688,7 @@ func HandleOpenAIImageEditStreamRequest(
 	url string,
 	request *schemas.BifrostImageEditRequest,
 	authHeader map[string]string,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	streamIdleTimeoutInSeconds int,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
@@ -5899,6 +6077,10 @@ func (provider *OpenAIProvider) ImageVariation(ctx *schemas.BifrostContext, key 
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ImageVariationRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	response, err := HandleOpenAIImageVariationRequest(
 		ctx,
@@ -5923,7 +6105,7 @@ func HandleOpenAIImageVariationRequest(
 	url string,
 	request *schemas.BifrostImageVariationRequest,
 	key schemas.Key,
-	extraHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
 	sendBackRawRequest bool,
 	sendBackRawResponse bool,
 	providerName schemas.ModelProvider,
@@ -6046,6 +6228,10 @@ func (provider *OpenAIProvider) FileUpload(ctx *schemas.BifrostContext, key sche
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.FileUploadRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	if len(request.File) == 0 {
 		return nil, providerUtils.NewBifrostOperationError("file content is required", nil)
@@ -6167,6 +6353,12 @@ func (provider *OpenAIProvider) FileList(ctx *schemas.BifrostContext, keys []sch
 			HasMore: false,
 		}, nil
 	}
+	// Resolve only the key the cursor selects: the cursor stores a position, so filtering
+	// failed OAuth keys out first would shift every later key and misdirect saved cursors.
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -6287,6 +6479,13 @@ func (provider *OpenAIProvider) FileRetrieve(ctx *schemas.BifrostContext, keys [
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Minted only when the loop reaches it, so a working earlier key never waits on this
+		// key's token endpoint; a mint failure is this key's error and the next key is tried.
+		key, keyErr := provider.resolveKey(ctx, key)
+		if keyErr != nil {
+			lastErr = keyErr
+			continue
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -6367,6 +6566,13 @@ func (provider *OpenAIProvider) FileDelete(ctx *schemas.BifrostContext, keys []s
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Minted only when the loop reaches it, so a working earlier key never waits on this
+		// key's token endpoint; a mint failure is this key's error and the next key is tried.
+		key, keyErr := provider.resolveKey(ctx, key)
+		if keyErr != nil {
+			lastErr = keyErr
+			continue
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -6461,6 +6667,13 @@ func (provider *OpenAIProvider) FileContent(ctx *schemas.BifrostContext, keys []
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Minted only when the loop reaches it, so a working earlier key never waits on this
+		// key's token endpoint; a mint failure is this key's error and the next key is tried.
+		key, keyErr := provider.resolveKey(ctx, key)
+		if keyErr != nil {
+			lastErr = keyErr
+			continue
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -6529,6 +6742,10 @@ func (provider *OpenAIProvider) VideoEdit(ctx *schemas.BifrostContext, key schem
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoEditRequest); err != nil {
 		return nil, err
 	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	return HandleOpenAIVideoEditRequest(
 		ctx,
@@ -6549,6 +6766,10 @@ func (provider *OpenAIProvider) VideoEdit(ctx *schemas.BifrostContext, key schem
 func (provider *OpenAIProvider) VideoRemix(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoRemixRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.VideoRemixRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 
 	providerName := provider.GetProviderKey()
@@ -6647,6 +6868,10 @@ func (provider *OpenAIProvider) VideoRemix(ctx *schemas.BifrostContext, key sche
 func (provider *OpenAIProvider) BatchCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostBatchCreateRequest) (*schemas.BifrostBatchCreateResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.BatchCreateRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 
 	inputFileID := request.InputFileID
@@ -6774,6 +6999,12 @@ func (provider *OpenAIProvider) BatchList(ctx *schemas.BifrostContext, keys []sc
 			HasMore: false,
 		}, nil
 	}
+	// Resolve only the key the cursor selects: the cursor stores a position, so filtering
+	// failed OAuth keys out first would shift every later key and misdirect saved cursors.
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	// Create request
 	req := fasthttp.AcquireRequest()
@@ -6876,6 +7107,13 @@ func (provider *OpenAIProvider) BatchRetrieve(ctx *schemas.BifrostContext, keys 
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Minted only when the loop reaches it, so a working earlier key never waits on this
+		// key's token endpoint; a mint failure is this key's error and the next key is tried.
+		key, keyErr := provider.resolveKey(ctx, key)
+		if keyErr != nil {
+			lastErr = keyErr
+			continue
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -6954,6 +7192,13 @@ func (provider *OpenAIProvider) BatchCancel(ctx *schemas.BifrostContext, keys []
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Minted only when the loop reaches it, so a working earlier key never waits on this
+		// key's token endpoint; a mint failure is this key's error and the next key is tried.
+		key, keyErr := provider.resolveKey(ctx, key)
+		if keyErr != nil {
+			lastErr = keyErr
+			continue
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -7076,6 +7321,13 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 	// Download the output file - try each key
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Minted only when the loop reaches it, so a working earlier key never waits on this
+		// key's token endpoint; a mint failure is this key's error and the next key is tried.
+		key, keyErr := provider.resolveKey(ctx, key)
+		if keyErr != nil {
+			lastErr = keyErr
+			continue
+		}
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
@@ -7157,6 +7409,10 @@ func (provider *OpenAIProvider) BatchResults(ctx *schemas.BifrostContext, keys [
 func (provider *OpenAIProvider) ContainerCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostContainerCreateRequest) (*schemas.BifrostContainerCreateResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ContainerCreateRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 
 	if request == nil {
@@ -7314,6 +7570,12 @@ func (provider *OpenAIProvider) ContainerList(ctx *schemas.BifrostContext, keys 
 			HasMore: false,
 		}, nil
 	}
+	// Resolve only the key the cursor selects: the cursor stores a position, so filtering
+	// failed OAuth keys out first would shift every later key and misdirect saved cursors.
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	// Build query string
 	queryParams := url.Values{}
@@ -7438,6 +7700,13 @@ func (provider *OpenAIProvider) ContainerRetrieve(ctx *schemas.BifrostContext, k
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Minted only when the loop reaches it, so a working earlier key never waits on this
+		// key's token endpoint; a mint failure is this key's error and the next key is tried.
+		key, keyErr := provider.resolveKey(ctx, key)
+		if keyErr != nil {
+			lastErr = keyErr
+			continue
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -7549,6 +7818,13 @@ func (provider *OpenAIProvider) ContainerDelete(ctx *schemas.BifrostContext, key
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Minted only when the loop reaches it, so a working earlier key never waits on this
+		// key's token endpoint; a mint failure is this key's error and the next key is tried.
+		key, keyErr := provider.resolveKey(ctx, key)
+		if keyErr != nil {
+			lastErr = keyErr
+			continue
+		}
 		// Create request
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
@@ -7630,6 +7906,10 @@ func (provider *OpenAIProvider) ContainerDelete(ctx *schemas.BifrostContext, key
 func (provider *OpenAIProvider) ContainerFileCreate(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostContainerFileCreateRequest) (*schemas.BifrostContainerFileCreateResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.ContainerFileCreateRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 
 	if request == nil {
@@ -7788,6 +8068,12 @@ func (provider *OpenAIProvider) ContainerFileList(ctx *schemas.BifrostContext, k
 			HasMore: false,
 		}, nil
 	}
+	// Resolve only the key the cursor selects: the cursor stores a position, so filtering
+	// failed OAuth keys out first would shift every later key and misdirect saved cursors.
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
+	}
 
 	// Build URL with query parameters
 	endpoint := fmt.Sprintf("/v1/containers/%s/files", escapedContainerID)
@@ -7924,6 +8210,13 @@ func (provider *OpenAIProvider) ContainerFileRetrieve(ctx *schemas.BifrostContex
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Minted only when the loop reaches it, so a working earlier key never waits on this
+		// key's token endpoint; a mint failure is this key's error and the next key is tried.
+		key, keyErr := provider.resolveKey(ctx, key)
+		if keyErr != nil {
+			lastErr = keyErr
+			continue
+		}
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
@@ -8046,6 +8339,13 @@ func (provider *OpenAIProvider) ContainerFileContent(ctx *schemas.BifrostContext
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Minted only when the loop reaches it, so a working earlier key never waits on this
+		// key's token endpoint; a mint failure is this key's error and the next key is tried.
+		key, keyErr := provider.resolveKey(ctx, key)
+		if keyErr != nil {
+			lastErr = keyErr
+			continue
+		}
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
@@ -8153,6 +8453,13 @@ func (provider *OpenAIProvider) ContainerFileDelete(ctx *schemas.BifrostContext,
 
 	var lastErr *schemas.BifrostError
 	for _, key := range keys {
+		// Minted only when the loop reaches it, so a working earlier key never waits on this
+		// key's token endpoint; a mint failure is this key's error and the next key is tried.
+		key, keyErr := provider.resolveKey(ctx, key)
+		if keyErr != nil {
+			lastErr = keyErr
+			continue
+		}
 		req := fasthttp.AcquireRequest()
 		resp := fasthttp.AcquireResponse()
 
@@ -8239,6 +8546,10 @@ func (provider *OpenAIProvider) Passthrough(
 ) (*schemas.BifrostPassthroughResponse, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.PassthroughRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 
 	url, err := provider.buildPassthroughURL(req)
@@ -8331,6 +8642,10 @@ func (provider *OpenAIProvider) PassthroughStream(
 ) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
 	if err := providerUtils.CheckOperationAllowed(schemas.OpenAI, provider.customProviderConfig, schemas.PassthroughStreamRequest); err != nil {
 		return nil, err
+	}
+	key, keyErr := provider.resolveKey(ctx, key)
+	if keyErr != nil {
+		return nil, keyErr
 	}
 
 	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)

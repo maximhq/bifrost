@@ -2405,6 +2405,52 @@ func TestToBedrockResponsesRequest_GuardrailConfig(t *testing.T) {
 	assert.Nil(t, bedrockReq.ExtraParams)
 }
 
+// TestToBedrockResponsesRequest_InstructionsLeadSystemInput: top-level instructions and
+// system/developer input both reach system, instructions first (OpenAI places instructions
+// ahead of input). Previously instructions were dropped whenever the input carried system content.
+func TestToBedrockResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
+	user := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+	developer := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("DEVELOPER_MUST_SURVIVE")},
+	}
+
+	tests := []struct {
+		name         string
+		instructions *string
+		input        []schemas.ResponsesMessage
+		want         []string
+	}{
+		{"instructions and developer input both reach system, instructions first", schemas.Ptr("BASE_MUST_SURVIVE"), []schemas.ResponsesMessage{developer, user}, []string{"BASE_MUST_SURVIVE", "DEVELOPER_MUST_SURVIVE"}},
+		{"instructions alone", schemas.Ptr("BASE_MUST_SURVIVE"), []schemas.ResponsesMessage{user}, []string{"BASE_MUST_SURVIVE"}},
+		{"developer input alone", nil, []schemas.ResponsesMessage{developer, user}, []string{"DEVELOPER_MUST_SURVIVE"}},
+		{"empty instructions add nothing", schemas.Ptr(""), []schemas.ResponsesMessage{developer, user}, []string{"DEVELOPER_MUST_SURVIVE"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			bedrockReq, err := bedrock.ToBedrockResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+				Model:  "bedrock/anthropic.claude-3-sonnet-20240229-v1:0",
+				Input:  tc.input,
+				Params: &schemas.ResponsesParameters{Instructions: tc.instructions},
+			})
+			require.NoError(t, err)
+
+			var got []string
+			for _, sys := range bedrockReq.System {
+				require.NotNil(t, sys.Text, "unexpected non-text system block: %+v", sys)
+				got = append(got, *sys.Text)
+			}
+			assert.Equal(t, tc.want, got)
+			require.Len(t, bedrockReq.Messages, 1)
+			assert.Equal(t, bedrock.BedrockMessageRoleUser, bedrockReq.Messages[0].Role)
+		})
+	}
+}
+
 // TestBedrockToBifrostResponse_TraceStoredInProviderExtraFields verifies that
 // ToBifrostResponsesResponse carries guardrail trace in ProviderExtraFields.
 func TestBedrockToBifrostResponse_TraceStoredInProviderExtraFields(t *testing.T) {
@@ -5181,6 +5227,37 @@ func TestFinalizeBedrockStream_CleanCompletionUnaffected(t *testing.T) {
 	require.NotNil(t, terminal.Response.Status)
 	assert.Equal(t, "completed", *terminal.Response.Status)
 	assert.Nil(t, terminal.Response.IncompleteDetails)
+}
+
+// An empty Converse turn (messageStart then messageStop, no content, which Claude
+// returns after a tool result) must stream output: [] on every lifecycle event. A null
+// output on response.completed crashes clients that iterate it (pydantic-ai: TypeError).
+func TestFinalizeBedrockStream_EmptyTurnSendsEmptyOutputArray(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	events, bifrostErr, _ := (&bedrock.BedrockStreamEvent{Role: new("assistant")}).ToBifrostResponsesStream(0, state)
+	require.Nil(t, bifrostErr)
+	state.StopReason = new("stop")
+	events = append(events, bedrock.FinalizeBedrockStream(state, len(events), &schemas.ResponsesResponseUsage{InputTokens: 12, TotalTokens: 12}, nil)...)
+
+	var lifecycle []schemas.ResponsesStreamResponseType
+	for _, event := range events {
+		if event.Response == nil {
+			continue
+		}
+		lifecycle = append(lifecycle, event.Type)
+		data, err := schemas.Marshal(event)
+		require.NoError(t, err)
+		var wire struct {
+			Response map[string]json.RawMessage `json:"response"`
+		}
+		require.NoError(t, json.Unmarshal(data, &wire))
+		assert.Equal(t, "[]", string(wire.Response["output"]), "%s must carry output: [] — %s", event.Type, data)
+	}
+	assert.Equal(t, []schemas.ResponsesStreamResponseType{
+		schemas.ResponsesStreamResponseTypeCreated,
+		schemas.ResponsesStreamResponseTypeInProgress,
+		schemas.ResponsesStreamResponseTypeCompleted,
+	}, lifecycle)
 }
 
 // TestFinalizeBedrockStream_UnmappedReasonLeavesStatusUnset keeps the streaming

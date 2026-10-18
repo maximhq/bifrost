@@ -14,6 +14,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"gorm.io/gorm"
 )
@@ -383,6 +384,28 @@ func TestGetExchangedAccessTokenRejected(t *testing.T) {
 	}
 }
 
+// A form-encoded rejection keeps its error and description in Detail, the
+// same as a JSON one.
+func TestGetExchangedAccessTokenRejected_FormEncodedBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-www-form-urlencoded")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`error=invalid_grant&error_description=subject+token+revoked`))
+	}))
+	defer server.Close()
+
+	p := newExchangeProvider(t, server.URL, schemas.TokenExchangeGrantRFC8693)
+	_, err := p.GetExchangedAccessToken(userExchangeContext("subject-jwt"), exchangeTestClientConfig())
+
+	var rejected *schemas.TokenExchangeRejectedError
+	if !errors.As(err, &rejected) {
+		t.Fatalf("expected *TokenExchangeRejectedError, got %T: %v", err, err)
+	}
+	if want := "invalid_grant: subject token revoked"; rejected.Detail != want {
+		t.Fatalf("expected sanitized Detail %q, got %q", want, rejected.Detail)
+	}
+}
+
 // TestGetExchangedAccessTokenRejected_NonStandardBodyNotLeaked pins the
 // security-relevant behavior: TokenExchangeRejectedError.Detail is
 // externally serialized (MCPAuthRequiredError.ExchangeError) and appears in
@@ -489,6 +512,17 @@ func (s *testConfigStore) GetMCPClientConfigByID(_ context.Context, id string) (
 		return nil, nil
 	}
 	return cfg, nil
+}
+
+func (s *testConfigStore) GetMCPClientByOauthConfigID(_ context.Context, oauthConfigID string) (*tables.TableMCPClient, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, cfg := range s.mcpClients {
+		if cfg.OauthConfigID != nil && *cfg.OauthConfigID == oauthConfigID {
+			return &tables.TableMCPClient{ClientID: cfg.ID, OauthConfigID: cfg.OauthConfigID, RequirePublicTarget: cfg.RequirePublicTarget}, nil
+		}
+	}
+	return nil, configstore.ErrNotFound
 }
 
 func TestRetainAndRefreshExchangeAdminCredential(t *testing.T) {

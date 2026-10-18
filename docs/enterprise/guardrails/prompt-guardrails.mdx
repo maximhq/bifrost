@@ -26,7 +26,7 @@ At runtime:
 1. A guardrail rule matches an LLM request or MCP tool execution.
 2. Bifrost extracts text from the rule's selected `input`, `output`, or `both` phase.
 3. Prompt Guardrails sends that text and the configured natural-language policy to the selected judge model.
-4. The judge returns a structured `ALLOW` or `BLOCK` decision with a short reason.
+4. The judge returns a JSON `ALLOW` or `BLOCK` decision with a short reason.
 5. Bifrost continues processing or returns a guardrail intervention.
 
 The evaluated content is sent separately from the judge's system prompt and encoded as JSON. The internal judge request skips the guardrail plugin pipeline so it cannot recursively invoke Prompt Guardrails.
@@ -54,13 +54,15 @@ You can attach multiple profiles to one rule for layered protection.
 
 ## Judge Model Requirements
 
-The selected judge provider must already be configured and enabled in Bifrost. The judge model must:
+The selected judge provider must already be configured and enabled in Bifrost. The judge model must support **Chat Completions** or the **Responses API**. Bifrost prefers Chat Completions and switches to the Responses API when the provider requires it.
 
-- Support **Chat Completions** or the **Responses API**. Bifrost prefers Chat Completions when both are available.
-- Support the `response_format` parameter used for the structured decision.
-- Be available in Bifrost's model catalog.
+The judge request sends only the system prompt, the evaluated content, and the output-token limit. It does not send `response_format` or sampling parameters such as `temperature`, so models without structured-output support, including self-hosted models, can be used as judges. The system prompt instructs the judge to return the JSON decision, and Bifrost validates the reply strictly.
 
-Bifrost checks model-catalog metadata before verification and runtime execution. Provider behavior remains authoritative: a provider can still reject a model that advertises the required parameters, particularly when strict structured output is incompatible with the model's reasoning behavior. If verification returns such an error, select another judge model that supports `response_format`.
+Model-catalog metadata is not required. When the catalog describes the selected model, the UI shows its advertised capabilities as hints, but **Verify** is the authoritative check because it calls the model.
+
+<Note>
+Reasoning models spend output tokens on reasoning before they write the decision. If verification reports that the judge returned no text decision, increase `max_output_tokens`.
+</Note>
 
 ## Configuration
 
@@ -102,7 +104,7 @@ curl -X POST http://localhost:8080/api/guardrails/prompt-guardrail \
       "judge_model": "gpt-4o-mini",
       "rule": "Block responses that provide a definitive medical diagnosis for an individual.",
       "timeout": 30,
-      "max_output_tokens": 200
+      "max_output_tokens": 1000
     }
   }'
 ```
@@ -119,7 +121,7 @@ curl -X POST http://localhost:8080/api/guardrails/prompt-guardrail/verify \
       "judge_model": "gpt-4o-mini",
       "rule": "Block responses that provide a definitive medical diagnosis for an individual.",
       "timeout": 30,
-      "max_output_tokens": 200
+      "max_output_tokens": 1000
     }
   }'
 ```
@@ -143,7 +145,7 @@ The management API assigns the profile ID after creation. Attach the profile to 
           "judge_provider": "openai",
           "judge_model": "gpt-4o-mini",
           "rule": "Block responses that provide a definitive medical diagnosis for an individual.",
-          "max_output_tokens": 200
+          "max_output_tokens": 1000
         }
       }
     ]
@@ -167,7 +169,7 @@ bifrost:
           judge_provider: "openai"
           judge_model: "gpt-4o-mini"
           rule: "Block responses that provide a definitive medical diagnosis for an individual."
-          max_output_tokens: 200
+          max_output_tokens: 1000
 ```
 
 </Tab>
@@ -182,9 +184,9 @@ bifrost:
 | `rule` | Yes | - | Natural-language policy the judge evaluates. |
 | `prompt_template` | No | Built-in classifier prompt | Judge system-prompt template. It must contain `{{rule}}` and must not contain `{{content}}`. |
 | `timeout` | No | `30` | Judge-request timeout in seconds. Must be greater than zero. |
-| `max_output_tokens` | No | `200` | Maximum judge response tokens. Must be between `1` and `1024`. |
+| `max_output_tokens` | No | `1000` | Maximum judge response tokens, including any reasoning tokens. Must be between `1` and `1024`. |
 
-The default system prompt treats the configured rule as the complete policy. It blocks only clear rule violations and allows unrelated, ambiguous, or uncertain content. If you customize the prompt, preserve `{{rule}}`; Bifrost always sends the evaluated content separately.
+The default system prompt treats the configured rule as the complete policy. It blocks only clear rule violations and allows unrelated, ambiguous, or uncertain content. If you customize the prompt, preserve `{{rule}}`; Bifrost always sends the evaluated content separately and appends the required JSON output format to every system prompt, so a custom template does not need to describe the response shape.
 
 ## Prompt Policy vs. Guardrail Rule
 
@@ -206,9 +208,9 @@ The guardrail rule also owns `input`, `output`, or `both`, sampling, execution t
 **Verify** performs a real internal judge request with the selected provider and model. It checks:
 
 - Configuration-field validation.
-- Chat Completions or Responses API support, plus the `response_format` model capability.
 - Provider configuration and model reachability.
-- The judge model's ability to return a usable structured decision.
+- Chat Completions or Responses API support for the selected model.
+- The judge model's ability to return a valid JSON `ALLOW` or `BLOCK` decision.
 
 Verification evaluates a dummy text value, `"test"`. It does not test whether your policy makes the correct decision on real application content.
 
@@ -277,8 +279,9 @@ Recommended practice:
 | Error or symptom | Meaning | Recommended action |
 |------------------|---------|--------------------|
 | Model supports neither Chat Completions nor the Responses API | The model cannot serve as a Prompt Guardrails judge | Select a model with either supported inference API |
-| Model does not support `response_format` | Bifrost cannot request the strict `ALLOW`/`BLOCK` schema | Select a model with structured-output support |
-| Provider rejects function tools or structured output with reasoning | Catalog metadata and provider runtime behavior differ | Select another compatible judge model |
+| Judge returned no text decision | The model used its output-token budget, usually on reasoning, before writing a decision | Increase `max_output_tokens` |
+| Judge decision did not contain a JSON object, or returned an invalid action | The model did not follow the required output format | Select a more instruction-following judge model, or simplify a custom `prompt_template` |
+| Provider rejects the model ID | The model belongs to a different provider, or the provider needs a different identifier (for example, a Bedrock inference profile ID) | Select the provider that serves the model and use the identifier that provider expects |
 | Verify succeeds but policy decisions are poor | Verification used dummy content and did not evaluate policy quality | Test representative examples and refine the policy |
 | No judge call for image-only or file-only content | Prompt Guardrails evaluates extracted text only | Add a provider that supports the required modality |
 | More judge cost than expected | Multiple phases, rules, or profiles executed | Review rule matching, `apply_to`, and sampling |

@@ -165,16 +165,84 @@ var streamPreambles sync.Map // map[streamPreambleKey]*streamPreambleBuffer
 // commits the stream (forwarding it after the buffered prefix) or, under a
 // TTFT deadline, ends the attempt.
 func (buffer *streamPreambleBuffer) tryAppend(chunk *schemas.BifrostStreamChunk, maxBytes int) bool {
-	if len(buffer.chunks)+1 >= maxStreamPreambleChunks {
-		return false
-	}
-	encoded, err := MarshalSorted(chunk)
-	if err != nil || len(encoded) >= maxBytes-buffer.bytes {
+	size, ok := fitStreamPreamble(len(buffer.chunks), buffer.bytes, chunk, maxBytes)
+	if !ok {
 		return false
 	}
 	buffer.chunks = append(buffer.chunks, chunk)
-	buffer.bytes += len(encoded)
+	buffer.bytes += size
 	return true
+}
+
+// fitStreamPreamble reports whether chunk fits the startup buffer, and its encoded size.
+func fitStreamPreamble(count, bytes int, chunk *schemas.BifrostStreamChunk, maxBytes int) (int, bool) {
+	if count+1 >= maxStreamPreambleChunks {
+		return 0, false
+	}
+	encoded, err := MarshalSorted(chunk)
+	if err != nil || len(encoded) >= maxBytes-bytes {
+		return 0, false
+	}
+	return len(encoded), true
+}
+
+// isStreamStartupError reports whether err fails a stream attempt not yet committed to the client.
+func isStreamStartupError(err *schemas.BifrostError) bool {
+	return err != nil && err.Error != nil &&
+		(err.Error.Message != "" || err.Error.Code != nil || err.Error.Type != nil)
+}
+
+// StreamStartupState tracks whether the retry reader will hold an attempt's
+// startup events or release its output. Only the attempt's producer uses it;
+// it stores counters, never chunks, and needs no synchronization.
+type StreamStartupState struct {
+	isPreamble    func(*schemas.BifrostStreamChunk) bool
+	maxBytes      int
+	underDeadline bool
+	count         int
+	bytes         int
+	committed     bool
+	ended         bool
+}
+
+// NewStreamStartupState tracks one attempt; isPreamble is nil when only the first chunk is checked.
+func NewStreamStartupState(isPreamble func(*schemas.BifrostStreamChunk) bool, underDeadline bool) *StreamStartupState {
+	maxBytes := maxStreamPreambleBytes
+	if underDeadline {
+		maxBytes = maxStreamPreambleBytesUnderDeadline
+	}
+	return &StreamStartupState{isPreamble: isPreamble, maxBytes: maxBytes, underDeadline: underDeadline}
+}
+
+// IsStartupError reports whether the retry reader will reject err before
+// returning the stream to the caller. Retry eligibility is decided separately.
+func (c *StreamStartupState) IsStartupError(err *schemas.BifrostError) bool {
+	return !c.committed && isStreamStartupError(err)
+}
+
+// ObserveResult records a post-hook result as ProcessAndSendResponse and
+// ProcessAndSendBifrostError would send it.
+func (c *StreamStartupState) ObserveResult(ctx context.Context, resp *schemas.BifrostResponse, err *schemas.BifrostError) {
+	if c.committed || c.ended || isStreamControlSkip(err) {
+		return
+	}
+	chunk := BuildClientStreamChunk(ctx, resp, err)
+	if isStreamStartupError(chunk.BifrostError) {
+		return
+	}
+	if c.isPreamble != nil && c.isPreamble(chunk) {
+		if size, ok := fitStreamPreamble(c.count, c.bytes, chunk, c.maxBytes); ok {
+			c.count++
+			c.bytes += size
+			return
+		}
+		if c.underDeadline {
+			// The checker ends this attempt rather than committing it.
+			c.ended = true
+			return
+		}
+	}
+	c.committed = true
 }
 
 // replayStreamPreamble transfers buffer ownership to the forwarding goroutine.
@@ -308,9 +376,8 @@ func CheckStreamPreambleForError(
 			if chunk == nil {
 				continue
 			}
-			if err := chunk.BifrostError; err != nil && err.Error != nil &&
-				(err.Error.Message != "" || err.Error.Code != nil || err.Error.Type != nil) {
-				return nil, drain(), err
+			if isStreamStartupError(chunk.BifrostError) {
+				return nil, drain(), chunk.BifrostError
 			}
 			if isPreamble(chunk) {
 				if abort == nil {
@@ -438,8 +505,7 @@ func CheckFirstStreamChunkForError(
 	}
 
 	// Check if first chunk is an error
-	if firstChunk.BifrostError != nil && firstChunk.BifrostError.Error != nil &&
-		(firstChunk.BifrostError.Error.Message != "" || firstChunk.BifrostError.Error.Code != nil || firstChunk.BifrostError.Error.Type != nil) {
+	if isStreamStartupError(firstChunk.BifrostError) {
 		// Drain source channel to let the provider goroutine exit cleanly
 		return nil, drainInBackground(stream), firstChunk.BifrostError
 	}

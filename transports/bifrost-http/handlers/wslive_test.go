@@ -9,10 +9,11 @@ import (
 
 	"github.com/fasthttp/router"
 	ws "github.com/fasthttp/websocket"
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -53,14 +54,18 @@ func dialLiveTestUpstream(t *testing.T) (*bfws.UpstreamConn, *ws.Conn) {
 	return upstream, openai
 }
 
-type fakeLiveModels struct{ allowed bool }
+type fakeLiveModels struct {
+	allowed bool
+	blocked string
+}
 
-func (f fakeLiveModels) KeySupportsModel(schemas.ModelProvider, schemas.Key, string) bool {
-	return f.allowed
+func (f fakeLiveModels) KeySupportsModel(_ schemas.ModelProvider, _ schemas.Key, model string) bool {
+	return f.allowed && model != f.blocked
 }
 
 type liveRelayFixture struct {
 	runner *fakeLiveRunner
+	relay  *liveWSRelay
 	app    *ws.Conn // the caller's end
 	openai *ws.Conn // the fake provider's end
 	done   chan struct{}
@@ -109,7 +114,7 @@ func startLiveRelay(t *testing.T, models liveModelChecker, backendModel string) 
 		_ = openai.UnderlyingConn().Close()
 		<-done
 	})
-	return &liveRelayFixture{runner: runner, app: app, openai: openai, done: done}
+	return &liveRelayFixture{runner: runner, relay: relay, app: app, openai: openai, done: done}
 }
 
 func readFrame(t *testing.T, conn *ws.Conn) string {
@@ -202,6 +207,50 @@ func TestLiveRelayClosesUpstreamWhenClientLeaves(t *testing.T) {
 	sendFrame(t, f.openai, `{"type":"session.closed","reason":"close_requested","usage":{"seconds":12}}`)
 	f.waitDone(t)
 	assert.Equal(t, []float64{12}, f.voiceSeconds(t), "the final usage is still billed")
+}
+
+// TestLiveRelayWaitsForTheClientsCloseReply: a client that reads session.closed and the close
+// frame together may fail its close reply if the socket is already gone, and some libraries then
+// discard the frames read with it. The relay keeps the socket until the client has answered.
+func TestLiveRelayWaitsForTheClientsCloseReply(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "")
+	// Hold the close reply instead of answering as soon as the frame arrives.
+	f.app.SetCloseHandler(func(int, string) error { return nil })
+
+	closed := `{"type":"session.closed","reason":"close_requested","usage":{"seconds":3}}`
+	sendFrame(t, f.openai, closed)
+	assert.Equal(t, closed, readFrame(t, f.app))
+	require.NoError(t, f.app.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, _, err := f.app.ReadMessage()
+	var closeErr *ws.CloseError
+	require.ErrorAs(t, err, &closeErr)
+	assert.Equal(t, ws.CloseNormalClosure, closeErr.Code)
+
+	select {
+	case <-f.done:
+		t.Fatal("the relay dropped the connection before the client answered the close frame")
+	case <-time.After(300 * time.Millisecond):
+	}
+	require.NoError(t, f.app.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, ""), time.Now().Add(time.Second)))
+	f.waitDone(t)
+}
+
+func TestLiveRelayReleasesAClientThatNeverAnswersClose(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "")
+	f.app.SetCloseHandler(func(int, string) error { return nil })
+
+	sendFrame(t, f.openai, `{"type":"session.closed","reason":"close_requested","usage":{"seconds":3}}`)
+	readFrame(t, f.app)
+	require.NoError(t, f.app.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, _, err := f.app.ReadMessage()
+	var closeErr *ws.CloseError
+	require.ErrorAs(t, err, &closeErr)
+
+	started := time.Now()
+	f.waitDone(t)
+	assert.GreaterOrEqual(t, time.Since(started), liveCloseHandshakeGrace/2, "the handshake is given its grace before the socket is dropped")
 }
 
 func TestLiveRelayEndsSessionWhenBudgetRunsOut(t *testing.T) {
@@ -445,6 +494,59 @@ func TestLiveSidebandRelayChecksUpdatesAndEndsAlone(t *testing.T) {
 	}
 }
 
+// TestLiveSidebandRelayReportsHowItEnded: the sideband's row records an upstream that dropped
+// while the client was attached, and nothing when the client left or the upstream closed normally.
+func TestLiveSidebandRelayReportsHowItEnded(t *testing.T) {
+	t.Parallel()
+	start := func(t *testing.T) (*ws.Conn, *ws.Conn, chan *schemas.BifrostError) {
+		t.Helper()
+		bifrostSide, app, cleanup := dialRealtimeTestConn(t)
+		t.Cleanup(cleanup)
+		upstream, openai := dialLiveTestUpstream(t)
+		relay := &liveSidebandRelay{liveUpdatePolicy: testLiveUpdatePolicy(fakeLiveModels{allowed: true}), clientConn: newRealtimeClientConn(bifrostSide), upstream: upstream}
+		ended := make(chan *schemas.BifrostError, 1)
+		go func() { ended <- relay.run() }()
+		t.Cleanup(func() { _ = openai.UnderlyingConn().Close() })
+		return app, openai, ended
+	}
+	wait := func(t *testing.T, ended chan *schemas.BifrostError) *schemas.BifrostError {
+		t.Helper()
+		select {
+		case err := <-ended:
+			return err
+		case <-time.After(5 * time.Second):
+			t.Fatal("sideband relay did not end")
+			return nil
+		}
+	}
+
+	t.Run("upstream drops while the client is attached", func(t *testing.T) {
+		app, openai, ended := start(t)
+		require.NoError(t, openai.UnderlyingConn().Close())
+		assert.Contains(t, readFrame(t, app), "upstream connection ended", "the client is told")
+		err := wait(t, ended)
+		require.NotNil(t, err, "the row records the failure the client was told about")
+		assert.Equal(t, 502, *err.StatusCode)
+	})
+	t.Run("client leaves", func(t *testing.T) {
+		app, _, ended := start(t)
+		require.NoError(t, app.Close())
+		assert.Nil(t, wait(t, ended))
+	})
+	t.Run("upstream closes normally", func(t *testing.T) {
+		_, openai, ended := start(t)
+		require.NoError(t, openai.WriteControl(ws.CloseMessage, ws.FormatCloseMessage(ws.CloseNormalClosure, "session over"), time.Now().Add(time.Second)))
+		assert.Nil(t, wait(t, ended))
+	})
+}
+
+func TestLiveSidebandUpgradeRefusalKeepsTheHandshakeStatus(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, 403, *sidebandUpgradeRefusal(403).StatusCode, "a disallowed origin is refused with 403 by the upgrader")
+	assert.Equal(t, 400, *sidebandUpgradeRefusal(400).StatusCode)
+	assert.Equal(t, 400, *sidebandUpgradeRefusal(0).StatusCode, "an upgrade that wrote no status is a bad handshake")
+}
+
 func TestLiveAttachRefusesBeforeUpgrade(t *testing.T) {
 	t.Parallel()
 
@@ -557,4 +659,200 @@ func TestLiveRelayAssemblesDelegationOutputFromItemEvents(t *testing.T) {
 	assert.Equal(t, schemas.ResponsesMessageTypeFunctionCallOutput, *billed[2].resp.Output[0].Type)
 	assert.Equal(t, "call_1", *billed[2].resp.Output[0].ResponsesToolMessage.CallID)
 	assert.Equal(t, schemas.ResponsesMessageTypeMessage, *billed[2].resp.Output[1].Type)
+}
+
+func TestLiveRelayBackendSwitchEnforcesPinnedKeyBeforeForwarding(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "gpt-5.6-luna")
+	f.runner.restrictKeys("gpt-5.6-terra", []string{"key-2"})
+	update := `{"type":"session.update","session":{"delegation":{"type":"responses","responses":{"model":"gpt-5.6-terra"}}}}`
+	sendFrame(t, f.app, update)
+	assert.Contains(t, readFrame(t, f.app), "the key serving this session is not allowed for model gpt-5.6-terra")
+	marker := `{"type":"session.thinking.append","delegation_id":null,"content":"still here"}`
+	sendFrame(t, f.app, marker)
+	assert.Equal(t, marker, readFrame(t, f.openai), "the refused update never reaches the provider and the session remains usable")
+
+	f.runner.restrictKeys("gpt-5.6-terra", []string{"key-1"})
+	sendFrame(t, f.app, update)
+	assert.Equal(t, update, readFrame(t, f.openai), "the permitted update is forwarded")
+	sendFrame(t, f.app, `{"type":"session.close"}`)
+	assert.Equal(t, `{"type":"session.close"}`, readFrame(t, f.openai))
+	sendFrame(t, f.openai, `{"type":"session.closed","usage":{"seconds":0}}`)
+	readFrame(t, f.app)
+	f.waitDone(t)
+	opens, posts, cleanups := f.runner.snapshot()
+	assert.Len(t, posts, len(opens))
+	assert.Equal(t, len(opens), cleanups, "rejected and admitted units are cleaned exactly once")
+}
+
+// sidebandHookRecorder observes a sideband's request through the plugin pipeline.
+type sidebandHookRecorder struct {
+	refuse       *schemas.BifrostError
+	preType      schemas.RequestType
+	preProvider  schemas.ModelProvider
+	preSession   string
+	preSkipSpend bool
+	postType     schemas.RequestType
+	postKeyName  string
+	postLatency  int64
+	postErr      bool
+}
+
+func (*sidebandHookRecorder) GetName() string { return "sideband-recorder" }
+func (*sidebandHookRecorder) Cleanup() error  { return nil }
+func (*sidebandHookRecorder) PreRequestHook(*schemas.BifrostContext, *schemas.BifrostRequest) error {
+	return nil
+}
+func (r *sidebandHookRecorder) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.BifrostRequest) (*schemas.BifrostRequest, *schemas.LLMPluginShortCircuit, error) {
+	r.preType = req.RequestType
+	r.preProvider, _, _ = req.GetRequestFields()
+	r.preSession, _ = ctx.Value(schemas.BifrostContextKeyRealtimeProviderSessionID).(string)
+	r.preSkipSpend, _ = ctx.Value(schemas.BifrostContextKeySkipBudgetAndRateLimits).(bool)
+	if r.refuse != nil {
+		return req, &schemas.LLMPluginShortCircuit{Error: r.refuse}, nil
+	}
+	return req, nil, nil
+}
+func (r *sidebandHookRecorder) PostLLMHook(ctx *schemas.BifrostContext, resp *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+	r.postType, _, _, _ = bifrost.GetResponseFields(resp, bifrostErr)
+	r.postKeyName, _ = ctx.Value(schemas.BifrostContextKeySelectedKeyName).(string)
+	r.postErr = bifrostErr != nil
+	if resp != nil {
+		r.postLatency = resp.GetExtraFields().Latency
+	}
+	return resp, bifrostErr, nil
+}
+
+// TestLiveSidebandIsARequestOfItsOwn: a sideband names only a session id, yet it acts on the
+// operator's key for the provider, so it runs through the plugin pipeline as a request of its own:
+// governance holds it to the caller's virtual key without charging it, and its row names the
+// provider session and how long it stayed attached.
+func TestLiveSidebandIsARequestOfItsOwn(t *testing.T) {
+	t.Parallel()
+	recorder := &sidebandHookRecorder{}
+	client, err := bifrost.Init(context.Background(), schemas.BifrostConfig{Account: splitKeysAccount{}, LLMPlugins: []schemas.LLMPlugin{recorder}, Logger: bifrost.NewDefaultLogger(schemas.LogLevelError)})
+	require.NoError(t, err)
+	defer client.Shutdown()
+	g := &liveGateway{client: client}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	hooks, bifrostErr := g.admitSideband(ctx, schemas.OpenAI, "live_1")
+	require.Nil(t, bifrostErr)
+	require.NotNil(t, hooks)
+	assert.Equal(t, schemas.LiveSidebandRequest, recorder.preType)
+	assert.Equal(t, schemas.OpenAI, recorder.preProvider)
+	assert.Equal(t, "live_1", recorder.preSession, "the row names the provider session it joined")
+	assert.True(t, recorder.preSkipSpend, "a sideband spends nothing: budgets and request limits govern the session")
+	closeSideband(ctx, hooks, schemas.OpenAI, schemas.Key{ID: "every-model", Name: "every-model"}, time.Now().Add(-1500*time.Millisecond), nil)
+	assert.Equal(t, schemas.LiveSidebandRequest, recorder.postType)
+	assert.Equal(t, "every-model", recorder.postKeyName, "the row names the key the sideband dialed with")
+	assert.False(t, recorder.postErr)
+	assert.GreaterOrEqual(t, recorder.postLatency, int64(1500), "the row carries how long the sideband stayed attached")
+
+	// A refusal from the pipeline is the caller's answer, and the row closes with it.
+	recorder.refuse = &schemas.BifrostError{StatusCode: schemas.Ptr(403), Error: &schemas.ErrorField{Message: "Provider 'openai' is not allowed"}}
+	hooks, bifrostErr = g.admitSideband(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), schemas.OpenAI, "live_2")
+	require.NotNil(t, bifrostErr)
+	assert.Nil(t, hooks)
+	assert.Equal(t, 403, *bifrostErr.StatusCode)
+	assert.True(t, recorder.postErr)
+
+	// A dial that fails after admission closes the row as an error without touching the caller's copy.
+	recorder.refuse, recorder.postErr = nil, false
+	ctx = schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	hooks, bifrostErr = g.admitSideband(ctx, schemas.OpenAI, "live_3")
+	require.Nil(t, bifrostErr)
+	dialErr := newRealtimeWireBifrostError(502, "upstream_connection_error", "dial failed")
+	closeSideband(ctx, hooks, schemas.OpenAI, schemas.Key{}, time.Now(), dialErr)
+	assert.True(t, recorder.postErr)
+	assert.Equal(t, schemas.RequestType(""), dialErr.ExtraFields.RequestType, "the error sent to the caller is not rewritten")
+}
+
+// panickingLiveModels stands in for a model check that panics, the way a plugin hook on the
+// client pump might.
+type panickingLiveModels struct{}
+
+func (panickingLiveModels) KeySupportsModel(schemas.ModelProvider, schemas.Key, string) bool {
+	panic("model check exploded")
+}
+
+// The client pump runs on its own goroutine, past the recover deferred by the upgrade callback.
+// A panic there ends this session, with the client told and the usage still billed, instead of
+// ending the process.
+func TestLiveRelayEndsSessionWhenClientPumpPanics(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, panickingLiveModels{}, "gpt-5.6-luna")
+
+	sendFrame(t, f.app, `{"type":"session.update","session":{"delegation":{"type":"responses","responses":{"model":"gpt-5.6-sol"}}}}`)
+	errFrame := readFrame(t, f.app)
+	assert.Contains(t, errFrame, `"type":"error"`)
+	assert.Contains(t, errFrame, "internal error")
+	assert.NotContains(t, errFrame, "exploded", "the panic value is not echoed to the client")
+
+	assert.Equal(t, `{"type":"session.close"}`, readFrame(t, f.openai), "Bifrost ends the session itself")
+	sendFrame(t, f.openai, `{"type":"session.closed","reason":"close_requested","usage":{"seconds":4}}`)
+	f.waitDone(t)
+	assert.Equal(t, []float64{4}, f.voiceSeconds(t), "the usage so far is still billed")
+}
+
+// The upstream pump runs on the upgrade callback's goroutine, whose recover keeps the process
+// alive, but a panic there (a billing post-hook) must still end the session properly: the
+// stale watcher must be released and the client told, instead of leaking a watcher per failure.
+func TestLiveRelayEndsSessionWhenUpstreamPumpPanics(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "")
+
+	f.runner.setPanicOnPost(true)
+	sendFrame(t, f.openai, `{"type":"session.usage.updated","usage":{"seconds":31}}`)
+	errFrame := readFrame(t, f.app)
+	assert.Contains(t, errFrame, `"type":"error"`)
+	assert.NotContains(t, errFrame, "exploded", "the panic value is not echoed to the client")
+	f.waitDone(t)
+	select {
+	case <-f.relay.upstreamDone:
+	default:
+		t.Fatal("upstreamDone was not closed after the upstream pump panicked; the stale watcher is leaked")
+	}
+
+	// The panic hit the post hook of a window rotation, after the next unit was admitted. That unit
+	// is still the lane's: ending the session bills and cleans it, and the session end is recorded.
+	opens, posts, cleanups := f.runner.snapshot()
+	assert.Equal(t, len(opens), cleanups, "every admitted unit is cleaned up, including the one opened by the rotation that panicked")
+	ended := false
+	for _, post := range posts {
+		if post.end {
+			ended = true
+		}
+	}
+	assert.True(t, ended, "the session end is recorded on the unit the rotation admitted")
+}
+
+// Session close bills every lane, backends first and the voice lane last, since the voice unit
+// carries the session's end. A backend post hook that panics there must not cost the lanes after
+// it: each admitted unit is still billed and cleaned, and the session end is still recorded.
+func TestLiveRelayClosesEveryLaneWhenABackendPostHookPanicsAtSessionEnd(t *testing.T) {
+	t.Parallel()
+	f := startLiveRelay(t, fakeLiveModels{allowed: true}, "gpt-5.6-luna")
+
+	for _, frame := range []string{
+		`{"type":"session.started","session":{"id":"live_close_panic","model":"gpt-live-1"}}`,
+		`{"type":"session.usage.updated","usage":{"seconds":9}}`,
+	} {
+		sendFrame(t, f.openai, frame)
+		readFrame(t, f.app)
+	}
+	f.runner.setPanicOnPost(true)
+	sendFrame(t, f.openai, `{"type":"session.closed","reason":"close_requested","usage":{"seconds":12}}`)
+	f.waitDone(t)
+
+	opens, posts, cleanups := f.runner.snapshot()
+	require.GreaterOrEqual(t, len(opens), 2, "the session admitted a voice and a backend unit")
+	assert.Equal(t, len(opens), cleanups, "every admitted unit is cleaned up even though a backend post hook panicked")
+	ended := false
+	for _, post := range posts {
+		if post.end {
+			ended = true
+		}
+	}
+	assert.True(t, ended, "the voice unit still records the session end")
 }

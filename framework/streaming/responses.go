@@ -543,9 +543,9 @@ func deepCopyResponsesMessage(original schemas.ResponsesMessage) schemas.Respons
 			copy.ResponsesToolMessage.ResponsesCodeInterpreterToolCall = &copyToolCall
 		}
 
-		if original.ResponsesToolMessage.ResponsesMCPToolCall != nil {
-			copyToolCall := *original.ResponsesToolMessage.ResponsesMCPToolCall
-			copy.ResponsesToolMessage.ResponsesMCPToolCall = &copyToolCall
+		if original.ResponsesToolMessage.ServerLabel != nil {
+			serverLabel := *original.ResponsesToolMessage.ServerLabel
+			copy.ResponsesToolMessage.ServerLabel = &serverLabel
 		}
 
 		if original.ResponsesToolMessage.ResponsesCustomToolCall != nil {
@@ -724,12 +724,20 @@ type respMsgAccum struct {
 	encrypted   *strings.Builder         // reasoning encrypted content
 }
 
-// buildCompleteMessageFromResponsesStreamChunks builds complete messages from
+// buildCompleteMessageFromResponsesStreamChunks builds complete messages from accumulated chunks.
+func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*ResponsesStreamChunk) []schemas.ResponsesMessage {
+	return BuildResponsesMessagesFromChunks(chunks)
+}
+
+// BuildResponsesMessagesFromChunks builds complete messages from
 // accumulated responses stream chunks. Streamed string fields are gathered into
 // strings.Builder accumulators during the walk and materialized once at the end,
 // avoiding the O(n²) churn of repeated `*field += delta` on immutable strings
 // (mirrors buildCompleteMessageFromChatStreamChunks).
-func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*ResponsesStreamChunk) []schemas.ResponsesMessage {
+//
+// It sorts chunks in place by ChunkIndex and holds no state, so callers that rebuild a stream
+// outside the Accumulator (e.g. from a recorded passthrough body) get the same result.
+func BuildResponsesMessagesFromChunks(chunks []*ResponsesStreamChunk) []schemas.ResponsesMessage {
 	var messages []schemas.ResponsesMessage
 
 	// Sort chunks by chunk index to ensure correct processing order
@@ -1161,8 +1169,13 @@ func (a *Accumulator) processAccumulatedResponsesStreamingChunks(requestID strin
 	}
 	// The response envelope carrying service_tier can precede a later usage-only
 	// event, so retain the newest non-nil tier across the stream.
+	reasonChunkIndex := -1
 	tierChunkIndex := -1
 	for _, streamChunk := range accumulator.ResponsesStreamChunks {
+		if streamChunk.FinishReason != nil && streamChunk.ChunkIndex > reasonChunkIndex {
+			data.FinishReason = streamChunk.FinishReason
+			reasonChunkIndex = streamChunk.ChunkIndex
+		}
 		if streamChunk.ServiceTier != nil && streamChunk.ChunkIndex > tierChunkIndex {
 			data.ServiceTier = streamChunk.ServiceTier
 			tierChunkIndex = streamChunk.ChunkIndex
@@ -1228,6 +1241,10 @@ func (a *Accumulator) processResponsesStreamingResponse(ctx *schemas.BifrostCont
 		}
 		// Store a deep copy of the stream response to prevent shared data mutation between plugins
 		chunk.StreamResponse = deepCopyResponsesStreamResponse(result.ResponsesStreamResponse)
+		// Retain the provider stop reason independently of output text and trailing usage.
+		if response := result.ResponsesStreamResponse.Response; response != nil && response.StopReason != nil {
+			chunk.FinishReason = bifrost.Ptr(*response.StopReason)
+		}
 		// Extract token usage from stream response if available
 		if result.ResponsesStreamResponse.Response != nil &&
 			result.ResponsesStreamResponse.Response.Usage != nil {

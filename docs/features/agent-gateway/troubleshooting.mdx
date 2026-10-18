@@ -1,0 +1,119 @@
+---
+title: "Troubleshooting"
+description: "Work from the failing connection to the agent task, model call, tool call, or callback."
+icon: "wrench"
+---
+
+Find the failing hop first. A card fetch, agent request, model call, and push delivery use different endpoints and can require different credentials.
+
+## Gateway operations return 503 or UNAVAILABLE
+
+Check **Agents → Agent Settings → External Client URL**. If it is empty, or its environment variable or vault reference resolves to an empty value, Bifrost disables Agent Gateway protocol operations. HTTP endpoints return **503 Service Unavailable** and A2A gRPC operations return **UNAVAILABLE**. Registration and management can still succeed. Set Bifrost's public base URL to enable traffic; request headers do not provide a fallback.
+
+HTTP responses use the standard Bifrost JSON error structure, with `is_bifrost_error: true` and `error.message` set to `agent gateway disabled: configure a2a_external_client_url`.
+
+## The card will not fetch
+
+Check the full card URL from Bifrost's network. A URL reachable from your laptop may not be reachable from a container or cluster node. The card must be an A2A card, not an HTML login page.
+
+If it requires authentication, configure **Card fetch options**. Request authentication is used after discovery and cannot fix a protected card fetch. For a private certificate authority or mutual TLS, configure the card connection's TLS settings.
+
+If the card fetch succeeds but calls fail, inspect the interfaces it advertises. Bifrost must reach those addresses too.
+
+## The card returns 502 after a private destination is blocked
+
+Bifrost fetches the upstream card when a client requests the gateway's card. If that connection is blocked by the Agent Gateway private network policy, the response is **502 Bad Gateway** with an explanation in `error.message`:
+
+```json
+{
+  "is_bifrost_error": true,
+  "status_code": 502,
+  "error": {
+    "message": "Agent card unavailable: the upstream destination is blocked by the Agent Gateway private network policy. Ask your Bifrost administrator to allow it in Agent Settings."
+  },
+  "extra_fields": {
+    "routing_info": {}
+  }
+}
+```
+
+Ask an administrator to permit the destination in [Agent Settings → Private Network Allowlist](./configuration#permit-private-agent-destinations), `client.a2a_private_allowlist` in config.json, or `bifrost.client.a2aPrivateAllowlist` in Helm values. Link-local and cloud metadata addresses cannot be allowed. The consumer-facing response does not disclose the internal destination or credentials.
+
+The management form's **Fetch** error includes the destination and configuration guidance. If a client displays only the HTTP status, inspect its response body for `error.message`.
+
+## Agent registration fails with "runtime origin is not permitted"
+
+A successful **Fetch** only loads the card for inspection. It does not authorize the runtime addresses advertised in that card.
+
+For example, a card at `http://127.0.0.1:19181/.well-known/agent-card.json` can advertise a JSON-RPC runtime at `http://127.0.0.1:19182/rpc`. These are different origins because their ports differ. Even if the runtime is reachable and accepts requests, Bifrost requires approval to use that origin.
+
+If none of the card's supported runtime interfaces has an approved origin, creating or updating an enabled agent fails. The dashboard shows **Unable to save agent**, and the management API returns HTTP `400`:
+
+```json
+{
+  "is_bifrost_error": true,
+  "status_code": 400,
+  "error": {
+    "message": "invalid agent registration: create upstream SDK client: upstream runtime origin is not permitted by credential_origins"
+  },
+  "extra_fields": {
+    "routing_info": {}
+  }
+}
+```
+
+A failed create does not save the registration, so a consumer cannot connect to it yet. A failed update leaves the existing registration unchanged. Bifrost rejects the unapproved origin before sending a runtime request.
+
+1. Expand [Additional agent endpoints](./authentication#additional-agent-endpoints) in the agent form. The badge shows how many advertised origins need approval.
+2. Click **Allow** beside the runtime origin you trust, then create or save the agent. In this example, approve `http://127.0.0.1:19182`, without `/rpc`.
+3. Connect your A2A client to the registered agent's gateway card URL and retry the request.
+
+For file-based configuration, add the origin to `agents[].credential_origins` in config.json or `bifrost.agents[].credential_origins` in Helm values. Origin approval applies even when the runtime requires no authentication.
+
+Private runtime destinations also need their host, IP, or CIDR in [Agent Settings → Private Network Allowlist](./configuration#permit-private-agent-destinations), `client.a2a_private_allowlist` in config.json, or `bifrost.client.a2aPrivateAllowlist` in Helm values. Allowing `127.0.0.1` there permits private-network access but does not approve every port as an agent runtime origin.
+
+## A caller is denied
+
+Check that the agent is enabled and the caller's credential is valid. For restricted agents, grant the virtual key access to that registration.
+
+In Enterprise, check the user's access profile and any project named on the request. Project membership alone does not guarantee an agent grant, and **Allow any virtual key** does not override project restrictions.
+
+If the agent is reached but its LLM or MCP call is denied, grant those resources separately. An agent grant does not grant model or tool access.
+
+See [access control](./access-control) for the configuration and scope rules.
+
+## The card selects the wrong authentication
+
+Use **Configure manually** under request authentication. Supply the credential your server actually accepts, or choose no runtime authentication if the server intentionally accepts the forwarded Bifrost identity instead.
+
+If forwarding and runtime authentication use the same header, choose which value should win. See [header collisions](./authentication#if-both-use-the-same-header).
+
+## The task failed but the request succeeded
+
+An A2A task's state and a gateway operation's status describe different outcomes. Open the conversation, read the failed or rejected task's status message, then inspect its correlated LLM and MCP logs. Task-state filters apply where the row records a state; a SendMessage operation can expose the state only in its returned task payload.
+
+## A stream disconnected
+
+Retrieve the task to see whether it is still working. Reconnect with `SubscribeToTask` if the agent supports it. Disconnecting a client stream does not cancel the task. Use `CancelTask` if you intend to stop the work.
+
+An agent can reject cancellation or subscription. Read the protocol error and its advertised capabilities rather than treating every disconnect as a gateway failure.
+
+## gRPC cannot find the agent
+
+Check the dialed authority. It must contain the registration name as the first DNS label, such as `library-research.a2a.example.com:443`. A generic load-balancer hostname does not identify an agent.
+
+Check wildcard DNS, TLS termination, HTTP/2 forwarding, the public-to-local port mapping, and whether both gRPC server settings were present at startup. With Helm, expose the listener through an additional Service or deployment-specific routing. See [gRPC setup](./configuration#enable-grpc).
+
+## Push notifications are unavailable
+
+Set the gateway's **External Client URL** to an address the agent can reach. Check that the upstream agent supports push notifications and that Bifrost has a configured persistent config store.
+
+If configuration succeeds but delivery fails, distinguish the agent-to-Bifrost **Push notification** from Bifrost-to-client **Push delivery**. Inspect delivery attempts for callback authentication, HTTP errors, or timeouts. Private callback targets are blocked by default. See [push notifications](./push-notifications).
+
+## The logs look incomplete
+
+Check the time filter and permissions first. A long session or event list is paginated. Use the next-page control rather than assuming the first page is the entire conversation.
+
+For missing LLM or MCP logs, inspect [correlation headers](./integrating-your-agent). For missing raw bytes, enable capture before making a new HTTP request. gRPC and local push configuration reads do not provide upstream raw HTTP captures.
+
+Content-logging restrictions may hide bodies while retaining metadata. A file URI can also point to content your browser cannot access. Inspect the structured payload to distinguish a missing file from a failed preview.

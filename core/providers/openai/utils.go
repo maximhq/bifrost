@@ -75,6 +75,12 @@ func defaultCanDisableReasoning(model string) bool {
 // (https://developers.openai.com/api/docs/guides/tools-tool-search). Azure and
 // Bedrock serve the same OpenAI models on the same wire; other OpenAI-compatible
 // backends are not assumed to understand defer_loading.
+// SupportsToolSearch reports whether provider serves model with OpenAI's tool search
+// (and so accepts defer_loading), the gate ToOpenAIResponsesRequest applies.
+func SupportsToolSearch(provider schemas.ModelProvider, model string) bool {
+	return schemas.ResolveModelCaps(provider, model).SupportsToolSearch(defaultSupportsToolSearch(provider, model))
+}
+
 func defaultSupportsToolSearch(provider schemas.ModelProvider, model string) bool {
 	switch provider {
 	case schemas.OpenAI, schemas.Azure, schemas.Bedrock, schemas.BedrockMantle:
@@ -93,36 +99,75 @@ func defaultSupportsAsyncTools(model string) bool {
 	return strings.Contains(bareModelLower(model), "gpt-6")
 }
 
-// omittedEffortReasons reports OpenAI reasoning models that still reason when
-// reasoning.effort is omitted. Only GPT-5.1 through GPT-5.4 default to "none";
-// their -pro variants always reason.
-func omittedEffortReasons(model string) bool {
+// defaultReasoningEffort is the name-based fallback for
+// ModelCaps.DefaultReasoningEffort, per OpenAI's model pages: GPT-5.1 through
+// GPT-5.4 default to "none", the -pro variants to "high", and every other
+// reasoning model (o-series, gpt-5, gpt-5.5, gpt-5.6, gpt-6) to "medium".
+// Non-reasoning models answer "".
+func defaultReasoningEffort(model string) string {
 	if !IsOpenAIReasoningModel(model) {
-		return false
+		return ""
 	}
 	m := bareModelLower(model)
-	if strings.Contains(m, "-pro") {
-		return true
+	switch {
+	case strings.Contains(m, "-pro"):
+		return schemas.ReasoningEffortHigh
+	case strings.Contains(m, "gpt-5.1"), strings.Contains(m, "gpt-5.2"),
+		strings.Contains(m, "gpt-5.3"), strings.Contains(m, "gpt-5.4"):
+		return schemas.ReasoningEffortNone
+	default:
+		return schemas.ReasoningEffortMedium
 	}
-	return !strings.Contains(m, "gpt-5.1") && !strings.Contains(m, "gpt-5.2") &&
-		!strings.Contains(m, "gpt-5.3") && !strings.Contains(m, "gpt-5.4")
+}
+
+// omittedEffortReasons reports whether the model still reasons when
+// reasoning.effort is omitted: the datasheet's default_reasoning_effort, else
+// the name-based default.
+func omittedEffortReasons(caps schemas.ModelCaps, model string) bool {
+	effort := caps.DefaultReasoningEffort(defaultReasoningEffort(model))
+	return effort != "" && effort != schemas.ReasoningEffortNone
 }
 
 // defaultEffortControl widens the base low/medium/high ladder with the effort
 // levels a model natively accepts. Only the widening is name-derived; the
 // datasheet's per-level booleans take precedence when a row exists.
-func defaultEffortControl(model string) *schemas.EffortControl {
+func defaultEffortControl(provider schemas.ModelProvider, model string) *schemas.EffortControl {
 	levels := []string{schemas.ReasoningEffortLow, schemas.ReasoningEffortMedium, schemas.ReasoningEffortHigh}
 	if acceptsMinimalEffort(model) {
 		levels = append([]string{schemas.ReasoningEffortMinimal}, levels...)
 	}
-	if acceptsXHighEffort(model) {
+	if includeXHighInDefaultLadder(provider, model) {
 		levels = append(levels, schemas.ReasoningEffortXHigh)
 	}
 	if acceptsMaxEffort(model) {
 		levels = append(levels, schemas.ReasoningEffortMax)
 	}
 	return &schemas.EffortControl{Levels: levels}
+}
+
+// includeXHighInDefaultLadder reports whether the OpenAI-dialect fallback
+// ladder should list "xhigh". OpenAI, Azure, and xAI still use the hosted
+// catalog (gpt-5.2+ / Grok prefixes). Every other destination — built-in
+// vLLM/Ollama/SGL and custom providers with base_provider_type openai —
+// keeps the client value, because OpenAI model prefixes are the wrong
+// oracle for those upstreams.
+func includeXHighInDefaultLadder(provider schemas.ModelProvider, model string) bool {
+	switch provider {
+	case schemas.OpenAI, schemas.Azure, schemas.XAI:
+		return acceptsXHighEffort(model)
+	default:
+		return true
+	}
+}
+
+// normalizeReasoningEffort maps effort onto the levels the destination accepts.
+// A datasheet record for the provider wins; without one, the fallback ladder
+// keeps xhigh for OpenAI-compatible destinations (see includeXHighInDefaultLadder).
+func normalizeReasoningEffort(provider schemas.ModelProvider, caps schemas.ModelCaps, effort string) string {
+	if provider == "" {
+		provider = caps.Provider()
+	}
+	return caps.NormalizeReasoningEffort(effort, defaultEffortControl(provider, caps.Model()))
 }
 
 // acceptsXHighEffort reports models that natively accept "xhigh" effort. The

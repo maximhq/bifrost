@@ -6,29 +6,91 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/bytedance/sonic"
 	"github.com/canonical/starlark/syntax"
 	"github.com/mark3labs/mcp-go/mcp"
+	codemcp "github.com/maximhq/bifrost/core/mcp"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
+
+// serverInstructionsComment renders the client's upstream instructions, or "" if it advertises
+// none. Shared by readToolFile and getToolDocs: every stub documenting a server carries them.
+func (s *StarlarkCodeMode) serverInstructionsComment(clientName string) string {
+	client := s.clientManager.GetClientByName(clientName)
+	if client == nil || client.ExecutionConfig == nil {
+		return ""
+	}
+	// Client override first, then the configured global. The aggregate total stays out of it:
+	// a stub carries one server, so being clamped by the whole-set budget would cut it early.
+	limit := client.ExecutionConfig.MaxInstructionsLength
+	if limit <= 0 {
+		limit = s.clientManager.InstructionCaps().PerClient
+	}
+	return codemcp.InstructionsCommentBlock(client.ServerInstructions, limit)
+}
+
+// jsonModuleShadowed reports whether a code mode server is bound as "json", which keeps the
+// sandbox's json module out of a script's reach (see runSandbox).
+func (s *StarlarkCodeMode) jsonModuleShadowed(toolsPerClient map[string][]schemas.ChatTool) bool {
+	if len(toolsPerClient["json"]) == 0 {
+		return false
+	}
+	client := s.clientManager.GetClientByName("json")
+	return client != nil && client.ExecutionConfig != nil && client.ExecutionConfig.IsCodeModeClient
+}
 
 // extractResultFromChatMessage extracts the result from a chat message and parses it as JSON if possible.
 func extractResultFromChatMessage(msg *schemas.ChatMessage) interface{} {
 	if msg == nil || msg.Content == nil || msg.Content.ContentStr == nil {
 		return nil
 	}
+	return decodeToolResult(*msg.Content.ContentStr)
+}
 
-	rawResult := *msg.Content.ContentStr
-
-	var finalResult interface{}
-	if err := sonic.Unmarshal([]byte(rawResult), &finalResult); err != nil {
-		return rawResult
+// decodeToolResult turns a tool's text result into the value a script receives: the decoded
+// JSON when the text is JSON, the text itself otherwise. Some servers wrap their JSON payload
+// in a JSON string, so a decode that yields a string holding an object or array is decoded
+// once more. A quoted scalar such as "123" stays the string the server sent.
+func decodeToolResult(raw string) interface{} {
+	var value interface{}
+	if err := sonic.Unmarshal([]byte(raw), &value); err != nil {
+		return raw
 	}
+	if wrapped, ok := value.(string); ok {
+		trimmed := strings.TrimSpace(wrapped)
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			var inner interface{}
+			if err := sonic.Unmarshal([]byte(trimmed), &inner); err == nil {
+				return inner
+			}
+		}
+	}
+	return value
+}
 
-	return finalResult
+// joinTextBlocks joins a result's text blocks. Several blocks that are each valid JSON become
+// one JSON array, so a server that sends one result per block still hands the script a list;
+// anything else is joined with newlines so adjacent blocks never run together.
+func joinTextBlocks(texts []string) string {
+	if len(texts) > 1 {
+		allJSON := true
+		for _, text := range texts {
+			if !gjson.Valid(text) {
+				allJSON = false
+				break
+			}
+		}
+		if allJSON {
+			return "[" + strings.Join(texts, ",") + "]"
+		}
+	}
+	return strings.Join(texts, "\n")
 }
 
 // extractResultFromResponsesMessage extracts the result or error from a ResponsesMessage.
@@ -48,13 +110,7 @@ func extractResultFromResponsesMessage(msg *schemas.ResponsesMessage) (interface
 
 		if msg.ResponsesToolMessage.Output != nil {
 			if msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr != nil {
-				rawResult := *msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr
-
-				var finalResult interface{}
-				if err := sonic.Unmarshal([]byte(rawResult), &finalResult); err != nil {
-					return rawResult, nil
-				}
-				return finalResult, nil
+				return decodeToolResult(*msg.ResponsesToolMessage.Output.ResponsesToolCallOutputStr), nil
 			}
 
 			if len(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) > 0 {
@@ -65,12 +121,7 @@ func extractResultFromResponsesMessage(msg *schemas.ResponsesMessage) (interface
 					}
 				}
 				if len(textParts) > 0 {
-					result := strings.Join(textParts, "\n")
-					var finalResult interface{}
-					if err := sonic.Unmarshal([]byte(result), &finalResult); err != nil {
-						return result, nil
-					}
-					return finalResult, nil
+					return decodeToolResult(joinTextBlocks(textParts)), nil
 				}
 			}
 		}
@@ -79,22 +130,22 @@ func extractResultFromResponsesMessage(msg *schemas.ResponsesMessage) (interface
 	return nil, nil
 }
 
-// formatResultForLog formats a result value for logging purposes.
-func formatResultForLog(result interface{}) string {
-	// Tool responses can be large even when code returns a small projection.
-	// Bound automatic diagnostic previews before JSON escaping/copying them.
-	if text, ok := result.(string); ok && len(text) > 2048 {
-		result = text[:2048] + "... (truncated)"
+// codeModeDiagnosticBytes bounds any tool text surfaced to the caller.
+const codeModeDiagnosticBytes = 2048
+
+// truncateDiagnostic bounds caller-visible text without JSON-encoding it. Cuts on
+// a rune boundary: it is raised as an error, not only escaped into a log line.
+func truncateDiagnostic(text string) string {
+	if len(text) <= codeModeDiagnosticBytes {
+		return text
 	}
-	var resultStr string
-	if result == nil {
-		resultStr = "null"
-	} else if resultBytes, err := schemas.MarshalSorted(result); err == nil {
-		resultStr = string(resultBytes)
-	} else {
-		resultStr = fmt.Sprintf("%v", result)
+	// The marker counts against the cap, so reserve it before picking the prefix.
+	const marker = "... (truncated)"
+	cut := text[:codeModeDiagnosticBytes-len(marker)]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
 	}
-	return resultStr
+	return cut + marker
 }
 
 // exceptionHandlingHints explains that Starlark has no exception handling.
@@ -139,7 +190,20 @@ func unsupportedStatement(code string, err error) string {
 func generatePythonErrorHints(errorMessage string, serverKeys []string) []string {
 	hints := []string{}
 
-	if strings.Contains(errorMessage, "got try") || strings.Contains(errorMessage, "got except") ||
+	if strings.HasPrefix(errorMessage, "fail: ") {
+		// The script chose to stop; generic advice about the code would only mislead.
+		hints = append(hints, "The script stopped itself with fail(); the message above is the reason it gave.")
+	} else if strings.Contains(errorMessage, "unhandled index operation struct[") || strings.Contains(errorMessage, `"tool_error" struct has no`) ||
+		strings.Contains(errorMessage, "value of type struct has no len") || strings.Contains(errorMessage, "struct value is not iterable") {
+		hints = append(hints, "If this value came from a tool call, the call failed: its result is an error value, not a dict or list.")
+		hints = append(hints, "Check it first: if hasattr(r, \"error\"): ... (r.error holds the message)")
+	} else if strings.Contains(errorMessage, "string index") || strings.Contains(errorMessage, "string has no .") {
+		hints = append(hints, "The value is a str, not a dict: the server's text was not JSON, or was JSON wrapped in a string.")
+		if !slices.Contains(serverKeys, "json") {
+			hints = append(hints, "If it holds JSON, parse it first: data = json.decode(result)")
+		}
+		hints = append(hints, "Check the shape with type(result) before indexing a tool result.")
+	} else if strings.Contains(errorMessage, "got try") || strings.Contains(errorMessage, "got except") ||
 		strings.Contains(errorMessage, "got finally") || strings.Contains(errorMessage, "got raise") {
 		hints = append(hints, exceptionHandlingHints()...)
 	} else if strings.Contains(errorMessage, "undefined") || strings.Contains(errorMessage, "not defined") {
@@ -176,7 +240,7 @@ func generatePythonErrorHints(errorMessage string, serverKeys []string) []string
 	} else if strings.Contains(errorMessage, "has no") && strings.Contains(errorMessage, "attribute") {
 		hints = append(hints, "You're trying to access an attribute that doesn't exist.")
 		hints = append(hints, "Use dict access syntax: result[\"key\"] instead of result.key")
-		hints = append(hints, "Use print(result) to see the actual structure.")
+		hints = append(hints, "Check the shape with print(type(result)), and print(sorted(result.keys())) for a dict.")
 		if len(serverKeys) > 0 {
 			hints = append(hints, fmt.Sprintf("Available server keys: %s", strings.Join(serverKeys, ", ")))
 		}
@@ -189,7 +253,7 @@ func generatePythonErrorHints(errorMessage string, serverKeys []string) []string
 		hints = append(hints, "Use readToolFile to see available tools for a server.")
 	} else if strings.Contains(errorMessage, "key") && strings.Contains(errorMessage, "not found") {
 		hints = append(hints, "Dictionary key not found.")
-		hints = append(hints, "Use print() to inspect the dict structure before accessing keys.")
+		hints = append(hints, "Check which keys exist with print(sorted(result.keys())) before indexing.")
 		hints = append(hints, "Use .get(\"key\", default) for safe access.")
 	} else {
 		hints = append(hints, "Check the error message above for details.")
@@ -209,10 +273,23 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 	if toolResponse == nil {
 		return fmt.Sprintf("MCP tool '%s' executed successfully", toolName), nil
 	}
+	// Structured content is the machine-readable result the MCP spec defines; the text
+	// blocks beside it are a copy kept for older clients. An error result keeps its text.
+	if !toolResponse.IsError && toolResponse.StructuredContent != nil {
+		encoded, err := schemas.MarshalSorted(toolResponse.StructuredContent)
+		if err != nil {
+			return "", err
+		}
+		if len(encoded) > valueLimit {
+			return "", fmt.Errorf("code mode tool result exceeds size limit")
+		}
+		return string(encoded), nil
+	}
 	if len(toolResponse.Content) > valueLimit/128 {
 		return "", fmt.Errorf("code mode tool result exceeds size limit")
 	}
-	var result strings.Builder
+	blocks := make([]string, 0, len(toolResponse.Content))
+	size := 0
 	for _, contentBlock := range toolResponse.Content {
 		// Both values and pointers implement MCP's sealed Content interface.
 		switch content := contentBlock.(type) {
@@ -247,11 +324,11 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 		case mcp.TextContent:
 			parts = []string{content.Text}
 		case mcp.ImageContent:
-			parts = []string{"[Image Response: ", content.Data, ", MIME: ", content.MIMEType, "]\n"}
+			parts = []string{"[Image Response: ", content.Data, ", MIME: ", content.MIMEType, "]"}
 		case mcp.AudioContent:
-			parts = []string{"[Audio Response: ", content.Data, ", MIME: ", content.MIMEType, "]\n"}
+			parts = []string{"[Audio Response: ", content.Data, ", MIME: ", content.MIMEType, "]"}
 		case mcp.EmbeddedResource:
-			parts = []string{"[Embedded Resource Response: ", content.Type, "]\n"}
+			parts = []string{"[Embedded Resource Response: ", content.Type, "]"}
 		case mcp.ResourceLink:
 			remaining := valueLimit - 256
 			check := func(value string) bool {
@@ -285,15 +362,19 @@ func extractTextFromMCPResponse(toolResponse *mcp.CallToolResult, toolName strin
 		default:
 			return "", fmt.Errorf("unsupported code mode tool content type %T", contentBlock)
 		}
+		if len(blocks) > 0 {
+			size++ // the separator joinTextBlocks puts between blocks
+		}
 		for _, part := range parts {
-			if len(part) > valueLimit-result.Len() {
+			if len(part) > valueLimit-size {
 				return "", fmt.Errorf("code mode tool result exceeds size limit")
 			}
-			result.WriteString(part)
+			size += len(part)
 		}
+		blocks = append(blocks, strings.Join(parts, ""))
 	}
-	if result.Len() > 0 {
-		return strings.TrimSpace(result.String()), nil
+	if text := strings.TrimSpace(joinTextBlocks(blocks)); text != "" {
+		return text, nil
 	}
 	return fmt.Sprintf("MCP tool '%s' executed successfully", toolName), nil
 }

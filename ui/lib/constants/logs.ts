@@ -31,6 +31,7 @@ export const KnownProvidersNames = [
 	"sarvam",
 	"wafer",
 	"databricks",
+	"cloudflare",
 	"github-copilot",
 	"typesafe",
 ] as const;
@@ -69,6 +70,7 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"vertex",
 	"vllm",
 	"databricks",
+	"cloudflare",
 ] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
@@ -144,6 +146,7 @@ export const RequestTypes = [
 	"live",
 	"live.session",
 	"live_content",
+	"live_sideband",
 ] as const;
 
 export const ProviderLabels: Record<ProviderName, string> = {
@@ -178,6 +181,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	sarvam: "Sarvam AI",
 	wafer: "Wafer",
 	databricks: "Databricks",
+	cloudflare: "Cloudflare",
 	"github-copilot": "GitHub Copilot",
 	typesafe: "TypeSafe",
 } as const;
@@ -225,6 +229,8 @@ const userAgentAppMatchers: { identifiers: string[]; app: ClientApp }[] = [
 	{ identifiers: ["cline"], app: { name: "Cline", icon: "/images/cline.png" } },
 	{ identifiers: ["opencode"], app: { name: "OpenCode", icon: "/images/opencode.png" } },
 	{ identifiers: ["windsurf"], app: { name: "Windsurf", icon: "/images/windsurf.png" } },
+	{ identifiers: ["antigravity-cli"], app: { name: "Antigravity CLI", icon: "/images/harness/antigravity.svg" } },
+	{ identifiers: ["antigravity-desktop", "antigravity/"], app: { name: "Antigravity Desktop", icon: "/images/harness/antigravity.svg" } },
 	{ identifiers: ["gemini", "geminicli"], app: { name: "Gemini CLI", icon: "/images/gemini-cli.png" } },
 	{ identifiers: ["qwencode", "qwen"], app: { name: "Qwen Code" } },
 ];
@@ -368,6 +374,7 @@ export const RequestTypeLabels = {
 	live: "Live",
 	"live.session": "Live Session",
 	live_content: "Live Recording",
+	live_sideband: "Live Sideband",
 } as const;
 
 export const RequestTypeColors = {
@@ -463,6 +470,7 @@ export const RequestTypeColors = {
 	live: "bg-violet-100 text-violet-800",
 	"live.session": "bg-violet-100 text-violet-800",
 	live_content: "bg-blue-100 text-blue-800",
+	live_sideband: "bg-blue-100 text-blue-800",
 } as const;
 
 export const RoutingEngineUsedLabels = {

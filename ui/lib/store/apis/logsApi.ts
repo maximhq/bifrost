@@ -23,6 +23,7 @@ import {
 	ThroughputHistogramResponse,
 	TokenHistogramResponse,
 } from "@/lib/types/logs";
+import { getPeriodTimezone, withPeriodTimezone } from "@/lib/utils/timeRange";
 import { baseApi } from "./baseApi";
 import { RoutingRule } from "@/lib/types/routingRules";
 
@@ -83,6 +84,8 @@ function buildFilterParams(filters: LogFilters): Record<string, string | number>
 	}
 	if (filters.period) {
 		params.period = filters.period;
+		const timezone = getPeriodTimezone(filters.period);
+		if (timezone) params.timezone = timezone;
 	} else {
 		if (filters.start_time) params.start_time = filters.start_time;
 		if (filters.end_time) params.end_time = filters.end_time;
@@ -454,7 +457,7 @@ export const logsApi = baseApi.injectEndpoints({
 			query: ({ filters, limit }) => ({
 				url: "/logs/recalculate-cost",
 				method: "POST",
-				body: { filters, limit },
+				body: { filters: withPeriodTimezone(filters), limit },
 			}),
 			invalidatesTags: ["Logs"],
 		}),

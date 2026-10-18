@@ -118,7 +118,64 @@ func newMCPServer(instructions string) *server.MCPServer {
 		mcp.WithString("name", mcp.Required(), mcp.Description("Name to greet")),
 	), greetHandler)
 
+	// Backs the provider-harness injected web search cases. Its one result carries a
+	// fact no model knows, so an answer containing it proves Bifrost ran the tool.
+	s.AddTool(mcp.NewTool(
+		"web_search",
+		mcp.WithDescription("Search the web and return the most relevant results for a query"),
+		mcp.WithString("query", mcp.Required(), mcp.Description("Search query")),
+	), webSearchHandler)
+
+	// Back the provider-harness code mode result cases. Each returns one shape a nested call
+	// has to hand a script as a value: several JSON blocks, structured content beside a
+	// different text copy, and a JSON object wrapped in a JSON string.
+	s.AddTool(mcp.NewTool(
+		"multi_block",
+		mcp.WithDescription("Return two results as two JSON text blocks"),
+	), multiBlockHandler)
+
+	s.AddTool(mcp.NewTool(
+		"structured_result",
+		mcp.WithDescription("Return a structured result next to a text copy that differs from it"),
+	), structuredResultHandler)
+
+	s.AddTool(mcp.NewTool(
+		"json_string",
+		mcp.WithDescription("Return a JSON object wrapped in a JSON string"),
+	), jsonStringHandler)
+
+	// Backs the provider-harness code mode failed-call case for a failure flagged with isError
+	// whose text opens with "Error: ", the way Bifrost's own in-process tools report one.
+	s.AddTool(mcp.NewTool(
+		"prefixed_error",
+		mcp.WithDescription("Fail with isError and text that opens with \"Error: \""),
+	), prefixedErrorHandler)
+
 	return s
+}
+
+func prefixedErrorHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return mcp.NewToolResultError("Error: contact not found"), nil
+}
+
+func multiBlockHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{Content: []mcp.Content{
+		mcp.NewTextContent(`{"id":1,"title":"first"}`),
+		mcp.NewTextContent(`{"id":2,"title":"second"}`),
+	}}, nil
+}
+
+// The text copy differs from the structured result on purpose, so a case can tell which one
+// reached the script.
+func structuredResultHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return &mcp.CallToolResult{
+		Content:           []mcp.Content{mcp.NewTextContent(`{"source":"text"}`)},
+		StructuredContent: map[string]any{"source": "structured"},
+	}, nil
+}
+
+func jsonStringHandler(context.Context, mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return mcp.NewToolResultText(`"{\"title\":\"Example Domain\"}"`), nil
 }
 
 // Handlers return JSON objects rather than prose. Code mode parses a tool's
@@ -152,6 +209,24 @@ func greetHandler(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResu
 		return mcp.NewToolResultError(err.Error()), nil
 	}
 	return jsonResult(map[string]any{"greeting": "Hello, " + strings.TrimSpace(name) + "!"})
+}
+
+// HarnessSearchFact is the fact web_search returns, asserted by the provider harness.
+const HarnessSearchFact = "The Bifrost harness lighthouse is painted teal-and-amber and its keeper is named Orrin Vale."
+
+func webSearchHandler(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	query, err := req.RequireString("query")
+	if err != nil {
+		return mcp.NewToolResultError(err.Error()), nil
+	}
+	return jsonResult(map[string]any{
+		"query": query,
+		"results": []map[string]any{{
+			"title":   "Bifrost harness lighthouse",
+			"url":     "https://example.com/bifrost-harness-lighthouse",
+			"snippet": HarnessSearchFact,
+		}},
+	})
 }
 
 // jsonResult marshals v and returns it as the tool's text content.
