@@ -496,10 +496,11 @@ div.content-container:has(.no-border-parent) {
 		margin-left: 0;
 	}
 
+	/* The card has no side padding (it lives on main), so the banner already spans it. */
 	@media (min-width: 48rem) {
 		#trial-notification-banner {
-			width: calc(100% + 80px);
-			margin-left: -40px;
+			width: 100%;
+			margin-left: 0;
 		}
 	}
 }

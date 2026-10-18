@@ -43105,7 +43105,7 @@
     },
     {
       "name": "19. Chat-to-Responses Tool Replay (#5101 / PR #5102) (chat-responses-tool-replay)",
-      "description": "Regression coverage for PR #5102 (closes #5101): Vercel-AI-SDK-style clients replay an assistant tool call and its tool result on the second step of a run. When the compat plugin converts /v1/chat/completions to the OpenAI Responses API, the replayed tool call becomes a function_call input item that must NOT carry role - OpenAI rejects role on any non-message input item with 400 unknown_parameter input[N].role. Cases 1-2 drive the real conversion route (x-bf-compat forces convert_chat_to_responses); case 3 pins the wire invariant on the native /v1/responses route with a caller-supplied role-bearing function_call item. Cases 4-5 pin that a chat tool message with array content converts to function_call_output blocks in the Responses spelling (input_text, not the chat text type), which OpenAI and Azure rejected with \"Invalid value: 'text'. Supported values are: 'input_text', ...\" at input[N].output[0].type.",
+      "description": "Regression coverage for PR #5102 (closes #5101): Vercel-AI-SDK-style clients replay an assistant tool call and its tool result on the second step of a run. When the compat plugin converts /v1/chat/completions to the OpenAI Responses API, the replayed tool call becomes a function_call input item that must NOT carry role - OpenAI rejects role on any non-message input item with 400 unknown_parameter input[N].role. Cases 1-2 drive the real conversion route (x-bf-compat forces convert_chat_to_responses); case 3 pins the wire invariant on the native /v1/responses route with a caller-supplied role-bearing function_call item. Cases 4-5 pin that a chat tool message with array content converts to function_call_output blocks in the Responses spelling (input_text, not the chat text type), which OpenAI and Azure rejected with \"Invalid value: 'text'. Supported values are: 'input_text', ...\" at input[N].output[0].type. Cases 6-8 pin that a chat tool message with empty string content converts to a function_call_output that still carries output \"\"; the field used to be dropped and OpenAI rejected the request with \"Missing required parameter: 'input[N].output'\" (#8568).",
       "item": [
         {
           "name": "bedrock_mantle/openai.gpt-5.6-luna compat chat->responses: replayed tool call accepted (non-streaming) - chat-responses-tool-replay",
@@ -43393,6 +43393,177 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_paris_blocks\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_paris_blocks\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Thanks. Is that warm?\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.1-codex-mini compat chat->responses: empty tool result keeps function_call_output.output (non-streaming) - chat-responses-tool-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('openai: empty tool result is not rejected as a missing output', function () {",
+                  "  pm.expect(text, 'function_call_output went out without output').to.not.match(/Missing required parameter: 'input\\[\\d+\\]\\.output'/);",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('chat->responses conversion actually fired', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.converted_request_type, 'conversion did not fire, so this row proves nothing: ' + text).to.eql('responses');",
+                  "});",
+                  "pm.test('openai: function_call_output carries output \"\" on the wire', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
+                  "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
+                  "  pm.expect(outs.length, 'expected one function_call_output in the converted request: ' + JSON.stringify(raw)).to.equal(1);",
+                  "  pm.expect(outs[0], 'output key dropped: ' + JSON.stringify(outs[0])).to.have.property('output');",
+                  "  pm.expect(outs[0].output).to.equal('');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.1-codex-mini\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "openai/gpt-5.1-codex-mini compat chat->responses: empty tool result keeps function_call_output.output (streaming) - chat-responses-tool-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('openai: empty tool result is not rejected as a missing output', function () {",
+                  "  pm.expect(text, 'function_call_output went out without output').to.not.match(/Missing required parameter: 'input\\[\\d+\\]\\.output'/);",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('openai: stream converted and finished without an error frame', function () {",
+                  "  var converted = false;",
+                  "  text.split('\\n').forEach(function (line) {",
+                  "    var t = line.replace(/\\r$/, '');",
+                  "    if (t.indexOf('data:') !== 0) { return; }",
+                  "    var payload = t.slice(5).trim();",
+                  "    if (!payload || payload === '[DONE]') { return; }",
+                  "    try { var ef = JSON.parse(payload).extra_fields || {}; if (ef.converted_request_type === 'responses') { converted = true; } } catch (e) {}",
+                  "  });",
+                  "  pm.expect(converted, 'conversion did not fire on any chunk, so this row proves nothing: ' + text).to.equal(true);",
+                  "  pm.expect(text, 'stream ended with an error frame: ' + text).to.not.include('\"error\"');",
+                  "  pm.expect(text, 'stream did not finish: ' + text).to.include('[DONE]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"openai/gpt-5.1-codex-mini\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}],\"stream\":true}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "bedrock_mantle/openai.gpt-5.6-luna compat chat->responses: empty tool result keeps function_call_output.output (non-streaming) - chat-responses-tool-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "pm.test('bedrock_mantle: empty tool result is not rejected as a missing output', function () {",
+                  "  pm.expect(text, 'function_call_output went out without output').to.not.match(/Missing required parameter: 'input\\[\\d+\\]\\.output'/);",
+                  "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
+                  "});",
+                  "pm.test('chat->responses conversion actually fired', function () {",
+                  "  var ef = pm.response.json().extra_fields || {};",
+                  "  pm.expect(ef.converted_request_type, 'conversion did not fire, so this row proves nothing: ' + text).to.eql('responses');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"convert_chat_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"bedrock_mantle/openai.gpt-5.6-luna\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -190333,7 +190504,7 @@
     },
     {
       "name": "143. Mistral content arrays return text or explicit streaming errors (#7906) (mistral-content-array)",
-      "description": "Deterministic, free fixture pin for #7906. A local SSE upstream emits original Mistral delta.content arrays through the real native provider parser. Three routes complete homogeneous text arrays; thinking, mixed and reference arrays terminate with a structured error instead of being dropped. Uses real dashboard login, a fresh app profile with no preexisting Mistral, an owned native provider with a dummy key, upstream wire witness and cleanup. Mistral is not a supported custom-provider base in this revision, so no allowlist changes or bypass mocker plugin are used. Same-host fixture started by run-mistral-content-array-fixture.mjs; scoped INCLUDE_PREVIEW=1 PARALLEL=0 only. User-run live harness; complete preparation below.\n\nUser-run setup (Linux/WSL Bash, repo root; Node, Go, jq, curl, docker, nc and lsof):\n1. Start the profile backing service: docker compose -f tests/docker-compose.yml up -d weaviate. Wait for curl -sf http://localhost:9000/v1/.well-known/ready and nc -z localhost 50051 to succeed. Check lsof -nP -iTCP:3021 -sTCP:LISTEN prints no listener; use another free port consistently if occupied.\n2. Make a fresh isolated profile (never run this on an existing app directory):\nmkdir -p tmp\nTASK_MISTRAL_APP_DIR=$(mktemp -d \"$PWD/tmp/mistral-content-array.XXXXXX\")\ngit show HEAD:tests/integrations/python/config.json | jq --arg db \"$TASK_MISTRAL_APP_DIR/config.db\" --arg logs \"$TASK_MISTRAL_APP_DIR/logs.db\" '.providers={} | .governance.routing_rules=[] | .governance.virtual_keys=[] | .governance.auth_config={\"is_enabled\":true,\"admin_username\":\"mistral_array_harness\",\"admin_password\":\"harness-only-password\"} | .config_store.config.path=$db | .logs_store.config.path=$logs | .mcp.client_configs=[] | .client.oauth2_server_config.issuer_url=\"http://localhost:3021\"' > \"$TASK_MISTRAL_APP_DIR/config.json\"\nprintf '%s\\n' \"$TASK_MISTRAL_APP_DIR\" > tmp/mistral-content-array-app-dir\n3. In a separate terminal, start only the same-host fixture (ENV_FILE must not already exist; choose another path for concurrent runs):\nnode tests/e2e/api/runners/run-mistral-content-array-fixture.mjs --env-out tmp/mistral-content-array.env.json\n4. Start the gateway from the reviewed source in another terminal:\nmake dev PORT=3021 APP_DIR=$(cat tmp/mistral-content-array-app-dir)\n5. After /health answers, obtain a disposable bootstrap session for the Makefile's authenticated raw-override preflight (do not print its token):\nTASK_MISTRAL_BOOTSTRAP_TOKEN=$(curl -fsS -c - -o /dev/null -H 'Content-Type: application/json' --data '{\"username\":\"mistral_array_harness\",\"password\":\"harness-only-password\"}' http://localhost:3021/api/session/login | awk '$6==\"token\" {print $7}')\ntest -n \"$TASK_MISTRAL_BOOTSTRAP_TOKEN\" && export BIFROST_E2E_AUTH_HEADER=\"Bearer $TASK_MISTRAL_BOOTSTRAP_TOKEN\"\n6. Run the full owned setup/wire/cleanup chain in one Newman process:\nmake run-provider-harness-test PROVIDER=mistral FEATURE=\"mistral-content-array\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 ENV_FILE=tmp/mistral-content-array.env.json BASE_URL=http://localhost:3021\n7. The collection removes its provider/key, witness and login session. Invalidate the separate bootstrap session after the run, then stop the two foreground servers:\ncurl -fsS -X POST -H \"Authorization: $BIFROST_E2E_AUTH_HEADER\" http://localhost:3021/api/session/logout >/dev/null\nunset BIFROST_E2E_AUTH_HEADER TASK_MISTRAL_BOOTSTRAP_TOKEN\nThe submitted rows are structurally validated; live execution belongs to the user. These six calls reach only the local fixture, with a dummy key; no real provider credential is needed.",
+      "description": "Deterministic, free fixture pin for #7906. A local SSE upstream emits original Mistral delta.content arrays through the real native provider parser. Three routes complete homogeneous text arrays; three routes stream a leading thinking block as reasoning followed by the answer text in the same delta (the zai-glm/magistral shape); text-then-thinking and reference arrays terminate with a structured error instead of being dropped. Uses real dashboard login, a fresh app profile with no preexisting Mistral, an owned native provider with a dummy key, upstream wire witness and cleanup. Mistral is not a supported custom-provider base in this revision, so no allowlist changes or bypass mocker plugin are used. Same-host fixture started by run-mistral-content-array-fixture.mjs; scoped INCLUDE_PREVIEW=1 PARALLEL=0 only. User-run live harness; complete preparation below.\n\nUser-run setup (Linux/WSL Bash, repo root; Node, Go, jq, curl, docker, nc and lsof):\n1. Start the profile backing service: docker compose -f tests/docker-compose.yml up -d weaviate. Wait for curl -sf http://localhost:9000/v1/.well-known/ready and nc -z localhost 50051 to succeed. Check lsof -nP -iTCP:3021 -sTCP:LISTEN prints no listener; use another free port consistently if occupied.\n2. Make a fresh isolated profile (never run this on an existing app directory):\nmkdir -p tmp\nTASK_MISTRAL_APP_DIR=$(mktemp -d \"$PWD/tmp/mistral-content-array.XXXXXX\")\ngit show HEAD:tests/integrations/python/config.json | jq --arg db \"$TASK_MISTRAL_APP_DIR/config.db\" --arg logs \"$TASK_MISTRAL_APP_DIR/logs.db\" '.providers={} | .governance.routing_rules=[] | .governance.virtual_keys=[] | .governance.auth_config={\"is_enabled\":true,\"admin_username\":\"mistral_array_harness\",\"admin_password\":\"harness-only-password\"} | .config_store.config.path=$db | .logs_store.config.path=$logs | .mcp.client_configs=[] | .client.oauth2_server_config.issuer_url=\"http://localhost:3021\"' > \"$TASK_MISTRAL_APP_DIR/config.json\"\nprintf '%s\\n' \"$TASK_MISTRAL_APP_DIR\" > tmp/mistral-content-array-app-dir\n3. In a separate terminal, start only the same-host fixture (ENV_FILE must not already exist; choose another path for concurrent runs):\nnode tests/e2e/api/runners/run-mistral-content-array-fixture.mjs --env-out tmp/mistral-content-array.env.json\n4. Start the gateway from the reviewed source in another terminal:\nmake dev PORT=3021 APP_DIR=$(cat tmp/mistral-content-array-app-dir)\n5. After /health answers, obtain a disposable bootstrap session for the Makefile's authenticated raw-override preflight (do not print its token):\nTASK_MISTRAL_BOOTSTRAP_TOKEN=$(curl -fsS -c - -o /dev/null -H 'Content-Type: application/json' --data '{\"username\":\"mistral_array_harness\",\"password\":\"harness-only-password\"}' http://localhost:3021/api/session/login | awk '$6==\"token\" {print $7}')\ntest -n \"$TASK_MISTRAL_BOOTSTRAP_TOKEN\" && export BIFROST_E2E_AUTH_HEADER=\"Bearer $TASK_MISTRAL_BOOTSTRAP_TOKEN\"\n6. Run the full owned setup/wire/cleanup chain in one Newman process:\nmake run-provider-harness-test PROVIDER=mistral FEATURE=\"mistral-content-array\" INCLUDE_PREVIEW=1 PARALLEL=0 COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 ENV_FILE=tmp/mistral-content-array.env.json BASE_URL=http://localhost:3021\n7. The collection removes its provider/key, witness and login session. Invalidate the separate bootstrap session after the run, then stop the two foreground servers:\ncurl -fsS -X POST -H \"Authorization: $BIFROST_E2E_AUTH_HEADER\" http://localhost:3021/api/session/logout >/dev/null\nunset BIFROST_E2E_AUTH_HEADER TASK_MISTRAL_BOOTSTRAP_TOKEN\nThe submitted rows are structurally validated; live execution belongs to the user. These eight calls reach only the local fixture, with a dummy key; no real provider credential is needed.",
       "item": [
         {
           "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture local fixture identity - mistral-content-array - #7906",
@@ -190600,11 +190771,16 @@
                   "var errors = events.filter(function (e) { return e.error && typeof e.error.message === 'string'; });",
                   "var completed = events.filter(function (e) { return e.type === 'response.completed' || e.type === 'message_stop'; });",
                   "var text = '';",
+                  "var reasoning = '';",
                   "events.forEach(function (e) {",
-                  "  if (route === 'chat') (e.choices || []).forEach(function (c) { if (c.delta && typeof c.delta.content === 'string') text += c.delta.content; });",
+                  "  if (route === 'chat') (e.choices || []).forEach(function (c) { if (!c.delta) return; if (typeof c.delta.content === 'string') text += c.delta.content; if (typeof c.delta.reasoning === 'string') reasoning += c.delta.reasoning; });",
                   "  else if (route === 'responses' && e.type === 'response.output_text.delta') text += e.delta || '';",
+                  "  else if (route === 'responses' && e.type === 'response.reasoning_summary_text.delta') reasoning += e.delta || '';",
                   "  else if (route === 'anthropic' && e.type === 'content_block_delta' && e.delta && e.delta.type === 'text_delta') text += e.delta.text || '';",
+                  "  else if (route === 'anthropic' && e.type === 'content_block_delta' && e.delta && e.delta.type === 'thinking_delta') reasoning += e.delta.thinking || '';",
                   "});",
+                  "var thinking = pm.info.requestName.indexOf(' thinking-') >= 0;",
+                  "var nonce = pm.collectionVariables.get('mistralArrayNonce');",
                   "pm.test('array content produces the promised successful or explicit error stream', function () {",
                   "  if (unsupported) {",
                   "    pm.expect(errors.length, raw).to.equal(1);",
@@ -190612,9 +190788,11 @@
                   "    pm.expect(completed.length, 'unsupported content must not be reported completed: ' + raw).to.equal(0);",
                   "    pm.expect(doneMarkers, 'failed stream must not claim a clean terminal marker: ' + raw).to.equal(0);",
                   "    pm.expect(text, 'a mixed array must not leak a partial answer before rejecting its thinking block: ' + raw).to.equal('');",
+                  "    pm.expect(reasoning, 'a rejected array must not leak reasoning: ' + raw).to.equal('');",
                   "  } else {",
                   "    pm.expect(errors.length, raw).to.equal(0);",
-                  "    pm.expect(text, raw).to.equal('mistral array fixture ' + pm.collectionVariables.get('mistralArrayNonce'));",
+                  "    pm.expect(text, 'answer text after a thinking block must not be dropped: ' + raw).to.equal('mistral array fixture ' + nonce);",
+                  "    pm.expect(reasoning, 'thinking blocks must surface as reasoning: ' + raw).to.equal(thinking ? 'private reasoning ' + nonce : '');",
                   "    if (route === 'chat') {",
                   "      pm.expect(doneMarkers, raw).to.equal(1);",
                   "      pm.expect(events.some(function (e) { return (e.choices || []).some(function (c) { return c.finish_reason === 'stop'; }); }), raw).to.equal(true);",
@@ -190628,14 +190806,17 @@
                   "      pm.expect(completed.length, raw).to.equal(1);",
                   "      var starts = events.filter(function (e) { return e.type === 'content_block_start'; });",
                   "      var stops = events.filter(function (e) { return e.type === 'content_block_stop'; });",
-                  "      pm.expect(starts.length, raw).to.equal(1);",
-                  "      pm.expect(starts[0].content_block.type, raw).to.equal('text');",
-                  "      pm.expect(stops.map(function (e) { return e.index; }), raw).to.deep.equal([starts[0].index]);",
-                  "      var open = false;",
+                  "      pm.expect(starts.map(function (e) { return e.content_block.type; }), raw).to.deep.equal(thinking ? ['thinking', 'text'] : ['text']);",
+                  "      pm.expect(stops.map(function (e) { return e.index; }), raw).to.deep.equal(starts.map(function (e) { return e.index; }));",
+                  "      var openIndex = null, openType = null;",
+                  "      var deltaTypes = { thinking: ['thinking_delta', 'signature_delta'], text: ['text_delta'] };",
                   "      events.forEach(function (e) {",
-                  "        if (e.type === 'content_block_start') open = true;",
-                  "        if (e.type === 'content_block_delta') pm.expect(open && e.index === starts[0].index, 'every text delta targets the open block: ' + raw).to.equal(true);",
-                  "        if (e.type === 'content_block_stop') open = false;",
+                  "        if (e.type === 'content_block_start') { openIndex = e.index; openType = e.content_block.type; }",
+                  "        if (e.type === 'content_block_delta') {",
+                  "          pm.expect(e.index, 'every delta targets the open block: ' + raw).to.equal(openIndex);",
+                  "          pm.expect(deltaTypes[openType] || [], e.delta.type + ' inside an open ' + openType + ' block: ' + raw).to.include(e.delta.type);",
+                  "        }",
+                  "        if (e.type === 'content_block_stop') { openIndex = null; openType = null; }",
                   "      });",
                   "      pm.expect(events.some(function (e) { return e.type === 'message_delta' && e.delta.stop_reason === 'end_turn' && e.usage.output_tokens === 2; }), raw).to.equal(true);",
                   "    }",
@@ -190793,7 +190974,7 @@
               ]
             },
             {
-              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [chat] unsupported thinking-chat fails explicitly - mistral-content-array - #7906",
+              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [chat] thinking-chat streams reasoning and text - mistral-content-array - #7906",
               "protocolProfileBehavior": {
                 "disableCookies": true
               },
@@ -190926,11 +191107,101 @@
                   }
                 }
               ]
+            },
+            {
+              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [responses] thinking-responses streams reasoning and text - mistral-content-array - #7906",
+              "protocolProfileBehavior": {
+                "disableCookies": true
+              },
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{mistralArrayToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-response",
+                    "value": "true"
+                  }
+                ],
+                "url": "{{baseUrl}}/v1/responses",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"model\": \"mistral/mistral-array-fixture\", \"input\": \"mistral-content-array:thinking-responses:{{mistralArrayNonce}}\", \"stream\": true, \"max_output_tokens\": 8}"
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var ready = pm.collectionVariables.get('mistralArrayKeyReady');",
+                      "pm.test('prerequisite mistralArrayKeyReady exists', function () { pm.expect(ready).to.equal('1'); });",
+                      "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();",
+                      "pm.collectionVariables.set('mistralArrayThinkingResponsesAttempted', '1');"
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture [anthropic] thinking-anthropic streams reasoning and text - mistral-content-array - #7906",
+              "protocolProfileBehavior": {
+                "disableCookies": true
+              },
+              "request": {
+                "auth": {
+                  "type": "noauth"
+                },
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Authorization",
+                    "value": "Bearer {{mistralArrayToken}}"
+                  },
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "key": "x-bf-send-back-raw-response",
+                    "value": "true"
+                  }
+                ],
+                "url": "{{baseUrl}}/anthropic/v1/messages",
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\"model\": \"mistral/mistral-array-fixture\", \"messages\": [{\"role\": \"user\", \"content\": \"mistral-content-array:thinking-anthropic:{{mistralArrayNonce}}\"}], \"stream\": true, \"max_tokens\": 8}"
+                }
+              },
+              "event": [
+                {
+                  "listen": "prerequest",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "var ready = pm.collectionVariables.get('mistralArrayKeyReady');",
+                      "pm.test('prerequisite mistralArrayKeyReady exists', function () { pm.expect(ready).to.equal('1'); });",
+                      "if (ready !== '1' && pm.execution && pm.execution.skipRequest) pm.execution.skipRequest();",
+                      "pm.collectionVariables.set('mistralArrayThinkingAnthropicAttempted', '1');"
+                    ]
+                  }
+                }
+              ]
             }
           ]
         },
         {
-          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture inspect actual six upstream array frames - mistral-content-array - #7906",
+          "name": "[PREVIEW] [EXPECT-200] mistral mistral-array-fixture inspect actual eight upstream array frames - mistral-content-array - #7906",
           "protocolProfileBehavior": {
             "disableCookies": true
           },
@@ -190951,19 +191222,22 @@
                   "pm.test('upstream witness returns HTTP 200', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "pm.test('six gateway requests reached the Mistral SSE parser path', function () {",
+                  "pm.test('eight gateway requests reached the Mistral SSE parser path', function () {",
                   "  pm.expect(pm.collectionVariables.get('mistralArrayTextChatAttempted'), 'run the full scoped chain').to.equal('1');",
                   "  pm.expect(pm.collectionVariables.get('mistralArrayTextResponsesAttempted'), 'run the full scoped chain').to.equal('1');",
                   "  pm.expect(pm.collectionVariables.get('mistralArrayTextAnthropicAttempted'), 'run the full scoped chain').to.equal('1');",
                   "  pm.expect(pm.collectionVariables.get('mistralArrayThinkingChatAttempted'), 'run the full scoped chain').to.equal('1');",
                   "  pm.expect(pm.collectionVariables.get('mistralArrayMixedResponsesAttempted'), 'run the full scoped chain').to.equal('1');",
                   "  pm.expect(pm.collectionVariables.get('mistralArrayReferenceAnthropicAttempted'), 'run the full scoped chain').to.equal('1');",
+                  "  pm.expect(pm.collectionVariables.get('mistralArrayThinkingResponsesAttempted'), 'run the full scoped chain').to.equal('1');",
+                  "  pm.expect(pm.collectionVariables.get('mistralArrayThinkingAnthropicAttempted'), 'run the full scoped chain').to.equal('1');",
                   "  var rows = pm.response.json().requests;",
-                  "  pm.expect(rows.map(function (r) { return r.scenario; }), pm.response.text()).to.deep.equal(['text-chat','text-responses','text-anthropic','thinking-chat','mixed-responses','reference-anthropic']);",
+                  "  pm.expect(rows.map(function (r) { return r.scenario; }), pm.response.text()).to.deep.equal(['text-chat','text-responses','text-anthropic','thinking-chat','mixed-responses','reference-anthropic','thinking-responses','thinking-anthropic']);",
                   "  pm.expect(rows.every(function (r) { return r.method === 'POST' && r.path === '/v1/chat/completions' && r.model === 'mistral-array-fixture' && r.stream === true && Array.isArray(r.frame.choices[0].delta.content); }), pm.response.text()).to.equal(true);",
                   "  pm.expect(rows[0].frame.choices[0].delta.content.map(function (c) { return c.text; }).join('')).to.equal('mistral array fixture ' + pm.collectionVariables.get('mistralArrayNonce'));",
                   "  pm.expect(rows[3].frame.choices[0].delta.content[0].thinking[0].type).to.equal('text');",
                   "  pm.expect(rows[3].frame.choices[0].delta.content[0].signature).to.equal('fixture-signature');",
+                  "  [3, 6, 7].forEach(function (i) { pm.expect(rows[i].frame.choices[0].delta.content.map(function (c) { return c.type; })).to.deep.equal(['thinking', 'text', 'text']); });",
                   "  pm.expect(rows[4].frame.choices[0].delta.content.map(function (c) { return c.type; })).to.deep.equal(['text', 'thinking']);",
                   "  pm.expect(rows[5].frame.choices[0].delta.content[0].reference_ids).to.deep.equal([7, 'fixture-' + pm.collectionVariables.get('mistralArrayNonce')]);",
                   "});"
@@ -201207,10 +201481,14 @@
                 "type": "text/javascript",
                 "exec": [
                   "// Canonical's parser reports try as an illegal token; the hint must still explain that Starlark has no exception handling.",
+                  "// It must also show the check that catches a failed call, which reaches the script as an error value, never a dict.",
                   "pm.test('code-mode-budget try-except-hint', function () {",
                   "  pm.expect(pm.response.code, pm.response.text()).to.equal(200);",
                   "  pm.expect(pm.response.json().is_error, pm.response.text()).to.equal(true);",
                   "  pm.expect(pm.response.text()).to.include('does NOT support try/except');",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(content, 'the hint does not show the failed-call check: ' + content).to.include('if hasattr(r, \"error\"):');",
+                  "  pm.expect(content, 'the hint still checks for a dict: ' + content).to.not.include('\"error\" in result');",
                   "});"
                 ]
               }
@@ -269307,7 +269585,8 @@
                   "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
                   "});",
                   "pm.test('bedrock converse: cache_control on the tool_calls entry becomes a cachePoint directly after its toolUse (was silently dropped before the fix)', function () {",
-                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  var raw = (pm.response.json().extra_fields || {}).raw_request;",
+                  "  pm.expect(raw, 'extra_fields.raw_request missing; was x-bf-send-back-raw-request: true honored? body=' + text).to.exist;",
                   "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
                   "  var assistant = (raw.messages || []).filter(function (m) { return m.role === 'assistant'; })[0];",
                   "  pm.expect(assistant, 'no assistant message in raw_request: ' + JSON.stringify(raw)).to.not.equal(undefined);",
@@ -273517,6 +273796,2490 @@
             "body": {
               "mode": "raw",
               "raw": "{\n  \"model\": \"openai_decisions_optin/kserve-decider\",\n  \"input\": \"Customer message: I was double charged last month and nobody replied to my two emails. I want a refund today or I am cancelling.\",\n  \"questions\": [\n    {\n      \"type\": \"predicate\",\n      \"name\": \"is_frustrated\",\n      \"instructions\": \"Is the customer frustrated?\"\n    }\n  ]\n}"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "252. Mistral rejects replayed assistant reasoning (mistral-reasoning-replay)",
+      "description": "Mistral validates chat requests strictly and 422s any unknown assistant field (extra_forbidden). Once Bifrost surfaces zai-glm-5-3 thinking blocks as reasoning, clients send that reasoning back on the next turn: reasoning_content on /v1/chat/completions, a thinking block on /anthropic/v1/messages (Claude Code), a reasoning item on /v1/responses. All of them reached Mistral as assistant reasoning_content and failed every follow-up turn. Each case replays one turn of reasoning and must get a 200; the unary chat case also asserts the outbound body carries no reasoning field. Vertex-hosted Mistral shares applyMistralCompatibility and is pinned by the Go unit test only (no Vertex Mistral model in the harness profile).",
+      "item": [
+        {
+          "name": "mistral/zai-glm-5-3 /v1/chat/completions assistant reasoning_content replay is stripped before Mistral - mistral-reasoning-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('replayed assistant reasoning is not rejected by Mistral', function () {",
+                  "  pm.expect(body, 'Mistral rejected a replayed reasoning field (extra_forbidden): ' + body).to.not.include('extra_forbidden');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('reasoning_content never reaches the Mistral request body', function () {",
+                  "  var raw = pm.response.json().extra_fields.raw_request;",
+                  "  var parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;",
+                  "  var assistant = (parsed.messages || []).filter(function (m) { return m.role === 'assistant'; })[0];",
+                  "  pm.expect(assistant, 'no assistant message in raw_request: ' + JSON.stringify(raw)).to.not.equal(undefined);",
+                  "  pm.expect(assistant, 'assistant reasoning leaked to Mistral: ' + JSON.stringify(assistant)).to.not.have.any.keys('reasoning_content', 'reasoning', 'reasoning_details');",
+                  "  pm.expect(assistant.content, 'assistant answer text must survive the strip').to.equal('Hi! What can I help you with today?');",
+                  "  pm.expect(pm.response.json().choices, 'no choices returned: ' + body).to.be.an('array').that.is.not.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"max_tokens\":512,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"Hi! What can I help you with today?\",\"reasoning_content\":\"Simple greeting. Respond briefly.\"},{\"role\":\"user\",\"content\":\"Reply with just the word ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mistral/zai-glm-5-3 /v1/chat/completions streaming assistant reasoning_content replay is stripped before Mistral - mistral-reasoning-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('replayed assistant reasoning is not rejected by Mistral', function () {",
+                  "  pm.expect(body, 'Mistral rejected a replayed reasoning field (extra_forbidden): ' + body).to.not.include('extra_forbidden');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('stream completes without an error frame', function () {",
+                  "  pm.expect(body, 'no SSE chunks returned: ' + body).to.include('data:');",
+                  "  pm.expect(body, 'stream ended with an error frame: ' + body).to.not.include('\"error\"');",
+                  "  pm.expect(body, 'stream did not finish: ' + body).to.include('[DONE]');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"max_tokens\":512,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":\"Hi! What can I help you with today?\",\"reasoning_content\":\"Simple greeting. Respond briefly.\"},{\"role\":\"user\",\"content\":\"Reply with just the word ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mistral/zai-glm-5-3 /anthropic/v1/messages streaming thinking block replay (Claude Code shape) is stripped before Mistral - mistral-reasoning-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('replayed assistant reasoning is not rejected by Mistral', function () {",
+                  "  pm.expect(body, 'Mistral rejected a replayed reasoning field (extra_forbidden): ' + body).to.not.include('extra_forbidden');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('anthropic stream completes without an error event', function () {",
+                  "  pm.expect(body, 'stream ended with an error event: ' + body).to.not.include('event: error');",
+                  "  pm.expect(body, 'stream did not reach message_stop: ' + body).to.include('message_stop');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"max_tokens\":512,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"Simple greeting. Respond briefly.\",\"signature\":\"\"},{\"type\":\"text\",\"text\":\"Hi! What can I help you with today?\"}]},{\"role\":\"user\",\"content\":\"Reply with just the word ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "mistral/zai-glm-5-3 /v1/responses reasoning item replay is stripped before Mistral - mistral-reasoning-replay",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('replayed assistant reasoning is not rejected by Mistral', function () {",
+                  "  pm.expect(body, 'Mistral rejected a replayed reasoning field (extra_forbidden): ' + body).to.not.include('extra_forbidden');",
+                  "  pm.expect(pm.response.code, 'request failed: ' + body).to.equal(200);",
+                  "});",
+                  "pm.test('responses request completes with a message', function () {",
+                  "  var json = pm.response.json();",
+                  "  pm.expect(json.status, 'response not completed: ' + body).to.equal('completed');",
+                  "  pm.expect((json.output || []).some(function (o) { return o.type === 'message'; }), 'no message output: ' + body).to.equal(true);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"model\":\"mistral/zai-glm-5-3\",\"max_output_tokens\":512,\"input\":[{\"role\":\"user\",\"content\":\"hi\"},{\"type\":\"reasoning\",\"summary\":[],\"content\":[{\"type\":\"reasoning_text\",\"text\":\"Simple greeting. Respond briefly.\"}]},{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Hi! What can I help you with today?\"}]},{\"role\":\"user\",\"content\":\"Reply with just the word ok.\"}]}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "253. Code mode hands tool results to scripts in the shape they expect (code-mode-results) [SERIAL]",
+      "description": "A nested tool call inside executeToolCode hands the script a value, but results arrived in the wrong shape: several JSON text blocks were joined into an unparseable `{...}{...}` string, `structuredContent` was ignored, and JSON wrapped in a JSON string stayed a string. These cases pin each shape end to end through the SSE fixture (examples/mcps/remote-test-server, which serves multi_block, structured_result and json_string for this folder).\n\nSerial, and it provisions its own client for the same reason as folder 210: a code-mode client makes the four meta-tools visible to every MCP-bearing request while it exists.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-results provision a code-mode client on the SSE fixture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Per-run name, so two runs against one gateway never contend, and the sweep below can",
+                  "// reap anything an interrupted run left behind by its prefix.",
+                  "pm.collectionVariables.set('codeModeResultsClient', 'harness_codemode_results_' + Date.now());",
+                  "pm.collectionVariables.set('codeModeResultsQueue', '[]');",
+                  "pm.collectionVariables.set('codeModeResultsSweeps', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeResultsClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"multi_block\",\n    \"structured_result\",\n    \"json_string\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"multi_block\",\n    \"structured_result\",\n    \"json_string\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-results several JSON text blocks reach the script as a list",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('several JSON text blocks reach the script as a list', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value, 'multi-block result did not arrive as a list: ' + content).to.eql(['list', 2, 'second']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-results\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeResultsClient}}.multi_block()\\\\nresult = [type(r), len(r), r[1][\\\\\\\"title\\\\\\\"]] if type(r) == \\\\\\\"list\\\\\\\" else [type(r)]\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-results structuredContent wins over its text copy",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('structuredContent wins over its text copy', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value, 'the script got the text copy, not the structured result: ' + content).to.equal('structured');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-results\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"result = {{codeModeResultsClient}}.structured_result()[\\\\\\\"source\\\\\\\"]\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-results JSON wrapped in a JSON string is decoded",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('JSON wrapped in a JSON string is decoded', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value, 'the wrapped object stayed a string: ' + content).to.equal('Example Domain');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-results\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeResultsClient}}.json_string()\\\\nresult = r[\\\\\\\"title\\\\\\\"] if type(r) == \\\\\\\"dict\\\\\\\" else type(r)\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-results queue this run's client, plus any stale leftovers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeResultsClient');",
+                  "var PREFIX = 'harness_codemode_results_';",
+                  "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
+                  "// Anything younger than this belongs to a run that may still be executing: never touch it.",
+                  "var STALE_MS = 3600000;",
+                  "pm.test('this run\\'s code-mode client is listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients || [];",
+                  "  var mine = null, stale = [];",
+                  "  for (var i = 0; i < clients.length; i++) {",
+                  "    var cfg = clients[i].config;",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf(PREFIX) !== 0) { continue; }",
+                  "    if (cfg.name === client) { mine = cfg.client_id; continue; }",
+                  "    var stamp = parseInt(cfg.name.substring(PREFIX.length), 10);",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
+                  "  }",
+                  "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
+                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
+                  "  pm.collectionVariables.set('codeModeResultsQueue', JSON.stringify([mine].concat(stale)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-results remove every queued code-mode client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeResultsQueue') || '[]');",
+                  "// An empty queue means the listing above already failed: skip, rather than add a second failure.",
+                  "if (!queue.length) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('codeModeResultsClientId', queue[0]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "",
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeResultsQueue') || '[]');",
+                  "// Only a removed client leaves the queue: a failed delete stays queued for the next pass.",
+                  "if (pm.response.code === 200) {",
+                  "  queue.shift();",
+                  "  pm.collectionVariables.set('codeModeResultsQueue', JSON.stringify(queue));",
+                  "}",
+                  "",
+                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
+                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeResultsSweeps') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeResultsSweeps', String(sweeps));",
+                  "",
+                  "if (queue.length > 0 && sweeps < 10) {",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
+                  "  pm.test('the sweep drained every queued client', function () {",
+                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{codeModeResultsClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{codeModeResultsClientId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "254. Code mode scripts can parse string results, and the stubs say how (code-mode-guidance) [SERIAL]",
+      "description": "The sandbox had no `json` module, so a result that arrived as a string could not be parsed in a script, and the stubs claimed every result was a dict while telling the model to print whole responses. These cases pin that `json` and `math` are available in executeToolCode, and that readToolFile and getToolDocs describe the real result shapes and point at `json.decode` instead of `print(result)`.\n\nSerial, and it provisions its own client for the same reason as folder 210: a code-mode client makes the four meta-tools visible to every MCP-bearing request while it exists.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance provision a code-mode client on the SSE fixture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Per-run name, so two runs against one gateway never contend, and the sweep below can",
+                  "// reap anything an interrupted run left behind by its prefix.",
+                  "pm.collectionVariables.set('codeModeGuidanceClient', 'harness_codemode_guidance_' + Date.now());",
+                  "pm.collectionVariables.set('codeModeGuidanceQueue', '[]');",
+                  "pm.collectionVariables.set('codeModeGuidanceSweeps', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeGuidanceClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"echo\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance json and math are available in the sandbox",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('json and math are available in the sandbox', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value, 'json or math is missing from the sandbox: ' + content).to.eql([2, '{\"b\":1}', 2]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"result = [json.decode('{\\\\\\\"a\\\\\\\": [1, 2]}')[\\\\\\\"a\\\\\\\"][1], json.encode({\\\\\\\"b\\\\\\\": 1}), math.floor(2.7)]\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance readToolFile states the result shapes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the stub says what a call returns and how to parse a str', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'readToolFile errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var stub = String(pm.response.json().content || '');",
+                  "  pm.expect(stub, 'stub does not state the result shapes:\\n' + stub).to.include('# Results: the decoded JSON when the server sends JSON (a dict or list, or a number, bool or None), otherwise a str.');",
+                  "  pm.expect(stub, 'stub does not limit json.decode to a str holding JSON:\\n' + stub).to.include('json.decode(s) parses a str that holds JSON; plain text raises.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"readToolFile\",\n    \"arguments\": \"{\\\"fileName\\\":\\\"servers/{{codeModeGuidanceClient}}.pyi\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance getToolDocs checks the shape instead of printing whole responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the docs describe real result shapes', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'getToolDocs errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var docs = String(pm.response.json().content || '');",
+                  "  pm.expect(docs, 'docs still claim every response is a dict:\\n' + docs).to.not.include('Tool responses are dicts');",
+                  "  pm.expect(docs, 'docs still tell the model to print a whole response:\\n' + docs).to.not.include('print(result)');",
+                  "  pm.expect(docs, 'docs still label every response a dict:\\n' + docs).to.not.include('dict: Response from the tool');",
+                  "  pm.expect(docs, 'docs do not say a bare JSON value arrives as a scalar:\\n' + docs).to.include('a number, bool or None');",
+                  "  pm.expect(docs, 'docs do not limit json.decode to a str holding JSON:\\n' + docs).to.include('json.decode(r[\"body\"]); plain text raises.');",
+                  "  pm.expect(docs, 'docs still say top-level loops must be wrapped in a function:\\n' + docs).to.not.include('MUST be inside a function');",
+                  "  pm.expect(docs, 'docs do not quote the missing-key message Starlark produces:\\n' + docs).to.include('key \"x\" not in dict');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"getToolDocs\",\n    \"arguments\": \"{\\\"server\\\":\\\"{{codeModeGuidanceClient}}\\\",\\\"tool\\\":\\\"echo\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance a missing dict key names the key and suggests get",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Starlark reports a missing key as 'key \"x\" not in dict'; the hint used to look for 'not found' and never fired.",
+                  "pm.test('a missing dict key names the key and suggests get', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'the script must fail: ' + pm.response.text()).to.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(content, 'the hint does not name the missing key: ' + content).to.include('The dict has no key \\\"x\\\".');",
+                  "  pm.expect(content, 'the hint does not suggest get: ' + content).to.include('r.get(\\\"x\\\", default)');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {\\\\\\\"a\\\\\\\": 1}\\\\nx = r[\\\\\\\"x\\\\\\\"]\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance a misspelled tool points at the server tools, not dict access",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A misspelled tool used to draw 'Use dict access syntax', advice meant for a dict.",
+                  "pm.test('a misspelled tool points at the server tools, not dict access', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'the script must fail: ' + pm.response.text()).to.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(content, 'the hint does not name the missing tool: ' + content).to.include(' has no tool ech.');",
+                  "  pm.expect(content, 'the error lost the did-you-mean suggestion: ' + content).to.include('did you mean .echo?');",
+                  "  pm.expect(content, 'the hint still blames dict access: ' + content).to.not.include('Use dict access syntax');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeGuidanceClient}}.ech(message=\\\\\\\"hi\\\\\\\")\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance a str method Starlark lacks is not blamed on JSON from the server",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Any missing str method used to draw advice about JSON tool results, even on a string the script wrote.",
+                  "pm.test('a str method Starlark lacks is not blamed on JSON from the server', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'the script must fail: ' + pm.response.text()).to.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(content, 'the hint does not name the missing method: ' + content).to.include('str has no .ljust method');",
+                  "  pm.expect(content, 'the hint still blames JSON from the server: ' + content).to.not.include('json.decode');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-guidance\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"x = \\\\\\\"name\\\\\\\".ljust(10)\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance queue this run's client, plus any stale leftovers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeGuidanceClient');",
+                  "var PREFIX = 'harness_codemode_guidance_';",
+                  "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
+                  "// Anything younger than this belongs to a run that may still be executing: never touch it.",
+                  "var STALE_MS = 3600000;",
+                  "pm.test('this run\\'s code-mode client is listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients || [];",
+                  "  var mine = null, stale = [];",
+                  "  for (var i = 0; i < clients.length; i++) {",
+                  "    var cfg = clients[i].config;",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf(PREFIX) !== 0) { continue; }",
+                  "    if (cfg.name === client) { mine = cfg.client_id; continue; }",
+                  "    var stamp = parseInt(cfg.name.substring(PREFIX.length), 10);",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
+                  "  }",
+                  "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
+                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
+                  "  pm.collectionVariables.set('codeModeGuidanceQueue', JSON.stringify([mine].concat(stale)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-guidance remove every queued code-mode client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeGuidanceQueue') || '[]');",
+                  "// An empty queue means the listing above already failed: skip, rather than add a second failure.",
+                  "if (!queue.length) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('codeModeGuidanceClientId', queue[0]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "",
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeGuidanceQueue') || '[]');",
+                  "// Only a removed client leaves the queue: a failed delete stays queued for the next pass.",
+                  "if (pm.response.code === 200) {",
+                  "  queue.shift();",
+                  "  pm.collectionVariables.set('codeModeGuidanceQueue', JSON.stringify(queue));",
+                  "}",
+                  "",
+                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
+                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeGuidanceSweeps') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeGuidanceSweeps', String(sweeps));",
+                  "",
+                  "if (queue.length > 0 && sweeps < 10) {",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
+                  "  pm.test('the sweep drained every queued client', function () {",
+                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{codeModeGuidanceClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{codeModeGuidanceClientId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "255. Code mode replies carry what the script returns, and failed calls are values the script handles (code-mode-replies) [SERIAL]",
+      "description": "Every nested response used to be echoed into the executeToolCode reply as a `[TOOL] ... response:` line (up to 2 KB each), and every successful run ended with an environment footer, so a script returning one number still sent the model every payload it read. A call that answered with `isError` (how mcp-go and most SDK servers report a failure) reached the script as a plain string that looked like a normal result. These cases pin that the reply carries only what the script prints and returns, that a failed call reaches the script as an error value (`hasattr(r, \"error\")`, `r.error`) and is noted in the reply with an honest status line, that `fail()` makes the run an error, and that a script which recovers from a failed call still succeeds. The SSE fixture's `echo` returns `isError` with plain text when called without a message.\n\nSerial, and it provisions its own client for the same reason as folder 210: a code-mode client makes the four meta-tools visible to every MCP-bearing request while it exists.",
+      "item": [
+        {
+          "name": "[EXPECT-200] openai code-mode-replies provision a code-mode client on the SSE fixture",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Per-run name, so two runs against one gateway never contend, and the sweep below can",
+                  "// reap anything an interrupted run left behind by its prefix.",
+                  "pm.collectionVariables.set('codeModeRepliesClient', 'harness_codemode_replies_' + Date.now());",
+                  "pm.collectionVariables.set('codeModeRepliesQueue', '[]');",
+                  "pm.collectionVariables.set('codeModeRepliesSweeps', '0');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('code-mode client registers against the SSE fixture', function () {",
+                  "  pm.expect(pm.response.code, 'create failed: ' + pm.response.text()).to.be.oneOf([200, 201]);",
+                  "  pm.expect(pm.response.json().status, 'unexpected create status: ' + pm.response.text()).to.eql('success');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{codeModeRepliesClient}}\",\n  \"connection_type\": \"sse\",\n  \"connection_string\": \"http://localhost:3012/sse\",\n  \"auth_type\": \"none\",\n  \"is_code_mode_client\": true,\n  \"tools_to_execute\": [\n    \"echo\",\n    \"json_string\",\n    \"prefixed_error\"\n  ],\n  \"tools_to_auto_execute\": [\n    \"echo\",\n    \"json_string\",\n    \"prefixed_error\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies the reply carries no nested tool payload and no environment footer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('the reply carries no nested tool payload and no environment footer', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value, 'unexpected return value: ' + content).to.equal(4);",
+                  "  pm.expect(content, 'a payload the script never printed reached the reply: ' + content).to.not.include('harness-payload-marker-31e7');",
+                  "  pm.expect(content, 'a nested call was echoed into the reply: ' + content).to.not.include('[TOOL]');",
+                  "  pm.expect(content, 'a successful run still carries the environment footer: ' + content).to.not.include('Environment:');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-replies\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"{{codeModeRepliesClient}}.echo(message=\\\\\\\"harness-payload-marker-31e7\\\\\\\")\\\\nresult = 4\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies a failed call reaches the script as an error value and is noted in the reply",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('a failed call reaches the script as an error value and is noted in the reply', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value.failed, 'the failed call was not an error value: ' + content).to.equal(true);",
+                  "  pm.expect(value.message, 'r.error does not hold the upstream message: ' + content).to.include('required argument');",
+                  "  pm.expect(content, 'the failed call is not noted in the reply: ' + content).to.include('returned an error: required argument');",
+                  "  pm.expect(content, 'the reply still claims a clean run: ' + content).to.include('Execution completed, but 1 nested tool call failed.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-replies\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeRepliesClient}}.echo()\\\\nresult = {\\\\\\\"failed\\\\\\\": hasattr(r, \\\\\\\"error\\\\\\\"), \\\\\\\"message\\\\\\\": r.error if hasattr(r, \\\\\\\"error\\\\\\\") else r}\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies an isError failure whose text opens with Error: is still an error value, without the prefix",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('an isError failure whose text opens with Error: is still an error value, without the prefix', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value.failed, 'the failed call was not an error value: ' + content).to.equal(true);",
+                  "  pm.expect(value.message, 'r.error does not hold the message without its Error: prefix: ' + content).to.equal('contact not found');",
+                  "  pm.expect(content, 'the failed call is not noted in the reply: ' + content).to.include('returned an error: contact not found');",
+                  "  pm.expect(content, 'the reply still claims a clean run: ' + content).to.include('Execution completed, but 1 nested tool call failed.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-replies\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeRepliesClient}}.prefixed_error()\\\\nresult = {\\\\\\\"failed\\\\\\\": hasattr(r, \\\\\\\"error\\\\\\\"), \\\\\\\"message\\\\\\\": r.error if hasattr(r, \\\\\\\"error\\\\\\\") else r}\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies fail() on a failed call makes the run an error",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('the script stopped itself and the run is an error', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  pm.expect(pm.response.json().is_error, 'a script that called fail() must mark the run failed: ' + pm.response.text()).to.equal(true);",
+                  "  pm.expect(content, 'the fail() message is missing: ' + content).to.include('fail: lookup failed: required argument');",
+                  "  pm.expect(content, 'the error does not carry a traceback: ' + content).to.include('Traceback (most recent call last):');",
+                  "  pm.expect(content, 'the traceback does not name the line fail() ran on: ' + content).to.include('code.star:3:');",
+                  "  pm.expect(content, 'the hint does not say the script stopped itself: ' + content).to.include('The script stopped itself with fail()');",
+                  "  pm.expect(content, 'the script kept running after fail(): ' + content).to.not.include('unreachable');",
+                  "  pm.expect(content, 'print output on a failed run is labelled differently: ' + content).to.include('Print output:');",
+                  "  pm.expect(content, 'print output on a failed run is labelled differently: ' + content).to.not.include('Print Output:');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-replies\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeRepliesClient}}.echo()\\\\nif hasattr(r, \\\\\\\"error\\\\\\\"):\\\\n    fail(\\\\\\\"lookup failed: \\\\\\\" + r.error)\\\\nresult = \\\\\\\"unreachable\\\\\\\"\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies a script that recovers from a failed call succeeds",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "function returnValue(content) {",
+                  "  var marker = 'Return value: ';",
+                  "  var at = content.indexOf(marker);",
+                  "  pm.expect(at, 'no return value in the reply: ' + content).to.be.above(-1);",
+                  "  var rest = content.substring(at + marker.length);",
+                  "  var footer = rest.indexOf('\\n\\nEnvironment:');",
+                  "  if (footer !== -1) { rest = rest.substring(0, footer); }",
+                  "  try { return JSON.parse(rest); }",
+                  "  catch (e) { pm.expect.fail('the return value is not valid JSON: ' + content); }",
+                  "}",
+                  "",
+                  "pm.test('a script that recovers from a failed call succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  pm.expect(pm.response.json().is_error, 'executeToolCode errored: ' + pm.response.text()).to.not.equal(true);",
+                  "  var content = String(pm.response.json().content || '');",
+                  "  var value = returnValue(content);",
+                  "  pm.expect(value, 'the fallback did not run: ' + content).to.equal('Example Domain');",
+                  "  pm.expect(content, 'the recovered failure is not noted: ' + content).to.include('Execution completed, but 1 nested tool call failed.');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"code-mode-replies\",\n  \"type\": \"function\",\n  \"function\": {\n    \"name\": \"executeToolCode\",\n    \"arguments\": \"{\\\"code\\\":\\\"r = {{codeModeRepliesClient}}.echo()\\\\nif hasattr(r, \\\\\\\"error\\\\\\\"):\\\\n    r = {{codeModeRepliesClient}}.json_string()\\\\nresult = r[\\\\\\\"title\\\\\\\"]\\\"}\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/mcp/tool/execute",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "mcp",
+                "tool",
+                "execute"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies the executeToolCode description says a failed call is a value to check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Every model reads this description before its first script. It used to say tool failures",
+                  "// cannot be caught, so a model never checked for the error value a failed call returns.",
+                  "// The gateway may answer JSON-RPC as plain JSON or as an SSE 'data:' frame.",
+                  "function rpcResult(res) {",
+                  "  var text = res.text();",
+                  "  var line = text;",
+                  "  if (text.indexOf('data:') !== -1) {",
+                  "    var lines = text.split('\\n');",
+                  "    for (var i = 0; i < lines.length; i++) {",
+                  "      var t = lines[i].replace(/^data:\\s*/, '').trim();",
+                  "      if (t.charAt(0) === '{') { line = t; break; }",
+                  "    }",
+                  "  }",
+                  "  var body;",
+                  "  try { body = JSON.parse(line); }",
+                  "  catch (e) { throw new Error('invalid JSON-RPC response: ' + text); }",
+                  "  if (!body || !body.result) { throw new Error('invalid JSON-RPC response: ' + text); }",
+                  "  return body.result;",
+                  "}",
+                  "",
+                  "pm.test('the executeToolCode description says a failed call is a value to check', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var result = rpcResult(pm.response);",
+                  "  pm.expect(result.tools, 'tools missing: ' + pm.response.text()).to.be.an('array');",
+                  "  var tool = result.tools.filter(function (t) { return t.name === 'executeToolCode'; })[0];",
+                  "  pm.expect(tool, 'executeToolCode is not listed: ' + pm.response.text()).to.be.an('object');",
+                  "  var description = String(tool.description || '');",
+                  "  pm.expect(description, 'no failed-call check: ' + description).to.include('hasattr(r, \"error\")');",
+                  "  pm.expect(description, 'no fail(): ' + description).to.include('fail(r.error)');",
+                  "  pm.expect(description, 'still says failures cannot be caught: ' + description).to.not.include('cannot be caught');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json, text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/mcp",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "mcp"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies queue this run's client, plus any stale leftovers",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var client = pm.collectionVariables.get('codeModeRepliesClient');",
+                  "var PREFIX = 'harness_codemode_replies_';",
+                  "// The name carries the run's Date.now(), so a leftover's age is readable from the name itself.",
+                  "// Anything younger than this belongs to a run that may still be executing: never touch it.",
+                  "var STALE_MS = 3600000;",
+                  "pm.test('this run\\'s code-mode client is listed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "  var clients = pm.response.json().clients || [];",
+                  "  var mine = null, stale = [];",
+                  "  for (var i = 0; i < clients.length; i++) {",
+                  "    var cfg = clients[i].config;",
+                  "    if (!cfg || !cfg.name || cfg.name.indexOf(PREFIX) !== 0) { continue; }",
+                  "    if (cfg.name === client) { mine = cfg.client_id; continue; }",
+                  "    var stamp = parseInt(cfg.name.substring(PREFIX.length), 10);",
+                  "    if (stamp && (Date.now() - stamp) > STALE_MS) { stale.push(cfg.client_id); }",
+                  "  }",
+                  "  pm.expect(mine, 'this run\\'s client is not listed, so the cleanup below cannot run: ' + pm.response.text()).to.be.a('string');",
+                  "  // This run's client first, so it is reclaimed even if the sweep cap is reached.",
+                  "  pm.collectionVariables.set('codeModeRepliesQueue', JSON.stringify([mine].concat(stale)));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/clients",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "clients"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-200] openai code-mode-replies remove every queued code-mode client",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeRepliesQueue') || '[]');",
+                  "// An empty queue means the listing above already failed: skip, rather than add a second failure.",
+                  "if (!queue.length) { pm.execution.skipRequest(); return; }",
+                  "pm.collectionVariables.set('codeModeRepliesClientId', queue[0]);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('cleanup removes the queued code-mode client', function () {",
+                  "  pm.expect(pm.response.code, 'cleanup failed - a code-mode client is still registered and its meta-tools will be injected into every MCP-bearing request: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "",
+                  "var queue = JSON.parse(pm.collectionVariables.get('codeModeRepliesQueue') || '[]');",
+                  "// Only a removed client leaves the queue: a failed delete stays queued for the next pass.",
+                  "if (pm.response.code === 200) {",
+                  "  queue.shift();",
+                  "  pm.collectionVariables.set('codeModeRepliesQueue', JSON.stringify(queue));",
+                  "}",
+                  "",
+                  "// Bounded self-repeat (the collection's existing idiom) so a stuck delete cannot spin forever.",
+                  "var sweeps = parseInt(pm.collectionVariables.get('codeModeRepliesSweeps') || '0', 10) + 1;",
+                  "pm.collectionVariables.set('codeModeRepliesSweeps', String(sweeps));",
+                  "",
+                  "if (queue.length > 0 && sweeps < 10) {",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  // Stopping with anything left is a leak, not a pass: say so rather than exiting quietly.",
+                  "  pm.test('the sweep drained every queued client', function () {",
+                  "    pm.expect(queue.length, 'cleanup stopped after ' + sweeps + ' passes with clients still registered: ' + JSON.stringify(queue)).to.equal(0);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/mcp/client/{{codeModeRepliesClientId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "mcp",
+                "client",
+                "{{codeModeRepliesClientId}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "256. Logs calendar periods resolve server-side in the caller timezone (calendar periods)",
+      "description": "The date filter offers Today, This week and This month. They start at midnight in the viewer's timezone, so the server now resolves them in ResolvePeriod from period plus a timezone query param (or body field), next to the sliding 1h-30d periods. Before the change the server ignored any period it did not know and dropped the time filter. The histogram case pins the resolution through bucket_size_seconds: no window gives 3600, while today is always under 24 hours and gives 600 or 60. The recalculation case pins that an unknown period is a 400 rather than an unbounded window that recalculates every log (red before the change: the request starts a job over all logs). Neither case calls a provider.",
+      "item": [
+        {
+          "name": "calendar periods: histogram resolves period=today in the caller timezone into a window under a day",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('calendar periods: histogram answers 200', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "var body = pm.response.json();",
+                  "pm.test('calendar periods: today is resolved to a window shorter than a day', function () {",
+                  "  // 3600 is the bucket for an unbounded window, which means the period was ignored.",
+                  "  pm.expect(body.bucket_size_seconds, 'bucket_size_seconds: ' + pm.response.text()).to.be.oneOf([60, 600]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/histogram?period=today&timezone=Asia/Kolkata",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "histogram"
+              ],
+              "query": [
+                {
+                  "key": "period",
+                  "value": "today"
+                },
+                {
+                  "key": "timezone",
+                  "value": "Asia/Kolkata"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] calendar periods: cost recalculation rejects an unknown period",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('calendar periods: an unknown period is rejected, not widened to every log', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400, got: ' + pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test('calendar periods: the error names the period', function () {",
+                  "  pm.expect(pm.response.text()).to.include('yesterday');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"filters\":{\"period\":\"yesterday\",\"timezone\":\"Asia/Kolkata\"}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/logs/recalculate-cost",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "logs",
+                "recalculate-cost"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "257. OpenAI ChatGPT Codex passthrough stream dispatch",
+      "description": "Server regression for Codex native responses routed through /chatgpt_passthrough. Requires openaiKey to contain a valid ChatGPT subscription access token, not an OpenAI API key. Input is intentionally invalid so ChatGPT rejects without generating output. Synthetic cases: original Edge logs did not retain raw request or response payloads. Both cases must take passthrough_stream, retain native upstream 400 errors, and never fall back to a normal inference request or operator key. Authentication, policy, rate-limit and upstream failures must fail, not skip.",
+      "item": [
+        {
+          "name": "257.1 OpenAI ChatGPT Codex passthrough stream omitted [EXPECT-400]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.5\",\n  \"store\": false,\n  \"input\": 42\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Native invalid request remains a 400\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test(\"Codex uses streaming passthrough dispatch\", function () {",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough_stream\");",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-passthrough-path\"), pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "257.2 OpenAI ChatGPT Codex passthrough stream false [EXPECT-400]",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{openaiKey}}"
+              },
+              {
+                "key": "x-bf-direct-key",
+                "value": "true"
+              },
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-5.5\",\n  \"store\": false,\n  \"input\": 42,\n  \"stream\": false\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/chatgpt_passthrough/backend-api/codex/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "chatgpt_passthrough",
+                "backend-api",
+                "codex",
+                "responses"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Native invalid request remains a 400\", function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.equal(400);",
+                  "});",
+                  "pm.test(\"Codex uses streaming passthrough dispatch\", function () {",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-request-type\"), pm.response.text()).to.equal(\"passthrough_stream\");",
+                  "  pm.expect(pm.response.headers.get(\"x-bifrost-passthrough-path\"), pm.response.text()).to.equal(\"/backend-api/codex/responses\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "258. Vertex session routing from prompt_cache_key (session routing)",
+      "description": "use_session_routing on a Vertex key sends the request's prompt cache key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so stateless requests that share a long prefix and differ in the question read it from the implicit cache (Google enables session routing per project). Each route carries the key in its own field: prompt_cache_key on /v1/chat/completions and /v1/responses (unary and streamed), metadata.user_id on /anthropic, and session_id on /genai (a string, or the Gemini API's int64, sent on as a string). Rows read the Vertex-bound request back from the log. Guards: a Vertex key without the flag sends nothing; the Gemini API, whose session_id is an int64, never receives one (a leaked string would answer 400); /genai countTokens with session_id still answers, since Vertex rejects session_id there. Requests pin the key by name (x-bf-api-key), since two profile keys can serve Gemini models. Red before the feature: rows 1-7 reach Vertex without session_id.",
+      "item": [
+        {
+          "name": "258.1 vertex/gemini-3.7-flash /v1/chat/completions prompt_cache_key is sent as session_id (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.1 vertex/gemini-3.7-flash /v1/chat/completions prompt_cache_key is sent as session_id (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID harness-session-chat', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('harness-session-chat');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"prompt_cache_key\": \"harness-session-chat\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.2 vertex/gemini-3.7-flash /v1/chat/completions streamed prompt_cache_key is sent as session_id (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.2 vertex/gemini-3.7-flash /v1/chat/completions streamed prompt_cache_key is sent as session_id (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID harness-session-chat-stream', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('harness-session-chat-stream');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"stream\": true,\n  \"prompt_cache_key\": \"harness-session-chat-stream\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.3 vertex/gemini-3.7-flash /v1/responses prompt_cache_key is sent as session_id (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.3 vertex/gemini-3.7-flash /v1/responses prompt_cache_key is sent as session_id (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID harness-session-responses', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('harness-session-responses');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_output_tokens\": 64,\n  \"prompt_cache_key\": \"harness-session-responses\",\n  \"input\": \"Say ok.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.4 vertex/gemini-3.7-flash /v1/responses streamed prompt_cache_key is sent as session_id (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.4 vertex/gemini-3.7-flash /v1/responses streamed prompt_cache_key is sent as session_id (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID harness-session-responses-stream', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('harness-session-responses-stream');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_output_tokens\": 64,\n  \"stream\": true,\n  \"prompt_cache_key\": \"harness-session-responses-stream\",\n  \"input\": \"Say ok.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.5 vertex/gemini-3.7-flash /anthropic/v1/messages metadata.user_id is sent as session_id (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.5 vertex/gemini-3.7-flash /anthropic/v1/messages metadata.user_id is sent as session_id (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID harness-session-user', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('harness-session-user');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-3.7-flash\",\n  \"max_tokens\": 64,\n  \"metadata\": {\n    \"user_id\": \"harness-session-user\"\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.6 vertex/gemini-3.7-flash /genai generateContent session_id is passed on to Vertex (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.6 vertex/gemini-3.7-flash /genai generateContent session_id is passed on to Vertex (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID harness-session-genai', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('harness-session-genai');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  },\n  \"session_id\": \"harness-session-genai\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.7-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.7-flash:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.7 vertex/gemini-3.7-flash /genai generateContent a numeric session_id is sent as a string (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.7 vertex/gemini-3.7-flash /genai generateContent a numeric session_id is sent as a string (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex with session ID 12345', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal('12345');",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  },\n  \"session_id\": 12345\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.7-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.7-flash:generateContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.8 vertex/gemini-2.5-flash /v1/chat/completions a key without session routing sends no session_id (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.8 vertex/gemini-2.5-flash /v1/chat/completions a key without session routing sends no session_id (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex without a session ID', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex API Key"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-2.5-flash\",\n  \"max_tokens\": 64,\n  \"prompt_cache_key\": \"harness-session-plain-key\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.9 gemini/gemini-3.8-flash /v1/chat/completions the Gemini API never receives a session ID (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('258.9 gemini/gemini-3.8-flash /v1/chat/completions the Gemini API never receives a session ID (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
+                  "});",
+                  "if (pm.response.code !== 200 || !reqId) { return; }",
+                  "// The log row is written by the batching writer, so poll for it. Bounded: ten reads a second apart.",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = null;",
+                  "    if (!err && res.code === 200) {",
+                  "      rr = res.json().raw_request;",
+                  "      if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "    }",
+                  "    if (rr) {",
+                  "      pm.test('the request reached Vertex without a session ID', function () {",
+                  "        pm.expect(rr.session_id, 'raw_request: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "        pm.expect(rr.sessionId, 'camelCase sessionId sent: ' + JSON.stringify(rr).slice(0, 400)).to.equal(undefined);",
+                  "      });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('log row carries the provider-bound raw_request', function () { pm.expect.fail('log ' + reqId + ' never carried raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 300)))); });",
+                  "  });",
+                  "}",
+                  "checkLog(0);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-3.8-flash\",\n  \"max_tokens\": 64,\n  \"prompt_cache_key\": \"harness-session-gemini-api\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Say ok.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "258.10 vertex/gemini-3.7-flash /genai countTokens with session_id still counts (session routing)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('258.10 vertex/gemini-3.7-flash /genai countTokens with session_id still counts (session routing) succeeds', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text().slice(0, 500)).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "pm.test('a token count is returned', function () {",
+                  "  pm.expect(pm.response.json().totalTokens, pm.response.text().slice(0, 300)).to.be.above(0);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-store-raw-request-response",
+                "value": "true"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "Vertex Global (Gemini 3)"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say ok.\"\n        }\n      ]\n    }\n  ],\n  \"session_id\": \"harness-session-count\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-3.7-flash:countTokens",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-3.7-flash:countTokens"
+              ]
             }
           }
         }

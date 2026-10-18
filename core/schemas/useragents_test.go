@@ -33,6 +33,8 @@ func TestDetectAppFromUserAgent(t *testing.T) {
 		{name: "antigravity cli before generic", userAgent: "antigravity-cli/1.0 antigravity/2.23.0", want: "Antigravity CLI"},
 		{name: "antigravity unrelated", userAgent: "unrelated-antigravity-tool/1.0", want: "Other"},
 		{name: "edge is not antigravity", userAgent: "bifrost-edge/0.1.0", want: "Other"},
+		{name: "edge-stamped antigravity desktop", userAgent: "antigravity-desktop bifrost-edge/0.1.0", want: "Antigravity Desktop"},
+		{name: "edge-stamped antigravity cli over gemini sdk", userAgent: "antigravity-cli google-genai-sdk/1.74.0 gemini-cli/0.1", want: "Antigravity CLI"},
 		{name: "qwen", userAgent: "qwen-code/1.0", want: "Qwen Code"},
 		{name: "opencode", userAgent: "opencode/1.0", want: "OpenCode"},
 		{name: "windsurf", userAgent: "Windsurf/1.0", want: "Windsurf"},

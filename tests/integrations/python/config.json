@@ -264,7 +264,8 @@
           "vertex_key_config": {
             "project_id": "env.VERTEX_PROJECT_ID",
             "region": "global",
-            "auth_credentials": "env.VERTEX_CREDENTIALS"
+            "auth_credentials": "env.VERTEX_CREDENTIALS",
+            "use_session_routing": true
           },
           "weight": 1,
           "models": [

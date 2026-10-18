@@ -734,6 +734,50 @@ func TestUpdateProvidersConfig_UpdateExistingByName_FallbackFix(t *testing.T) {
 	assert.Equal(t, "original-uuid", result["openai"].Keys[0].ID, "Original KeyID should be preserved")
 }
 
+// TestUpdateProvidersConfig_EnabledFromFileIsPersisted verifies that an explicit enabled
+// value on an existing key is written to the store, while a key that leaves enabled unset
+// keeps the stored value (for example a toggle made in the UI).
+func TestUpdateProvidersConfig_EnabledFromFileIsPersisted(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	enabledFalse := false
+
+	providers := map[schemas.ModelProvider]ProviderConfig{
+		"openai": {
+			Keys: []schemas.Key{
+				{ID: "key-a", Name: "key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0},
+				{ID: "key-b", Name: "key-b", Value: *schemas.NewSecretVar("sk-b"), Weight: 1.0},
+			},
+		},
+	}
+	require.NoError(t, store.UpdateProvidersConfig(ctx, providers))
+
+	// key-b is disabled outside the file, as the UI toggle does
+	keyB, err := store.GetProviderKey(ctx, "openai", "key-b")
+	require.NoError(t, err)
+	keyB.Enabled = &enabledFalse
+	require.NoError(t, store.UpdateProviderKey(ctx, "openai", "key-b", *keyB))
+
+	// The file now disables key-a and still leaves enabled unset on key-b
+	providers["openai"] = ProviderConfig{
+		Keys: []schemas.Key{
+			{ID: "key-a", Name: "key-a", Value: *schemas.NewSecretVar("sk-a"), Weight: 1.0, Enabled: &enabledFalse},
+			{ID: "key-b", Name: "key-b", Value: *schemas.NewSecretVar("sk-b"), Weight: 1.0},
+		},
+	}
+	require.NoError(t, store.UpdateProvidersConfig(ctx, providers))
+
+	result, err := store.GetProvidersConfig(ctx)
+	require.NoError(t, err)
+	enabledByName := map[string]bool{}
+	for _, key := range result["openai"].Keys {
+		require.NotNil(t, key.Enabled)
+		enabledByName[key.Name] = *key.Enabled
+	}
+	assert.False(t, enabledByName["key-a"], "explicit enabled=false from the file should be stored")
+	assert.False(t, enabledByName["key-b"], "unset enabled should keep the stored value")
+}
+
 func TestUpdateProvidersConfig_MultipleKeys(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()

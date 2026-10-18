@@ -408,6 +408,8 @@ Most request-level Bifrost LLM metrics include these labels (the `bifrost_key_ro
 
 `user_id` / `user_name` are **not** included by default — see [User Labels](#user-labels).
 
+Stored-prompt attribution (`prompt_id`, `prompt_name`, `prompt_version`) is not a Prometheus label. A prompt mints a new version on every edit and versions are never pruned, so the label would grow series without bound. It is available on traces and in the Datadog, Splunk and BigQuery connectors.
+
 <Note>
   **v1.5.0-prerelease4+**: `selected_key_id` / `selected_key_name` are only populated when the request succeeds. On final errors both are empty — use the `attempt_trail` log field to see which keys were tried.
 </Note>

@@ -5207,3 +5207,49 @@ func BenchmarkRequestDecompressionMiddlewareParallel(b *testing.B) {
 		})
 	}
 }
+
+// A connector rebuilding the caller's parent context needs the vendor trace state, which
+// rides tracestate rather than traceparent. It is captured as a trace attribute, not from
+// RequestHeaders, which exist only when a plugin opted into header capture.
+func TestTracingMiddleware_CapturesTraceState(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	mw := NewTracingMiddleware(tracer).Middleware()
+
+	const traceState = "dd=s:2;t.llmobs_ml_app:checkout-agent"
+	// Read inside the handler: the middleware completes the trace on the way out and the
+	// pooled object is reset, so a pointer held past the call sees nil attributes.
+	run := func(headers map[string]string) string {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+		ctx.Request.Header.SetMethod("POST")
+		for k, v := range headers {
+			ctx.Request.Header.Set(k, v)
+		}
+		var got string
+		mw(func(c *fasthttp.RequestCtx) {
+			id, _ := c.UserValue(schemas.BifrostContextKeyTraceID).(string)
+			if trace := store.GetTrace(id); trace != nil {
+				v, _ := trace.GetAttribute(schemas.TraceAttrTraceState)
+				got, _ = v.(string)
+			}
+		})(ctx)
+		return got
+	}
+
+	if got := run(map[string]string{
+		"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		"tracestate":  traceState,
+	}); got != traceState {
+		t.Errorf("tracestate attribute = %q, want %q", got, traceState)
+	}
+
+	// No traceparent means no parent to rebuild, so a lone tracestate is not stored.
+	if got := run(map[string]string{"tracestate": traceState}); got != "" {
+		t.Errorf("tracestate stored with no traceparent: %q", got)
+	}
+}

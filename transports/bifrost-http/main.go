@@ -59,6 +59,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	_ "time/tzdata" // Calendar log periods need IANA zones and the Alpine image ships none; clickhouse-go embeds this too, but do not rely on that
 
 	_ "go.uber.org/automaxprocs" // Automatically set GOMAXPROCS based on container cgroup limits
 

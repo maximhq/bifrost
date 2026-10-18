@@ -122,6 +122,11 @@ func (request *GeminiGenerationRequest) ToBifrostResponsesRequest(ctx *schemas.B
 		params.ExtraParams["cached_content"] = request.CachedContent
 	}
 
+	// session_id rides as prompt_cache_key, so only Vertex keys with session routing send it on.
+	if request.SessionID != nil && request.SessionID.Value != "" {
+		params.PromptCacheKey = new(request.SessionID.Value)
+	}
+
 	bifrostReq.Params = params
 
 	return bifrostReq
