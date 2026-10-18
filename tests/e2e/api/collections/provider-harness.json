@@ -206723,6 +206723,90 @@
               ]
             }
           }
+        },
+        {
+          "name": "168.5 openai/gpt-6-sol chat stream without tools keeps one id on every chunk - reasoning-only-to-responses",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('168.5 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
+                  "});",
+                  "if (pm.response.code !== 200) { return; }",
+                  "var text = pm.response.text();",
+                  "var chunks = [], badEvents = [], sawDone = false, converted = false, content = '';",
+                  "text.split('\\n').forEach(function (line) {",
+                  "  if (line.indexOf('data: ') !== 0) { return; }",
+                  "  var data = line.slice(6).trim();",
+                  "  if (data === '[DONE]') { sawDone = true; return; }",
+                  "  var chunk;",
+                  "  try { chunk = JSON.parse(data); } catch (e) { badEvents.push(data.slice(0, 200)); return; }",
+                  "  if (chunk.object !== 'chat.completion.chunk') { return; }",
+                  "  chunks.push(chunk);",
+                  "  if ((chunk.extra_fields || {}).converted_request_type === 'responses') { converted = true; }",
+                  "  (chunk.choices || []).forEach(function (ch) {",
+                  "    if (ch.delta && typeof ch.delta.content === 'string') { content += ch.delta.content; }",
+                  "  });",
+                  "});",
+                  "pm.test('168.5 every data event is valid JSON', function () {",
+                  "  pm.expect(badEvents, 'unparseable data events: ' + JSON.stringify(badEvents)).to.be.empty;",
+                  "});",
+                  "pm.test('168.5 stream terminates with [DONE]', function () {",
+                  "  pm.expect(sawDone, 'missing [DONE]: ' + text.slice(-800)).to.equal(true);",
+                  "});",
+                  "pm.test('168.5 chat stream was served through Responses', function () {",
+                  "  pm.expect(converted, 'no chunk carried converted_request_type=responses, so this case no longer exercises the conversion: ' + text.slice(0, 1500)).to.equal(true);",
+                  "});",
+                  "pm.test('168.5 every chunk carries the stream id, model and created of the first chunk', function () {",
+                  "  pm.expect(chunks.length, 'no chat.completion.chunk events: ' + text.slice(0, 1500)).to.be.above(1);",
+                  "  var first = chunks[0];",
+                  "  pm.expect(first.id, 'first chunk has no id: ' + JSON.stringify(first)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(first.model, 'first chunk has no model: ' + JSON.stringify(first)).to.be.a('string').and.not.empty;",
+                  "  pm.expect(first.created, 'first chunk has no created timestamp: ' + JSON.stringify(first)).to.be.a('number').and.above(0);",
+                  "  chunks.forEach(function (c, i) {",
+                  "    pm.expect(c.id, 'chunk ' + i + ' id differs from the stream id (OpenAI SDK accumulators drop it): ' + JSON.stringify(c)).to.eql(first.id);",
+                  "    pm.expect(c.model, 'chunk ' + i + ' model: ' + JSON.stringify(c)).to.eql(first.model);",
+                  "    pm.expect(c.created, 'chunk ' + i + ' created: ' + JSON.stringify(c)).to.eql(first.created);",
+                  "  });",
+                  "});",
+                  "pm.test('168.5 streamed assistant text is not empty', function () {",
+                  "  pm.expect(content, 'no delta.content in the stream: ' + text.slice(0, 1500)).to.not.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-compat",
+                "value": "[\"force_reasoning_only_models_to_responses\"]"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/gpt-6-sol\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with just: ok\"\n    }\n  ],\n  \"reasoning_effort\": \"low\",\n  \"max_completion_tokens\": 256,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
         }
       ]
     },
