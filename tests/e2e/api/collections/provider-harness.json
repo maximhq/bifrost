@@ -193487,6 +193487,51 @@
           ]
         },
         {
+          "name": "148.6b [EXPECT-4XX] azure On Your Data streaming with an unreachable search endpoint reaches the provider (on your data)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "api-key",
+                "value": "{{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is in the index?\"\n    }\n  ],\n  \"data_sources\": [\n    {\n      \"type\": \"azure_search\",\n      \"parameters\": {\n        \"endpoint\": \"https://does-not-exist-h146.search.windows.net\",\n        \"index_name\": \"none\",\n        \"authentication\": {\n          \"type\": \"api_key\",\n          \"key\": \"bogus\"\n        }\n      }\n    }\n  ],\n  \"stream\": true,\n  \"max_tokens\": 32\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/openai/deployments/{{azureDeployment}}/chat/completions?api-version={{azureApiVersion}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "openai",
+                "deployments",
+                "{{azureDeployment}}",
+                "chat",
+                "completions?api-version={{azureApiVersion}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('rejection comes from the data_sources path', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention data source/search: ' + t).to.match(/data.?source|search|endpoint|index|unreachable/i); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "148.7 openai passthrough ignores client credentials and still authenticates (passthrough auth strip)",
           "request": {
             "method": "POST",
