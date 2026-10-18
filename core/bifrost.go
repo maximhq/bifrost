@@ -5103,11 +5103,11 @@ type requestScopedClass struct {
 
 // requestScopedProvider is a provider instance serving request-scoped attempts. It holds no
 // request data: each attempt brings its own key and, through ForRequest, its own base URL.
-// slots bounds how many attempts run on the instance at once, as workers bound a queue.
+// Attempts run on the instance without a concurrency bound of their own; the caller's
+// admission, the request context and the attempt timeout bound them.
 type requestScopedProvider struct {
 	provider schemas.Provider
 	config   *schemas.ProviderConfig
-	slots    chan struct{}
 }
 
 // requestScopedProviderConfig returns the configuration request-scoped instances are built
@@ -5149,7 +5149,6 @@ func (bifrost *Bifrost) getRequestScopedProvider(class requestScopedClass) (*req
 	instance := &requestScopedProvider{
 		provider: provider,
 		config:   config,
-		slots:    make(chan struct{}, schemas.DefaultConcurrency),
 	}
 	instances := make(map[requestScopedClass]*requestScopedProvider, 1)
 	if current != nil {
@@ -5162,9 +5161,7 @@ func (bifrost *Bifrost) getRequestScopedProvider(class requestScopedClass) (*req
 
 // processRequestScoped runs msg against providerKey with the request-scoped configuration in
 // override, in the calling goroutine and without a provider queue. The outcome lands in msg's
-// channels exactly as a worker's would, so the caller receives it the same way. The attempt
-// first takes a slot on its instance: it waits for one, or with dropExcessRequests fails at
-// once when none is free, and stops waiting when shutdown begins. Configuration the provider
+// channels exactly as a worker's would, so the caller receives it the same way. Configuration the provider
 // cannot serve, or shutdown having begun, fails the attempt without calling the provider. The
 // caller admits the attempt with beginRequestScoped first.
 func (bifrost *Bifrost) processRequestScoped(providerKey schemas.ModelProvider, override *schemas.ProviderOverride, msg *ChannelMessage) {
@@ -5193,26 +5190,6 @@ func (bifrost *Bifrost) processRequestScoped(providerKey schemas.ModelProvider, 
 		})
 		return
 	}
-
-	select {
-	case instance.slots <- struct{}{}:
-	default:
-		if bifrost.dropExcessRequests.Load() {
-			bifrost.logger.Warn("request dropped: all request-scoped slots for provider %s are busy", providerKey)
-			bifrost.sendWorkerError(msg, *newBifrostQueueFullError())
-			return
-		}
-		select {
-		case instance.slots <- struct{}{}:
-		case <-msg.Context.Done():
-			bifrost.sendWorkerError(msg, *newBifrostCtxDoneError(msg.Context, "while waiting for a request-scoped slot"))
-			return
-		case <-bifrost.ctx.Done():
-			bifrost.sendWorkerError(msg, *newBifrostErrorFromMsg("provider is shutting down"))
-			return
-		}
-	}
-	defer func() { <-instance.slots }()
 
 	// The attempt gets its own copy of the key: the request's overrides may be updated by
 	// the PreLLMHook of a later attempt while this one is still being delivered.
@@ -10662,8 +10639,8 @@ func (bifrost *Bifrost) Shutdown() {
 	// published, but Shutdown must still wait for their in-flight requests.
 	bifrost.oldWorkerCleanups.Wait()
 
-	// Wait for request-scoped attempts, which run in their callers' goroutines. Those waiting
-	// for a slot stop on bifrost.ctx; a stream is no longer tracked once it is handed back.
+	// Wait for request-scoped attempts, which run in their callers' goroutines. A stream is no
+	// longer tracked once it is handed back.
 	// Attempts that reach admission from now on fail without post-hooks, as on a closed queue.
 	bifrost.requestScopedAdmission.Lock()
 	bifrost.requestScopedDrained = true
