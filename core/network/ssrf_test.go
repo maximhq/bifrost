@@ -799,12 +799,12 @@ func TestGuardedClientRedirectToLoopbackRefusedEndToEnd(t *testing.T) {
 	defer internal.Close()
 	for _, target := range []string{internal.URL, "http://169.254.169.254/latest/meta-data/"} {
 		entry := newRedirectingServer(t, target)
-		client := newGuardedHTTPClient(5*time.Second, (&net.Dialer{}).DialContext, func(ip net.IP, host string) error {
+		client := newGuardedHTTPClientWith(5*time.Second, (&net.Dialer{}).DialContext, func(ip net.IP, host string) error {
 			if !IsPublicIP(ip) {
 				return fmt.Errorf("blocked redirect to non-public address %s (host %s)", ip, host)
 			}
 			return nil
-		})
+		}, false, nil, net.DefaultResolver)
 		mustFailGet(t, client, entry.URL, "blocked redirect to non-public address")
 	}
 }
@@ -897,12 +897,12 @@ func TestGuardedRedirectViaProxyToleratesProxyOnlyDNS(t *testing.T) {
 	noDNS := &fakeResolver{err: errors.New("no route to resolver")}
 	req, _ := http.NewRequest(http.MethodGet, "https://catalog.example/next", nil)
 
-	proxied := newGuardedHTTPClientWith(5*time.Second, (&net.Dialer{}).DialContext, checkPrivateNetworkPolicy, fixedProxy(t, "http://proxy.internal:3128"), noDNS)
+	proxied := newGuardedHTTPClientWith(5*time.Second, (&net.Dialer{}).DialContext, checkPrivateNetworkPolicy, true, fixedProxy(t, "http://proxy.internal:3128"), noDNS)
 	if err := proxied.CheckRedirect(req, redirectVia()); err != nil {
 		t.Fatalf("proxied redirect to an unresolvable hostname must be left to the proxy, got %v", err)
 	}
 
-	direct := newGuardedHTTPClientWith(5*time.Second, (&net.Dialer{}).DialContext, checkPrivateNetworkPolicy, nil, noDNS)
+	direct := newGuardedHTTPClientWith(5*time.Second, (&net.Dialer{}).DialContext, checkPrivateNetworkPolicy, true, nil, noDNS)
 	if err := direct.CheckRedirect(req, redirectVia()); err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
 		t.Fatalf("direct redirect with a failing resolver must be refused, got %v", err)
 	}
@@ -945,7 +945,7 @@ func TestNewSSRFSafeHTTPClientReachesConfiguredPrivateProxy(t *testing.T) {
 // maps to a blocked address is refused before the proxy is asked for it.
 func TestGuardedRedirectViaProxyStillAppliesPolicyWhenResolvable(t *testing.T) {
 	metadata := &fakeResolver{ips: []net.IP{net.ParseIP("169.254.169.254")}}
-	client := newGuardedHTTPClientWith(5*time.Second, (&net.Dialer{}).DialContext, checkPrivateNetworkPolicy, fixedProxy(t, "http://proxy.internal:3128"), metadata)
+	client := newGuardedHTTPClientWith(5*time.Second, (&net.Dialer{}).DialContext, checkPrivateNetworkPolicy, true, fixedProxy(t, "http://proxy.internal:3128"), metadata)
 	req, _ := http.NewRequest(http.MethodGet, "http://metadata.internal/latest/meta-data/", nil)
 	if err := client.CheckRedirect(req, redirectVia()); err == nil || !strings.Contains(err.Error(), "link-local") {
 		t.Fatalf("proxied redirect to a hostname resolving to link-local must be refused, got %v", err)
@@ -973,7 +973,7 @@ func TestGuardedProxySelectorAppliesPolicyToHostnames(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sel := guardedProxySelector(proxy, checkPrivateNetworkPolicy, tc.resolver)
+			sel := guardedProxySelector(proxy, checkPrivateNetworkPolicy, true, tc.resolver)
 			req, _ := http.NewRequest(http.MethodGet, tc.target, nil)
 			got, err := sel(req)
 			if tc.wantErr == "" {
@@ -1113,5 +1113,23 @@ func TestPublicTargetCheck_UnresolvableTargetIsRefused(t *testing.T) {
 	_, err := publicTargetCheck(hostResolver{}, nil)(context.Background(), "only-the-proxy-knows.example")
 	if err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
 		t.Fatalf("expected a DNS failure, got %v", err)
+	}
+}
+
+// TestNewSSRFSafeHTTPClientRefusesProxyOnlyDNS: the strict client guards URLs
+// an untrusted party chose, so on the proxied path a hostname the local
+// resolver cannot answer is refused rather than handed to the proxy, both for
+// the request itself (the proxy selector) and for a redirect hop. Otherwise a
+// feed could redirect to an internal-only name that only the proxy resolves.
+func TestNewSSRFSafeHTTPClientRefusesProxyOnlyDNS(t *testing.T) {
+	noDNS := &fakeResolver{err: errors.New("no such host")}
+	client := newSSRFSafeHTTPClientWith(5*time.Second, fixedProxy(t, "http://proxy.internal:3128"), noDNS)
+	req, _ := http.NewRequest(http.MethodGet, "http://intranet.corp/feed", nil)
+
+	if err := client.CheckRedirect(req, redirectVia()); err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
+		t.Fatalf("strict proxied redirect to an unresolvable hostname must be refused, got %v", err)
+	}
+	if _, err := client.Do(req); err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
+		t.Fatalf("strict proxied request to an unresolvable hostname must be refused before the proxy, got %v", err)
 	}
 }
