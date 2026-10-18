@@ -2716,9 +2716,15 @@ func ToBedrockResponsesRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.
 						// actually be sent. Left alone when the refit cannot succeed,
 						// which means the total is too small to carry thinking at all.
 						if inferenceConfig.MaxTokens != nil && tokenBudget >= *inferenceConfig.MaxTokens {
+							// "none" is treated as absent, not forwarded: it maps through
+							// to a budget of 0, which would fail the guard below and
+							// leave the oversized budget in place. A caller who set
+							// reasoning.max_tokens has asked for thinking, so the budget
+							// is the operative request and "high" is the same default
+							// used when no effort is given at all.
 							level := "high"
-							if bifrostReq.Params.Reasoning.Effort != nil {
-								level = anthropic.MapBifrostEffortToAnthropic(*bifrostReq.Params.Reasoning.Effort)
+							if effort := bifrostReq.Params.Reasoning.Effort; effort != nil && *effort != "none" {
+								level = anthropic.MapBifrostEffortToAnthropic(*effort)
 							}
 							if fitted, err := providerUtils.GetBudgetTokensFromReasoningEffort(level, anthropic.MinimumReasoningMaxTokens, *inferenceConfig.MaxTokens); err == nil && fitted >= anthropic.MinimumReasoningMaxTokens && fitted < *inferenceConfig.MaxTokens {
 								tokenBudget = fitted

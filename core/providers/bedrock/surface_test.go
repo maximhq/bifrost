@@ -1012,6 +1012,50 @@ func TestToBedrockResponsesRequestRefitsThinkingBudgetUnderTheClampedTotal(t *te
 	}
 }
 
+// effort "none" alongside an explicit budget must still refit. It maps through
+// to a budget of 0, so a refit that forwarded the caller's effort verbatim would
+// fail its own guard and leave the oversized budget in place -- the 400 this PR
+// exists to stop.
+func TestToBedrockResponsesRequestRefitsThinkingBudgetWithEffortNone(t *testing.T) {
+	bifrostReq := &schemas.BifrostResponsesRequest{
+		Provider: schemas.Bedrock,
+		Model:    "anthropic.claude-haiku-4-5",
+		Params: &schemas.ResponsesParameters{
+			MaxOutputTokens: schemas.Ptr(100000),
+			Reasoning: &schemas.ResponsesParametersReasoning{
+				MaxTokens: schemas.Ptr(65000),
+				Effort:    schemas.Ptr("none"),
+			},
+		},
+	}
+
+	bedrockReq, err := ToBedrockResponsesRequest(surfaceTestCtx(), bifrostReq)
+	if err != nil {
+		t.Fatalf("ToBedrockResponsesRequest failed: %v", err)
+	}
+	total := *bedrockReq.InferenceConfig.MaxTokens
+	raw, ok := bedrockReq.AdditionalModelRequestFields.Get("thinking")
+	if !ok {
+		t.Fatalf("expected a `thinking` field, got none")
+	}
+	thinking, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("expected `thinking` to be a map, got %T: %+v", raw, raw)
+	}
+	budget, ok := thinking["budget_tokens"].(int)
+	if !ok {
+		t.Fatalf("expected an int budget_tokens, got %T: %+v", thinking["budget_tokens"], thinking)
+	}
+	if budget >= total {
+		t.Errorf("budget_tokens %d is not below the clamped max_tokens %d with effort \"none\"",
+			budget, total)
+	}
+	if budget < anthropic.MinimumReasoningMaxTokens {
+		t.Errorf("budget_tokens %d fell below the anthropic minimum %d",
+			budget, anthropic.MinimumReasoningMaxTokens)
+	}
+}
+
 // The control: a budget that already fits is passed through untouched, so the
 // refit cannot be quietly rewriting every request.
 func TestToBedrockResponsesRequestLeavesAFittingThinkingBudgetAlone(t *testing.T) {
