@@ -185,6 +185,13 @@ const server = http.createServer((req, res) => {
 		if (auth !== undefined && auth !== "Bearer test-key") {
 			return send(401, {}, errorBody("Incorrect API key provided", "invalid_request_error", "invalid_api_key"));
 		}
+		if (parsed.user === "output-token-bound-fixture") {
+			// Refuse deliberately before starting a stream. The distinct code proves
+			// the exact bound reached the provider on every native and SDK route.
+			const limit = parsed.max_completion_tokens ?? parsed.max_output_tokens ?? parsed.max_tokens;
+			const code = limit === 8 ? "output_bound_preserved" : "output_bound_changed";
+			return send(400, {}, errorBody(`fixture observed output bound ${limit}`, "invalid_request_error", code));
+		}
 		if (model === "upstream-fixed-length-short" || model === "upstream-fixed-length-ok") {
 			// finish_reason makes this semantically complete even without [DONE].
 			// Only the transport's Content-Length check can reject the short body.
