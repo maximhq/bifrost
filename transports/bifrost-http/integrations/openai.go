@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/url"
 	"strconv"
@@ -391,15 +392,14 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			}
 			return &openai.OpenAIChatRequest{}
 		},
-		// Dynamic RequestParser: dispatch to the correct multipart parser for
-		// transcription/image-edit/image-variation, fall through to default JSON
-		// parsing (nil return) for everything else.
+		// Dispatch media requests to their format-specific parsers and use JSON
+		// parsing for the remaining operations.
 		RequestParser: func(ctx *fasthttp.RequestCtx, req interface{}) error {
 			switch req.(type) {
 			case *openai.OpenAITranscriptionRequest:
 				return parseTranscriptionMultipartRequest(ctx, req)
 			case *openai.OpenAIImageEditRequest:
-				return parseOpenAIImageEditMultipartRequest(ctx, req)
+				return parseOpenAIImageEditRequest(ctx, req)
 			case *openai.OpenAIImageVariationRequest:
 				return parseOpenAIImageVariationMultipartRequest(ctx, req)
 			default:
@@ -1241,7 +1241,7 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			GetRequestTypeInstance: func(ctx context.Context) interface{} {
 				return &openai.OpenAIImageEditRequest{}
 			},
-			RequestParser: parseOpenAIImageEditMultipartRequest, // Handle multipart form parsing
+			RequestParser: parseOpenAIImageEditRequest,
 			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
 				if imageEditReq, ok := req.(*openai.OpenAIImageEditRequest); ok {
 					return &schemas.BifrostRequest{
@@ -3826,6 +3826,72 @@ func videoIDProviderSuffix(videoID string) string {
 		return suffix
 	}
 	return ""
+}
+
+// parseOpenAIImageEditRequest accepts JSON image references and multipart uploads.
+func parseOpenAIImageEditRequest(ctx *fasthttp.RequestCtx, req interface{}) error {
+	imageEditReq, ok := req.(*openai.OpenAIImageEditRequest)
+	if !ok || imageEditReq == nil {
+		return errors.New("invalid request type for image edit")
+	}
+	contentType, _, err := mime.ParseMediaType(string(ctx.Request.Header.ContentType()))
+	if err != nil {
+		return err
+	}
+	if contentType != "application/json" {
+		return parseOpenAIImageEditMultipartRequest(ctx, req)
+	}
+
+	var jsonReq struct {
+		openai.OpenAIImageEditJSONRequest
+		ResponseFormat *string         `json:"response_format"`
+		Fallbacks      []string        `json:"fallbacks"`
+		Mask           json.RawMessage `json:"mask"`
+	}
+	if err := sonic.Unmarshal(ctx.Request.Body(), &jsonReq); err != nil {
+		return err
+	}
+	// Deployment routes populate the model in AzureEndpointPreHook after parsing.
+	deploymentPath, _ := ctx.UserValue("deploymentPath").(string)
+	if strings.TrimSpace(jsonReq.Model) == "" && deploymentPath == "" {
+		return errors.New("model field is required")
+	}
+	if strings.TrimSpace(jsonReq.Prompt) == "" {
+		return errors.New("prompt field is required")
+	}
+	if len(jsonReq.Images) == 0 {
+		return errors.New("at least one image is required")
+	}
+	images := make([]schemas.ImageInput, len(jsonReq.Images))
+	for i, image := range jsonReq.Images {
+		if strings.TrimSpace(image.ImageURL) == "" {
+			return fmt.Errorf("images[%d].image_url is required", i)
+		}
+		images[i] = schemas.ImageInput{URL: image.ImageURL}
+	}
+	if len(jsonReq.Mask) > 0 && strings.TrimSpace(string(jsonReq.Mask)) != "null" {
+		return errors.New("json image edit masks are not supported; upload images and the mask using multipart instead")
+	}
+
+	*imageEditReq = openai.OpenAIImageEditRequest{
+		Model: jsonReq.Model,
+		Input: &schemas.ImageEditInput{Images: images, Prompt: jsonReq.Prompt},
+		ImageEditParameters: schemas.ImageEditParameters{
+			Background:        jsonReq.Background,
+			InputFidelity:     jsonReq.InputFidelity,
+			N:                 jsonReq.N,
+			OutputCompression: jsonReq.OutputCompression,
+			OutputFormat:      jsonReq.OutputFormat,
+			PartialImages:     jsonReq.PartialImages,
+			Quality:           jsonReq.Quality,
+			ResponseFormat:    jsonReq.ResponseFormat,
+			Size:              jsonReq.Size,
+			User:              jsonReq.User,
+		},
+		Stream:    jsonReq.Stream,
+		Fallbacks: jsonReq.Fallbacks,
+	}
+	return nil
 }
 
 // parseOpenAIImageEditMultipartRequest is a RequestParser that handles multipart/form-data for image edit requests
