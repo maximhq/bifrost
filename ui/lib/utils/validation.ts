@@ -627,3 +627,20 @@ export function hasCopilotApiToken(value: string | { value?: string; ref?: strin
 	if (typeof value === "string") return value.trim() !== "";
 	return !!value.value?.trim() || !!value.ref?.trim();
 }
+/**
+ * True for an absolute http(s) URL the dashboard may link to or load: it must
+ * parse, name a host, and carry no credentials, so a look-alike such as
+ * https://example.com@evil.example is refused. Mirrors the server's isWebURL.
+ */
+export function isSafeWebURL(value: string): boolean {
+	if (value !== value.trim() || /\s/.test(value)) return false;
+	try {
+		const parsed = new URL(value);
+		return (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.hostname !== "" && !parsed.username && !parsed.password;
+	} catch {
+		return false;
+	}
+}
+
+/** An uploaded RSS feed logo: a base64 PNG or JPEG data URI, as the server stores it. */
+export const RSS_FEED_LOGO_DATA_URI_PATTERN = /^data:image\/(png|jpeg);base64,[A-Za-z0-9+/]+={0,2}$/;

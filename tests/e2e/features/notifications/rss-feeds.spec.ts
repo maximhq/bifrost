@@ -11,6 +11,7 @@ interface MockFeed {
   name: string
   url: string
   icon?: string
+  icon_url?: string
   source: 'builtin' | 'custom'
   enabled: boolean
   created_at: string
@@ -186,6 +187,81 @@ test.describe('Notification panel news feeds', () => {
     releaseA()
     await expect(page.getByTestId('rss-feed-row-custom-100')).toHaveCount(0)
     expect(deletesA).toBe(1)
+  })
+
+  test('renders hostile feed content as inert text, never as a script link', async ({ page }) => {
+    await mockRSS(page, builtinFeeds())
+    const hostile = (id: string, title: string, link: string) => ({ id, feed_id: 9, feed_slug: 'custom-9', feed_name: 'Untrusted', feed_url: 'https://example.com/feed', title, link, published_at: hourAgo })
+    await page.route('**/api/rss/items*', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          enabled: true,
+          items: [
+            hostile('evil:js', '<img src=x onerror="window.__rssXSS=1">Script link', 'javascript:window.__rssXSS=1'),
+            hostile('evil:data', 'Data link', 'data:text/html,<script>window.__rssXSS=1</script>'),
+            hostile('evil:creds', 'Look-alike link', 'https://example.com@evil.example/phish'),
+            hostile('ok:post', 'Safe link', 'https://example.com/post'),
+          ],
+          errors: [],
+        }),
+      }),
+    )
+    const dialogs: string[] = []
+    page.on('dialog', (dialog) => { dialogs.push(dialog.message()); void dialog.dismiss() })
+    await page.goto('/workspace/dashboard')
+    await openNewsTab(page)
+
+    for (const id of ['evil:js', 'evil:data', 'evil:creds']) {
+      const row = page.getByTestId(`rss-item-${id}`)
+      await expect(row).toBeVisible()
+      await expect(row).not.toHaveAttribute('href', /.*/)
+      expect(await row.evaluate((el) => el.tagName)).toBe('DIV')
+    }
+    await expect(page.getByTestId('rss-item-evil:js')).toContainText('<img src=x onerror=')
+    await expect(page.getByTestId('rss-item-ok:post')).toHaveAttribute('href', 'https://example.com/post')
+    await page.getByTestId('rss-item-evil:js').click()
+    expect(await page.evaluate(() => (window as unknown as { __rssXSS?: number }).__rssXSS)).toBeUndefined()
+    expect(dialogs).toEqual([])
+  })
+
+  test('shows custom logos only as PNG or JPEG images that send no referrer', async ({ page }) => {
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64')
+    await page.route('https://logos.example.com/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }))
+    await page.route('https://legacy.example.com/**', (route) => route.fulfill({ status: 200, contentType: 'image/png', body: png }))
+    const feeds: MockFeed[] = [
+      ...builtinFeeds(),
+      { id: 100, slug: 'custom-linked', name: 'Linked logo', url: 'https://example.com/a.atom', icon_url: 'https://logos.example.com/logo.png', source: 'custom', enabled: true, created_at: now, updated_at: now },
+      { id: 101, slug: 'custom-svg', name: 'Legacy SVG logo', url: 'https://legacy.example.com/b.atom', icon_url: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnLz4=', source: 'custom', enabled: true, created_at: now, updated_at: now },
+    ]
+    await mockRSS(page, feeds)
+    await page.goto('/workspace/dashboard')
+    await openNewsTab(page)
+    await page.getByTestId('rss-sources-btn').click()
+
+    const linked = page.getByTestId('rss-feed-row-custom-linked').locator('img')
+    await expect(linked).toHaveAttribute('src', 'https://logos.example.com/logo.png')
+    await expect(linked).toHaveAttribute('referrerpolicy', 'no-referrer')
+    // A stored SVG logo is never drawn; the row falls back to the feed's favicon
+    // (which headless Chromium refuses to load, leaving the RSS glyph).
+    const legacyRow = page.getByTestId('rss-feed-row-custom-svg')
+    await expect(legacyRow).toBeVisible()
+    await expect(legacyRow.locator('img[src^="data:"]')).toHaveCount(0)
+  })
+
+  test('refuses an SVG logo upload, and a file that only claims to be a PNG', async ({ page }) => {
+    await mockRSS(page, builtinFeeds())
+    await page.goto('/workspace/dashboard')
+    await openNewsTab(page)
+    await page.getByTestId('rss-sources-btn').click()
+
+    const fileInput = page.getByTestId('rss-add-feed-logo-file')
+    await expect(fileInput).toHaveAttribute('accept', 'image/png,image/jpeg')
+    await fileInput.setInputFiles({ name: 'logo.svg', mimeType: 'image/svg+xml', buffer: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>') })
+    await expect(page.getByTestId('rss-add-feed-logo-error')).toContainText('PNG or JPEG')
+    await fileInput.setInputFiles({ name: 'logo.png', mimeType: 'image/png', buffer: Buffer.from('<svg onload="alert(1)"/>') })
+    await expect(page.getByTestId('rss-add-feed-logo-error')).toContainText('not a valid PNG or JPEG')
   })
 
   test('clears news per browser, and the cleared state survives a reload', async ({ page }) => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	safeRSSLink,
 	countActiveSidekiqJobs,
 	countFreshUnreadRSSItems,
 	countUnreadRSSItems,
@@ -180,5 +181,28 @@ describe("rssItemIconUrl", () => {
 	it("is undefined for a feed without a logo, or when the response has none", () => {
 		expect(rssItemIconUrl(feedIcons, 8)).toBeUndefined();
 		expect(rssItemIconUrl(undefined, 7)).toBeUndefined();
+	});
+});
+describe("safeRSSLink", () => {
+	it("keeps http and https links", () => {
+		expect(safeRSSLink("https://example.com/post")).toBe("https://example.com/post");
+		expect(safeRSSLink("http://example.com/post?x=1")).toBe("http://example.com/post?x=1");
+	});
+
+	it("refuses scripts, other schemes, credentials and relative links", () => {
+		for (const link of [
+			"javascript:alert(1)",
+			" JavaScript:alert(1)",
+			"data:text/html,<script>alert(1)</script>",
+			"vbscript:msgbox(1)",
+			"file:///etc/passwd",
+			"https://example.com@evil.example/phish",
+			"https://user:secret@example.com/post",
+			"/news/relative",
+			"not a url",
+			"",
+		]) {
+			expect(safeRSSLink(link), link).toBeUndefined();
+		}
 	});
 });

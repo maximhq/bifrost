@@ -9,6 +9,7 @@ import {
 	RSS_POLL_MS,
 	rssItemIconUrl,
 	rssReadId,
+	safeRSSLink,
 	shouldHideNotificationTrigger,
 	sidekiqPollInterval,
 	visibleRSSItems,
@@ -504,45 +505,60 @@ function NewsList({
 					<div className="divide-y">
 						{items.map((item) => {
 							const isRead = read.has(rssReadId(item.id));
+							const href = safeRSSLink(item.link);
+							const rowClass =
+								"focus-visible:ring-ring flex min-w-0 flex-1 gap-3 px-4 py-3 pr-9 outline-none focus-visible:ring-2 focus-visible:ring-inset";
+							const body = (
+								<>
+									<span className="bg-background mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full border">
+										<RSSFeedIcon
+											icon={item.feed_icon}
+											iconUrl={rssItemIconUrl(feedIcons, item.feed_id)}
+											feedUrl={item.feed_url}
+											name={item.feed_name}
+											size={14}
+										/>
+									</span>
+									<span className="min-w-0 flex-1">
+										<span className="flex items-start gap-2">
+											<span className={cn("min-w-0 flex-1 text-sm", !isRead && "font-semibold")}>{item.title}</span>
+											{!isRead && <span className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full" aria-label="Unread" />}
+										</span>
+										{item.summary && (
+											<span className="text-muted-foreground mt-0.5 line-clamp-2 block text-xs leading-relaxed">{item.summary}</span>
+										)}
+										<span className="text-muted-foreground mt-1.5 flex items-center gap-2 text-[11px]">
+											<span className="truncate font-medium">{item.feed_name}</span>
+											{hasRSSPublishedDate(item.published_at) && (
+												<span className="shrink-0">{formatDistanceToNow(new Date(item.published_at), { addSuffix: true })}</span>
+											)}
+										</span>
+									</span>
+								</>
+							);
 							return (
 								// Open and dismiss are siblings, never nested: an <a> may not contain a <button>.
 								<div
 									key={item.id}
 									className={cn("group relative flex transition-colors", isRead ? "hover:bg-accent/60" : "bg-accent/25 hover:bg-accent/60")}
 								>
-									<a
-										href={item.link}
-										target="_blank"
-										rel="noopener noreferrer"
-										onClick={() => onOpen(item.id)}
-										data-testid={`rss-item-${item.id}`}
-										className="focus-visible:ring-ring flex min-w-0 flex-1 gap-3 px-4 py-3 pr-9 outline-none focus-visible:ring-2 focus-visible:ring-inset"
-									>
-										<span className="bg-background mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full border">
-											<RSSFeedIcon
-												icon={item.feed_icon}
-												iconUrl={rssItemIconUrl(feedIcons, item.feed_id)}
-												feedUrl={item.feed_url}
-												name={item.feed_name}
-												size={14}
-											/>
-										</span>
-										<span className="min-w-0 flex-1">
-											<span className="flex items-start gap-2">
-												<span className={cn("min-w-0 flex-1 text-sm", !isRead && "font-semibold")}>{item.title}</span>
-												{!isRead && <span className="bg-primary mt-1.5 size-1.5 shrink-0 rounded-full" aria-label="Unread" />}
-											</span>
-											{item.summary && (
-												<span className="text-muted-foreground mt-0.5 line-clamp-2 block text-xs leading-relaxed">{item.summary}</span>
-											)}
-											<span className="text-muted-foreground mt-1.5 flex items-center gap-2 text-[11px]">
-												<span className="truncate font-medium">{item.feed_name}</span>
-												{hasRSSPublishedDate(item.published_at) && (
-													<span className="shrink-0">{formatDistanceToNow(new Date(item.published_at), { addSuffix: true })}</span>
-												)}
-											</span>
-										</span>
-									</a>
+									{href ? (
+										<a
+											href={href}
+											target="_blank"
+											rel="noopener noreferrer"
+											onClick={() => onOpen(item.id)}
+											data-testid={`rss-item-${item.id}`}
+											className={rowClass}
+										>
+											{body}
+										</a>
+									) : (
+										// A link that is not http(s) is never rendered as an href.
+										<div data-testid={`rss-item-${item.id}`} className={rowClass}>
+											{body}
+										</div>
+									)}
 									<button
 										type="button"
 										aria-label={`Clear ${item.title}`}
