@@ -54,6 +54,7 @@ const routeTitleOverrides: Record<string, string> = {
 	"/workspace/governance/rbac": "Roles & Permissions",
 	"/workspace/guardrails/configuration": "Guardrail Rules",
 	"/workspace/guardrails/providers": "Guardrail Providers",
+	"/workspace/guardrails/incidents": "Guardrail Incidents",
 	"/workspace/logs": "LLM Logs",
 	"/workspace/logs/connectors": "Log Connectors",
 	"/workspace/observability": "Observability Connectors",

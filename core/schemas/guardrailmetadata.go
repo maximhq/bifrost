@@ -9,6 +9,21 @@ import (
 type BifrostGuardrailMetadata struct {
 	JudgeCalls []BifrostGuardrailJudgeCall `json:"judge_calls,omitempty"`
 	Detections []BifrostGuardrailDetection `json:"detections,omitempty"`
+	// Interventions records rules that blocked the request, so a blocked log row
+	// names the rule that stopped it instead of only carrying an error message.
+	Interventions []BifrostGuardrailIntervention `json:"interventions,omitempty"`
+}
+
+// BifrostGuardrailIntervention records one guardrail policy match that blocked
+// the request (input, output, or MCP tool call).
+type BifrostGuardrailIntervention struct {
+	Phase             string   `json:"phase,omitempty"`
+	RuleID            *uint    `json:"rule_id,omitempty"`
+	RuleName          string   `json:"rule_name,omitempty"`
+	GuardrailName     string   `json:"guardrail_name,omitempty"`
+	GuardrailProvider string   `json:"guardrail_provider,omitempty"`
+	Reason            string   `json:"reason,omitempty"`
+	Assessments       []string `json:"assessments,omitempty"` // Sanitized policy categories; never matched text.
 }
 
 // BifrostGuardrailDetection records one guardrail policy match whose configured
@@ -55,7 +70,7 @@ type BifrostGuardrailJudgeCall struct {
 
 // isEmpty reports whether the metadata carries nothing worth storing or emitting.
 func (d *BifrostGuardrailMetadata) isEmpty() bool {
-	return d == nil || len(d.JudgeCalls) == 0 && len(d.Detections) == 0
+	return d == nil || len(d.JudgeCalls) == 0 && len(d.Detections) == 0 && len(d.Interventions) == 0
 }
 
 // Clone returns an owned snapshot of the guardrail metadata.
@@ -82,6 +97,14 @@ func (d *BifrostGuardrailMetadata) Clone() *BifrostGuardrailMetadata {
 			if detection.Enforced != nil {
 				clone.Detections[index].Enforced = Ptr(*detection.Enforced)
 			}
+		}
+	}
+	if len(d.Interventions) > 0 {
+		clone.Interventions = make([]BifrostGuardrailIntervention, len(d.Interventions))
+		for index, intervention := range d.Interventions {
+			clone.Interventions[index] = intervention
+			clone.Interventions[index].RuleID = cloneUint(intervention.RuleID)
+			clone.Interventions[index].Assessments = append([]string(nil), intervention.Assessments...)
 		}
 	}
 	return clone
@@ -147,12 +170,24 @@ func AppendGuardrailJudgeCallOnContext(ctx *BifrostContext, call BifrostGuardrai
 	if ctx == nil || call.TotalTokens == 0 && call.PromptTokens == 0 && call.CompletionTokens == 0 {
 		return false
 	}
-	current, _ := GuardrailMetadataFromContext(ctx)
-	if current == nil {
-		current = &BifrostGuardrailMetadata{}
-	}
-	current.JudgeCalls = append(current.JudgeCalls, call)
-	return SetGuardrailMetadataOnContext(ctx, current)
+	return appendGuardrailMetadataOnContext(ctx, func(metadata *BifrostGuardrailMetadata) {
+		metadata.JudgeCalls = append(metadata.JudgeCalls, call)
+	})
+}
+
+// appendGuardrailMetadataOnContext applies appendTo to an owned copy of ctx's guardrail metadata
+// and stores it in one locked step, so concurrent appends of any kind never lose an entry.
+func appendGuardrailMetadataOnContext(ctx *BifrostContext, appendTo func(*BifrostGuardrailMetadata)) bool {
+	ctx.updateValue(BifrostContextKeyGuardrailMetadata, func(current any) any {
+		existing, _ := current.(*BifrostGuardrailMetadata)
+		next := existing.Clone()
+		if next == nil {
+			next = &BifrostGuardrailMetadata{}
+		}
+		appendTo(next)
+		return next
+	})
+	return true
 }
 
 // AppendGuardrailDetectionOnContext appends one detect-only guardrail match to ctx.
@@ -160,12 +195,9 @@ func AppendGuardrailDetectionOnContext(ctx *BifrostContext, detection BifrostGua
 	if ctx == nil {
 		return false
 	}
-	current, _ := GuardrailMetadataFromContext(ctx)
-	if current == nil {
-		current = &BifrostGuardrailMetadata{}
-	}
-	current.Detections = append(current.Detections, detection)
-	return SetGuardrailMetadataOnContext(ctx, current)
+	return appendGuardrailMetadataOnContext(ctx, func(metadata *BifrostGuardrailMetadata) {
+		metadata.Detections = append(metadata.Detections, detection)
+	})
 }
 
 // DeferredGuardrailResult carries guardrail results that finish after the
@@ -232,6 +264,16 @@ func DeferredGuardrailResultFromContext(ctx *BifrostContext) (*DeferredGuardrail
 	}
 	result, ok := ctx.Value(BifrostContextKeyDeferredGuardrail).(*DeferredGuardrailResult)
 	return result, ok && result != nil
+}
+
+// AppendGuardrailInterventionOnContext appends one blocking guardrail match to ctx.
+func AppendGuardrailInterventionOnContext(ctx *BifrostContext, intervention BifrostGuardrailIntervention) bool {
+	if ctx == nil {
+		return false
+	}
+	return appendGuardrailMetadataOnContext(ctx, func(metadata *BifrostGuardrailMetadata) {
+		metadata.Interventions = append(metadata.Interventions, intervention)
+	})
 }
 
 // Deprecated: use BifrostGuardrailMetadata.

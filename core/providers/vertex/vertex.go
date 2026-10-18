@@ -3596,6 +3596,8 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	return batchResultsResp, nil
 }
 
+// vertexNormalizeBatchUsage normalizes Vertex usageMetadata into OpenAI-compatible
+// usage, ensuring reasoning tokens from thoughtsTokenCount are included in completion_tokens.
 func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
 	raw, ok := body["usageMetadata"]
 	if !ok {
@@ -3611,8 +3613,13 @@ func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
 	}
 	usage := map[string]any{
 		"prompt_tokens":     meta.PromptTokenCount,
-		"completion_tokens": meta.CandidatesTokenCount,
+		"completion_tokens": meta.CandidatesTokenCount + meta.ThoughtsTokenCount,
 		"total_tokens":      meta.TotalTokenCount,
+	}
+	if meta.ThoughtsTokenCount > 0 {
+		usage["completion_tokens_details"] = map[string]any{
+			"reasoning_tokens": meta.ThoughtsTokenCount,
+		}
 	}
 	if meta.CachedContentTokenCount > 0 {
 		usage["prompt_tokens_details"] = map[string]any{
