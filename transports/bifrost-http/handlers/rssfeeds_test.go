@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -318,7 +319,7 @@ func TestRSSFeedCreateValidatesAndProbes(t *testing.T) {
 	h.createFeed(ctx)
 	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "non-image icon_url rejected")
 
-	ctx = rssRequest(`{"name":" My Releases ","url":"`+srv.URL+`/atom","icon_url":"https://example.com/logo.png"}`, 0)
+	ctx = rssRequest(`{"name":" My Releases ","url":"`+srv.URL+`/atom","icon_url":"https://93.184.216.34/logo.png"}`, 0)
 	h.createFeed(ctx)
 	require.Equal(t, fasthttp.StatusCreated, ctx.Response.StatusCode(), string(ctx.Response.Body()))
 	require.Len(t, store.feeds, 1)
@@ -326,7 +327,7 @@ func TestRSSFeedCreateValidatesAndProbes(t *testing.T) {
 	require.Equal(t, "My Releases", created.Name)
 	require.Equal(t, tables.RSSFeedSourceCustom, created.Source)
 	require.True(t, created.Enabled, "custom feeds default to enabled")
-	require.Equal(t, "https://example.com/logo.png", created.IconURL)
+	require.Equal(t, "https://93.184.216.34/logo.png", created.IconURL)
 	require.Regexp(t, `^custom-my-releases-`, created.Slug)
 }
 
@@ -371,7 +372,7 @@ func TestRSSFeedBuiltinGuards(t *testing.T) {
 	h.updateFeed(ctx)
 	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "builtin URL is fixed")
 
-	ctx = rssRequest(`{"icon_url":"https://example.com/logo.png"}`, 1)
+	ctx = rssRequest(`{"icon_url":"https://93.184.216.34/logo.png"}`, 1)
 	h.updateFeed(ctx)
 	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), "builtin logo is fixed")
 
@@ -490,4 +491,97 @@ func TestRSSNewsSwitchStopsFetching(t *testing.T) {
 	require.True(t, response.Enabled)
 	require.Len(t, response.Items, 1)
 	require.Equal(t, 1, hits)
+}
+
+// rssLogoDataURI builds a data URI whose payload starts with magic and is
+// padded with zero bytes to size bytes.
+func rssLogoDataURI(mime, magic string, size int) string {
+	payload := append([]byte(magic), make([]byte, size-len(magic))...)
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(payload)
+}
+
+// TestRSSFeedIconURLValidation pins every rule for a custom logo: an uploaded
+// logo is a PNG or JPEG data URI whose bytes match the declared type and decode
+// to at most 96 KB, and a linked logo is an http(s) URL on a public host
+// without credentials, since every dashboard viewer's browser loads it.
+func TestRSSFeedIconURLValidation(t *testing.T) {
+	const png, jpeg = "\x89PNG\r\n\x1a\n", "\xff\xd8\xff\xe0"
+	accepted := map[string]string{
+		"no logo":            "",
+		"png upload":         rssLogoDataURI("image/png", png, 64),
+		"jpeg upload":        rssLogoDataURI("image/jpeg", jpeg, 64),
+		"exactly 96 KB":      rssLogoDataURI("image/png", png, 96<<10),
+		"public logo url":    "https://93.184.216.34/logo.png",
+		"public logo url ip": "http://93.184.216.34:8080/logo.jpg",
+	}
+	for name, raw := range accepted {
+		_, err := validateRSSFeedIconURL(raw)
+		require.NoError(t, err, name)
+	}
+	rejected := map[string]string{
+		"svg upload":         rssLogoDataURI("image/svg+xml", "<svg xmlns='http://www.w3.org/2000/svg'/>", 64),
+		"gif upload":         rssLogoDataURI("image/gif", "GIF89a", 64),
+		"webp upload":        rssLogoDataURI("image/webp", "RIFF\x00\x00\x00\x00WEBPVP8 ", 64),
+		"ico upload":         rssLogoDataURI("image/x-icon", "\x00\x00\x01\x00", 64),
+		"jpeg bytes as png":  rssLogoDataURI("image/png", jpeg, 64),
+		"html bytes as png":  rssLogoDataURI("image/png", "<html><script>", 64),
+		"96 KB plus one":     rssLogoDataURI("image/png", png, 96<<10+1),
+		"invalid base64":     "data:image/png;base64,!!!!",
+		"unpadded base64":    "data:image/png;base64,iVBORw0KGgo",
+		"private logo url":   "http://10.0.0.5/logo.png",
+		"loopback logo url":  "http://127.0.0.1/logo.png",
+		"localhost logo url": "http://localhost/logo.png",
+		"metadata logo url":  "http://169.254.169.254/logo.png",
+		"credentials in url": "https://user:secret@93.184.216.34/logo.png",
+		"script url":         "javascript:alert(1)",
+		"non-web scheme":     "ftp://93.184.216.34/logo.png",
+	}
+	for name, raw := range rejected {
+		_, err := validateRSSFeedIconURL(raw)
+		require.Error(t, err, name)
+	}
+}
+
+// TestRSSFeedURLRejectsCredentials pins that a feed URL carrying credentials is
+// refused on create and on update, so they are never stored, shown to every
+// reader, or sent upstream.
+func TestRSSFeedURLRejectsCredentials(t *testing.T) {
+	srv := newRSSFeedTestServer(t)
+	h, store := newTestRSSFeedsHandler(srv,
+		tables.TableRSSFeed{ID: 1, Slug: "custom-x", Name: "X", URL: srv.URL + "/atom", Source: tables.RSSFeedSourceCustom, Enabled: true},
+	)
+	withCreds := strings.Replace(srv.URL, "http://", "http://user:secret@", 1) + "/atom"
+
+	ctx := rssRequest(`{"name":"creds","url":"`+withCreds+`"}`, 0)
+	h.createFeed(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+
+	ctx = rssRequest(`{"url":"`+withCreds+`"}`, 1)
+	h.updateFeed(ctx)
+	require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	require.Len(t, store.feeds, 1)
+	require.Equal(t, srv.URL+"/atom", store.feeds[0].URL)
+}
+
+// TestRSSProbeErrorMessage pins what a failed probe tells the admin. Only a
+// URL refused before any request is sent says it must be public; a refusal at
+// dial time or on a redirect hop reads like any other fetch failure, so the
+// probe cannot be used to learn which internal names resolve.
+func TestRSSProbeErrorMessage(t *testing.T) {
+	cases := map[string]struct {
+		err  error
+		want string
+	}{
+		"not a feed":          {rssfeed.ErrNotAFeed, "URL did not return a valid RSS or Atom feed"},
+		"parse error":         {errors.New("parse feed: XML syntax error"), "URL did not return a valid RSS or Atom feed"},
+		"own url refused":     {errors.New("invalid feed url: blocked private address 10.0.0.5"), "URL must be a public http or https address"},
+		"dial refused":        {errors.New(`fetch feed: Get "http://a.example": blocked connection to non-public address 10.0.0.5 (host a.example)`), "Feed could not be fetched from this URL"},
+		"redirect refused":    {errors.New(`fetch feed: Get "http://b.example": blocked redirect to intranet.corp: blocked redirect to non-public address 10.1.2.3 (host intranet.corp)`), "Feed could not be fetched from this URL"},
+		"redirect unresolved": {errors.New(`fetch feed: Get "http://b.example": blocked redirect to nope.corp: DNS lookup failed: no such host`), "Feed could not be fetched from this URL"},
+		"timeout":             {errors.New("fetch feed: context deadline exceeded"), "Feed could not be fetched from this URL"},
+		"status":              {errors.New("fetch feed: unexpected status 404"), "Feed could not be fetched from this URL"},
+	}
+	for name, tc := range cases {
+		require.Equal(t, tc.want, probeErrorMessage(tc.err), name)
+	}
 }

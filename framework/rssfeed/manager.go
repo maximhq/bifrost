@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -19,10 +20,11 @@ const (
 	DefaultTTL = 15 * time.Minute
 	// errorTTL is shorter so a feed that was briefly down recovers quickly
 	// without every tray open hammering it.
-	errorTTL       = 2 * time.Minute
-	fetchTimeout   = 10 * time.Second
-	maxFeedBytes   = 2 << 20
-	userAgentValue = "Bifrost-RSS/1.0 (+https://getbifrost.ai)"
+	errorTTL               = 2 * time.Minute
+	fetchTimeout           = 10 * time.Second
+	validateResolveTimeout = 5 * time.Second
+	maxFeedBytes           = 2 << 20
+	userAgentValue         = "Bifrost-RSS/1.0 (+https://getbifrost.ai)"
 )
 
 // ErrFeedTooLarge is returned when a feed body exceeds maxFeedBytes.
@@ -56,12 +58,38 @@ type Manager struct {
 func NewManager() *Manager {
 	return &Manager{
 		client:      network.NewSSRFSafeHTTPClient(fetchTimeout),
-		validate:    func(u string) error { return bifrost.ValidateExternalURL(u, false) },
+		validate:    ValidatePublicURL,
 		now:         time.Now,
 		ttl:         DefaultTTL,
 		cache:       make(map[string]*cacheEntry),
 		generations: make(map[string]uint64),
 	}
+}
+
+// ValidatePublicURL checks a URL an admin entered (a feed or a logo) before
+// anything is fetched or stored: http or https only, no credentials in it, and
+// a host whose every address is public. ValidateExternalURL alone lets
+// loopback through for local development, so the host is also resolved with
+// ResolvePublicTarget; the dial-time guard still covers redirects and DNS
+// rebinding after this check.
+func ValidatePublicURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("scheme %q is not allowed", parsed.Scheme)
+	}
+	if parsed.User != nil {
+		return errors.New("credentials in the url are not allowed")
+	}
+	if err := bifrost.ValidateExternalURL(raw, false); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), validateResolveTimeout)
+	defer cancel()
+	_, err = network.ResolvePublicTarget(ctx, parsed.Hostname())
+	return err
 }
 
 // NewManagerWithClient is the test seam: it uses the given client and skips

@@ -1,6 +1,8 @@
 package rssfeed
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"net/http"
@@ -179,14 +181,49 @@ func TestManagerCachesErrorsBriefly(t *testing.T) {
 	}
 }
 
+// TestNewManagerRefusesPrivateTargets pins that every non-public or
+// credential-bearing feed URL is refused before any request is sent, so the
+// caller's own URL is always reported as invalid rather than failing at dial
+// time, and the dial-time guard is left for redirects and DNS rebinding.
 func TestNewManagerRefusesPrivateTargets(t *testing.T) {
 	m := NewManager()
-	for _, target := range []string{"http://127.0.0.1:1/feed", "http://169.254.169.254/latest/meta-data", "file:///etc/passwd"} {
-		// Loopback can clear URL validation (it permits local development
-		// hosts) but must still be refused by the dial-time guard.
-		_, err := m.Fetch(context.Background(), target)
-		if err == nil || !(strings.HasPrefix(err.Error(), "invalid feed url:") || strings.Contains(err.Error(), "non-public address")) {
-			t.Errorf("%s: expected the target to be refused, got %v", target, err)
+	for _, target := range []string{
+		"http://127.0.0.1:1/feed",
+		"http://localhost:1/feed",
+		"http://[::1]:1/feed",
+		"http://10.0.0.5/feed",
+		"http://169.254.169.254/latest/meta-data",
+		"http://[::ffff:169.254.169.254]/latest/meta-data",
+		"http://user:secret@93.184.216.34/feed",
+		"https://token@93.184.216.34/feed",
+		"file:///etc/passwd",
+		"ftp://93.184.216.34/feed",
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_, err := m.Fetch(ctx, target)
+		cancel()
+		if err == nil || !strings.HasPrefix(err.Error(), "invalid feed url:") {
+			t.Errorf("%s: expected the url to be refused before fetching, got %v", target, err)
 		}
+	}
+}
+
+// TestManagerCapsDecompressedBody pins that the 2 MB cap applies to the
+// decompressed body, so a small gzip bomb is refused as too large.
+func TestManagerCapsDecompressedBody(t *testing.T) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, _ = zw.Write([]byte("<rss><channel>" + strings.Repeat("x", 3*maxFeedBytes) + "</channel></rss>"))
+	_ = zw.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(buf.Bytes())
+	}))
+	t.Cleanup(srv.Close)
+	if buf.Len() > maxFeedBytes/10 {
+		t.Fatalf("fixture should be a small compressed body, got %d bytes", buf.Len())
+	}
+	if _, err := NewManagerWithClient(srv.Client()).Fetch(context.Background(), srv.URL); !errors.Is(err, ErrFeedTooLarge) {
+		t.Fatalf("expected ErrFeedTooLarge for a gzip body that expands past the cap, got %v", err)
 	}
 }
