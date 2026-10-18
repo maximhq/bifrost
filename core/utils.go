@@ -901,6 +901,7 @@ func isPromptOptionalVideoEditType(t *string) bool {
 // bytes, which integrations must not echo to a client of the original API.
 func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, targetType schemas.RequestType) schemas.PostHookRunner {
 	roleSent := false
+	var identity chatStreamIdentity
 	return func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, bifrostErr *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 		if result != nil {
 			switch targetType {
@@ -917,6 +918,7 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 				if result.ResponsesStreamResponse != nil {
 					if converted := result.ResponsesStreamResponse.ToBifrostChatResponse(); converted != nil {
 						roleSent = setAssistantRoleOnce(converted, roleSent)
+						identity.apply(converted)
 						converted.ExtraFields.ConvertedRequestType = targetType
 						result = &schemas.BifrostResponse{ChatResponse: converted}
 					}
@@ -924,6 +926,35 @@ func wrapConvertedStreamPostHookRunner(postHookRunner schemas.PostHookRunner, ta
 			}
 		}
 		return postHookRunner(ctx, result, bifrostErr)
+	}
+}
+
+// chatStreamIdentity holds the id, model and created of a converted chat stream.
+// Only the response.created, in_progress and completed events carry the Response
+// object, so the deltas between them convert without these fields. OpenAI SDK
+// stream accumulators drop a chunk whose id differs from the stream's.
+type chatStreamIdentity struct {
+	id      string
+	model   string
+	created int
+}
+
+// apply records each field a chunk carries and fills in each one it lacks.
+func (s *chatStreamIdentity) apply(resp *schemas.BifrostChatResponse) {
+	if resp.ID == "" {
+		resp.ID = s.id
+	} else {
+		s.id = resp.ID
+	}
+	if resp.Model == "" {
+		resp.Model = s.model
+	} else {
+		s.model = resp.Model
+	}
+	if resp.Created == 0 {
+		resp.Created = s.created
+	} else {
+		s.created = resp.Created
 	}
 }
 
