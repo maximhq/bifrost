@@ -141,7 +141,7 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 		s.logger.Debug("%s Formatting error response. Error kind: %s, Message length: %d, Hints count: %d", codemcp.CodeModeLogPrefix, result.Errors.Kind, len(result.Errors.Message), len(result.Errors.Hints))
 		logsText := ""
 		if len(result.Logs) > 0 {
-			logsText = fmt.Sprintf("\n\nPrint Output:\n%s\n", strings.Join(result.Logs, "\n"))
+			logsText = fmt.Sprintf("\n\nPrint output:\n%s\n", strings.Join(result.Logs, "\n"))
 		}
 
 		responseText = fmt.Sprintf(
