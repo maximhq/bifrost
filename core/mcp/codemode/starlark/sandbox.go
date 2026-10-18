@@ -197,9 +197,12 @@ func runSandbox(ctx context.Context, limits schemas.MCPCodeModeLimits, code stri
 			kind = ExecutionErrorTypeSyntax
 		}
 		result.Result = nil
-		hints := generatePythonErrorHints(err.Error(), servers)
+		var hints []string
 		if unsupportedStatement(code, err) != "" {
-			hints = append(exceptionHandlingHints(), hints...)
+			// The parse error only names an illegal token, so generic hints would bury this one.
+			hints = exceptionHandlingHints()
+		} else {
+			hints = generatePythonErrorHints(err.Error(), servers)
 		}
 		result.Errors = &ExecutionError{Kind: kind, Message: withTraceback(err), Hints: hints}
 	}

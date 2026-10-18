@@ -70,7 +70,7 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"Do NOT guess callable tool names from natural language or stale assumptions; use the exact identifier returned by listToolFiles/readToolFile. " +
 
 					"STARLARK DIFFERENCES FROM PYTHON — READ BEFORE WRITING CODE: " +
-					"1. NO try/except/finally/raise — error handling is not supported, and tool failures cannot be caught inside Starlark. " +
+					"1. NO try/except/finally/raise. A failed tool call returns an error value instead of raising: check hasattr(r, \"error\"), read r.error, and call fail(r.error) to stop the run. A timeout or a lost connection still stops the script. " +
 					"2. NO classes — use dicts and functions. " +
 					"3. NO imports, direct network access, or direct filesystem access — use MCP tools instead. " +
 					"4. NO is operator — use == for comparison. " +
@@ -80,7 +80,7 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"SYNTAX NOTES: " +
 					"• Synchronous calls — NO async/await: result = server.tool(arg=\"value\") " +
 					"• Use keyword arguments: server.tool(param=\"value\") NOT server.tool({\"param\": \"value\"}) " +
-					"• Access dict values with brackets: result[\"key\"] NOT result.key " +
+					"• Access dict values with brackets: result[\"key\"] NOT result.key (a failed call's r.error is the exception) " +
 					"• Use print() for logging/debugging " +
 					"• List comprehensions: [x for x in items if x[\"active\"]] " +
 					"• String escapes work normally: \"line1\\nline2\" produces a newline " +
@@ -90,7 +90,8 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"• MCP tool calls are timeout-limited; avoid long or infinite loops " +
 
 					"AVAILABLE BUILTINS: print, len, range, enumerate, zip, sorted, reversed, min, max, " +
-					"int, float, str, bool, list, dict, tuple, set, hasattr, getattr, type, chr, ord, any, all, hash, repr. " +
+					"int, float, str, bool, list, dict, tuple, set, hasattr, getattr, type, chr, ord, any, all, hash, repr, fail. " +
+					"MODULES: json (json.decode(s), json.encode(v)), math (math.floor, math.sqrt and the like); a server named json or math takes that name. " +
 
 					"RETRY POLICY: Retry after fixing syntax or logic errors, especially for read-only flows. Before rerunning code that already made tool calls, inspect prior outputs and avoid replaying stateful operations.",
 			),
@@ -140,7 +141,7 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 		s.logger.Debug("%s Formatting error response. Error kind: %s, Message length: %d, Hints count: %d", codemcp.CodeModeLogPrefix, result.Errors.Kind, len(result.Errors.Message), len(result.Errors.Hints))
 		logsText := ""
 		if len(result.Logs) > 0 {
-			logsText = fmt.Sprintf("\n\nPrint Output:\n%s\n", strings.Join(result.Logs, "\n"))
+			logsText = fmt.Sprintf("\n\nPrint output:\n%s\n", strings.Join(result.Logs, "\n"))
 		}
 
 		responseText = fmt.Sprintf(
