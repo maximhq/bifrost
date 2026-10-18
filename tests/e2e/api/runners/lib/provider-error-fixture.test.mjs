@@ -27,11 +27,11 @@ async function startFixture(t) {
     });
     child.on("exit", (code) => reject(new Error(`the fixture exited (${code}) before it listened: ${output}`)));
   });
-  const post = async (body, path = "/v1/chat/completions") => {
+  const post = async (body, path = "/v1/chat/completions", headers = {}) => {
     try {
       return await fetch(`http://127.0.0.1:${port}${path}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...headers },
         body: JSON.stringify(body),
       });
     } catch (err) {
@@ -78,4 +78,23 @@ test("filtered Live create checks accounting events and unchanged command permis
   const complete = await create(required);
   assert.equal(complete.status, 201);
   assert.equal((await complete.json()).transport.sdp, "invalid SDP answer");
+});
+
+
+test("Gemini fixture requires the declared custom-profile capability override", async (t) => {
+  const post = await startFixture(t);
+  for (const [model, supported] of [["profile-schema-on", true], ["gemini-3.5-flash", false]]) {
+    const body = { generationConfig: { maxOutputTokens: 64, ...(supported ? { responseMimeType: "application/json", responseJsonSchema: { type: "object" } } : {}) },
+      tools: [{ functionDeclarations: [{ name: "lookup" }] }] };
+    for (const stream of [false, true]) {
+      const path = `/v1beta/models/${model}:${stream ? "streamGenerateContent" : "generateContent"}`;
+      const accepted = await post(body, path, { "x-goog-api-key": "test-key" });
+      assert.equal(accepted.status, 200);
+      assert.match(await accepted.text(), supported ? /schema present/ : /schema absent/);
+      const wrong = { ...body, generationConfig: { maxOutputTokens: 64, ...(!supported ? { responseMimeType: "application/json", responseJsonSchema: { type: "object" } } : {}) } };
+      const refused = await post(wrong, path, { "x-goog-api-key": "test-key" });
+      assert.equal(refused.status, 422);
+      assert.equal((await refused.json()).error.code, "capability_override_lost");
+    }
+  }
 });
