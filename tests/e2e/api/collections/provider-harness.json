@@ -196310,7 +196310,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Count in lowercase words: one, two, three, four\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128,\n    \"stopSequences\": [\n      \"three\"\n    ]\n  },\n  \"additionalModelResponseFieldPaths\": [\n    \"/stop_sequence\"\n  ]\n}"
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Repeat exactly, in lowercase: one, two, three, four\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128,\n    \"stopSequences\": [\n      \"three\"\n    ]\n  },\n  \"additionalModelResponseFieldPaths\": [\n    \"/stop_sequence\"\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
@@ -196331,11 +196331,61 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 600)).to.equal(200); });",
                   "var j = pm.response.json();",
                   "pm.test('stop sequence fired and was echoed through additionalModelResponseFields', function () {",
                   "  pm.expect(j.stopReason, pm.response.text().slice(0, 600)).to.equal('stop_sequence');",
                   "  pm.expect(j.additionalModelResponseFields, 'additionalModelResponseFields missing: ' + pm.response.text().slice(0, 600)).to.be.an('object');",
                   "  pm.expect(j.additionalModelResponseFields.stop_sequence).to.equal('three');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "153.6b bedrock converse-stream messageStop carries stop_sequence and additionalModelResponseFields (response field paths)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Repeat exactly, in lowercase: one, two, three, four\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128,\n    \"stopSequences\": [\n      \"three\"\n    ]\n  },\n  \"additionalModelResponseFieldPaths\": [\n    \"/stop_sequence\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse-stream"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('HTTP 200 AWS event stream', function () {",
+                  "  pm.expect(pm.response.code, body.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'content-type').to.include('vnd.amazon.eventstream');",
+                  "});",
+                  "pm.test('messageStop reports the native stop_sequence and echoes additionalModelResponseFields', function () {",
+                  "  var stop = body.slice(body.lastIndexOf('messageStop'));",
+                  "  pm.expect(body, 'no messageStop event: ' + body.slice(-600)).to.include('messageStop');",
+                  "  pm.expect(stop, 'messageStop payload: ' + stop.slice(0, 600)).to.match(/\"stopReason\"\\s*:\\s*\"stop_sequence\"/);",
+                  "  pm.expect(stop, 'messageStop payload: ' + stop.slice(0, 600)).to.match(/\"additionalModelResponseFields\"\\s*:\\s*\\{\\s*\"stop_sequence\"\\s*:\\s*\"three\"/);",
                   "});"
                 ]
               }
