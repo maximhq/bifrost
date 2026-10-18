@@ -3089,6 +3089,70 @@ func TestToolResultJSONParsingResponsesAPI(t *testing.T) {
 			expectedContentType: "text",
 			expectedText:        schemas.Ptr(`{"a":{"b":[1,2]},"":2}`),
 		},
+		// Converse rejects a repeated key within one object with the same "...json is
+		// invalid" error, and json.Compact accepts duplicates, so these must also fall
+		// back to a text block holding the original JSON string.
+		{
+			name:                "DuplicateKeyObjectFallsBackToText",
+			toolResultContent:   `{"a":1,"a":2}`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`{"a":1,"a":2}`),
+		},
+		{
+			name:                "NestedDuplicateKeyFallsBackToText",
+			toolResultContent:   `{"x":{"a":1,"a":2}}`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`{"x":{"a":1,"a":2}}`),
+		},
+		{
+			name:                "DuplicateKeyInsideArrayFallsBackToText",
+			toolResultContent:   `[{"a":1,"a":2}]`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`[{"a":1,"a":2}]`),
+		},
+		{
+			// Duplicate only after escape decoding: "\u0061" is "a".
+			name:                "EscapedDuplicateKeyFallsBackToText",
+			toolResultContent:   "{\"a\":1,\"\\u0061\":2}",
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr("{\"a\":1,\"\\u0061\":2}"),
+		},
+		{
+			// Duplicate key after a nested container: the detector must keep tracking
+			// sibling keys after descending.
+			name:                "DuplicateKeyAfterNestedContainerFallsBackToText",
+			toolResultContent:   `{"a":{"b":1},"c":[1],"a":2}`,
+			expectedContentType: "text",
+			expectedText:        schemas.Ptr(`{"a":{"b":1},"c":[1],"a":2}`),
+		},
+		{
+			// Keys are case-sensitive, so these are distinct.
+			name:                "CaseDifferentKeysStayJSON",
+			toolResultContent:   `{"A":1,"a":2}`,
+			expectedContentType: "json",
+			expectedJSON:        mustMarshalJSON(map[string]any{"A": float64(1), "a": float64(2)}),
+		},
+		{
+			// The same key in sibling objects is not a duplicate.
+			name:                "SameKeyInSiblingObjectsStaysJSON",
+			toolResultContent:   `[{"a":1},{"a":2}]`,
+			expectedContentType: "json",
+			expectedJSON:        mustMarshalJSON(map[string]any{"results": []any{map[string]any{"a": float64(1)}, map[string]any{"a": float64(2)}}}),
+		},
+		{
+			// A key reused inside a nested object is not a duplicate.
+			name:                "SameKeyInNestedObjectStaysJSON",
+			toolResultContent:   `{"a":{"a":1}}`,
+			expectedContentType: "json",
+			expectedJSON:        mustMarshalJSON(map[string]any{"a": map[string]any{"a": float64(1)}}),
+		},
+		{
+			// A string value equal to a key name is not a key.
+			name:                "ValueMatchingKeyStaysJSON",
+			toolResultContent:   `{"a":"a","b":"a"}`,
+			expectedContentType: "json",
+			expectedJSON:        mustMarshalJSON(map[string]any{"a": "a", "b": "a"}),
+		},
 	}
 
 	for _, tt := range tests {

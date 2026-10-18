@@ -86,3 +86,55 @@ func TestToolResultEmptyKeyChatSurface(t *testing.T) {
 		t.Fatalf("expected text fallback carrying the original payload, got %v", content[0].Text)
 	}
 }
+
+// TestToolResultDuplicateKeyChatSurface verifies that a string tool result whose
+// JSON repeats a key within one object converts to a text block on the
+// chat-completions surface. Converse rejects such a document in the json field
+// with the same "...toolResult.content.0.json is invalid" error as an empty key,
+// but json.Compact accepts duplicates, so the shared helper must catch them.
+func TestToolResultDuplicateKeyChatSurface(t *testing.T) {
+	payload := `{"result":{"id":1,"id":2}}`
+	msgs := []schemas.ChatMessage{
+		{
+			Role:            schemas.ChatMessageRoleTool,
+			ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_dupkey")},
+			Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr(payload)},
+		},
+	}
+
+	converted, err := convertToolMessages(context.Background(), "anthropic.claude-sonnet-4-5-20250929-v1:0", msgs)
+	if err != nil {
+		t.Fatalf("convert tool messages: %v", err)
+	}
+	if len(converted.Content) != 1 || converted.Content[0].ToolResult == nil {
+		t.Fatalf("expected a single toolResult block, got %#v", converted.Content)
+	}
+	content := converted.Content[0].ToolResult.Content
+	if len(content) != 1 {
+		t.Fatalf("expected 1 tool result content block, got %d", len(content))
+	}
+	if content[0].JSON != nil {
+		t.Fatalf("duplicate-key payload must not be sent as a json block, got %s", string(content[0].JSON))
+	}
+	if content[0].Text == nil || *content[0].Text != payload {
+		t.Fatalf("expected text fallback carrying the original payload, got %v", content[0].Text)
+	}
+}
+
+// BenchmarkTryParseJSONIntoContentBlock measures the per-tool-result cost of
+// classifying a string tool result, including the Converse-unsafe key scan.
+func BenchmarkTryParseJSONIntoContentBlock(b *testing.B) {
+	payloads := map[string]string{
+		"SmallObject":  `{"status":"ok","count":3,"path":"/repo/main.go"}`,
+		"NestedObject": `{"success":{"files":[{"name":"a.go","size":120,"mode":"0644"},{"name":"b.go","size":98,"mode":"0644"}],"fullSubtreeExtensionCounts":{".go":2,".md":1},"numFiles":3}}`,
+		"PlainText":    `command exited with code 0`,
+	}
+	for name, payload := range payloads {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = tryParseJSONIntoContentBlock(payload)
+			}
+		})
+	}
+}
