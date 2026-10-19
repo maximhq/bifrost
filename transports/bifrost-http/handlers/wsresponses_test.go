@@ -596,3 +596,36 @@ func TestResponsesWSHealsUnverifiableEncryptedReasoning(t *testing.T) {
 	assert.NotContains(t, last, "encrypted_content", "the retry must not replay the unverifiable ciphertext")
 	assert.Contains(t, last, "earlier thought", "the retry keeps the reasoning summary")
 }
+
+func TestEventLoopIgnoresResponseInterrupt(t *testing.T) {
+	SetLogger(bifrost.NewDefaultLogger(schemas.LogLevelError))
+	h := &WSResponsesHandler{sessions: bfws.NewSessionManager(10)}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up := newWSTestUpgrader()
+		c, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		session, err := h.sessions.Create(c)
+		if err != nil {
+			return
+		}
+		defer h.sessions.Remove(c)
+		h.eventLoop(c, session, &authHeaders{})
+	}))
+	defer srv.Close()
+
+	clientConn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(srv.URL, "http"), nil)
+	require.NoError(t, err)
+	defer clientConn.Close()
+
+	// Codex sends response.interrupt when the user types mid-stream; it is dropped without a reply.
+	require.NoError(t, clientConn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.interrupt","response_id":"resp_1","mode":"discard_partial_items"}`)))
+	require.NoError(t, clientConn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.unknown"}`)))
+
+	require.NoError(t, clientConn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, data, err := clientConn.ReadMessage()
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "unsupported event type: response.unknown", "the interrupt must not produce an error frame ahead of the next event's reply")
+}
