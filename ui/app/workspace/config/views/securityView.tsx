@@ -148,6 +148,9 @@ export default function SecurityView() {
 		const deleteExpiredVirtualKeysChanged = localConfig.delete_expired_virtual_keys !== config.delete_expired_virtual_keys;
 		const enforceVKObjectOwnershipChanged =
 			(localConfig.enforce_vk_object_ownership ?? true) !== (config.enforce_vk_object_ownership ?? true);
+		const skipAccessProfileUserVirtualKeysChanged =
+			IS_ENTERPRISE &&
+			(localConfig.skip_access_profile_user_virtual_keys ?? false) !== (config.skip_access_profile_user_virtual_keys ?? false);
 		const dualCredentialConflictBehaviorChanged =
 			(localConfig.dual_credential_conflict_behavior || "prefer_idp") !== (config.dual_credential_conflict_behavior || "prefer_idp");
 		const vkRotationCooldownChanged = formatCooldown(localConfig.vk_rotation_cooldown) !== formatCooldown(config.vk_rotation_cooldown);
@@ -162,6 +165,7 @@ export default function SecurityView() {
 			allowDirectKeysChanged ||
 			deleteExpiredVirtualKeysChanged ||
 			enforceVKObjectOwnershipChanged ||
+			skipAccessProfileUserVirtualKeysChanged ||
 			dualCredentialConflictBehaviorChanged ||
 			vkRotationCooldownChanged
 		);
@@ -664,6 +668,27 @@ export default function SecurityView() {
 						onCheckedChange={(checked) => handleConfigChange("enforce_vk_object_ownership", checked)}
 					/>
 				</div>
+				{/* Access Profiles Don't Manage User Virtual Keys */}
+				{IS_ENTERPRISE && (
+					<div className="flex items-center justify-between space-x-2 rounded-sm border p-4">
+						<div className="space-y-0.5">
+							<label htmlFor="skip-access-profile-user-virtual-keys" className="text-sm font-medium">
+								Don&apos;t Create User Virtual Keys for Access Profiles
+							</label>
+							<p className="text-muted-foreground text-sm">
+								When enabled, assigning an access profile to a user doesn&apos;t create a virtual key for them, and removing their last
+								access profile doesn&apos;t delete their virtual keys. Keys the user already owns are still governed by the profile while
+								they hold one. Deleting the user still deletes their keys.
+							</p>
+						</div>
+						<Switch
+							id="skip-access-profile-user-virtual-keys"
+							data-testid="security-skip-access-profile-user-virtual-keys-switch"
+							checked={localConfig.skip_access_profile_user_virtual_keys ?? false}
+							onCheckedChange={(checked) => handleConfigChange("skip_access_profile_user_virtual_keys", checked)}
+						/>
+					</div>
+				)}
 				{/* Allowed Origins */}
 				{needsRestart && <RestartWarning />}
 				<div>

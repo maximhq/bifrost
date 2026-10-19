@@ -130,6 +130,7 @@ type ClientConfig struct {
 	HideDeletedVirtualKeysInFilters       bool                                  `json:"hide_deleted_virtual_keys_in_filters"`        // Hide deleted virtual keys from logs/MCP filter data
 	DeleteExpiredVirtualKeys              bool                                  `json:"delete_expired_virtual_keys"`                 // Delete expired virtual keys by default; a key's delete_after_expire overrides this
 	EnforceVKObjectOwnership              bool                                  `json:"enforce_vk_object_ownership"`                 // Restrict provider objects (files, batches, containers, ...) to the virtual key that created them
+	SkipAccessProfileUserVirtualKeys      bool                                  `json:"skip_access_profile_user_virtual_keys"`       // Enterprise: assigning/removing an access profile neither creates nor deletes the user's virtual keys
 	HiddenRequestTypes                    []string                              `json:"hidden_request_types,omitempty"`              // Request types excluded from dashboard and log API reads; logs are still written
 	RoutingChainMaxDepth                  int                                   `json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
 	MCPExternalClientURL                  *schemas.SecretVar                    `json:"mcp_external_client_url,omitempty"`           // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers. Supports env var syntax ("env.MY_VAR")
@@ -256,6 +257,9 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 	if c.DeleteExpiredVirtualKeys {
 		hash.Write([]byte("deleteExpiredVirtualKeys:true"))
+	}
+	if c.SkipAccessProfileUserVirtualKeys {
+		hash.Write([]byte("skipAccessProfileUserVirtualKeys:true"))
 	}
 	// Default is true; only hash the opt-out to avoid config hash churn on upgrade.
 	if !c.EnforceVKObjectOwnership {

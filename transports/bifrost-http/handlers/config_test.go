@@ -534,6 +534,41 @@ func TestUpdateConfig_EnforceVKObjectOwnershipPresence(t *testing.T) {
 	}
 }
 
+// skip_access_profile_user_virtual_keys is copied only when sent, so a partial save from an API
+// client can't silently hand user key lifecycle back to access profiles.
+func TestUpdateConfig_SkipAccessProfileUserVirtualKeysPresence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.SkipAccessProfileUserVirtualKeys = true
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() bool {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.SkipAccessProfileUserVirtualKeys
+	}
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.True(t, cfg.ClientConfig.SkipAccessProfileUserVirtualKeys, "an omitted field keeps the live value")
+	assert.True(t, stored(), "an omitted field keeps the stored value")
+
+	disabled := putConfigCtx(`{"client_config":{"log_retention_days":8,"skip_access_profile_user_virtual_keys":false}}`)
+	h.updateConfig(disabled)
+	require.Equal(t, fasthttp.StatusOK, disabled.Response.StatusCode(), string(disabled.Response.Body()))
+	assert.False(t, cfg.ClientConfig.SkipAccessProfileUserVirtualKeys)
+	assert.False(t, stored())
+
+	enabled := putConfigCtx(`{"client_config":{"log_retention_days":8,"skip_access_profile_user_virtual_keys":true}}`)
+	h.updateConfig(enabled)
+	require.Equal(t, fasthttp.StatusOK, enabled.Response.StatusCode(), string(enabled.Response.Body()))
+	assert.True(t, cfg.ClientConfig.SkipAccessProfileUserVirtualKeys)
+	assert.True(t, stored())
+}
+
 // extra_fields_placement is copied only when sent, so a partial save keeps the stored value,
 // and anything other than body/headers is refused before any live mutation.
 func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {

@@ -883,6 +883,8 @@ export interface CoreConfig {
 	// Restrict provider objects (files, batches, containers, live sessions, ...) to the
 	// virtual key that created them.
 	enforce_vk_object_ownership: boolean;
+	// Enterprise: access profiles neither create nor delete a user's virtual keys.
+	skip_access_profile_user_virtual_keys?: boolean;
 	// Request types excluded from Logs and Dashboard reads. Logs are still stored.
 	hidden_request_types: string[];
 	routing_chain_max_depth: number;
@@ -945,6 +947,7 @@ export const DefaultCoreConfig: CoreConfig = {
 	hide_deleted_virtual_keys_in_filters: false,
 	delete_expired_virtual_keys: false,
 	enforce_vk_object_ownership: true,
+	skip_access_profile_user_virtual_keys: false,
 	hidden_request_types: [],
 	routing_chain_max_depth: 10,
 };

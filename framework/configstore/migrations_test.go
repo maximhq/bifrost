@@ -4555,6 +4555,28 @@ func TestMigrationAddClientConfigDeleteExpiredVirtualKeysColumn(t *testing.T) {
 	require.NoError(t, migrationAddClientConfigDeleteExpiredVirtualKeysColumn(ctx, db, testMigrationLogger))
 }
 
+func TestMigrationAddClientConfigSkipAccessProfileUserVirtualKeysColumn(t *testing.T) {
+	db := setupVKTestDBWithoutRotationColumns(t)
+	ctx := context.Background()
+	require.NoError(t, db.AutoMigrate(&tables.TableClientConfig{}))
+	require.NoError(t, db.Create(&tables.TableClientConfig{}).Error)
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "skip_access_profile_user_virtual_keys"))
+	mg := db.Migrator()
+	require.False(t, mg.HasColumn(&tables.TableClientConfig{}, "skip_access_profile_user_virtual_keys"))
+
+	require.NoError(t, migrationAddClientConfigSkipAccessProfileUserVirtualKeysColumn(ctx, db, testMigrationLogger))
+	assert.True(t, mg.HasColumn(&tables.TableClientConfig{}, "skip_access_profile_user_virtual_keys"))
+
+	// Existing rows read back as off: an upgrade keeps access profiles managing user keys.
+	var cfg tables.TableClientConfig
+	require.NoError(t, db.First(&cfg).Error)
+	assert.False(t, cfg.SkipAccessProfileUserVirtualKeys)
+
+	// Idempotent: a re-run with the column already present must not fail.
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "add_client_config_skip_access_profile_user_virtual_keys_column").Error)
+	require.NoError(t, migrationAddClientConfigSkipAccessProfileUserVirtualKeysColumn(ctx, db, testMigrationLogger))
+}
+
 func TestMigrationAddClientConfigEnforceVKObjectOwnershipColumn(t *testing.T) {
 	db := setupVKTestDBWithoutRotationColumns(t)
 	ctx := context.Background()

@@ -859,6 +859,10 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 	if _, present := clientConfigFields["enforce_vk_object_ownership"]; present {
 		updatedConfig.EnforceVKObjectOwnership = payload.ClientConfig.EnforceVKObjectOwnership
 	}
+	// Copied only when sent, so a partial save doesn't silently hand key lifecycle back to access profiles.
+	if _, present := clientConfigFields["skip_access_profile_user_virtual_keys"]; present {
+		updatedConfig.SkipAccessProfileUserVirtualKeys = payload.ClientConfig.SkipAccessProfileUserVirtualKeys
+	}
 
 	// Rotation grace period; bounds validated up front. Copied unconditionally
 	// so 0 clears a previously stored cooldown.

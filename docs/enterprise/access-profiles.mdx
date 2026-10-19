@@ -79,6 +79,8 @@ When a user receives a profile:
 
 When a user loses their last profile, their virtual keys are removed.
 
+To manage user keys yourself, turn on **Don't Create User Virtual Keys for Access Profiles** under **Settings > Security** (`client.skip_access_profile_user_virtual_keys` in `config.json`). A profile then never issues a key, and losing the last profile never removes one. Keys the user already owns, or that you add for them, are still governed and locked by their profiles while they hold one; once the last profile goes they become ordinary keys. Deleting the user still deletes their keys.
+
 ---
 
 ## Profiles on teams, business units, and customers
@@ -178,7 +180,7 @@ A key whose owner holds no profile (for example, a team key on a team that has n
 | **A user joins a team, business unit, or customer** | They are covered by its profile, and charged against it, from their next request. Their own keys and profiles are untouched. |
 | **A user leaves** | They stop being covered and charged immediately. |
 | **A user's role changes** | Profiles from the old role are removed and profiles from the new role are added. Manual and IdP-granted profiles stay. |
-| **A user loses their last profile** | Their virtual keys are removed. |
+| **A user loses their last profile** | Their virtual keys are removed, unless `skip_access_profile_user_virtual_keys` is on: then they are kept as ordinary keys. |
 | **A profile is detached from a team, business unit, or customer** | You choose: **Delete virtual keys** removes the entity's keys, or **Preserve virtual keys** keeps them stripped of the profile's access, so they only reach what a customer above still allows. Either way, the entity's profile budgets and their usage are removed, and its old legacy limits are not restored. |
 | **The team, business unit, or customer is deleted** | Its profile copy is deleted with it. Its keys are kept but no longer owned by it. |
 | **A profile is edited and propagated** | Every user and every entity holding it is updated. Usage is preserved unless you choose to reset it, and budget overrides are always kept. |

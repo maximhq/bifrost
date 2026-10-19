@@ -348,6 +348,11 @@
           "description": "Restrict provider objects (files, batches, videos, containers, container files, cached contents and live sessions) to the virtual key that created them. Another virtual key gets 404 for them and does not see them in list responses. Requests without a virtual key are not restricted. Creators are recorded even while this is off, so turning it back on also covers objects created meanwhile; an object whose creator could not be recorded stays reachable to every virtual key.",
           "default": true
         },
+        "skip_access_profile_user_virtual_keys": {
+          "type": "boolean",
+          "description": "Enterprise only. When true, assigning an access profile to a user never creates a virtual key for them, and removing their last access profile never deletes their virtual keys. Keys the user already owns are still governed by the profile while they hold one. Deleting the user still deletes their keys.",
+          "default": false
+        },
         "vk_rotation_cooldown": {
           "type": [
             "string",

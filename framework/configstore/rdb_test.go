@@ -2712,6 +2712,31 @@ func TestUpdateClientConfig_EnforceVKObjectOwnershipRoundTrip(t *testing.T) {
 	assert.NotEqual(t, onHash, offHash)
 }
 
+func TestUpdateClientConfig_SkipAccessProfileUserVirtualKeysRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+
+	off := ClientConfig{EnableLogging: new(true), InitialPoolSize: 100, LogRetentionDays: 30, MaxRequestBodySizeMB: 50, EnforceVKObjectOwnership: true}
+	require.NoError(t, store.UpdateClientConfig(ctx, &off))
+	result, err := store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.False(t, result.SkipAccessProfileUserVirtualKeys)
+
+	on := off
+	on.SkipAccessProfileUserVirtualKeys = true
+	require.NoError(t, store.UpdateClientConfig(ctx, &on))
+	result, err = store.GetClientConfig(ctx)
+	require.NoError(t, err)
+	assert.True(t, result.SkipAccessProfileUserVirtualKeys)
+
+	// Only the opt-in is hashed, so configs written before the field existed keep their hash.
+	offHash, err := off.GenerateClientConfigHash()
+	require.NoError(t, err)
+	onHash, err := on.GenerateClientConfigHash()
+	require.NoError(t, err)
+	assert.NotEqual(t, offHash, onHash)
+}
+
 func TestUpdateClientConfig_ExtraFieldsPlacementRoundTrip(t *testing.T) {
 	store := setupRDBTestStore(t)
 	ctx := context.Background()
