@@ -407,3 +407,34 @@ func TestHTTPExchangeObserverSkipsRoundTripperClients(t *testing.T) {
 		})
 	}
 }
+
+type exchangeTestTransport func(*http.Request) (*http.Response, error)
+
+func (f exchangeTestTransport) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+func TestHTTPExchangeObserverStopsAfterDone(t *testing.T) {
+	record := &recordedExchange{}
+	ctx := context.WithValue(t.Context(), schemas.BifrostContextKeyHTTPExchangeObserver, schemas.HTTPExchangeObserverFactory(func() schemas.HTTPExchangeObserver { return record }))
+	client := &http.Client{Transport: exchangeTestTransport(func(req *http.Request) (*http.Response, error) {
+		// net/http can return the response while its transport still reads an upload.
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("response")), Request: req}, nil
+	})}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://provider.invalid", io.NopCloser(strings.NewReader("upload")))
+	resp, err := DoHTTPRequest(client, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Completion must be final, even when a body permits reads after Close.
+	_, _ = io.ReadAll(req.Body)
+	_, _ = io.ReadAll(resp.Body)
+	_ = req.Body.Close()
+	_ = resp.Body.Close()
+	record.mu.Lock()
+	defer record.mu.Unlock()
+	if len(record.request) != 0 || len(record.response) != 0 || record.done != 1 {
+		t.Fatalf("callbacks after completion: %+v", record)
+	}
+}

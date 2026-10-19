@@ -13,7 +13,8 @@ type HTTPExchangeObserverFactory func() HTTPExchangeObserver
 // Bodies retain Content-Encoding; HTTP transfer framing has been removed. A nil
 // request body means an unobserved streaming upload; an empty slice means empty.
 // Response may be called repeatedly as a stream is read, including once with nil
-// data when its headers arrive. Done is called once; its error describes transport read/close failures.
+// data when its headers arrive. Callbacks for one attempt are serialized; Done
+// runs once after the final callback and describes transport read/close failures.
 type HTTPExchangeObserver interface {
 	Request(contentType, contentEncoding string, body []byte)
 	Response(status int, contentType, contentEncoding string, body []byte)
