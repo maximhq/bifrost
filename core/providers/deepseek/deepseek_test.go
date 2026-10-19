@@ -523,3 +523,241 @@ func TestResponses_DowngradesJSONSchemaTextFormat(t *testing.T) {
 	}
 	assertJSONSchemaDowngraded(t, captured)
 }
+
+// toolsRequestCapture is what a test server saw on a Search or Fetch call.
+type toolsRequestCapture struct {
+	path      string
+	body      []byte
+	auth      string
+	userAgent string
+}
+
+// newToolsServer answers the two tools endpoints and records what it received.
+func newToolsServer(t *testing.T, status int, body string, captured *toolsRequestCapture) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if captured != nil {
+			raw, _ := io.ReadAll(r.Body)
+			captured.path = r.URL.Path
+			captured.body = raw
+			captured.auth = r.Header.Get("Authorization")
+			captured.userAgent = r.Header.Get("User-Agent")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestDeepSeekImplementsToolsProvider(t *testing.T) {
+	t.Parallel()
+	provider, err := newTestDeepSeekProvider("http://localhost:1")
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+	var _ schemas.ToolsProvider = provider
+}
+
+func TestSearch_SendsDocumentedContractAndReportsPerRequestCost(t *testing.T) {
+	t.Parallel()
+
+	captured := &toolsRequestCapture{}
+	server := newToolsServer(t, http.StatusOK, `{"results":[{"title":"Bifrost","url":"https://example.com/a","snippet":"short","summary":"longer","site_name":"Example","authority":3,"rerank_score":1.5,"date":"2026-10-18T00:00:00Z"}]}`, captured)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	count := 5
+	needContent := false
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Search(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostSearchRequest{
+		Provider:    schemas.DeepSeek,
+		Query:       "bifrost gateway",
+		Count:       &count,
+		NeedContent: &needContent,
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Search: %v", bifrostErr.Error.Message)
+	}
+
+	if captured.path != "/v1/tools/search" {
+		t.Fatalf("path = %q, want /v1/tools/search", captured.path)
+	}
+	if captured.auth != "Bearer test-api-key" {
+		t.Fatalf("Authorization = %q, want a bearer token", captured.auth)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(captured.body, &sent); err != nil {
+		t.Fatalf("request body is not JSON: %v", err)
+	}
+	if sent["query"] != "bifrost gateway" {
+		t.Fatalf("query = %v, want the caller's query", sent["query"])
+	}
+	if sent["count"] != float64(5) {
+		t.Fatalf("count = %v, want 5", sent["count"])
+	}
+	if sent["need_content"] != false {
+		t.Fatalf("need_content = %v, want false", sent["need_content"])
+	}
+	// The upstream contract carries no model; a routing model must never leak onto the wire.
+	if _, present := sent["model"]; present {
+		t.Fatalf("model must not be sent to the tools API, got %v", sent["model"])
+	}
+
+	if len(resp.Results) != 1 {
+		t.Fatalf("results = %d, want 1", len(resp.Results))
+	}
+	result := resp.Results[0]
+	if result.Title != "Bifrost" || result.URL != "https://example.com/a" {
+		t.Fatalf("result = %+v, want the upstream title and url", result)
+	}
+	if result.Authority == nil || *result.Authority != 3 {
+		t.Fatalf("authority = %v, want 3", result.Authority)
+	}
+	if result.Date == nil || *result.Date != "2026-10-18T00:00:00Z" {
+		t.Fatalf("date = %v, want the upstream RFC 3339 string", result.Date)
+	}
+	if resp.Usage == nil || resp.Usage.Cost == nil {
+		t.Fatal("Usage.Cost must be reported so the gateway can price a model-less call")
+	}
+	if got := resp.Usage.Cost.TotalCost; got != 0.00075 {
+		t.Fatalf("TotalCost = %v, want 0.00075", got)
+	}
+	if resp.ExtraFields.RequestType != schemas.SearchRequest {
+		t.Fatalf("RequestType = %q, want search", resp.ExtraFields.RequestType)
+	}
+}
+
+func TestSearch_EmptyResultsIsASuccessfulAnswer(t *testing.T) {
+	t.Parallel()
+
+	server := newToolsServer(t, http.StatusOK, `{"results":[]}`, nil)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Search(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostSearchRequest{
+		Provider: schemas.DeepSeek,
+		Query:    "nothing matches this",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("a no-match search is not an error: %v", bifrostErr.Error.Message)
+	}
+	if resp.Results == nil {
+		t.Fatal("results must marshal as [] rather than null")
+	}
+	if len(resp.Results) != 0 {
+		t.Fatalf("results = %d, want 0", len(resp.Results))
+	}
+}
+
+// 402 means "top up", not "retry" and not "bad key". Flattening it would hide the fix.
+func TestSearch_PreservesUpstreamStatusCodes(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		status int
+	}{
+		{name: "insufficient balance", status: http.StatusPaymentRequired},
+		{name: "bad key", status: http.StatusUnauthorized},
+		{name: "qps exceeded", status: http.StatusTooManyRequests},
+		{name: "upstream failure", status: http.StatusInternalServerError},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			server := newToolsServer(t, tc.status, `{"error":{"message":"upstream said no","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`, nil)
+			provider, err := newTestDeepSeekProvider(server.URL)
+			if err != nil {
+				t.Fatalf("NewDeepSeekProvider: %v", err)
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			_, bifrostErr := provider.Search(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostSearchRequest{
+				Provider: schemas.DeepSeek,
+				Query:    "q",
+			})
+			if bifrostErr == nil {
+				t.Fatal("expected an error")
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tc.status {
+				t.Fatalf("StatusCode = %v, want %d", bifrostErr.StatusCode, tc.status)
+			}
+		})
+	}
+}
+
+func TestFetch_ReturnsMarkdownAndReportsPerRequestCost(t *testing.T) {
+	t.Parallel()
+
+	captured := &toolsRequestCapture{}
+	server := newToolsServer(t, http.StatusOK, `{"title":"Example","content":"# Heading\n\nBody text."}`, captured)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Fetch(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostFetchRequest{
+		Provider: schemas.DeepSeek,
+		URL:      "https://example.com/page",
+	})
+	if bifrostErr != nil {
+		t.Fatalf("Fetch: %v", bifrostErr.Error.Message)
+	}
+
+	if captured.path != "/v1/tools/fetch" {
+		t.Fatalf("path = %q, want /v1/tools/fetch", captured.path)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal(captured.body, &sent); err != nil {
+		t.Fatalf("request body is not JSON: %v", err)
+	}
+	if sent["url"] != "https://example.com/page" {
+		t.Fatalf("url = %v, want the caller's url", sent["url"])
+	}
+	if _, present := sent["model"]; present {
+		t.Fatalf("model must not be sent to the tools API, got %v", sent["model"])
+	}
+
+	if resp.Title != "Example" {
+		t.Fatalf("title = %q, want Example", resp.Title)
+	}
+	if resp.Content != "# Heading\n\nBody text." {
+		t.Fatalf("content = %q, want the upstream Markdown unchanged", resp.Content)
+	}
+	if resp.Usage == nil || resp.Usage.Cost == nil || resp.Usage.Cost.TotalCost != 0.00075 {
+		t.Fatalf("Usage.Cost = %+v, want a flat 0.00075", resp.Usage)
+	}
+	if resp.ExtraFields.RequestType != schemas.FetchRequest {
+		t.Fatalf("RequestType = %q, want fetch", resp.ExtraFields.RequestType)
+	}
+}
+
+func TestFetch_PreservesSecurityPolicyRejection(t *testing.T) {
+	t.Parallel()
+
+	server := newToolsServer(t, http.StatusForbidden, `{"error":{"message":"rejected by security policy","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`, nil)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	_, bifrostErr := provider.Fetch(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostFetchRequest{
+		Provider: schemas.DeepSeek,
+		URL:      "https://example.com/blocked",
+	})
+	if bifrostErr == nil {
+		t.Fatal("expected an error")
+	}
+	if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusForbidden {
+		t.Fatalf("StatusCode = %v, want 403", bifrostErr.StatusCode)
+	}
+}
