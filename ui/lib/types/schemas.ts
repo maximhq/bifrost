@@ -1095,6 +1095,8 @@ export const allowedRequestsSchema = z.object({
 	ocr: z.boolean().optional(),
 	ocr_stream: z.boolean().optional(),
 	rerank: z.boolean(),
+	search: z.boolean(),
+	fetch: z.boolean(),
 	decisions: z.boolean().optional(),
 	video_generation: z.boolean(),
 	video_edit: z.boolean(),

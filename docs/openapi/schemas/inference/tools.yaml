@@ -1,0 +1,135 @@
+# DeepSeek web tools schemas (Search and Fetch)
+#
+# Neither operation takes a model upstream. "model" is accepted only as a gateway routing
+# handle so a virtual key's allowlist has something to gate on.
+
+SearchRequest:
+  type: object
+  required:
+    - query
+  properties:
+    model:
+      type: string
+      description: |
+        Optional routing handle in provider/model format. Search carries no model upstream;
+        omit this and the gateway routes to DeepSeek.
+      example: deepseek/deepseek-chat
+    query:
+      type: string
+      minLength: 1
+      maxLength: 128
+      description: |
+        Search query. Passes DeepSeek's operators through unchanged: site:, -site:, -term,
+        "exact phrase", lang:, after: and before:.
+      example: 'lang:en after:2026-01-01 go generics'
+    count:
+      type: integer
+      minimum: 1
+      maximum: 50
+      default: 10
+      description: Number of results to return. Does not affect price.
+    ori_question:
+      type: string
+      minLength: 1
+      maxLength: 128
+      description: The user's original question, used to improve query understanding.
+    localization:
+      type: string
+      description: An IP address used to localize results.
+    need_content:
+      type: boolean
+      default: false
+      description: When true, each result carries page text in content. Increases response size.
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback providers and models in provider/model format.
+
+SearchResult:
+  type: object
+  properties:
+    title:
+      type: string
+    url:
+      type: string
+    snippet:
+      type: string
+      description: Display-length excerpt.
+    summary:
+      type: string
+      description: A 600-800 character summary shaped for a model.
+    content:
+      type: string
+      description: Page text, present only when need_content was true.
+    site_name:
+      type: string
+    site_icon:
+      type: string
+    date:
+      type: string
+      nullable: true
+      description: RFC 3339 publication date, or null when unknown.
+    authority:
+      type: integer
+      description: 0-4 source authority, -1 when unknown. 3 or above is authoritative.
+    rerank_score:
+      type: number
+      description: 0-3 relevance score. 1.5 or above is considered high quality.
+
+SearchResponse:
+  type: object
+  properties:
+    results:
+      type: array
+      description: An empty array is a normal no-match answer, not an error.
+      items:
+        $ref: '#/SearchResult'
+    usage:
+      type: object
+      description: Carries the flat per-request cost of this call.
+      properties:
+        cost:
+          type: object
+          properties:
+            total_cost:
+              type: number
+              example: 0.00075
+    extra_fields:
+      type: object
+      description: Bifrost metadata (latency, provider, request type, headers).
+
+FetchRequest:
+  type: object
+  required:
+    - url
+  properties:
+    model:
+      type: string
+      description: Optional routing handle; fetch carries no model upstream.
+    url:
+      type: string
+      maxLength: 8192
+      description: Absolute HTTP(S) URL with a host and no embedded credentials.
+      example: https://example.com/page
+    fallbacks:
+      type: array
+      items:
+        type: string
+      description: Fallback providers and models in provider/model format.
+
+FetchResponse:
+  type: object
+  properties:
+    title:
+      type: string
+      description: Empty when the upstream could not determine one.
+    content:
+      type: string
+      description: The page as Markdown.
+    usage:
+      type: object
+      description: Carries the flat per-request cost of this call.
+    extra_fields:
+      type: object
+      description: Bifrost metadata (latency, provider, request type, headers).

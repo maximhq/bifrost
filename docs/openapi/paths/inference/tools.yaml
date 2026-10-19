@@ -1,0 +1,85 @@
+tools-search:
+  post:
+    operationId: searchWeb
+    summary: Search the web
+    description: |
+      Runs a web search through DeepSeek's Search API and returns ranked pages.
+
+      This is a web call, not an inference call: it carries no model upstream and is billed
+      at a flat rate per successful request rather than per token. Omit `model` and the
+      gateway routes to DeepSeek; a `model` is accepted only as a routing handle for
+      virtual-key allowlists.
+    tags:
+    - Web Tools
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/tools.yaml#/SearchRequest'
+    responses:
+      '200':
+        description: Successful response. An empty results array means no match.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/tools.yaml#/SearchResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        description: Invalid DeepSeek API key.
+      '402':
+        description: Insufficient DeepSeek account balance. Top up rather than retry.
+      '429':
+        description: The 5 QPS per-account search limit was exceeded.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
+
+tools-fetch:
+  post:
+    operationId: fetchPage
+    summary: Fetch a page as Markdown
+    description: |
+      Retrieves a single page through DeepSeek's Fetch API and returns its content as
+      Markdown. Billed at a flat rate per successful request.
+
+      The page is read by DeepSeek's servers, not by Bifrost, so the gateway's
+      private-network safeguards do not apply. A URL rejected by DeepSeek's security policy
+      surfaces as a 403.
+    tags:
+    - Web Tools
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/inference/tools.yaml#/FetchRequest'
+    responses:
+      '200':
+        description: Successful response.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/tools.yaml#/FetchResponse'
+      '400':
+        $ref: '../../openapi.yaml#/components/responses/BadRequest'
+      '401':
+        description: Invalid DeepSeek API key.
+      '402':
+        description: Insufficient DeepSeek account balance. Top up rather than retry.
+      '403':
+        description: The page was rejected by DeepSeek's fetch security policy.
+      '404':
+        description: The page carried no usable content.
+      '429':
+        description: The 5 QPS per-account fetch limit was exceeded.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+    security:
+    - BearerAuth: []
+    - VirtualKeyAuth: []
+    - ApiKeyAuth: []
