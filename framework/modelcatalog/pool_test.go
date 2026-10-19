@@ -82,21 +82,25 @@ func TestGetModelsForProvider_ElevenlabsScribe(t *testing.T) {
 	}
 }
 
-func TestGetDatasheetModelsForProviderExcludesLiveAndAliases(t *testing.T) {
+// Key-config updates invalidate the composed catalog without changing upstream
+// discovery. A stale wildcard memo must not authorize a newly restricted key.
+func TestElevenlabsScribeCatalogReconcilesKeyChanges(t *testing.T) {
 	mc := elevenlabsScribeCatalog(t)
-	mc.SetKeyConfigForProvider(schemas.Elevenlabs, []schemas.Key{{ID: "key-1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"dictation": {ModelID: "scribe_v2"}}}})
-	mc.UpsertLive(schemas.Elevenlabs, "key-1", true, []string{"dictation", "live-only-model"})
-	want := []string{"eleven_turbo_v2_5", "scribe_v1", "scribe_v1_experimental", "scribe_v2"}
-	got := mc.GetDatasheetModelsForProvider(schemas.Elevenlabs)
-	slices.Sort(got)
-	if !slices.Equal(got, want) {
-		t.Fatalf("datasheet inventory = %v, want %v", got, want)
-	}
-	got[0] = "caller-mutation"
-	got = mc.GetDatasheetModelsForProvider(schemas.Elevenlabs)
-	slices.Sort(got)
-	if !slices.Equal(got, want) {
-		t.Fatalf("caller mutation changed inventory: %v", got)
+	mc.UpsertLive(schemas.Elevenlabs, "key-1", false, []string{"eleven_turbo_v2_5"})
+	for _, tc := range []struct {
+		allowed schemas.WhiteList
+		blocked schemas.BlackList
+		want    bool
+	}{
+		{schemas.WhiteList{"*"}, nil, true},
+		{schemas.WhiteList{"eleven_turbo_v2_5"}, nil, false},
+		{schemas.WhiteList{"*"}, nil, true},
+		{schemas.WhiteList{"*"}, schemas.BlackList{"scribe_v2"}, false},
+	} {
+		mc.SetKeyConfigForProvider(schemas.Elevenlabs, []schemas.Key{{ID: "key-1", Models: tc.allowed, BlacklistedModels: tc.blocked}})
+		if got := mc.IsModelAllowedForProvider(schemas.Elevenlabs, "scribe_v2", nil, schemas.WhiteList{"*"}); got != tc.want {
+			t.Fatalf("authorization after key update = %t, want %t", got, tc.want)
+		}
 	}
 }
 

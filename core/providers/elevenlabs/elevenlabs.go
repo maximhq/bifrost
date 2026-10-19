@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -113,29 +112,6 @@ func (provider *ElevenlabsProvider) listModelsByKey(ctx *schemas.BifrostContext,
 		return nil, bifrostErr
 	}
 
-	// ElevenLabs' live listing omits Scribe. Reconcile registered catalog models
-	// before the same per-key allow/block/alias pipeline used for upstream models.
-	// Only use pricing-backed inventory: live entries may include another key's
-	// aliases. The optional capability keeps core independent of framework.
-	if catalog, ok := ctx.Value(schemas.BifrostContextKeyModelCatalog).(interface {
-		GetDatasheetModelsForProvider(schemas.ModelProvider) []string
-	}); ok {
-		for _, modelID := range catalog.GetDatasheetModelsForProvider(provider.GetProviderKey()) {
-			// A configured alias wins over a native-looking name in request routing.
-			if key.Aliases.ResolveConfig(modelID) != nil {
-				continue
-			}
-			if slices.ContainsFunc(elevenlabsResponse, func(model ElevenlabsModel) bool {
-				return strings.EqualFold(model.ModelID, modelID)
-			}) {
-				continue
-			}
-			elevenlabsResponse = append(elevenlabsResponse, ElevenlabsModel{
-				ModelID: modelID,
-				Name:    providerUtils.ToDisplayName(modelID),
-			})
-		}
-	}
 	response := elevenlabsResponse.ToBifrostListModelsResponse(provider.GetProviderKey(), key.Models, key.BlacklistedModels, key.Aliases, request.Unfiltered)
 
 	response.ExtraFields.Latency = latency.Milliseconds()

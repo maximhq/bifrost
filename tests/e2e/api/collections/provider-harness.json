@@ -276457,7 +276457,7 @@
     },
     {
       "name": "261. ElevenLabs Scribe wildcard permissions (#8467) [SERIAL]",
-      "description": "ElevenLabs Scribe models must survive partial TTS/STS discovery and wildcard virtual-key authorization (#8467). Requires an ElevenLabs provider configured with a valid STT-capable credential and models=[\"*\"]. A run-scoped virtual key is created with allowed_models=[\"*\"], key_ids=[\"*\"], and allow_all_providers=true, then deleted. Covers native model discovery, native transcription, OpenAI-compatible transcription, and a 403 model_blocked denial for an unknown model. No provider settings or existing keys are modified. Run with PROVIDER=elevenlabs FEATURE=\"scribe wildcard\". The transcription rows make paid provider calls only when the operator explicitly runs the live harness.",
+      "description": "ElevenLabs Scribe models must survive partial TTS/STS discovery and wildcard virtual-key authorization (#8467). Requires an ElevenLabs provider configured with a valid STT-capable credential and models=[\"*\"]. A run-scoped virtual key is created with allowed_models=[\"*\"], key_ids=[\"*\"], and allow_all_providers=true, then deleted. Covers management-catalog discovery separately from upstream provider listing, native transcription, OpenAI-compatible transcription, and a 403 model_blocked denial for an unknown model. No provider settings or existing keys are modified. Run with PROVIDER=elevenlabs FEATURE=\"scribe wildcard\". The transcription rows make paid provider calls only when the operator explicitly runs the live harness.",
       "item": [
         {
           "name": "elevenlabs scribe_v2 scribe wildcard setup: create virtual key - #8467",
@@ -276504,7 +276504,7 @@
           }
         },
         {
-          "name": "elevenlabs scribe_v2 scribe wildcard discovery on /v1/models - #8467",
+          "name": "elevenlabs scribe_v2 scribe wildcard catalog discovery on /api/models - #8467",
           "event": [
             {
               "listen": "test",
@@ -276512,7 +276512,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('scribe wildcard: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
-                  "pm.test('scribe wildcard: discovery includes Scribe v2', function () { var j = pm.response.json(); pm.expect(j.data, pm.response.text()).to.be.an('array'); var ids = j.data.map(function (m) { return m.id; }); pm.expect(ids, pm.response.text()).to.include('elevenlabs/scribe_v2'); });"
+                  "pm.test('scribe wildcard: management catalog includes Scribe v2', function () { var j = pm.response.json(); pm.expect(j.models, pm.response.text()).to.be.an('array'); var ids = j.models.map(function (m) { return m.provider + '/' + m.name; }); pm.expect(ids, pm.response.text()).to.include('elevenlabs/scribe_v2'); });"
                 ]
               }
             }
@@ -276525,7 +276525,7 @@
                 "value": "{{scribeWildcardVkValue}}"
               }
             ],
-            "url": "{{baseUrl}}/v1/models?provider=elevenlabs"
+            "url": "{{baseUrl}}/api/models?provider=elevenlabs&limit=100"
           }
         },
         {
