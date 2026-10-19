@@ -857,6 +857,7 @@ append_dynamic_mcp_clients_insert() {
     append_v200_fixtures "$db_type" "$faker_sql" "$now" "$future"
     append_v210_fixtures "$db_type" "$faker_sql" "$now"
     append_v220_fixtures "$db_type" "$faker_sql"
+    append_v230_fixtures "$db_type" "$faker_sql" "$now"
   else
     now="datetime('now')"
     future="datetime('now', '+1 hour')"
@@ -882,6 +883,7 @@ append_dynamic_mcp_clients_insert() {
     append_v200_fixtures "$db_type" "$faker_sql" "$now" "$future" "$config_db" "$logs_db"
     append_v210_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
     append_v220_fixtures "$db_type" "$faker_sql" "$config_db" "$logs_db"
+    append_v230_fixtures "$db_type" "$faker_sql" "$now" "$config_db" "$logs_db"
   fi
 }
 
@@ -894,15 +896,17 @@ v200_column_exists() {
     column_exists_postgres "$table" "$column"
   else
     local db="$fixture_config_db"
-    case "$table" in logs|mcp_tool_logs|user_agent_mappings) db="$fixture_logs_db" ;; esac
+    case "$table" in logs|mcp_tool_logs|user_agent_mappings|agent_logs|warp_conversations|warp_messages) db="$fixture_logs_db" ;; esac
     column_exists_sqlite "$db" "$table" "$column"
   fi
 }
 
 # Read column|SQL-value pairs from stdin, retaining only columns in this schema.
+# The optional second argument names the column that gates the insert, for tables
+# keyed by something other than id (composite or natural primary keys).
 v200_insert() {
-  local table="$1" column value cols="" vals=""
-  if ! v200_column_exists "$table" "id"; then
+  local table="$1" gate_column="${2:-id}" column value cols="" vals=""
+  if ! v200_column_exists "$table" "$gate_column"; then
     return
   fi
   while IFS='|' read -r column value; do
@@ -1173,6 +1177,256 @@ mcp_tool_logs|business_unit_names|'["Migration Test BU"]'|id = 'mcp-log-migratio
 mcp_tool_logs|budget_ids|'["budget-migration-test-1"]'|id = 'mcp-log-migration-001'
 mcp_tool_logs|rate_limit_ids|'["ratelimit-migration-test-1"]'|id = 'mcp-log-migration-001'
 V220_COLUMNS
+}
+
+# v2.3.0 introduced these columns plus the Agent Gateway, provider object
+# ownership and Warp tables. Same probing scheme as append_v200_fixtures so the
+# fixture set still runs against older releases; reuses the v200_* helpers,
+# which read these locals dynamically.
+# - config_keys columns stay NULL (config sync rewrites config_keys on startup)
+# - governance_model_pricing columns stay NULL (datasheet-sync-managed)
+# - business_unit_id stays NULL: both test VKs already belong to a team or a
+#   customer, and a VK may belong to only one of team, customer or business unit
+# - the agent registration is disabled so startup never dials its agent card URL,
+#   and the push delivery is terminal so the outbox relay never claims it
+# - warp_config.id pins the singleton row id the store upserts
+append_v230_fixtures() {
+  local fixture_db_type="$1" fixture_output="$2" now="$3"
+  local fixture_config_db="${4:-}" fixture_logs_db="${5:-}"
+  local table column value predicate
+  while IFS='|' read -r table column value predicate; do
+    if v200_column_exists "$table" "$column"; then
+      echo "UPDATE $table SET $column = $value WHERE $predicate;" >> "$fixture_output"
+    fi
+  done <<'V230_COLUMNS'
+config_client|mcp_max_instructions_per_client|0|id = 1
+config_client|mcp_max_instructions_total|0|id = 1
+config_client|delete_expired_virtual_keys|false|id = 1
+config_client|enforce_vk_object_ownership|true|id = 1
+config_client|a2a_store_raw_request_response|false|id = 1
+config_client|a2_a_external_client_url|NULL|id = 1
+config_client|compat_force_reasoning_only_models_to_responses|false|id = 1
+config_client|compat_convert_decision_to_responses|false|id = 1
+config_client|mcp_code_mode_limits_json|NULL|id = 1
+config_client|mcp_oauth_private_allowlist_json|NULL|id = 1
+config_keys|vertex_aws_workload_identity_json|NULL|name = 'migration-test-key-anthropic'
+config_keys|oauth_token_url|NULL|name = 'migration-test-key-anthropic'
+config_keys|oauth_client_id|NULL|name = 'migration-test-key-anthropic'
+config_keys|oauth_client_secret|NULL|name = 'migration-test-key-anthropic'
+config_keys|oauth_private_key|NULL|name = 'migration-test-key-anthropic'
+config_keys|oauth_settings_json|NULL|name = 'migration-test-key-anthropic'
+config_mcp_clients|require_public_target|false|client_id = 'mcp-migration-test-001'
+config_mcp_clients|max_instructions_length|0|client_id = 'mcp-migration-test-001'
+config_mcp_clients|discovered_instructions|'Use tool1 for lookups and tool2 for writes.'|client_id = 'mcp-migration-test-001'
+config_providers|injected_tools_json|NULL|name = 'anthropic'
+config_providers|ignore_provider_cost|false|name = 'anthropic'
+governance_model_pricing|input_cost_per_token_decisions|NULL|id = 1
+governance_model_pricing|output_cost_per_token_decisions|NULL|id = 1
+governance_model_pricing|input_cost_per_token_above_100k_tokens|NULL|id = 1
+governance_model_pricing|output_cost_per_token_above_100k_tokens|NULL|id = 1
+governance_model_pricing|cache_creation_input_token_cost_above_100k_tokens|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_above_100k_tokens|NULL|id = 1
+governance_model_pricing|cache_creation_input_token_cost_above_1hr_above_100k_tokens|NULL|id = 1
+governance_model_pricing|web_search_cost_per_request|NULL|id = 1
+governance_virtual_keys|delete_after_expire|false|id = 'vk-migration-test-1'
+governance_virtual_keys|business_unit_id|NULL|id = 'vk-migration-test-1'
+governance_virtual_keys|disable_content_logging|true|id = 'vk-migration-test-1'
+logs|agent_correlation_id|'agent-corr-migration-001'|id = 'log-migration-test-001'
+logs|embedding_input|''|id = 'log-migration-test-001'
+logs|live_session|''|id = 'log-migration-test-001'
+mcp_tool_logs|session_id|'migration-session'|id = 'mcp-log-migration-001'
+mcp_tool_logs|agent_correlation_id|'agent-corr-migration-001'|id = 'mcp-log-migration-001'
+routing_targets|ttft_timeout_ms|5000|rule_id = 'rule-migration-test-1'
+V230_COLUMNS
+
+  # Agent Gateway: the registration first, then the rows that reference it
+  # (push configs, push deliveries and VK grants all cascade from it).
+  v200_insert config_agent_registrations name <<V230_ROW
+name|'migration-test-agent'
+agent_card_url|'https://agent.example.com/.well-known/agent-card.json'
+tenant|'migration-tenant'
+enabled|false
+allow_by_default|false
+forward_accepted_credential|false
+forward_accepted_credential_overrides_auth|false
+discovery_auth|'{"type":"none"}'
+extension_uris|'["https://a2a.example.com/extensions/migration-test"]'
+runtime_auth|'{"type":"headers","headers":{"X-Agent-Key":"migration-agent-key"}}'
+encryption_status|'plain_text'
+config_hash|NULL
+created_at|$now
+updated_at|$now
+V230_ROW
+
+  v200_insert config_agent_push_configs config_id <<V230_ROW
+agent_name|'migration-test-agent'
+task_id|'task-migration-001'
+config_id|'push-config-migration-001'
+url|'https://client.example.com/a2a/push'
+tenant|'migration-tenant'
+token|'migration-push-token'
+auth_scheme|'Bearer'
+auth_credentials|'migration-push-credentials'
+ingress_token_hash|'aa11c3c9f893104feafdbe13ccb62017195ad3f8ee27d983d1b2f7318054c616'
+encryption_status|'plain_text'
+created_at|$now
+updated_at|$now
+V230_ROW
+
+  v200_insert config_agent_push_deliveries <<V230_ROW
+id|'e5f9fe90f95ce1eacd85b39c5eefcf410100d18e228d9ac7d8bdf905b0a951fe'
+agent_name|'migration-test-agent'
+task_id|'task-migration-001'
+config_id|'push-config-migration-001'
+payload|'{"id":"task-migration-001","status":{"state":"completed"}}'
+status|'delivered'
+attempts|1
+next_attempt_at|$now
+last_error|''
+claimed_by|NULL
+claimed_until|NULL
+created_at|$now
+updated_at|$now
+V230_ROW
+
+  v200_insert governance_virtual_key_agent_grants agent_name <<V230_ROW
+virtual_key_id|'vk-migration-test-1'
+agent_name|'migration-test-agent'
+created_at|$now
+V230_ROW
+
+  v200_insert agent_logs <<V230_ROW
+id|'agent-log-migration-001'
+timestamp|$now
+created_at|$now
+record_kind|'request'
+operation|'message/send'
+status|'success'
+agent_name|'migration-test-agent'
+user_id|NULL
+user_name|NULL
+virtual_key_id|'vk-migration-test-1'
+virtual_key_name|'Migration Test Virtual Key 1'
+team_id|'team-migration-test-1'
+team_name|'Migration Test Team'
+customer_id|NULL
+customer_name|NULL
+business_unit_id|NULL
+business_unit_name|NULL
+project_id|'project-migration-001'
+project_name|'Migration Project'
+team_ids|'["team-migration-test-1"]'
+team_names|'["Migration Test Team"]'
+customer_ids|'[]'
+customer_names|'[]'
+business_unit_ids|'[]'
+business_unit_names|'[]'
+budget_ids|'[]'
+rate_limit_ids|'["ratelimit-migration-test-1"]'
+request_id|'agent-req-migration-001'
+trace_id|'trace-migration-001'
+task_id|'task-migration-001'
+context_id|'context-migration-001'
+message_id|'msg-migration-001'
+request_message_id|'msg-migration-001'
+response_message_id|'msg-migration-002'
+artifact_id|NULL
+push_config_id|'push-config-migration-001'
+delivery_id|NULL
+attempt_id|NULL
+event_sequence|1
+event_type|NULL
+task_state|'completed'
+downstream_transport|'jsonrpc'
+upstream_transport|'jsonrpc'
+latency|120.5
+upstream_latency|110
+overhead_latency|10.5
+overhead_breakdown|'[]'
+content_type|'application/json'
+raw_request|NULL
+raw_response|NULL
+request_body|'{"jsonrpc":"2.0","method":"message/send","id":"1"}'
+response_body|'{"jsonrpc":"2.0","id":"1","result":{"kind":"task"}}'
+event_body|NULL
+error_details|NULL
+plugin_logs|'[]'
+payload_reference|NULL
+has_object|false
+content_hidden|false
+V230_ROW
+
+  v200_insert provider_objects <<V230_ROW
+id|'file:openai:file-migration-001'
+kind|'file'
+provider|'openai'
+object_id|'file-migration-001'
+virtual_key_id|'vk-migration-test-1'
+created_at|$now
+V230_ROW
+
+  v200_insert warp_config <<V230_ROW
+id|1
+enabled|false
+provider|'openai'
+model|'gpt-4'
+api_key_id|'migration-test-key-openai'
+additional_models|NULL
+max_iterations|8
+request_timeout_seconds|120
+history_retention_days|30
+system_prompt_suffix|'Answer from the migration test logs only.'
+temperature|0.2
+reasoning_effort|'low'
+embedding_provider|''
+embedding_model|''
+embedding_api_key_id|''
+embedding_dimension|0
+log_vector_store_namespace|''
+semantic_search_threshold|0
+semantic_search_limit|0
+retired_log_vector_store_namespaces|NULL
+created_at|$now
+updated_at|$now
+V230_ROW
+
+  v200_insert warp_conversations <<V230_ROW
+id|'5f0c2a7e-1d3b-4c8a-9e21-6b7f4a0d9c11'
+owner_id|'migration-owner'
+title|'Migration test conversation'
+created_at|$now
+updated_at|$now
+V230_ROW
+
+  v200_insert warp_messages <<V230_ROW
+id|'8a4e6c1f-2b7d-4f30-a5c9-3d1e0b7f6a21'
+conversation_id|'5f0c2a7e-1d3b-4c8a-9e21-6b7f4a0d9c11'
+created_at|$now
+position|0
+role|'user'
+content|'Which provider failed most yesterday?'
+tool_calls_json|NULL
+question_json|NULL
+error|NULL
+finish_reason|NULL
+total_tokens|0
+cost|0
+V230_ROW
+
+  v200_insert warp_messages <<V230_ROW
+id|'c2d9f0b3-7e15-4a6c-8b42-9f0e1d3a5b77'
+conversation_id|'5f0c2a7e-1d3b-4c8a-9e21-6b7f4a0d9c11'
+created_at|$now
+position|1
+role|'assistant'
+content|'No provider failed in the migration test window.'
+tool_calls_json|'[]'
+question_json|NULL
+error|NULL
+finish_reason|'stop'
+total_tokens|42
+cost|0.00042
+V230_ROW
 }
 
 # Append dynamic column UPDATEs for columns that may not exist in older schemas (PostgreSQL)
@@ -5824,6 +6078,11 @@ compare_postgres_snapshots() {
     # OAuth authorization server, so the .well-known / WWW-Authenticate advertise URL is dead)
     if [ "$table" = "config_client" ]; then
       dropped_columns="$dropped_columns enable_litellm_fallbacks allow_direct_keys mcp_external_server_url"
+    fi
+    # tenant, extension_uris (dropped from config_agent_registrations by
+    # migrationDropAgentRegistrationOptions - unused tenant and manual extension configuration)
+    if [ "$table" = "config_agent_registrations" ]; then
+      dropped_columns="$dropped_columns tenant extension_uris"
     fi
 
     local before_col_array

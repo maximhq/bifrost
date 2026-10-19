@@ -215,6 +215,7 @@ const FilterSchema = `{
     "error_types": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's error classification on failed requests, e.g. invalid_request_error, overloaded_error - the ids a query_usage_by error_type ranking returns. This is how to fetch the rows behind one row of that ranking."},
     "error_codes": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1, "maxItems": 50, "description": "The provider's finer-grained error code, e.g. context_length_exceeded. Many providers leave it empty - prefer error_types or status_codes unless an error_code ranking shows values. overloaded_error and rate_limit_error are error types - put them in error_types, never here."},
     "status_codes": {"type": "array", "items": {"type": "integer", "minimum": 100, "maximum": 599}, "minItems": 1, "maxItems": 50, "description": "HTTP status the failure came back with, e.g. 400, 429, 529. Populated on every failed request."},
+    "guardrail_outcomes": {"type": "array", "items": {"type": "string", "enum": ["blocked", "detected"]}, "minItems": 1, "description": "Requests a guardrail acted on: blocked (a guardrail stopped the request) or detected (a detect-only rule matched). Several values are OR-ed together."},
     "content_search": {"type": "string", "minLength": 1, "maxLength": 500, "description": "Substring match against request and response content. Omit the field rather than sending an empty string."},
     "scope": {"type": "string", "enum": ["all"], "description": "Set to \"all\" when the question is explicitly about everyone's traffic. Without it, an identified caller with no team, customer, business unit, project, user or virtual key named is scoped to their own traffic. It widens the question, not the permission: results are still limited to what the caller may see."}
   }
@@ -253,7 +254,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		"project_ids": true, "apps": true, "min_latency": true, "max_latency": true,
 		"min_tokens": true, "max_tokens": true, "min_cost": true, "max_cost": true,
 		"cache_hit_types": true, "content_search": true, "scope": true,
-		"error_types": true, "error_codes": true, "status_codes": true,
+		"error_types": true, "error_codes": true, "status_codes": true, "guardrail_outcomes": true,
 		"routing_rule_ids": true, "routing_engine_used": true, "selected_key_ids": true, "aliases": true,
 		"complexity_tiers": true, "complexity_mechanisms": true, "tool_call_names": true, "user_agents": true,
 		"metadata_filters": true, "session_id": true, "request_id": true, "parent_request_id": true,
@@ -317,7 +318,7 @@ func parseFilters(raw map[string]any, now time.Time) (*logstore.SearchFilters, e
 		"customer_ids": &filters.CustomerIDs, "user_ids": &filters.UserIDs,
 		"business_unit_ids": &filters.BusinessUnitIDs, "project_ids": &filters.ProjectIDs,
 		"apps": &filters.Apps, "cache_hit_types": &filters.CacheHitTypes,
-		"error_types": &filters.ErrorTypes, "error_codes": &filters.ErrorCodes,
+		"error_types": &filters.ErrorTypes, "error_codes": &filters.ErrorCodes, "guardrail_outcomes": &filters.GuardrailOutcomes,
 		"routing_rule_ids": &filters.RoutingRuleIDs, "routing_engine_used": &filters.RoutingEngineUsed,
 		"selected_key_ids": &filters.SelectedKeyIDs, "aliases": &filters.Aliases,
 		"complexity_tiers": &filters.ComplexityTiers, "complexity_mechanisms": &filters.ComplexityMechanisms,
