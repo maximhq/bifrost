@@ -489,6 +489,10 @@ func normalizeRequestType(reqType schemas.RequestType) string {
 		return "embedding"
 	case schemas.RerankRequest:
 		return "rerank"
+	case schemas.SearchRequest:
+		return "search"
+	case schemas.FetchRequest:
+		return "fetch"
 	case schemas.DecisionRequest:
 		return "decisions"
 	case schemas.SpeechRequest, schemas.SpeechStreamRequest:
