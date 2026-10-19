@@ -134,6 +134,13 @@ func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []stri
 	return out
 }
 
+// GetDatasheetModelsForProvider returns pricing-backed model IDs only, without
+// live entries or key aliases. Providers with partial discovery use this inventory
+// to supplement their responses before applying per-key model restrictions.
+func (mc *ModelCatalog) GetDatasheetModelsForProvider(provider schemas.ModelProvider) []string {
+	return mc.datasheet.DatasheetModelsForProvider(provider)
+}
+
 // GetUnfilteredModelsForProvider returns the raw catalog view (no gate
 // applied): union of live unfiltered entries and the datasheet view.
 func (mc *ModelCatalog) GetUnfilteredModelsForProvider(provider schemas.ModelProvider) []string {

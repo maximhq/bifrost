@@ -82,6 +82,24 @@ func TestGetModelsForProvider_ElevenlabsScribe(t *testing.T) {
 	}
 }
 
+func TestGetDatasheetModelsForProviderExcludesLiveAndAliases(t *testing.T) {
+	mc := elevenlabsScribeCatalog(t)
+	mc.SetKeyConfigForProvider(schemas.Elevenlabs, []schemas.Key{{ID: "key-1", Models: schemas.WhiteList{"*"}, Aliases: schemas.KeyAliases{"dictation": {ModelID: "scribe_v2"}}}})
+	mc.UpsertLive(schemas.Elevenlabs, "key-1", true, []string{"dictation", "live-only-model"})
+	want := []string{"eleven_turbo_v2_5", "scribe_v1", "scribe_v1_experimental", "scribe_v2"}
+	got := mc.GetDatasheetModelsForProvider(schemas.Elevenlabs)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("datasheet inventory = %v, want %v", got, want)
+	}
+	got[0] = "caller-mutation"
+	got = mc.GetDatasheetModelsForProvider(schemas.Elevenlabs)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("caller mutation changed inventory: %v", got)
+	}
+}
+
 func BenchmarkElevenlabsScribeWildcardAuthorization(b *testing.B) {
 	mc := elevenlabsScribeCatalog(b)
 	mc.SetKeyConfigForProvider(schemas.Elevenlabs, []schemas.Key{{ID: "key-1", Models: schemas.WhiteList{"*"}}})

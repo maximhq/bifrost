@@ -276454,6 +276454,220 @@
           }
         }
       ]
+    },
+    {
+      "name": "261. ElevenLabs Scribe wildcard permissions (#8467) [SERIAL]",
+      "description": "ElevenLabs Scribe models must survive partial TTS/STS discovery and wildcard virtual-key authorization (#8467). Requires an ElevenLabs provider configured with a valid STT-capable credential and models=[\"*\"]. A run-scoped virtual key is created with allowed_models=[\"*\"], key_ids=[\"*\"], and allow_all_providers=true, then deleted. Covers native model discovery, native transcription, OpenAI-compatible transcription, and a 403 model_blocked denial for an unknown model. No provider settings or existing keys are modified. Run with PROVIDER=elevenlabs FEATURE=\"scribe wildcard\". The transcription rows make paid provider calls only when the operator explicitly runs the live harness.",
+      "item": [
+        {
+          "name": "elevenlabs scribe_v2 scribe wildcard setup: create virtual key - #8467",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.unset('scribeWildcardVkId');",
+                  "pm.collectionVariables.unset('scribeWildcardVkValue');",
+                  "pm.collectionVariables.set('scribeWildcardRun', String(Date.now()) + '-' + pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scribe wildcard: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "var vk = {}; try { vk = pm.response.json().virtual_key || {}; } catch (e) {}",
+                  "var value = typeof vk.value === 'string' ? vk.value : ((vk.value || {}).value || '');",
+                  "pm.test('scribe wildcard: virtual key created', function () { pm.expect(vk.id, pm.response.text()).to.be.a('string').and.not.equal(''); pm.expect(value, pm.response.text()).to.be.a('string').and.not.equal(''); });",
+                  "if (vk.id) { pm.collectionVariables.set('scribeWildcardVkId', vk.id); }",
+                  "if (value) { pm.collectionVariables.set('scribeWildcardVkValue', value); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"name\":\"harness-elevenlabs-scribe-{{scribeWildcardRun}}\",\"is_active\":true,\"allow_all_providers\":true,\"provider_configs\":[{\"provider\":\"elevenlabs\",\"allowed_models\":[\"*\"],\"key_ids\":[\"*\"],\"weight\":1}]}"
+            },
+            "url": "{{baseUrl}}/api/governance/virtual-keys"
+          }
+        },
+        {
+          "name": "elevenlabs scribe_v2 scribe wildcard discovery on /v1/models - #8467",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scribe wildcard: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('scribe wildcard: discovery includes Scribe v2', function () { var j = pm.response.json(); pm.expect(j.data, pm.response.text()).to.be.an('array'); var ids = j.data.map(function (m) { return m.id; }); pm.expect(ids, pm.response.text()).to.include('elevenlabs/scribe_v2'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{scribeWildcardVkValue}}"
+              }
+            ],
+            "url": "{{baseUrl}}/v1/models?provider=elevenlabs"
+          }
+        },
+        {
+          "name": "elevenlabs scribe_v2 scribe wildcard transcription on /v1/audio/transcriptions - #8467",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scribe wildcard: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('scribe wildcard: transcription succeeded rather than model_blocked', function () { var j = pm.response.json(); pm.expect(j.error, pm.response.text()).to.equal(undefined); pm.expect(j.text, pm.response.text()).to.be.a('string').and.not.equal(''); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{scribeWildcardVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "elevenlabs/scribe_v2",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/v1/audio/transcriptions"
+          }
+        },
+        {
+          "name": "elevenlabs scribe_v2 scribe wildcard transcription on /openai/v1/audio/transcriptions - #8467",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scribe wildcard: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "pm.test('scribe wildcard: transcription succeeded rather than model_blocked', function () { var j = pm.response.json(); pm.expect(j.error, pm.response.text()).to.equal(undefined); pm.expect(j.text, pm.response.text()).to.be.a('string').and.not.equal(''); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{scribeWildcardVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "elevenlabs/scribe_v2",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/openai/v1/audio/transcriptions"
+          }
+        },
+        {
+          "name": "[EXPECT-403] elevenlabs scribe wildcard unknown model denial - #8467",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scribe wildcard: expected HTTP 403', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(403); });",
+                  "pm.test('scribe wildcard: unknown model is rejected by governance', function () { var j = pm.response.json(); pm.expect(j.type, pm.response.text()).to.eql('model_blocked'); pm.expect(j.error.message, pm.response.text()).to.include('not allowed'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "x-bf-vk",
+                "value": "{{scribeWildcardVkValue}}"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "model",
+                  "value": "elevenlabs/bifrost-nonexistent-scribe-8467",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "src": "tests/e2e/api/fixtures/sample.mp3",
+                  "type": "file"
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/v1/audio/transcriptions"
+          }
+        },
+        {
+          "name": "elevenlabs scribe_v2 scribe wildcard cleanup: delete virtual key - #8467",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('scribe wildcard: expected HTTP 200', function () { pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200); });",
+                  "if (pm.response.code === 200) { pm.collectionVariables.unset('scribeWildcardVkId'); pm.collectionVariables.unset('scribeWildcardVkValue'); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "url": "{{baseUrl}}/api/governance/virtual-keys/{{scribeWildcardVkId}}"
+          }
+        }
+      ]
     }
   ]
 }
