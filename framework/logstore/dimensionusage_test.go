@@ -335,6 +335,16 @@ func TestMCPToolCountsByDimensionMatchesTopTools(t *testing.T) {
 		assert.Equal(t, 2, got["bu-a"], "processing and out-of-window calls are not counted")
 		assert.NotContains(t, got, "bu-c", "units outside the filter are not read")
 
+		// Without an id filter the read groups every owner, so the ceiling must hide
+		// the owners the caller may not be shown.
+		unfiltered := MCPToolLogSearchFilters{StartTime: &start, EndTime: &end}
+		all, err := s.store.GetMCPToolCountsByDimension(ctx, unfiltered, RankingDimensionBusinessUnit)
+		require.NoError(t, err)
+		assert.Contains(t, all, "bu-c", "no ceiling, every owner is counted")
+		bounded, err := s.store.GetMCPToolCountsByDimension(withCeiling(ctx, "business_unit_id", "bu-a"), unfiltered, RankingDimensionBusinessUnit)
+		require.NoError(t, err)
+		assert.Equal(t, map[string]int{"bu-a": 2}, bounded, "owners outside the ceiling are not named")
+
 		_, err = s.store.GetMCPToolCountsByDimension(ctx, filters, RankingDimensionVirtualKey)
 		assert.Error(t, err, "MCP tool logs carry no virtual key dimension reader")
 	})
