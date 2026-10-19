@@ -322,6 +322,39 @@ func TestCustomProviderConfig_OperationGating(t *testing.T) {
 	}
 }
 
+// TestGetProviderKey_CustomProvider verifies a provider constructed for a custom
+// provider reports and forwards the custom key rather than the base Tencent name.
+func TestGetProviderKey_CustomProvider(t *testing.T) {
+	t.Parallel()
+
+	provider, err := tencent.NewTencentProvider(&schemas.ProviderConfig{
+		NetworkConfig: schemas.NetworkConfig{
+			BaseURL:                        "http://127.0.0.1:1",
+			DefaultRequestTimeoutInSeconds: 5,
+		},
+		CustomProviderConfig: &schemas.CustomProviderConfig{
+			CustomProviderKey: "my-tencent",
+		},
+	}, testLogger{})
+	if err != nil {
+		t.Fatalf("NewTencentProvider: %v", err)
+	}
+
+	if got := provider.GetProviderKey(); got != schemas.ModelProvider("my-tencent") {
+		t.Fatalf("GetProviderKey() = %q, want %q", got, "my-tencent")
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	key := schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}
+	_, bifrostErr := provider.TextCompletion(ctx, key, &schemas.BifrostTextCompletionRequest{})
+	if bifrostErr == nil {
+		t.Fatal("TextCompletion: got nil error, want unsupported-operation error")
+	}
+	if got := bifrostErr.ExtraFields.Provider; got != schemas.ModelProvider("my-tencent") {
+		t.Fatalf("unsupported-operation error provider = %q, want %q", got, "my-tencent")
+	}
+}
+
 // TestNetworkConfigMapsAreCopied verifies NewTencentProvider takes provider-owned
 // copies of NetworkConfig.ExtraHeaders so post-construction mutations of the
 // caller's ProviderConfig cannot alias into in-flight Tencent requests.

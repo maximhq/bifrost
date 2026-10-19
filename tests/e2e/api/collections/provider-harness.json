@@ -276670,6 +276670,9 @@
                       "  var ct = pm.response.headers.get('content-type') || '';",
                       "  pm.expect(ct, 'expected SSE, got ' + ct).to.include('event-stream');",
                       "  pm.expect(t, 'no SSE chunks').to.include('data:');",
+                      "  pm.expect(t, 'stream did not complete: ' + t).to.include('response.completed');",
+                      "  pm.expect(t, 'stream failed: ' + t).to.not.include('response.failed');",
+                      "  pm.expect(t, 'stream incomplete: ' + t).to.not.include('response.incomplete');",
                       "});"
                     ]
                   }

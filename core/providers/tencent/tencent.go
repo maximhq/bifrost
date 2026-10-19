@@ -110,9 +110,10 @@ func (provider *TencentProvider) anthropicHeaders(key schemas.Key) map[string]st
 	return headers
 }
 
-// GetProviderKey returns the provider identifier for Tencent TokenHub.
+// GetProviderKey returns the provider identifier for Tencent TokenHub, or the
+// custom provider key when this instance backs a custom provider.
 func (provider *TencentProvider) GetProviderKey() schemas.ModelProvider {
-	return schemas.Tencent
+	return providerUtils.GetProviderName(schemas.Tencent, provider.customProviderConfig)
 }
 
 // ListModels performs a list models request to Tencent TokenHub's API.
@@ -152,7 +153,7 @@ func (provider *TencentProvider) ChatCompletion(ctx *schemas.BifrostContext, key
 			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, messagesPath),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
-				Provider:                  schemas.Tencent,
+				Provider:                  provider.GetProviderKey(),
 				ShouldSendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 				ShouldSendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			},
@@ -191,7 +192,7 @@ func (provider *TencentProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	}
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		jsonData, bifrostErr := anthropic.BuildAnthropicChatRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
-			Provider:                  schemas.Tencent,
+			Provider:                  provider.GetProviderKey(),
 			IsStreaming:               true,
 			ShouldSendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			ShouldSendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -211,7 +212,7 @@ func (provider *TencentProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 			provider.networkConfig.BetaHeaderOverrides,
 			providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-			schemas.Tencent,
+			provider.GetProviderKey(),
 			postHookRunner,
 			nil,
 			nil,
@@ -231,7 +232,7 @@ func (provider *TencentProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 		provider.networkConfig.StreamIdleTimeoutInSeconds,
 		providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 		providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
-		schemas.Tencent,
+		provider.GetProviderKey(),
 		postHookRunner,
 		nil,
 		nil,
@@ -258,7 +259,7 @@ func (provider *TencentProvider) Responses(ctx *schemas.BifrostContext, key sche
 			provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, messagesPath),
 			request,
 			anthropic.AnthropicRequestBuildConfig{
-				Provider:                  schemas.Tencent,
+				Provider:                  provider.GetProviderKey(),
 				ShouldSendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 				ShouldSendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 			},
@@ -288,7 +289,7 @@ func (provider *TencentProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 	}
 	if anthropic.ResolveUseAnthropicEndpoints(ctx, key) {
 		jsonData, bifrostErr := anthropic.BuildAnthropicResponsesRequestBody(ctx, request, anthropic.AnthropicRequestBuildConfig{
-			Provider:                  schemas.Tencent,
+			Provider:                  provider.GetProviderKey(),
 			IsStreaming:               true,
 			ShouldSendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			ShouldSendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
@@ -339,7 +340,7 @@ func (provider *TencentProvider) CountTokens(ctx *schemas.BifrostContext, key sc
 		provider.networkConfig.BaseURL+providerUtils.GetPathFromContext(ctx, messagesCountTokensPath),
 		request,
 		anthropic.AnthropicRequestBuildConfig{
-			Provider:                  schemas.Tencent,
+			Provider:                  provider.GetProviderKey(),
 			ShouldSendBackRawRequest:  providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest),
 			ShouldSendBackRawResponse: providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse),
 		},
