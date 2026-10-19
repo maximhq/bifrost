@@ -1202,7 +1202,7 @@
       "max_batch_size": 100,
       "batch_interval": "1s",
       "max_batch_bytes": 10485760,
-      "write_queue_capacity": 1000,
+      "write_queue_capacity": 10000,
       "deferred_usage_concurrency": 10
     }
   },
