@@ -20,6 +20,7 @@ var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 	schemas.Perplexity: true,
 	schemas.Vertex:     true,
 	schemas.Runware:    true,
+	schemas.Elevenlabs: true, // /v1/models omits Scribe transcription models.
 }
 
 // providersWithListModelsOnly enumerates providers whose unfiltered model list

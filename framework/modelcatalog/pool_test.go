@@ -6,11 +6,98 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog/datasheet"
 	"github.com/maximhq/bifrost/framework/modelcatalog/keyconfig"
 	"github.com/maximhq/bifrost/framework/modelcatalog/live"
 )
+
+func elevenlabsScribeCatalog(tb testing.TB) *ModelCatalog {
+	tb.Helper()
+	path := filepath.Join(tb.TempDir(), "pricing.json")
+	pricing := []byte(`{
+		"elevenlabs/scribe_v1": {"provider":"elevenlabs","mode":"audio_transcription","base_model":"scribe_v1"},
+		"elevenlabs/scribe_v1_experimental": {"provider":"elevenlabs","mode":"audio_transcription","base_model":"scribe_v1_experimental"},
+		"elevenlabs/scribe_v2": {"provider":"elevenlabs","mode":"audio_transcription","base_model":"scribe_v2"},
+		"elevenlabs/eleven_turbo_v2_5": {"provider":"elevenlabs","mode":"audio_speech","base_model":"eleven_turbo_v2_5"},
+		"openai/gpt-4o-mini": {"provider":"openai","mode":"chat","base_model":"gpt-4o-mini"}
+	}`)
+	if err := os.WriteFile(path, pricing, 0o600); err != nil {
+		tb.Fatal(err)
+	}
+	ds := datasheet.New(nil, nil, datasheet.Config{URL: "file://" + path})
+	if err := ds.LoadFromURLIntoMemory(tb.Context()); err != nil {
+		tb.Fatal(err)
+	}
+	return NewTestCatalogWithDatasheet(ds)
+}
+
+// A successful TTS-only live listing must not remove callable Scribe models
+// from the effective catalog that wildcard virtual-key authorization uses.
+func TestGetModelsForProvider_ElevenlabsScribe(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		allowed schemas.WhiteList
+		blocked schemas.BlackList
+		want    []string
+	}{
+		{"wildcard", schemas.WhiteList{"*"}, nil, []string{"eleven_turbo_v2_5", "scribe_v1", "scribe_v1_experimental", "scribe_v2"}},
+		{"explicit scribe", schemas.WhiteList{"scribe_v2"}, nil, []string{"scribe_v2"}},
+		{"tts only", schemas.WhiteList{"eleven_turbo_v2_5"}, nil, []string{"eleven_turbo_v2_5"}},
+		{"empty denies all", schemas.WhiteList{}, nil, []string{}},
+		{"blacklist wins", schemas.WhiteList{"*"}, schemas.BlackList{"scribe_v2"}, []string{"eleven_turbo_v2_5", "scribe_v1", "scribe_v1_experimental"}},
+		{"regex allow", schemas.WhiteList{"regex:^scribe_.*$"}, nil, []string{"scribe_v1", "scribe_v1_experimental", "scribe_v2"}},
+		{"regex block", schemas.WhiteList{"*"}, schemas.BlackList{"regex:^scribe_.*$"}, []string{"eleven_turbo_v2_5"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := elevenlabsScribeCatalog(t)
+			key := schemas.Key{ID: "key-1", Models: tc.allowed, BlacklistedModels: tc.blocked}
+			mc.SetKeyConfigForProvider(schemas.Elevenlabs, []schemas.Key{key})
+			upstream := elevenlabs.ElevenlabsListModelsResponse{{ModelID: "eleven_turbo_v2_5", Name: "Turbo"}}
+			mc.UpsertLiveFromResponse(schemas.Elevenlabs, key.ID, true,
+				upstream.ToBifrostListModelsResponse(schemas.Elevenlabs, key.Models, key.BlacklistedModels, nil, true))
+			mc.UpsertLiveFromResponse(schemas.Elevenlabs, key.ID, false,
+				upstream.ToBifrostListModelsResponse(schemas.Elevenlabs, key.Models, key.BlacklistedModels, nil, false))
+			got := mc.GetModelsForProvider(schemas.Elevenlabs)
+			slices.Sort(got)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("effective catalog = %v, want %v", got, tc.want)
+			}
+			for _, model := range []string{"eleven_turbo_v2_5", "scribe_v1", "scribe_v1_experimental", "scribe_v2", "nonexistent-scribe", "gpt-4o-mini"} {
+				want := slices.Contains(tc.want, model)
+				if allowed := mc.IsModelAllowedForProvider(schemas.Elevenlabs, model, nil, schemas.WhiteList{"*"}); allowed != want {
+					t.Errorf("wildcard authorization for %s = %t, want %t", model, allowed, want)
+				}
+			}
+			// The management view is unfiltered, not an authorization grant.
+			if !slices.Contains(mc.GetUnfilteredModelsForProvider(schemas.Elevenlabs), "scribe_v2") {
+				t.Error("Scribe missing from unfiltered management catalog")
+			}
+			mc.UpsertLive(schemas.OpenAI, "openai-key", false, []string{"gpt-4o-mini"})
+			if mc.IsModelAllowedForProvider(schemas.OpenAI, "scribe_v2", nil, schemas.WhiteList{"*"}) {
+				t.Error("ElevenLabs Scribe must not be granted on OpenAI")
+			}
+		})
+	}
+}
+
+func BenchmarkElevenlabsScribeWildcardAuthorization(b *testing.B) {
+	mc := elevenlabsScribeCatalog(b)
+	mc.SetKeyConfigForProvider(schemas.Elevenlabs, []schemas.Key{{ID: "key-1", Models: schemas.WhiteList{"*"}}})
+	mc.UpsertLive(schemas.Elevenlabs, "key-1", false, []string{"eleven_turbo_v2_5"})
+	allowed := schemas.WhiteList{"*"}
+	for _, model := range []string{"scribe_v2", "eleven_turbo_v2_5"} {
+		b.Run(model, func(b *testing.B) {
+			_ = mc.IsModelAllowedForProvider(schemas.Elevenlabs, model, nil, allowed)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				_ = mc.IsModelAllowedForProvider(schemas.Elevenlabs, model, nil, allowed)
+			}
+		})
+	}
+}
 
 // TestUpsertLiveFromResponse_NilRespIsNoop guards the API surface: handing a
 // nil response into UpsertLiveFromResponse must not clear an existing cache
