@@ -48,6 +48,7 @@
 - **Gemini Prompt Blocks** - A prompt Gemini or Vertex refuses outright (`promptFeedback.blockReason`) returns an error instead of a completed response with empty output (#8564)
 - **Reasoning Token Usage** - Gemini and Vertex batch results include thinking tokens in `completion_tokens` and report `reasoning_tokens`, and SGLang's top-level `usage.reasoning_tokens` maps to `completion_tokens_details` (#8600, #8687) (thanks [@Shashank2985](https://github.com/Shashank2985)!)
 - **Bedrock Converse Round-Trip** - Converse responses keep `stopReason` and `additionalModelResponseFields` verbatim (#8704)
+- **Prompt Cache Mode on Bedrock Converse** - `prompt_cache_options` in `additionalModelRequestFields` on `/bedrock` Converse and ConverseStream now reaches OpenAI, Azure and Bedrock Mantle gpt-5.6 models. Send `{"mode": "explicit"}` with a `cachePoint` after the system prompt to cache only the system prompt, or without a `cachePoint` to turn caching off (#8554)
 - **Azure Deployments Route** - Unknown chat fields are forwarded on the `/openai/deployments/...` route instead of being dropped (#8703)
 - **Decisions** - Custom OpenAI-base providers are gated on `/v1/decisions` by their allowed requests alone, so models outside OpenAI's own list are no longer rejected with `unsupported_operation`, and answer objects a model JSON-encodes as strings are recovered (#8617, #8626, #8705)
 - **Zero-Key Custom Providers in Routing** - A custom provider with no keys no longer claims every model during provider inference, and `no_key_supports_model` no longer stops the fallback chain (#8706)
@@ -97,6 +98,7 @@
 - [#8500](https://github.com/maximhq/bifrost/issues/8500) - [Bug]: Keyless provider with residual disabled keys never discovers models - key CRUD blocked, deadlock
 - [#8541](https://github.com/maximhq/bifrost/issues/8541) - [Bug]: Bedrock: top-level cache_control is silently dropped, automatic caching never creates a cache point
 - [#8548](https://github.com/maximhq/bifrost/issues/8548) - [Bug]: MCP Library "Installed" badge only checks the first 100 clients and only matches by URL or name
+- [#8554](https://github.com/maximhq/bifrost/issues/8554) - [Bug]: Bedrock Converse cache points no longer limit gpt-5.6 caching to the system prompt in v2.3.0, and prompt_cache_options cannot be sent on this route
 - [#8568](https://github.com/maximhq/bifrost/issues/8568) - [Bug]: Empty tool message breaks requests to Responses API models
 - [#8590](https://github.com/maximhq/bifrost/issues/8590) - [Bug]: goroutine count climbs ~1,200/hour on v2.3.0 until OOM, even at low traffic
 - [#8616](https://github.com/maximhq/bifrost/issues/8616) - [Bug]: Responses API configuration_update input items drop the reasoning field

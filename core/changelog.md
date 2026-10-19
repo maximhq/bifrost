@@ -10,6 +10,7 @@
 - fix: Anthropic tool_reference blocks in a client tool_result survive for custom tool search (thanks [@CMWR421](https://github.com/CMWR421)!) (#7813)
 - fix: Claude server tool search blocks replay unchanged (#8555)
 - fix: Bedrock creates a cache point for Anthropic automatic caching and emits a standalone cachePoint after toolResult (#8573, #8595)
+- fix: Bedrock Converse prompt_cache_options in additionalModelRequestFields reaches Params.PromptCacheOptions, so gpt-5.6 targets run in the caller's cache mode (#8554)
 - fix: OpenRouter clamps cache_control markers to four for Claude models (#8512)
 - fix: parallel_tool_calls false reaches Claude on every path (#8471)
 - fix: Responses instructions are merged ahead of system and developer messages instead of dropped (#8515)
