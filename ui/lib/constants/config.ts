@@ -144,7 +144,8 @@ export const MCP_STATUS_COLORS: Record<string, string> = {
 	// pending_verification, deliberately distinct from needs_reauth's red
 	// ("action required").
 	unstable: "bg-yellow-100 text-yellow-800 border-yellow-200 dark:border-yellow-800/40 dark:bg-yellow-950/40 dark:text-yellow-300",
-	pending_verification: "bg-yellow-100 text-yellow-800 border-yellow-200 dark:border-yellow-800/40 dark:bg-yellow-950/40 dark:text-yellow-300",
+	pending_verification:
+		"bg-yellow-100 text-yellow-800 border-yellow-200 dark:border-yellow-800/40 dark:bg-yellow-950/40 dark:text-yellow-300",
 	disabled: "bg-orange-100 text-orange-800 border-orange-200 dark:border-orange-800/40 dark:bg-orange-950/40 dark:text-orange-300",
 	// Same red as `error`: the client's credential has died and it can't be
 	// used until a human reauthorizes it, mirroring the "destructive" treatment

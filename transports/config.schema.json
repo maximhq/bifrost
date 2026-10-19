@@ -584,36 +584,7 @@
           "description": "OAuth2 authorization server settings for /mcp. Only relevant when mcp_server_auth_mode is 'both' or 'oauth'."
         }
       },
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "mcp_server_auth_mode": {
-                "enum": [
-                  "both",
-                  "oauth"
-                ]
-              }
-            },
-            "required": [
-              "mcp_server_auth_mode"
-            ]
-          },
-          "then": {
-            "required": [
-              "oauth2_server_config"
-            ],
-            "properties": {
-              "oauth2_server_config": {
-                "required": [
-                  "issuer_url"
-                ]
-              }
-            }
-          }
-        }
-      ]
+      "additionalProperties": false
     },
     "framework": {
       "type": "object",
