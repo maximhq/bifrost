@@ -597,7 +597,7 @@ func (h *LoggingHandler) getLogSessionByID(ctx *fasthttp.RequestCtx) {
 
 	for i, log := range result.Logs {
 		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
-			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName, log.Object)
+			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, &log)
 		}
 		if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 			result.Logs[i].VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
@@ -862,7 +862,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	// Add selected key, virtual key, and routing rule to the result
 	for i, log := range result.Logs {
 		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
-			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName, log.Object)
+			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, &log)
 		}
 		if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 			result.Logs[i].VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
@@ -906,7 +906,7 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 	// populated by GetLog) so the detail view receives the same structure as the list endpoint.
 	if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
 		redactedKeys := h.redactedKeysManager.GetAllRedactedKeys(ctx, []string{log.SelectedKeyID})
-		log.SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName, log.Object)
+		log.SelectedKey = findRedactedKey(redactedKeys, log)
 	}
 	if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 		redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, []string{*log.VirtualKeyID})
@@ -2665,22 +2665,20 @@ func recalcJobStatusFromRow(job *tables.TableSidekiqJob) recalcJobStatus {
 
 // Helper functions
 
-// findRedactedKey matches a redacted provider key, else returns the logged name, marked deleted unless the log is passthrough.
-func findRedactedKey(redactedKeys []schemas.Key, id string, name string, object string) *schemas.Key {
+// findRedactedKey matches the log's selected key against the redacted provider keys, else returns
+// the logged name, marked deleted unless the log came through a passthrough route. Passthrough rows
+// stored under an inferred type (is_passthrough=true) count as passthrough too.
+func findRedactedKey(redactedKeys []schemas.Key, log *logstore.Log) *schemas.Key {
 	for _, key := range redactedKeys {
-		if key.ID == id {
+		if key.ID == log.SelectedKeyID {
 			return &key
 		}
 	}
-	if name != "" && !isPassthroughObject(object) {
+	name := log.SelectedKeyName
+	if name != "" && !logstore.IsPassthroughObjectType(log.PassthroughObjectType()) {
 		name += " (deleted)"
 	}
-	return &schemas.Key{ID: id, Name: name}
-}
-
-// isPassthroughObject reports whether a log's object type is a passthrough request type.
-func isPassthroughObject(object string) bool {
-	return object == string(schemas.PassthroughRequest) || object == string(schemas.PassthroughStreamRequest)
+	return &schemas.Key{ID: log.SelectedKeyID, Name: name}
 }
 
 // findRedactedVirtualKey matches a redacted virtual key or returns a deleted-key placeholder.
