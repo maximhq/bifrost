@@ -654,6 +654,11 @@ func TestSearch_EmptyResultsIsASuccessfulAnswer(t *testing.T) {
 	if len(resp.Results) != 0 {
 		t.Fatalf("results = %d, want 0", len(resp.Results))
 	}
+	// DeepSeek does not charge for an empty result set, so the gateway must not report a
+	// cost for one. Without Usage the cost engine has nothing to price.
+	if resp.Usage != nil {
+		t.Fatalf("Usage = %+v, want nil for a no-match search", resp.Usage)
+	}
 }
 
 // 402 means "top up", not "retry" and not "bad key". Flattening it would hide the fix.

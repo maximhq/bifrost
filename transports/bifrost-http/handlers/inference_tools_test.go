@@ -79,6 +79,23 @@ func TestPrepareSearchRequest_RejectsInvalidInput(t *testing.T) {
 	}
 }
 
+// The bounds are checked on trimmed values, so the trimmed values are what goes upstream.
+// Sending the untrimmed text would turn a 128-character query plus whitespace into an
+// upstream 400 after the gateway had already accepted it.
+func TestPrepareSearchRequest_SendsTrimmedFields(t *testing.T) {
+	req, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search",
+		`{"query":"  bifrost gateway  ","ori_question":"  what is bifrost  "}`), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Query != "bifrost gateway" {
+		t.Fatalf("query = %q, want the trimmed query", req.Query)
+	}
+	if req.OriQuestion == nil || *req.OriQuestion != "what is bifrost" {
+		t.Fatalf("ori_question = %v, want the trimmed question", req.OriQuestion)
+	}
+}
+
 func TestPrepareSearchRequest_AcceptsMaximumQueryLength(t *testing.T) {
 	body := `{"query":"` + strings.Repeat("a", 128) + `"}`
 	if _, err := prepareSearchRequest(jsonToolsCtx("/v1/tools/search", body), nil); err != nil {

@@ -9226,6 +9226,13 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.RerankResponse = rerankResponse
 	case schemas.SearchRequest:
+		var customProviderConfig *schemas.CustomProviderConfig
+		if config != nil {
+			customProviderConfig = config.CustomProviderConfig
+		}
+		if bifrostError := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), customProviderConfig, schemas.SearchRequest); bifrostError != nil {
+			return nil, bifrostError
+		}
 		tools, ok := provider.(schemas.ToolsProvider)
 		if !ok {
 			return nil, providerUtils.NewUnsupportedOperationError(schemas.SearchRequest, provider.GetProviderKey())
@@ -9236,6 +9243,13 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		}
 		response.SearchResponse = searchResponse
 	case schemas.FetchRequest:
+		var customProviderConfig *schemas.CustomProviderConfig
+		if config != nil {
+			customProviderConfig = config.CustomProviderConfig
+		}
+		if bifrostError := providerUtils.CheckOperationAllowed(provider.GetProviderKey(), customProviderConfig, schemas.FetchRequest); bifrostError != nil {
+			return nil, bifrostError
+		}
 		tools, ok := provider.(schemas.ToolsProvider)
 		if !ok {
 			return nil, providerUtils.NewUnsupportedOperationError(schemas.FetchRequest, provider.GetProviderKey())

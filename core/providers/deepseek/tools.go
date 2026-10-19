@@ -115,14 +115,18 @@ func (provider *DeepSeekProvider) Search(ctx *schemas.BifrostContext, key schema
 		results = []schemas.BifrostSearchResult{}
 	}
 
+	// DeepSeek does not bill a search that returns no results, so neither does the
+	// gateway. With no usage the cost engine falls through to any pinned row.
 	response := &schemas.BifrostSearchResponse{
 		Results: results,
-		Usage:   toolsUsage(deepseekSearchCostPerRequest),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:             schemas.SearchRequest,
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: providerResponseHeaders,
 		},
+	}
+	if len(results) > 0 {
+		response.Usage = toolsUsage(deepseekSearchCostPerRequest)
 	}
 	attachToolsRawFields(&response.ExtraFields, rawRequest, rawResponse)
 	return response, nil

@@ -1596,19 +1596,21 @@ func prepareSearchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schema
 	if req.Count != nil && (*req.Count < 1 || *req.Count > 50) {
 		return nil, fmt.Errorf("count must be between 1 and 50")
 	}
+	var oriQuestion *string
 	if req.OriQuestion != nil {
-		oriQuestion := strings.TrimSpace(*req.OriQuestion)
-		if oriQuestion == "" || len([]rune(oriQuestion)) > 128 {
+		trimmed := strings.TrimSpace(*req.OriQuestion)
+		if trimmed == "" || len([]rune(trimmed)) > 128 {
 			return nil, fmt.Errorf("ori_question must be between 1 and 128 characters")
 		}
+		oriQuestion = &trimmed
 	}
 	provider, model := resolveToolsRouting(base)
 	return &schemas.BifrostSearchRequest{
 		Provider:     provider,
 		Model:        model,
-		Query:        req.Query,
+		Query:        query,
 		Count:        req.Count,
-		OriQuestion:  req.OriQuestion,
+		OriQuestion:  oriQuestion,
 		Localization: req.Localization,
 		NeedContent:  req.NeedContent,
 		Fallbacks:    base.Fallbacks,
