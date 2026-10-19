@@ -312,8 +312,9 @@ func TestAgentGatewayRoutesRegisteredAfterStartupInitialization(t *testing.T) {
 	store := &agentGatewayRouteStore{}
 	s := &BifrostHTTPServer{
 		Config: &lib.Config{
-			ConfigStore:  store,
-			ClientConfig: &configstore.ClientConfig{},
+			ConfigStore: store,
+			// Protocol routes answer 503 until a public A2A URL is configured.
+			ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("https://bifrost.example.com")},
 		},
 		Router: router.New(),
 	}

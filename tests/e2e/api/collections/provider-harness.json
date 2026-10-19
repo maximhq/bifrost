@@ -43317,13 +43317,19 @@
                   "  pm.expect(text, 'Responses rejected the tool result block type').to.not.include(\"Invalid value: 'text'\");",
                   "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
                   "});",
-                  "pm.test('openai: function_call_output blocks use the Responses input_text spelling, not the chat text one', function () {",
+                  "pm.test('openai: function_call_output never carries the chat text block spelling', function () {",
                   "  var raw = pm.response.json().extra_fields.raw_request;",
                   "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
                   "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
                   "  pm.expect(outs.length, 'expected one function_call_output in the converted request: ' + JSON.stringify(raw)).to.equal(1);",
-                  "  pm.expect(Array.isArray(outs[0].output), 'array content must stay an array of blocks: ' + JSON.stringify(outs[0])).to.equal(true);",
-                  "  pm.expect(outs[0].output[0].type, 'block type on the wire').to.equal('input_text');",
+                  "  // Text-only blocks are flattened to a string on the OpenAI egress (core/providers/openai/types.go); a block array is only kept when it carries something a string cannot.",
+                  "  var out = outs[0].output;",
+                  "  if (typeof out === 'string') {",
+                  "    pm.expect(out, 'flattened tool output lost the tool text: ' + JSON.stringify(outs[0])).to.equal('18C, light rain');",
+                  "  } else {",
+                  "    pm.expect(Array.isArray(out) && out.length > 0, 'output must be a string or a non-empty block array: ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "    out.forEach(function (blk) { pm.expect(blk.type, 'block type on the wire: ' + JSON.stringify(outs[0])).to.equal('input_text'); });",
+                  "  }",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -43364,7 +43370,7 @@
           }
         },
         {
-          "name": "azure/gpt-4o-mini compat chat->responses: array-content tool result becomes input_text output blocks - chat-responses-tool-replay",
+          "name": "azure/gpt-5.6-sol compat chat->responses: array-content tool result becomes input_text output blocks - chat-responses-tool-replay",
           "event": [
             {
               "listen": "test",
@@ -43375,13 +43381,19 @@
                   "  pm.expect(text, 'Responses rejected the tool result block type').to.not.include(\"Invalid value: 'text'\");",
                   "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
                   "});",
-                  "pm.test('azure: function_call_output blocks use the Responses input_text spelling, not the chat text one', function () {",
+                  "pm.test('azure: function_call_output never carries the chat text block spelling', function () {",
                   "  var raw = pm.response.json().extra_fields.raw_request;",
                   "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
                   "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
                   "  pm.expect(outs.length, 'expected one function_call_output in the converted request: ' + JSON.stringify(raw)).to.equal(1);",
-                  "  pm.expect(Array.isArray(outs[0].output), 'array content must stay an array of blocks: ' + JSON.stringify(outs[0])).to.equal(true);",
-                  "  pm.expect(outs[0].output[0].type, 'block type on the wire').to.equal('input_text');",
+                  "  // Text-only blocks are flattened to a string on the OpenAI egress (core/providers/openai/types.go); a block array is only kept when it carries something a string cannot.",
+                  "  var out = outs[0].output;",
+                  "  if (typeof out === 'string') {",
+                  "    pm.expect(out, 'flattened tool output lost the tool text: ' + JSON.stringify(outs[0])).to.equal('18C, light rain');",
+                  "  } else {",
+                  "    pm.expect(Array.isArray(out) && out.length > 0, 'output must be a string or a non-empty block array: ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "    out.forEach(function (blk) { pm.expect(blk.type, 'block type on the wire: ' + JSON.stringify(outs[0])).to.equal('input_text'); });",
+                  "  }",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -43406,7 +43418,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_paris_blocks\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_paris_blocks\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Thanks. Is that warm?\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"azure/gpt-5.6-sol\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_paris_blocks\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_paris_blocks\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Thanks. Is that warm?\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -195752,7 +195764,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 128,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
@@ -195801,7 +195813,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 128,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
@@ -276437,6 +276449,248 @@
                 "api",
                 "providers",
                 "{{zeroKeyProvider}}"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "261. Converse additionalModelRequestFields prompt_cache_options reaches the outbound request (converse prompt cache mode)",
+      "description": "Since #8334/#8322 Bifrost leaves gpt-5.6 requests in the default implicit prompt cache mode when it translates a cache marker, so a Converse cachePoint after the system prompt no longer limits caching to the system prompt. OpenAI documents prompt_cache_options.mode explicit as the opt-in for breakpoint-only caching, and explicit with no breakpoints as caching off. The AWS SDK ConverseInput has no field for it, so a /bedrock drop-in caller can only send it inside additionalModelRequestFields. BedrockConverseRequest.ToBifrostResponsesRequest (core/providers/bedrock/responses.go) never read that key, so the outbound Responses body had no prompt_cache_options. Each case sends prompt_cache_options {mode: explicit} in additionalModelRequestFields and reads the logged raw_request to assert the outbound body carries mode explicit and the expected number of prompt_cache_breakpoint markers (1 with a system cachePoint, 0 without). Red before the fix: raw_request has no prompt_cache_options. The Go-level pin is TestConverseAdditionalModelRequestFieldsPromptCacheOptionsReachesParams.",
+      "item": [
+        {
+          "name": "261.1 /bedrock converse -> azure/gpt-5.6-luna system cachePoint plus prompt_cache_options explicit reaches outbound body (converse prompt cache mode)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse cache mode azure: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('converse cache mode azure: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var dump = JSON.stringify(rr).slice(0, 800);",
+                  "      pm.test('converse cache mode azure: outbound body carries prompt_cache_options.mode explicit', function () { pm.expect(rr.prompt_cache_options, 'prompt_cache_options missing from outbound raw_request (request stays in implicit mode): ' + dump).to.be.an('object'); pm.expect(rr.prompt_cache_options.mode, dump).to.eql('explicit'); });",
+                  "      pm.test('converse cache mode azure: outbound body carries 1 prompt_cache_breakpoint', function () { pm.expect(JSON.stringify(rr).split('\"prompt_cache_breakpoint\"').length - 1, dump).to.eql(1); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse cache mode azure: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"system\": [\n    {\n      \"text\": \"You are a terse assistant for issue 8554. Reply with one word.\"\n    },\n    {\n      \"cachePoint\": {\n        \"type\": \"default\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 256\n  },\n  \"additionalModelRequestFields\": {\n    \"prompt_cache_options\": {\n      \"mode\": \"explicit\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-5.6-luna",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "261.2 /bedrock converse -> openai/gpt-5.6-luna system cachePoint plus prompt_cache_options explicit reaches outbound body (converse prompt cache mode)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse cache mode openai: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('converse cache mode openai: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var dump = JSON.stringify(rr).slice(0, 800);",
+                  "      pm.test('converse cache mode openai: outbound body carries prompt_cache_options.mode explicit', function () { pm.expect(rr.prompt_cache_options, 'prompt_cache_options missing from outbound raw_request (request stays in implicit mode): ' + dump).to.be.an('object'); pm.expect(rr.prompt_cache_options.mode, dump).to.eql('explicit'); });",
+                  "      pm.test('converse cache mode openai: outbound body carries 1 prompt_cache_breakpoint', function () { pm.expect(JSON.stringify(rr).split('\"prompt_cache_breakpoint\"').length - 1, dump).to.eql(1); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse cache mode openai: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"system\": [\n    {\n      \"text\": \"You are a terse assistant for issue 8554. Reply with one word.\"\n    },\n    {\n      \"cachePoint\": {\n        \"type\": \"default\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 256\n  },\n  \"additionalModelRequestFields\": {\n    \"prompt_cache_options\": {\n      \"mode\": \"explicit\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/openai%2Fgpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "openai%2Fgpt-5.6-luna",
+                "converse"
+              ]
+            }
+          }
+        },
+        {
+          "name": "261.3 /bedrock converse-stream -> azure/gpt-5.6-luna system cachePoint plus prompt_cache_options explicit reaches outbound body (converse prompt cache mode)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse-stream cache mode azure: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('converse-stream cache mode azure: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var dump = JSON.stringify(rr).slice(0, 800);",
+                  "      pm.test('converse-stream cache mode azure: outbound body carries prompt_cache_options.mode explicit', function () { pm.expect(rr.prompt_cache_options, 'prompt_cache_options missing from outbound raw_request (request stays in implicit mode): ' + dump).to.be.an('object'); pm.expect(rr.prompt_cache_options.mode, dump).to.eql('explicit'); });",
+                  "      pm.test('converse-stream cache mode azure: outbound body carries 1 prompt_cache_breakpoint', function () { pm.expect(JSON.stringify(rr).split('\"prompt_cache_breakpoint\"').length - 1, dump).to.eql(1); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse-stream cache mode azure: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"system\": [\n    {\n      \"text\": \"You are a terse assistant for issue 8554. Reply with one word.\"\n    },\n    {\n      \"cachePoint\": {\n        \"type\": \"default\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 256\n  },\n  \"additionalModelRequestFields\": {\n    \"prompt_cache_options\": {\n      \"mode\": \"explicit\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-5.6-luna",
+                "converse-stream"
+              ]
+            }
+          }
+        },
+        {
+          "name": "261.4 /bedrock converse -> azure/gpt-5.6-luna no cachePoint plus prompt_cache_options explicit turns caching off on the outbound body (converse prompt cache mode)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('converse cache off azure: request succeeded', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 500)).to.eql(200); });",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
+                  "pm.test('converse cache off azure: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
+                  "// raw_request is the body Bifrost sent upstream. The log row is written by the batching writer and,",
+                  "// for streams, filled in when the stream ends, so poll until it parses. Bounded: ten reads a second apart.",
+                  "// It may be stored as a JSON string of the JSON body, so unwrap up to twice.",
+                  "function rawOf(j) { var rr = j.raw_request; for (var i = 0; i < 2 && typeof rr === 'string'; i++) { try { rr = JSON.parse(rr); } catch (e) { rr = null; } } return rr; }",
+                  "function checkLog(attempt) {",
+                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
+                  "    var rr = (!err && res.code === 200) ? rawOf(res.json()) : null;",
+                  "    if (rr && typeof rr === 'object') {",
+                  "      var dump = JSON.stringify(rr).slice(0, 800);",
+                  "      pm.test('converse cache off azure: outbound body carries prompt_cache_options.mode explicit', function () { pm.expect(rr.prompt_cache_options, 'prompt_cache_options missing from outbound raw_request (request stays in implicit mode): ' + dump).to.be.an('object'); pm.expect(rr.prompt_cache_options.mode, dump).to.eql('explicit'); });",
+                  "      pm.test('converse cache off azure: outbound body carries 0 prompt_cache_breakpoint', function () { pm.expect(JSON.stringify(rr).split('\"prompt_cache_breakpoint\"').length - 1, dump).to.eql(0); });",
+                  "      return;",
+                  "    }",
+                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
+                  "    pm.test('converse cache off azure: raw_request logged', function () { pm.expect.fail('log ' + reqId + ' never carried a parseable raw_request: ' + (err ? String(err) : (res.code + ' ' + res.text().slice(0, 500)))); });",
+                  "  });",
+                  "}",
+                  "if (reqId) { checkLog(0); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"system\": [\n    {\n      \"text\": \"You are a terse assistant for issue 8554. Reply with one word.\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Reply with the single word: ok\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 256\n  },\n  \"additionalModelRequestFields\": {\n    \"prompt_cache_options\": {\n      \"mode\": \"explicit\"\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/azure%2Fgpt-5.6-luna/converse",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "azure%2Fgpt-5.6-luna",
+                "converse"
               ]
             }
           }
