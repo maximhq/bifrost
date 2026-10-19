@@ -5492,6 +5492,9 @@ func (bifrost *Bifrost) RunRealtimeTurnPreHooks(ctx *schemas.BifrostContext, req
 		}
 	}
 
+	// Transports settle the unit on a fresh context. Attach pre-hook logs now,
+	// since its copied values do not include the context's private log store.
+	drainAndAttachPluginLogs(ctx)
 	provider, model, _ = preReq.GetRequestFields()
 
 	return &RealtimeTurnHooks{
