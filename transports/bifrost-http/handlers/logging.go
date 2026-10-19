@@ -1153,6 +1153,33 @@ func calculateBucketSize(start, end *time.Time) int64 {
 	return logstore.DefaultBucketSize(start, end)
 }
 
+// maxBucketSizeOverrideBuckets caps how many buckets an explicit bucket_size may produce over the window.
+const maxBucketSizeOverrideBuckets = 5000
+
+// parseBucketSizeOverride validates an explicit bucket_size (seconds); callers check the key is present.
+// Sub-hour sizes must divide an hour and larger ones must be whole hours, so buckets read off the
+// hourly matview never split an hour between two buckets.
+func parseBucketSizeOverride(raw string, start, end *time.Time) (int64, error) {
+	size, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || size < 60 || size > 31*24*3600 {
+		return 0, fmt.Errorf("invalid bucket_size: %s. Expected seconds between 60 and 2678400", raw)
+	}
+	if (size < 3600 && 3600%size != 0) || (size >= 3600 && size%3600 != 0) {
+		return 0, fmt.Errorf("invalid bucket_size: %d. Below an hour it must divide 3600; otherwise it must be a whole number of hours", size)
+	}
+	if start == nil || end == nil {
+		return 0, fmt.Errorf("bucket_size requires start_time and end_time, or period")
+	}
+	if end.Before(*start) {
+		return 0, fmt.Errorf("bucket_size requires end_time at or after start_time")
+	}
+	// Counted the way generateBucketTimestamps lays them out: from the aligned start through end.
+	if buckets := (end.Unix()-(start.Unix()/size)*size)/size + 1; buckets > maxBucketSizeOverrideBuckets {
+		return 0, fmt.Errorf("bucket_size %d gives %d buckets for this window; at most %d are allowed", size, buckets, maxBucketSizeOverrideBuckets)
+	}
+	return size, nil
+}
+
 func parseAgentNamesFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
 	filters.AgentNames = parseCommaSeparated(string(ctx.QueryArgs().Peek("agent_names")))
 }
@@ -1340,6 +1367,14 @@ func (h *LoggingHandler) getLogsTokenHistogram(ctx *fasthttp.RequestCtx) {
 func (h *LoggingHandler) getLogsCostHistogram(ctx *fasthttp.RequestCtx) {
 	filters := parseHistogramFilters(ctx)
 	bucketSizeSeconds := calculateBucketSize(filters.StartTime, filters.EndTime)
+	if ctx.QueryArgs().Has("bucket_size") {
+		size, err := parseBucketSizeOverride(string(ctx.QueryArgs().Peek("bucket_size")), filters.StartTime, filters.EndTime)
+		if err != nil {
+			SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+			return
+		}
+		bucketSizeSeconds = size
+	}
 
 	result, err := h.logManager.GetCostHistogram(ctx, filters, bucketSizeSeconds)
 	if err != nil {
