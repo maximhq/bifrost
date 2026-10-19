@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
+	"github.com/maximhq/bifrost/framework/grant"
 )
 
 const (
@@ -40,7 +42,23 @@ const (
 	// expires_in. Deliberately short: with no declared lifetime the only safe
 	// assumption is a brief one, and re-exchanging is cheap.
 	defaultExchangedTokenTTL = 5 * time.Minute
+
+	// storedSubjectDiscriminator ends the cache key of a token exchanged from
+	// the user's stored sign-in, in place of a subject fingerprint: building
+	// the key needs no read of the stored token, so a hit costs nothing and a
+	// refresh of that token keeps the entry. A fingerprint is hex, so it can
+	// never equal this.
+	storedSubjectDiscriminator = "stored"
 )
+
+// storedSubjectCredentials are the credential kinds minted through the user's
+// own sign-in, each recorded with the user's ID as its value; see
+// storedSubjectAllowed.
+var storedSubjectCredentials = []grant.CredentialKind{
+	grant.CredentialEdgeSession,
+	grant.CredentialSessionToken,
+	grant.CredentialMCPToken,
+}
 
 // SetTokenExchangeIdPResolver installs the identity-provider resolver that
 // backs delegated token exchange. Called once at server startup after the
@@ -68,11 +86,13 @@ func (p *OAuth2Provider) TokenExchangeAvailable() bool {
 
 // GetExchangedAccessToken returns an upstream access token for a
 // token_exchange client, exchanging the caller's identity-provider token for
-// one scoped to the client's audience. Cached per (auth mode, identity, mcp
-// client) binding in the same in-memory cache as per-user OAuth lookups —
-// exchanged tokens have no database row, so the cached entry (with the
-// expiry-as-miss validator) is the only local state, and a miss simply
-// performs a fresh exchange.
+// one scoped to the client's audience. A request that carried no such token
+// but was authenticated through the user's own sign-in exchanges the token
+// stored from that sign-in instead (storedSubjectAllowed). Cached per (auth
+// mode, identity, mcp client) binding in the same in-memory cache as per-user
+// OAuth lookups — exchanged tokens have no database row, so the cached entry
+// (with the expiry-as-miss validator) is the only local state, and a miss
+// simply performs a fresh exchange.
 func (p *OAuth2Provider) GetExchangedAccessToken(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig) (string, error) {
 	if err := validateExchangeConfig(config); err != nil {
 		return "", err
@@ -90,24 +110,32 @@ func (p *OAuth2Provider) GetExchangedAccessToken(ctx *schemas.BifrostContext, co
 	if identity == "" {
 		return "", schemas.ErrExchangeSubjectTokenMissing
 	}
+
+	var key string
+	var fill func() (cachedUserToken, error)
 	subjectToken, _ := ctx.Value(schemas.BifrostContextKeyMCPInboundBearer).(string)
-	if subjectToken == "" {
+	switch {
+	case subjectToken != "":
+		// subjectTokenFingerprint binds the cache entry to the actual bearer
+		// credential validated on this request, not just the (mode, identity)
+		// binding — see userTokenCacheKey's doc comment on subjectDiscriminator
+		// for why MCPAuthModeVK's identity alone isn't enough here.
+		key = userTokenCacheKey(mode, identity, config.ID, subjectTokenFingerprint(subjectToken))
+		fill = func() (cachedUserToken, error) {
+			return p.performExchange(ctx, config, subjectExchangeForm(config, subjectToken))
+		}
+	case mode == schemas.MCPAuthModeUser && storedSubjectAllowed(ctx, identity):
+		key = userTokenCacheKey(mode, identity, config.ID, storedSubjectDiscriminator)
+		fill = func() (cachedUserToken, error) {
+			return p.exchangeStoredSubject(ctx, config, identity)
+		}
+	default:
 		return "", schemas.ErrExchangeSubjectTokenMissing
 	}
-
-	// subjectTokenFingerprint binds the cache entry to the actual bearer
-	// credential validated on this request, not just the (mode, identity)
-	// binding — see userTokenCacheKey's doc comment on subjectDiscriminator
-	// for why MCPAuthModeVK's identity alone isn't enough here.
-	key := userTokenCacheKey(mode, identity, config.ID, subjectTokenFingerprint(subjectToken))
 	if cached, ok := p.userTokens.Get(key); ok {
 		return cached.accessToken, nil
 	}
-	filled, err := p.userTokens.Fill(ctx, key, func() (cachedUserToken, error) {
-		return p.performExchange(ctx, config, func(idp *schemas.TokenExchangeIdP) (url.Values, error) {
-			return buildSubjectExchangeForm(idp, config.TokenExchange, subjectToken)
-		})
-	})
+	filled, err := p.userTokens.Fill(ctx, key, fill)
 	if err != nil {
 		return "", err
 	}
@@ -127,9 +155,7 @@ func (p *OAuth2Provider) ExchangeAdminCredential(ctx context.Context, config *sc
 	if subjectToken == "" {
 		return nil, schemas.ErrExchangeSubjectTokenMissing
 	}
-	return p.rawExchange(ctx, config, func(idp *schemas.TokenExchangeIdP) (url.Values, error) {
-		return buildSubjectExchangeForm(idp, config.TokenExchange, subjectToken)
-	})
+	return p.rawExchange(ctx, config, subjectExchangeForm(config, subjectToken))
 }
 
 // RetainExchangeAdminCredential persists the outcome of a successful admin
@@ -272,9 +298,80 @@ func subjectTokenFingerprint(subjectToken string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// performExchange adapts performExchangeCtx to the BifrostContext request path.
-func (p *OAuth2Provider) performExchange(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig, form func(*schemas.TokenExchangeIdP) (url.Values, error)) (cachedUserToken, error) {
-	return p.performExchangeCtx(ctx, config, form)
+// storedSubjectAllowed reports whether a request that carried no
+// identity-provider token may exchange userID's stored one. It must have been
+// authenticated by a credential minted through that user's own sign-in: a
+// Bifrost Edge session, a dashboard session, or this deployment's /mcp user
+// token, recorded with the user's ID as its value. The value must be userID
+// because the user a request acts for can change after authentication, as when
+// a virtual key riding along resolves to its owner; one user's credential
+// never exchanges another user's sign-in. A virtual key never qualifies, even
+// with an owner: it is a static secret, and a leaked one would let anyone act
+// as its owner upstream. Nor does a request whose identity-provider token
+// failed validation, so its refusal still names the rejection.
+//
+// Both records of the credential are read. The identity settled on the grant
+// names the /mcp token, but settles as the virtual key whenever one rides
+// along with another credential; the authenticating middleware's own record
+// still names that credential.
+func storedSubjectAllowed(ctx *schemas.BifrostContext, userID string) bool {
+	if reason, _ := ctx.Value(schemas.BifrostContextKeyMCPInboundBearerOmitted).(schemas.MCPInboundBearerOmittedReason); reason != "" {
+		return false
+	}
+	recorded, _ := ctx.Value(schemas.BifrostContextKeyAuthCredential).(schemas.Credential)
+	if signedInAs(recorded, userID) {
+		return true
+	}
+	g := ctx.Grant()
+	if g == nil || g.Identity() == nil {
+		return false
+	}
+	return signedInAs(g.Identity().Credential(), userID)
+}
+
+// signedInAs reports whether credential was minted through userID's own
+// sign-in; see storedSubjectAllowed.
+func signedInAs(credential schemas.Credential, userID string) bool {
+	return credential.Value == userID && slices.Contains(storedSubjectCredentials, grant.CredentialKind(credential.Kind))
+}
+
+// exchangeStoredSubject exchanges the access token stored from userID's
+// sign-in. When the identity provider declines it as a subject (invalid_grant),
+// the resolver is asked once more with rejected set: it refreshes the token
+// when that could help, such as an opaque token revoked early, and the exchange
+// is retried only with a token that changed. So one fill exchanges at most
+// twice. A refusal of the exchange client is returned as is, since refreshing
+// the user's token cannot fix it, and a resolver that returns no token is
+// treated as an expired sign-in.
+func (p *OAuth2Provider) exchangeStoredSubject(ctx *schemas.BifrostContext, config *schemas.MCPClientConfig, userID string) (cachedUserToken, error) {
+	resolver := p.tokenExchangeIdPResolver()
+	if resolver == nil || !resolver.Available() {
+		return cachedUserToken{}, schemas.ErrTokenExchangeUnavailable
+	}
+	subjectToken, err := resolver.StoredSubjectToken(ctx, userID, false)
+	if err != nil {
+		return cachedUserToken{}, err
+	}
+	if subjectToken == "" {
+		return cachedUserToken{}, schemas.ErrStoredSignInExpired
+	}
+	logger.Debug("token exchange: no subject token on the request; exchanging the stored sign-in of user %s for mcp_client=%s", userID, config.ID)
+	token, err := p.performExchange(ctx, config, subjectExchangeForm(config, subjectToken))
+	var rejected *schemas.TokenExchangeRejectedError
+	if !errors.As(err, &rejected) || !rejected.SubjectRejected {
+		return token, err
+	}
+	refreshed, refreshErr := resolver.StoredSubjectToken(ctx, userID, true)
+	if refreshErr != nil {
+		return cachedUserToken{}, refreshErr
+	}
+	if refreshed == "" {
+		return cachedUserToken{}, schemas.ErrStoredSignInExpired
+	}
+	if refreshed == subjectToken {
+		return cachedUserToken{}, err
+	}
+	return p.performExchange(ctx, config, subjectExchangeForm(config, refreshed))
 }
 
 // rawExchange resolves the identity provider and posts the grant built by
@@ -303,7 +400,10 @@ func (p *OAuth2Provider) rawExchange(ctx context.Context, config *schemas.MCPCli
 	if err != nil {
 		var permanent *PermanentOAuthError
 		if errors.As(err, &permanent) {
-			return nil, &schemas.TokenExchangeRejectedError{Detail: sanitizeTokenExchangeRejection(permanent.Body)}
+			return nil, &schemas.TokenExchangeRejectedError{
+				Detail:          sanitizeTokenExchangeRejection(permanent.Body),
+				SubjectRejected: classifyTokenRejection(permanent.StatusCode, []byte(permanent.Body)) == rejectionGrant,
+			}
 		}
 		return nil, fmt.Errorf("token exchange for MCP client %s failed: %w", config.Name, err)
 	}
@@ -329,10 +429,10 @@ func sanitizeTokenExchangeRejection(rawBody string) string {
 	return code + ": " + description
 }
 
-// performExchangeCtx shapes a rawExchange result into a cache entry, with the
+// performExchange shapes a rawExchange result into a cache entry, with the
 // expiry safety margin applied so a token about to lapse mid-call reads as a
 // miss.
-func (p *OAuth2Provider) performExchangeCtx(ctx context.Context, config *schemas.MCPClientConfig, form func(*schemas.TokenExchangeIdP) (url.Values, error)) (cachedUserToken, error) {
+func (p *OAuth2Provider) performExchange(ctx context.Context, config *schemas.MCPClientConfig, form func(*schemas.TokenExchangeIdP) (url.Values, error)) (cachedUserToken, error) {
 	response, err := p.rawExchange(ctx, config, form)
 	if err != nil {
 		return cachedUserToken{}, err
@@ -387,6 +487,14 @@ func exchangeClientCredentials(idp *schemas.TokenExchangeIdP, cfg *schemas.MCPTo
 		clientSecret = strings.TrimSpace(cfg.ClientSecret.GetValue())
 	}
 	return clientID, clientSecret, nil
+}
+
+// subjectExchangeForm defers buildSubjectExchangeForm for subjectToken until
+// rawExchange has resolved the identity provider.
+func subjectExchangeForm(config *schemas.MCPClientConfig, subjectToken string) func(*schemas.TokenExchangeIdP) (url.Values, error) {
+	return func(idp *schemas.TokenExchangeIdP) (url.Values, error) {
+		return buildSubjectExchangeForm(idp, config.TokenExchange, subjectToken)
+	}
 }
 
 // buildSubjectExchangeForm builds the delegated-exchange request body for the
