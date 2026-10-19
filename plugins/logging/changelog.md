@@ -1,1 +1,2 @@
+- [feat]: log Search queries and Fetch URLs, never result pages, and report per-request cost on recalculation [@jimaldon](https://github.com/jimaldon)
 - [feat]: snapshot virtual key metadata onto log metadata; the key's values override request-supplied entries [@jimseiwert](https://github.com/jimseiwert)

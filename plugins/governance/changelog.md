@@ -1,1 +1,2 @@
+- [feat]: hold Search and Fetch to the model allowlist when they carry a routing model, and skip the model requirement when they do not [@jimaldon](https://github.com/jimaldon)
 - [feat]: stamp the resolved virtual key's metadata on the request context for logging [@jimseiwert](https://github.com/jimseiwert)

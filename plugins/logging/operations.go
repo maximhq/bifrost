@@ -2159,6 +2159,20 @@ func buildResponseForRequestType(requestType schemas.RequestType, usage *schemas
 				ExtraFields: extra,
 			},
 		}
+	case schemas.SearchRequest:
+		return &schemas.BifrostResponse{
+			SearchResponse: &schemas.BifrostSearchResponse{
+				Usage:       usage,
+				ExtraFields: extra,
+			},
+		}
+	case schemas.FetchRequest:
+		return &schemas.BifrostResponse{
+			FetchResponse: &schemas.BifrostFetchResponse{
+				Usage:       usage,
+				ExtraFields: extra,
+			},
+		}
 	case schemas.DecisionRequest:
 		return &schemas.BifrostResponse{
 			DecisionResponse: &schemas.BifrostDecisionResponse{
