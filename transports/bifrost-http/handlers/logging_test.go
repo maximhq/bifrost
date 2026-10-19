@@ -1720,3 +1720,43 @@ func TestFindRedactedKeyDeletedSuffix(t *testing.T) {
 		})
 	}
 }
+
+func TestParseBucketSizeOverride(t *testing.T) {
+	end := time.Date(2026, 10, 19, 14, 0, 0, 0, time.UTC)
+	week := end.Add(-7 * 24 * time.Hour)
+	cases := []struct {
+		name    string
+		raw     string
+		start   *time.Time
+		want    int64
+		wantErr bool
+	}{
+		{name: "absent keeps the range default", raw: "", start: &week, want: 0},
+		{name: "ten minutes", raw: "600", start: &week, want: 600},
+		{name: "three hours", raw: "10800", start: &week, want: 10800},
+		{name: "not a number", raw: "abc", start: &week, wantErr: true},
+		{name: "below a minute", raw: "30", start: &week, wantErr: true},
+		{name: "does not divide an hour", raw: "420", start: &week, wantErr: true},
+		{name: "not whole hours", raw: "5400", start: &week, wantErr: true},
+		{name: "too many buckets", raw: "60", start: &week, wantErr: true},
+		{name: "no window", raw: "3600", start: nil, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var endPtr *time.Time
+			if tc.start != nil {
+				endPtr = &end
+			}
+			got, err := parseBucketSizeOverride(tc.raw, tc.start, endPtr)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %d", got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("got %d, %v; want %d", got, err, tc.want)
+			}
+		})
+	}
+}
