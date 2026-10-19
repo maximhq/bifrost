@@ -888,6 +888,14 @@ func ConvertBifrostFinishReasonToGemini(bifrostReason string) FinishReason {
 	return FinishReasonStop
 }
 
+// geminiInputTokens returns total input tokens including tool-use prompt tokens.
+func geminiInputTokens(metadata *GenerateContentResponseUsageMetadata) int {
+	if metadata == nil {
+		return 0
+	}
+	return int(metadata.PromptTokenCount + metadata.ToolUsePromptTokenCount)
+}
+
 // ConvertGeminiUsageMetadataToChatUsage converts Gemini usage metadata to Bifrost chat LLM usage
 func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsageMetadata) *schemas.BifrostLLMUsage {
 	if metadata == nil {
@@ -895,7 +903,7 @@ func ConvertGeminiUsageMetadataToChatUsage(metadata *GenerateContentResponseUsag
 	}
 
 	usage := &schemas.BifrostLLMUsage{
-		PromptTokens:     int(metadata.PromptTokenCount),
+		PromptTokens:     geminiInputTokens(metadata),
 		CompletionTokens: int(metadata.CandidatesTokenCount),
 		TotalTokens:      int(metadata.TotalTokenCount),
 	}
@@ -959,7 +967,7 @@ func convertGeminiUsageMetadataToSpeechUsage(metadata *GenerateContentResponseUs
 	}
 
 	usage := &schemas.SpeechUsage{
-		InputTokens:  int(metadata.PromptTokenCount),
+		InputTokens:  geminiInputTokens(metadata),
 		OutputTokens: int(metadata.CandidatesTokenCount),
 		TotalTokens:  int(metadata.TotalTokenCount),
 	}
@@ -1020,7 +1028,7 @@ func convertGeminiUsageMetadataToTranscriptionUsage(metadata *GenerateContentRes
 
 	usage := &schemas.TranscriptionUsage{
 		Type:         "tokens",
-		InputTokens:  schemas.Ptr(int(metadata.PromptTokenCount)),
+		InputTokens:  schemas.Ptr(geminiInputTokens(metadata)),
 		OutputTokens: schemas.Ptr(int(metadata.CandidatesTokenCount)),
 		TotalTokens:  schemas.Ptr(int(metadata.TotalTokenCount)),
 	}
@@ -1086,7 +1094,7 @@ func convertGeminiUsageMetadataToImageUsage(metadata *GenerateContentResponseUsa
 	}
 
 	usage := &schemas.ImageUsage{
-		InputTokens:  int(metadata.PromptTokenCount),
+		InputTokens:  geminiInputTokens(metadata),
 		OutputTokens: int(metadata.CandidatesTokenCount),
 		TotalTokens:  int(metadata.TotalTokenCount),
 	}
@@ -1177,7 +1185,7 @@ func ConvertGeminiUsageMetadataToResponsesUsage(metadata *GenerateContentRespons
 
 	usage := &schemas.ResponsesResponseUsage{
 		TotalTokens:         int(metadata.TotalTokenCount),
-		InputTokens:         int(metadata.PromptTokenCount),
+		InputTokens:         geminiInputTokens(metadata),
 		OutputTokens:        int(metadata.CandidatesTokenCount),
 		OutputTokensDetails: &schemas.ResponsesResponseOutputTokens{},
 		InputTokensDetails:  &schemas.ResponsesResponseInputTokens{},
