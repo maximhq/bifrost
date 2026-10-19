@@ -37,6 +37,7 @@ ModelProvider:
     - databricks
     - cloudflare
     - typesafe
+    - nearai
 
 Fallback:
   type: object

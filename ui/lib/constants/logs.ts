@@ -34,6 +34,7 @@ export const KnownProvidersNames = [
 	"cloudflare",
 	"github-copilot",
 	"typesafe",
+	"nearai",
 ] as const;
 
 // Local Provider type derived from KNOWN_PROVIDERS constant
@@ -71,6 +72,7 @@ export const EmbeddingSupportedProviders: readonly ProviderName[] = [
 	"vllm",
 	"databricks",
 	"cloudflare",
+	"nearai",
 ] as const;
 
 export const Statuses = ["success", "error", "processing", "cancelled"] as const;
@@ -184,6 +186,7 @@ export const ProviderLabels: Record<ProviderName, string> = {
 	cloudflare: "Cloudflare",
 	"github-copilot": "GitHub Copilot",
 	typesafe: "TypeSafe",
+	nearai: "NEAR AI",
 } as const;
 
 // Helper function to get provider label, supporting custom providers

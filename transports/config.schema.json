@@ -703,6 +703,9 @@
         "typesafe": {
           "$ref": "#/$defs/provider"
         },
+        "nearai": {
+          "$ref": "#/$defs/provider"
+        },
         "vllm": {
           "$ref": "#/$defs/provider_with_vllm_config"
         },
@@ -4480,7 +4483,8 @@
                         "sgl",
                         "huggingface",
                         "databricks",
-                        "cloudflare"
+                        "cloudflare",
+                        "nearai"
                       ]
                     },
                     "embedding_model": {
@@ -12817,7 +12821,8 @@
             "sarvam",
             "wafer",
             "cloudflare",
-            "typesafe"
+            "typesafe",
+            "nearai"
           ],
           "description": "Base provider type to extend"
         },
