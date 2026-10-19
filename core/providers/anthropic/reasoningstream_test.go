@@ -64,6 +64,9 @@ func TestReasoningStream_NoOrphanThinkingBlock(t *testing.T) {
 					openBlocks[*e.Index] = true
 					if e.ContentBlock != nil && e.ContentBlock.Type == AnthropicContentBlockTypeThinking {
 						sawThinkingStart = true
+						if e.ContentBlock.Signature != nil && *e.ContentBlock.Signature != "" {
+							t.Errorf("expected empty signature for synthetic bridged id in stream, got %q", *e.ContentBlock.Signature)
+						}
 					}
 				case AnthropicStreamEventTypeContentBlockDelta:
 					if e.Index == nil {

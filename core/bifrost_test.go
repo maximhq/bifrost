@@ -7737,6 +7737,70 @@ func TestScenarioInferredFallbacksStopOnCallerFault(t *testing.T) {
 	}
 }
 
+// TestScenarioInferredFallbacksPassNoKeySupportsModel pins that a primary whose key pool has no
+// key for the model (400 no_key_supports_model, built before any upstream call) does not stop an
+// inferred chain: that 400 says this provider cannot serve the model, not that the request is
+// malformed. A caller-named chain falls back as before, and a caller-named provider with no
+// fallbacks still gets the 400.
+func TestScenarioInferredFallbacksPassNoKeySupportsModel(t *testing.T) {
+	restricted := scenarioKey("a1", 1)
+	restricted.Models = schemas.WhiteList{"other-model"}
+	for _, tc := range []struct {
+		name         string
+		fallbacks    []schemas.Fallback
+		wantFallback bool
+	}{
+		{name: "inferred chain falls back", fallbacks: []schemas.Fallback{{Provider: provB, Model: "m", Inferred: true}}, wantFallback: true},
+		{name: "caller-named chain falls back", fallbacks: []schemas.Fallback{{Provider: provB, Model: "m"}}, wantFallback: true},
+		{name: "caller-named provider without fallbacks returns the 400"},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
+				u := newScenarioUpstream(t)
+				account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+					provA: {restricted},
+					provB: {scenarioKey("b1", 1)},
+				})
+				route := fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, tc.fallbacks...)
+				client := scenarioClient(t, account, &scenarioRouter{route: route}, nil)
+
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+				var bifrostErr *schemas.BifrostError
+				if stream {
+					var ch chan *schemas.BifrostStreamChunk
+					ch, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+					if bifrostErr == nil {
+						if _, errs := drainChatStream(ch); len(errs) > 0 {
+							t.Fatalf("stream emitted error chunks: %v", errs)
+						}
+					}
+				} else {
+					_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+				}
+
+				if got := u.count("sk-a1"); got != 0 {
+					t.Fatalf("primary with no key for the model reached the upstream %d times, want 0", got)
+				}
+				if tc.wantFallback {
+					if bifrostErr != nil {
+						t.Fatalf("want the fallback to serve, got error: %s", bifrostErr.GetErrorString())
+					}
+					if got := u.count("sk-b1"); got != 1 {
+						t.Fatalf("fallback reached the upstream %d times, want 1", got)
+					}
+					return
+				}
+				if bifrostErr == nil || bifrostErr.Type == nil || *bifrostErr.Type != schemas.NoKeySupportsModel {
+					t.Fatalf("want the primary's %s error, got %+v", schemas.NoKeySupportsModel, bifrostErr)
+				}
+				if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+					t.Fatalf("status %v, want 400", bifrostErr.StatusCode)
+				}
+			})
+		}
+	}
+}
+
 // BenchmarkShouldTryFallbacks measures the fallback decision on a failed primary, for a
 // caller-named chain (the common case, which must stay a field check) and an inferred chain
 // refused as a caller fault (which classifies the error).

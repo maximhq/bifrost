@@ -7656,7 +7656,7 @@
                   }
                 },
                 {
-                  "name": "bedrock/amazon.nova-canvas-v1:0",
+                  "name": "bedrock/stability.stable-image-core-v1:1",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7667,7 +7667,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"bedrock/amazon.nova-canvas-v1:0\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                      "raw": "{\n  \"model\": \"bedrock/stability.stable-image-core-v1:1\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/v1/images/generations",
@@ -7800,7 +7800,7 @@
                   }
                 },
                 {
-                  "name": "bedrock/amazon.nova-canvas-v1:0",
+                  "name": "bedrock/stability.stable-image-core-v1:1",
                   "request": {
                     "method": "POST",
                     "header": [
@@ -7811,7 +7811,7 @@
                     ],
                     "body": {
                       "mode": "raw",
-                      "raw": "{\n  \"model\": \"bedrock/amazon.nova-canvas-v1:0\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                      "raw": "{\n  \"model\": \"bedrock/stability.stable-image-core-v1:1\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                     },
                     "url": {
                       "raw": "{{baseUrl}}/openai/v1/images/generations",
@@ -17869,7 +17869,7 @@
                 ],
                 "body": {
                   "mode": "raw",
-                  "raw": "{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ]\n      }\n    },\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
+                  "raw": "{\n  \"model\": \"claude-opus-4-8\",\n  \"max_tokens\": 256,\n  \"tools\": [\n    {\n      \"name\": \"harness_probe\",\n      \"description\": \"Harness probe tool\",\n      \"input_schema\": {\n        \"type\": \"object\",\n        \"properties\": {\n          \"q\": {\n            \"type\": \"string\"\n          }\n        },\n        \"required\": [\n          \"q\"\n        ]\n      }\n    },\n    {\n      \"type\": \"advisor_20260301\",\n      \"name\": \"advisor\",\n      \"model\": \"claude-opus-4-8\"\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with the single word: ok\"\n    }\n  ]\n}"
                 },
                 "url": {
                   "raw": "{{baseUrl}}/anthropic/v1/messages",
@@ -19514,7 +19514,7 @@
               }
             },
             {
-              "name": "Gemini: response logprobs",
+              "name": "[EXPECT-4XX] Gemini: response logprobs reaches Google, which refuses logprobs on every model the key serves",
               "request": {
                 "method": "POST",
                 "header": [
@@ -19532,7 +19532,7 @@
                   "raw": "{\n  \"contents\": [{\"parts\":[{\"text\":\"Hi\"}]}],\n  \"generationConfig\": {\"responseLogprobs\":true,\"logprobs\":3}\n}"
                 },
                 "url": {
-                  "raw": "{{baseUrl}}/genai/v1beta/models/{{genaiModel}}:generateContent",
+                  "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
                   "host": [
                     "{{baseUrl}}"
                   ],
@@ -19540,10 +19540,22 @@
                     "genai",
                     "v1beta",
                     "models",
-                    "{{genaiModel}}:generateContent"
+                    "gemini-2.5-flash:generateContent"
                   ]
                 }
-              }
+              },
+              "event": [
+                {
+                  "listen": "test",
+                  "script": {
+                    "type": "text/javascript",
+                    "exec": [
+                      "// The Gemini API serves logprobs on no model this key reaches (2.5 and 3.x answer 'Logprobs is not enabled', 2.0 is retired), so this pins that the GenAI route forwards responseLogprobs/logprobs and returns Google's own rejection. The positive check runs on Vertex in 157.3c.",
+                      "pm.test('Google names logprobs in its rejection, so the field reached it', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention logprobs; the field may not have reached Google: ' + t).to.match(/logprobs/i); });"
+                    ]
+                  }
+                }
+              ]
             },
             {
               "name": "Gemini: presence + frequency penalty",
@@ -32291,7 +32303,8 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "if (pm.response.code < 400) { pm.test('Response content non-empty', function () { var j = pm.response.json(); var raw = JSON.stringify(j); pm.expect(raw.length, 'body too small').to.be.greaterThan(50); }); }"
+                      "pm.test('Cohere stream: HTTP 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200); });",
+                      "pm.test('Cohere stream: SSE with content-delta and message-end events', function () { var ct = pm.response.headers.get('Content-Type') || ''; var body = pm.response.text(); pm.expect(ct, 'content-type').to.include('text/event-stream'); var types = body.split('\\n').filter(function (l) { return l.indexOf('data:') === 0; }).map(function (l) { try { return JSON.parse(l.slice(5).trim()).type; } catch (e) { return null; } }); pm.expect(types, body.slice(0, 400)).to.include('content-delta'); pm.expect(types, body.slice(-400)).to.include('message-end'); });"
                     ]
                   }
                 }
@@ -32367,7 +32380,8 @@
                   "script": {
                     "type": "text/javascript",
                     "exec": [
-                      "if (pm.response.code < 400) { pm.test('Cohere shape: message.content non-empty', function () { var j = pm.response.json(); var c = j.message && j.message.content; pm.expect(Array.isArray(c) ? c.length > 0 : (typeof c === 'string' && c.length > 0), 'expected non-empty cohere message content').to.be.true; }); }"
+                      "pm.test('Cohere tools: HTTP 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200); });",
+                      "pm.test('Cohere shape: a tool call comes back with finish_reason TOOL_CALL', function () { var j = pm.response.json(); var calls = (j.message && j.message.tool_calls) || []; pm.expect(calls, pm.response.text().slice(0, 400)).to.be.an('array').that.is.not.empty; pm.expect(calls[0].function && calls[0].function.name, 'tool name').to.be.a('string').and.not.empty; pm.expect(j.finish_reason, 'finish_reason').to.eql('TOOL_CALL'); });"
                     ]
                   }
                 }
@@ -41337,7 +41351,7 @@
                       }
                     },
                     {
-                      "name": "bedrock/amazon.nova-canvas-v1:0",
+                      "name": "bedrock/stability.stable-image-core-v1:1",
                       "request": {
                         "method": "POST",
                         "header": [
@@ -41348,7 +41362,7 @@
                         ],
                         "body": {
                           "mode": "raw",
-                          "raw": "{\n  \"model\": \"amazon.nova-canvas-v1:0\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
+                          "raw": "{\n  \"model\": \"stability.stable-image-core-v1:1\",\n  \"prompt\": \"A simple red apple on a white background\",\n  \"n\": 1,\n  \"size\": \"1024x1024\"\n}"
                         },
                         "url": {
                           "raw": "{{baseUrl}}/openai/v1/images/generations",
@@ -43292,7 +43306,7 @@
           }
         },
         {
-          "name": "openai/gpt-4o-mini compat chat->responses: array-content tool result becomes input_text output blocks - chat-responses-tool-replay",
+          "name": "openai/gpt-5.3-codex compat chat->responses: array-content tool result becomes input_text output blocks - chat-responses-tool-replay",
           "event": [
             {
               "listen": "test",
@@ -43303,13 +43317,19 @@
                   "  pm.expect(text, 'Responses rejected the tool result block type').to.not.include(\"Invalid value: 'text'\");",
                   "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
                   "});",
-                  "pm.test('openai: function_call_output blocks use the Responses input_text spelling, not the chat text one', function () {",
+                  "pm.test('openai: function_call_output never carries the chat text block spelling', function () {",
                   "  var raw = pm.response.json().extra_fields.raw_request;",
                   "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
                   "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
                   "  pm.expect(outs.length, 'expected one function_call_output in the converted request: ' + JSON.stringify(raw)).to.equal(1);",
-                  "  pm.expect(Array.isArray(outs[0].output), 'array content must stay an array of blocks: ' + JSON.stringify(outs[0])).to.equal(true);",
-                  "  pm.expect(outs[0].output[0].type, 'block type on the wire').to.equal('input_text');",
+                  "  // Text-only blocks are flattened to a string on the OpenAI egress (core/providers/openai/types.go); a block array is only kept when it carries something a string cannot.",
+                  "  var out = outs[0].output;",
+                  "  if (typeof out === 'string') {",
+                  "    pm.expect(out, 'flattened tool output lost the tool text: ' + JSON.stringify(outs[0])).to.equal('18C, light rain');",
+                  "  } else {",
+                  "    pm.expect(Array.isArray(out) && out.length > 0, 'output must be a string or a non-empty block array: ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "    out.forEach(function (blk) { pm.expect(blk.type, 'block type on the wire: ' + JSON.stringify(outs[0])).to.equal('input_text'); });",
+                  "  }",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -43334,7 +43354,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_paris_blocks\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_paris_blocks\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Thanks. Is that warm?\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_paris_blocks\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_paris_blocks\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Thanks. Is that warm?\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -43350,7 +43370,7 @@
           }
         },
         {
-          "name": "azure/gpt-4o-mini compat chat->responses: array-content tool result becomes input_text output blocks - chat-responses-tool-replay",
+          "name": "azure/gpt-5.6-sol compat chat->responses: array-content tool result becomes input_text output blocks - chat-responses-tool-replay",
           "event": [
             {
               "listen": "test",
@@ -43361,13 +43381,19 @@
                   "  pm.expect(text, 'Responses rejected the tool result block type').to.not.include(\"Invalid value: 'text'\");",
                   "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
                   "});",
-                  "pm.test('azure: function_call_output blocks use the Responses input_text spelling, not the chat text one', function () {",
+                  "pm.test('azure: function_call_output never carries the chat text block spelling', function () {",
                   "  var raw = pm.response.json().extra_fields.raw_request;",
                   "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
                   "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
                   "  pm.expect(outs.length, 'expected one function_call_output in the converted request: ' + JSON.stringify(raw)).to.equal(1);",
-                  "  pm.expect(Array.isArray(outs[0].output), 'array content must stay an array of blocks: ' + JSON.stringify(outs[0])).to.equal(true);",
-                  "  pm.expect(outs[0].output[0].type, 'block type on the wire').to.equal('input_text');",
+                  "  // Text-only blocks are flattened to a string on the OpenAI egress (core/providers/openai/types.go); a block array is only kept when it carries something a string cannot.",
+                  "  var out = outs[0].output;",
+                  "  if (typeof out === 'string') {",
+                  "    pm.expect(out, 'flattened tool output lost the tool text: ' + JSON.stringify(outs[0])).to.equal('18C, light rain');",
+                  "  } else {",
+                  "    pm.expect(Array.isArray(out) && out.length > 0, 'output must be a string or a non-empty block array: ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "    out.forEach(function (blk) { pm.expect(blk.type, 'block type on the wire: ' + JSON.stringify(outs[0])).to.equal('input_text'); });",
+                  "  }",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -43392,7 +43418,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_paris_blocks\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_paris_blocks\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Thanks. Is that warm?\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"azure/gpt-5.6-sol\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_paris_blocks\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_paris_blocks\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Thanks. Is that warm?\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -43408,7 +43434,7 @@
           }
         },
         {
-          "name": "openai/gpt-5.1-codex-mini compat chat->responses: empty tool result keeps function_call_output.output (non-streaming) - chat-responses-tool-replay",
+          "name": "openai/gpt-5.3-codex compat chat->responses: empty tool result keeps function_call_output.output (non-streaming) - chat-responses-tool-replay",
           "event": [
             {
               "listen": "test",
@@ -43454,7 +43480,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-5.1-codex-mini\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}]}"
+              "raw": "{\"model\":\"openai/gpt-5.3-codex\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}]}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -43470,7 +43496,7 @@
           }
         },
         {
-          "name": "openai/gpt-5.1-codex-mini compat chat->responses: empty tool result keeps function_call_output.output (streaming) - chat-responses-tool-replay",
+          "name": "openai/gpt-5.3-codex compat chat->responses: empty tool result keeps function_call_output.output (streaming) - chat-responses-tool-replay",
           "event": [
             {
               "listen": "test",
@@ -43513,7 +43539,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\"model\":\"openai/gpt-5.1-codex-mini\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}],\"stream\":true}"
+              "raw": "{\"model\":\"openai/gpt-5.3-codex\",\"max_tokens\":200,\"messages\":[{\"role\":\"user\",\"content\":\"What is the weather in Berlin? If the tool returns nothing, say the weather is unknown.\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_empty_8568\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"location\\\":\\\"Berlin\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_empty_8568\",\"content\":\"\"}],\"tools\":[{\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\",\"properties\":{\"location\":{\"type\":\"string\"}}}}}],\"stream\":true}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -53824,8 +53850,10 @@
                   "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
                   "pm.test('turn 3 answers after the replayed interleave', function () {",
                   "  var body = pm.response.text() || '';",
-                  "  pm.expect(body, 'provider rejected the replayed reasoning blocks').to.not.include('cannot be modified');",
-                  "  pm.expect(body, 'a thought signature did not survive two round trips').to.not.include('thought_signature');",
+                  "  // extra_fields.raw_request echoes the outbound body, whose replayed parts legitimately carry thought signatures; only the provider's own answer is searched.",
+                  "  var answer = body; try { var parsed = JSON.parse(body); delete parsed.extra_fields; answer = JSON.stringify(parsed); } catch (e) { answer = body; }",
+                  "  pm.expect(answer, 'provider rejected the replayed reasoning blocks').to.not.include('cannot be modified');",
+                  "  pm.expect(answer, 'a thought signature did not survive two round trips').to.not.include('thought_signature');",
                   "  pm.expect(pm.response.code, 'turn 3 failed: ' + body).to.be.below(400);",
                   "  var j = pm.response.json();",
                   "  var messages = (j.output || []).filter(function (o) { return o.type === 'message'; });",
@@ -54019,8 +54047,10 @@
                   "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
                   "pm.test('turn 3 answers after the replayed interleave', function () {",
                   "  var body = pm.response.text() || '';",
-                  "  pm.expect(body, 'provider rejected the replayed reasoning blocks').to.not.include('cannot be modified');",
-                  "  pm.expect(body, 'a thought signature did not survive two round trips').to.not.include('thought_signature');",
+                  "  // extra_fields.raw_request echoes the outbound body, whose replayed parts legitimately carry thought signatures; only the provider's own answer is searched.",
+                  "  var answer = body; try { var parsed = JSON.parse(body); delete parsed.extra_fields; answer = JSON.stringify(parsed); } catch (e) { answer = body; }",
+                  "  pm.expect(answer, 'provider rejected the replayed reasoning blocks').to.not.include('cannot be modified');",
+                  "  pm.expect(answer, 'a thought signature did not survive two round trips').to.not.include('thought_signature');",
                   "  pm.expect(pm.response.code, 'turn 3 failed: ' + body).to.be.below(400);",
                   "  var j = pm.response.json();",
                   "  var messages = (j.output || []).filter(function (o) { return o.type === 'message'; });",
@@ -54216,8 +54246,10 @@
                   "if (pm.request.body && pm.request.body.raw && pm.request.body.raw.indexOf('{{') !== -1) { return; }",
                   "pm.test('turn 3 answers after the replayed interleave', function () {",
                   "  var body = pm.response.text() || '';",
-                  "  pm.expect(body, 'provider rejected the replayed reasoning blocks').to.not.include('cannot be modified');",
-                  "  pm.expect(body, 'a thought signature did not survive two round trips').to.not.include('thought_signature');",
+                  "  // extra_fields.raw_request echoes the outbound body, whose replayed parts legitimately carry thought signatures; only the provider's own answer is searched.",
+                  "  var answer = body; try { var parsed = JSON.parse(body); delete parsed.extra_fields; answer = JSON.stringify(parsed); } catch (e) { answer = body; }",
+                  "  pm.expect(answer, 'provider rejected the replayed reasoning blocks').to.not.include('cannot be modified');",
+                  "  pm.expect(answer, 'a thought signature did not survive two round trips').to.not.include('thought_signature');",
                   "  pm.expect(pm.response.code, 'turn 3 failed: ' + body).to.be.below(400);",
                   "  var j = pm.response.json();",
                   "  var messages = (j.output || []).filter(function (o) { return o.type === 'message'; });",
@@ -164650,7 +164682,7 @@
           "response": []
         },
         {
-          "name": "/v1/decisions - matches jev anchors - bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0",
+          "name": "/v1/decisions - matches jev anchors - bedrock/global.anthropic.claude-sonnet-4-6",
           "event": [
             {
               "listen": "test",
@@ -164720,7 +164752,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-20250514-v1:0\",\n  \"state\": \"Customer support ticket #88231. Customer is on the Pro plan and has been a paying subscriber for 3 years. They write: 'This is my FIFTH email in two weeks and NOBODY has replied. You charged my card THREE times for a single order (#A-4021) at $149 each, so $447 total instead of $149. I have screenshots of all three charges. I have asked for a refund every single time and been completely ignored. If the two extra charges are not refunded TODAY I am filing a chargeback with my bank, cancelling my Pro subscription immediately, posting the screenshots on Twitter, and reporting you to the Better Business Bureau. Your competitor Acme offers the same features for less and I am seriously considering switching. This is completely unacceptable and I want a real person to fix this now.'\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"is_angry\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer angry?\"\n    },\n    \"is_satisfied\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer satisfied with the service?\"\n    },\n    \"is_polite\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the message written in a calm, polite tone?\"\n    },\n    \"mentions_refund\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    },\n    \"threatens_chargeback\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten a bank chargeback?\"\n    },\n    \"threatens_cancellation\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to cancel their subscription?\"\n    },\n    \"threatens_public_complaint\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to complain publicly (social media, review sites, or a regulator)?\"\n    },\n    \"mentions_competitor\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer mention a competitor?\"\n    },\n    \"is_billing_related\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the issue about billing or charges?\"\n    },\n    \"is_repeat_contact\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Has the customer contacted support about this before?\"\n    },\n    \"has_attached_evidence\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer say they have evidence such as screenshots?\"\n    },\n    \"mentions_specific_amount\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer cite a specific dollar amount?\"\n    },\n    \"is_long_time_customer\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this a long-time customer (multiple years)?\"\n    },\n    \"requests_human_response\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer explicitly ask to speak to a real person?\"\n    },\n    \"is_first_time_issue\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this the first time the customer is raising this issue?\"\n    },\n    \"willing_to_wait\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer willing to wait patiently for a resolution?\"\n    },\n    \"expresses_urgency\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer express that this is urgent?\"\n    },\n    \"mentions_data_loss\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report lost data?\"\n    },\n    \"reports_product_crash\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report the product crashing or a software defect?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges, refunds, invoices\",\n        \"bug\": \"product defects or crashes\",\n        \"account\": \"login or account access\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"sentiment\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Overall sentiment of the message\",\n      \"criteria\": {\n        \"positive\": \"happy\",\n        \"neutral\": \"matter of fact\",\n        \"negative\": \"unhappy or hostile\"\n      }\n    },\n    \"primary_emotion\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The dominant emotion\",\n      \"criteria\": {\n        \"anger\": \"angry or hostile\",\n        \"confusion\": \"confused\",\n        \"sadness\": \"sad or disappointed\",\n        \"joy\": \"happy\"\n      }\n    },\n    \"customer_tier\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which plan is the customer on?\",\n      \"criteria\": {\n        \"free\": \"free plan\",\n        \"pro\": \"pro plan\",\n        \"enterprise\": \"enterprise plan\"\n      }\n    },\n    \"recommended_action\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The single best next action\",\n      \"criteria\": {\n        \"issue_refund\": \"refund the extra charges\",\n        \"request_more_info\": \"ask for more details\",\n        \"close_ticket\": \"close with no action\",\n        \"ignore\": \"take no action\"\n      }\n    },\n    \"contact_channel\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which channel did the customer use?\",\n      \"criteria\": {\n        \"email\": \"email or support ticket\",\n        \"phone\": \"phone call\",\n        \"chat\": \"live chat\",\n        \"social\": \"social media\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered this week\",\n        \"should be answered today\",\n        \"needs an immediate reply\"\n      ]\n    },\n    \"severity\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How severe is the customer's problem?\",\n      \"criteria\": [\n        \"minor\",\n        \"moderate\",\n        \"major\",\n        \"severe\"\n      ]\n    },\n    \"churn_risk\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How likely is this customer to cancel?\",\n      \"criteria\": [\n        \"not at all likely\",\n        \"somewhat likely\",\n        \"very likely\",\n        \"almost certain\"\n      ]\n    },\n    \"customer_satisfaction\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How satisfied is the customer right now?\",\n      \"criteria\": [\n        \"very unsatisfied\",\n        \"unsatisfied\",\n        \"neutral\",\n        \"satisfied\",\n        \"very satisfied\"\n      ]\n    }\n  }\n}"
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-sonnet-4-6\",\n  \"state\": \"Customer support ticket #88231. Customer is on the Pro plan and has been a paying subscriber for 3 years. They write: 'This is my FIFTH email in two weeks and NOBODY has replied. You charged my card THREE times for a single order (#A-4021) at $149 each, so $447 total instead of $149. I have screenshots of all three charges. I have asked for a refund every single time and been completely ignored. If the two extra charges are not refunded TODAY I am filing a chargeback with my bank, cancelling my Pro subscription immediately, posting the screenshots on Twitter, and reporting you to the Better Business Bureau. Your competitor Acme offers the same features for less and I am seriously considering switching. This is completely unacceptable and I want a real person to fix this now.'\",\n  \"questions\": {\n    \"is_frustrated\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer frustrated?\"\n    },\n    \"is_angry\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer angry?\"\n    },\n    \"is_satisfied\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer satisfied with the service?\"\n    },\n    \"is_polite\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the message written in a calm, polite tone?\"\n    },\n    \"mentions_refund\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer ask for a refund?\"\n    },\n    \"threatens_chargeback\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten a bank chargeback?\"\n    },\n    \"threatens_cancellation\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to cancel their subscription?\"\n    },\n    \"threatens_public_complaint\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer threaten to complain publicly (social media, review sites, or a regulator)?\"\n    },\n    \"mentions_competitor\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer mention a competitor?\"\n    },\n    \"is_billing_related\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the issue about billing or charges?\"\n    },\n    \"is_repeat_contact\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Has the customer contacted support about this before?\"\n    },\n    \"has_attached_evidence\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer say they have evidence such as screenshots?\"\n    },\n    \"mentions_specific_amount\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer cite a specific dollar amount?\"\n    },\n    \"is_long_time_customer\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this a long-time customer (multiple years)?\"\n    },\n    \"requests_human_response\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer explicitly ask to speak to a real person?\"\n    },\n    \"is_first_time_issue\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is this the first time the customer is raising this issue?\"\n    },\n    \"willing_to_wait\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Is the customer willing to wait patiently for a resolution?\"\n    },\n    \"expresses_urgency\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer express that this is urgent?\"\n    },\n    \"mentions_data_loss\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report lost data?\"\n    },\n    \"reports_product_crash\": {\n      \"kind\": \"noul\",\n      \"instructions\": \"Does the customer report the product crashing or a software defect?\"\n    },\n    \"category\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Pick the ticket category\",\n      \"criteria\": {\n        \"billing\": \"charges, refunds, invoices\",\n        \"bug\": \"product defects or crashes\",\n        \"account\": \"login or account access\",\n        \"other\": \"anything else\"\n      }\n    },\n    \"sentiment\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Overall sentiment of the message\",\n      \"criteria\": {\n        \"positive\": \"happy\",\n        \"neutral\": \"matter of fact\",\n        \"negative\": \"unhappy or hostile\"\n      }\n    },\n    \"primary_emotion\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The dominant emotion\",\n      \"criteria\": {\n        \"anger\": \"angry or hostile\",\n        \"confusion\": \"confused\",\n        \"sadness\": \"sad or disappointed\",\n        \"joy\": \"happy\"\n      }\n    },\n    \"customer_tier\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which plan is the customer on?\",\n      \"criteria\": {\n        \"free\": \"free plan\",\n        \"pro\": \"pro plan\",\n        \"enterprise\": \"enterprise plan\"\n      }\n    },\n    \"recommended_action\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"The single best next action\",\n      \"criteria\": {\n        \"issue_refund\": \"refund the extra charges\",\n        \"request_more_info\": \"ask for more details\",\n        \"close_ticket\": \"close with no action\",\n        \"ignore\": \"take no action\"\n      }\n    },\n    \"contact_channel\": {\n      \"kind\": \"choice\",\n      \"instructions\": \"Which channel did the customer use?\",\n      \"criteria\": {\n        \"email\": \"email or support ticket\",\n        \"phone\": \"phone call\",\n        \"chat\": \"live chat\",\n        \"social\": \"social media\"\n      }\n    },\n    \"urgency\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How urgently does this need a human reply?\",\n      \"criteria\": [\n        \"can wait a week\",\n        \"should be answered this week\",\n        \"should be answered today\",\n        \"needs an immediate reply\"\n      ]\n    },\n    \"severity\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How severe is the customer's problem?\",\n      \"criteria\": [\n        \"minor\",\n        \"moderate\",\n        \"major\",\n        \"severe\"\n      ]\n    },\n    \"churn_risk\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How likely is this customer to cancel?\",\n      \"criteria\": [\n        \"not at all likely\",\n        \"somewhat likely\",\n        \"very likely\",\n        \"almost certain\"\n      ]\n    },\n    \"customer_satisfaction\": {\n      \"kind\": \"score\",\n      \"instructions\": \"How satisfied is the customer right now?\",\n      \"criteria\": [\n        \"very unsatisfied\",\n        \"unsatisfied\",\n        \"neutral\",\n        \"satisfied\",\n        \"very satisfied\"\n      ]\n    }\n  }\n}"
             }
           },
           "response": []
@@ -170805,7 +170837,8 @@
                 "exec": [
                   "// One run id for the dynamic rules and keys below, one fresh session per sequence.",
                   "pm.collectionVariables.set('sessionMatrixRun', 'run-' + Date.now());",
-                  "pm.collectionVariables.set('smSession1', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));"
+                  "pm.collectionVariables.set('smSession1', 'session-affinity-' + Date.now() + '-' + Math.floor(Math.random() * 1e9));",
+                  "// Sweep leftovers of an aborted earlier run before the first sequence. Matrix 9-11 sweep too, but they\n// sit after 12-17 in collection order, so a stale second anthropic key would serve every sequence first.\n// No age cutoff here: one shard per run carries this folder and runs it in order, so before matrix 1 the\n// run has created nothing and every run-tagged matrix object is a leftover, however recent. Matrix 9-11\n// keep their ten-minute guard because by then this run's own objects exist.\n(function () {\n  var BASE = pm.variables.get('baseUrl');\n  function isStale(name, prefix) {\n    return String(name || '').indexOf(prefix) === 0 && /run-\\d+/.test(String(name));\n  }\n  function list(path, field, prefix, cb) {\n    pm.sendRequest({ url: BASE + path, method: 'GET' }, function (err, res) {\n      var json = null; try { json = res.json(); } catch (e) { json = null; }\n      cb(((json && json[field]) || []).filter(function (o) { return isStale(o.name, prefix); }));\n    });\n  }\n  function deleteEach(items, pathOf, done) {\n    var i = 0; (function next() { if (i >= items.length) { return done(); } var it = items[i++]; pm.sendRequest({ url: BASE + pathOf(it), method: 'DELETE' }, function () { next(); }); })();\n  }\n  list('/api/governance/routing-rules', 'rules', 'Harness session matrix ', function (rules) {\n    deleteEach(rules, function (r) { return '/api/governance/routing-rules/' + r.id; }, function () {\n      list('/api/governance/virtual-keys', 'virtual_keys', 'harness-session-matrix-', function (vks) {\n        deleteEach(vks, function (v) { return '/api/governance/virtual-keys/' + v.id; }, function () {\n          list('/api/providers/anthropic/keys', 'keys', 'Harness Session Key B ', function (keys) {\n            deleteEach(keys, function (k) { return '/api/providers/anthropic/keys/' + k.id; }, function () {});\n          });\n        });\n      });\n    });\n  });\n})();"
                 ]
               }
             },
@@ -175708,7 +175741,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
-                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "pm.variables.set('fallbackRulePriority', String(800000 + Math.floor(Math.random() * 90000)));"
                 ]
               }
             },
@@ -175771,7 +175805,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"harness-fallback-roundtrip-{{$guid}}\",\n  \"enabled\": false,\n  \"scope\": \"global\",\n  \"priority\": 0,\n  \"cel_expression\": \"model == \\\"bifrost-harness-never-matches\\\"\",\n  \"targets\": [\n    {\n      \"provider\": \"openai\",\n      \"model\": \"gpt-4o-mini\",\n      \"weight\": 1\n    }\n  ],\n  \"fallbacks\": [\n    \"openai_pc_auto/gpt-4o-mini\",\n    \"openai_pc_auto/\",\n    {\n      \"provider\": \"openai_pc_auto\",\n      \"model\": \"gpt-4o-mini\",\n      \"key_id\": \"00000000-0000-4000-8000-000000000003\"\n    },\n    {\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-sonnet-4-6\"\n    },\n    \"azure/\"\n  ]\n}",
+              "raw": "{\n  \"name\": \"harness-fallback-roundtrip-{{$guid}}\",\n  \"enabled\": false,\n  \"scope\": \"global\",\n  \"priority\": {{fallbackRulePriority}},\n  \"cel_expression\": \"model == \\\"bifrost-harness-never-matches\\\"\",\n  \"targets\": [\n    {\n      \"provider\": \"openai\",\n      \"model\": \"gpt-4o-mini\",\n      \"weight\": 1\n    }\n  ],\n  \"fallbacks\": [\n    \"openai_pc_auto/gpt-4o-mini\",\n    \"openai_pc_auto/\",\n    {\n      \"provider\": \"openai_pc_auto\",\n      \"model\": \"gpt-4o-mini\",\n      \"key_id\": \"00000000-0000-4000-8000-000000000003\"\n    },\n    {\n      \"provider\": \"anthropic\",\n      \"model\": \"claude-sonnet-4-6\"\n    },\n    \"azure/\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -175800,7 +175834,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
-                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }",
+                  "pm.variables.set('fallbackRulePriority', String(800000 + Math.floor(Math.random() * 90000)));"
                 ]
               }
             },
@@ -175835,7 +175870,7 @@
                   "  {label: 'an object with a blank provider', fallbacks: [{provider: ' ', model: 'gpt-4o-mini'}]}",
                   "];",
                   "invalid.forEach(function (tc) {",
-                  "  var rule = {name: 'harness-invalid-fallback-' + pm.variables.replaceIn('{{$guid}}'), enabled: false, scope: 'global', priority: 0,",
+                  "  var rule = {name: 'harness-invalid-fallback-' + pm.variables.replaceIn('{{$guid}}'), enabled: false, scope: 'global', priority: Number(pm.variables.get('fallbackRulePriority')) + 1,",
                   "    cel_expression: 'model == \"bifrost-harness-never-matches\"', targets: [{provider: 'openai', weight: 1}], fallbacks: tc.fallbacks};",
                   "  mgmt('POST', '/api/routing/rules', rule, function (err, res) {",
                   "    var body = null; try { body = res.json(); } catch (e) { body = res && res.text(); }",
@@ -175856,7 +175891,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"name\": \"harness-invalid-fallback-{{$guid}}\",\n  \"enabled\": false,\n  \"scope\": \"global\",\n  \"priority\": 0,\n  \"cel_expression\": \"model == \\\"bifrost-harness-never-matches\\\"\",\n  \"targets\": [\n    {\n      \"provider\": \"openai\",\n      \"weight\": 1\n    }\n  ],\n  \"fallbacks\": [\n    {\n      \"key_id\": \"k-1\"\n    }\n  ]\n}",
+              "raw": "{\n  \"name\": \"harness-invalid-fallback-{{$guid}}\",\n  \"enabled\": false,\n  \"scope\": \"global\",\n  \"priority\": {{fallbackRulePriority}},\n  \"cel_expression\": \"model == \\\"bifrost-harness-never-matches\\\"\",\n  \"targets\": [\n    {\n      \"provider\": \"openai\",\n      \"weight\": 1\n    }\n  ],\n  \"fallbacks\": [\n    {\n      \"key_id\": \"k-1\"\n    }\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -193464,6 +193499,51 @@
           ]
         },
         {
+          "name": "148.6b [EXPECT-4XX] azure On Your Data streaming with an unreachable search endpoint reaches the provider (on your data)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "api-key",
+                "value": "{{openaiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is in the index?\"\n    }\n  ],\n  \"data_sources\": [\n    {\n      \"type\": \"azure_search\",\n      \"parameters\": {\n        \"endpoint\": \"https://does-not-exist-h146.search.windows.net\",\n        \"index_name\": \"none\",\n        \"authentication\": {\n          \"type\": \"api_key\",\n          \"key\": \"bogus\"\n        }\n      }\n    }\n  ],\n  \"stream\": true,\n  \"max_tokens\": 32\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/openai/deployments/{{azureDeployment}}/chat/completions?api-version={{azureApiVersion}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "openai",
+                "deployments",
+                "{{azureDeployment}}",
+                "chat",
+                "completions?api-version={{azureApiVersion}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('rejection comes from the data_sources path', function () { var t = pm.response.text(); pm.expect(t, 'rejection does not mention data source/search: ' + t).to.match(/data.?source|search|endpoint|index|unreachable/i); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "148.7 openai passthrough ignores client credentials and still authenticates (passthrough auth strip)",
           "request": {
             "method": "POST",
@@ -194754,7 +194834,7 @@
           ]
         },
         {
-          "name": "151.11 [EXPECT-4XX] vertex/gemini-2.5-flash vertexAiSearch datastore that does not exist reaches Google (vertex ai search grounding)",
+          "name": "151.11 [EXPECT-4XX] vertex/gemini-2.5-flash vertexAiSearch malformed datastore name reaches Google (vertex ai search grounding)",
           "request": {
             "method": "POST",
             "header": [
@@ -194765,7 +194845,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What does the index say?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"retrieval\": {\n        \"vertexAiSearch\": {\n          \"datastore\": \"projects/{{vertexProject}}/locations/global/collections/default_collection/dataStores/h149-does-not-exist\"\n        }\n      }\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  }\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"What does the index say?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"retrieval\": {\n        \"vertexAiSearch\": {\n          \"datastore\": \"h149-not-a-datastore-resource-name\"\n        }\n      }\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
@@ -195141,7 +195221,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"input\": \"Use the code_exec tool to run: print(\\\"hello\\\")\",\n  \"tools\": [\n    {\n      \"type\": \"custom\",\n      \"name\": \"code_exec\",\n      \"description\": \"Executes arbitrary python code\",\n      \"format\": {\n        \"type\": \"text\"\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"name\": \"code_exec\"\n  },\n  \"max_output_tokens\": 256\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5-mini\",\n  \"input\": \"Use the code_exec tool to run: print(\\\"hello\\\")\",\n  \"tools\": [\n    {\n      \"type\": \"custom\",\n      \"name\": \"code_exec\",\n      \"description\": \"Executes arbitrary python code\",\n      \"format\": {\n        \"type\": \"text\"\n      }\n    }\n  ],\n  \"tool_choice\": {\n    \"type\": \"custom\",\n    \"name\": \"code_exec\"\n  },\n  \"max_output_tokens\": 2048\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/responses",
@@ -195684,7 +195764,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 128,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
@@ -195733,7 +195813,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 128,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
@@ -196242,7 +196322,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Count in lowercase words: one, two, three, four\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128,\n    \"stopSequences\": [\n      \"three\"\n    ]\n  },\n  \"additionalModelResponseFieldPaths\": [\n    \"/stop_sequence\"\n  ]\n}"
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Repeat exactly, in lowercase: one, two, three, four\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128,\n    \"stopSequences\": [\n      \"three\"\n    ]\n  },\n  \"additionalModelResponseFieldPaths\": [\n    \"/stop_sequence\"\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse",
@@ -196263,11 +196343,61 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 600)).to.equal(200); });",
                   "var j = pm.response.json();",
                   "pm.test('stop sequence fired and was echoed through additionalModelResponseFields', function () {",
                   "  pm.expect(j.stopReason, pm.response.text().slice(0, 600)).to.equal('stop_sequence');",
                   "  pm.expect(j.additionalModelResponseFields, 'additionalModelResponseFields missing: ' + pm.response.text().slice(0, 600)).to.be.an('object');",
                   "  pm.expect(j.additionalModelResponseFields.stop_sequence).to.equal('three');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "153.6b bedrock converse-stream messageStop carries stop_sequence and additionalModelResponseFields (response field paths)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"text\": \"Repeat exactly, in lowercase: one, two, three, four\"\n        }\n      ]\n    }\n  ],\n  \"inferenceConfig\": {\n    \"maxTokens\": 128,\n    \"stopSequences\": [\n      \"three\"\n    ]\n  },\n  \"additionalModelResponseFieldPaths\": [\n    \"/stop_sequence\"\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/bedrock/model/{{bedrockModel}}/converse-stream",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "bedrock",
+                "model",
+                "{{bedrockModel}}",
+                "converse-stream"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var body = pm.response.text() || '';",
+                  "pm.test('HTTP 200 AWS event stream', function () {",
+                  "  pm.expect(pm.response.code, body.slice(0, 600)).to.equal(200);",
+                  "  pm.expect(pm.response.headers.get('content-type') || '', 'content-type').to.include('vnd.amazon.eventstream');",
+                  "});",
+                  "pm.test('messageStop reports the native stop_sequence and echoes additionalModelResponseFields', function () {",
+                  "  var stop = body.slice(body.lastIndexOf('messageStop'));",
+                  "  pm.expect(body, 'no messageStop event: ' + body.slice(-600)).to.include('messageStop');",
+                  "  pm.expect(stop, 'messageStop payload: ' + stop.slice(0, 600)).to.match(/\"stopReason\"\\s*:\\s*\"stop_sequence\"/);",
+                  "  pm.expect(stop, 'messageStop payload: ' + stop.slice(0, 600)).to.match(/\"additionalModelResponseFields\"\\s*:\\s*\\{\\s*\"stop_sequence\"\\s*:\\s*\"three\"/);",
                   "});"
                 ]
               }
@@ -198181,6 +198311,57 @@
                   "var j = {}; try { j = pm.response.json() || {}; } catch (e) { j = {}; }",
                   "var cand = (j.candidates && j.candidates[0]) || {};",
                   "pm.test('candidate carries logprobsResult with top candidates', function () { pm.expect(cand.logprobsResult, 'no logprobsResult (responseLogprobs stripped on the raw path?): ' + pm.response.text().slice(0, 600)).to.be.an('object'); pm.expect((cand.logprobsResult.topCandidates || []).length, pm.response.text().slice(0, 600)).to.be.above(0); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "157.3c vertex/gemini-2.5-flash /genai responseLogprobs returns logprobsResult with top candidates (response logprobs)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Say hi.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"responseLogprobs\": true,\n    \"logprobs\": 3,\n    \"maxOutputTokens\": 16,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-2.5-flash:generateContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-2.5-flash:generateContent"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Vertex serves logprobs on gemini-2.5-flash (the raw genai_passthrough answer carries avgLogprobs and logprobsResult). The typed /genai -> Vertex path runs compat drop-params, which strips logprobs while the model catalog does not list them for gemini-2.5-flash.",
+                  "var text = pm.response.text() || '';",
+                  "pm.test('HTTP 200', function () { pm.expect(pm.response.code, text.slice(0, 600)).to.eql(200); });",
+                  "pm.test('the candidate carries logprobsResult with top candidates and avgLogprobs', function () {",
+                  "  var c = ((pm.response.json() || {}).candidates || [])[0] || {};",
+                  "  var lr = c.logprobsResult;",
+                  "  pm.expect(lr, 'no logprobsResult; responseLogprobs/logprobs never reached Vertex or the answer was dropped: ' + text.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(lr.topCandidates, 'topCandidates').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(((lr.topCandidates[0] || {}).candidates || []).length, 'top candidates per step').to.be.at.most(3).and.at.least(1);",
+                  "  pm.expect(lr.chosenCandidates, 'chosenCandidates').to.be.an('array').that.is.not.empty;",
+                  "  pm.expect(c.avgLogprobs, 'avgLogprobs').to.be.a('number');",
+                  "});"
                 ]
               }
             }
@@ -228487,7 +228668,9 @@
                   "      pm.expect(first).to.include('Skipping load balancing for model gpt-4o-mini: provider ' + state.p_a + ' already set');",
                   "      pm.expect(first).to.include('Session stays on ' + state.p_a + '/gpt-4o-mini for gpt-4o-mini, which routing also proposed');",
                   "      pm.expect(first).to.include('Session reused key ' + turns[0].key + ' for ' + state.p_a + '/gpt-4o-mini');",
-                  "      ts.forEach(function (t, k) { pm.expect(messages(t), 'turn ' + (k + 2) + ' trail').to.eql(first); });",
+                  "      // Other shards add and delete global rules mid-run, so the scope's rule count and the no-match lines of rules this row did not make are left out of the comparison.",
+                  "      var own = function (t) { return messages(t).split('\\n').filter(function (l) { return l.indexOf('Evaluating scope ') === -1 && (l.indexOf(\"Rule '\") === -1 || l.indexOf(state.run) !== -1); }).join('\\n'); };",
+                  "      ts.forEach(function (t, k) { pm.expect(own(t), 'turn ' + (k + 2) + ' trail').to.eql(own(ts[0])); });",
                   "    });",
                   "    cleanup(state);",
                   "  });",
@@ -238367,7 +238550,8 @@
                   "logRow(reqId, function (j) {",
                   "  pm.test('the log row records a passthrough served by openai', function () {",
                   "    pm.expect(j, 'log ' + reqId + ' never settled').to.be.an('object');",
-                  "    pm.expect(j.object).to.eql('passthrough');",
+                  "    pm.expect(j.object, JSON.stringify(j).slice(0, 400)).to.eql('chat_completion');",
+                  "    pm.expect(j.is_passthrough, JSON.stringify(j).slice(0, 400)).to.eql(true);",
                   "    pm.expect(j.provider).to.eql('openai');",
                   "  });",
                   "});"
@@ -246614,10 +246798,10 @@
     },
     {
       "name": "187. Chat reasoning.summary reaches the Responses upstream (reasoning summary)",
-      "description": "A chat request served through the Responses API (x-bf-compat convert_chat_to_responses) used to drop reasoning.summary, because the chat reasoning object had no summary field: the upstream got reasoning.summary null, or no reasoning at all when summary was the only field set, so only encrypted reasoning came back. 187.1 and 187.2 pin that /v1/chat/completions forwards it (asserted on extra_fields.raw_request). They use openai/gpt-5.1-codex-mini because convert_chat_to_responses only converts a model the catalog lists without chat completions (plugins/compat markForConversion); gpt-5-mini supports chat, so it was never converted. The /openai integration keeps OpenAI's chat shape, which has no reasoning.summary: 187.3 sends an invalid summary there and expects 200 (it would 400 if it leaked), and 187.4 pins the passthrough route (x-bf-passthrough-extra-params + extra_params) by sending the same invalid value and expecting OpenAI to reject it.",
+      "description": "A chat request served through the Responses API (x-bf-compat convert_chat_to_responses) used to drop reasoning.summary, because the chat reasoning object had no summary field: the upstream got reasoning.summary null, or no reasoning at all when summary was the only field set, so only encrypted reasoning came back. 187.1 and 187.2 pin that /v1/chat/completions forwards it (asserted on extra_fields.raw_request). They use openai/gpt-5.3-codex because convert_chat_to_responses only converts a model the catalog lists without chat completions (plugins/compat markForConversion); gpt-5-mini supports chat, so it was never converted. The /openai integration keeps OpenAI's chat shape, which has no reasoning.summary: 187.3 sends an invalid summary there and expects 200 (it would 400 if it leaked), and 187.4 pins the passthrough route (x-bf-passthrough-extra-params + extra_params) by sending the same invalid value and expecting OpenAI to reject it.",
       "item": [
         {
-          "name": "187.1 openai/gpt-5.1-codex-mini /v1 chat reasoning.summary with effort is forwarded to responses (reasoning summary)",
+          "name": "187.1 openai/gpt-5.3-codex /v1 chat reasoning.summary with effort is forwarded to responses (reasoning summary)",
           "request": {
             "method": "POST",
             "header": [
@@ -246636,7 +246820,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.1-codex-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"how many primes between 7 and 70\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"summary\": \"auto\"\n  },\n  \"max_completion_tokens\": 512\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"how many primes between 7 and 70\"\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"low\",\n    \"summary\": \"auto\"\n  },\n  \"max_completion_tokens\": 512\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -246674,7 +246858,7 @@
           ]
         },
         {
-          "name": "187.2 openai/gpt-5.1-codex-mini /v1 chat summary-only reasoning object is forwarded to responses (reasoning summary)",
+          "name": "187.2 openai/gpt-5.3-codex /v1 chat summary-only reasoning object is forwarded to responses (reasoning summary)",
           "request": {
             "method": "POST",
             "header": [
@@ -246693,7 +246877,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"openai/gpt-5.1-codex-mini\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"how many primes between 7 and 70\"\n    }\n  ],\n  \"reasoning\": {\n    \"summary\": \"auto\"\n  },\n  \"max_completion_tokens\": 512\n}"
+              "raw": "{\n  \"model\": \"openai/gpt-5.3-codex\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"how many primes between 7 and 70\"\n    }\n  ],\n  \"reasoning\": {\n    \"summary\": \"auto\"\n  },\n  \"max_completion_tokens\": 512\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -263143,10 +263327,12 @@
                   "var text = pm.response.text();",
                   "var clients = (pm.response.json() || {}).clients || [];",
                   "var client = clients.filter(function (c) { return c.config && c.config.name === pm.collectionVariables.get('openapiPetstoreName'); })[0];",
-                  "pm.test('the openapi client is listed with only the ticked operations as tools', function () {",
+                  "pm.test('the openapi client lists every supported operation as a tool and keeps the ticked ones as tools_to_execute', function () {",
                   "  pm.expect(client, 'client missing from ' + text.slice(0, 500)).to.be.an('object');",
                   "  var names = (client.tools || []).map(function (t) { return t.name; });",
-                  "  pm.expect(names, JSON.stringify(names)).to.have.members(['listPets', 'getPetById']);",
+                  "  // The list shows every discovered tool, as for any other connection type; tools_to_execute only gates execution. The multipart uploadPetPhoto operation is not synthesized.",
+                  "  pm.expect(names, JSON.stringify(names)).to.have.members(['listPets', 'getPetById', 'createPet']);",
+                  "  pm.expect(client.config.tools_to_execute, JSON.stringify(client.config)).to.have.members(['listPets', 'getPetById']);",
                   "  pm.expect(client.config.connection_type).to.eql('openapi');",
                   "});",
                   "pm.test('the stored document is not returned by the list, its metadata is', function () {",
@@ -268392,12 +268578,13 @@
                   "var BASE = pm.variables.get('baseUrl');",
                   "var run = pm.collectionVariables.get('vkMetadataLogsRun');",
                   "var vkId = pm.collectionVariables.get('vkMetadataLogsVkId');",
-                  "var reqId = pm.response.headers.get('x-request-id');",
+                  "// x-bifrost-request-id is the id the row is logged under; x-request-id is replaced by OpenAI's own req_ id once it answers.",
+                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
                   "pm.test('vk-metadata-logs: chat through the key succeeds', function () {",
                   "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.equal(200);",
                   "});",
-                  "pm.test('vk-metadata-logs: x-request-id echoed', function () {",
-                  "  pm.expect(reqId, 'x-request-id header').to.be.a('string').and.not.empty;",
+                  "pm.test('vk-metadata-logs: x-bifrost-request-id echoed', function () {",
+                  "  pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty;",
                   "});",
                   "function call(method, path, body, cb) {",
                   "  var req = { url: BASE + path, method: method, header: { 'Content-Type': 'application/json' } };",
@@ -269840,500 +270027,6 @@
                   "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
                   "    var j = (!err && res.code === 200) ? res.json() : null;",
                   "    if (j && j.params && j.params.parsed_type !== undefined) {",
-                  "      pm.test('openai chat parsed: row is passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('passthrough'); });",
-                  "      pm.test('openai chat parsed: parsed as chat completion', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('chat_completion'); });",
-                  "      pm.test('openai chat parsed: input_history parsed from the request body', function () { pm.expect(j.input_history, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); pm.expect(JSON.stringify(j.input_history[0].content)).to.include('passthrough parsing'); });",
-                  "      pm.test('openai chat parsed: output_message parsed from the response body', function () { pm.expect(j.output_message, JSON.stringify(j)).to.be.an('object'); pm.expect(j.output_message.role).to.eql('assistant'); pm.expect(JSON.stringify(j.output_message.content || '')).to.not.eql('\"\"'); });",
-                  "      pm.test('openai chat parsed: model params recorded', function () { pm.expect(j.params.model_params, JSON.stringify(j.params)).to.be.an('object'); });",
-                  "      pm.test('openai chat parsed: stop_reason recorded', function () { pm.expect(j.stop_reason, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('openai chat parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('openai chat parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('openai chat parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
-                  "      return;",
-                  "    }",
-                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
-                  "    pm.test('openai chat parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
-                  "  });",
-                  "}",
-                  "checkLog(0);"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one short sentence about passthrough parsing.\"\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "openai_passthrough",
-                "v1",
-                "chat",
-                "completions"
-              ]
-            }
-          }
-        },
-        {
-          "name": "241.2 openai/gpt-4o-mini /openai_passthrough/v1/chat/completions stream logs the reassembled conversation (passthrough parsed logs)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('openai chat stream parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
-                  "pm.test('openai chat stream parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
-                  "function checkLog(attempt) {",
-                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
-                  "    var j = (!err && res.code === 200) ? res.json() : null;",
-                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
-                  "      pm.test('openai chat stream parsed: row is passthrough_stream', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('passthrough_stream'); });",
-                  "      pm.test('openai chat stream parsed: parsed as chat completion', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('chat_completion'); });",
-                  "      pm.test('openai chat stream parsed: input_history parsed from the request body', function () { pm.expect(j.input_history, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); pm.expect(JSON.stringify(j.input_history[0].content)).to.include('passthrough parsing'); });",
-                  "      pm.test('openai chat stream parsed: output_message parsed from the response body', function () { pm.expect(j.output_message, JSON.stringify(j)).to.be.an('object'); pm.expect(j.output_message.role).to.eql('assistant'); pm.expect(JSON.stringify(j.output_message.content || '')).to.not.eql('\"\"'); });",
-                  "      pm.test('openai chat stream parsed: model params recorded', function () { pm.expect(j.params.model_params, JSON.stringify(j.params)).to.be.an('object'); });",
-                  "      pm.test('openai chat stream parsed: stop_reason recorded', function () { pm.expect(j.stop_reason, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('openai chat stream parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('openai chat stream parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('openai chat stream parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
-                  "      return;",
-                  "    }",
-                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
-                  "    pm.test('openai chat stream parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
-                  "  });",
-                  "}",
-                  "checkLog(0);"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one short sentence about passthrough parsing.\"\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "openai_passthrough",
-                "v1",
-                "chat",
-                "completions"
-              ]
-            }
-          }
-        },
-        {
-          "name": "241.3 anthropic/claude-haiku-4-5 /anthropic_passthrough/v1/messages logs parsed Responses input and output (passthrough parsed logs)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('anthropic messages parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
-                  "pm.test('anthropic messages parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
-                  "function checkLog(attempt) {",
-                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
-                  "    var j = (!err && res.code === 200) ? res.json() : null;",
-                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
-                  "      pm.test('anthropic messages parsed: parsed as responses', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('responses'); });",
-                  "      pm.test('anthropic messages parsed: responses_input_history parsed from the request body', function () { pm.expect(j.responses_input_history, JSON.stringify(j)).to.be.an('array').that.is.not.empty; pm.expect(JSON.stringify(j.responses_input_history)).to.include('passthrough parsing'); });",
-                  "      pm.test('anthropic messages parsed: responses_output parsed from the response body', function () { pm.expect(j.responses_output, JSON.stringify(j)).to.be.an('array').that.is.not.empty; });",
-                  "      pm.test('anthropic messages parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('anthropic messages parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('anthropic messages parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
-                  "      return;",
-                  "    }",
-                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
-                  "    pm.test('anthropic messages parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
-                  "  });",
-                  "}",
-                  "checkLog(0);"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "anthropic-version",
-                "value": "2023-06-01"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one short sentence about passthrough parsing.\"\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "anthropic_passthrough",
-                "v1",
-                "messages"
-              ]
-            }
-          }
-        },
-        {
-          "name": "241.4 gemini/gemini-2.5-flash /genai_passthrough/v1beta/models/gemini-2.5-flash:generateContent logs parsed Responses input and output (passthrough parsed logs)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('gemini generateContent parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
-                  "pm.test('gemini generateContent parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
-                  "function checkLog(attempt) {",
-                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
-                  "    var j = (!err && res.code === 200) ? res.json() : null;",
-                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
-                  "      pm.test('gemini generateContent parsed: parsed as responses', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('responses'); });",
-                  "      pm.test('gemini generateContent parsed: responses_input_history parsed from the request body', function () { pm.expect(j.responses_input_history, JSON.stringify(j)).to.be.an('array').that.is.not.empty; pm.expect(JSON.stringify(j.responses_input_history)).to.include('passthrough parsing'); });",
-                  "      pm.test('gemini generateContent parsed: responses_output parsed from the response body', function () { pm.expect(j.responses_output, JSON.stringify(j)).to.be.an('array').that.is.not.empty; });",
-                  "      pm.test('gemini generateContent parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('gemini generateContent parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('gemini generateContent parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
-                  "      return;",
-                  "    }",
-                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
-                  "    pm.test('gemini generateContent parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
-                  "  });",
-                  "}",
-                  "checkLog(0);"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with one short sentence about passthrough parsing.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  }\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-2.5-flash:generateContent",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "genai_passthrough",
-                "v1beta",
-                "models",
-                "gemini-2.5-flash:generateContent"
-              ]
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "241. Passthrough bodies parsed into the logged conversation (passthrough parsed logs)",
-      "description": "Passthrough rows (/openai_passthrough, /anthropic_passthrough, /genai_passthrough) used to store only the raw request and response bodies, so the logs UI showed two JSON boxes and the list preview and search were empty. With content logging on, the logging plugin's batch writer now decodes both bodies with the provider's own native-to-Bifrost converters (framework/passthroughparse, routed by provider + path like the passthrough usage extractors) and fills the same fields a typed request does: input_history/output_message for OpenAI chat, responses_input_history/responses_output for Anthropic Messages and Gemini generateContent, plus tools, stop_reason, tool calls and params.parsed_type/model_params. The raw bodies are kept, and parsing is best-effort: a body that does not decode leaves the row raw. Each case calls a passthrough route with a real client's shape, then polls /api/logs/<x-bifrost-request-id> (the row and the parse are written by the async batch writer) and asserts the parsed fields alongside the raw bodies. Red before the change: params.parsed_type never appears, so every case fails on the poll. Content-logging-off behaviour (no parsing, no bodies) is pinned by Go tests in plugins/logging (TestPassthroughLogSkipsParsingWithoutContentLogging), since the harness profile logs content.",
-      "item": [
-        {
-          "name": "241.1 openai/gpt-4o-mini /openai_passthrough/v1/chat/completions logs a parsed conversation (passthrough parsed logs)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('openai chat parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
-                  "pm.test('openai chat parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
-                  "function checkLog(attempt) {",
-                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
-                  "    var j = (!err && res.code === 200) ? res.json() : null;",
-                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
-                  "      pm.test('openai chat parsed: row is passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('passthrough'); });",
-                  "      pm.test('openai chat parsed: parsed as chat completion', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('chat_completion'); });",
-                  "      pm.test('openai chat parsed: input_history parsed from the request body', function () { pm.expect(j.input_history, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); pm.expect(JSON.stringify(j.input_history[0].content)).to.include('passthrough parsing'); });",
-                  "      pm.test('openai chat parsed: output_message parsed from the response body', function () { pm.expect(j.output_message, JSON.stringify(j)).to.be.an('object'); pm.expect(j.output_message.role).to.eql('assistant'); pm.expect(JSON.stringify(j.output_message.content || '')).to.not.eql('\"\"'); });",
-                  "      pm.test('openai chat parsed: model params recorded', function () { pm.expect(j.params.model_params, JSON.stringify(j.params)).to.be.an('object'); });",
-                  "      pm.test('openai chat parsed: stop_reason recorded', function () { pm.expect(j.stop_reason, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('openai chat parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('openai chat parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('openai chat parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
-                  "      return;",
-                  "    }",
-                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
-                  "    pm.test('openai chat parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
-                  "  });",
-                  "}",
-                  "checkLog(0);"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one short sentence about passthrough parsing.\"\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "openai_passthrough",
-                "v1",
-                "chat",
-                "completions"
-              ]
-            }
-          }
-        },
-        {
-          "name": "241.2 openai/gpt-4o-mini /openai_passthrough/v1/chat/completions stream logs the reassembled conversation (passthrough parsed logs)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('openai chat stream parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
-                  "pm.test('openai chat stream parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
-                  "function checkLog(attempt) {",
-                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
-                  "    var j = (!err && res.code === 200) ? res.json() : null;",
-                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
-                  "      pm.test('openai chat stream parsed: row is passthrough_stream', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('passthrough_stream'); });",
-                  "      pm.test('openai chat stream parsed: parsed as chat completion', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('chat_completion'); });",
-                  "      pm.test('openai chat stream parsed: input_history parsed from the request body', function () { pm.expect(j.input_history, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); pm.expect(JSON.stringify(j.input_history[0].content)).to.include('passthrough parsing'); });",
-                  "      pm.test('openai chat stream parsed: output_message parsed from the response body', function () { pm.expect(j.output_message, JSON.stringify(j)).to.be.an('object'); pm.expect(j.output_message.role).to.eql('assistant'); pm.expect(JSON.stringify(j.output_message.content || '')).to.not.eql('\"\"'); });",
-                  "      pm.test('openai chat stream parsed: model params recorded', function () { pm.expect(j.params.model_params, JSON.stringify(j.params)).to.be.an('object'); });",
-                  "      pm.test('openai chat stream parsed: stop_reason recorded', function () { pm.expect(j.stop_reason, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('openai chat stream parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('openai chat stream parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('openai chat stream parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
-                  "      return;",
-                  "    }",
-                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
-                  "    pm.test('openai chat stream parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
-                  "  });",
-                  "}",
-                  "checkLog(0);"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  },\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one short sentence about passthrough parsing.\"\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/openai_passthrough/v1/chat/completions",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "openai_passthrough",
-                "v1",
-                "chat",
-                "completions"
-              ]
-            }
-          }
-        },
-        {
-          "name": "241.3 anthropic/claude-haiku-4-5 /anthropic_passthrough/v1/messages logs parsed Responses input and output (passthrough parsed logs)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('anthropic messages parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
-                  "pm.test('anthropic messages parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
-                  "function checkLog(attempt) {",
-                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
-                  "    var j = (!err && res.code === 200) ? res.json() : null;",
-                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
-                  "      pm.test('anthropic messages parsed: parsed as responses', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('responses'); });",
-                  "      pm.test('anthropic messages parsed: responses_input_history parsed from the request body', function () { pm.expect(j.responses_input_history, JSON.stringify(j)).to.be.an('array').that.is.not.empty; pm.expect(JSON.stringify(j.responses_input_history)).to.include('passthrough parsing'); });",
-                  "      pm.test('anthropic messages parsed: responses_output parsed from the response body', function () { pm.expect(j.responses_output, JSON.stringify(j)).to.be.an('array').that.is.not.empty; });",
-                  "      pm.test('anthropic messages parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('anthropic messages parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('anthropic messages parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
-                  "      return;",
-                  "    }",
-                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
-                  "    pm.test('anthropic messages parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
-                  "  });",
-                  "}",
-                  "checkLog(0);"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "anthropic-version",
-                "value": "2023-06-01"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"model\": \"claude-haiku-4-5\",\n  \"max_tokens\": 32,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"Reply with one short sentence about passthrough parsing.\"\n    }\n  ]\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/anthropic_passthrough/v1/messages",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "anthropic_passthrough",
-                "v1",
-                "messages"
-              ]
-            }
-          }
-        },
-        {
-          "name": "241.4 gemini/gemini-2.5-flash /genai_passthrough/v1beta/models/gemini-2.5-flash:generateContent logs parsed Responses input and output (passthrough parsed logs)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('gemini generateContent parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
-                  "pm.test('gemini generateContent parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
-                  "function checkLog(attempt) {",
-                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
-                  "    var j = (!err && res.code === 200) ? res.json() : null;",
-                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
-                  "      pm.test('gemini generateContent parsed: parsed as responses', function () { pm.expect(j.params.parsed_type, JSON.stringify(j.params)).to.eql('responses'); });",
-                  "      pm.test('gemini generateContent parsed: responses_input_history parsed from the request body', function () { pm.expect(j.responses_input_history, JSON.stringify(j)).to.be.an('array').that.is.not.empty; pm.expect(JSON.stringify(j.responses_input_history)).to.include('passthrough parsing'); });",
-                  "      pm.test('gemini generateContent parsed: responses_output parsed from the response body', function () { pm.expect(j.responses_output, JSON.stringify(j)).to.be.an('array').that.is.not.empty; });",
-                  "      pm.test('gemini generateContent parsed: raw request body kept', function () { pm.expect(j.passthrough_request_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('gemini generateContent parsed: raw response body kept', function () { pm.expect(j.passthrough_response_body, JSON.stringify(j)).to.be.a('string').and.not.empty; });",
-                  "      pm.test('gemini generateContent parsed: passthrough params intact', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(200); pm.expect(j.params.path, JSON.stringify(j.params)).to.be.a('string').and.not.empty; });",
-                  "      return;",
-                  "    }",
-                  "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
-                  "    pm.test('gemini generateContent parsed: log row carries parsed passthrough fields', function () { pm.expect.fail('log ' + reqId + ' has no params.parsed_type after 10 reads: ' + (err ? String(err) : (res.code + ' ' + res.text()))); });",
-                  "  });",
-                  "}",
-                  "checkLog(0);"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"Reply with one short sentence about passthrough parsing.\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 64\n  }\n}"
-            },
-            "url": {
-              "raw": "{{baseUrl}}/genai_passthrough/v1beta/models/gemini-2.5-flash:generateContent",
-              "host": [
-                "{{baseUrl}}"
-              ],
-              "path": [
-                "genai_passthrough",
-                "v1beta",
-                "models",
-                "gemini-2.5-flash:generateContent"
-              ]
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "241. Passthrough bodies parsed into the logged conversation (passthrough parsed logs)",
-      "description": "Passthrough rows (/openai_passthrough, /anthropic_passthrough, /genai_passthrough) used to store only the raw request and response bodies, so the logs UI showed two JSON boxes and the list preview and search were empty. With content logging on, the logging plugin's batch writer now decodes both bodies with the provider's own native-to-Bifrost converters (framework/passthroughparse, routed by provider + path like the passthrough usage extractors) and fills the same fields a typed request does: input_history/output_message for OpenAI chat, responses_input_history/responses_output for Anthropic Messages and Gemini generateContent, plus tools, stop_reason, tool calls and params.parsed_type/model_params. The raw bodies are kept, and parsing is best-effort: a body that does not decode leaves the row raw. Each case calls a passthrough route with a real client's shape, then polls /api/logs/<x-bifrost-request-id> (the row and the parse are written by the async batch writer) and asserts the parsed fields alongside the raw bodies. Red before the change: params.parsed_type never appears, so every case fails on the poll. Content-logging-off behaviour (no parsing, no bodies) is pinned by Go tests in plugins/logging (TestPassthroughLogSkipsParsingWithoutContentLogging), since the harness profile logs content.",
-      "item": [
-        {
-          "name": "241.1 openai/gpt-4o-mini /openai_passthrough/v1/chat/completions logs a parsed conversation (passthrough parsed logs)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('openai chat parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
-                  "var reqId = pm.response.headers.get('x-bifrost-request-id');",
-                  "pm.test('openai chat parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
-                  "function checkLog(attempt) {",
-                  "  pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs/' + reqId, method: 'GET' }, function (err, res) {",
-                  "    var j = (!err && res.code === 200) ? res.json() : null;",
-                  "    if (j && j.params && j.params.parsed_type !== undefined) {",
                   "      pm.test('openai chat parsed: stored as chat_completion and tagged passthrough', function () { pm.expect(j.object, JSON.stringify(j)).to.eql('chat_completion'); pm.expect(j.is_passthrough, JSON.stringify(j)).to.eql(true); });",
                   "      ['chat_completion', 'passthrough'].forEach(function (objectType) {",
                   "        pm.sendRequest({ url: pm.variables.get('baseUrl') + '/api/logs?objects=' + objectType + '&request_id=' + reqId, method: 'GET' }, function (ferr, fres) {",
@@ -270688,7 +270381,7 @@
           }
         },
         {
-          "name": "242.3 openai/dall-e-2 /openai_passthrough/v1/images/generations logs parsed image input and output (passthrough parsed logs)",
+          "name": "242.3 openai/gpt-image-1 /openai_passthrough/v1/images/generations logs parsed image input and output (passthrough parsed logs)",
           "event": [
             {
               "listen": "test",
@@ -270730,7 +270423,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"dall-e-2\",\n  \"prompt\": \"a small red square\",\n  \"size\": \"256x256\",\n  \"n\": 1\n}"
+              "raw": "{\n  \"model\": \"gpt-image-1\",\n  \"prompt\": \"a small red square\",\n  \"size\": \"1024x1024\",\n  \"quality\": \"low\",\n  \"n\": 1\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/openai_passthrough/v1/images/generations",
@@ -271206,14 +270899,15 @@
           }
         },
         {
-          "name": "243.3 openai/dall-e-2 /openai_passthrough/v1/images/variations multipart upload logged as a form summary and parsed (passthrough parsed logs)",
+          "name": "243.3 [EXPECT-4XX] openai/dall-e-2 /openai_passthrough/v1/images/variations multipart upload logged as a form summary and parsed though OpenAI retired the model (passthrough parsed logs)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('openai image variation multipart parsed: upstream call succeeded', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "// Variations only ever served dall-e-2 and OpenAI has retired it, so the endpoint answers 404 for every model. The row is still typed, parsed and summarized from the request, which is what this case pins.",
+                  "pm.test('openai image variation multipart parsed: OpenAI answers 404 for the retired dall-e-2, passed through', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(404); });",
                   "var reqId = pm.response.headers.get('x-bifrost-request-id');",
                   "pm.test('openai image variation multipart parsed: x-bifrost-request-id echoed', function () { pm.expect(reqId, 'x-bifrost-request-id header').to.be.a('string').and.not.empty; });",
                   "function checkLog(attempt) {",
@@ -271225,7 +270919,7 @@
                   "      pm.test('openai image variation multipart parsed: params parsed from the form', function () { pm.expect(j.params.model_params && j.params.model_params.size, JSON.stringify(j.params)).to.eql('256x256'); });",
                   "      pm.test('openai image variation multipart parsed: body logged as a form summary', function () { pm.expect(j.params.multipart_summary, JSON.stringify(j.params)).to.eql(true); var s = JSON.parse(j.passthrough_request_body); pm.expect(s.fields.model, j.passthrough_request_body).to.eql('dall-e-2'); var f = (s.files || []).filter(function (x) { return x.field === 'image'; }); pm.expect(f, j.passthrough_request_body).to.have.lengthOf(1); pm.expect(f[0].filename).to.eql('sample.png'); pm.expect(f[0].bytes).to.be.above(1000); });",
                   "      pm.test('openai image variation multipart parsed: image bytes not stored', function () { pm.expect(j.passthrough_request_body.length, 'summary length').to.be.below(2000); });",
-                  "      pm.test('openai image variation multipart parsed: image_generation_output parsed from the response body', function () { pm.expect(j.image_generation_output && j.image_generation_output.data, JSON.stringify(j)).to.be.an('array').with.lengthOf(1); });",
+                  "      pm.test('openai image variation multipart parsed: the upstream 404 is recorded on the row', function () { pm.expect(j.params.status_code, JSON.stringify(j.params)).to.eql(404); pm.expect(j.status, JSON.stringify(j)).to.eql('error'); });",
                   "      return;",
                   "    }",
                   "    if (attempt < 10) { setTimeout(function () { checkLog(attempt + 1); }, 1000); return; }",
@@ -276605,6 +276299,159 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "name": "260. Zero-key custom provider does not hijack provider inference (keyless provider inference)",
+      "description": "A custom provider with no keys that is not marked is_key_less used to be treated as serving every model. Provider inference for a bare model sorts candidates by name, so such a provider (every custom provider starts with zero keys until one is added, and the harness leaves several pointed at dead base URLs) won the pick over the real provider; its key pool then failed with 400 no_key_supports_model, which counted as a caller error, so the inferred fallbacks never ran. Seen as /openai/v1/embeddings {model: text-embedding-005} answered by harness-oauthkey-run-... instead of Vertex. The fix: only a keyless provider is unrestricted with zero keys, and no_key_supports_model no longer stops an inferred fallback chain. Rows: (1) create a zero-key, non-keyless openai-based custom provider whose name sorts before vertex; (2) the bare-model embedding is served by vertex, not by it; (3) delete it. Red before the fix: row 2 returns 400 no_key_supports_model naming the harness provider. Run with FEATURE=\"keyless provider inference\".",
+      "item": [
+        {
+          "name": "260.1 vertex/text-embedding-005 setup: create a zero-key custom provider that sorts before vertex (keyless provider inference)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('zeroKeyProvider', 'harness-zerokey-run-' + Date.now() + '-' + Math.floor(Math.random() * 1e6));",
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('created the zero-key provider', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"provider\": \"{{zeroKeyProvider}}\",\n  \"custom_provider_config\": {\n    \"base_provider_type\": \"openai\",\n    \"is_key_less\": false\n  },\n  \"network_config\": {\n    \"base_url\": \"http://127.0.0.1:9\",\n    \"max_retries\": 0\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "260.2 vertex/text-embedding-005 bare model on /openai/v1/embeddings is served by vertex, not the zero-key provider (keyless provider inference)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No provider prefix, so the gateway infers one from the catalog."
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var text = pm.response.text() || '';",
+                  "var zk = pm.collectionVariables.get('zeroKeyProvider');",
+                  "pm.test('the bare-model embedding succeeds', function () { pm.expect(pm.response.code, text.slice(0, 600)).to.eql(200); });",
+                  "pm.test('vertex served it, not the zero-key provider', function () {",
+                  "  pm.expect(text, 'the zero-key provider was picked: ' + text.slice(0, 600)).to.not.include(zk);",
+                  "  pm.expect(pm.response.headers.get('x-bifrost-provider'), 'x-bifrost-provider').to.eql('vertex');",
+                  "  var j = pm.response.json();",
+                  "  pm.expect((j.data || [])[0] && (j.data[0].embedding || []).length, 'embedding vector').to.be.above(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"text-embedding-005\",\n  \"input\": \"hello\"\n}"
+            }
+          }
+        },
+        {
+          "name": "260.3 vertex/text-embedding-005 cleanup: delete the zero-key provider (keyless provider inference)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var managementToken = pm.environment.get('managementApiKey') || pm.collectionVariables.get('managementApiKey');",
+                  "if (managementToken) { pm.request.headers.upsert({key: 'Authorization', value: 'Bearer ' + managementToken}); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('deleted the zero-key provider', function () { pm.expect(pm.response.code, pm.response.text().slice(0, 400)).to.eql(200); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/providers/{{zeroKeyProvider}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "providers",
+                "{{zeroKeyProvider}}"
+              ]
+            }
+          }
         }
       ]
     }

@@ -63,13 +63,21 @@ func (mc *ModelCatalog) RetainLiveKeys(provider schemas.ModelProvider, keep map[
 }
 
 // SetKeyConfigForProvider replaces the keyconfig snapshot for one provider.
+// A provider left with no routable key serves no model.
 func (mc *ModelCatalog) SetKeyConfigForProvider(provider schemas.ModelProvider, keys []schemas.Key) {
 	mc.keyconf.SetProvider(provider, keys)
 }
 
+// SetKeyConfigForKeylessProvider is SetKeyConfigForProvider for a custom
+// provider configured as keyless (is_key_less): with no keys it serves any model.
+func (mc *ModelCatalog) SetKeyConfigForKeylessProvider(provider schemas.ModelProvider, keys []schemas.Key) {
+	mc.keyconf.SetKeylessProvider(provider, keys)
+}
+
 // ReplaceKeyConfig atomically resets the keyconfig snapshot for all providers.
-func (mc *ModelCatalog) ReplaceKeyConfig(snapshot map[schemas.ModelProvider][]schemas.Key) {
-	mc.keyconf.Replace(snapshot)
+// keyless names the custom providers configured as keyless (is_key_less).
+func (mc *ModelCatalog) ReplaceKeyConfig(snapshot map[schemas.ModelProvider][]schemas.Key, keyless ...schemas.ModelProvider) {
+	mc.keyconf.Replace(snapshot, keyless...)
 }
 
 // RemoveKeyConfigForProvider drops keyconfig state for the provider.
