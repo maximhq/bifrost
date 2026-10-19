@@ -22,7 +22,7 @@ var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 	schemas.Vertex:     true,
 	schemas.Runware:    true,
 	schemas.Databricks: true,
-	schemas.Elevenlabs: true, // /v1/models omits Scribe transcription models.
+	schemas.Elevenlabs: true, // Include catalog-known STT models absent from live discovery.
 }
 
 // providersWithListModelsOnly enumerates providers whose unfiltered model list
@@ -146,13 +146,6 @@ func (mc *ModelCatalog) appendAllowedDatasheetModels(out []string, models []stri
 	}
 	slices.Sort(out)
 	return out
-}
-
-// GetDatasheetModelsForProvider returns pricing-backed model IDs only, without
-// live entries or key aliases. Providers with partial discovery use this inventory
-// to supplement their responses before applying per-key model restrictions.
-func (mc *ModelCatalog) GetDatasheetModelsForProvider(provider schemas.ModelProvider) []string {
-	return mc.datasheet.DatasheetModelsForProvider(provider)
 }
 
 // GetUnfilteredModelsForProvider returns the raw catalog view (no gate

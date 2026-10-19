@@ -192,6 +192,7 @@ func TestElevenlabsScribeTranscriptionVirtualKey(t *testing.T) {
 		{"wildcard alias", "elevenlabs/dictation", scribeVirtualKey("alias-wildcard", schemas.WhiteList{"*"}, nil, false), true},
 		{"exact alias", "elevenlabs/dictation", scribeVirtualKey("alias-exact", schemas.WhiteList{"dictation"}, nil, false), true},
 		{"regex scribe", "elevenlabs/scribe_v2", scribeVirtualKey("regex", schemas.WhiteList{"regex:^scribe_v[12]$"}, nil, false), true},
+		{"regex excludes sibling", "elevenlabs/scribe_v1", scribeVirtualKey("regex-denied", schemas.WhiteList{"regex:^scribe_v2$"}, nil, false), false},
 		{"exact excludes sibling", "elevenlabs/scribe_v1", scribeVirtualKey("sibling", schemas.WhiteList{"scribe_v2"}, nil, false), false},
 		{"tts only despite allow all providers", "elevenlabs/scribe_v2", scribeVirtualKey("tts", schemas.WhiteList{"eleven_turbo_v2_5"}, nil, true), false},
 		{"empty denies all", "elevenlabs/scribe_v2", scribeVirtualKey("empty", schemas.WhiteList{}, nil, true), false},
@@ -253,6 +254,40 @@ func TestElevenlabsScribeTranscriptionVirtualKey(t *testing.T) {
 	require.Equal(t, before, calls.Load())
 }
 
+// A catalog-known Scribe model is authorized separately from upstream inventory.
+// Provider ListModels must not synthesize catalog entries, even with a catalog wired.
+func TestElevenlabsProviderListingDoesNotSynthesizeCatalog(t *testing.T) {
+	key := scribeProviderKey()
+	key.Aliases = nil
+	vk := scribeVirtualKey("provider-inventory", schemas.WhiteList{"*"}, nil, false)
+	handler, catalog, _ := newElevenlabsScribeHandler(t, []schemas.Key{key}, []configtables.TableVirtualKey{vk})
+	require.Contains(t, catalog.GetModelsForProvider(schemas.Elevenlabs), "scribe_v2")
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("/v1/models?provider=elevenlabs")
+	ctx.Request.Header.Set("x-bf-vk", vk.Value.GetValue())
+	handler.listModels(ctx)
+	require.Equal(t, 200, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var response schemas.BifrostListModelsResponse
+	require.NoError(t, schemas.Unmarshal(ctx.Response.Body(), &response))
+	require.Len(t, response.Data, 1)
+	require.Equal(t, "elevenlabs/eleven_turbo_v2_5", response.Data[0].ID)
+	require.Equal(t, "Upstream Turbo", *response.Data[0].Name)
+}
+
+// Management catalog queries use the same catalog-backed model matcher as governance.
+func scribeCatalogAccess(catalog *modelcatalog.ModelCatalog, vk configtables.TableVirtualKey) schemas.Access {
+	config := vk.ProviderConfigs[0]
+	permit := grant.NewPermit(grant.PermitVirtualKey, vk.ID, vk.Name, true, false, []schemas.ProviderPermit{{
+		Provider: config.Provider, AllowedModels: config.AllowedModels,
+		BlacklistedModels: config.BlacklistedModels, KeyIDs: config.KeyIDs(),
+	}}, nil)
+	return grant.NewAccess([]schemas.Permit{permit}, nil, "", func(provider, model string, allowed []string) bool {
+		return catalog.IsModelAllowedForProvider(schemas.ModelProvider(provider), model, nil, schemas.WhiteList(allowed))
+	})
+}
+
+// Provider inventory and management-catalog discovery are deliberately different:
+// catalog-known Scribe remains authorized without being invented in /v1/models.
 func TestElevenlabsScribeDiscoveryVirtualKey(t *testing.T) {
 	vks := []configtables.TableVirtualKey{
 		scribeVirtualKey("discovery-all", schemas.WhiteList{"*"}, nil, true),
@@ -261,7 +296,19 @@ func TestElevenlabsScribeDiscoveryVirtualKey(t *testing.T) {
 		scribeVirtualKey("discovery-empty", schemas.WhiteList{}, nil, true),
 		scribeVirtualKey("discovery-blocked", schemas.WhiteList{"*"}, schemas.BlackList{"scribe_v2"}, true),
 	}
-	handler, _, _ := newElevenlabsScribeHandler(t, []schemas.Key{scribeProviderKey()}, vks)
+	handler, catalog, _ := newElevenlabsScribeHandler(t, []schemas.Key{scribeProviderKey()}, vks)
+	manager := &mockModelsManager{
+		filtered:   map[schemas.ModelProvider][]string{schemas.Elevenlabs: catalog.GetModelsForProvider(schemas.Elevenlabs)},
+		unfiltered: map[schemas.ModelProvider][]string{schemas.Elevenlabs: catalog.GetUnfilteredModelsForProvider(schemas.Elevenlabs)},
+	}
+	management := &ProviderHandler{modelsManager: manager, inMemoryStore: handler.config}
+	providerModels := [][]string{
+		{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/dictation"},
+		{},
+		{"elevenlabs/eleven_turbo_v2_5"},
+		{},
+		{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/dictation"},
+	}
 	for i, want := range [][]string{
 		{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/scribe_v1", "elevenlabs/scribe_v1_experimental", "elevenlabs/scribe_v2", "elevenlabs/dictation"},
 		{"elevenlabs/scribe_v2"},
@@ -287,7 +334,15 @@ func TestElevenlabsScribeDiscoveryVirtualKey(t *testing.T) {
 					require.Equal(t, "scribe_v2", *model.Alias)
 				}
 			}
-			require.ElementsMatch(t, want, ids)
+			require.ElementsMatch(t, providerModels[i], ids, "provider listing must preserve upstream inventory and configured alias backfill")
+			rows := management.listManagementModelsForProvider(schemas.Elevenlabs, modelListQuery{
+				HasVKFilter: true, Access: scribeCatalogAccess(catalog, vks[i]),
+			})
+			ids = ids[:0]
+			for _, row := range rows {
+				ids = append(ids, string(row.Provider)+"/"+row.Name)
+			}
+			require.ElementsMatch(t, want, ids, "management catalog must reconcile supported models separately")
 		})
 	}
 	// The aggregate route still discovers an unrelated allowed provider normally.
@@ -299,7 +354,7 @@ func TestElevenlabsScribeDiscoveryVirtualKey(t *testing.T) {
 	var response schemas.BifrostListModelsResponse
 	require.NoError(t, schemas.Unmarshal(ctx.Response.Body(), &response))
 	require.True(t, slices.ContainsFunc(response.Data, func(model schemas.Model) bool { return model.ID == "openai/gpt-4o-mini" }), "%s", ctx.Response.Body())
-	require.True(t, slices.ContainsFunc(response.Data, func(model schemas.Model) bool { return model.ID == "elevenlabs/scribe_v2" }), "%s", ctx.Response.Body())
+	require.False(t, slices.ContainsFunc(response.Data, func(model schemas.Model) bool { return model.ID == "elevenlabs/scribe_v2" }), "%s", ctx.Response.Body())
 }
 
 func TestElevenlabsScribeProviderKeyRestrictions(t *testing.T) {
@@ -336,8 +391,7 @@ func TestElevenlabsScribeProviderKeyRestrictions(t *testing.T) {
 	}
 }
 
-// Live unfiltered entries can include another key's aliases. Family metadata
-// lookup is not proof that such an alias is a provider-native model ID.
+// Another key's cached aliases and catalog records must not enter provider inventory.
 func TestElevenlabsScribeDiscoveryDoesNotCopyOtherKeyAliases(t *testing.T) {
 	key := scribeProviderKey()
 	key.Aliases = nil
@@ -362,7 +416,7 @@ func TestElevenlabsScribeDiscoveryDoesNotCopyOtherKeyAliases(t *testing.T) {
 	for _, model := range response.Data {
 		ids = append(ids, model.ID)
 	}
-	require.ElementsMatch(t, []string{"elevenlabs/eleven_turbo_v2_5", "elevenlabs/scribe_v1", "elevenlabs/scribe_v1_experimental", "elevenlabs/scribe_v2"}, ids)
+	require.ElementsMatch(t, []string{"elevenlabs/eleven_turbo_v2_5"}, ids)
 }
 
 func TestElevenlabsScribeDiscoveryPreservesAliasOverride(t *testing.T) {
