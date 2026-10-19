@@ -1561,11 +1561,12 @@ type ChatInputAudio struct {
 
 // ChatInputFile represents a file in a message.
 type ChatInputFile struct {
-	FileData *string `json:"file_data,omitempty"` // Base64 encoded file data
-	FileURL  *string `json:"file_url,omitempty"`  // Direct URL to file
-	FileID   *string `json:"file_id,omitempty"`   // Reference to uploaded file
-	Filename *string `json:"filename,omitempty"`  // Name of the file
-	FileType *string `json:"file_type,omitempty"` // Type of the file
+	FileContent json.RawMessage `json:"file_content,omitempty"` // Custom document content: a string or array of text blocks, preserving citation boundaries
+	FileData    *string         `json:"file_data,omitempty"`    // Base64 encoded file data
+	FileURL     *string         `json:"file_url,omitempty"`     // Direct URL to file
+	FileID      *string         `json:"file_id,omitempty"`      // Reference to uploaded file
+	Filename    *string         `json:"filename,omitempty"`     // Name of the file
+	FileType    *string         `json:"file_type,omitempty"`    // Type of the file
 }
 
 // ChatToolMessage represents a tool message in a chat conversation.

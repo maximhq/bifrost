@@ -1,6 +1,7 @@
 package schemas
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
@@ -903,6 +904,7 @@ func deepCopyChatContentBlock(original ChatContentBlock) ChatContentBlock {
 
 	if original.File != nil {
 		copyFile := ChatInputFile{}
+		copyFile.FileContent = bytes.Clone(original.File.FileContent)
 		if original.File.FileData != nil {
 			copyFileData := *original.File.FileData
 			copyFile.FileData = &copyFileData
@@ -2070,6 +2072,7 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 	// Deep copy ResponsesInputMessageContentBlockFile
 	if original.ResponsesInputMessageContentBlockFile != nil {
 		copyFile := &ResponsesInputMessageContentBlockFile{}
+		copyFile.FileContent = bytes.Clone(original.ResponsesInputMessageContentBlockFile.FileContent)
 		if original.ResponsesInputMessageContentBlockFile.FileData != nil {
 			copyFileData := *original.ResponsesInputMessageContentBlockFile.FileData
 			copyFile.FileData = &copyFileData

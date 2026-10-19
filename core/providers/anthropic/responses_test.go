@@ -14,6 +14,32 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 )
 
+func TestCustomDocumentContentRoundTrip(t *testing.T) {
+	for _, sourceType := range []string{"content", "content_block"} {
+		for _, content := range []string{`"Budget: $4.2M."`, `[{"type":"text","text":"Budget: $4.2M."},{"type":"text","text":"Audit: March."}]`} {
+			// content_block is retained only as Bifrost's compatibility spelling;
+			// current Anthropic requests and the rendered output use content.
+			body := `{"model":"claude-haiku-5-5","max_tokens":128,"thinking":{"type":"disabled"},"messages":[{"role":"user","content":[{"type":"document","title":"pack","source":{"type":"` + sourceType + `","content":` + content + `},"citations":{"enabled":true}}]}]}`
+			var in AnthropicMessageRequest
+			if err := sonic.Unmarshal([]byte(body), &in); err != nil {
+				t.Fatal(err)
+			}
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			req := in.ToBifrostResponsesRequest(ctx)
+			for i := range req.Input {
+				req.Input[i] = schemas.DeepCopyResponsesMessage(req.Input[i])
+			}
+			out, err := ToAnthropicResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := out.Messages[0].Content.ContentBlocks[0].Source.SourceObj; got.Type != "content" || string(got.Content) != content {
+				t.Fatalf("custom document chunks changed: %+v", got)
+			}
+		}
+	}
+}
+
 // makeResponsesTextFormat returns a minimal json_schema text config for the
 // Responses API structured-output request path.
 func makeResponsesTextFormat(schemaName string) *schemas.ResponsesTextConfig {
