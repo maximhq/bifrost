@@ -4,8 +4,8 @@ go 1.27.2
 
 require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
-	github.com/maximhq/bifrost/core v1.12.0
-	github.com/maximhq/bifrost/framework v1.9.0
+	github.com/maximhq/bifrost/core v1.13.0
+	github.com/maximhq/bifrost/framework v1.10.0
 	github.com/stretchr/testify v1.12.1
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.44.0
@@ -124,6 +124,9 @@ require (
 	github.com/molecule-man/go-brrr v1.0.1 // indirect
 	github.com/oapi-codegen/runtime v1.1.1 // indirect
 	github.com/oklog/ulid v1.3.1 // indirect
+	github.com/parquet-go/bitpack v1.0.0 // indirect
+	github.com/parquet-go/jsonlite v1.0.0 // indirect
+	github.com/parquet-go/parquet-go v0.32.0 // indirect
 	github.com/paulmach/orb v0.11.1 // indirect
 	github.com/philippgille/chromem-go v0.7.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
@@ -145,6 +148,7 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	github.com/twpayne/go-geom v1.6.1 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.74.0 // indirect
 	github.com/weaviate/weaviate v1.38.0 // indirect
