@@ -5282,7 +5282,9 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 					}
 				}
 			}
-			fileBlock.Citations = block.Document.Citations
+			if block.Document.Citations != nil {
+				fileBlock.Citations = &schemas.Citations{Enabled: schemas.Ptr(block.Document.Citations.Enabled)}
+			}
 
 			bifrostMsg := schemas.ResponsesMessage{
 				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),

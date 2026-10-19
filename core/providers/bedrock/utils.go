@@ -412,11 +412,15 @@ func materializeBedrockDocument(
 	citations *schemas.Citations,
 	sourceRequirement bedrockDocumentSourceRequirement,
 ) (*BedrockDocumentSource, error) {
+	var bedrockCitations *BedrockCitationsConfig
+	if citations != nil && citations.Enabled != nil {
+		bedrockCitations = &BedrockCitationsConfig{Enabled: *citations.Enabled}
+	}
 	document := &BedrockDocumentSource{
 		Name:      "document",
 		Format:    "pdf",
 		Source:    &BedrockDocumentSourceData{},
-		Citations: citations,
+		Citations: bedrockCitations,
 	}
 	if filename != nil {
 		document.Name = normalizeBedrockFilename(*filename)

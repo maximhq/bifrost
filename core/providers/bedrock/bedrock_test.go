@@ -16,6 +16,7 @@ import (
 
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/openai"
@@ -133,6 +134,94 @@ func TestDocumentCitationsTextBytesAndS3(t *testing.T) {
 				assert.Equal(t, "s3://bucket/key.pdf", doc.Get("source.s3Location.uri").Str)
 			}
 		})
+	}
+}
+
+func TestDocumentCitationsConfigNormalization(t *testing.T) {
+	proxy := proxytest.ForwardProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "203.0.113.10", r.URL.Host)
+		w.Header().Set("Content-Type", "text/plain")
+		_, err := io.WriteString(w, "Budget: $4.2M.")
+		assert.NoError(t, err)
+	})
+	for _, source := range []struct {
+		name, model string
+		file        schemas.ResponsesInputMessageContentBlockFile
+	}{
+		{"text", "global.anthropic.claude-haiku-5-5", schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr("Budget: $4.2M."), FileType: schemas.Ptr("text/plain")}},
+		{"bytes", "global.anthropic.claude-haiku-5-5", schemas.ResponsesInputMessageContentBlockFile{FileData: schemas.Ptr("data:text/plain;base64,QnVkZ2V0OiAkNC4yTS4=")}},
+		{"url", "global.anthropic.claude-haiku-5-5", schemas.ResponsesInputMessageContentBlockFile{FileURL: schemas.Ptr("http://203.0.113.10/pack.txt")}},
+		{"content", "global.anthropic.claude-haiku-5-5", schemas.ResponsesInputMessageContentBlockFile{FileContent: json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."}]`)}},
+	} {
+		for _, config := range []struct {
+			name      string
+			citations *schemas.Citations
+			want      string
+		}{
+			{"absent", nil, ""},
+			{"empty", &schemas.Citations{}, ""},
+			{"disabled", &schemas.Citations{Enabled: schemas.Ptr(false)}, `{"enabled":false}`},
+			{"enabled", &schemas.Citations{Enabled: schemas.Ptr(true)}, `{"enabled":true}`},
+		} {
+			t.Run(source.name+"/"+config.name, func(t *testing.T) {
+				parent := context.WithValue(context.Background(), schemas.BifrostContextKeyProviderProxyConfig, &schemas.ProxyConfig{Type: schemas.HTTPProxy, URL: schemas.NewSecretVar(proxy.URL)})
+				ctx := schemas.NewBifrostContext(parent, schemas.NoDeadline)
+				req := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: source.model,
+					Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+						Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+							Type: schemas.ResponsesInputMessageContentBlockTypeFile, ResponsesInputMessageContentBlockFile: &source.file,
+							Citations: config.citations,
+						}, {Type: schemas.ResponsesInputMessageContentBlockTypeText, Text: schemas.Ptr("Read the document.")}}},
+					}},
+				}
+				out, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+				if source.name == "content" && config.name != "enabled" {
+					bad, ok := providerUtils.AsBifrostBadRequestError(err)
+					require.True(t, ok, "custom documents still require explicitly enabled citations")
+					require.Equal(t, 400, *bad.StatusCode)
+					return
+				}
+				require.NoError(t, err)
+				wire, err := providerUtils.MarshalSorted(out)
+				require.NoError(t, err)
+				got := gjson.GetBytes(wire, "messages.0.content.0.document.citations")
+				if config.want == "" {
+					require.False(t, got.Exists(), "unspecified configuration must be omitted: %s", wire)
+				} else {
+					require.JSONEq(t, config.want, got.Raw)
+				}
+			})
+		}
+	}
+}
+
+func TestDocumentCitationsConfigIngressRoundTrip(t *testing.T) {
+	for _, config := range []string{"", `,"citations":{"enabled":false}`, `,"citations":{"enabled":true}`} {
+		var native bedrock.BedrockConverseRequest
+		require.NoError(t, json.Unmarshal([]byte(`{"messages":[{"role":"user","content":[{"document":{"format":"txt","name":"pack","source":{"text":"Budget: $4.2M."}`+config+`}},{"text":"Read the document."}]}]}`), &native))
+		native.ModelID = "global.anthropic.claude-haiku-5-5"
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		req, err := native.ToBifrostResponsesRequest(ctx)
+		require.NoError(t, err)
+		citations := req.Input[0].Content.ContentBlocks[0].Citations
+		if config == "" {
+			require.Nil(t, citations)
+		} else {
+			require.NotNil(t, citations)
+			require.NotNil(t, citations.Enabled)
+			require.Equal(t, strings.Contains(config, "true"), *citations.Enabled)
+		}
+		out, err := bedrock.ToBedrockResponsesRequest(ctx, req)
+		require.NoError(t, err)
+		wire, err := providerUtils.MarshalSorted(out)
+		require.NoError(t, err)
+		got := gjson.GetBytes(wire, "messages.0.content.0.document.citations")
+		if config == "" {
+			require.False(t, got.Exists())
+		} else {
+			require.True(t, got.Get("enabled").Exists(), "explicit false must not disappear")
+			require.Equal(t, *citations.Enabled, got.Get("enabled").Bool())
+		}
 	}
 }
 

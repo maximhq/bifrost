@@ -277031,6 +277031,45 @@
               ]
             }
           }
+        },
+        {
+          "name": "261.13 bedrock/claude-haiku-5-5 empty optional document citations are normalized (document citation fidelity) - #8666",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('empty optional citations do not produce provider validation errors', function () { pm.expect(pm.response.code, pm.response.text()).to.eql(200); });",
+                  "var j=pm.response.json(), text=''; (j.output || []).forEach(function (m) { (m.content || []).forEach(function (b) { text += b.text || ''; }); });",
+                  "pm.test('document source survives normalization', function () { pm.expect(text, pm.response.text()).to.match(/4\\.2/); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"bedrock/global.anthropic.claude-haiku-5-5\",\n  \"max_output_tokens\": 128,\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"input_file\",\n          \"filename\": \"pack.txt\",\n          \"file_data\": \"data:text/plain,The board approved a budget of $4.2M.\",\n          \"citations\": {}\n        },\n        {\n          \"type\": \"input_text\",\n          \"text\": \"What budget was approved? Respond in one short sentence.\"\n        }\n      ]\n    }\n  ],\n  \"reasoning\": {\n    \"effort\": \"none\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
         }
       ]
     }

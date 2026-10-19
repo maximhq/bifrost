@@ -301,7 +301,7 @@ type BedrockDocumentSource struct {
 	Format    string                     `json:"format,omitempty"` // Omitted for custom-content documents
 	Name      string                     `json:"name"`             // Required: Document name
 	Source    *BedrockDocumentSourceData `json:"source"`           // Required: Document source data
-	Citations *schemas.Citations         `json:"citations,omitempty"`
+	Citations *BedrockCitationsConfig    `json:"citations,omitempty"`
 }
 
 // BedrockDocumentContentBlock is the text union used for custom document content
@@ -373,7 +373,7 @@ type BedrockSearchResultContent struct {
 	Text string `json:"text"` // Required: actual text content
 }
 
-// BedrockCitationsConfig represents citations configuration for a search result.
+// BedrockCitationsConfig represents citations configuration for documents and search results.
 // See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_CitationsConfig.html
 type BedrockCitationsConfig struct {
 	Enabled bool `json:"enabled"` // Required: whether citations are enabled
