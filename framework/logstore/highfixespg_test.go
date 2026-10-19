@@ -435,7 +435,7 @@ func TestHighFixesPGLongJobsLiftPoolStatementTimeout(t *testing.T) {
 		"a refresh over 300k rows must exceed the pool timeout, or this test proves nothing")
 
 	resetTestMatViewRefreshGate()
-	require.NoError(t, refreshMatViews(ctx, tight), "refreshMatViews must lift the pool timeout on its connection")
+	require.NoError(t, refreshMatViews(ctx, tight, 0), "refreshMatViews must lift the pool timeout on its connection")
 
 	require.NoError(t, db.Exec("DROP MATERIALIZED VIEW IF EXISTS mv_logs_hourly CASCADE").Error)
 	require.NoError(t, ensureMatViews(ctx, tight), "ensureMatViews must lift the pool timeout on its connection")

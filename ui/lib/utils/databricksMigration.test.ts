@@ -85,10 +85,28 @@ describe("extractAuthFromHeaders", () => {
 		expect(extractAuthFromHeaders({ Authorization: "vault.secret/dbx" }).token).toMatchObject({ ref: "vault.secret/dbx", type: "vault" });
 	});
 
-	it("reports missing or non-bearer headers", () => {
+	it("reports missing, non-bearer, or masked headers", () => {
 		expect(extractAuthFromHeaders(undefined).problem).toBe("missing");
 		expect(extractAuthFromHeaders({ "X-Api-Key": "x" }).problem).toBe("missing");
 		expect(extractAuthFromHeaders({ Authorization: "Basic abc" }).problem).toBe("not_bearer");
+		expect(extractAuthFromHeaders({ Authorization: "<REDACTED>" }).problem).toBe("masked");
+	});
+
+	it("excludes masked extra headers from the migrated provider and warns about them", () => {
+		const plan = buildDatabricksMigrationPlan(
+			custom("my-dbx", {
+				network_config: {
+					...custom("x").network_config!,
+					extra_headers: { Authorization: "<REDACTED>", "X-Client-Secret": "<REDACTED>", "X-From-Env": "env.UPSTREAM", "X-Trace": "1" },
+				},
+			}),
+			[],
+		);
+		expect(plan.providerSettings.network_config.extra_headers).toEqual({ "X-From-Env": "env.UPSTREAM", "X-Trace": "1" });
+		expect(plan.warnings.some((w) => w.includes('"X-Client-Secret"') && w.includes("cannot be copied"))).toBe(true);
+		expect(plan.warnings.some((w) => w.includes("Authorization header is stored as a literal value"))).toBe(true);
+		expect(plan.keys[0].needsValue).toBe(true);
+		expect(planNeedsInput(plan)).toBe(true);
 	});
 });
 

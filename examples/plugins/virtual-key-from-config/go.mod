@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/examples/plugins/virtual-key-from-config
 
-go 1.27.0
+go 1.27.2
 
 require github.com/maximhq/bifrost/core v1.7.11
 

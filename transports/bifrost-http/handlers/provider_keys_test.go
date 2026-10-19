@@ -15,7 +15,7 @@ import (
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1119,6 +1119,45 @@ func TestRefreshProviderModels_UnknownProviderReturns404(t *testing.T) {
 	}
 	if len(mgr.refreshProviderCalls) != 0 {
 		t.Fatalf("expected no upstream refresh for an unknown provider, got %v", mgr.refreshProviderCalls)
+	}
+}
+
+// TestDeleteProviderKey_KeylessProviderRemovesResidualKey is the recovery
+// half of issue #8500. A provider switched from keyed to keyless keeps its old
+// keys, and adding or updating keys there is rightly refused, but refusing the
+// DELETE too left no API or UI path to ever remove them. Deleting can only
+// shrink the key set of a provider that ignores keys, so it must go through.
+func TestDeleteProviderKey_KeylessProviderRemovesResidualKey(t *testing.T) {
+	SetLogger(&mockLogger{})
+	lib.SetLogger(&mockLogger{})
+
+	const provider schemas.ModelProvider = "keyless-custom"
+	h := &ProviderHandler{
+		inMemoryStore: &lib.Config{
+			Providers: map[schemas.ModelProvider]configstore.ProviderConfig{
+				provider: {
+					Keys: []schemas.Key{{ID: "residual-key", Name: "residual", Value: *schemas.NewSecretVar("sk-residual"), Weight: 1, Enabled: schemas.Ptr(false)}},
+					CustomProviderConfig: &schemas.CustomProviderConfig{
+						IsKeyLess:        true,
+						BaseProviderType: schemas.OpenAI,
+					},
+				},
+			},
+		},
+		modelsManager: &mockModelsManager{},
+	}
+	attachBifrostClient(t, h.inMemoryStore)
+
+	ctx := newTestRequestCtx("")
+	ctx.SetUserValue("provider", string(provider))
+	ctx.SetUserValue("key_id", "residual-key")
+	h.deleteProviderKey(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusOK {
+		t.Fatalf("delete residual key on keyless provider: status got %d, want 200; body=%s", ctx.Response.StatusCode(), ctx.Response.Body())
+	}
+	if keys := h.inMemoryStore.Providers[provider].Keys; len(keys) != 0 {
+		t.Fatalf("residual key still stored after delete: %+v", keys)
 	}
 }
 

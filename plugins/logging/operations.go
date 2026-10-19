@@ -569,6 +569,112 @@ func isPassthroughErrorResponse(result *schemas.BifrostResponse) bool {
 
 // applyNonStreamingOutputToEntry applies non-streaming response data to a log entry.
 // shouldStoreRaw gates whether raw request/response bytes are written to the entry.
+// responseStopReason returns the stop reason a non-streaming response reports: the first choice's
+// finish reason for text and chat completions, the response-level stop reason for Responses.
+func responseStopReason(result *schemas.BifrostResponse) *string {
+	var stopReason *string
+	if result.TextCompletionResponse != nil && len(result.TextCompletionResponse.Choices) > 0 {
+		if choice := result.TextCompletionResponse.Choices[0]; choice.FinishReason != nil {
+			stopReason = choice.FinishReason
+		}
+	}
+	if result.ChatResponse != nil && len(result.ChatResponse.Choices) > 0 {
+		if choice := result.ChatResponse.Choices[0]; choice.FinishReason != nil {
+			stopReason = choice.FinishReason
+		}
+	}
+	if result.ResponsesResponse != nil && result.ResponsesResponse.StopReason != nil {
+		stopReason = result.ResponsesResponse.StopReason
+	}
+	return stopReason
+}
+
+// applyContentOutputToEntry sets the content output of a non-streaming response on entry: the
+// conversation (text and chat completions as OutputMessage, Responses and compaction as
+// ResponsesOutput) and the per-kind outputs (list models, embeddings, rerank, decisions, OCR,
+// speech, transcription, images and video). Callers gate it on content logging. Passthrough log
+// parsing applies it to the typed response decoded from a passthrough body, so both rows record
+// the same fields.
+func applyContentOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse) {
+	if result.ListModelsResponse != nil && result.ListModelsResponse.Data != nil {
+		entry.ListModelsOutputParsed = result.ListModelsResponse.Data
+	}
+	if result.TextCompletionResponse != nil {
+		if len(result.TextCompletionResponse.Choices) > 0 {
+			choice := result.TextCompletionResponse.Choices[0]
+			if choice.TextCompletionResponseChoice != nil {
+				entry.OutputMessageParsed = &schemas.ChatMessage{
+					Role: schemas.ChatMessageRoleAssistant,
+					Content: &schemas.ChatMessageContent{
+						ContentStr: choice.TextCompletionResponseChoice.Text,
+					},
+				}
+			}
+		}
+	}
+	if result.ChatResponse != nil {
+		if len(result.ChatResponse.Choices) > 0 {
+			choice := result.ChatResponse.Choices[0]
+			if choice.ChatNonStreamResponseChoice != nil {
+				entry.OutputMessageParsed = choice.ChatNonStreamResponseChoice.Message
+			}
+		}
+	}
+	if result.ResponsesResponse != nil {
+		entry.ResponsesOutputParsed = result.ResponsesResponse.Output
+	}
+	if result.CompactionResponse != nil {
+		entry.ResponsesOutputParsed = result.CompactionResponse.Output
+	}
+	if result.EmbeddingResponse != nil && len(result.EmbeddingResponse.Data) > 0 {
+		entry.EmbeddingOutputParsed = result.EmbeddingResponse.Data
+	}
+	if result.RerankResponse != nil && len(result.RerankResponse.Results) > 0 {
+		entry.RerankOutputParsed = result.RerankResponse.Results
+	}
+	if result.DecisionResponse != nil && len(result.DecisionResponse.Answers) > 0 {
+		if answersJSON, err := sonic.Marshal(result.DecisionResponse.Answers); err == nil {
+			answers := string(answersJSON)
+			entry.OutputMessageParsed = &schemas.ChatMessage{
+				Role: schemas.ChatMessageRoleAssistant,
+				Content: &schemas.ChatMessageContent{
+					ContentStr: &answers,
+				},
+			}
+		}
+	}
+	if result.OCRResponse != nil {
+		entry.OCROutputParsed = result.OCRResponse
+	}
+	if result.SpeechResponse != nil {
+		entry.SpeechOutputParsed = result.SpeechResponse
+	}
+	if result.TranscriptionResponse != nil {
+		entry.TranscriptionOutputParsed = result.TranscriptionResponse
+	}
+	if result.ImageGenerationResponse != nil {
+		entry.ImageGenerationOutputParsed = result.ImageGenerationResponse
+	}
+	if result.VideoGenerationResponse != nil {
+		// Generation, remix and retrieve all return BifrostVideoGenerationResponse;
+		// the request type is the only discriminator.
+		if result.GetExtraFields().RequestType == schemas.VideoRetrieveRequest {
+			entry.VideoRetrieveOutputParsed = result.VideoGenerationResponse
+		} else {
+			entry.VideoGenerationOutputParsed = result.VideoGenerationResponse
+		}
+	}
+	if result.VideoDownloadResponse != nil {
+		entry.VideoDownloadOutputParsed = result.VideoDownloadResponse
+	}
+	if result.VideoListResponse != nil {
+		entry.VideoListOutputParsed = result.VideoListResponse
+	}
+	if result.VideoDeleteResponse != nil {
+		entry.VideoDeleteOutputParsed = result.VideoDeleteResponse
+	}
+}
+
 func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
 	defer applyRefusalLogOutcome(entry)
 	if result == nil {
@@ -591,18 +697,8 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 	extraFields := result.GetExtraFields()
 
 	// Extract stop_reason - always persist regardless of content logging settings
-	if result.TextCompletionResponse != nil && len(result.TextCompletionResponse.Choices) > 0 {
-		if choice := result.TextCompletionResponse.Choices[0]; choice.FinishReason != nil {
-			entry.StopReason = choice.FinishReason
-		}
-	}
-	if result.ChatResponse != nil && len(result.ChatResponse.Choices) > 0 {
-		if choice := result.ChatResponse.Choices[0]; choice.FinishReason != nil {
-			entry.StopReason = choice.FinishReason
-		}
-	}
-	if result.ResponsesResponse != nil && result.ResponsesResponse.StopReason != nil {
-		entry.StopReason = result.ResponsesResponse.StopReason
+	if stopReason := responseStopReason(result); stopReason != nil {
+		entry.StopReason = stopReason
 	}
 
 	if contentLoggingEnabled {
@@ -620,83 +716,7 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 				}
 			}
 		}
-		if result.ListModelsResponse != nil && result.ListModelsResponse.Data != nil {
-			entry.ListModelsOutputParsed = result.ListModelsResponse.Data
-		}
-		if result.TextCompletionResponse != nil {
-			if len(result.TextCompletionResponse.Choices) > 0 {
-				choice := result.TextCompletionResponse.Choices[0]
-				if choice.TextCompletionResponseChoice != nil {
-					entry.OutputMessageParsed = &schemas.ChatMessage{
-						Role: schemas.ChatMessageRoleAssistant,
-						Content: &schemas.ChatMessageContent{
-							ContentStr: choice.TextCompletionResponseChoice.Text,
-						},
-					}
-				}
-			}
-		}
-		if result.ChatResponse != nil {
-			if len(result.ChatResponse.Choices) > 0 {
-				choice := result.ChatResponse.Choices[0]
-				if choice.ChatNonStreamResponseChoice != nil {
-					entry.OutputMessageParsed = choice.ChatNonStreamResponseChoice.Message
-				}
-			}
-		}
-		if result.ResponsesResponse != nil {
-			entry.ResponsesOutputParsed = result.ResponsesResponse.Output
-		}
-		if result.CompactionResponse != nil {
-			entry.ResponsesOutputParsed = result.CompactionResponse.Output
-		}
-		if result.EmbeddingResponse != nil && len(result.EmbeddingResponse.Data) > 0 {
-			entry.EmbeddingOutputParsed = result.EmbeddingResponse.Data
-		}
-		if result.RerankResponse != nil && len(result.RerankResponse.Results) > 0 {
-			entry.RerankOutputParsed = result.RerankResponse.Results
-		}
-		if result.DecisionResponse != nil && len(result.DecisionResponse.Answers) > 0 {
-			if answersJSON, err := sonic.Marshal(result.DecisionResponse.Answers); err == nil {
-				answers := string(answersJSON)
-				entry.OutputMessageParsed = &schemas.ChatMessage{
-					Role: schemas.ChatMessageRoleAssistant,
-					Content: &schemas.ChatMessageContent{
-						ContentStr: &answers,
-					},
-				}
-			}
-		}
-		if result.OCRResponse != nil {
-			entry.OCROutputParsed = result.OCRResponse
-		}
-		if result.SpeechResponse != nil {
-			entry.SpeechOutputParsed = result.SpeechResponse
-		}
-		if result.TranscriptionResponse != nil {
-			entry.TranscriptionOutputParsed = result.TranscriptionResponse
-		}
-		if result.ImageGenerationResponse != nil {
-			entry.ImageGenerationOutputParsed = result.ImageGenerationResponse
-		}
-		if result.VideoGenerationResponse != nil {
-			// Generation, remix and retrieve all return BifrostVideoGenerationResponse;
-			// the request type is the only discriminator.
-			if extraFields.RequestType == schemas.VideoRetrieveRequest {
-				entry.VideoRetrieveOutputParsed = result.VideoGenerationResponse
-			} else {
-				entry.VideoGenerationOutputParsed = result.VideoGenerationResponse
-			}
-		}
-		if result.VideoDownloadResponse != nil {
-			entry.VideoDownloadOutputParsed = result.VideoDownloadResponse
-		}
-		if result.VideoListResponse != nil {
-			entry.VideoListOutputParsed = result.VideoListResponse
-		}
-		if result.VideoDeleteResponse != nil {
-			entry.VideoDeleteOutputParsed = result.VideoDeleteResponse
-		}
+		applyContentOutputToEntry(entry, result)
 		if result.PassthroughResponse != nil && len(result.PassthroughResponse.Body) > 0 {
 			entry.PassthroughResponseBody = string(result.PassthroughResponse.Body)
 		}

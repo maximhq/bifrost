@@ -257,6 +257,22 @@ func (bc *BifrostContext) Grant() Grant {
 // is not itself a *BifrostContext.
 type bifrostContextSelfKey struct{}
 
+// BifrostContextFromContext returns the nearest *BifrostContext reachable from ctx: ctx itself,
+// or the one a foreign wrapper (context.WithTimeout, mcp-go's per-request WithValue, ...) was
+// derived from. ok is false when no BifrostContext is in the chain. Callers that only need to
+// read request values (identity, extra headers) use this instead of wrapping ctx in a fresh
+// BifrostContext, which would start a cancellation watcher per call.
+func BifrostContextFromContext(ctx context.Context) (*BifrostContext, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	if bc, ok := ctx.(*BifrostContext); ok {
+		return bc, true
+	}
+	bc, ok := ctx.Value(bifrostContextSelfKey{}).(*BifrostContext)
+	return bc, ok && bc != nil
+}
+
 // inheritedGrant finds the grant of the nearest ancestor request context that has one. A
 // BifrostContext parent is walked directly; a foreign parent is asked for one via Value before
 // giving up, since a foreign context with nothing to offer still answers nil for that key the
@@ -579,6 +595,29 @@ func (bc *BifrostContext) GetAndSetValue(key any, value any) any {
 	oldValue := bc.userValues[key]
 	bc.userValues[key] = value
 	return oldValue
+}
+
+// updateValue replaces key's value with update(current) under the root's values lock, so
+// concurrent read-modify-write callers cannot overwrite each other. current falls back to the
+// parent's value like Value does. Writes to reserved keys are dropped like SetValue.
+func (bc *BifrostContext) updateValue(key any, update func(current any) any) {
+	if bc.valueDelegate != nil {
+		bc.valueDelegate.updateValue(key, update)
+		return
+	}
+	if bc.blockRestrictedWrites.Load() && isReservedKey(key) {
+		return
+	}
+	bc.valuesMu.Lock()
+	defer bc.valuesMu.Unlock()
+	current, ok := bc.userValues[key]
+	if !ok && bc.parent != nil && !isNonCancellingContext(bc.parent) {
+		current = bc.parent.Value(key)
+	}
+	if bc.userValues == nil {
+		bc.userValues = make(map[any]any, 16)
+	}
+	bc.userValues[key] = update(current)
 }
 
 // GetUserValues returns a copy of all user-set values in this context.

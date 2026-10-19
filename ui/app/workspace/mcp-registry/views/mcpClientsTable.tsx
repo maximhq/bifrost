@@ -601,6 +601,8 @@ export default function MCPClientsTable({
 				return "SSE";
 			case "stdio":
 				return "STDIO";
+			case "openapi":
+				return "OpenAPI";
 			default:
 				return type.toUpperCase();
 		}

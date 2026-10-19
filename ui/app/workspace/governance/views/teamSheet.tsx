@@ -1,3 +1,5 @@
+import { CalendarAlignmentNotice } from "@/components/calendarAlignmentNotice";
+import { calendarWindowDurations, isMultiUnitDuration } from "@/lib/constants/governance";
 import { CustomerSelector } from "@/components/entitySelectors/customerSelector";
 import {
 	AlertDialog,
@@ -512,18 +514,35 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 							options={resetDurationOptions}
 						/>
 
+						<CalendarAlignmentNotice
+							enabled={formData.calendarAligned}
+							durations={calendarWindowDurations([
+								{
+									budgets: formData.budgets.map((b) => ({ max_limit: b.maxLimit, reset_duration: b.resetDuration })),
+									rate_limit: {
+										token_max_limit: formData.tokenMaxLimit,
+										token_reset_duration: formData.tokenResetDuration,
+										request_max_limit: formData.requestMaxLimit,
+										request_reset_duration: formData.requestResetDuration,
+									},
+								},
+							])}
+						/>
 						{/* Calendar alignment — team-wide setting that applies to all team budgets and the team rate limit */}
 						{(() => {
 							const hasAlignableBudget = formData.budgets.some(
-								(b) => b.maxLimit !== undefined && b.maxLimit !== null && supportsCalendarAlignment(b.resetDuration),
+								(b) =>
+									b.maxLimit !== undefined &&
+									b.maxLimit !== null &&
+									(supportsCalendarAlignment(b.resetDuration) || isMultiUnitDuration(b.resetDuration)),
 							);
 							const hasAlignableRateLimit =
 								(formData.tokenMaxLimit !== undefined &&
 									formData.tokenMaxLimit !== null &&
-									supportsCalendarAlignment(formData.tokenResetDuration)) ||
+									(supportsCalendarAlignment(formData.tokenResetDuration) || isMultiUnitDuration(formData.tokenResetDuration))) ||
 								(formData.requestMaxLimit !== undefined &&
 									formData.requestMaxLimit !== null &&
-									supportsCalendarAlignment(formData.requestResetDuration));
+									(supportsCalendarAlignment(formData.requestResetDuration) || isMultiUnitDuration(formData.requestResetDuration)));
 							if (!hasAlignableBudget && !hasAlignableRateLimit) return null;
 							return (
 								<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
@@ -533,7 +552,7 @@ export default function TeamSheet({ team, onSave, onCancel }: TeamSheetProps) {
 										</Label>
 										<p className="text-muted-foreground text-xs">
 											Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation date.
-											Quarterly budgets always align to fiscal quarter starts. Applies to durations of a day or longer.
+											Single-unit day, week, month, quarter and year windows align to calendar boundaries. Other durations remain rolling.
 										</p>
 									</div>
 									<Switch

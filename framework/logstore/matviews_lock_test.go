@@ -84,7 +84,7 @@ func TestRefreshMatViewsAdvisoryLockLifecycle(t *testing.T) {
 	t.Run("normal refresh releases lock", func(t *testing.T) {
 		resetTestMatViewRefreshGate()
 
-		require.NoError(t, refreshMatViews(context.Background(), db))
+		require.NoError(t, refreshMatViews(context.Background(), db, 0))
 
 		conn := acquireTestAdvisoryLock(t, db, matviewRefreshAdvisoryLockKey)
 		releaseTestAdvisoryLock(t, conn, matviewRefreshAdvisoryLockKey)
@@ -99,7 +99,7 @@ func TestRefreshMatViewsAdvisoryLockLifecycle(t *testing.T) {
 		defer cancel()
 
 		start := time.Now()
-		require.NoError(t, refreshMatViews(ctx, db))
+		require.NoError(t, refreshMatViews(ctx, db, 0))
 		assert.Less(t, time.Since(start), time.Second)
 	})
 
@@ -114,7 +114,7 @@ func TestRefreshMatViewsAdvisoryLockLifecycle(t *testing.T) {
 			resetTestMatViewRefreshGate()
 
 			ctx, cancel := context.WithTimeout(context.Background(), budget)
-			err := refreshMatViews(ctx, db)
+			err := refreshMatViews(ctx, db, 0)
 			cancel()
 			if err != nil {
 				timedOut = true
@@ -135,7 +135,7 @@ func TestRefreshMatViewsAdvisoryLockLifecycle(t *testing.T) {
 		holderDB, holder := acquireTestAdvisoryLockOnIsolatedPool(t, matviewRefreshAdvisoryLockKey)
 		closeTestAdvisoryLockSession(t, holderDB, holder)
 
-		require.NoError(t, refreshMatViews(context.Background(), db))
+		require.NoError(t, refreshMatViews(context.Background(), db, 0))
 
 		conn := acquireTestAdvisoryLock(t, db, matviewRefreshAdvisoryLockKey)
 		releaseTestAdvisoryLock(t, conn, matviewRefreshAdvisoryLockKey)

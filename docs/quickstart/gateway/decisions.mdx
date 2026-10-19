@@ -22,12 +22,14 @@ Write models as `provider/model` to pick the provider explicitly. Switching prov
 
 | Provider | Example models | Bifrost endpoint | Images |
 |----------|----------------|------------------|--------|
-| [TypeSafe](/providers/supported-providers/typesafe) | `typesafe/jev-latest`, `typesafe/jev-1.13.0` | `/v1/decisions`, or `/typesafe/v1/systemone` (TypeSafe's native API) | No |
+| [TypeSafe](/providers/supported-providers/typesafe) | `typesafe/jev-latest`, `typesafe/jev-1.14.0` | `/v1/decisions`, or `/typesafe/v1/systemone` (TypeSafe's native API) | Yes, by reference (see [Images by Reference](#images-by-reference)) |
 | [OpenAI](/providers/supported-providers/openai#15-decisions) | `openai/gpt-6-luna` | `/v1/decisions`, or `/openai/v1/decisions` (OpenAI's native API) | Yes |
 | [OpenRouter](/providers/supported-providers/openrouter#decisions) | `openrouter/~typesafe/jev-latest` | `/v1/decisions` | Depends on the model |
 | [Cloudflare](/providers/supported-providers/cloudflare#4-decisions) | `cloudflare/clef`, `cloudflare/clef-flash`, `cloudflare/clef-omni` | `/v1/decisions` | Yes |
 | [Perplexity](/providers/supported-providers/perplexity#3-decisions) | `perplexity/pplx-decider-v1.1-27b`, `perplexity/pplx-decider-v1-27b` | `/v1/decisions` | Yes |
 | [Ollama](/providers/supported-providers/ollama#6-decisions) | `ollama/nimble`, `ollama/clef-flash`, `ollama/tev1:0.8b` | `/v1/decisions` | Yes, base64 only |
+| [Azure](/providers/supported-providers/azure#10-decisions) | `azure/Microsoft-Decision-1` (a key alias maps it to your deployment) | `/v1/decisions` | No |
+| [Databricks](/providers/supported-providers/databricks#decisions) | `databricks/ai_decide` | `/v1/decisions` | No |
 | [Laya, Nimble](/providers/self-hosted-decision-models) | `laya/english`, `nimble/nimble-latest` | `/v1/decisions` | No |
 
 Every provider also answers on `/openai/v1/decisions` and `/typesafe/v1/systemone` when you send a `provider/model` name, so an OpenAI or TypeSafe SDK can reach any of them. Each provider page covers its setup.
@@ -94,9 +96,46 @@ curl --location 'http://localhost:8080/v1/decisions' \
 
 - `image_url` is a base64 data URL or an `https` URL. Ollama reads base64 only.
 - `detail` is optional: `low`, `high`, `auto`, or `original`.
-- Only `input_text` and `input_image` parts are accepted. A provider that reads text only (TypeSafe, Laya, Nimble) rejects an image with a `400`, which lets a [fallback](#fallbacks) that reads images take the request.
+- Only `input_text` and `input_image` parts are accepted. A provider that reads text only (Azure, Databricks, Laya, Nimble) rejects an image with a `400`, which lets a [fallback](#fallbacks) that reads images take the request. TypeSafe reads images by reference only, as below, and rejects an inline image the same way.
+- An `input_text` part's `text` is a string, or structured data (object or array) that System One models read as is and OpenAI receives as JSON text.
 
-**Structured data**: an object, sent to System One models (TypeSafe, Clef, Perplexity, Ollama, Laya, Nimble) as is, and to OpenAI as JSON text.
+### Images by Reference
+
+TypeSafe places an image wherever its ID is written: in the input, inside a question's instructions, or in choice, score, and predicate criteria. Send each image as an `input_image` part with an `id` and the file base64-encoded in `data`, and write the `id` where the image belongs. The format is read from the bytes. A single message with one `input_text` part plus such parts sends that text as TypeSafe's state, so structured data stays structured:
+
+```json
+"input": [
+  {
+    "role": "user",
+    "content": [
+      { "type": "input_text", "text": { "camera": "r-cam" } },
+      { "type": "input_image", "id": "r-cam", "data": "/9j/4AAQ..." },
+      { "type": "input_image", "id": "r-thumb", "data": "iVBORw0..." }
+    ]
+  }
+]
+```
+
+Here `r-cam` is the evidence, and `r-thumb` can define a choice option (`{ "value": "thumbs_up", "description": "r-thumb" }`) without becoming part of the evidence. Bifrost adds the header TypeSafe requires for images. Images sent by reference work only with TypeSafe; other providers reject them. See [TypeSafe: Images and Box](/providers/supported-providers/typesafe#images-and-box).
+
+To send the files as they are instead of base64, use a multipart request: the JSON goes in a part named `request`, each image in its own file part, and the image part names its file part with `name` instead of carrying `data`:
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -F 'request={
+    "model": "typesafe/jev-1.14.0",
+    "input": [{"role": "user", "content": [
+      {"type": "input_text", "text": {"camera": "r-cam"}},
+      {"type": "input_image", "id": "r-cam", "name": "camera-photo"}
+    ]}],
+    "questions": [{"type": "box", "name": "hand", "instructions": "the hand in `camera`"}]
+  };type=application/json' \
+  -F 'camera-photo=@camera.jpg;type=image/jpeg'
+```
+
+A `name` in a JSON request, a `name` with no matching file part, and a file part no image part names are each rejected with `400`.
+
+**Structured data**: an object, sent to System One models (TypeSafe, Clef, Perplexity, Ollama, Azure, Databricks, Laya, Nimble) as is, and to OpenAI as JSON text.
 
 ```json
 "input": { "ticket_id": 4812, "message": "I was double charged.", "plan": "pro" }
@@ -108,7 +147,7 @@ curl --location 'http://localhost:8080/v1/decisions' \
 
 | Field | Meaning |
 |-------|---------|
-| `type` | `predicate`: probability that a statement is true. `choice`: which option fits. `score`: a level on an ordered scale (may fall between levels) |
+| `type` | `predicate`: probability that a statement is true. `choice`: which option fits. `score`: a level on an ordered scale (may fall between levels). `box`: where the instructions' subject is in an image (TypeSafe Jev 1.14: `jev-preview`, `jev-1.14.0`) |
 | `name` | Optional. Echoed on the answer so you can match it up |
 | `instructions` | A string, or structured data (object or array): sent as is to System One models, as JSON text to OpenAI |
 | `criteria` | Predicate only, optional: what `true` and `false` mean. Appended to the instructions for models without a criteria field |
@@ -155,7 +194,7 @@ Provider-only fields, such as Laya's `min_confidence`, go at the top level of th
 }
 ```
 
-There is one answer per question, in question order, with the question's `type`. `confidence`, `probabilities`, and `legend` appear when the model supplies them. A model that declines a question answers it with `"type": "refusal"`.
+There is one answer per question, in question order, with the question's `type`. A box answer carries `box`: its `top`, `bottom`, `left`, and `right` edges, each a fraction from 0 to 1 of the image measured from its top-left. `confidence`, `probabilities`, and `legend` appear when the model supplies them. A model that declines a question answers it with `"type": "refusal"`.
 
 ### Provider-Specific Fields
 
@@ -190,7 +229,7 @@ Bifrost rejects these with a `400` before calling any provider:
 - A `choice` question with no `choices`
 - Two questions with the same `name`
 
-The number of score levels is checked by each provider (TypeSafe accepts 2-10, Perplexity 1-10).
+The number of score levels is checked by each provider (TypeSafe, Azure and Databricks accept 2-10, Perplexity 1-10).
 
 An input part one model cannot read fails only that attempt, so a fallback can still serve it. If every attempt fails, you get the first attempt's error.
 

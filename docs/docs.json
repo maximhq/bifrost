@@ -202,6 +202,7 @@
             "pages": [
               "mcp/overview",
               "mcp/connecting-to-servers",
+              "mcp/openapi-servers",
               "mcp/connections",
               "mcp/virtual-mcps",
               {
@@ -274,6 +275,7 @@
               "features/keys-management",
               "features/async-inference",
               "features/webhooks",
+              "features/news-feeds",
               {
                 "group": "Governance",
                 "icon": "user-lock",
@@ -1532,6 +1534,19 @@
                 ]
               },
               {
+                "group": "News Feeds",
+                "expanded": false,
+                "pages": [
+                  "GET /api/rss/feeds",
+                  "POST /api/rss/feeds",
+                  "PUT /api/rss/feeds/{id}",
+                  "DELETE /api/rss/feeds/{id}",
+                  "GET /api/rss/items",
+                  "GET /api/rss/settings",
+                  "PUT /api/rss/settings"
+                ]
+              },
+              {
                 "group": "Warp",
                 "expanded": false,
                 "pages": [
@@ -2384,6 +2399,7 @@
             "item": "Helm",
             "icon": "box",
             "pages": [
+              "changelogs/helm-v2.1.45",
               "changelogs/helm-v2.1.44",
               "changelogs/helm-v2.1.43",
               "changelogs/helm-v2.1.42",

@@ -17,7 +17,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore"
 	configtables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/oauth2"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
@@ -493,4 +493,163 @@ func TestDeleteMCPClient_UnknownIDIsNotFound(t *testing.T) {
 	assert.Equal(t, []string{"mcp-delete-known"}, manager.removed)
 	_, err := store.GetMCPClientByID(context.Background(), "mcp-delete-known")
 	assert.ErrorIs(t, err, configstore.ErrNotFound)
+}
+
+// =============================================================================
+// GET /api/mcp/library installed flag
+// =============================================================================
+
+// libraryInstalledStore serves one library page and a client table of any size,
+// honoring the limit/offset the handler asks for.
+type libraryInstalledStore struct {
+	configstore.ConfigStore
+	entries     []configtables.TableMCPLibrary
+	clients     []configtables.TableMCPClient
+	clientPages int
+}
+
+func (s *libraryInstalledStore) GetMCPLibraryPaginated(_ context.Context, _ configstore.MCPLibraryQueryParams) ([]configtables.TableMCPLibrary, int64, error) {
+	return s.entries, int64(len(s.entries)), nil
+}
+
+func (s *libraryInstalledStore) GetMCPClientsPaginated(_ context.Context, params configstore.MCPClientsQueryParams) ([]configtables.TableMCPClient, int64, error) {
+	s.clientPages++
+	if params.Offset >= len(s.clients) {
+		return nil, int64(len(s.clients)), nil
+	}
+	end := min(params.Offset+params.Limit, len(s.clients))
+	return s.clients[params.Offset:end], int64(len(s.clients)), nil
+}
+
+func fillerMCPClients(n int) []configtables.TableMCPClient {
+	clients := make([]configtables.TableMCPClient, n)
+	for i := range clients {
+		clients[i] = configtables.TableMCPClient{
+			ClientID:         fmt.Sprintf("filler-%d", i),
+			Name:             fmt.Sprintf("filler_%d", i),
+			EndpointSlug:     fmt.Sprintf("filler-%d", i),
+			ConnectionType:   string(schemas.MCPConnectionTypeHTTP),
+			ConnectionString: schemas.NewSecretVar(fmt.Sprintf("https://filler.example.com/%d", i)),
+		}
+	}
+	return clients
+}
+
+func TestGetMCPLibrary_InstalledLooksPastFirstHundredClients(t *testing.T) {
+	clients := append(fillerMCPClients(250), configtables.TableMCPClient{
+		ClientID:         "context7",
+		Name:             "Context7",
+		EndpointSlug:     "context7",
+		ConnectionType:   string(schemas.MCPConnectionTypeHTTP),
+		ConnectionString: schemas.NewSecretVar("https://mcp.context7.com/mcp"),
+	})
+	store := &libraryInstalledStore{
+		entries: []configtables.TableMCPLibrary{
+			{Slug: "context7", Name: "Context7", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://mcp.context7.com/mcp"},
+			{Slug: "linear", Name: "Linear", ConnectionType: schemas.MCPConnectionTypeHTTP, ConnectionURL: "https://mcp.linear.app/mcp"},
+		},
+		clients: clients,
+	}
+	h := &MCPHandler{store: &lib.Config{ConfigStore: store}}
+
+	ctx := &fasthttp.RequestCtx{}
+	h.getMCPLibrary(ctx)
+
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	var resp struct {
+		Servers []struct {
+			Slug      string `json:"slug"`
+			Installed bool   `json:"installed"`
+		} `json:"servers"`
+	}
+	require.NoError(t, json.Unmarshal(ctx.Response.Body(), &resp))
+	require.Len(t, resp.Servers, 2)
+	assert.Equal(t, "context7", resp.Servers[0].Slug)
+	assert.True(t, resp.Servers[0].Installed, "client #251 installs context7")
+	assert.Equal(t, "linear", resp.Servers[1].Slug)
+	assert.False(t, resp.Servers[1].Installed)
+	assert.Equal(t, 3, store.clientPages, "251 clients read in pages of 100")
+}
+
+func TestIsMCPLibraryEntryInstalled(t *testing.T) {
+	httpEntry := configtables.TableMCPLibrary{
+		Name:           "Context7",
+		ConnectionType: schemas.MCPConnectionTypeHTTP,
+		ConnectionURL:  "https://mcp.context7.com/mcp",
+	}
+	stdioEntry := configtables.TableMCPLibrary{
+		Name:           "File System",
+		ConnectionType: schemas.MCPConnectionTypeSTDIO,
+		StdioConfig:    &schemas.MCPStdioConfig{Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-filesystem"}},
+	}
+	cases := []struct {
+		name   string
+		entry  configtables.TableMCPLibrary
+		client configtables.TableMCPClient
+		want   bool
+	}{
+		{
+			name:   "http renamed client still matches by url",
+			entry:  httpEntry,
+			client: configtables.TableMCPClient{Name: "docs_lookup", EndpointSlug: "context7", ConnectionString: schemas.NewSecretVar("https://mcp.context7.com/mcp")},
+			want:   true,
+		},
+		{
+			name:   "http url with trailing slash matches",
+			entry:  httpEntry,
+			client: configtables.TableMCPClient{Name: "docs_lookup", EndpointSlug: "docs-lookup", ConnectionString: schemas.NewSecretVar("https://mcp.context7.com/mcp/")},
+			want:   true,
+		},
+		{
+			name:   "stdio renamed client matches by immutable endpoint slug",
+			entry:  stdioEntry,
+			client: configtables.TableMCPClient{Name: "my_files", EndpointSlug: "file-system", StdioConfig: &schemas.MCPStdioConfig{Command: "npx", Args: []string{"-y", "other"}}},
+			want:   true,
+		},
+		{
+			name:   "stdio renamed client matches by command and args",
+			entry:  stdioEntry,
+			client: configtables.TableMCPClient{Name: "my_files", EndpointSlug: "my-files", StdioConfig: &schemas.MCPStdioConfig{Command: "npx", Args: []string{"-y", "@modelcontextprotocol/server-filesystem"}}},
+			want:   true,
+		},
+		{
+			name:   "stdio client with same command but other args does not match",
+			entry:  stdioEntry,
+			client: configtables.TableMCPClient{Name: "my_files", EndpointSlug: "my-files", StdioConfig: &schemas.MCPStdioConfig{Command: "npx", Args: []string{"-y", "other"}}},
+			want:   false,
+		},
+		{
+			name:   "name match is case-insensitive",
+			entry:  stdioEntry,
+			client: configtables.TableMCPClient{Name: "file_system", EndpointSlug: "custom"},
+			want:   true,
+		},
+		{
+			name:   "unrelated client does not match",
+			entry:  httpEntry,
+			client: configtables.TableMCPClient{Name: "other", EndpointSlug: "other", ConnectionString: schemas.NewSecretVar("https://other.example.com/mcp")},
+			want:   false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isMCPLibraryEntryInstalled(&tc.entry, []configtables.TableMCPClient{tc.client})
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestSanitizeMCPLibraryServerName(t *testing.T) {
+	cases := map[string]string{
+		"Context7":         "Context7",
+		"Maxim AI":         "Maxim_AI",
+		"  File - System ": "File_System",
+		"a-_b":             "a__b",
+		"-lead":            "lead",
+		"1Password":        "mcp_1Password",
+		"***":              "mcp_",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, sanitizeMCPLibraryServerName(in), in)
+	}
 }

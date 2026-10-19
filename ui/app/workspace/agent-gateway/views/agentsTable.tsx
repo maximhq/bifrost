@@ -233,7 +233,6 @@ export default function AgentsTable({
 				name: agent.name,
 				data: {
 					agent_card_url: agent.agent_card_url,
-					tenant: agent.tenant,
 					enabled,
 					allow_by_default: agent.allow_by_default,
 					forward_accepted_credential: agent.forward_accepted_credential,
@@ -241,7 +240,6 @@ export default function AgentsTable({
 					discovery_auth: agent.discovery_auth,
 					runtime_auth: agent.runtime_auth,
 					virtual_key_ids: agent.virtual_key_ids ?? [],
-					extension_uris: agent.extension_uris ?? [],
 				},
 			}).unwrap();
 			toast({ title: `Agent ${enabled ? "enabled" : "disabled"} successfully` });

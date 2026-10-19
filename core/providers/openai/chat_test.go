@@ -3,8 +3,10 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -999,6 +1001,8 @@ func TestToOpenAIChatRequest_StripsAssistantReasoningContentForCompatibleProvide
 		model    string
 	}{
 		{name: "deepseek", provider: schemas.DeepSeek, model: "deepseek-v4-pro"},
+		{name: "mistral", provider: schemas.Mistral, model: "zai-glm-5-3"},
+		{name: "vertex mistral", provider: schemas.Vertex, model: "mistral-medium-3"},
 	}
 
 	for _, tt := range tests {
@@ -1812,6 +1816,124 @@ func TestToOpenAIChatRequest_LegacyMaxTokensProvidersUseMaxTokensOnWire(t *testi
 // embedded in the tool call_id as "<baseID>_ts_<sig>" and can exceed OpenAI's 64-char
 // limit. The chat converter must strip it to the base ID on the wire while leaving the
 // caller's input intact (so a later Gemini turn can still recover the signature).
+func TestToOpenAIChatRequest_ToolCallCacheControl_OpenRouterOnly(t *testing.T) {
+	// The tool_calls marker follows the same rule as block and tool markers: forwarded to
+	// OpenRouter, which relays it to Claude, and stripped for every other OpenAI-shaped target.
+	makeReq := func(provider schemas.ModelProvider) *schemas.BifrostChatRequest {
+		return &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    "anthropic/claude-sonnet-4-6",
+			Input: []schemas.ChatMessage{
+				{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("weather in paris?")}},
+				{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID: schemas.Ptr("call_paris"), Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+						Function:     schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_weather"), Arguments: `{"city":"Paris"}`},
+						CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+					}},
+				}},
+				{
+					Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_paris")},
+					Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("18C")},
+				},
+			},
+		}
+	}
+	for _, tt := range []struct {
+		provider schemas.ModelProvider
+		wantKept bool
+	}{{schemas.OpenRouter, true}, {schemas.OpenAI, false}, {schemas.Groq, false}} {
+		t.Run(string(tt.provider), func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+			defer cancel()
+			req := makeReq(tt.provider)
+			wire, err := json.Marshal(ToOpenAIChatRequest(ctx, req))
+			require.NoError(t, err)
+			if tt.wantKept {
+				require.Equal(t, 1, strings.Count(string(wire), "cache_control"), "OpenRouter must keep the tool_calls marker: %s", wire)
+			} else {
+				require.NotContains(t, string(wire), "cache_control", "%s must not receive the tool_calls marker: %s", tt.provider, wire)
+			}
+			require.Contains(t, string(wire), `"call_paris"`)
+			require.NotNil(t, req.Input[1].ChatAssistantMessage.ToolCalls[0].CacheControl, "strip must copy, not mutate the caller's request")
+		})
+	}
+}
+
+func TestToOpenAIChatRequest_OpenRouterClampsCacheControlToFour(t *testing.T) {
+	cc := func() *schemas.CacheControl { return &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral} }
+	// Five markers in render order: tool definition, system block, user block, tool call, tool result.
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.OpenRouter,
+		Model:    "anthropic/claude-sonnet-5",
+		Input: []schemas.ChatMessage{
+			{Role: schemas.ChatMessageRoleSystem, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("You are a weather assistant."), CacheControl: cc()},
+			}}},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+				{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("What is the weather in Paris?"), CacheControl: cc()},
+			}}},
+			{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{
+				ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+					ID: schemas.Ptr("toolu_paris"), Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+					Function:     schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_weather"), Arguments: `{"city":"Paris"}`},
+					CacheControl: cc(),
+				}},
+			}},
+			{
+				Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("toolu_paris")},
+				Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
+					{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("18C, light rain"), CacheControl: cc()},
+				}},
+			},
+			{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Thanks. Is that warm?")}},
+		},
+		Params: &schemas.ChatParameters{Tools: []schemas.ChatTool{{
+			Type:         schemas.ChatToolTypeFunction,
+			Function:     &schemas.ChatToolFunction{Name: "get_weather", Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+			CacheControl: cc(),
+		}}},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(nil)
+	defer cancel()
+	result := ToOpenAIChatRequest(ctx, req)
+	require.NotNil(t, result)
+
+	wireBody, err := json.Marshal(result)
+	require.NoError(t, err)
+	wire := string(wireBody)
+	require.Equal(t, 4, strings.Count(wire, "cache_control"), "OpenRouter relays markers to Claude, which caps them at 4: %s", wire)
+
+	// The earliest marker in render order (the tool definition) is the one dropped;
+	// the later ones, which anchor longer prefixes, all survive.
+	require.Nil(t, result.ChatParameters.Tools[0].CacheControl, "tool-definition marker must be the one dropped")
+	require.NotNil(t, result.Messages[0].Content.ContentBlocks[0].CacheControl, "system marker must survive")
+	require.NotNil(t, result.Messages[1].Content.ContentBlocks[0].CacheControl, "user marker must survive")
+	require.NotNil(t, result.Messages[2].OpenAIChatAssistantMessage.ToolCalls[0].CacheControl, "tool_calls marker must survive")
+	require.NotNil(t, result.Messages[3].Content.ContentBlocks[0].CacheControl, "tool result marker must survive")
+
+	// The caller's request is shared across retries and fallbacks and must not be mutated.
+	require.NotNil(t, req.Params.Tools[0].CacheControl, "clamp must copy, not mutate the caller's tools")
+	require.NotNil(t, req.Input[0].Content.ContentBlocks[0].CacheControl)
+	require.NotNil(t, req.Input[2].ChatAssistantMessage.ToolCalls[0].CacheControl)
+
+	// A non-Claude upstream on OpenRouter ignores the markers, so all five pass through.
+	req.Model = "google/gemini-2.5-pro"
+	result = ToOpenAIChatRequest(ctx, req)
+	wireBody, err = json.Marshal(result)
+	require.NoError(t, err)
+	require.Equal(t, 5, strings.Count(string(wireBody), "cache_control"), "clamp must be scoped to Claude upstreams: %s", wireBody)
+
+	// Four markers or fewer pass through untouched on Claude too.
+	req.Model = "anthropic/claude-sonnet-5"
+	req.Params.Tools[0].CacheControl = nil
+	result = ToOpenAIChatRequest(ctx, req)
+	wireBody, err = json.Marshal(result)
+	require.NoError(t, err)
+	require.Equal(t, 4, strings.Count(string(wireBody), "cache_control"))
+}
+
 func TestToOpenAIChatRequest_StripsThoughtSignatureFromToolCallIDs(t *testing.T) {
 	embeddedID := "search" + providerUtils.ThoughtSignatureSeparator + strings.Repeat("A", 6000)
 
@@ -2279,10 +2401,12 @@ func TestToOpenAIChatRequest_GPT56CacheBreakpoint(t *testing.T) {
 					ID: schemas.Ptr("call_1"), Type: schemas.Ptr("function"),
 					Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("echo"), Arguments: `{"text":"hello"}`},
 				}}}},
-				{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
+				{
+					Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_1")},
 					Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{
 						{Type: schemas.ChatContentBlockTypeText, Text: schemas.Ptr("hello"), CacheControl: ephemeral},
-					}}},
+					}},
+				},
 			},
 			Params: &schemas.ChatParameters{},
 		}
@@ -2803,5 +2927,57 @@ func BenchmarkToOpenAIChatRequest_DeepSeekResponseFormat(b *testing.B) {
 				_ = ToOpenAIChatRequest(ctx, bifrostReq)
 			}
 		})
+	}
+}
+
+// TestOpenAIChatRequestUnknownFields pins which top-level chat fields count as
+// unknown: every field OpenAIChatRequest decodes (its own, ChatParameters', the
+// reasoning_* shorthands, fallbacks and extra_params) is known, anything else
+// such as Azure's data_sources is returned compacted, and a body with only
+// known fields allocates nothing.
+func TestOpenAIChatRequestUnknownFields(t *testing.T) {
+	known := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"stream":true,"max_tokens":8,` +
+		`"max_completion_tokens":8,"temperature":0.1,"top_p":1,"tools":[],"tool_choice":"auto","response_format":{"type":"text"},` +
+		`"reasoning_effort":"low","reasoning_max_tokens":5,"reasoning_display":"summarized","reasoning":{"effort":"low"},` +
+		`"prompt_cache_isolation_key":"k","fallbacks":["openai/gpt-4o"],"extra_params":{"a":1},"stream_options":{"include_usage":true},` +
+		`"web_search_options":{},"user":"u","service_tier":"auto","context_management":{}}`)
+	require.Nil(t, OpenAIChatRequestUnknownFields(known))
+	require.Nil(t, OpenAIChatRequestUnknownFields(nil))
+	allocs := testing.AllocsPerRun(100, func() { _ = OpenAIChatRequestUnknownFields(known) })
+	require.Zero(t, allocs, "a body with only known fields must not allocate")
+
+	body := []byte(`{"model":"gpt-4o","messages":[],"data_sources":[ {"type": "azure_search", "parameters": {"index_name": "idx"}} ],"x_new":7}`)
+	got := OpenAIChatRequestUnknownFields(body)
+	require.Len(t, got, 2)
+	require.Equal(t, json.RawMessage(`[{"type":"azure_search","parameters":{"index_name":"idx"}}]`), got["data_sources"])
+	require.Equal(t, json.RawMessage(`7`), got["x_new"])
+
+	// The kept names and values must not alias the body, which fasthttp reuses.
+	copy(body, strings.Repeat("x", len(body)))
+	require.Equal(t, json.RawMessage(`7`), got["x_new"])
+	require.Contains(t, got, "data_sources")
+
+	// sonic matches field names case-insensitively, so these spellings are decoded into the
+	// typed fields; forwarding them as well would send each one to the provider twice.
+	folded := []byte(`{"MODEL":"gpt-4o","Messages":[{"role":"user","content":"hi"}],"Temperature":0.2,"Reasoning_Effort":"low","data_sources":[]}`)
+	var decoded OpenAIChatRequest
+	require.NoError(t, sonic.Unmarshal(folded, &decoded))
+	require.Equal(t, "gpt-4o", decoded.Model, "precondition: sonic folds the case of MODEL")
+	require.Len(t, decoded.Messages, 1, "precondition: sonic folds the case of Messages")
+	got = OpenAIChatRequestUnknownFields(folded)
+	require.Equal(t, []string{"data_sources"}, slices.Sorted(maps.Keys(got)), "only the field sonic does not decode is unknown")
+	foldedKnown := []byte(`{"MODEL":"gpt-4o","Messages":[{"role":"user","content":"hi"}],"Temperature":0.2,"Reasoning_Effort":"low"}`)
+	require.Nil(t, OpenAIChatRequestUnknownFields(foldedKnown))
+	allocs = testing.AllocsPerRun(100, func() { _ = OpenAIChatRequestUnknownFields(foldedKnown) })
+	require.Zero(t, allocs, "case-folded known fields must not allocate either")
+}
+
+// BenchmarkOpenAIChatRequestUnknownFields measures the top-level scan on a
+// typical chat body with no unknown fields.
+func BenchmarkOpenAIChatRequestUnknownFields(b *testing.B) {
+	body := []byte(`{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"hi"}],"temperature":0.2,"max_tokens":64,"stream":true,"stream_options":{"include_usage":true}}`)
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = OpenAIChatRequestUnknownFields(body)
 	}
 }

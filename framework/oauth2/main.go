@@ -1194,6 +1194,89 @@ func (e *PermanentOAuthError) Error() string {
 	return fmt.Sprintf("permanent oauth error (status %d): %s", e.StatusCode, e.Body)
 }
 
+// tokenRejection is how callTokenEndpoint treats a response that carried no
+// access token.
+type tokenRejection int
+
+const (
+	rejectionRequest   tokenRejection = iota // request or config bug: fail fast, mark nothing
+	rejectionTransient                       // retry with backoff
+	rejectionGrant                           // the grant is dead: the holder must re-authorize
+	rejectionClient                          // the client's credentials were refused
+)
+
+// oauthErrorAliases maps non-standard token endpoint error codes onto their
+// RFC 6749 §5.2 equivalents (plus the RFC's temporarily_unavailable and
+// server_error), so classification only ever reasons about RFC codes.
+var oauthErrorAliases = map[string]string{
+	// Slack, which answers HTTP 200 with {"ok":false,"error":...}:
+	// https://docs.slack.dev/reference/methods/oauth.v2.user.access
+	"invalid_refresh_token":   "invalid_grant",
+	"token_revoked":           "invalid_grant",
+	"token_expired":           "invalid_grant",
+	"invalid_auth":            "invalid_grant",
+	"account_inactive":        "invalid_grant",
+	"access_denied":           "invalid_grant",
+	"team_access_not_granted": "invalid_grant",
+	"bad_client_secret":       "invalid_client",
+	"invalid_client_id":       "invalid_client",
+	"app_not_admin_approved":  "unauthorized_client",
+	"ratelimited":             "temporarily_unavailable",
+	"service_unavailable":     "temporarily_unavailable",
+	"request_timeout":         "temporarily_unavailable",
+	"internal_error":          "server_error",
+	"fatal_error":             "server_error",
+
+	// GitHub: https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/refreshing-user-access-tokens
+	"bad_refresh_token": "invalid_grant",
+}
+
+// parseOAuthErrorBody returns the error and error_description of a token
+// endpoint response body, JSON or form-encoded, or "" for each when absent.
+func parseOAuthErrorBody(body []byte) (code, description string) {
+	var oauthErr struct {
+		Error            string `json:"error"`
+		ErrorDescription string `json:"error_description"`
+	}
+	if json.Unmarshal(body, &oauthErr) == nil {
+		return oauthErr.Error, oauthErr.ErrorDescription
+	}
+	if form, err := url.ParseQuery(string(body)); err == nil {
+		return form.Get("error"), form.Get("error_description")
+	}
+	return "", ""
+}
+
+// classifyTokenRejection decides how to treat a token endpoint response that
+// carried no access token. The error code decides when there is a recognised
+// one, whatever HTTP status carries it (Slack sends 200, Atlassian's v2
+// server 403); the status decides otherwise.
+func classifyTokenRejection(status int, body []byte) tokenRejection {
+	code, _ := parseOAuthErrorBody(body)
+	if alias, ok := oauthErrorAliases[code]; ok {
+		code = alias
+	}
+	switch code {
+	case "invalid_grant":
+		return rejectionGrant
+	case "invalid_client", "unauthorized_client":
+		return rejectionClient
+	case "temporarily_unavailable", "server_error":
+		return rejectionTransient
+	}
+	switch {
+	case status == http.StatusUnauthorized:
+		return rejectionClient
+	case status >= 500, status == http.StatusTooManyRequests, status == http.StatusRequestTimeout:
+		return rejectionTransient
+	case status == http.StatusOK, status == http.StatusBadRequest, code != "":
+		return rejectionRequest
+	default:
+		// An unexplained 4xx such as a proxy's 403 page: retry, as before.
+		return rejectionTransient
+	}
+}
+
 // refreshRejectionReason is what gets recorded on the token row when a
 // refresh is permanently rejected: the HTTP status the provider answered
 // with plus the standard OAuth error and error_description from its body
@@ -1201,17 +1284,14 @@ func (e *PermanentOAuthError) Error() string {
 // page. It is what lets an admin tell "the grant was revoked" from "the
 // client is no longer authorized" without reading the provider's logs.
 func refreshRejectionReason(permErr *PermanentOAuthError) string {
-	var oauthErr struct {
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
-	}
-	if err := json.Unmarshal([]byte(permErr.Body), &oauthErr); err != nil || oauthErr.Error == "" {
+	code, description := parseOAuthErrorBody([]byte(permErr.Body))
+	if code == "" {
 		return fmt.Sprintf("provider rejected the refresh (HTTP %d)", permErr.StatusCode)
 	}
-	if oauthErr.ErrorDescription == "" {
-		return fmt.Sprintf("provider rejected the refresh (HTTP %d, %s)", permErr.StatusCode, oauthErr.Error)
+	if description == "" {
+		return fmt.Sprintf("provider rejected the refresh (HTTP %d, %s)", permErr.StatusCode, code)
 	}
-	return fmt.Sprintf("provider rejected the refresh (HTTP %d, %s: %s)", permErr.StatusCode, oauthErr.Error, oauthErr.ErrorDescription)
+	return fmt.Sprintf("provider rejected the refresh (HTTP %d, %s: %s)", permErr.StatusCode, code, description)
 }
 
 // inactiveTokenError is the error every access-token lookup returns for a
@@ -1272,8 +1352,9 @@ func (p *OAuth2Provider) requirePublicTargetFor(ctx context.Context, mcpClientID
 }
 
 // callTokenEndpoint makes a POST request to the OAuth token endpoint with retry logic.
-// Transport errors and 5xx responses are retried up to maxTokenRetries times with
-// exponential backoff. HTTP 4xx responses are returned immediately as PermanentOAuthError.
+// A response without an access token is classified by classifyTokenRejection:
+// transient ones are retried up to maxTokenRetries times with exponential
+// backoff, and dead grants or refused clients are returned as PermanentOAuthError.
 func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string, data url.Values) (*schemas.OAuth2TokenExchangeResponse, error) {
 	client := newOAuthDiscoveryHTTPClient(ctx, networkTimeout)
 	var lastErr error
@@ -1310,52 +1391,44 @@ func (p *OAuth2Provider) callTokenEndpoint(ctx context.Context, tokenURL string,
 			continue
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			if resp.StatusCode == http.StatusUnauthorized {
-				return nil, &PermanentOAuthError{StatusCode: resp.StatusCode, Body: string(body)}
-			}
-			// Per RFC 6749 §5.2, only invalid_grant and unauthorized_client within a 400
-			// require user re-authorization. Other 400s (invalid_request, unsupported_grant_type,
-			// etc.) are configuration or request errors — fail fast without expiring the config.
-			if resp.StatusCode == http.StatusBadRequest {
-				var oauthErr struct {
-					Error string `json:"error"`
+		if resp.StatusCode == http.StatusOK {
+			// Try to parse as JSON first
+			var tokenResponse schemas.OAuth2TokenExchangeResponse
+			if err := json.Unmarshal(body, &tokenResponse); err != nil {
+				// Fall back to URL-encoded form data (GitHub's OAuth endpoint returns this format)
+				formValues, parseErr := url.ParseQuery(string(body))
+				if parseErr != nil {
+					return nil, fmt.Errorf("failed to parse token response as JSON or form data: JSON error: %w, form error: %v", err, parseErr)
 				}
-				if json.Unmarshal(body, &oauthErr) == nil {
-					if oauthErr.Error == "invalid_grant" || oauthErr.Error == "unauthorized_client" {
-						return nil, &PermanentOAuthError{StatusCode: resp.StatusCode, Body: string(body)}
-					}
+				tokenResponse.AccessToken = formValues.Get("access_token")
+				tokenResponse.RefreshToken = formValues.Get("refresh_token")
+				tokenResponse.TokenType = formValues.Get("token_type")
+				tokenResponse.Scope = formValues.Get("scope")
+				if expiresIn := formValues.Get("expires_in"); expiresIn != "" {
+					fmt.Sscanf(expiresIn, "%d", &tokenResponse.ExpiresIn)
 				}
-				return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
 			}
-			// Transient error (rate limit, server error, etc.) — retry
+			if tokenResponse.AccessToken != "" {
+				return &tokenResponse, nil
+			}
+		}
+
+		// No access token: a rejection, whatever the status.
+		switch classifyTokenRejection(resp.StatusCode, body) {
+		case rejectionGrant, rejectionClient:
+			// Client rejections are treated as re-authorization for now;
+			// re-auth is the only recovery the token row offers.
+			return nil, &PermanentOAuthError{StatusCode: resp.StatusCode, Body: string(body)}
+		case rejectionTransient:
 			lastErr = fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
 			sleepIfNotLastAttempt(ctx, attempt, p.retryBaseDelay)
 			continue
-		}
-
-		// Try to parse as JSON first
-		var tokenResponse schemas.OAuth2TokenExchangeResponse
-		if err := json.Unmarshal(body, &tokenResponse); err != nil {
-			// Fall back to URL-encoded form data (GitHub's OAuth endpoint returns this format)
-			formValues, parseErr := url.ParseQuery(string(body))
-			if parseErr != nil {
-				return nil, fmt.Errorf("failed to parse token response as JSON or form data: JSON error: %w, form error: %v", err, parseErr)
+		default:
+			if resp.StatusCode == http.StatusOK {
+				return nil, fmt.Errorf("token response missing access_token, body: %s", string(body))
 			}
-			tokenResponse.AccessToken = formValues.Get("access_token")
-			tokenResponse.RefreshToken = formValues.Get("refresh_token")
-			tokenResponse.TokenType = formValues.Get("token_type")
-			tokenResponse.Scope = formValues.Get("scope")
-			if expiresIn := formValues.Get("expires_in"); expiresIn != "" {
-				fmt.Sscanf(expiresIn, "%d", &tokenResponse.ExpiresIn)
-			}
+			return nil, fmt.Errorf("token request failed with status %d: %s", resp.StatusCode, string(body))
 		}
-
-		if tokenResponse.AccessToken == "" {
-			return nil, fmt.Errorf("token response missing access_token, body: %s", string(body))
-		}
-
-		return &tokenResponse, nil
 	}
 
 	return nil, fmt.Errorf("token request failed after %d attempts: %w", maxTokenRetries, lastErr)

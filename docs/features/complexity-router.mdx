@@ -35,7 +35,7 @@ The older lexical keyword scorer is retired. See [Lexical keyword classifier (re
 |---|---|---|
 | **How it decides** | A decision model reads the request and picks the tier whose [definition, signals, and examples](#tier-guidance) fit it best | The request is embedded and takes the tier of its nearest [reference phrase](#reference-phrases) |
 | **What you maintain** | Nothing to start. Optionally, a definition plus up to 12 signals and 12 examples per tier | Reference phrases for each tier (150 shipped, up to 750) |
-| **Requires** | A provider serving the decision model: [Typesafe](/providers/supported-providers/typesafe) by default; [OpenAI](/providers/supported-providers/openai), [OpenRouter](/providers/supported-providers/openrouter), [Cloudflare](/providers/supported-providers/cloudflare), [Perplexity](/providers/supported-providers/perplexity), or [Ollama](/providers/supported-providers/ollama) for their decision models; or a [custom provider](/providers/self-hosted-decision-models) for Laya or Nimble | An embedding provider and model with an enabled key; optionally a vector store |
+| **Requires** | A provider serving the decision model: [Typesafe](/providers/supported-providers/typesafe) by default; [OpenAI](/providers/supported-providers/openai), [OpenRouter](/providers/supported-providers/openrouter), [Cloudflare](/providers/supported-providers/cloudflare), [Perplexity](/providers/supported-providers/perplexity), [Ollama](/providers/supported-providers/ollama), [Azure](/providers/supported-providers/azure), or [Databricks](/providers/supported-providers/databricks) for their decision models; or a [custom provider](/providers/self-hosted-decision-models) for Laya or Nimble | An embedding provider and model with an enabled key; optionally a vector store |
 | **Per-request cost** | One decision call (Typesafe Jev typically 600–800 ms) | One embedding call plus a vector lookup, usually much faster than a decision call |
 | **Warmup** | None | Reference phrases are embedded in the background after each change |
 | **Handles unseen request shapes** | Yes: it judges the work, not similarity to a known phrase | Only as well as your phrases cover them; can [fall back](#fallback-classifiers) to the decision model or an LLM |
@@ -76,6 +76,8 @@ Any decision model Bifrost serves natively can classify. In the UI, pick a provi
 | Clef | [`cloudflare`](/providers/supported-providers/cloudflare#4-decisions) | `@cf/cloudflare/clef-flash` (UI default), `@cf/cloudflare/clef`, or `@cf/cloudflare/clef-omni` |
 | Perplexity deciders | [`perplexity`](/providers/supported-providers/perplexity#3-decisions) | `pplx-decider-v1.1-27b` (UI default) or `pplx-decider-v1-27b` |
 | Ollama System One models | [`ollama`](/providers/supported-providers/ollama#6-decisions) | A pulled `nimble`, `tev1`, `clef`, `clef-flash`, or `laya` model, such as `tev1:0.8b` |
+| Microsoft-Decision-1 | [`azure`](/providers/supported-providers/azure#10-decisions) | `Microsoft-Decision-1` (UI default), aliased to your deployment |
+| Databricks ai_decide | [`databricks`](/providers/supported-providers/databricks#decisions) | `ai_decide` (the only one, shown fixed in the UI) |
 | Laya | Your [custom provider](/providers/self-hosted-decision-models#laya) | `english`, `multilingual`, or `typed-decisions` |
 | Nimble | Your [custom provider](/providers/self-hosted-decision-models#nimble) | `nimble-latest` |
 
@@ -318,7 +320,7 @@ Navigate to **Models > Complexity Router**. On **Classifier**, choose **Decision
 - **Restore defaults** (footer) resets all three tiers.
 - **Edit model configuration** (header) opens **Model configuration**:
   - **Provider** lists only providers that serve decision models.
-  - **Model** lists only that provider's decision models, starting on its default (`jev-latest`, `gpt-6-luna`, `~typesafe/jev-latest`, `@cf/cloudflare/clef-flash`, or `pplx-decider-v1.1-27b`; Ollama starts empty). A Laya or Nimble provider offers its listed models, or the known checkpoints if it lists none.
+  - **Model** lists only that provider's decision models, starting on its default (`jev-latest`, `gpt-6-luna`, `~typesafe/jev-latest`, `@cf/cloudflare/clef-flash`, `pplx-decider-v1.1-27b`, or `Microsoft-Decision-1`; Ollama starts empty, and Databricks shows `ai_decide` fixed). A Laya or Nimble provider offers its listed models, or the known checkpoints if it lists none.
   - **Max messages to send** (`previous_message_count`) and **Classification timeout (ms)**.
   - If the provider is missing, failing, or has no enabled key, a warning links to the fix and **Save** stays disabled.
 

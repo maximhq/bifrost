@@ -36,7 +36,7 @@ type entrypoint struct {
 
 var entrypoints = []entrypoint{
 	{
-		pkg:        "github.com/maximhq/bifrost/transports/bifrost-http/lib",
+		pkg:        "github.com/maximhq/bifrost/transports/v2/bifrost-http/lib",
 		typeName:   "ConfigData",
 		schemaPath: "", // root schema node — collectProperties will find .properties
 		moduleDir:  "transports",
@@ -154,6 +154,14 @@ var ignoreGoFields = map[string]string{
 	"/properties/mcp/properties/client_configs/items/properties/oauth_config|redirect_uri":  "computed by Bifrost (MCP OAuth callback URI); not authored in config.json",
 	"/properties/mcp/properties/client_configs/items/properties/oauth_config|server_url":    "derived from the client connection_string for OAuth discovery; not authored in config.json",
 	"/properties/mcp/properties/client_configs/items/properties/oauth_config|use_discovery": "deprecated; discovery is automatic when URLs are missing",
+	// openapi_config (schemas.MCPOpenAPIConfig) carries five fields the server computes from the
+	// parsed spec at write time and returns on read; they are never authored in config.json, and
+	// the schema's additionalProperties: false on openapi_config keeps them out deliberately.
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|spec_size":       "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|spec_hash":       "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|spec_title":      "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|openapi_version": "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
+	"/properties/mcp/properties/client_configs/items/properties/openapi_config|operation_count": "server-computed from the parsed spec; informational on read, not user-configurable via config.json",
 	// source_id is a stable external identifier for teams provisioned by an
 	// integrating system (PR #3395). It is assigned through the API by that
 	// system, never authored in config.json.

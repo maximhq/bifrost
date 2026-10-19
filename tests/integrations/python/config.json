@@ -111,6 +111,31 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "openai_decisions_optin": {
+      "keys": [
+        {
+          "name": "OpenAI Decisions Opt-in API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["kserve-decider"],
+          "aliases": {
+            "kserve-decider": { "model_id": "gpt-6-luna", "model_name": "kserve-decider" }
+          },
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false,
+        "allowed_requests": {
+          "list_models": false,
+          "decisions": true
+        }
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "xai": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -239,7 +264,8 @@
           "vertex_key_config": {
             "project_id": "env.VERTEX_PROJECT_ID",
             "region": "global",
-            "auth_credentials": "env.VERTEX_CREDENTIALS"
+            "auth_credentials": "env.VERTEX_CREDENTIALS",
+            "use_session_routing": true
           },
           "weight": 1,
           "models": [
@@ -423,6 +449,9 @@
         {
           "name": "Azure API Key",
           "value": "env.AZURE_API_KEY",
+          "aliases": {
+            "Microsoft-Decision-1": "Decision-1"
+          },
           "azure_key_config": {
             "endpoint": "env.AZURE_ENDPOINT",
             "deployments": {
@@ -474,6 +503,22 @@
         "auto_inject": false,
         "ttl": "1h"
       }
+    },
+    "databricks": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Databricks PAT",
+          "value": "env.DATABRICKS_TOKEN",
+          "weight": 1,
+          "models": ["ai_decide"],
+          "databricks_key_config": {
+            "workspace_url": "env.DATABRICKS_WORKSPACE_URL"
+          }
+        }
+      ]
     },
     "bedrock": {
       "send_back_raw_request": true,
@@ -1157,7 +1202,7 @@
       "max_batch_size": 100,
       "batch_interval": "1s",
       "max_batch_bytes": 10485760,
-      "write_queue_capacity": 1000,
+      "write_queue_capacity": 10000,
       "deferred_usage_concurrency": 10
     }
   },

@@ -26,7 +26,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/typesafe"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1482,8 +1482,15 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 // object keyed by name rather than a list. mapForm reports which, so the
 // response is rendered in the same form.
 func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (req *schemas.BifrostDecisionRequest, mapForm bool, err error) {
+	files, err := readDecisionMultipart(ctx)
+	if err != nil {
+		return nil, false, err
+	}
 	handlerReq, base, decodeErr := prepareRequest[DecisionHandlerRequest](ctx, config, decisionParamsKnownFields)
 	if decodeErr != nil {
+		if files != nil {
+			return nil, true, fmt.Errorf("a multipart decision request needs the input form in its request part")
+		}
 		req, err := prepareDecisionMapFormRequest(ctx, config)
 		return req, true, err
 	}
@@ -1495,6 +1502,9 @@ func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (req *
 	if len(handlerReq.Questions) == 0 {
 		return nil, false, fmt.Errorf("questions are required for decision")
 	}
+	if err := attachDecisionFiles(&handlerReq.Input, files); err != nil {
+		return nil, false, err
+	}
 	return &schemas.BifrostDecisionRequest{
 		Provider:         base.Provider,
 		Model:            base.ModelName,
@@ -1504,6 +1514,59 @@ func prepareDecisionRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (req *
 		Fallbacks:        base.Fallbacks,
 		ExtraParams:      base.ExtraParams,
 	}, false, nil
+}
+
+// readDecisionMultipart reads a multipart decision request: the JSON in its "request"
+// part replaces the body, so it decodes exactly as a JSON request does, and the file
+// parts are returned for attachDecisionFiles. A JSON request returns no files.
+func readDecisionMultipart(ctx *fasthttp.RequestCtx) (map[string][]byte, error) {
+	boundary := ctx.Request.Header.MultipartFormBoundary()
+	if len(boundary) == 0 {
+		return nil, nil
+	}
+	request, files, err := lib.ReadMultipartRequest(ctx.Request.Body(), string(boundary))
+	if err != nil {
+		return nil, err
+	}
+	ctx.Request.SetBody(request)
+	ctx.Request.Header.SetContentType("application/json")
+	return files, nil
+}
+
+// attachDecisionFiles gives each image part sent by reference the bytes of the file
+// part its name points at. files is nil for a JSON request, where no part can name a
+// file. Only what the request cannot be built from is rejected, each a 400 Typesafe's
+// own multipart rules also give: a name with no file part, two parts naming one file,
+// and a file part no image part names. A file part takes precedence over data.
+func attachDecisionFiles(input *schemas.DecisionInput, files map[string][]byte) error {
+	used := make(map[string]string, len(files))
+	for m := range input.Messages {
+		parts := input.Messages[m].Content.Parts
+		for i := range parts {
+			part := &parts[i]
+			if !part.IsAsset() || part.Name == nil {
+				continue
+			}
+			if files == nil {
+				return fmt.Errorf("input_image part %q names file part %q, which needs a multipart request", *part.ID, *part.Name)
+			}
+			data, ok := files[*part.Name]
+			if !ok {
+				return fmt.Errorf("input_image part %q names part %q, which the request does not carry", *part.ID, *part.Name)
+			}
+			if other, taken := used[*part.Name]; taken {
+				return fmt.Errorf("input_image parts %q and %q both name part %q", other, *part.ID, *part.Name)
+			}
+			used[*part.Name] = *part.ID
+			part.Data = data
+		}
+	}
+	for name := range files {
+		if _, ok := used[name]; !ok {
+			return fmt.Errorf("multipart part %q is not named by any input_image part", name)
+		}
+	}
+	return nil
 }
 
 // prepareDecisionMapFormRequest prepares a BifrostDecisionRequest from a
@@ -1632,6 +1695,8 @@ func toDecisionMapFormResponse(resp *schemas.BifrostDecisionResponse) *DecisionM
 			answer.Value = *native.Choice
 		case native.Score != nil:
 			answer.Value = *native.Score
+		case native.Box != nil:
+			answer.Value = *native.Box
 		}
 		answers[name] = answer
 	}
@@ -2335,6 +2400,8 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 	// Routed-identity headers from the context snapshot — routing is final once
 	// the stream channel is returned, before any chunk arrives.
 	lib.ApplyBifrostStreamResponseHeaders(ctx, bifrostCtx, requestType)
+	// Read once on the handler goroutine: in headers mode every chunk drops extra_fields.
+	stripExtraFields := lib.ExtraFieldsInHeaders(ctx)
 
 	// Signal to tracing middleware that trace completion should be deferred
 	// The streaming callback will complete the trace after the stream ends
@@ -2501,6 +2568,9 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 							}
 							return
 						}
+						if stripExtraFields {
+							errorJSON = lib.StripExtraFields(errorJSON)
+						}
 						// Return error event and stop streaming
 						reader.SendError(errorJSON)
 						cancel()
@@ -2520,6 +2590,9 @@ func (h *CompletionHandler) handleStreamingResponse(ctx *fasthttp.RequestCtx, bi
 			// Convert response to JSON (transport-goroutine CPU).
 			cpuStart := time.Now()
 			chunkJSON, err := sonic.Marshal(chunk)
+			if err == nil && stripExtraFields {
+				chunkJSON = lib.StripExtraFields(chunkJSON)
+			}
 			streamTransportCPUNs += time.Since(cpuStart).Nanoseconds()
 			if err != nil {
 				logger.Warn("Failed to marshal streaming response: %v", err)

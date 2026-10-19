@@ -1,12 +1,21 @@
 package typesafe
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"mime"
+	"mime/multipart"
+	"net/http"
+	"net/textproto"
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/tidwall/gjson"
+	"github.com/valyala/fasthttp"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -21,6 +30,7 @@ var typesafeQuestionTypes = map[schemas.DecisionType]string{
 	schemas.DecisionTypePredicate: TypesafeQuestionTypeNoul,
 	schemas.DecisionTypeChoice:    TypesafeQuestionTypeChoice,
 	schemas.DecisionTypeScore:     TypesafeQuestionTypeScore,
+	schemas.DecisionTypeBox:       TypesafeQuestionTypeBox,
 }
 
 // validStructuredValue reports whether a state or instructions value
@@ -50,19 +60,25 @@ func validStructuredValue(value interface{}) bool {
 // question is keyed by its name (see schemas.DecisionQuestionNames). Choices
 // become an option -> description map, a boolean choice keyed "true" or
 // "false", and levels an ordered array of descriptions with their labels
-// folded in. Unsupported types and malformed criteria are rejected rather than
-// silently approximated, and so is an image in the input, which Typesafe would
-// read as text. Validation is never stricter than the official SDKs' types:
-// null state, null or absent instructions, and null descriptions are
-// forwarded for the endpoint to judge.
+// folded in. Image parts with an ID become the request's assets (see
+// typesafeAssets), for each endpoint that receives this shape to accept or
+// reject. Unsupported types and malformed
+// criteria are rejected rather than silently approximated, and so is an inline
+// image in the input, which a systemone endpoint would read as text. Validation
+// is never stricter than the official SDKs' types: null state, null or absent
+// instructions, and null descriptions are forwarded for the endpoint to judge.
 func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error) {
 	if len(request.Questions) == 0 {
 		return nil, providerUtils.InvalidRequestErrorf("decision request requires at least one question")
 	}
-	if partType := request.Input.NonTextPartType(); partType != "" {
-		return nil, providerUtils.InvalidRequestErrorf("decision input carries an %q part, which Typesafe cannot read; route the request to a provider that accepts it", partType)
+	input, assets, err := typesafeAssets(request.Input)
+	if err != nil {
+		return nil, err
 	}
-	state := typesafeState(request.Input)
+	if partType := input.NonTextPartType(); partType != "" {
+		return nil, providerUtils.InvalidRequestErrorf("decision input carries an %q part, which this provider cannot read; route the request to a provider that accepts it", partType)
+	}
+	state := typesafeState(input)
 	if !isJSONNull(state) && !validStructuredValue(state) {
 		return nil, providerUtils.InvalidRequestErrorf("state must be a string, object, or array")
 	}
@@ -84,8 +100,89 @@ func ToTypesafeDecisionRequest(request *schemas.BifrostDecisionRequest) (*Typesa
 		State:       state,
 		Model:       request.Model,
 		Questions:   questions,
+		Assets:      assets,
 		ExtraParams: request.ExtraParams,
 	}, nil
+}
+
+// typesafeAssets moves the input's asset parts into Typesafe's assets map, keyed
+// by their IDs. A single message left with a single text part, the shape the
+// systemone route builds from a state, gives that text back as the state; other
+// messages stay messages, without their asset parts.
+func typesafeAssets(input schemas.DecisionInput) (schemas.DecisionInput, map[string]TypesafeAsset, error) {
+	if !input.HasAssetParts() {
+		return input, nil, nil
+	}
+	assets := make(map[string]TypesafeAsset)
+	messages := make([]schemas.DecisionInputMessage, 0, len(input.Messages))
+	for _, message := range input.Messages {
+		if message.Content.Parts == nil {
+			messages = append(messages, message)
+			continue
+		}
+		parts := make([]schemas.DecisionInputPart, 0, len(message.Content.Parts))
+		for _, part := range message.Content.Parts {
+			if !part.IsAsset() {
+				parts = append(parts, part)
+				continue
+			}
+			if _, seen := assets[*part.ID]; seen {
+				return schemas.DecisionInput{}, nil, providerUtils.InvalidRequestErrorf("asset id %q is used by more than one input_image part", *part.ID)
+			}
+			asset, err := typesafeAsset(part)
+			if err != nil {
+				return schemas.DecisionInput{}, nil, err
+			}
+			assets[*part.ID] = asset
+		}
+		if len(parts) > 0 {
+			message.Content.Parts = parts
+			messages = append(messages, message)
+		}
+	}
+	switch {
+	case len(messages) == 0:
+		return schemas.DecisionInput{}, assets, nil
+	case len(messages) == 1 && len(messages[0].Content.Parts) == 1 && messages[0].Content.Parts[0].Type == schemas.DecisionInputPartTypeText:
+		return ToBifrostDecisionInput(messages[0].Content.Parts[0].Text.Value()), assets, nil
+	}
+	return schemas.DecisionInput{Messages: messages}, assets, nil
+}
+
+// typesafeAsset converts an asset part. One that arrived as a multipart file part
+// is sent as that part again; any other is sent as data_base64, with the format
+// read from its bytes.
+func typesafeAsset(part schemas.DecisionInputPart) (TypesafeAsset, error) {
+	if part.Data == nil {
+		return TypesafeAsset{}, providerUtils.InvalidRequestErrorf("asset %q has no data; send the image file base64-encoded in data, or as a multipart file part its name points at", *part.ID)
+	}
+	if part.Name != nil {
+		return TypesafeAsset{Type: "image", Part: *part.Name}, nil
+	}
+	format := strings.TrimPrefix(typesafeImageType(part.Data), "image/")
+	return TypesafeAsset{Type: "image", Format: format, DataBase64: base64.StdEncoding.EncodeToString(part.Data)}, nil
+}
+
+// typesafeImageType reads an image file's media type from its bytes, as Typesafe
+// itself does: image/png or image/jpeg for the images it accepts. Any other type
+// is sent on for Typesafe to reject.
+func typesafeImageType(data []byte) string {
+	mediaType, _, _ := strings.Cut(http.DetectContentType(data), ";")
+	return mediaType
+}
+
+// usesTypesafeImages reports whether the request needs typesafeImagesHeader: it
+// carries assets or asks a box question.
+func usesTypesafeImages(request *schemas.BifrostDecisionRequest) bool {
+	if request.Input.HasAssetParts() {
+		return true
+	}
+	for _, question := range request.Questions {
+		if question.Type == schemas.DecisionTypeBox {
+			return true
+		}
+	}
+	return false
 }
 
 // typesafeState renders the input as a Typesafe state: text as a string, a
@@ -106,7 +203,7 @@ func typesafeState(input schemas.DecisionInput) interface{} {
 func toTypesafeQuestion(name string, question schemas.DecisionQuestion) (*TypesafeQuestion, error) {
 	nativeType, ok := typesafeQuestionTypes[question.Type]
 	if !ok {
-		return nil, providerUtils.InvalidRequestErrorf("question %q has unsupported type %q; expected predicate, choice, or score", name, question.Type)
+		return nil, providerUtils.InvalidRequestErrorf("question %q has unsupported type %q; expected predicate, choice, score, or box", name, question.Type)
 	}
 	// Instructions are optional in the SDK types (noul() defaults them to
 	// null); whether criteria alone suffice is the endpoint's rule, not ours.
@@ -365,6 +462,11 @@ func ToBifrostDecisionResponse(resp *TypesafeDecisionResponse, request *schemas.
 				return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("typesafe score answer for question %q carries no value", name), nil)
 			}
 			answer.Score = native.Score
+		case schemas.DecisionTypeBox:
+			if native.Box == nil {
+				return nil, providerUtils.NewBifrostOperationError(fmt.Sprintf("typesafe box answer for question %q carries no box", name), nil)
+			}
+			answer.Box = &schemas.DecisionBox{Top: native.Box.Top, Bottom: native.Box.Bottom, Left: native.Box.Left, Right: native.Box.Right}
 		}
 		answers = append(answers, answer)
 	}
@@ -426,14 +528,67 @@ func (req *TypesafeDecisionRequest) ToBifrostDecisionRequest(ctx *schemas.Bifros
 		return nil, err
 	}
 
+	input := ToBifrostDecisionInput(req.State)
+	if len(req.Assets) > 0 {
+		if input, err = req.toBifrostDecisionInputWithAssets(); err != nil {
+			return nil, err
+		}
+	}
+
 	provider, model := schemas.ParseModelString(req.Model, schemas.Typesafe)
 	return &schemas.BifrostDecisionRequest{
 		Provider:    provider,
 		Model:       model,
-		Input:       ToBifrostDecisionInput(req.State),
+		Input:       input,
 		Questions:   questions,
 		ExtraParams: req.ExtraParams,
 	}, nil
+}
+
+// toBifrostDecisionInputWithAssets normalizes a state sent with assets: one user
+// message whose text part is the state as is, followed by an input_image part per
+// asset, sorted by ID, holding the asset's bytes; a multipart asset also keeps its
+// part name. The format is read from the bytes again when the request is sent.
+// Only what the normalized shape cannot carry is rejected here: an asset of another
+// type, base64 that does not decode, and a part named without a multipart request.
+func (req *TypesafeDecisionRequest) toBifrostDecisionInputWithAssets() (schemas.DecisionInput, error) {
+	refs := make([]string, 0, len(req.Assets))
+	for ref := range req.Assets {
+		refs = append(refs, ref)
+	}
+	sort.Strings(refs)
+
+	state := &schemas.DecisionText{Structured: req.State}
+	if text, ok := req.State.(string); ok {
+		state = schemas.NewDecisionText(text)
+	}
+	parts := make([]schemas.DecisionInputPart, 0, len(refs)+1)
+	parts = append(parts, schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: state})
+	for _, ref := range refs {
+		asset := req.Assets[ref]
+		if asset.Type != "" && asset.Type != "image" {
+			return schemas.DecisionInput{}, providerUtils.InvalidRequestErrorf("asset %q has type %q; assets are images", ref, asset.Type)
+		}
+		part := schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr(ref)}
+		if asset.Part != "" {
+			if asset.Data == nil {
+				return schemas.DecisionInput{}, providerUtils.InvalidRequestErrorf("asset %q names part %q, which needs a multipart request", ref, asset.Part)
+			}
+			part.Name = schemas.Ptr(asset.Part)
+			part.Data = asset.Data
+		} else {
+			data, err := base64.StdEncoding.DecodeString(asset.DataBase64)
+			if err != nil {
+				return schemas.DecisionInput{}, providerUtils.InvalidRequestErrorf("asset %q data_base64 is not valid base64", ref)
+			}
+			part.Data = data
+		}
+		parts = append(parts, part)
+	}
+	return schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{
+		Role:    string(schemas.ChatMessageRoleUser),
+		Content: schemas.DecisionInputContent{Parts: parts},
+	}}}, nil
 }
 
 // ToBifrostDecisionInput normalizes a Typesafe state: a string becomes the
@@ -518,8 +673,11 @@ func ToBifrostDecisionQuestions(questions map[string]TypesafeQuestion) ([]schema
 					converted.Levels[i] = schemas.DecisionLevel{Label: strconv.Itoa(i), Description: description}
 				}
 			}
+		case TypesafeQuestionTypeBox:
+			// Box takes no criteria; Typesafe ignores any sent, so they are dropped.
+			converted.Type = schemas.DecisionTypeBox
 		default:
-			return nil, providerUtils.InvalidRequestErrorf("question %q has unsupported kind %q; expected noul, choice, or score", name, question.Type)
+			return nil, providerUtils.InvalidRequestErrorf("question %q has unsupported kind %q; expected noul, choice, score, or box", name, question.Type)
 		}
 		normalized = append(normalized, converted)
 	}
@@ -671,10 +829,196 @@ func ToTypesafeAnswers(answers []schemas.DecisionAnswer) map[string]TypesafeAnsw
 		case schemas.DecisionTypeScore:
 			converted.Type = TypesafeQuestionTypeScore
 			converted.Score = answer.Score
+		case schemas.DecisionTypeBox:
+			converted.Type = TypesafeQuestionTypeBox
+			if answer.Box != nil {
+				converted.Box = &TypesafeBox{Top: answer.Box.Top, Bottom: answer.Box.Bottom, Left: answer.Box.Left, Right: answer.Box.Right}
+			}
 		default:
 			converted.Type = string(answer.Type)
 		}
 		native[names[i]] = converted
 	}
 	return native
+}
+
+// HandleTypesafeDecisionRequest sends a decision to a systemone endpoint, one whose
+// request and response are Typesafe's (Typesafe, Azure's Microsoft-Decision-1,
+// Perplexity's deciders), and converts the reply. toRequest builds the body, so a
+// provider can adapt the input (Perplexity keeps images); the caller resolves the
+// URL and auth headers, and parseError reads the provider's error body. A reply in a
+// {result, success} envelope is unwrapped. keepNativeResponse copies the reply into
+// NativeResponse for the native /typesafe route, which relays it only for Typesafe.
+func HandleTypesafeDecisionRequest(
+	ctx *schemas.BifrostContext,
+	client *fasthttp.Client,
+	url string,
+	request *schemas.BifrostDecisionRequest,
+	toRequest func(*schemas.BifrostDecisionRequest) (*TypesafeDecisionRequest, error),
+	authHeaders map[string]string,
+	extraHeaders map[string]schemas.SecretVar,
+	providerName schemas.ModelProvider,
+	parseError func(*fasthttp.Response) *schemas.BifrostError,
+	sendBackRawRequest bool,
+	sendBackRawResponse bool,
+	keepNativeResponse bool,
+) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			return toRequest(request)
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	defer fasthttp.ReleaseRequest(req)
+	defer fasthttp.ReleaseResponse(resp)
+
+	providerUtils.SetExtraHeaders(ctx, req, extraHeaders, nil)
+	req.SetRequestURI(url)
+	req.Header.SetMethod(http.MethodPost)
+	req.Header.SetContentType("application/json")
+	for k, v := range authHeaders {
+		req.Header.Set(k, v)
+	}
+	// A nil body means large-payload passthrough staged the request as a
+	// stream; apply it instead of sending an empty body. Assets that arrived as
+	// multipart file parts are sent the same way, with the JSON as "request".
+	if !providerUtils.ApplyLargePayloadRequestBodyWithModelNormalization(ctx, req, providerName) {
+		if files := typesafeFileParts(request.Input); len(files) == 0 {
+			req.SetBody(jsonData)
+		} else {
+			body, contentType, err := typesafeMultipartBody(jsonData, files)
+			if err != nil {
+				return nil, providerUtils.NewBifrostOperationError(schemas.ErrRequestBodyConversion, err)
+			}
+			req.SetBody(body)
+			req.Header.SetContentType(contentType)
+		}
+	}
+
+	latency, bifrostErr, wait := providerUtils.MakeRequestWithContext(ctx, client, req, resp)
+	defer wait()
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	// Captured before the status check so error responses forward them too
+	// (the SDKs read request ids and Retry-After off every reply).
+	providerResponseHeaders := providerUtils.ExtractProviderResponseHeaders(resp)
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerResponseHeaders)
+
+	if resp.StatusCode() != fasthttp.StatusOK {
+		return nil, providerUtils.EnrichError(ctx, parseError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	ft, fh := providerUtils.StartPhaseSpan(ctx, "response-finalize")
+	respBody, err := providerUtils.CheckAndDecodeBody(resp)
+	if ft != nil {
+		if err != nil {
+			ft.EndSpan(fh, schemas.SpanStatusError, err.Error())
+		} else {
+			ft.EndSpan(fh, schemas.SpanStatusOk, "")
+		}
+	}
+	if err != nil {
+		rawErrBody := append([]byte(nil), resp.Body()...)
+		return nil, providerUtils.EnrichError(ctx, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err), jsonData, rawErrBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+	respBody, envelopeFailed := unwrapResultEnvelope(respBody)
+	if envelopeFailed {
+		return nil, providerUtils.EnrichError(ctx, parseTypesafeEnvelopeFailure(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	var decisionResp TypesafeDecisionResponse
+	rawRequest, rawResponse, bifrostErr := providerUtils.HandleProviderResponseCtx(ctx, respBody, &decisionResp, jsonData, sendBackRawRequest, sendBackRawResponse)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, respBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	bifrostResp, bifrostErr := ToBifrostDecisionResponse(&decisionResp, request)
+	if bifrostErr != nil {
+		return nil, providerUtils.EnrichError(ctx, bifrostErr, jsonData, respBody, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	bifrostResp.ExtraFields.Latency = latency.Milliseconds()
+	bifrostResp.ExtraFields.ProviderResponseHeaders = providerResponseHeaders
+	if sendBackRawRequest {
+		bifrostResp.ExtraFields.RawRequest = rawRequest
+	}
+	if sendBackRawResponse {
+		bifrostResp.ExtraFields.RawResponse = rawResponse
+	}
+	if keepNativeResponse {
+		// Compacting copies the body, which is released with resp.
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, respBody); err == nil {
+			bifrostResp.NativeResponse = json.RawMessage(compact.Bytes())
+		}
+	}
+	return bifrostResp, nil
+}
+
+// typesafeFilePart is a multipart file part to send: an asset that arrived as one.
+type typesafeFilePart struct {
+	name        string
+	contentType string
+	data        []byte
+}
+
+// typesafeFileParts returns the asset parts that arrived as multipart file parts,
+// each with its bytes and the content type read from them.
+func typesafeFileParts(input schemas.DecisionInput) []typesafeFilePart {
+	var files []typesafeFilePart
+	for _, message := range input.Messages {
+		for _, part := range message.Content.Parts {
+			if part.IsAsset() && part.Name != nil {
+				files = append(files, typesafeFilePart{name: *part.Name, contentType: typesafeImageType(part.Data), data: part.Data})
+			}
+		}
+	}
+	return files
+}
+
+// typesafeMultipartBody writes the JSON body as the first part, "request", then
+// each file part under its name and content type, and returns the body with its
+// multipart content type.
+func typesafeMultipartBody(jsonBody []byte, files []typesafeFilePart) ([]byte, string, error) {
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	header := textproto.MIMEHeader{}
+	header.Set("Content-Disposition", `form-data; name="request"`)
+	header.Set("Content-Type", "application/json")
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		return nil, "", err
+	}
+	if _, err := part.Write(jsonBody); err != nil {
+		return nil, "", err
+	}
+	for _, file := range files {
+		// MIME quoting, not Go's, so any name the client sent parses back unchanged.
+		disposition := mime.FormatMediaType("form-data", map[string]string{"name": file.name, "filename": file.name})
+		if disposition == "" {
+			return nil, "", fmt.Errorf("multipart part name %q cannot be encoded", file.name)
+		}
+		header := textproto.MIMEHeader{}
+		header.Set("Content-Disposition", disposition)
+		header.Set("Content-Type", file.contentType)
+		part, err := writer.CreatePart(header)
+		if err != nil {
+			return nil, "", err
+		}
+		if _, err := part.Write(file.data); err != nil {
+			return nil, "", err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), writer.FormDataContentType(), nil
 }

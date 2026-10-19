@@ -15,7 +15,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -103,12 +103,19 @@ func TimedMiddleware(name string, mw schemas.BifrostHTTPMiddleware) schemas.Bifr
 	}
 }
 
-// ResolvePeriod converts a relative period string ("1h","6h","24h","7d","30d") to concrete
-// start/end time pointers computed from the current server time. Returns nil, nil for
-// unrecognised values. When used in filter parsing, period takes precedence over any explicit
-// start_time/end_time query parameters so every poll always covers the intended window.
-func ResolvePeriod(period string) (start, end *time.Time) {
-	now := time.Now().UTC()
+// ResolvePeriod converts a period string to concrete start/end time pointers computed from the
+// current server time. Sliding periods ("1h","6h","24h","7d","30d") end now and are
+// timezone-independent. Calendar periods ("today","this_week","this_month") start at midnight
+// of the current day, week (Monday) or month in timezone, an IANA name; an empty or unknown
+// timezone falls back to UTC. Returns nil, nil for unrecognised periods. When used in filter
+// parsing, period takes precedence over any explicit start_time/end_time query parameters so
+// every poll always covers the intended window.
+func ResolvePeriod(period, timezone string) (start, end *time.Time) {
+	return resolvePeriodAt(period, timezone, time.Now())
+}
+
+func resolvePeriodAt(period, timezone string, now time.Time) (start, end *time.Time) {
+	now = now.UTC()
 	var from time.Time
 	switch period {
 	case "1h":
@@ -121,10 +128,72 @@ func ResolvePeriod(period string) (start, end *time.Time) {
 		from = now.AddDate(0, 0, -7)
 	case "30d":
 		from = now.AddDate(0, 0, -30)
+	case "today", "this_week", "this_month":
+		local := now.In(periodLocation(timezone))
+		year, month, day := local.Date()
+		switch period {
+		case "this_week":
+			day -= (int(local.Weekday()) + 6) % 7 // days since Monday
+		case "this_month":
+			day = 1
+		}
+		from = startOfLocalDay(year, month, day, local.Location()).UTC()
 	default:
 		return nil, nil
 	}
 	return &from, &now
+}
+
+// startOfLocalDay returns the first instant of the given calendar date in loc. Where
+// DST starts at midnight (America/Havana, America/Santiago) the day has no 00:00,
+// and time.Date normalizes it back to 23:00 on the previous day. In that case the
+// day starts at the zone transition that skipped midnight, which ZoneBounds reports
+// as the end of the offset in effect at that 23:00. Where DST ends just after
+// midnight (Asia/Amman), 00:00 happens twice and time.Date may return the second
+// one; the day starts at the first, the same wall clock in the offset in effect
+// before the transition. day may be out of range (this week's Monday can be in the
+// previous month); it is normalized like time.Date.
+func startOfLocalDay(year int, month time.Month, day int, loc *time.Location) time.Time {
+	start := time.Date(year, month, day, 0, 0, 0, 0, loc)
+	wantYear, wantMonth, wantDay := time.Date(year, month, day, 0, 0, 0, 0, time.UTC).Date()
+	if gotYear, gotMonth, gotDay := start.Date(); gotYear != wantYear || gotMonth != wantMonth || gotDay != wantDay {
+		if _, transition := start.ZoneBounds(); !transition.IsZero() {
+			return transition
+		}
+		return start
+	}
+	if zoneStart, _ := start.ZoneBounds(); !zoneStart.IsZero() {
+		_, offset := start.Zone()
+		_, prevOffset := zoneStart.Add(-time.Nanosecond).Zone()
+		if earlier := start.Add(-time.Duration(prevOffset-offset) * time.Second); earlier.Before(zoneStart) {
+			return earlier
+		}
+	}
+	return start
+}
+
+// periodLocations caches resolved IANA locations for calendar periods, since
+// time.LoadLocation reads and parses zone data on every call. Only successful
+// lookups are stored, so the map is bounded by the IANA zone list no matter
+// what callers send.
+var periodLocations sync.Map // string -> *time.Location
+
+// periodLocation resolves the timezone a calendar period is measured in.
+// Empty and unknown names resolve to UTC, and so does "Local", which
+// time.LoadLocation would otherwise map to the server's own timezone.
+func periodLocation(name string) *time.Location {
+	if name == "" || name == "UTC" || name == "Local" {
+		return time.UTC
+	}
+	if cached, ok := periodLocations.Load(name); ok {
+		return cached.(*time.Location)
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.UTC
+	}
+	periodLocations.Store(name, loc)
+	return loc
 }
 
 // pluginDisabledKey is a dedicated context key type for marking a plugin as disabled
@@ -176,6 +245,7 @@ func SendJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
 		return
 	}
+	body = lib.StripExtraFieldsIfInHeaders(ctx, body)
 	ctx.SetBody(append(body, '\n'))
 }
 
@@ -189,6 +259,7 @@ func SendJSONWithStatus(ctx *fasthttp.RequestCtx, data interface{}, statusCode i
 		SendError(ctx, fasthttp.StatusInternalServerError, fmt.Sprintf("Failed to encode response: %v", err))
 		return
 	}
+	body = lib.StripExtraFieldsIfInHeaders(ctx, body)
 	ctx.SetBody(append(body, '\n'))
 }
 
@@ -224,6 +295,17 @@ func SendBifrostError(ctx *fasthttp.RequestCtx, bifrostErr *schemas.BifrostError
 	lib.ApplyBifrostErrorResponseHeaders(ctx, nil, bifrostErr.ExtraFields)
 
 	ctx.SetContentType("application/json")
+	if lib.ExtraFieldsInHeaders(ctx) {
+		body, encodeErr := json.Marshal(bifrostErr)
+		if encodeErr != nil {
+			logger.Warn(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
+			ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+			ctx.SetBodyString(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
+			return
+		}
+		ctx.SetBody(append(lib.StripExtraFields(body), '\n'))
+		return
+	}
 	if encodeErr := json.NewEncoder(ctx).Encode(bifrostErr); encodeErr != nil {
 		logger.Warn(fmt.Sprintf("Failed to encode error response: %v", encodeErr))
 		ctx.SetStatusCode(fasthttp.StatusInternalServerError)

@@ -680,7 +680,8 @@ curl --location 'http://localhost:8080/api/providers' \
     "network_config": {
         "extra_headers": {
             "x-custom-org": "my-organization",
-            "x-environment": "production"
+            "x-environment": "production",
+            "x-client-secret": "env.UPSTREAM_CLIENT_SECRET"
         }
     }
 }'
@@ -705,7 +706,8 @@ curl --location 'http://localhost:8080/api/providers' \
       "network_config": {
         "extra_headers": {
           "x-custom-org": "my-organization",
-          "x-environment": "production"
+          "x-environment": "production",
+          "x-client-secret": "env.UPSTREAM_CLIENT_SECRET"
         }
       }
     }
@@ -769,6 +771,8 @@ This denylist is applied to both static and dynamic headers to prevent security 
 #### Beta Header Overrides
 
 For Anthropic-family providers (Anthropic, Vertex, Bedrock, Azure), Bifrost maintains a default support matrix for `anthropic-beta` headers. You can override these defaults per provider when upstream support changes before Bifrost updates its defaults.
+
+TypeSafe and custom providers built on it have one entry, `typesafe-danger-zone-images`: the `TypeSafe-Danger-Zone-Images` header Bifrost adds to image and box requests, supported by default. See [TypeSafe: Images and Box](/providers/supported-providers/typesafe#images-and-box).
 
 <Tabs group="beta-header-overrides">
 

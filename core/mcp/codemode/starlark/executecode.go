@@ -18,10 +18,11 @@ import (
 
 // ExecutionResult represents the result of code execution
 type ExecutionResult struct {
-	Result      interface{}          `json:"result"`
-	Logs        []string             `json:"logs"`
-	Errors      *ExecutionError      `json:"errors,omitempty"`
-	Environment ExecutionEnvironment `json:"environment"`
+	Result          interface{}          `json:"result"`
+	Logs            []string             `json:"logs"`
+	Errors          *ExecutionError      `json:"errors,omitempty"`
+	Environment     ExecutionEnvironment `json:"environment"`
+	FailedToolCalls int                  `json:"failed_tool_calls,omitempty"` // nested calls that returned an error result
 }
 
 // ExecutionErrorType represents the type of execution error
@@ -69,7 +70,7 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"Do NOT guess callable tool names from natural language or stale assumptions; use the exact identifier returned by listToolFiles/readToolFile. " +
 
 					"STARLARK DIFFERENCES FROM PYTHON — READ BEFORE WRITING CODE: " +
-					"1. NO try/except/finally/raise — error handling is not supported, and tool failures cannot be caught inside Starlark. " +
+					"1. NO try/except/finally/raise. A failed tool call returns an error value instead of raising: check hasattr(r, \"error\"), read r.error, and call fail(r.error) to stop the run. A timeout or a lost connection still stops the script. " +
 					"2. NO classes — use dicts and functions. " +
 					"3. NO imports, direct network access, or direct filesystem access — use MCP tools instead. " +
 					"4. NO is operator — use == for comparison. " +
@@ -79,7 +80,7 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"SYNTAX NOTES: " +
 					"• Synchronous calls — NO async/await: result = server.tool(arg=\"value\") " +
 					"• Use keyword arguments: server.tool(param=\"value\") NOT server.tool({\"param\": \"value\"}) " +
-					"• Access dict values with brackets: result[\"key\"] NOT result.key " +
+					"• Access dict values with brackets: result[\"key\"] NOT result.key (a failed call's r.error is the exception) " +
 					"• Use print() for logging/debugging " +
 					"• List comprehensions: [x for x in items if x[\"active\"]] " +
 					"• String escapes work normally: \"line1\\nline2\" produces a newline " +
@@ -89,7 +90,8 @@ func (s *StarlarkCodeMode) createExecuteToolCodeTool() schemas.ChatTool {
 					"• MCP tool calls are timeout-limited; avoid long or infinite loops " +
 
 					"AVAILABLE BUILTINS: print, len, range, enumerate, zip, sorted, reversed, min, max, " +
-					"int, float, str, bool, list, dict, tuple, set, hasattr, getattr, type, chr, ord, any, all, hash, repr. " +
+					"int, float, str, bool, list, dict, tuple, set, hasattr, getattr, type, chr, ord, any, all, hash, repr, fail. " +
+					"MODULES: json (json.decode(s), json.encode(v)), math (math.floor, math.sqrt and the like); a server named json or math takes that name. " +
 
 					"RETRY POLICY: Retry after fixing syntax or logic errors, especially for read-only flows. Before rerunning code that already made tool calls, inspect prior outputs and avoid replaying stateful operations.",
 			),
@@ -139,7 +141,7 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 		s.logger.Debug("%s Formatting error response. Error kind: %s, Message length: %d, Hints count: %d", codemcp.CodeModeLogPrefix, result.Errors.Kind, len(result.Errors.Message), len(result.Errors.Hints))
 		logsText := ""
 		if len(result.Logs) > 0 {
-			logsText = fmt.Sprintf("\n\nPrint Output:\n%s\n", strings.Join(result.Logs, "\n"))
+			logsText = fmt.Sprintf("\n\nPrint output:\n%s\n", strings.Join(result.Logs, "\n"))
 		}
 
 		responseText = fmt.Sprintf(
@@ -175,10 +177,10 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 			s.logger.Debug("%s No-data failure response formatted. Response length: %d chars", codemcp.CodeModeLogPrefix, len(responseText))
 		} else {
 			if hasLogs {
-				responseText = fmt.Sprintf("Print output:\n%s\n\nExecution completed successfully.",
-					strings.Join(result.Logs, "\n"))
+				responseText = fmt.Sprintf("Print output:\n%s\n\n%s",
+					strings.Join(result.Logs, "\n"), completionLine(result.FailedToolCalls))
 			} else {
-				responseText = "Execution completed successfully."
+				responseText = completionLine(result.FailedToolCalls)
 			}
 			if hasResult {
 				resultJSON, err := schemas.MarshalSortedIndent(result.Result, "", "  ")
@@ -189,11 +191,9 @@ func (s *StarlarkCodeMode) handleExecuteToolCode(ctx *schemas.BifrostContext, to
 					s.logger.Debug("%s Failed to marshal result to JSON: %v", codemcp.CodeModeLogPrefix, err)
 				}
 			}
-
-			responseText += fmt.Sprintf("\n\nEnvironment:\n  Available server keys: %s",
-				strings.Join(result.Environment.ServerKeys, ", "))
-			responseText += "\nNote: This is a Starlark (Python subset) environment. Use MCP tools for external interactions."
-			s.logger.Debug("%s Success response formatted. Response length: %d chars, Server keys: %v", codemcp.CodeModeLogPrefix, len(responseText), result.Environment.ServerKeys)
+			// No environment footer here: the server keys help a failed run recover, while
+			// a successful one would only carry them into every reply.
+			s.logger.Debug("%s Success response formatted. Response length: %d chars", codemcp.CodeModeLogPrefix, len(responseText))
 		}
 	}
 
@@ -227,13 +227,31 @@ func (s *StarlarkCodeMode) executeCode(ctx *schemas.BifrostContext, code string)
 	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, s.getToolExecutionTimeout())
 	defer cancel()
-	return runSandbox(timeoutCtx, limits, code, bindings, func(callCtx context.Context, client, tool string, args map[string]interface{}, log func(string)) (interface{}, error) {
-		return s.callMCPTool(schemas.NewBifrostContext(callCtx, schemas.NoDeadline), client, tool, args, log)
+	// A script's tool calls run one at a time on its thread, so a plain counter is safe.
+	failedCalls := 0
+	result := runSandbox(timeoutCtx, limits, code, bindings, func(callCtx context.Context, client, tool string, args map[string]interface{}, log func(string)) (interface{}, error) {
+		return s.callMCPTool(schemas.NewBifrostContext(callCtx, schemas.NoDeadline), client, tool, args, log, func() { failedCalls++ })
 	})
+	result.FailedToolCalls = failedCalls
+	return result
 }
 
-// callMCPTool calls an MCP tool and returns the result.
-func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, toolName string, args map[string]interface{}, appendLog func(string)) (interface{}, error) {
+// completionLine closes the reply of a run that finished. A nested call that returned an
+// error does not stop the script, so the line says so rather than claiming a clean run.
+func completionLine(failedCalls int) string {
+	switch failedCalls {
+	case 0:
+		return "Execution completed successfully."
+	case 1:
+		return "Execution completed, but 1 nested tool call failed."
+	default:
+		return fmt.Sprintf("Execution completed, but %d nested tool calls failed.", failedCalls)
+	}
+}
+
+// callMCPTool calls an MCP tool and returns the result. onToolError is called when the tool
+// answers with an error result that is handed to the script rather than raised.
+func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, toolName string, args map[string]interface{}, appendLog func(string), onToolError func()) (interface{}, error) {
 	// Get available tools per client
 	availableToolsPerClient := s.clientManager.GetToolPerClient(ctx)
 
@@ -341,6 +359,9 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 	//
 	// Declared out here so the post-pipeline diagnostics can name the tool.
 	logToolName := strings.ReplaceAll(originalToolName, "-", "_")
+	// Whether the server flagged the result with isError. The message's own flag also covers
+	// text that only opens with "Error: ", so it cannot tell the two apart after the pipeline.
+	wireIsError := false
 	finalResp, finalErr := s.clientManager.RunWithPluginPipeline(nestedCtx, mcpRequest, func(preReq *schemas.BifrostMCPRequest) (*schemas.BifrostMCPResponse, error) {
 		// Honor any pre-hook mutation of tool name + arguments before the wire
 		// call. Mirrors ToolsManager.executeToolInternal (toolmanager.go:648–670):
@@ -409,7 +430,8 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		}
 		// An "Error: ..." text result is still a result, so it has to reach the output
 		// guardrails: mark it here and raise after the pipeline, not before it.
-		isErrorResult := strings.HasPrefix(rawResult, "Error: ") || (toolResponse != nil && toolResponse.IsError)
+		wireIsError = toolResponse != nil && toolResponse.IsError
+		isErrorResult := wireIsError || strings.HasPrefix(rawResult, "Error: ")
 		if isErrorResult {
 			s.logger.Debug("%s Tool returned error result: %s.%s", codemcp.CodeModeLogPrefix, clientName, effectiveToolName)
 		}
@@ -437,20 +459,39 @@ func (s *StarlarkCodeMode) callMCPTool(ctx *schemas.BifrostContext, clientName, 
 		return nil, fmt.Errorf("plugin post-hooks returned invalid response")
 	}
 
-	if finalResp.ChatMessage != nil {
-		if content := finalResp.ChatMessage.Content; content != nil && content.ContentStr != nil {
-			if err := chargeToolResult(ctx, len(*content.ContentStr)); err != nil {
+	if msg := finalResp.ChatMessage; msg != nil {
+		text := ""
+		if msg.Content != nil && msg.Content.ContentStr != nil {
+			text = *msg.Content.ContentStr
+			if err := chargeToolResult(ctx, len(text)); err != nil {
 				return nil, err
 			}
-			// Raised below, so logging it too would duplicate it in the model's context.
-			if after, ok := strings.CutPrefix(*content.ContentStr, "Error: "); ok {
-				return nil, fmt.Errorf("%s", truncateDiagnostic(after))
-			}
-			// Post-pipeline text only: the wire result would put blocked and redacted
-			// content into this log, which the model receives verbatim.
-			appendLog(fmt.Sprintf("[TOOL] %s.%s response: %s", clientName, logToolName, formatResultForLog(*content.ContentStr)))
 		}
-		return extractResultFromChatMessage(finalResp.ChatMessage), nil
+		flagged := msg.ChatToolMessage != nil && msg.ChatToolMessage.IsError != nil && *msg.ChatToolMessage.IsError
+		// Legacy "Error: " text the server did not flag with isError is raised into the
+		// script, as it always has been.
+		if after, ok := strings.CutPrefix(text, "Error: "); ok && !(flagged && wireIsError) {
+			return nil, fmt.Errorf("%s", truncateDiagnostic(after))
+		}
+		// An isError result (set above from CallToolResult.IsError, and left to post-hooks
+		// to clear) reaches the script as an error value rather than raising, so the script
+		// decides what the failure means: fail() to stop the run, or carry on. The model no
+		// longer sees nested responses, so the reply notes the failure either way, from the
+		// post-pipeline text only. A leading "Error: ", as Bifrost's in-process tools write,
+		// is dropped from the message.
+		if flagged {
+			message := strings.TrimPrefix(text, "Error: ")
+			if message == "" {
+				message = "tool call returned an error"
+			}
+			appendLog(fmt.Sprintf("[TOOL] %s.%s returned an error: %s", clientName, logToolName, truncateDiagnostic(message)))
+			onToolError()
+			return toolErrorValue{message: message}, nil
+		}
+		// A successful result goes to the script, not the model: the model sees only what
+		// the script prints or returns. The payload itself is in the MCP tool log.
+		s.logger.Debug("%s Tool returned %d bytes: %s.%s", codemcp.CodeModeLogPrefix, len(text), clientName, logToolName)
+		return extractResultFromChatMessage(msg), nil
 	}
 
 	if finalResp.ResponsesMessage != nil {

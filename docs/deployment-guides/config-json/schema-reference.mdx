@@ -21,12 +21,15 @@ This page is a concise reference for every top-level key in `config.json`. Click
 | `source_of_truth` | string | Startup reconciliation mode for DB-backed `config.json`: `"split"` or `"config.json"` | [Source of Truth](/deployment-guides/config-json/source-of-truth) |
 | `encryption_key` | string | Optional AES-256 key (derived via Argon2id). Accepts `env.VAR` prefix and is also read from `BIFROST_ENCRYPTION_KEY`. If omitted, data is stored in plaintext. | [Client](/deployment-guides/config-json/client#encryption-key) |
 | `client` | object | Worker pool, logging, CORS, auth enforcement, header filtering, MCP, compat shims | [Client](/deployment-guides/config-json/client) |
+| `agents` | array | Declarative A2A registrations, authentication, access grants, and permitted runtime origins | [Agents](#agents) |
 | `providers` | object | LLM provider API keys, network settings, concurrency | [Providers](/deployment-guides/config-json/providers) |
 | `governance` | object | Admin auth, virtual keys, budgets, rate limits, routing rules, customers, teams, roles and business units | [Governance](/deployment-guides/config-json/governance) |
 | `alerting` | object | Alert channels, CEL-based rules, history retention, and webhook network controls *(enterprise only)* | [Alerting](/deployment-guides/config-json/alerting) |
 | `guardrails_config` | object | Content moderation providers and CEL-based rules *(enterprise only)* | [Guardrails](/deployment-guides/config-json/guardrails) |
 | `access_profiles` | array | Access profile templates for enterprise RBAC/governance controls *(enterprise only)* | [Access Profiles](/enterprise/access-profiles) |
 | `cluster_config` | object | Cluster mode settings: gossip, peers, and auto-discovery backends *(enterprise only)* | [Cluster](/deployment-guides/config-json/cluster) |
+| `load_balancer_config` | object | Adaptive routing settings: provider and key selection, redirects, fallback pruning, routing history *(enterprise only)* | [Adaptive Routing](/enterprise/adaptive-routing/overview#settings) |
+| `circuit_breaker_config` | object | Circuit breaker policies that move traffic from a primary provider and model to a fallback *(enterprise only)* | [Circuit Breaker](/enterprise/circuit-breaker) |
 | `config_store` | object | Configuration database backend - SQLite, PostgreSQL, or disabled (file-only mode) | [Storage](/deployment-guides/config-json/storage#config_store) |
 | `logs_store` | object | Request/response log database - SQLite, PostgreSQL, ClickHouse + optional S3/GCS offload | [Storage](/deployment-guides/config-json/storage#logs_store) |
 | `vector_store` | object | Vector database for semantic cache - Weaviate, Redis, Qdrant, Pinecone, Valkey | [Storage](/deployment-guides/config-json/storage#vector_store) |
@@ -108,8 +111,49 @@ Controls the worker pool, logging pipeline, security, and SDK shims. All fields 
 | `disable_db_pings_in_health` | boolean | `false` | Exclude DB connectivity from `/health` |
 | `routing_chain_max_depth` | integer | `10` | Max routing rule chain evaluation depth |
 | `mcp_external_client_url` | string \| EnvVar | - | Public base URL used as `redirect_uri` against upstream MCP OAuth providers; supports `"env.MY_VAR"` |
+| `a2a_private_allowlist` | array of strings | `[]` | Private hosts, IPs, or CIDRs permitted for Agent Gateway card, OAuth, and runtime connections; link-local and metadata addresses stay blocked |
+| `a2a_external_client_url` | string or secret reference | - | Public base URL required for Agent Gateway protocol operations; management remains available when unset |
+| `skills_external_client_url` | string or secret reference | - | Public base URL required for skills marketplace registration and serving; skill management and downloads remain available when unset |
 
 Full documentation: [Client Configuration](/deployment-guides/config-json/client).
+
+---
+
+## `agents`
+
+Declare A2A registrations in the top-level `agents` array. Registrations are reconciled by name at startup; see [registration and source-of-truth behavior](/features/agent-gateway/registration#register-from-deployment-configuration).
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `name` | string | Required | Registration name used in gateway routes. |
+| `agent_card_url` | string | Required | Absolute HTTP(S) agent card URL. |
+| `enabled` | boolean | `true` | Enable the registration. |
+| `allow_by_default` | boolean | `false` | Allow identified callers without an explicit agent grant. |
+| `credential_origins` | array of strings | `[]` | Up to 32 unique additional runtime origins. Include scheme and optional port, without a path, userinfo, query, or fragment. The card origin is automatically permitted. |
+| `discovery_auth` | object | None | Authentication and TLS settings for card discovery. |
+| `runtime_auth` | object | None | Authentication and TLS settings for runtime requests. |
+| `forward_accepted_credential` | boolean | `false` | Forward the accepted caller credential to the agent. |
+| `forward_accepted_credential_overrides_auth` | boolean | `false` | Prefer the forwarded credential on a header collision. |
+| `virtual_key_ids` | array of strings | `[]` | Exact set of virtual keys granted access to this registration. |
+
+For a card at `https://cards.example.com/.well-known/agent-card.json` advertising `https://research.internal:9000`, configure both the network permission and the additional origin:
+
+```json
+{
+  "client": {
+    "a2a_private_allowlist": ["research.internal"]
+  },
+  "agents": [
+    {
+      "name": "library-research",
+      "agent_card_url": "https://cards.example.com/.well-known/agent-card.json",
+      "credential_origins": ["https://research.internal:9000"]
+    }
+  ]
+}
+```
+
+Origin approval applies even without configured runtime credentials. It does not grant private-network access. See [Additional agent endpoints](/features/agent-gateway/authentication#additional-agent-endpoints) for authentication examples and the dashboard equivalent.
 
 ---
 
@@ -306,6 +350,22 @@ Enterprise-only clustering settings for multi-node deployments.
 | `discovery` | Auto-discovery configuration (`kubernetes`, `dns`, `udp`, `consul`, `etcd`, `mdns`) |
 
 Full documentation: [Cluster](/deployment-guides/config-json/cluster).
+
+---
+
+## `load_balancer_config`
+
+Enterprise-only. Supports `direction_selection_enabled`, `route_selection_enabled`, `append_fallbacks_to_pinned`, `reroute_failed_directions`, `reroute_target`, `prune_failed_fallbacks`, `history_enabled`, `history_retention_days`, and `snapshot_persist_interval_seconds`. Only the keys you list are applied; settings saved from the dashboard or API take precedence.
+
+Full documentation: [Adaptive Routing settings](/enterprise/adaptive-routing/overview#settings).
+
+---
+
+## `circuit_breaker_config`
+
+Enterprise-only. One sub-key: `policies` (array). A policy is inactive unless `enabled` is `true`.
+
+Full documentation: [Circuit Breaker](/enterprise/circuit-breaker).
 
 ---
 

@@ -336,6 +336,9 @@ false
 {{- if .Values.bifrost.client.dualCredentialConflictBehavior }}
 {{- $_ := set $client "dual_credential_conflict_behavior" .Values.bifrost.client.dualCredentialConflictBehavior }}
 {{- end }}
+{{- if .Values.bifrost.client.extraFieldsPlacement }}
+{{- $_ := set $client "extra_fields_placement" .Values.bifrost.client.extraFieldsPlacement }}
+{{- end }}
 {{- if hasKey .Values.bifrost.client "enforceGovernanceHeader" }}
 {{- $_ := set $client "enforce_governance_header" .Values.bifrost.client.enforceGovernanceHeader }}
 {{- end }}
@@ -464,7 +467,13 @@ false
 {{- if .Values.bifrost.client.mcpExternalClientUrl }}
 {{- $_ := set $client "mcp_external_client_url" .Values.bifrost.client.mcpExternalClientUrl }}
 {{- end }}
-{{- if .Values.bifrost.client.a2aExternalClientUrl }}
+{{- if hasKey .Values.bifrost.client "skillsExternalClientUrl" }}
+{{- $_ := set $client "skills_external_client_url" .Values.bifrost.client.skillsExternalClientUrl }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "a2aPrivateAllowlist" }}
+{{- $_ := set $client "a2a_private_allowlist" .Values.bifrost.client.a2aPrivateAllowlist }}
+{{- end }}
+{{- if hasKey .Values.bifrost.client "a2aExternalClientUrl" }}
 {{- $_ := set $client "a2a_external_client_url" .Values.bifrost.client.a2aExternalClientUrl }}
 {{- end }}
 {{- if .Values.bifrost.client.mcpServerAuthMode }}
@@ -491,6 +500,9 @@ false
 {{- $server := dict }}
 {{- if .Values.bifrost.server.readBufferSize }}
 {{- $_ := set $server "read_buffer_size" .Values.bifrost.server.readBufferSize }}
+{{- end }}
+{{- if not (kindIs "invalid" .Values.bifrost.server.bodyBufferPoolLimitBytes) }}
+{{- $_ := set $server "body_buffer_pool_limit_bytes" .Values.bifrost.server.bodyBufferPoolLimitBytes }}
 {{- end }}
 {{- if .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
 {{- $_ := set $server "plugin_download_private_allowlist" .Values.bifrost.server.pluginDownloadPrivateAllowlist }}
@@ -684,6 +696,7 @@ false
 {{- if .expires_at }}{{- $_ := set $vk "expires_at" .expires_at }}{{- end }}
 {{- if hasKey . "delete_after_expire" }}{{- $_ := set $vk "delete_after_expire" .delete_after_expire }}{{- end }}
 {{- if hasKey . "disable_content_logging" }}{{- $_ := set $vk "disable_content_logging" .disable_content_logging }}{{- end }}
+{{- if hasKey . "metadata" }}{{- $_ := set $vk "metadata" .metadata }}{{- end }}
 {{- if .team_id }}{{- $_ := set $vk "team_id" .team_id }}{{- end }}
 {{- if .customer_id }}{{- $_ := set $vk "customer_id" .customer_id }}{{- end }}
 {{- if .business_unit_id }}{{- $_ := set $vk "business_unit_id" .business_unit_id }}{{- end }}
@@ -892,7 +905,7 @@ false
 {{- end }}
 {{- /* Load Balancer Config */ -}}
 {{- if and .Values.bifrost.loadBalancer .Values.bifrost.loadBalancer.enabled }}
-{{- $lb := dict "enabled" true }}
+{{- $lb := dict }}
 {{- if hasKey .Values.bifrost.loadBalancer "directionSelectionEnabled" }}
 {{- $_ := set $lb "direction_selection_enabled" .Values.bifrost.loadBalancer.directionSelectionEnabled }}
 {{- end }}
@@ -908,11 +921,17 @@ false
 {{- if hasKey .Values.bifrost.loadBalancer "pruneFailedFallbacks" }}
 {{- $_ := set $lb "prune_failed_fallbacks" .Values.bifrost.loadBalancer.pruneFailedFallbacks }}
 {{- end }}
-{{- if .Values.bifrost.loadBalancer.trackerConfig }}
-{{- $_ := set $lb "tracker_config" .Values.bifrost.loadBalancer.trackerConfig }}
+{{- if hasKey .Values.bifrost.loadBalancer "rerouteTarget" }}
+{{- $_ := set $lb "reroute_target" .Values.bifrost.loadBalancer.rerouteTarget }}
 {{- end }}
-{{- if .Values.bifrost.loadBalancer.bootstrap }}
-{{- $_ := set $lb "bootstrap" .Values.bifrost.loadBalancer.bootstrap }}
+{{- if hasKey .Values.bifrost.loadBalancer "historyEnabled" }}
+{{- $_ := set $lb "history_enabled" .Values.bifrost.loadBalancer.historyEnabled }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "historyRetentionDays" }}
+{{- $_ := set $lb "history_retention_days" .Values.bifrost.loadBalancer.historyRetentionDays }}
+{{- end }}
+{{- if hasKey .Values.bifrost.loadBalancer "snapshotPersistIntervalSeconds" }}
+{{- $_ := set $lb "snapshot_persist_interval_seconds" .Values.bifrost.loadBalancer.snapshotPersistIntervalSeconds }}
 {{- end }}
 {{- $_ := set $config "load_balancer_config" $lb }}
 {{- end }}
@@ -932,6 +951,7 @@ false
 {{- if hasKey . "max_turns_to_send" }}{{- $_ := set $rule "max_turns_to_send" .max_turns_to_send }}{{- end }}
 {{- if .evaluation_mode }}{{- $_ := set $rule "evaluation_mode" .evaluation_mode }}{{- end }}
 {{- if hasKey . "stream_replay_event_interval_ms" }}{{- $_ := set $rule "stream_replay_event_interval_ms" .stream_replay_event_interval_ms }}{{- end }}
+{{- if .output_mode }}{{- $_ := set $rule "output_mode" .output_mode }}{{- end }}
 {{- if .provider_config_ids }}{{- $_ := set $rule "provider_config_ids" .provider_config_ids }}{{- end }}
 {{- $rules = append $rules $rule }}
 {{- end }}
@@ -1036,6 +1056,7 @@ false
 {{- end }}
 {{- with .Values.storage.configStore.statementTimeout }}{{- $_ := set $pgConfig "statement_timeout" (toString .) }}{{- end }}
 {{- with .Values.storage.configStore.idleInTransactionSessionTimeout }}{{- $_ := set $pgConfig "idle_in_transaction_session_timeout" (toString .) }}{{- end }}
+{{- with .Values.storage.configStore.migrationLockRetryBudget }}{{- $_ := set $pgConfig "migration_lock_retry_budget" (toString .) }}{{- end }}
 {{- $configStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "config_store" $configStore }}
 {{- else }}
@@ -1076,7 +1097,18 @@ false
 {{- if $vs.hashicorp.mountPath }}{{- $_ := set $hashicorp "mount_path" $vs.hashicorp.mountPath }}{{- end }}
 {{- if $vs.hashicorp.roleId }}{{- $_ := set $hashicorp "role_id" $vs.hashicorp.roleId }}{{- end }}
 {{- if $vs.hashicorp.secretId }}{{- $_ := set $hashicorp "secret_id" $vs.hashicorp.secretId }}{{- end }}
+{{- if $vs.hashicorp.kubernetesRole }}{{- $_ := set $hashicorp "kubernetes_role" $vs.hashicorp.kubernetesRole }}{{- end }}
+{{- if $vs.hashicorp.kubernetesMountPath }}{{- $_ := set $hashicorp "kubernetes_mount_path" $vs.hashicorp.kubernetesMountPath }}{{- end }}
+{{- if $vs.hashicorp.kubernetesTokenPath }}{{- $_ := set $hashicorp "kubernetes_token_path" $vs.hashicorp.kubernetesTokenPath }}{{- end }}
 {{- $_ := set $vaultStore "hashicorp" $hashicorp }}
+{{- end }}
+{{- if $vs.azure }}
+{{- $azure := dict }}
+{{- if $vs.azure.vaultUrl }}{{- $_ := set $azure "vault_url" $vs.azure.vaultUrl }}{{- end }}
+{{- if $vs.azure.tenantId }}{{- $_ := set $azure "tenant_id" $vs.azure.tenantId }}{{- end }}
+{{- if $vs.azure.clientId }}{{- $_ := set $azure "client_id" $vs.azure.clientId }}{{- end }}
+{{- if $vs.azure.clientSecret }}{{- $_ := set $azure "client_secret" $vs.azure.clientSecret }}{{- end }}
+{{- $_ := set $vaultStore "azure" $azure }}
 {{- end }}
 {{- $cs := index $config "config_store" }}
 {{- $_ := set $cs "vault_store" $vaultStore }}
@@ -1116,11 +1148,15 @@ false
 {{- if .Values.storage.logsStore.matviewRefreshTimeout }}
 {{- $_ := set $pgConfig "matview_refresh_timeout" .Values.storage.logsStore.matviewRefreshTimeout }}
 {{- end }}
+{{- if .Values.storage.logsStore.migrationMatviewCancelAfter }}
+{{- $_ := set $pgConfig "migration_matview_cancel_after" .Values.storage.logsStore.migrationMatviewCancelAfter }}
+{{- end }}
 {{- if .Values.storage.logsStore.connMaxIdleTime }}
 {{- $_ := set $pgConfig "conn_max_idle_time" .Values.storage.logsStore.connMaxIdleTime }}
 {{- end }}
 {{- with .Values.storage.logsStore.statementTimeout }}{{- $_ := set $pgConfig "statement_timeout" (toString .) }}{{- end }}
 {{- with .Values.storage.logsStore.idleInTransactionSessionTimeout }}{{- $_ := set $pgConfig "idle_in_transaction_session_timeout" (toString .) }}{{- end }}
+{{- with .Values.storage.logsStore.migrationLockRetryBudget }}{{- $_ := set $pgConfig "migration_lock_retry_budget" (toString .) }}{{- end }}
 {{- $logsStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- if .Values.storage.logsStore.writer }}
 {{- $writer := dict }}
@@ -1841,6 +1877,12 @@ false
 {{- end }}
 {{- if hasKey $inputConfig "enable_llm_obs" }}
 {{- $_ := set $datadogConfig "enable_llm_obs" $inputConfig.enable_llm_obs }}
+{{- end }}
+{{- if $inputConfig.otel_llmobs_conversion }}
+{{- $_ := set $datadogConfig "otel_llmobs_conversion" $inputConfig.otel_llmobs_conversion }}
+{{- end }}
+{{- if hasKey $inputConfig "llmobs_gateway_mode" }}
+{{- $_ := set $datadogConfig "llmobs_gateway_mode" $inputConfig.llmobs_gateway_mode }}
 {{- end }}
 {{- if hasKey $inputConfig "disable_content_logging" }}
 {{- $_ := set $datadogConfig "disable_content_logging" $inputConfig.disable_content_logging }}

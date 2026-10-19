@@ -1,10 +1,14 @@
 package typesafe
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1921,5 +1925,415 @@ func TestTypesafeQuestionReadsKindAsType(t *testing.T) {
 	}
 	if got := questions["both"].Type; got != TypesafeQuestionTypeScore {
 		t.Errorf("type must win over kind, got %q", got)
+	}
+}
+
+// galleryRequest is the gesture classifier from Typesafe's image docs: a camera
+// frame as the state, and example images inside the choice criteria and a noul
+// criterion, so it covers a reference as a whole value, nested in an object,
+// and inside an array.
+const galleryRequest = `{
+	"model": "jev-latest",
+	"state": {"camera": "r-cam"},
+	"assets": {
+		"r-cam":   {"type": "image", "format": "png", "data_base64": "iVBORw0KGgpDQU0="},
+		"r-thumb": {"format": "png", "data_base64": "iVBORw0KGgpUSFVNQg=="},
+		"r-palm":  {"format": "jpg", "data_base64": "/9j/4FBBTE0="}
+	},
+	"questions": {
+		"gesture": {"type": "choice", "instructions": "Which gesture is the hand in ` + "`camera`" + ` making?",
+			"criteria": {"thumbs_up": "r-thumb", "open_palm": {"description": "Palm facing the camera", "examples": ["r-palm"]}, "none": "No hand."}},
+		"assembled": {"type": "noul", "instructions": "Same pose as r-thumb?", "criteria": {"true": {"examples": ["r-thumb"]}, "false": "Parts missing."}}
+	}
+}`
+
+// TestTypesafeAssetsRoundTrip pins that a request with assets reaches Typesafe
+// as it was sent: the state, every asset, and every reference in instructions
+// and criteria come back unchanged, so example images never become evidence.
+func TestTypesafeAssetsRoundTrip(t *testing.T) {
+	var native TypesafeDecisionRequest
+	if err := sonic.Unmarshal([]byte(galleryRequest), &native); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(native.ExtraParams) != 0 {
+		t.Fatalf("assets decoded as extensions: %v", native.ExtraParams)
+	}
+	shared, err := native.ToBifrostDecisionRequest(nil)
+	if err != nil {
+		t.Fatalf("to shared: %v", err)
+	}
+
+	// The shared input is one message: the state as a structured text part, then
+	// one asset part per image, sorted by ID.
+	if len(shared.Input.Messages) != 1 {
+		t.Fatalf("input messages = %d, want 1", len(shared.Input.Messages))
+	}
+	parts := shared.Input.Messages[0].Content.Parts
+	if len(parts) != 4 || parts[0].Type != schemas.DecisionInputPartTypeText || !reflect.DeepEqual(parts[0].Text.Value(), map[string]interface{}{"camera": "r-cam"}) {
+		t.Fatalf("state part = %+v", parts)
+	}
+	for i, want := range []string{"r-cam", "r-palm", "r-thumb"} {
+		part := parts[i+1]
+		if !part.IsAsset() || *part.ID != want || part.Name != nil {
+			t.Errorf("part %d = %+v, want asset %q", i+1, part, want)
+		}
+	}
+	if string(parts[2].Data) != "\xff\xd8\xff\xe0PALM" || parts[2].ImageURL != nil {
+		t.Errorf("asset part = %+v, want the decoded bytes", parts[2])
+	}
+
+	out, err := ToTypesafeDecisionRequest(shared)
+	if err != nil {
+		t.Fatalf("to typesafe: %v", err)
+	}
+	if !reflect.DeepEqual(out.State, native.State) {
+		t.Errorf("state = %#v, want %#v", out.State, native.State)
+	}
+	// The format is read from the bytes, so a JPEG sent as "jpg" goes back as "jpeg",
+	// which Typesafe reads as the same format.
+	want := map[string]TypesafeAsset{
+		"r-cam":   {Type: "image", Format: "png", DataBase64: "iVBORw0KGgpDQU0="},
+		"r-thumb": {Type: "image", Format: "png", DataBase64: "iVBORw0KGgpUSFVNQg=="},
+		"r-palm":  {Type: "image", Format: "jpeg", DataBase64: "/9j/4FBBTE0="},
+	}
+	if !reflect.DeepEqual(out.Assets, want) {
+		t.Errorf("assets = %#v, want %#v", out.Assets, want)
+	}
+	if !reflect.DeepEqual(out.Questions["gesture"].Criteria, native.Questions["gesture"].Criteria) ||
+		!reflect.DeepEqual(out.Questions["assembled"].Criteria, native.Questions["assembled"].Criteria) ||
+		out.Questions["assembled"].Instructions != "Same pose as r-thumb?" {
+		t.Errorf("references in questions changed: %+v", out.Questions)
+	}
+}
+
+// TestTypesafeAssetsStateShapes pins that a string, array, or null state sent
+// with assets comes back in the same shape.
+func TestTypesafeAssetsStateShapes(t *testing.T) {
+	for name, state := range map[string]string{
+		"string": `"Camera shot: r-cam taken today."`,
+		"array":  `[{"frame":"r-cam"}]`,
+		"null":   `null`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var native TypesafeDecisionRequest
+			body := `{"model":"jev-latest","state":` + state + `,"assets":{"r-cam":{"format":"png","data_base64":"Q0FN"}},"questions":{"q":{"type":"noul","instructions":"Is a hand in r-cam?"}}}`
+			if err := sonic.Unmarshal([]byte(body), &native); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			shared, err := native.ToBifrostDecisionRequest(nil)
+			if err != nil {
+				t.Fatalf("to shared: %v", err)
+			}
+			out, err := ToTypesafeDecisionRequest(shared)
+			if err != nil {
+				t.Fatalf("to typesafe: %v", err)
+			}
+			got, _ := sonic.Marshal(out.State)
+			if string(got) != state {
+				t.Errorf("state = %s, want %s", got, state)
+			}
+		})
+	}
+}
+
+// TestTypesafeAssetsFromInputParts pins how /v1/decisions input parts with an id
+// reach Typesafe: data becomes data_base64 with the format read from its bytes,
+// the parts leave the state, and an asset without data is a 400.
+func TestTypesafeAssetsFromInputParts(t *testing.T) {
+	const jpeg, png, gif = "\xff\xd8\xff\xe0CAM", "\x89PNG\r\n\x1a\nCAM", "GIF89aCAM"
+	asset := func(id, data string) schemas.DecisionInputPart {
+		return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr(id), Data: []byte(data)}
+	}
+	text := func(s string) schemas.DecisionInputPart {
+		return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(s)}
+	}
+	request := func(messages ...schemas.DecisionInputMessage) *schemas.BifrostDecisionRequest {
+		return &schemas.BifrostDecisionRequest{Model: "jev-latest", Input: schemas.DecisionInput{Messages: messages}, Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Is a hand in r-cam?")},
+		}}
+	}
+	message := func(parts ...schemas.DecisionInputPart) schemas.DecisionInputMessage {
+		return schemas.DecisionInputMessage{Role: "user", Content: schemas.DecisionInputContent{Parts: parts}}
+	}
+
+	out, err := ToTypesafeDecisionRequest(request(message(text("The frame is r-cam."), asset("r-cam", jpeg))))
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if out.State != "The frame is r-cam." {
+		t.Errorf("state = %#v, want the text part", out.State)
+	}
+	if want := (TypesafeAsset{Type: "image", Format: "jpeg", DataBase64: "/9j/4ENBTQ=="}); !reflect.DeepEqual(out.Assets["r-cam"], want) {
+		t.Errorf("asset = %+v, want %+v", out.Assets["r-cam"], want)
+	}
+
+	// More than one message stays a message state, without the asset parts.
+	out, err = ToTypesafeDecisionRequest(request(
+		message(text("first")),
+		message(text("second"), asset("r-cam", png)),
+	))
+	if err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	if state, _ := sonic.Marshal(out.State); string(state) != `[{"role":"user","content":[{"type":"input_text","text":"first"}]},{"role":"user","content":[{"type":"input_text","text":"second"}]}]` {
+		t.Errorf("state = %s", state)
+	}
+
+	// Typesafe judges the image itself, so a GIF is sent on for it to reject.
+	out, err = ToTypesafeDecisionRequest(request(message(text("x"), asset("r-cam", gif))))
+	if err != nil || out.Assets["r-cam"].Format != "gif" {
+		t.Errorf("gif asset = %+v, %v; want sent with format gif", out.Assets["r-cam"], err)
+	}
+
+	urlOnly := schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-cam"), ImageURL: schemas.Ptr("https://example.com/cam.jpg")}
+	namedOnly := schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeImage, ID: schemas.Ptr("r-cam"), Name: schemas.Ptr("photo")}
+	for name, req := range map[string]*schemas.BifrostDecisionRequest{
+		"image_url without data": request(message(text("x"), urlOnly)),
+		"name without data":      request(message(text("x"), namedOnly)),
+		"duplicate id":           request(message(text("x"), asset("r-cam", png), asset("r-cam", png))),
+	} {
+		if _, err := ToTypesafeDecisionRequest(req); err == nil {
+			t.Errorf("%s: expected a 400", name)
+		}
+	}
+}
+
+// TestTypesafeAssetsNativeRejections pins the 400s for what the shared request
+// cannot carry, each of which Typesafe also rejects.
+func TestTypesafeAssetsNativeRejections(t *testing.T) {
+	for name, assets := range map[string]string{
+		"non-image type":           `{"r":{"type":"video","format":"png","data_base64":"QQ=="}}`,
+		"part outside a multipart": `{"r":{"part":"photo"}}`,
+		"invalid base64":           `{"r":{"format":"png","data_base64":"data:image/png;base64,QQ=="}}`,
+	} {
+		var native TypesafeDecisionRequest
+		body := `{"model":"jev-latest","state":"r","assets":` + assets + `,"questions":{"q":{"type":"noul","instructions":"x"}}}`
+		if err := sonic.Unmarshal([]byte(body), &native); err != nil {
+			t.Fatalf("%s: unmarshal: %v", name, err)
+		}
+		if _, err := native.ToBifrostDecisionRequest(nil); err == nil {
+			t.Errorf("%s: expected a 400", name)
+		}
+	}
+}
+
+// TestTypesafeBoxQuestionAndAnswer pins a box question through both directions:
+// criteria are dropped (Typesafe ignores them), instructions are optional, and
+// the box answer keeps its edges and confidence.
+func TestTypesafeBoxQuestionAndAnswer(t *testing.T) {
+	questions, err := ToBifrostDecisionQuestions(map[string]TypesafeQuestion{
+		"mug":  {Type: TypesafeQuestionTypeBox, Instructions: "the mug in `photo`", Criteria: map[string]any{"true": "x"}},
+		"bare": {Type: TypesafeQuestionTypeBox},
+	})
+	if err != nil {
+		t.Fatalf("questions: %v", err)
+	}
+	for _, question := range questions {
+		if question.Type != schemas.DecisionTypeBox || question.Criteria != nil {
+			t.Errorf("question = %+v, want a box without criteria", question)
+		}
+	}
+	request := &schemas.BifrostDecisionRequest{Model: "jev-preview", Input: schemas.DecisionInput{Text: schemas.Ptr("photo")}, Questions: questions}
+	native, err := ToTypesafeDecisionRequest(request)
+	if err != nil {
+		t.Fatalf("to typesafe: %v", err)
+	}
+	if got := native.Questions["mug"]; got.Type != "box" || got.Instructions != "the mug in `photo`" || got.Criteria != nil {
+		t.Errorf("native mug = %+v", got)
+	}
+	if got := native.Questions["bare"]; got.Type != "box" || got.Instructions != nil {
+		t.Errorf("native bare = %+v", got)
+	}
+
+	var resp TypesafeDecisionResponse
+	if err := sonic.Unmarshal([]byte(`{"model":"jev-1.14.0","answers":{"mug":{"type":"box","box":{"top":0.25,"bottom":0.82,"left":0.44,"right":0.84},"confidence":0.92},"bare":{"type":"box","box":{"top":0,"bottom":1,"left":0,"right":1},"confidence":0.1}},"usage":{"input_tokens":290,"output_tokens":21}}`), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	shared, bifrostErr := ToBifrostDecisionResponse(&resp, request)
+	if bifrostErr != nil {
+		t.Fatalf("to shared: %v", bifrostErr.Error)
+	}
+	mug := shared.Answers[1]
+	if *mug.Name != "mug" || mug.Box == nil || *mug.Box != (schemas.DecisionBox{Top: 0.25, Bottom: 0.82, Left: 0.44, Right: 0.84}) || *mug.Confidence != 0.92 {
+		t.Errorf("mug answer = %+v", mug)
+	}
+	back := ToTypesafeAnswers(shared.Answers)["mug"]
+	if back.Type != "box" || back.Box == nil || *back.Box != (TypesafeBox{Top: 0.25, Bottom: 0.82, Left: 0.44, Right: 0.84}) {
+		t.Errorf("native mug answer = %+v", back)
+	}
+
+	resp.Answers["mug"] = TypesafeAnswer{Type: "box"}
+	if _, bifrostErr := ToBifrostDecisionResponse(&resp, request); bifrostErr == nil {
+		t.Error("a box answer without a box was accepted")
+	}
+}
+
+// TestTypesafeImagesHeaderAndMultipart pins what reaches Typesafe on the wire: the
+// images header only for assets or a box question, a JSON body for base64
+// assets, and a multipart body, JSON first as "request", for assets that arrived
+// as file parts, each sent under its own name and content type.
+func TestTypesafeImagesHeaderAndMultipart(t *testing.T) {
+	type sent struct {
+		header      string
+		contentType string
+		body        []byte
+	}
+	requests := make(chan sent, 1)
+	_, provider := newTypesafeFixture(t, func(w http.ResponseWriter, r *http.Request, body []byte) {
+		requests <- sent{header: r.Header.Get("TypeSafe-Danger-Zone-Images"), contentType: r.Header.Get("Content-Type"), body: body}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"model":"jev-1.14.0","answers":{"q":{"type":"noul","noul":0.5},"mug":{"type":"box","box":{"top":0.1,"bottom":0.5,"left":0.2,"right":0.6},"confidence":0.9}}}`))
+	})
+	decide := func(native string) sent {
+		t.Helper()
+		var req TypesafeDecisionRequest
+		if err := sonic.Unmarshal([]byte(native), &req); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if asset, ok := req.Assets["r-cam"]; ok && asset.Part != "" {
+			asset.Data = []byte("\x89PNG\r\n\x1a\nbytes")
+			req.Assets["r-cam"] = asset
+		}
+		shared, err := req.ToBifrostDecisionRequest(nil)
+		if err != nil {
+			t.Fatalf("to shared: %v", err)
+		}
+		if _, bifrostErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), fixtureKey(), shared); bifrostErr != nil {
+			t.Fatalf("decision: %v", bifrostErr.Error)
+		}
+		return <-requests
+	}
+
+	last := decide(`{"model":"jev-latest","state":"text","questions":{"q":{"type":"noul","instructions":"x"}}}`)
+	if last.header != "" || !strings.HasPrefix(last.contentType, "application/json") {
+		t.Errorf("text request: header %q, content type %q", last.header, last.contentType)
+	}
+
+	last = decide(`{"model":"jev-preview","state":"text","questions":{"mug":{"type":"box","instructions":"the mug"}}}`)
+	if last.header != "true" {
+		t.Errorf("box request: header %q, want true", last.header)
+	}
+
+	last = decide(`{"model":"jev-latest","state":"r-cam","assets":{"r-cam":{"format":"png","data_base64":"iVBORw0KGgo="}},"questions":{"q":{"type":"noul","instructions":"x"}}}`)
+	if last.header != "true" || !strings.HasPrefix(last.contentType, "application/json") || !strings.Contains(string(last.body), `"assets":{"r-cam":{"type":"image","format":"png","data_base64":"iVBORw0KGgo="}}`) {
+		t.Errorf("base64 request: header %q, content type %q, body %s", last.header, last.contentType, last.body)
+	}
+
+	last = decide(`{"model":"jev-latest","state":"r-cam","assets":{"r-cam":{"type":"image","part":"door"}},"questions":{"q":{"type":"noul","instructions":"x"}}}`)
+	if last.header != "true" {
+		t.Errorf("multipart request: header %q, want true", last.header)
+	}
+	_, params, err := mime.ParseMediaType(last.contentType)
+	if err != nil || !strings.HasPrefix(last.contentType, "multipart/form-data") {
+		t.Fatalf("multipart request: content type %q", last.contentType)
+	}
+	reader := multipart.NewReader(bytes.NewReader(last.body), params["boundary"])
+	first, err := reader.NextPart()
+	if err != nil || first.FormName() != "request" || first.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("first part = %v, %v; want request as JSON", first, err)
+	}
+	requestJSON, _ := io.ReadAll(first)
+	if !strings.Contains(string(requestJSON), `"assets":{"r-cam":{"type":"image","part":"door"}}`) || strings.Contains(string(requestJSON), "data_base64") {
+		t.Errorf("request part = %s", requestJSON)
+	}
+	file, err := reader.NextPart()
+	if err != nil || file.FormName() != "door" || file.Header.Get("Content-Type") != "image/png" {
+		t.Fatalf("file part = %v, %v; want door as image/png", file, err)
+	}
+	if data, _ := io.ReadAll(file); string(data) != "\x89PNG\r\n\x1a\nbytes" {
+		t.Errorf("file bytes = %q", data)
+	}
+	if _, err := reader.NextPart(); err != io.EOF {
+		t.Errorf("unexpected extra part: %v", err)
+	}
+}
+
+// BenchmarkTypesafeSystemOneRequestWithoutImages measures the converter and the
+// images header check on a request without images, the common case images
+// support must not slow down.
+func BenchmarkTypesafeSystemOneRequestWithoutImages(b *testing.B) {
+	request := &schemas.BifrostDecisionRequest{
+		Model: "jev-latest",
+		Input: schemas.DecisionInput{Structured: map[string]any{"ticket": "I was double charged.", "plan": "pro"}},
+		Questions: []schemas.DecisionQuestion{
+			{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("angry"), Instructions: schemas.NewDecisionText("Is the customer angry?")},
+			{Type: schemas.DecisionTypeChoice, Name: schemas.Ptr("team"), Instructions: schemas.NewDecisionText("Which team?"), Choices: []schemas.DecisionChoice{
+				{Value: schemas.DecisionScalar{Str: schemas.Ptr("billing")}}, {Value: schemas.DecisionScalar{Str: schemas.Ptr("support")}},
+			}},
+		},
+	}
+	b.Run("ToTypesafeDecisionRequest", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if _, err := ToTypesafeDecisionRequest(request); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("usesTypesafeImages", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = usesTypesafeImages(request)
+		}
+	})
+}
+
+// TestTypesafeImagesHeaderOverride pins the provider's Beta Headers setting for
+// TypeSafe-Danger-Zone-Images: sent by default when a request needs it, and never
+// sent once beta_header_overrides turns it off.
+func TestTypesafeImagesHeaderOverride(t *testing.T) {
+	for name, tc := range map[string]struct {
+		overrides map[string]bool
+		want      string
+	}{
+		"default":     {nil, "true"},
+		"supported":   {map[string]bool{"typesafe-danger-zone-images": true}, "true"},
+		"unsupported": {map[string]bool{"typesafe-danger-zone-images": false}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			headers := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				headers <- r.Header.Get("TypeSafe-Danger-Zone-Images")
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"model":"jev-1.14.0","answers":{"mug":{"type":"box","box":{"top":0.1,"bottom":0.5,"left":0.2,"right":0.6},"confidence":0.9}}}`))
+			}))
+			defer server.Close()
+			provider, err := NewTypesafeProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, DefaultRequestTimeoutInSeconds: 10, BetaHeaderOverrides: tc.overrides},
+			}, noopLogger{})
+			if err != nil {
+				t.Fatalf("NewTypesafeProvider: %v", err)
+			}
+			request := &schemas.BifrostDecisionRequest{Provider: schemas.Typesafe, Model: "jev-preview", Input: schemas.DecisionInput{Text: schemas.Ptr("photo")},
+				Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypeBox, Name: schemas.Ptr("mug"), Instructions: schemas.NewDecisionText("the mug")}}}
+			if _, bifrostErr := provider.Decision(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), fixtureKey(), request); bifrostErr != nil {
+				t.Fatalf("decision: %v", bifrostErr.Error)
+			}
+			if got := <-headers; got != tc.want {
+				t.Errorf("TypeSafe-Danger-Zone-Images = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTypesafeMultipartBodyPartNames pins that a file part's name reaches Typesafe
+// exactly as the asset's part names it, including characters Go and MIME quote
+// differently, such as a newline or a quote.
+func TestTypesafeMultipartBodyPartNames(t *testing.T) {
+	for _, name := range []string{"door", "door photo", `door"photo`, "door\nphoto", "café"} {
+		body, contentType, err := typesafeMultipartBody([]byte(`{}`), []typesafeFilePart{{name: name, contentType: "image/png", data: []byte("x")}})
+		if err != nil {
+			t.Fatalf("%q: %v", name, err)
+		}
+		_, params, _ := mime.ParseMediaType(contentType)
+		reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+		if _, err := reader.NextPart(); err != nil {
+			t.Fatalf("%q: request part: %v", name, err)
+		}
+		file, err := reader.NextPart()
+		if err != nil || file.FormName() != name {
+			t.Errorf("part name = %q (%v), want %q", file.FormName(), err, name)
+		}
 	}
 }
