@@ -2998,7 +2998,7 @@ func TestToOpenAIChatRequest_MessageLevelCacheControl_OpenRouter(t *testing.T) {
 		model    string
 		want     int
 	}{
-		{name: "openrouter keeps both breakpoints", provider: schemas.OpenRouter, model: "anthropic/claude-haiku-4.5", want: 2},
+		{name: "openrouter keeps both breakpoints", provider: schemas.OpenRouter, model: "google/gemini-2.5-flash", want: 2},
 		{name: "openai drops them as before", provider: schemas.OpenAI, model: "gpt-4o", want: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3018,7 +3018,7 @@ func TestToOpenAIChatRequest_MessageLevelCacheControl_OpenRouter(t *testing.T) {
 // decoded request it came from.
 func TestOpenAIChatRequest_MessageLevelCacheControlIngress(t *testing.T) {
 	var req OpenAIChatRequest
-	require.NoError(t, sonic.Unmarshal([]byte(`{"model":"openrouter/anthropic/claude-haiku-4.5","messages":[
+	require.NoError(t, sonic.Unmarshal([]byte(`{"model":"openrouter/google/gemini-2.5-flash","messages":[
 	  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
 	  {"role":"user","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}],"cache_control":{"type":"ephemeral"}},
 	  {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{}"}}],"cache_control":{"type":"ephemeral"}},

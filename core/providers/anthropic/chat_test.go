@@ -2747,7 +2747,7 @@ func TestToAnthropicChatRequest_MessageLevelCacheControl(t *testing.T) {
 	defer cancel()
 	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
 		Provider: schemas.Anthropic,
-		Model:    "claude-haiku-4-5",
+		Model:    "my-anthropic-model",
 		Input:    input,
 	})
 	require.NoError(t, err)

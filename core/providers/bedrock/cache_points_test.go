@@ -795,7 +795,7 @@ func TestToBedrockChatCompletionRequest_MessageLevelCacheControlBecomesCachePoin
 	defer cancel()
 	result, err := ToBedrockChatCompletionRequest(ctx, &schemas.BifrostChatRequest{
 		Provider: schemas.Bedrock,
-		Model:    "anthropic.claude-sonnet-4-6",
+		Model:    "amazon.nova-pro-v1:0",
 		Input:    input,
 	})
 	if err != nil {
