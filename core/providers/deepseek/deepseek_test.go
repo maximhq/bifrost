@@ -761,3 +761,63 @@ func TestFetch_PreservesSecurityPolicyRejection(t *testing.T) {
 		t.Fatalf("StatusCode = %v, want 403", bifrostErr.StatusCode)
 	}
 }
+
+// Search and Fetch share one HTTP path, and their status codes are actionable rather than
+// interchangeable: 402 means top up the balance, 403 means the page was refused by policy,
+// 404 means there is no usable content, and 429 means the account QPS budget is spent.
+// Flattening any of them into a generic provider error would hide the fix, so every code
+// the vendor documents is pinned here.
+func TestTools_PreservesUpstreamErrors(t *testing.T) {
+	t.Parallel()
+
+	const upstreamMessage = "upstream says no"
+	tests := []struct {
+		name   string
+		status int
+		search bool
+	}{
+		{name: "search 400 invalid field", status: http.StatusBadRequest, search: true},
+		{name: "search 401 bad key", status: http.StatusUnauthorized, search: true},
+		{name: "search 402 insufficient balance", status: http.StatusPaymentRequired, search: true},
+		{name: "search 404 no results", status: http.StatusNotFound, search: true},
+		{name: "search 408 body read timeout", status: http.StatusRequestTimeout, search: true},
+		{name: "search 413 body too large", status: http.StatusRequestEntityTooLarge, search: true},
+		{name: "search 429 QPS exceeded", status: http.StatusTooManyRequests, search: true},
+		{name: "search 500 internal", status: http.StatusInternalServerError, search: true},
+		{name: "search 504 downstream timeout", status: http.StatusGatewayTimeout, search: true},
+		{name: "fetch 403 security policy", status: http.StatusForbidden},
+		{name: "fetch 429 QPS exceeded", status: http.StatusTooManyRequests},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := fmt.Sprintf(`{"error":{"message":%q,"type":"invalid_request_error","param":null,"code":"invalid_request_error"}}`, upstreamMessage)
+			server := newToolsServer(t, tt.status, body, nil)
+			provider, err := newTestDeepSeekProvider(server.URL)
+			if err != nil {
+				t.Fatalf("NewDeepSeekProvider: %v", err)
+			}
+
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			key := schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}
+			var bifrostErr *schemas.BifrostError
+			if tt.search {
+				_, bifrostErr = provider.Search(ctx, key, &schemas.BifrostSearchRequest{Provider: schemas.DeepSeek, Query: "q"})
+			} else {
+				_, bifrostErr = provider.Fetch(ctx, key, &schemas.BifrostFetchRequest{Provider: schemas.DeepSeek, URL: "https://example.com/"})
+			}
+
+			if bifrostErr == nil {
+				t.Fatalf("status %d: expected an error", tt.status)
+			}
+			if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != tt.status {
+				t.Fatalf("StatusCode = %v, want %d", bifrostErr.StatusCode, tt.status)
+			}
+			if bifrostErr.Error == nil || !strings.Contains(bifrostErr.Error.Message, upstreamMessage) {
+				t.Fatalf("message = %+v, want it to carry the upstream text", bifrostErr.Error)
+			}
+		})
+	}
+}
