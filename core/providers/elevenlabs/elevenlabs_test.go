@@ -15,13 +15,20 @@ import (
 )
 
 func TestElevenlabsListModelsWithoutCatalog(t *testing.T) {
-	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		model  string
+	}{
+		{http.StatusOK, "eleven_turbo_v2_5"},
+		{http.StatusOK, "scribe_v2"},
+		{http.StatusUnauthorized, ""},
+	} {
+		t.Run(http.StatusText(tc.status)+"/"+tc.model, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(status)
-				if status == http.StatusOK {
-					_, _ = w.Write([]byte(`[{"model_id":"eleven_turbo_v2_5","name":"Turbo"}]`))
+				w.WriteHeader(tc.status)
+				if tc.status == http.StatusOK {
+					_, _ = w.Write([]byte(`[{"model_id":"` + tc.model + `","name":"Upstream Model"}]`))
 				} else {
 					_, _ = w.Write([]byte(`{"detail":{"status":"invalid_api_key","message":"invalid api key"}}`))
 				}
@@ -35,8 +42,8 @@ func TestElevenlabsListModelsWithoutCatalog(t *testing.T) {
 			response, failure := provider.ListModels(ctx, []schemas.Key{{
 				ID: "key-1", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("test-key"),
 			}}, &schemas.BifrostListModelsRequest{Provider: schemas.Elevenlabs})
-			if status != http.StatusOK {
-				if failure == nil || failure.StatusCode == nil || *failure.StatusCode != status {
+			if tc.status != http.StatusOK {
+				if failure == nil || failure.StatusCode == nil || *failure.StatusCode != tc.status {
 					t.Fatalf("upstream status must be preserved, got %+v", failure)
 				}
 				return
@@ -44,7 +51,7 @@ func TestElevenlabsListModelsWithoutCatalog(t *testing.T) {
 			if failure != nil {
 				t.Fatal(failure.GetErrorString())
 			}
-			if len(response.Data) != 1 || response.Data[0].ID != "elevenlabs/eleven_turbo_v2_5" {
+			if len(response.Data) != 1 || response.Data[0].ID != "elevenlabs/"+tc.model {
 				t.Fatalf("SDK without a catalog must retain the upstream-only listing, got %+v", response.Data)
 			}
 		})
