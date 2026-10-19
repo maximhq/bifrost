@@ -219,12 +219,39 @@ func ToVertexMultimodalEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequ
 // Handles both text embedding responses (Embeddings.Values) and native multimodal
 // responses (TextEmbedding / ImageEmbedding / VideoEmbeddings).
 func (response *VertexEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.BifrostEmbeddingResponse {
-	if response == nil || len(response.Predictions) == 0 {
+	if response == nil {
+		return nil
+	}
+	characters := response.Metadata.CharacterMeasurement()
+	if len(response.Predictions) == 0 && characters == nil {
 		return nil
 	}
 
 	embeddings := make([]schemas.EmbeddingData, 0, len(response.Predictions))
 	var usage *schemas.BifrostLLMUsage
+	var tokens int
+	completeStats := len(response.Predictions) > 0
+	for _, prediction := range response.Predictions {
+		if prediction.Embeddings == nil {
+			completeStats = false
+			continue
+		}
+		count := prediction.Embeddings.Statistics.tokenMeasurement()
+		if count == nil || *count < 0 {
+			completeStats = false
+			continue
+		}
+		tokens += *count
+	}
+	if completeStats {
+		usage = schemas.NewTokenUsage(&tokens, nil, &tokens)
+	}
+	if chars := characters; chars != nil {
+		if usage == nil {
+			usage = schemas.NewTokenUsageAccumulator()
+		}
+		usage.InputCharacters = schemas.Ptr(int(*chars))
+	}
 	idx := 0
 
 	for _, prediction := range response.Predictions {
@@ -236,13 +263,7 @@ func (response *VertexEmbeddingResponse) ToBifrostEmbeddingResponse() *schemas.B
 				Index:     idx,
 			})
 			idx++
-			if prediction.Embeddings.Statistics != nil {
-				if usage == nil {
-					usage = &schemas.BifrostLLMUsage{}
-				}
-				usage.TotalTokens += prediction.Embeddings.Statistics.TokenCount
-				usage.PromptTokens += prediction.Embeddings.Statistics.TokenCount
-			}
+
 			continue
 		}
 

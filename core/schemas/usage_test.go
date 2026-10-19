@@ -168,3 +168,65 @@ func TestToolUsageAddHandlesNilOperands(t *testing.T) {
 		t.Fatalf("empty + one = %d, want 2", got)
 	}
 }
+
+func TestEmbeddingUsageCharacterCopyAndPresence(t *testing.T) {
+	for _, count := range []*int{nil, Ptr(0), Ptr(17)} {
+		usage := NewTokenUsage(nil, nil, nil)
+		usage.InputCharacters = count
+		clone := usage.DeepCopy()
+		if count == nil {
+			if clone.InputCharacters != nil {
+				t.Fatal("invented characters")
+			}
+		} else {
+			if clone.InputCharacters == count || *clone.InputCharacters != *count {
+				t.Fatal("character measurement not copied")
+			}
+		}
+		wire, err := Marshal(clone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var decoded BifrostLLMUsage
+		if err := Unmarshal(wire, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		input, output, total := decoded.TokenMeasurements()
+		if input != nil || output != nil || total != nil {
+			t.Fatalf("invented token counts: %s", wire)
+		}
+		if count != nil && (decoded.InputCharacters == nil || *decoded.InputCharacters != *count) {
+			t.Fatalf("lost characters: %s", wire)
+		}
+	}
+	input, total := 0, 3
+	usage := NewTokenUsage(&input, nil, &total)
+	input, total = 99, 99
+	observed, output, sum := usage.TokenMeasurements()
+	if observed == nil || *observed != 0 || output != nil || sum == nil || *sum != 3 {
+		t.Fatal("constructor lost independent counters or aliases its input")
+	}
+}
+
+func TestEmbeddingUsageMergedCharacterMeasurements(t *testing.T) {
+	base, add := NewTokenUsage(nil, nil, nil), NewTokenUsage(nil, nil, nil)
+	base.InputCharacters, add.InputCharacters = Ptr(17), Ptr(0)
+	merged := MergeBifrostLLMUsage(base, add)
+	if merged.InputCharacters == nil || *merged.InputCharacters != 17 {
+		t.Fatal("lost character sum")
+	}
+	input, output, total := merged.TokenMeasurements()
+	if input != nil || output != nil || total != nil {
+		t.Fatal("invented tokens from character-only requests")
+	}
+	add.InputCharacters = nil
+	if MergeBifrostLLMUsage(base, add).InputCharacters != nil {
+		t.Fatal("partial character sum reported as complete")
+	}
+	measured := NewTokenUsage(Ptr(3), nil, Ptr(3))
+	partial := MergeBifrostLLMUsage(measured, base)
+	input, output, total = partial.TokenMeasurements()
+	if input != nil || output != nil || total != nil {
+		t.Fatal("partial token sum reported as complete")
+	}
+}

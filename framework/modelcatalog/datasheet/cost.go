@@ -1187,7 +1187,17 @@ func computeEmbeddingCost(pricing *configstoreTables.TableModelPricing, usage *s
 	if usage == nil {
 		return nil
 	}
-	c := float64(usage.PromptTokens) * tieredInputRate(pricing, usage.PromptTokens, tier)
+	var c float64
+	if pricing.InputCostPerCharacter != nil {
+		// The catalog's declared unit chooses the basis. Never substitute tokens
+		// for an absent character receipt, or bill both independent observations.
+		if usage.InputCharacters == nil {
+			return nil
+		}
+		c = float64(*usage.InputCharacters) * *pricing.InputCostPerCharacter
+	} else {
+		c = float64(usage.PromptTokens) * tieredInputRate(pricing, usage.PromptTokens, tier)
+	}
 	if c == 0 {
 		return nil
 	}

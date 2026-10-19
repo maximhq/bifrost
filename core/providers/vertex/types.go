@@ -1,10 +1,14 @@
 package vertex
 
 import (
+	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/maximhq/bifrost/core/providers/gemini"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
+	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 )
 
 // Vertex AI Embedding API types
@@ -191,8 +195,9 @@ func (r *VertexGeminiEmbeddingRequest) GetExtraParams() map[string]interface{} {
 
 // VertexEmbeddingStatistics represents statistics computed from the input text
 type VertexEmbeddingStatistics struct {
-	Truncated  bool `json:"truncated"`   // Whether the input text was truncated
-	TokenCount int  `json:"token_count"` // Number of tokens in the input text
+	Truncated        bool `json:"truncated"`   // Whether the input text was truncated
+	TokenCount       int  `json:"token_count"` // Number of tokens in the input text
+	tokenCountAbsent bool
 }
 
 // VertexEmbeddingValues represents the embedding result
@@ -217,7 +222,8 @@ type VertexEmbeddingPrediction struct {
 
 // VertexEmbeddingResponse represents the complete embedding response from Vertex AI
 type VertexEmbeddingResponse struct {
-	Predictions []VertexEmbeddingPrediction `json:"predictions"` // List of embedding predictions
+	Predictions []VertexEmbeddingPrediction  `json:"predictions"` // List of embedding predictions
+	Metadata    *gemini.EmbedContentMetadata `json:"metadata,omitempty"`
 }
 
 // ================================ Model Types ================================
@@ -532,4 +538,46 @@ type gcsErrorBody struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+func (s *VertexEmbeddingStatistics) tokenMeasurement() *int {
+	if s == nil || s.tokenCountAbsent {
+		return nil
+	}
+	return &s.TokenCount
+}
+
+func (s *VertexEmbeddingStatistics) UnmarshalJSON(data []byte) error {
+	*s = VertexEmbeddingStatistics{tokenCountAbsent: true}
+	// Inspect only the small statistics object. A nested decode plus a presence
+	// scan adds allocations to every token-only embedding response.
+	raw := gjson.Parse(string(data))
+	if !gjson.ValidBytes(data) || (raw.Type != gjson.Null && !raw.IsObject()) {
+		return fmt.Errorf("invalid embedding statistics")
+	}
+	count := raw.Get("token_count")
+	if count.Type == gjson.Number {
+		value, err := strconv.ParseInt(count.Raw, 10, 64)
+		if err != nil {
+			return err
+		}
+		s.TokenCount = int(value)
+		s.tokenCountAbsent = false
+	} else if count.Exists() && count.Type != gjson.Null {
+		return fmt.Errorf("invalid embedding token count")
+	}
+	truncated := raw.Get("truncated")
+	if truncated.Type == gjson.True || truncated.Type == gjson.False {
+		s.Truncated = truncated.Bool()
+	} else if truncated.Exists() && truncated.Type != gjson.Null {
+		return fmt.Errorf("invalid embedding truncation flag")
+	}
+	return nil
+}
+
+func (s VertexEmbeddingStatistics) MarshalJSON() ([]byte, error) {
+	return schemas.Marshal(&struct {
+		Truncated bool `json:"truncated"`
+		Count     *int `json:"token_count,omitempty"`
+	}{s.Truncated, s.tokenMeasurement()})
 }

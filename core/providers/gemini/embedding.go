@@ -218,8 +218,14 @@ func ToGeminiEmbeddingRequest(bifrostReq *schemas.BifrostEmbeddingRequest) (*Gem
 
 // ToGeminiEmbedContentResponse converts a BifrostEmbeddingResponse to the single :embedContent wire format.
 func ToGeminiEmbedContentResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *GeminiEmbedContentResponse {
-	if bifrostResp == nil || len(bifrostResp.Data) == 0 {
+	if bifrostResp == nil {
 		return nil
+	}
+	if len(bifrostResp.Data) == 0 {
+		if bifrostResp.Usage == nil || bifrostResp.Usage.InputCharacters == nil {
+			return nil
+		}
+		return &GeminiEmbedContentResponse{Metadata: &EmbedContentMetadata{BillableCharacterCount: int32(*bifrostResp.Usage.InputCharacters)}}
 	}
 	values := bifrostResp.Data[0].Embedding.EmbeddingArray
 	if values == nil && len(bifrostResp.Data[0].Embedding.Embedding2DArray) > 0 {
@@ -228,18 +234,28 @@ func ToGeminiEmbedContentResponse(bifrostResp *schemas.BifrostEmbeddingResponse)
 	embedding := GeminiEmbedding{
 		Values: append([]float64(nil), values...),
 	}
-	if bifrostResp.Usage != nil {
+	if input, _, _ := bifrostResp.Usage.TokenMeasurements(); input != nil {
 		embedding.Statistics = &ContentEmbeddingStatistics{
-			TokenCount: int32(bifrostResp.Usage.PromptTokens),
+			TokenCount: int32(*input),
 		}
 	}
-	return &GeminiEmbedContentResponse{Embedding: embedding}
+	response := &GeminiEmbedContentResponse{Embedding: embedding}
+	if bifrostResp.Usage != nil && bifrostResp.Usage.InputCharacters != nil {
+		response.Metadata = &EmbedContentMetadata{BillableCharacterCount: int32(*bifrostResp.Usage.InputCharacters)}
+	}
+	return response
 }
 
 // ToGeminiEmbeddingResponse converts a BifrostResponse with embedding data to Gemini's embedding response format
 func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *GeminiEmbeddingResponse {
-	if bifrostResp == nil || len(bifrostResp.Data) == 0 {
+	if bifrostResp == nil {
 		return nil
+	}
+	if len(bifrostResp.Data) == 0 {
+		if bifrostResp.Usage == nil || bifrostResp.Usage.InputCharacters == nil {
+			return nil
+		}
+		return &GeminiEmbeddingResponse{Metadata: &EmbedContentMetadata{BillableCharacterCount: int32(*bifrostResp.Usage.InputCharacters)}}
 	}
 
 	geminiResp := &GeminiEmbeddingResponse{
@@ -248,9 +264,9 @@ func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *G
 
 	for i, embedding := range bifrostResp.Data {
 		geminiEmbedding := GeminiEmbedding{Values: append([]float64(nil), embedding.Embedding.EmbeddingArray...)}
-		if bifrostResp.Usage != nil && len(bifrostResp.Data) == 1 {
+		if input, _, _ := bifrostResp.Usage.TokenMeasurements(); input != nil && len(bifrostResp.Data) == 1 {
 			geminiEmbedding.Statistics = &ContentEmbeddingStatistics{
-				TokenCount: int32(bifrostResp.Usage.PromptTokens),
+				TokenCount: int32(*input),
 			}
 		}
 		geminiResp.Embeddings[i] = geminiEmbedding
@@ -259,9 +275,9 @@ func ToGeminiEmbeddingResponse(bifrostResp *schemas.BifrostEmbeddingResponse) *G
 	if len(geminiResp.Embeddings) == 1 {
 		geminiResp.Embedding = &geminiResp.Embeddings[0]
 	}
-	if bifrostResp.Usage != nil {
+	if bifrostResp.Usage != nil && bifrostResp.Usage.InputCharacters != nil {
 		geminiResp.Metadata = &EmbedContentMetadata{
-			BillableCharacterCount: int32(bifrostResp.Usage.PromptTokens),
+			BillableCharacterCount: int32(*bifrostResp.Usage.InputCharacters),
 		}
 	}
 	return geminiResp
@@ -282,8 +298,12 @@ func geminiResponseEmbeddings(resp *GeminiEmbeddingResponse) []GeminiEmbedding {
 
 // ToBifrostEmbeddingResponse converts a Gemini embedding response to BifrostEmbeddingResponse format
 func ToBifrostEmbeddingResponse(geminiResp *GeminiEmbeddingResponse, model string) *schemas.BifrostEmbeddingResponse {
+	if geminiResp == nil {
+		return nil
+	}
 	embeddings := geminiResponseEmbeddings(geminiResp)
-	if len(embeddings) == 0 {
+	characters := geminiResp.Metadata.CharacterMeasurement()
+	if len(embeddings) == 0 && characters == nil {
 		return nil
 	}
 
@@ -303,44 +323,38 @@ func ToBifrostEmbeddingResponse(geminiResp *GeminiEmbeddingResponse, model strin
 		}
 	}
 
-	hasStats := false
+	// A partial batch statistic is not a complete request token measurement.
+	var stats int
+	completeStats := len(embeddings) > 0
 	for _, emb := range embeddings {
-		if emb.Statistics != nil {
-			hasStats = true
-			break
+		count := emb.Statistics.TokenMeasurement()
+		if count == nil || *count < 0 {
+			completeStats = false
+			continue
 		}
+		stats += int(*count)
 	}
 	if um := geminiResp.UsageMetadata; um != nil && (um.PromptTokenCount > 0 || um.TotalTokenCount > 0) {
-		prompt := int(um.PromptTokenCount)
-		total := int(um.TotalTokenCount)
+		prompt, total := int(um.PromptTokenCount), int(um.TotalTokenCount)
 		if prompt == 0 {
-			for _, emb := range embeddings {
-				if emb.Statistics != nil {
-					prompt += int(emb.Statistics.TokenCount)
-				}
-			}
-			if prompt == 0 {
+			if completeStats {
+				prompt = stats
+			} else {
 				prompt = total
 			}
 		}
 		if total == 0 {
 			total = prompt
 		}
-		bifrostResp.Usage = &schemas.BifrostLLMUsage{PromptTokens: prompt, TotalTokens: total}
-	} else if geminiResp.Metadata != nil || hasStats {
-		bifrostResp.Usage = &schemas.BifrostLLMUsage{}
-		var totalTokens int
-		for _, emb := range embeddings {
-			if emb.Statistics != nil {
-				totalTokens += int(emb.Statistics.TokenCount)
-			}
+		bifrostResp.Usage = schemas.NewTokenUsage(&prompt, nil, &total)
+	} else if completeStats {
+		bifrostResp.Usage = schemas.NewTokenUsage(&stats, nil, &stats)
+	}
+	if chars := characters; chars != nil {
+		if bifrostResp.Usage == nil {
+			bifrostResp.Usage = schemas.NewTokenUsageAccumulator()
 		}
-		if totalTokens > 0 {
-			bifrostResp.Usage.PromptTokens = totalTokens
-		} else if geminiResp.Metadata != nil {
-			bifrostResp.Usage.PromptTokens = int(geminiResp.Metadata.BillableCharacterCount)
-		}
-		bifrostResp.Usage.TotalTokens = bifrostResp.Usage.PromptTokens
+		bifrostResp.Usage.InputCharacters = schemas.Ptr(int(*chars))
 	}
 
 	return bifrostResp

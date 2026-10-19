@@ -1,6 +1,13 @@
 package vertex
 
 import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"github.com/tidwall/gjson"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -175,4 +182,132 @@ func TestToVertexGeminiEmbeddingRequestForwardsEmbedContentConfig(t *testing.T) 
 		require.NotContains(t, string(body), "documentOcr")
 		require.Contains(t, extra, "documentOcr", "caller's ExtraParams must not be mutated")
 	})
+}
+
+// Character counts and token counts are different observed billing units.
+func TestEmbeddingCharacterMeasurements(t *testing.T) {
+	cases := []struct {
+		name   string
+		wire   string
+		chars  *int
+		tokens *int
+	}{
+		{"empty vectors", `{"predictions":[],"metadata":{"billableCharacterCount":17}}`, schemas.Ptr(17), nil},
+		{"characters", `{"predictions":[{"embeddings":{"values":[0.1,0.2]}}],"metadata":{"billableCharacterCount":17}}`, schemas.Ptr(17), nil},
+		{"zero characters", `{"predictions":[{"embeddings":{"values":[0.1,0.2]}}],"metadata":{"billableCharacterCount":0}}`, schemas.Ptr(0), nil},
+		{"absent character field", `{"predictions":[{"embeddings":{"values":[0.1,0.2]}}],"metadata":{}}`, nil, nil},
+		{"null characters", `{"predictions":[{"embeddings":{"values":[0.1,0.2]}}],"metadata":{"billableCharacterCount":null}}`, nil, nil},
+		{"independent tokens and characters", `{"predictions":[{"embeddings":{"values":[0.1,0.2],"statistics":{"token_count":3}}}],"metadata":{"billableCharacterCount":17}}`, schemas.Ptr(17), schemas.Ptr(3)},
+		{"empty token statistics", `{"predictions":[{"embeddings":{"values":[0.1,0.2],"statistics":{}}}],"metadata":{"billableCharacterCount":17}}`, schemas.Ptr(17), nil},
+		{"explicit zero tokens", `{"predictions":[{"embeddings":{"values":[0.1,0.2],"statistics":{"token_count":0}}}],"metadata":{"billableCharacterCount":17}}`, schemas.Ptr(17), schemas.Ptr(0)},
+		{"partial batch statistics", `{"predictions":[{"embeddings":{"values":[0.1],"statistics":{"token_count":3}}},{"embeddings":{"values":[0.2]}}],"metadata":{"billableCharacterCount":17}}`, schemas.Ptr(17), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var decoded VertexEmbeddingResponse
+			require.NoError(t, schemas.Unmarshal([]byte(tc.wire), &decoded))
+			got := decoded.ToBifrostEmbeddingResponse()
+			require.NotNil(t, got)
+			if tc.name == "empty vectors" {
+				require.Empty(t, got.Data)
+			}
+			body, err := schemas.Marshal(got)
+			require.NoError(t, err)
+			chars := gjson.GetBytes(body, "usage.input_characters")
+			if tc.chars == nil {
+				require.False(t, chars.Exists(), string(body))
+			} else {
+				require.Equal(t, gjson.Number, chars.Type, string(body))
+				require.EqualValues(t, *tc.chars, chars.Int(), string(body))
+			}
+			input, output, total := got.Usage.TokenMeasurements()
+			require.Nil(t, output, string(body))
+			if tc.tokens == nil {
+				require.Nil(t, input, string(body))
+				require.Nil(t, total, string(body))
+			} else {
+				require.NotNil(t, input, string(body))
+				require.Equal(t, *tc.tokens, *input)
+				require.NotNil(t, total, string(body))
+				require.Equal(t, *tc.tokens, *total)
+			}
+		})
+	}
+}
+
+func BenchmarkEmbeddingCharacterMeasurements(b *testing.B) {
+	for _, metadata := range []string{"", `,"metadata":{"billableCharacterCount":17}`} {
+		b.Run(fmt.Sprintf("characters=%t", metadata != ""), func(b *testing.B) {
+			var decoded VertexEmbeddingResponse
+			if err := schemas.Unmarshal([]byte(`{"predictions":[{"embeddings":{"values":[0.1,0.2],"statistics":{"token_count":3}}}]`+metadata+`}`), &decoded); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				_ = decoded.ToBifrostEmbeddingResponse()
+			}
+		})
+	}
+}
+
+func TestEmbeddingCharacterHTTPReceipt(t *testing.T) {
+	for _, model := range []string{"gemini-embedding-2-preview", "text-embedding-005"} {
+		for _, chars := range []int{0, 17} {
+			t.Run(fmt.Sprintf("%s/%d", model, chars), func(t *testing.T) {
+				requests := make(chan string, 1)
+				upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests <- r.URL.Path
+					w.Header().Set("Content-Type", "application/json")
+					if model == "gemini-embedding-2-preview" {
+						fmt.Fprintf(w, `{"embedding":{"values":[0.1,0.2]},"metadata":{"billableCharacterCount":%d}}`, chars)
+					} else {
+						fmt.Fprintf(w, `{"predictions":[{"embeddings":{"values":[0.1,0.2]}}],"metadata":{"billableCharacterCount":%d}}`, chars)
+					}
+				}))
+				defer upstream.Close()
+				config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 10}}
+				config.CheckAndSetDefaults()
+				provider, err := NewVertexProvider(config, nil)
+				require.NoError(t, err)
+				// Redirect only this provider instance; no global transport or external OAuth call.
+				provider.client.Dial = func(string) (net.Conn, error) { return net.Dial("tcp", upstream.Listener.Addr().String()) }
+				provider.client.TLSConfig = &tls.Config{InsecureSkipVerify: true}
+				text := "fixture"
+				response, failure := provider.Embedding(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+					schemas.Key{Value: *schemas.NewSecretVar("test-key"), VertexKeyConfig: &schemas.VertexKeyConfig{ProjectID: *schemas.NewSecretVar("fixture-project"), Region: *schemas.NewSecretVar("us-central1")}},
+					&schemas.BifrostEmbeddingRequest{Provider: schemas.Vertex, Model: model, Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}})
+				require.Nil(t, failure)
+				require.NotNil(t, response)
+				suffix := ":predict"
+				if model == "gemini-embedding-2-preview" {
+					suffix = ":embedContent"
+				}
+				require.Contains(t, <-requests, "/models/"+model+suffix)
+				require.NotNil(t, response.Usage.InputCharacters)
+				require.Equal(t, chars, *response.Usage.InputCharacters)
+				input, output, total := response.Usage.TokenMeasurements()
+				require.Nil(t, input)
+				require.Nil(t, output)
+				require.Nil(t, total)
+			})
+		}
+	}
+}
+
+func BenchmarkEmbeddingDecodeUnits(b *testing.B) {
+	for _, metadata := range []string{"", `,"metadata":{"billableCharacterCount":17}`} {
+		b.Run(fmt.Sprintf("characters=%t", metadata != ""), func(b *testing.B) {
+			raw := []byte(`{"predictions":[{"embeddings":{"values":[0.1,0.2],"statistics":{"token_count":3}}}]` + metadata + `}`)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				var decoded VertexEmbeddingResponse
+				if err := schemas.Unmarshal(raw, &decoded); err != nil {
+					b.Fatal(err)
+				}
+				_ = decoded.ToBifrostEmbeddingResponse()
+			}
+		})
+	}
 }

@@ -2298,7 +2298,8 @@ type GeminiEmbeddingResponse struct {
 
 // GeminiEmbedContentResponse is the wire format for a single :embedContent response.
 type GeminiEmbedContentResponse struct {
-	Embedding GeminiEmbedding `json:"embedding"`
+	Embedding GeminiEmbedding       `json:"embedding"`
+	Metadata  *EmbedContentMetadata `json:"metadata,omitempty"`
 }
 
 // GeminiEmbedding represents a single embedding in the response
@@ -2310,11 +2311,13 @@ type GeminiEmbedding struct {
 // EmbedContentMetadata represents request-level metadata for Vertex API
 type EmbedContentMetadata struct {
 	BillableCharacterCount int32 `json:"billableCharacterCount,omitempty"`
+	characterCountAbsent   bool
 }
 
 // ContentEmbeddingStatistics represents statistics of the input text
 type ContentEmbeddingStatistics struct {
-	TokenCount int32 `json:"tokenCount,omitempty"`
+	TokenCount       int32 `json:"tokenCount,omitempty"`
+	tokenCountAbsent bool
 }
 
 // LogprobsResultCandidate represents a candidate for the logprobs token and score.
@@ -3669,4 +3672,66 @@ type GeminiFileUploadHandlerReq struct {
 	// Step 2 fields — populated when upload_id is present in query
 	UploadID string `json:"-"`
 	FileData []byte `json:"-"`
+}
+
+// CharacterMeasurement preserves absent versus explicit zero without changing
+// the existing scalar convenience field for programmatic response construction.
+func (m *EmbedContentMetadata) CharacterMeasurement() *int32 {
+	if m == nil || m.characterCountAbsent {
+		return nil
+	}
+	return &m.BillableCharacterCount
+}
+
+func (m *EmbedContentMetadata) UnmarshalJSON(data []byte) error {
+	type wire EmbedContentMetadata
+	*m = EmbedContentMetadata{}
+	if err := schemas.Unmarshal(data, (*wire)(m)); err != nil {
+		return err
+	}
+	m.characterCountAbsent = gjson.GetBytes(data, "billableCharacterCount").Type != gjson.Number
+	return nil
+}
+
+func (m EmbedContentMetadata) MarshalJSON() ([]byte, error) {
+	return schemas.Marshal(&struct {
+		Count *int32 `json:"billableCharacterCount,omitempty"`
+	}{m.CharacterMeasurement()})
+}
+
+// TokenMeasurement preserves an explicitly observed zero statistic.
+func (s *ContentEmbeddingStatistics) TokenMeasurement() *int32 {
+	if s == nil || s.tokenCountAbsent {
+		return nil
+	}
+	return &s.TokenCount
+}
+
+func (s *ContentEmbeddingStatistics) UnmarshalJSON(data []byte) error {
+	*s = ContentEmbeddingStatistics{tokenCountAbsent: true}
+	// Inspect only the small statistics object. A nested decode plus a presence
+	// scan adds allocations to every token-only embedding response.
+	raw := gjson.Parse(string(data))
+	if !gjson.ValidBytes(data) || (raw.Type != gjson.Null && !raw.IsObject()) {
+		return fmt.Errorf("invalid embedding statistics")
+	}
+	count := raw.Get("tokenCount")
+	if count.Type == gjson.Number {
+		value, err := strconv.ParseInt(count.Raw, 10, 32)
+		if err != nil {
+			return err
+		}
+		s.TokenCount = int32(value)
+		s.tokenCountAbsent = false
+	} else if count.Exists() && count.Type != gjson.Null {
+		return fmt.Errorf("invalid embedding token count")
+	}
+
+	return nil
+}
+
+func (s ContentEmbeddingStatistics) MarshalJSON() ([]byte, error) {
+	return schemas.Marshal(&struct {
+		Count *int32 `json:"tokenCount,omitempty"`
+	}{s.TokenMeasurement()})
 }

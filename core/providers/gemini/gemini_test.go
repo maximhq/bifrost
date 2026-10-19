@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -6140,4 +6142,35 @@ func TestGenAIPartMediaResolution_SurvivesBatchConversion(t *testing.T) {
 	got := batchReq.Contents[0].Parts[0].MediaResolution
 	require.NotNil(t, got, "batch conversion must preserve per-part media resolution")
 	assert.Equal(t, "MEDIA_RESOLUTION_ULTRA_HIGH", got.Level)
+}
+
+// Drive the real provider HTTP/decode path; the only substituted boundary is the external vendor.
+func TestEmbeddingCharacterHTTPReceipt(t *testing.T) {
+	for _, chars := range []int{0, 17} {
+		t.Run(fmt.Sprint(chars), func(t *testing.T) {
+			requests := make(chan string, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests <- r.URL.Path
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"embeddings":[{"values":[0.1,0.2]}],"metadata":{"billableCharacterCount":%d}}`, chars)
+			}))
+			defer upstream.Close()
+			config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: upstream.URL, DefaultRequestTimeoutInSeconds: 10}}
+			config.CheckAndSetDefaults()
+			provider := gemini.NewGeminiProvider(config, nil)
+			text := "fixture"
+			response, failure := provider.Embedding(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline),
+				schemas.Key{Value: *schemas.NewSecretVar("test-key")},
+				&schemas.BifrostEmbeddingRequest{Provider: schemas.Gemini, Model: "gemini-embedding-001", Input: []schemas.EmbeddingInputItem{{Content: schemas.EmbeddingContent{{Type: schemas.EmbeddingContentPartTypeText, Text: &text}}}}})
+			require.Nil(t, failure)
+			require.NotNil(t, response)
+			require.Equal(t, "/models/gemini-embedding-001:batchEmbedContents", <-requests)
+			require.NotNil(t, response.Usage.InputCharacters)
+			require.Equal(t, chars, *response.Usage.InputCharacters)
+			input, output, total := response.Usage.TokenMeasurements()
+			require.Nil(t, input)
+			require.Nil(t, output)
+			require.Nil(t, total)
+		})
+	}
 }

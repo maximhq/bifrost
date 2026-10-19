@@ -51,6 +51,15 @@ const proxy = createInterceptProxy({
 	},
 	// The path decides the body shape.
 	respond: (req, body) => {
+		// Controlled character-only receipts exercise all three embedding hosts.
+		const embedding = req.url.match(/\/models\/([^/:]+):(batchEmbedContents|embedContent|predict)/);
+		if (embedding && /-character-(only|zero)$/.test(embedding[1])) {
+			const metadata = { billableCharacterCount: embedding[1].endsWith("-zero") ? 0 : 17 };
+			const vector = { values: [0.1, 0.2] };
+			const result = embedding[2] === "predict" ? { predictions: [{ embeddings: vector }], metadata }
+				: embedding[2] === "embedContent" ? { embedding: vector, metadata } : { embeddings: [vector], metadata };
+			return { status: 200, body: JSON.stringify(result) };
+		}
 		if (/:generateContent/.test(req.url)) return { status: 200, body: geminiBody };
 		if (/:rawPredict/.test(req.url)) return { status: 200, body: claudeBody };
 		// The video is inline so download needs no second fetch; the WebM magic marks it binary to the harness shape check.
@@ -93,6 +102,11 @@ const regions = {
 const config = {
 	framework: { pricing: { pricing_url: `http://127.0.0.1:${port}/pricing.json`, model_parameters_url: `http://127.0.0.1:${port}/model-parameters.json`, mcp_library_sync_interval: 0 } },
 	providers: {
+		gemini: {
+			keys: [{ name: "gemini-character-fixture", value: "fixture-api-key", models: ["gemini-embedding-character-only", "gemini-embedding-character-zero"], weight: 1 }],
+			network_config: { max_retries: 0, default_request_timeout_in_seconds: 15 },
+			proxy_config: { type: "http", url: `http://127.0.0.1:${port}`, ca_cert_pem: proxy.caPem },
+		},
 		vertex: {
 			keys: Object.entries(regions).map(([name, r]) => ({
 				name,

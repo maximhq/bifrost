@@ -112611,6 +112611,10 @@
           "completion_tokens_details": {
             "$ref": "#/components/schemas/ChatCompletionTokensDetails"
           },
+          "input_characters": {
+            "type": "integer",
+            "description": "Provider-observed billable input characters. Independent of token counts; absent when unreported, including an explicit zero when reported."
+          },
           "total_tokens": {
             "type": "integer"
           },

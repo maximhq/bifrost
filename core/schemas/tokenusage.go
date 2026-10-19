@@ -139,3 +139,22 @@ func (u *BifrostLLMUsage) AccumulateTokenUsage(other *BifrostLLMUsage) {
 		u.tokenPresence |= tokenUsageTotal
 	}
 }
+
+// NewTokenUsage declares only supplied token counters, copying the values so the
+// returned usage cannot change when the provider response or caller is reused.
+func NewTokenUsage(input, output, total *int) *BifrostLLMUsage {
+	u := NewTokenUsageAccumulator()
+	if input != nil {
+		u.PromptTokens = *input
+		u.tokenPresence |= tokenUsageInput
+	}
+	if output != nil {
+		u.CompletionTokens = *output
+		u.tokenPresence |= tokenUsageOutput
+	}
+	if total != nil {
+		u.TotalTokens = *total
+		u.tokenPresence |= tokenUsageTotal
+	}
+	return u
+}

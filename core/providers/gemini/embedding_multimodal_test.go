@@ -222,3 +222,122 @@ func TestGeminiBatchEmbeddingRequestReadsEmbedContentConfig(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, gjson.GetBytes(body, "requests.0.embedContentConfig.documentOcr").Bool(), string(body))
 }
+
+// Character counts and token counts are different observed billing units.
+func TestEmbeddingCharacterMeasurements(t *testing.T) {
+	cases := []struct {
+		name   string
+		wire   string
+		chars  *int
+		tokens *int
+	}{
+		{"empty vectors", `{"embeddings":[],"metadata":{"billableCharacterCount":17}}`, schemas.Ptr(17), nil},
+		{"characters", `{"embeddings":[{"values":[0.1,0.2]}],"metadata":{"billableCharacterCount":17}}`, schemas.Ptr(17), nil},
+		{"zero characters", `{"embeddings":[{"values":[0.1,0.2]}],"metadata":{"billableCharacterCount":0}}`, schemas.Ptr(0), nil},
+		{"absent character field", `{"embeddings":[{"values":[0.1,0.2]}],"metadata":{}}`, nil, nil},
+		{"null characters", `{"embeddings":[{"values":[0.1,0.2]}],"metadata":{"billableCharacterCount":null}}`, nil, nil},
+		{"independent tokens and characters", `{"embeddings":[{"values":[0.1,0.2],"statistics":{"tokenCount":3}}],"metadata":{"billableCharacterCount":17}}`, schemas.Ptr(17), schemas.Ptr(3)},
+		{"empty token statistics", `{"embeddings":[{"values":[0.1,0.2],"statistics":{}}],"metadata":{"billableCharacterCount":17}}`, schemas.Ptr(17), nil},
+		{"explicit zero tokens", `{"embeddings":[{"values":[0.1,0.2],"statistics":{"tokenCount":0}}],"metadata":{"billableCharacterCount":17}}`, schemas.Ptr(17), schemas.Ptr(0)},
+		{"partial batch statistics", `{"embeddings":[{"values":[0.1],"statistics":{"tokenCount":3}},{"values":[0.2]}],"metadata":{"billableCharacterCount":17}}`, schemas.Ptr(17), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var decoded GeminiEmbeddingResponse
+			require.NoError(t, schemas.Unmarshal([]byte(tc.wire), &decoded))
+			got := ToBifrostEmbeddingResponse(&decoded, "embedding-units")
+			require.NotNil(t, got)
+			if tc.name == "empty vectors" {
+				require.Empty(t, got.Data)
+			}
+			body, err := schemas.Marshal(got)
+			require.NoError(t, err)
+			chars := gjson.GetBytes(body, "usage.input_characters")
+			if tc.chars == nil {
+				require.False(t, chars.Exists(), string(body))
+			} else {
+				require.Equal(t, gjson.Number, chars.Type, string(body))
+				require.EqualValues(t, *tc.chars, chars.Int(), string(body))
+			}
+			input, output, total := got.Usage.TokenMeasurements()
+			require.Nil(t, output, string(body))
+			if tc.tokens == nil {
+				require.Nil(t, input, string(body))
+				require.Nil(t, total, string(body))
+			} else {
+				require.NotNil(t, input, string(body))
+				require.Equal(t, *tc.tokens, *input)
+				require.NotNil(t, total, string(body))
+				require.Equal(t, *tc.tokens, *total)
+			}
+		})
+	}
+}
+
+func BenchmarkEmbeddingCharacterMeasurements(b *testing.B) {
+	for _, metadata := range []string{"", `,"metadata":{"billableCharacterCount":17}`} {
+		b.Run(fmt.Sprintf("characters=%t", metadata != ""), func(b *testing.B) {
+			var decoded GeminiEmbeddingResponse
+			if err := schemas.Unmarshal([]byte(`{"embeddings":[{"values":[0.1,0.2],"statistics":{"tokenCount":3}}]`+metadata+`}`), &decoded); err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				_ = ToBifrostEmbeddingResponse(&decoded, "embedding-units")
+			}
+		})
+	}
+}
+
+func TestEmbeddingNativeResponseDoesNotInventCharacters(t *testing.T) {
+	var original schemas.BifrostEmbeddingResponse
+	require.NoError(t, schemas.Unmarshal([]byte(`{"data":[{"index":0,"embedding":[0.1]}],"usage":{"prompt_tokens":3,"total_tokens":3}}`), &original))
+	converted := ToGeminiEmbeddingResponse(&original)
+	wire, err := schemas.Marshal(converted)
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(wire, "metadata.billableCharacterCount").Exists(), string(wire))
+}
+
+func TestEmbeddingNativeCharacterOnlyRoundTrip(t *testing.T) {
+	var original schemas.BifrostEmbeddingResponse
+	require.NoError(t, schemas.Unmarshal([]byte(`{"data":[{"index":0,"embedding":[0.1]}],"usage":{"input_characters":0}}`), &original))
+	converted := ToGeminiEmbeddingResponse(&original)
+	wire, err := schemas.Marshal(converted)
+	require.NoError(t, err)
+	count := gjson.GetBytes(wire, "metadata.billableCharacterCount")
+	require.Equal(t, gjson.Number, count.Type, string(wire))
+	require.Zero(t, count.Int(), string(wire))
+	require.False(t, gjson.GetBytes(wire, "embeddings.0.statistics.tokenCount").Exists(), string(wire))
+	single, err := schemas.Marshal(ToGeminiEmbedContentResponse(&original))
+	require.NoError(t, err)
+	require.False(t, gjson.GetBytes(single, "embedding.statistics.tokenCount").Exists(), string(single))
+}
+
+func BenchmarkEmbeddingDecodeUnits(b *testing.B) {
+	for _, metadata := range []string{"", `,"metadata":{"billableCharacterCount":17}`} {
+		b.Run(fmt.Sprintf("characters=%t", metadata != ""), func(b *testing.B) {
+			raw := []byte(`{"embeddings":[{"values":[0.1,0.2],"statistics":{"tokenCount":3}}]` + metadata + `}`)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				var decoded GeminiEmbeddingResponse
+				if err := schemas.Unmarshal(raw, &decoded); err != nil {
+					b.Fatal(err)
+				}
+				_ = ToBifrostEmbeddingResponse(&decoded, "embedding-units")
+			}
+		})
+	}
+}
+
+func TestEmbeddingNativeEmptyCharacterReceipt(t *testing.T) {
+	var original schemas.BifrostEmbeddingResponse
+	require.NoError(t, schemas.Unmarshal([]byte(`{"data":[],"usage":{"input_characters":17}}`), &original))
+	for _, converted := range []any{ToGeminiEmbeddingResponse(&original), ToGeminiEmbedContentResponse(&original)} {
+		wire, err := schemas.Marshal(converted)
+		require.NoError(t, err)
+		require.EqualValues(t, 17, gjson.GetBytes(wire, "metadata.billableCharacterCount").Int(), string(wire))
+		require.False(t, gjson.GetBytes(wire, "embedding.statistics.tokenCount").Exists(), string(wire))
+	}
+}

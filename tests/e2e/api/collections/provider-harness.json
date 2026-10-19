@@ -276980,6 +276980,859 @@
           }
         }
       ]
+    },
+    {
+      "name": "262. Embedding character units",
+      "description": "Controlled Vertex endpoint fixture only, no paid provider calls. Run vertex-endpoint-fixture.mjs with its generated configuration and vertexEndpointFixture=1. Independent billable characters must survive Gemini batchEmbedContents, Vertex predict and Vertex-hosted Gemini embedContent, through native/OpenAI neutral routes and both GenAI renderers. Explicit zero remains present; tokens remain absent. Go SDK/provider HTTP regressions cover the same receipts. Embeddings do not stream; Chat/Responses have no embedding response on their wire. Other providers do not use these converters.",
+      "item": [
+        {
+          "name": "262.1 gemini/gemini-embedding-character-only on /v1/embeddings (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('characters retain their own unit without invented tokens', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j.usage, pm.response.text()).to.have.property('input_characters', 17);",
+                  "  ['prompt_tokens', 'completion_tokens', 'total_tokens'].forEach(function (field) { pm.expect(j.usage, pm.response.text()).to.not.have.property(field); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-character-only\",\n  \"input\": \"fixture\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.2 gemini/gemini-embedding-character-only on /openai/v1/embeddings (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('characters retain their own unit without invented tokens', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j.usage, pm.response.text()).to.have.property('input_characters', 17);",
+                  "  ['prompt_tokens', 'completion_tokens', 'total_tokens'].forEach(function (field) { pm.expect(j.usage, pm.response.text()).to.not.have.property(field); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-character-only\",\n  \"input\": \"fixture\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.3 gemini/gemini-embedding-character-only on /genai/v1beta/models/gemini/gemini-embedding-character-only:embedContent (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('character receipt survives native response rendering', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.metadata, pm.response.text()).to.have.property('billableCharacterCount', 17);",
+                  "  var vector = j.embedding || (j.embeddings || [])[0];",
+                  "  pm.expect(vector && vector.values, pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(vector.statistics, pm.response.text()).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": {\n    \"parts\": [\n      {\n        \"text\": \"fixture\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-embedding-character-only:embedContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-embedding-character-only:embedContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.4 gemini/gemini-embedding-character-only on /genai/v1beta/models/gemini/gemini-embedding-character-only:batchEmbedContents (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('character receipt survives native response rendering', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.metadata, pm.response.text()).to.have.property('billableCharacterCount', 17);",
+                  "  var vector = j.embedding || (j.embeddings || [])[0];",
+                  "  pm.expect(vector && vector.values, pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(vector.statistics, pm.response.text()).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requests\": [\n    {\n      \"content\": {\n        \"parts\": [\n          {\n            \"text\": \"fixture\"\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/gemini/gemini-embedding-character-only:batchEmbedContents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "gemini",
+                "gemini-embedding-character-only:batchEmbedContents"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.5 gemini/gemini-embedding-character-zero on /v1/embeddings (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('characters retain their own unit without invented tokens', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j.usage, pm.response.text()).to.have.property('input_characters', 0);",
+                  "  ['prompt_tokens', 'completion_tokens', 'total_tokens'].forEach(function (field) { pm.expect(j.usage, pm.response.text()).to.not.have.property(field); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gemini/gemini-embedding-character-zero\",\n  \"input\": \"fixture\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.6 vertex/text-embedding-character-only on /v1/embeddings (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('characters retain their own unit without invented tokens', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j.usage, pm.response.text()).to.have.property('input_characters', 17);",
+                  "  ['prompt_tokens', 'completion_tokens', 'total_tokens'].forEach(function (field) { pm.expect(j.usage, pm.response.text()).to.not.have.property(field); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/text-embedding-character-only\",\n  \"input\": \"fixture\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.7 vertex/text-embedding-character-only on /openai/v1/embeddings (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('characters retain their own unit without invented tokens', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j.usage, pm.response.text()).to.have.property('input_characters', 17);",
+                  "  ['prompt_tokens', 'completion_tokens', 'total_tokens'].forEach(function (field) { pm.expect(j.usage, pm.response.text()).to.not.have.property(field); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/text-embedding-character-only\",\n  \"input\": \"fixture\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.8 vertex/text-embedding-character-only on /genai/v1beta/models/vertex/text-embedding-character-only:embedContent (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('character receipt survives native response rendering', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.metadata, pm.response.text()).to.have.property('billableCharacterCount', 17);",
+                  "  var vector = j.embedding || (j.embeddings || [])[0];",
+                  "  pm.expect(vector && vector.values, pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(vector.statistics, pm.response.text()).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": {\n    \"parts\": [\n      {\n        \"text\": \"fixture\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/text-embedding-character-only:embedContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "text-embedding-character-only:embedContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.9 vertex/text-embedding-character-only on /genai/v1beta/models/vertex/text-embedding-character-only:batchEmbedContents (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('character receipt survives native response rendering', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.metadata, pm.response.text()).to.have.property('billableCharacterCount', 17);",
+                  "  var vector = j.embedding || (j.embeddings || [])[0];",
+                  "  pm.expect(vector && vector.values, pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(vector.statistics, pm.response.text()).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requests\": [\n    {\n      \"content\": {\n        \"parts\": [\n          {\n            \"text\": \"fixture\"\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/text-embedding-character-only:batchEmbedContents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "text-embedding-character-only:batchEmbedContents"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.10 vertex/text-embedding-character-zero on /v1/embeddings (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('characters retain their own unit without invented tokens', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j.usage, pm.response.text()).to.have.property('input_characters', 0);",
+                  "  ['prompt_tokens', 'completion_tokens', 'total_tokens'].forEach(function (field) { pm.expect(j.usage, pm.response.text()).to.not.have.property(field); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/text-embedding-character-zero\",\n  \"input\": \"fixture\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.11 vertex/gemini-embedding-2-character-only on /v1/embeddings (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('characters retain their own unit without invented tokens', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j.usage, pm.response.text()).to.have.property('input_characters', 17);",
+                  "  ['prompt_tokens', 'completion_tokens', 'total_tokens'].forEach(function (field) { pm.expect(j.usage, pm.response.text()).to.not.have.property(field); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-embedding-2-character-only\",\n  \"input\": \"fixture\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.12 vertex/gemini-embedding-2-character-only on /openai/v1/embeddings (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('characters retain their own unit without invented tokens', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j.usage, pm.response.text()).to.have.property('input_characters', 17);",
+                  "  ['prompt_tokens', 'completion_tokens', 'total_tokens'].forEach(function (field) { pm.expect(j.usage, pm.response.text()).to.not.have.property(field); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-embedding-2-character-only\",\n  \"input\": \"fixture\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.13 vertex/gemini-embedding-2-character-only on /genai/v1beta/models/vertex/gemini-embedding-2-character-only:embedContent (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('character receipt survives native response rendering', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.metadata, pm.response.text()).to.have.property('billableCharacterCount', 17);",
+                  "  var vector = j.embedding || (j.embeddings || [])[0];",
+                  "  pm.expect(vector && vector.values, pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(vector.statistics, pm.response.text()).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": {\n    \"parts\": [\n      {\n        \"text\": \"fixture\"\n      }\n    ]\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-embedding-2-character-only:embedContent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-embedding-2-character-only:embedContent"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.14 vertex/gemini-embedding-2-character-only on /genai/v1beta/models/vertex/gemini-embedding-2-character-only:batchEmbedContents (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('character receipt survives native response rendering', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.metadata, pm.response.text()).to.have.property('billableCharacterCount', 17);",
+                  "  var vector = j.embedding || (j.embeddings || [])[0];",
+                  "  pm.expect(vector && vector.values, pm.response.text()).to.be.an('array').with.lengthOf(2);",
+                  "  pm.expect(vector.statistics, pm.response.text()).to.be.undefined;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"requests\": [\n    {\n      \"content\": {\n        \"parts\": [\n          {\n            \"text\": \"fixture\"\n          }\n        ]\n      }\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/genai/v1beta/models/vertex/gemini-embedding-2-character-only:batchEmbedContents",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "genai",
+                "v1beta",
+                "models",
+                "vertex",
+                "gemini-embedding-2-character-only:batchEmbedContents"
+              ]
+            }
+          }
+        },
+        {
+          "name": "262.15 vertex/gemini-embedding-2-character-zero on /v1/embeddings (embedding character units)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('vertexEndpointFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var j = pm.response.json();",
+                  "pm.test('characters retain their own unit without invented tokens', function () {",
+                  "  pm.expect(pm.response.code, pm.response.text()).to.eql(200);",
+                  "  pm.expect(j.data, pm.response.text()).to.be.an('array').with.lengthOf(1);",
+                  "  pm.expect(j.usage, pm.response.text()).to.have.property('input_characters', 0);",
+                  "  ['prompt_tokens', 'completion_tokens', 'total_tokens'].forEach(function (field) { pm.expect(j.usage, pm.response.text()).to.not.have.property(field); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-api-key",
+                "value": "vertex-us-central1"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"vertex/gemini-embedding-2-character-zero\",\n  \"input\": \"fixture\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/embeddings",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "embeddings"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

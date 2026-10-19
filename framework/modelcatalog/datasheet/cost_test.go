@@ -2,6 +2,7 @@ package datasheet
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	bifrost "github.com/maximhq/bifrost/core"
@@ -6877,5 +6878,48 @@ func TestCalculateCostForUsage_LiveVoiceDuration(t *testing.T) {
 		assert.InDelta(t, seconds*0.001, cost, 1e-12)
 		assert.InDelta(t, s.CalculateCost(liveVoiceWindow(pricing.Model, seconds), nil), cost, 1e-12,
 			"usage carried on an error is priced the same as successful voice usage")
+	}
+}
+
+// Catalog units select the calculator; a character count is never a token count.
+func TestComputeEmbeddingCost_Characters(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		chars         *int
+		tokens        int
+		characterRate *float64
+		tokenRate     *float64
+		want          float64
+	}{
+		{"characters", new(17), 0, new(0.002), nil, 0.034},
+		{"both measurements use character price once", new(17), 3, new(0.002), new(0.5), 0.034},
+		{"missing character measurement is not inferred", nil, 3, new(0.002), new(0.5), 0},
+		{"explicit zero characters", new(0), 3, new(0.002), new(0.5), 0},
+		{"zero character price", new(17), 3, new(0.0), new(0.5), 0},
+		{"token priced row retains tokens", new(17), 3, nil, new(0.5), 1.5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pricing := configstoreTables.TableModelPricing{InputCostPerCharacter: tc.characterRate, InputCostPerToken: tc.tokenRate}
+			usage := &schemas.BifrostLLMUsage{PromptTokens: tc.tokens, InputCharacters: tc.chars}
+			assert.InDelta(t, tc.want, computeEmbeddingCostTotal(&pricing, usage, serviceTier{}), 1e-12)
+		})
+	}
+}
+
+func BenchmarkEmbeddingCostUnits(b *testing.B) {
+	for _, chars := range []bool{false, true} {
+		b.Run(fmt.Sprintf("characters=%t", chars), func(b *testing.B) {
+			pricing := configstoreTables.TableModelPricing{InputCostPerToken: new(0.002)}
+			usage := &schemas.BifrostLLMUsage{PromptTokens: 3}
+			if chars {
+				pricing.InputCostPerCharacter = new(0.002)
+				usage.InputCharacters = new(17)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				_ = computeEmbeddingCost(&pricing, usage, serviceTier{})
+			}
+		})
 	}
 }
