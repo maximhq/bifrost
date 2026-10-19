@@ -1718,7 +1718,8 @@
                 "expanded": false,
                 "pages": [
                   "GET /api/governance/budgets",
-                  "GET /api/governance/rate-limits"
+                  "GET /api/governance/rate-limits",
+                  "POST /api/governance/budget-requests/{request_id}/approve"
                 ]
               },
               {
