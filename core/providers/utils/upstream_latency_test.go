@@ -356,3 +356,27 @@ func TestHTTPExchangeObserverAcrossTransports(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPExchangeObserverOmitsSignedURLFromErrors(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer server.Close()
+	record := &recordedExchange{}
+	ctx := context.WithValue(t.Context(), schemas.BifrostContextKeyHTTPExchangeObserver, schemas.HTTPExchangeObserverFactory(func() schemas.HTTPExchangeObserver { return record }))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"?token=signed-secret", strings.NewReader("payload"))
+	_, err := DoHTTPRequest(server.Client(), req)
+	if err == nil || !strings.Contains(err.Error(), "signed-secret") {
+		t.Fatalf("expected original URL error, got %v", err)
+	}
+	record.mu.Lock()
+	defer record.mu.Unlock()
+	if record.done != 1 || record.err == nil || strings.Contains(record.err.Error(), "signed-secret") {
+		t.Fatalf("observer error: %v", record.err)
+	}
+}
