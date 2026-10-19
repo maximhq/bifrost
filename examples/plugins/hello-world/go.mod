@@ -2,7 +2,7 @@ module github.com/maximhq/bifrost/examples/plugins/hello-world
 
 go 1.27.2
 
-require github.com/maximhq/bifrost/core v1.12.0
+require github.com/maximhq/bifrost/core v1.13.0
 
 require (
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
