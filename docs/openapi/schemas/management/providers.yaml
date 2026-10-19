@@ -16,7 +16,13 @@ NetworkConfig:
       type: object
       additionalProperties:
         type: string
-      description: Additional headers to include in requests
+      description: Additional headers to include in requests. A value may be a literal, an `env.VAR_NAME` reference, or a `vault.path` reference; references are resolved at load time and only the reference is stored. Literal values are masked in API responses while env/vault references stay visible as references; on update, a masked value sent back under the same header name keeps the stored value, while a masked value under a new or renamed header, or on provider create, is rejected with 400.
+    extra_headers_secret_vars:
+      type: object
+      readOnly: true
+      additionalProperties:
+        $ref: '../../schemas/management/common.yaml#/EnvVar'
+      description: Response only. The same headers as `extra_headers`, as SecretVar objects (`value`, `ref`, `type`) so clients can tell literals from `env`/`vault` references without parsing prefixes. Literal values are `<REDACTED>`. Ignored on input; send `extra_headers` to change headers.
     default_request_timeout_in_seconds:
       type: integer
       description: Default timeout for requests
@@ -105,6 +111,10 @@ VertexKeyConfig:
       type: boolean
       default: false
       description: When true, always call the configured region and skip automatic promotion of multi-region-only models to a multi-region endpoint.
+    use_session_routing:
+      type: boolean
+      default: false
+      description: Send each request's prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this key's project.
     aws_workload_identity:
       type: object
       description: >-
@@ -345,7 +355,8 @@ Key:
       description: List of models this key cannot access (blacklist), which wins over `models`. `["*"]` blocks every model. An entry starting with `regex:` is an RE2 pattern matched case-insensitively against the whole model name; an empty pattern, `regex:*`, or a pattern that does not compile is rejected with 400.
     weight:
       type: number
-      description: Weight for load balancing
+      minimum: 0
+      description: Weight for load balancing. A negative weight is rejected with 400. A key with weight 0 is picked only when no other eligible key has a positive weight; when every weight is 0, keys are picked uniformly.
     aliases:
       type: object
       propertyNames:

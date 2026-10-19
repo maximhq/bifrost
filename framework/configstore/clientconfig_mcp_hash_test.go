@@ -48,6 +48,26 @@ func TestGenerateMCPClientHash_NeedsSessionStickiness_NilVsFalseVsTrue(t *testin
 	assert.NotEqual(t, trueHash, falseHash, "true and false must hash differently from each other")
 }
 
+// TestGenerateMCPClientHash_EndpointSlug: an omitted slug leaves the hash exactly as before the field was
+// hashed (no mass re-sync of stored clients), a declared one drifts it, and spellings that normalise
+// to the same slug hash the same.
+func TestGenerateMCPClientHash_EndpointSlug(t *testing.T) {
+	base := func(slug string) tables.TableMCPClient {
+		return tables.TableMCPClient{Name: "client", ConnectionType: "http", AuthType: "headers", EndpointSlug: slug}
+	}
+	hash := func(slug string) string {
+		h, err := GenerateMCPClientHash(base(slug))
+		require.NoError(t, err)
+		return h
+	}
+
+	assert.Equal(t, "4e079178fdf0b46b348e3f1b415589e6bd519a73a280faf9200ad204ad389edf", hash(""),
+		"an omitted slug must not move existing stored hashes")
+	assert.NotEqual(t, hash(""), hash("custom"), "declaring a slug must drift the hash")
+	assert.NotEqual(t, hash("custom"), hash("other"), "changing a declared slug must drift the hash")
+	assert.Equal(t, hash("my-slug"), hash("My Slug"), "spellings of the same slug must hash the same")
+}
+
 // TestGenerateKeyHash_OAuthKeyConfigIsOrderIndependent pins that an unchanged OAuth key hashes
 // the same on every call. extra_params is a map; an encoder that walks it in iteration order
 // makes the hash differ between restarts, and reconcileProviderKeys then treats the stored key
@@ -212,4 +232,89 @@ func TestKeyHashMatchesLegacyAliasOrder(t *testing.T) {
 	ok, err = KeyHashMatchesLegacyAliasOrder(many, manyLegacy)
 	require.NoError(t, err)
 	require.False(t, ok, "above maxLegacyAliasPermutations the search is skipped and the file wins")
+}
+
+// TestGenerateMCPClientHash_OpenAPIConfig pins which openapi_config fields take
+// part in config.json reconciliation: anything the synthesized server is built
+// from drifts the hash, server-computed metadata does not.
+func TestGenerateMCPClientHash_OpenAPIConfig(t *testing.T) {
+	str := func(s string) *string { return &s }
+	base := func(mutate func(c *schemas.MCPOpenAPIConfig)) tables.TableMCPClient {
+		cfg := &schemas.MCPOpenAPIConfig{
+			Spec:    "openapi: 3.0.0\npaths: {}",
+			BaseURL: str("https://api.example.com"),
+			SecurityCredentials: map[string]schemas.MCPOpenAPICredential{
+				"ApiKey": {Value: schemas.NewSecretVar("env.API_KEY")},
+				"Basic":  {Username: schemas.NewSecretVar("u"), Password: schemas.NewSecretVar("p")},
+			},
+			SpecHash:       "h1",
+			OperationCount: 3,
+		}
+		if mutate != nil {
+			mutate(cfg)
+		}
+		return tables.TableMCPClient{Name: "petstore", ConnectionType: "openapi", AuthType: "none", OpenAPIConfig: cfg}
+	}
+	hashOf := func(c tables.TableMCPClient) string {
+		h, err := GenerateMCPClientHash(c)
+		require.NoError(t, err)
+		return h
+	}
+	reference := hashOf(base(nil))
+
+	assert.Equal(t, reference, hashOf(base(nil)), "deterministic")
+	assert.Equal(t, reference, hashOf(base(func(c *schemas.MCPOpenAPIConfig) { c.SpecHash = "h2"; c.OperationCount = 9; c.SpecTitle = "x" })), "metadata does not drift the hash")
+
+	for name, mutate := range map[string]func(c *schemas.MCPOpenAPIConfig){
+		"spec":             func(c *schemas.MCPOpenAPIConfig) { c.Spec += "\n# edited" },
+		"base url":         func(c *schemas.MCPOpenAPIConfig) { c.BaseURL = str("https://other.example.com") },
+		"base url cleared": func(c *schemas.MCPOpenAPIConfig) { c.BaseURL = nil },
+		"credential ref": func(c *schemas.MCPOpenAPIConfig) {
+			c.SecurityCredentials["ApiKey"] = schemas.MCPOpenAPICredential{Value: schemas.NewSecretVar("env.OTHER")}
+		},
+		"credential value": func(c *schemas.MCPOpenAPIConfig) {
+			c.SecurityCredentials["Basic"] = schemas.MCPOpenAPICredential{Username: schemas.NewSecretVar("u"), Password: schemas.NewSecretVar("p2")}
+		},
+		"credential added": func(c *schemas.MCPOpenAPIConfig) {
+			c.SecurityCredentials["Bearer"] = schemas.MCPOpenAPICredential{Value: schemas.NewSecretVar("t")}
+		},
+		"include deprecated": func(c *schemas.MCPOpenAPIConfig) { c.IncludeDeprecated = true },
+		"response cap":       func(c *schemas.MCPOpenAPIConfig) { c.MaxResponseBytes = 1024 },
+	} {
+		assert.NotEqual(t, reference, hashOf(base(mutate)), "%s must drift the hash", name)
+	}
+
+	// Spec given by reference instead of content hashes by that reference.
+	fileOnly := hashOf(base(func(c *schemas.MCPOpenAPIConfig) { c.Spec = ""; c.SpecFile = str("specs/petstore.yaml") }))
+	urlOnly := hashOf(base(func(c *schemas.MCPOpenAPIConfig) { c.Spec = ""; c.SpecURL = str("https://x/openapi.json") }))
+	assert.NotEqual(t, reference, fileOnly)
+	assert.NotEqual(t, fileOnly, urlOnly)
+
+	// spec_url also drifts the hash beside an inline spec: relative servers (and
+	// Swagger 2.0 docs without a host) resolve against it, so it picks the upstream.
+	inlineWithURL := func(u string) string {
+		return hashOf(base(func(c *schemas.MCPOpenAPIConfig) { c.SpecURL = str(u) }))
+	}
+	assert.NotEqual(t, reference, inlineWithURL("https://a.example/openapi.json"))
+	assert.NotEqual(t, inlineWithURL("https://a.example/openapi.json"), inlineWithURL("https://b.example/openapi.json"), "changing only spec_url must drift the hash")
+
+	// An empty base_url means the same as none: use the document's server.
+	assert.Equal(t, hashOf(base(func(c *schemas.MCPOpenAPIConfig) { c.BaseURL = nil })), hashOf(base(func(c *schemas.MCPOpenAPIConfig) { c.BaseURL = str("") })), "an empty base_url must hash like a missing one")
+
+	// Fields are framed, so a value cannot impersonate a following field.
+	oneCred := func(value string, includeDeprecated bool) string {
+		return hashOf(base(func(c *schemas.MCPOpenAPIConfig) {
+			c.SecurityCredentials = map[string]schemas.MCPOpenAPICredential{"Z": {Value: schemas.NewSecretVar(value)}}
+			c.IncludeDeprecated = includeDeprecated
+		}))
+	}
+	assert.NotEqual(t, oneCred("k", true), oneCred("kopenapi_include_deprecated:true", false), "a credential value must not collide with the include_deprecated flag")
+
+	// A non-openapi client is unaffected by the new block.
+	plain := tables.TableMCPClient{Name: "remote", ConnectionType: "http", AuthType: "headers"}
+	before, err := GenerateMCPClientHash(plain)
+	require.NoError(t, err)
+	after, err := GenerateMCPClientHash(plain)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
 }

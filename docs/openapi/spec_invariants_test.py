@@ -320,6 +320,47 @@ def test_virtual_key_request_contract_is_current():
     assert not problems, "Virtual Key request contract drift:\n    " + "\n    ".join(problems)
 
 
+def test_virtual_key_metadata_contract():
+    """Virtual key metadata: update accepts null (leave unchanged), create and update exclude
+    the reserved keys (isAsyncRequest, bifrost_alb_*) the same way config.schema.json does,
+    and the list endpoint does not declare a literal `metadata_<key>` query parameter."""
+    import json
+
+    source = load(HERE / "schemas" / "management" / "governance.yaml")
+    bundle_doc = json.loads((HERE / "openapi.json").read_text(encoding="utf-8"))
+    bundle = bundle_doc["components"]["schemas"]
+    config_schema = json.loads((REPO_ROOT / "transports" / "config.schema.json").read_text(encoding="utf-8"))
+    config_metadata = config_schema["properties"]["governance"]["properties"]["virtual_keys"]["items"][
+        "properties"
+    ]["metadata"]
+    problems = []
+
+    for schema_name in ("CreateVirtualKeyRequest", "UpdateVirtualKeyRequest"):
+        for where, schema in (
+            ("schemas/management/governance.yaml", source[schema_name]),
+            ("openapi.json", bundle[schema_name]),
+        ):
+            metadata = schema["properties"]["metadata"]
+            if metadata.get("propertyNames") != config_metadata["propertyNames"]:
+                problems.append(f"{where} {schema_name}.metadata: propertyNames differ from config.schema.json")
+            types = metadata.get("type")
+            types = types if isinstance(types, list) else [types]
+            want_null = schema_name == "UpdateVirtualKeyRequest"
+            if ("null" in types) != want_null:
+                problems.append(f"{where} {schema_name}.metadata: null allowed={'null' in types}, want {want_null}")
+
+    source_list = load(PATHS_DIR / "governance.yaml")["virtual-keys"]["get"]
+    bundle_list = bundle_doc["paths"]["/api/governance/virtual-keys"]["get"]
+    for where, operation in (("paths/management/governance.yaml", source_list), ("openapi.json", bundle_list)):
+        names = [p.get("name", "") for p in operation.get("parameters", [])]
+        if any("<" in name for name in names):
+            problems.append(f"{where} listVirtualKeys: templated query parameter name in {names}")
+        if "metadata_<key>" not in operation.get("description", ""):
+            problems.append(f"{where} listVirtualKeys: description does not document metadata_<key> filters")
+
+    assert not problems, "Virtual Key metadata contract drift:\n    " + "\n    ".join(problems)
+
+
 
 def test_warp_credential_contract_is_current():
     """Warp's settings API carries `api_key_id`, a reference to a configured provider key.
@@ -947,12 +988,60 @@ def test_oauth_token_url_descriptions_state_the_server_rules():
     assert not problems, "token_url descriptions drift from OAuthKeyConfig.Validate:\n    " + "\n    ".join(problems)
 
 
+def test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response():
+    """The enterprise handler wraps /api/load-balancer-config outside its middleware chain, so every
+    response from the alias, an auth refusal or a validation error included, carries the Link to
+    /api/adaptive-routing/config and the Warning 299. A response that only $refs a shared error
+    response, or omits either header, documents a reply without the pointer to the successor."""
+    fragments = load(PATHS_DIR / "adaptiverouting.yaml") or {}
+    assert "adaptive-routing-config-legacy" in fragments, "adaptive-routing-config-legacy fragment is missing"
+    legacy = fragments["adaptive-routing-config-legacy"]
+    problems = []
+    for method, operation in legacy.items():
+        if not isinstance(operation, dict):
+            continue
+        if "responses" not in operation:
+            problems.append(f"{method.upper()}: missing responses")
+            continue
+        for status, response in operation["responses"].items():
+            headers = (response or {}).get("headers") or {}
+            missing = [name for name in ("Link", "Warning") if name not in headers]
+            if missing:
+                problems.append(f"{method.upper()} {status}: missing {missing}")
+    assert not problems, "legacy adaptive routing responses without deprecation headers:\n    " + "\n    ".join(problems)
+
+
+def test_adaptive_routing_put_descriptions_state_the_empty_reroute_target():
+    """The enterprise settings handler accepts an omitted or empty reroute_target and stores it as
+    pool, and refuses only other values. Every description of the PUT and of the field must say so,
+    or a caller reads that anything but pool or fallbacks earns a 400."""
+    paths = load(PATHS_DIR / "adaptiverouting.yaml") or {}
+    schemas = load(HERE / "schemas" / "management" / "adaptiverouting.yaml") or {}
+    sources = {
+        "PUT /api/adaptive-routing/config": ((paths.get("adaptive-routing-config") or {}).get("put") or {}).get("description", ""),
+        "PUT /api/load-balancer-config": ((paths.get("adaptive-routing-config-legacy") or {}).get("put") or {}).get("description", ""),
+    }
+    sources.update({
+        f"{name}.reroute_target": ((schema.get("properties") or {}).get("reroute_target") or {}).get("description", "")
+        for name, schema in schemas.items()
+        if isinstance(schema, dict) and "reroute_target" in (schema.get("properties") or {})
+    })
+    problems = []
+    for where, description in sources.items():
+        text = " ".join(description.lower().split())
+        for needle in ("omitted or empty", "stored as `pool`"):
+            if needle not in text:
+                problems.append(f"{where}: description does not mention {needle!r}")
+    assert not problems, "reroute_target descriptions drift from the settings handler:\n    " + "\n    ".join(problems)
+
+
 check("legacy aliases are mounted and their successors documented", test_legacy_aliases_mount_legacy_fragments)
 check("secret-capable values accept bare strings (EnvVar oneOf)", test_secret_capable_values_accept_bare_strings)
 check("vertex aws_workload_identity matches config.schema.json", test_vertex_aws_workload_identity_contract)
 check("vk_rotation_cooldown bounds match config.schema.json", test_vk_rotation_cooldown_bounds_match_config_schema)
 check("bulk rotate ids schema rejects empty arrays", test_bulk_rotate_ids_requires_min_items)
 check("virtual key request contract uses budgets and provider-scoped key_ids", test_virtual_key_request_contract_is_current)
+check("virtual key metadata contract: nullable update, reserved keys, no templated filter param", test_virtual_key_metadata_contract)
 check("warp credential contract uses api_key_id with no secret field", test_warp_credential_contract_is_current)
 check("warp config input models its embedding contract", test_warp_config_input_models_the_embedding_contract)
 check("warp chat response contract matches the agent", test_warp_chat_response_contract_is_current)
@@ -962,6 +1051,8 @@ check("every operation declares its own security", test_every_operation_declares
 check("injected_tools schemas match config.schema.json", test_injected_tools_contract_matches_config_schema)
 check("oauth_key_config grant rules match server validation", test_oauth_key_config_contract_matches_server_validation)
 check("oauth token_url descriptions state the loopback and URL-part rules", test_oauth_token_url_descriptions_state_the_server_rules)
+check("adaptive routing legacy alias declares Link and Warning on every response", test_adaptive_routing_legacy_alias_declares_deprecation_headers_on_every_response)
+check("adaptive routing PUT descriptions state that an empty reroute_target is stored as pool", test_adaptive_routing_put_descriptions_state_the_empty_reroute_target)
 
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(0 if failed == 0 else 1)

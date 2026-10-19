@@ -291,7 +291,7 @@ func (provider *MistralProvider) ChatCompletionStream(ctx *schemas.BifrostContex
 	)
 }
 
-// mistralChatStreamResponseHandler normalizes text arrays while keeping original
+// mistralChatStreamResponseHandler normalizes text and thinking arrays while keeping original
 // provider bytes available for raw-response diagnostics, including parse failures.
 func mistralChatStreamResponseHandler(responseBody []byte, response *schemas.BifrostChatResponse, requestBody []byte, sendBackRawRequest bool, sendBackRawResponse bool) (rawRequest interface{}, rawResponse interface{}, bifrostErr *schemas.BifrostError) {
 	if sendBackRawResponse {
@@ -339,17 +339,41 @@ func normalizeMistralStreamContent(body []byte) ([]byte, error) {
 		choiceBody := []byte(choice.Raw)
 		content := choice.Get("delta.content")
 		if content.IsArray() {
-			var text strings.Builder
+			var text, reasoning strings.Builder
+			hasText, hasReasoning := false, false
 			for blockIndex, block := range content.Array() {
 				blockType := block.Get("type")
-				if !block.IsObject() || blockType.Type != gjson.String || blockType.String() != "text" {
-					return nil, fmt.Errorf("unsupported mistral content block at choices[%d].delta.content[%d]: expected text block", choiceIndex, blockIndex)
+				if !block.IsObject() || blockType.Type != gjson.String {
+					return nil, fmt.Errorf("unsupported mistral content block at choices[%d].delta.content[%d]: expected text or thinking block", choiceIndex, blockIndex)
 				}
-				blockText := block.Get("text")
-				if blockText.Type != gjson.String {
-					return nil, fmt.Errorf("unsupported mistral content block at choices[%d].delta.content[%d]: text must be a string", choiceIndex, blockIndex)
+				switch blockType.String() {
+				case "text":
+					blockText := block.Get("text")
+					if blockText.Type != gjson.String {
+						return nil, fmt.Errorf("unsupported mistral content block at choices[%d].delta.content[%d]: text must be a string", choiceIndex, blockIndex)
+					}
+					text.WriteString(blockText.String())
+					hasText = true
+				case "thinking":
+					// Mistral only emits a leading thinking chunk; one after text cannot be reordered into reasoning.
+					if hasText {
+						return nil, fmt.Errorf("unsupported mistral content block at choices[%d].delta.content[%d]: thinking block after text", choiceIndex, blockIndex)
+					}
+					thinking := block.Get("thinking")
+					if !thinking.IsArray() {
+						return nil, fmt.Errorf("unsupported mistral content block at choices[%d].delta.content[%d]: thinking must be an array", choiceIndex, blockIndex)
+					}
+					for _, chunk := range thinking.Array() {
+						chunkText := chunk.Get("text")
+						if chunk.Get("type").String() != "text" || chunkText.Type != gjson.String {
+							return nil, fmt.Errorf("unsupported mistral content block at choices[%d].delta.content[%d]: thinking must contain text blocks", choiceIndex, blockIndex)
+						}
+						reasoning.WriteString(chunkText.String())
+					}
+					hasReasoning = true
+				default:
+					return nil, fmt.Errorf("unsupported mistral content block at choices[%d].delta.content[%d]: expected text or thinking block", choiceIndex, blockIndex)
 				}
-				text.WriteString(blockText.String())
 			}
 			encodedText, err := providerUtils.MarshalSorted(text.String())
 			if err != nil {
@@ -358,6 +382,16 @@ func normalizeMistralStreamContent(body []byte) ([]byte, error) {
 			choiceBody, err = providerUtils.SetRawJSONField(choiceBody, "delta.content", encodedText)
 			if err != nil {
 				return nil, err
+			}
+			if hasReasoning {
+				encodedReasoning, err := providerUtils.MarshalSorted(reasoning.String())
+				if err != nil {
+					return nil, err
+				}
+				choiceBody, err = providerUtils.SetRawJSONField(choiceBody, "delta.reasoning", encodedReasoning)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 		if choiceIndex > 0 {

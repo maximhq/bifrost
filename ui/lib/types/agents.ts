@@ -105,14 +105,13 @@ export interface InspectAgentCardResponse {
 export interface AgentRegistrationView {
 	name: string;
 	agent_card_url: string;
-	tenant?: string;
 	enabled: boolean;
 	allow_by_default: boolean;
 	forward_accepted_credential: boolean;
 	forward_accepted_credential_overrides_auth: boolean;
 	discovery_auth?: AgentUpstreamAuth;
 	runtime_auth?: AgentUpstreamAuth;
-	extension_uris?: string[];
+	credential_origins?: string[];
 	virtual_key_ids?: string[];
 	created_at: string;
 	updated_at: string;
@@ -154,7 +153,6 @@ export interface GetAgentsResponse {
 export interface CreateAgentRequest {
 	name: string;
 	agent_card_url: string;
-	tenant?: string;
 	enabled?: boolean;
 	allow_by_default: boolean;
 	forward_accepted_credential: boolean;
@@ -162,7 +160,7 @@ export interface CreateAgentRequest {
 	discovery_auth?: AgentUpstreamAuth;
 	runtime_auth?: AgentUpstreamAuth;
 	virtual_key_ids?: string[];
-	extension_uris?: string[];
+	credential_origins?: string[];
 }
 
 // PUT is a full replacement. Every field, including empty collections, must be

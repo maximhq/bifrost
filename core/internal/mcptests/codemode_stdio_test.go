@@ -1190,7 +1190,7 @@ func TestCodeMode_STDIO_ErrorTestServer_NetworkErrors(t *testing.T) {
 		{
 			name: "return_error_network",
 			code: `r = errorTestServer.return_error(error_type="network")
-result = {"error_message": r}`,
+result = {"error_message": r.error}`,
 			verifyResult: func(t *testing.T, execResult map[string]interface{}) {
 				result, ok := execResult["result"].(map[string]interface{})
 				require.True(t, ok)
@@ -1200,7 +1200,7 @@ result = {"error_message": r}`,
 		{
 			name: "return_error_timeout",
 			code: `r = errorTestServer.return_error(error_type="timeout")
-result = {"error_message": r}`,
+result = {"error_message": r.error}`,
 			verifyResult: func(t *testing.T, execResult map[string]interface{}) {
 				result, ok := execResult["result"].(map[string]interface{})
 				require.True(t, ok)
@@ -1210,7 +1210,7 @@ result = {"error_message": r}`,
 		{
 			name: "return_error_validation",
 			code: `r = errorTestServer.return_error(error_type="validation")
-result = {"error_message": r}`,
+result = {"error_message": r.error}`,
 			verifyResult: func(t *testing.T, execResult map[string]interface{}) {
 				result, ok := execResult["result"].(map[string]interface{})
 				require.True(t, ok)
@@ -1220,7 +1220,7 @@ result = {"error_message": r}`,
 		{
 			name: "return_error_permission",
 			code: `r = errorTestServer.return_error(error_type="permission")
-result = {"error_message": r}`,
+result = {"error_message": r.error}`,
 			verifyResult: func(t *testing.T, execResult map[string]interface{}) {
 				result, ok := execResult["result"].(map[string]interface{})
 				require.True(t, ok)
@@ -1393,16 +1393,18 @@ result = {
 }
 
 // verifyIntermittentResult accepts either outcome of intermittent_fail: the success
-// map, or the tool error, which code mode returns as the error text.
+// map, or the tool error, which code mode hands the script as an error value that
+// returns as {"error": "<message>"}.
 func verifyIntermittentResult(t *testing.T, execResult map[string]any) {
-	switch result := execResult["result"].(type) {
-	case map[string]any:
-		assert.Equal(t, true, result["success"], "success map: %v", result)
-	case string:
-		assert.Contains(t, result, "Intermittent failure")
-	default:
-		t.Fatalf("unexpected intermittent_fail result %T: %v", result, result)
+	result, ok := execResult["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected intermittent_fail result %T: %v", execResult["result"], execResult["result"])
 	}
+	if message, failed := result["error"]; failed {
+		assert.Contains(t, message, "Intermittent failure")
+		return
+	}
+	assert.Equal(t, true, result["success"], "success map: %v", result)
 }
 
 func TestCodeMode_STDIO_ErrorTestServer_IntermittentAndHandling(t *testing.T) {

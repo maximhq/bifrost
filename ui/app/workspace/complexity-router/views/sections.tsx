@@ -287,7 +287,8 @@ interface DecisionFieldsProps {
 // decision model runs, as the primary classifier or as the semantic fallback, so
 // both places render this. The model control follows the provider: Typesafe lists
 // Jev releases, OpenAI and OpenRouter list the models the datasheet marks as decision
-// models, a Cloudflare provider's URL fixes its Clef model,
+// models, Azure lists Microsoft's decision models, a Cloudflare provider's URL fixes its Clef model,
+// Databricks serves only ai_decide,
 // and a self-hosted provider offers the models it lists, or the known Laya and
 // Nimble checkpoints when it lists none.
 export function DecisionFields({ control, register, setValue, errors, canUpdate, providers, providerKeyIds }: DecisionFieldsProps) {
@@ -299,11 +300,13 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 	const servesCloudflare = providerName === "cloudflare";
 	const servesPerplexity = providerName === "perplexity";
 	const servesOllama = providerName === "ollama";
+	const servesAzure = providerName === "azure";
 	const servesOpenAI = provider ? isOpenAIDecisionProvider(provider) : providerName === "openai";
 	const servesClef = clefModelFromProvider(provider) !== undefined;
+	const servesDatabricks = providerName === "databricks";
 	// These providers' catalogs mix decision models with chat models, so only their decision models are listed.
-	const listsDecisionModels = servesOpenAI || servesOpenRouter || servesCloudflare || servesPerplexity || servesOllama;
-	const selfHosted = provider !== undefined && !servesJev && !listsDecisionModels && !servesClef;
+	const listsDecisionModels = servesOpenAI || servesOpenRouter || servesCloudflare || servesPerplexity || servesOllama || servesAzure;
+	const selfHosted = provider !== undefined && !servesJev && !listsDecisionModels && !servesClef && !servesDatabricks;
 
 	const { data: listed } = useGetModelsQuery(
 		{ provider: providerName, keys: providerKeyIds.length > 0 ? providerKeyIds : undefined, limit: 50 },
@@ -399,9 +402,9 @@ export function DecisionFields({ control, register, setValue, errors, canUpdate,
 								/>
 							);
 						}
-						if (servesClef) {
-							// Cloudflare binds the model to the provider's URL, so it is shown, not
-							// chosen: selecting the provider fills it in from that URL.
+						if (servesClef || servesDatabricks) {
+							// Cloudflare binds the model to the provider's URL, and Databricks serves only
+							// ai_decide, so it is shown, not chosen: selecting the provider fills it in.
 							return (
 								<Input
 									id="decision-model"

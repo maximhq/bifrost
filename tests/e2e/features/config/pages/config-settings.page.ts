@@ -18,6 +18,8 @@ export class ConfigSettingsPage extends BasePage {
   readonly dropExcessRequestsSwitch: Locator
   readonly disableDBPingsSwitch: Locator
   readonly asyncJobResultTtlInput: Locator
+  readonly extraFieldsPlacementSelect: Locator
+  readonly extraFieldsPlacementDroppedNote: Locator
 
   // Logging Settings
   readonly enableLoggingSwitch: Locator
@@ -62,6 +64,8 @@ export class ConfigSettingsPage extends BasePage {
     this.dropExcessRequestsSwitch = page.locator('#drop-excess-requests')
     this.disableDBPingsSwitch = page.locator('#disable-db-pings-in-health')
     this.asyncJobResultTtlInput = page.getByTestId('client-settings-async-job-result-ttl-input')
+    this.extraFieldsPlacementSelect = page.getByTestId('client-settings-extra-fields-placement-select')
+    this.extraFieldsPlacementDroppedNote = page.getByTestId('client-settings-extra-fields-placement-dropped-note')
 
     // Logging Settings locators
     this.enableLoggingSwitch = page.locator('#enable-logging')
@@ -104,6 +108,14 @@ export class ConfigSettingsPage extends BasePage {
   async goto(path: string): Promise<void> {
     await this.page.goto(`/workspace/config/${path}`)
     await waitForNetworkIdle(this.page)
+  }
+
+  /**
+   * Pick a value in the Extra Fields Placement select
+   */
+  async selectExtraFieldsPlacement(value: 'body' | 'headers'): Promise<void> {
+    await this.extraFieldsPlacementSelect.click()
+    await this.page.getByTestId(`client-settings-extra-fields-placement-option-${value}`).click()
   }
 
   async saveSettings(): Promise<void> {

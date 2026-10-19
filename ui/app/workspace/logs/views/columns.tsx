@@ -21,6 +21,8 @@ import { ChatMessageContent, DisplayLogEntry, LLMUsage, LogEntry, ResponsesMessa
 import { cn } from "@/lib/utils";
 import { formatCompactNumber } from "@/lib/utils/numbers";
 import { ColumnDef } from "@tanstack/react-table";
+import { showsPassthroughTag } from "../sheets/logDetailView.utils";
+import { PassthroughIcon } from "./passthroughTag";
 import { format, formatDistanceToNow } from "date-fns";
 import { ArrowUpDown, ChevronRight, Loader2, MoreHorizontal, Trash2 } from "lucide-react";
 import { type ReactNode, useState } from "react";
@@ -520,7 +522,7 @@ export const createColumns = (
 		{
 			id: "request_type",
 			header: "Type",
-			size: 150,
+			size: 180,
 			cell: ({ row }) => {
 				return (
 					<Badge
@@ -530,6 +532,7 @@ export const createColumns = (
 							RequestTypeColors[row.original.object as keyof typeof RequestTypeColors],
 						)}
 					>
+						{showsPassthroughTag(row.original) && <PassthroughIcon testId="logs-table-passthrough-tag" />}
 						{RequestTypeLabels[row.original.object as keyof typeof RequestTypeLabels]}
 					</Badge>
 				);
@@ -837,10 +840,11 @@ export const createColumns = (
 	const metadataColumns: ColumnDef<LogEntry>[] = metadataKeys.map((key) => ({
 		id: `metadata_${key}`,
 		header: key.charAt(0).toUpperCase() + key.slice(1),
-		size: 126,
+		// Fit the header text, since keys like warp-conversation-id overflow a fixed width.
+		size: Math.min(280, Math.max(160, key.length * 8 + 48)),
 		cell: ({ row }) => {
 			const value = row.original.metadata?.[key];
-			return <div className="max-w-[150px] truncate font-mono text-xs">{value ?? "-"}</div>;
+			return <TruncatedLabel className="block font-mono text-xs">{value ?? "-"}</TruncatedLabel>;
 		},
 	}));
 

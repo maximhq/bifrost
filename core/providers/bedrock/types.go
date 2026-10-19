@@ -925,7 +925,7 @@ type BedrockStreamEvent struct {
 	Trace   *BedrockConverseTrace   `json:"trace,omitempty"`   // Trace information
 
 	// Additional fields
-	AdditionalModelResponseFields interface{} `json:"additionalModelResponseFields,omitempty"`
+	AdditionalModelResponseFields json.RawMessage `json:"additionalModelResponseFields,omitempty"` // Native model-specific fields, kept verbatim
 
 	// For InvokeModelWithResponseStream (Legacy API)
 	// InvokeModelRawChunks holds one or more raw byte payloads for legacy invoke stream.
@@ -989,8 +989,8 @@ type BedrockToolUseDelta struct {
 
 // BedrockMessageStopEvent indicates the end of a message
 type BedrockMessageStopEvent struct {
-	StopReason                    string      `json:"stopReason"`
-	AdditionalModelResponseFields interface{} `json:"additionalModelResponseFields,omitempty"`
+	StopReason                    string          `json:"stopReason"`
+	AdditionalModelResponseFields json.RawMessage `json:"additionalModelResponseFields,omitempty"` // Native model-specific fields, kept verbatim
 }
 
 // BedrockMetadataEvent provides metadata about the response

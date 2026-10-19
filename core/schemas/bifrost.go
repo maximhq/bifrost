@@ -429,6 +429,7 @@ const (
 	BifrostContextKeyLargeResponseThreshold              BifrostContextKey = "bifrost-large-response-threshold"           // int64 (set by enterprise - DO NOT SET THIS MANUALLY)) threshold for response streaming
 	BifrostContextKeyLargePayloadPrefetchSize            BifrostContextKey = "bifrost-large-payload-prefetch-size"        // int (set by enterprise - DO NOT SET THIS MANUALLY)) prefetch buffer size for metadata extraction from large responses
 	BifrostContextKeyDeferredUsage                       BifrostContextKey = "bifrost-deferred-usage"                     // chan *BifrostLLMUsage (set by provider Phase B — delivers usage after response streaming completes)
+	BifrostContextKeyDeferredGuardrail                   BifrostContextKey = "bifrost-deferred-guardrail"                 // *DeferredGuardrailResult (set by enterprise guardrails plugin — output guardrail results that finish after the response was delivered; the log writer holds the row until they land)
 	BifrostContextKeyStreamAccumulatedUsage              BifrostContextKey = "bifrost-stream-accumulated-usage"           // *BifrostLLMUsage handle, set ONCE by a streaming provider and mutated in place as usage arrives; read on cancel/timeout to bill partial usage that the provider already consumed
 	BifrostContextKeyDeferredLargePayloadMetadata        BifrostContextKey = "bifrost-deferred-large-payload-metadata"    // <-chan *LargePayloadMetadata (set by enterprise Phase B request — delivers metadata after body streaming)
 	BifrostContextKeySSEReaderFactory                    BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
@@ -468,126 +469,167 @@ const (
 	BifrostContextKeyStreamOverhead                      BifrostContextKey = "bifrost-stream-overhead"        // *streamOverhead (set by bifrost - DO NOT SET THIS MANUALLY) - per-chunk stream conversion CPU and downstream backpressure, carved out of the overhead breakdown's "core" bucket
 )
 
-// Request attribution keys the Grant now carries. Each holds a copy of what ctx.Grant() answers,
-// kept only for readers that have not moved to the Grant yet; new code reads the Grant.
+// Request attribution keys the Grant now carries. They are kept only for readers that have not
+// moved to the Grant yet; new code reads the Grant.
 //
-// The replacements below say where each value lives, not code to paste: every step can be absent.
-// ctx.Grant() is nil when nothing governs the request, Identity() and Limits() are nil until they
-// are settled, VirtualKey(), User() and Project() are nil when unknown, and Teams(), Customers()
-// and BusinessUnits() are empty when unknown. Check each before reading through it, and check a
-// list's length before taking [0].
+// Nil checks. The replacements below say where each value lives, not code to paste: every step can
+// be absent. ctx.Grant() is nil when nothing governs the request, Identity() and Limits() are nil
+// until they are settled, VirtualKey(), User() and Project() are nil when unknown, and Teams(),
+// Customers() and BusinessUnits() are empty when unknown. Check each before reading through it, and
+// check a list's length before taking [0].
+//
+// Parity. The keys and the Grant's identity are written at different points, so a key can hold a
+// value the identity does not:
+//   - User() is the user the request authenticated as, through a user token or session. A request
+//     made with a virtual key goes by the key: VirtualKey() names the key and User() stays nil, even
+//     when the key is assigned to a user and BifrostContextKeyUserID names that user.
+//   - Teams() and Customers() hold what the presented virtual key belongs to. The team, customer and
+//     business unit keys can also hold entities the request is attributed to through its user, which
+//     the identity does not carry, and BusinessUnits() can be empty while a business unit key is set.
+//   - The identity is completed only once it has been settled. A context built without a settled
+//     identity, or a value learned after it was settled, can reach the keys alone.
+//
+// A reader that must keep answering for such requests reads the Grant first and falls back to the key
+// while the key is still written.
 const (
-	// string (to store the virtual key ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	// string (the virtual key ID (set by governance - DO NOT SET THIS MANUALLY))
 	//
-	// Deprecated: use ctx.Grant().Identity().VirtualKey().ID instead.
+	// Deprecated: use ctx.Grant().Identity().VirtualKey().ID instead, checking Grant(), Identity()
+	// and VirtualKey() for nil.
 	BifrostContextKeyGovernanceVirtualKeyID BifrostContextKey = "bifrost-governance-virtual-key-id"
 
-	// string (to store the virtual key name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	// string (the virtual key name (set by governance - DO NOT SET THIS MANUALLY))
 	//
-	// Deprecated: use ctx.Grant().Identity().VirtualKey().Name instead.
+	// Deprecated: use ctx.Grant().Identity().VirtualKey().Name instead, checking Grant(), Identity()
+	// and VirtualKey() for nil.
 	BifrostContextKeyGovernanceVirtualKeyName BifrostContextKey = "bifrost-governance-virtual-key-name"
 
-	// string (to store the team ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	// string (the team ID (set by governance - DO NOT SET THIS MANUALLY))
 	//
-	// Deprecated: use ctx.Grant().Identity().Teams()[0].ID instead.
+	// Deprecated: use ctx.Grant().Identity().Teams()[0].ID instead, checking Grant() and Identity()
+	// for nil and Teams() for length. Teams() holds the presented virtual key's team only; this key
+	// can also name a team the request is attributed to through its user.
 	BifrostContextKeyGovernanceTeamID BifrostContextKey = "bifrost-governance-team-id"
 
-	// string (to store the team name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	// string (the team name (set by governance - DO NOT SET THIS MANUALLY))
 	//
-	// Deprecated: use ctx.Grant().Identity().Teams()[0].Name instead.
+	// Deprecated: use ctx.Grant().Identity().Teams()[0].Name instead, with the same checks and the
+	// same caveat as BifrostContextKeyGovernanceTeamID.
 	BifrostContextKeyGovernanceTeamName BifrostContextKey = "bifrost-governance-team-name"
 
-	// string (to store the customer ID (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	// string (the customer ID (set by governance - DO NOT SET THIS MANUALLY))
 	//
-	// Deprecated: use ctx.Grant().Identity().Customers()[0].ID instead.
+	// Deprecated: use ctx.Grant().Identity().Customers()[0].ID instead, checking Grant() and
+	// Identity() for nil and Customers() for length. Customers() holds the presented virtual key's
+	// customers only; this key can also name a customer the request is attributed to through its user.
 	BifrostContextKeyGovernanceCustomerID BifrostContextKey = "bifrost-governance-customer-id"
 
-	// string (to store the customer name (set by bifrost governance plugin - DO NOT SET THIS MANUALLY))
+	// string (the customer name (set by governance - DO NOT SET THIS MANUALLY))
 	//
-	// Deprecated: use ctx.Grant().Identity().Customers()[0].Name instead.
+	// Deprecated: use ctx.Grant().Identity().Customers()[0].Name instead, with the same checks and
+	// the same caveat as BifrostContextKeyGovernanceCustomerID.
 	BifrostContextKeyGovernanceCustomerName BifrostContextKey = "bifrost-governance-customer-name"
 
-	// string (to store the business unit ID (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
+	// string (the business unit ID (set by governance - DO NOT SET THIS MANUALLY))
 	//
-	// Deprecated: use ctx.Grant().Identity().BusinessUnits()[0].ID instead.
+	// Deprecated: use ctx.Grant().Identity().BusinessUnits()[0].ID instead, checking Grant() and
+	// Identity() for nil and BusinessUnits() for length. BusinessUnits() can be empty while this key
+	// is set.
 	BifrostContextKeyGovernanceBusinessUnitID BifrostContextKey = "bifrost-governance-business-unit-id"
 
-	// string (to store the business unit name (set by enterprise governance plugin - DO NOT SET THIS MANUALLY))
+	// string (the business unit name (set by governance - DO NOT SET THIS MANUALLY))
 	//
-	// Deprecated: use ctx.Grant().Identity().BusinessUnits()[0].Name instead.
+	// Deprecated: use ctx.Grant().Identity().BusinessUnits()[0].Name instead, with the same checks
+	// and the same caveat as BifrostContextKeyGovernanceBusinessUnitID.
 	BifrostContextKeyGovernanceBusinessUnitName BifrostContextKey = "bifrost-governance-business-unit-name"
 
-	// []string (all teams a user/AP request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	// []string (every team the request is attributed to; set by governance - DO NOT SET THIS MANUALLY)
 	//
-	// Deprecated: use the IDs of ctx.Grant().Identity().Teams() instead.
+	// Deprecated: use the IDs of ctx.Grant().Identity().Teams() instead, checking Grant() and
+	// Identity() for nil. Teams() can hold fewer teams than this key: see BifrostContextKeyGovernanceTeamID.
 	BifrostContextKeyGovernanceTeamIDs BifrostContextKey = "bifrost-governance-team-ids"
 
-	// []string (display names, aligned with team-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	// []string (display names, aligned with team-ids; set by governance - DO NOT SET THIS MANUALLY)
 	//
-	// Deprecated: use the Names of ctx.Grant().Identity().Teams() instead.
+	// Deprecated: use the Names of ctx.Grant().Identity().Teams() instead, with the same checks and
+	// the same caveat as BifrostContextKeyGovernanceTeamIDs.
 	BifrostContextKeyGovernanceTeamNames BifrostContextKey = "bifrost-governance-team-names"
 
-	// []string (distinct BUs across the user's teams; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	// []string (every business unit the request is attributed to; set by governance - DO NOT SET THIS MANUALLY)
 	//
-	// Deprecated: use the IDs of ctx.Grant().Identity().BusinessUnits() instead.
+	// Deprecated: use the IDs of ctx.Grant().Identity().BusinessUnits() instead, checking Grant() and
+	// Identity() for nil. BusinessUnits() can be empty while this key is set.
 	BifrostContextKeyGovernanceBusinessUnitIDs BifrostContextKey = "bifrost-governance-business-unit-ids"
 
-	// []string (display names, aligned with business-unit-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	// []string (display names, aligned with business-unit-ids; set by governance - DO NOT SET THIS MANUALLY)
 	//
-	// Deprecated: use the Names of ctx.Grant().Identity().BusinessUnits() instead.
+	// Deprecated: use the Names of ctx.Grant().Identity().BusinessUnits() instead, with the same
+	// checks and the same caveat as BifrostContextKeyGovernanceBusinessUnitIDs.
 	BifrostContextKeyGovernanceBusinessUnitNames BifrostContextKey = "bifrost-governance-business-unit-names"
 
-	// []string (distinct customers a user/team request belongs to; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	// []string (every customer the request is attributed to; set by governance - DO NOT SET THIS MANUALLY)
 	//
-	// Deprecated: use the IDs of ctx.Grant().Identity().Customers() instead.
+	// Deprecated: use the IDs of ctx.Grant().Identity().Customers() instead, checking Grant() and
+	// Identity() for nil. Customers() can hold fewer customers than this key: see
+	// BifrostContextKeyGovernanceCustomerID.
 	BifrostContextKeyGovernanceCustomerIDs BifrostContextKey = "bifrost-governance-customer-ids"
 
-	// []string (display names, aligned with customer-ids; set by enterprise governance plugin - DO NOT SET THIS MANUALLY)
+	// []string (display names, aligned with customer-ids; set by governance - DO NOT SET THIS MANUALLY)
 	//
-	// Deprecated: use the Names of ctx.Grant().Identity().Customers() instead.
+	// Deprecated: use the Names of ctx.Grant().Identity().Customers() instead, with the same checks
+	// and the same caveat as BifrostContextKeyGovernanceCustomerIDs.
 	BifrostContextKeyGovernanceCustomerNames BifrostContextKey = "bifrost-governance-customer-names"
 
 	// string (the project a request is scoped to, once resolved and checked; every consumer reads the resolved value rather than the caller's header - DO NOT SET THIS MANUALLY)
 	//
-	// Deprecated: use ctx.Grant().Identity().Project().ID instead.
+	// Deprecated: use ctx.Grant().Identity().Project().ID instead, checking Grant(), Identity() and
+	// Project() for nil.
 	BifrostContextKeyGovernanceProjectID BifrostContextKey = "bifrost-governance-project-id"
 
 	// string (display name, aligned with project-id - DO NOT SET THIS MANUALLY)
 	//
-	// Deprecated: use ctx.Grant().Identity().Project().Name instead.
+	// Deprecated: use ctx.Grant().Identity().Project().Name instead, checking Grant(), Identity()
+	// and Project() for nil.
 	BifrostContextKeyGovernanceProjectName BifrostContextKey = "bifrost-governance-project-name"
 
 	// []string (budget IDs applicable to this request - set by governance plugin)
 	//
-	// Deprecated: use the IDs of ctx.Grant().Limits().Budgets() instead. The two differ when the
-	// holder's usage is not tracked (BifrostContextKeySkipVirtualKeyUsageTracking): governance then
-	// writes only the provider-level and model-config budgets, a user's model configs included, while
-	// Budgets() still lists every budget the attempt answers to. A reader recording what an attempt is
-	// billed against must apply the same filter (grant.LimitsFrom).
+	// Deprecated: use the IDs of ctx.Grant().Limits().Budgets() instead, checking Grant() and
+	// Limits() for nil. The two differ when the holder's usage is not tracked
+	// (BifrostContextKeySkipVirtualKeyUsageTracking): governance then writes only the provider-level
+	// and model-config budgets, a user's model configs included, while Budgets() still lists every
+	// budget the attempt answers to. A reader recording what an attempt is billed against must apply
+	// the same filter (grant.LimitsFrom).
 	BifrostContextKeyGovernanceBudgetIDs BifrostContextKey = "bifrost-governance-budget-ids"
 
 	// []string (rate limit IDs applicable to this request - set by governance plugin)
 	//
-	// Deprecated: use the IDs of ctx.Grant().Limits().RateLimits() instead. The two differ when the
-	// holder's usage is not tracked (BifrostContextKeySkipVirtualKeyUsageTracking): governance then
-	// writes only the provider-level and model-config rate limits, a user's model configs included,
-	// while RateLimits() still lists every rate limit the attempt answers to. A reader recording what
-	// an attempt is billed against must apply the same filter (grant.LimitsFrom).
+	// Deprecated: use the IDs of ctx.Grant().Limits().RateLimits() instead, checking Grant() and
+	// Limits() for nil. The two differ when the holder's usage is not tracked
+	// (BifrostContextKeySkipVirtualKeyUsageTracking): governance then writes only the provider-level
+	// and model-config rate limits, a user's model configs included, while RateLimits() still lists
+	// every rate limit the attempt answers to. A reader recording what an attempt is billed against
+	// must apply the same filter (grant.LimitsFrom).
 	BifrostContextKeyGovernanceRateLimitIDs BifrostContextKey = "bifrost-governance-rate-limit-ids"
 
-	// string (to store the user ID (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
+	// string (the user the request is attributed to (set by the layer that resolves the user - DO NOT SET THIS MANUALLY))
 	//
-	// Deprecated: use ctx.Grant().Identity().User().ID instead.
+	// Deprecated: use ctx.Grant().Identity().User().ID instead, checking Grant(), Identity() and
+	// User() for nil. User() is set only when the request authenticated as a user, through a user
+	// token or session. For a request made with a virtual key assigned to a user, this key names the
+	// user while User() stays nil and VirtualKey() names the key.
 	BifrostContextKeyUserID BifrostContextKey = "bifrost-user-id"
 
-	// string (to store the user name (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
+	// string (the user's name, aligned with user-id - DO NOT SET THIS MANUALLY)
 	//
-	// Deprecated: use ctx.Grant().Identity().User().Name instead.
+	// Deprecated: use ctx.Grant().Identity().User().Name instead, with the same checks and the same
+	// caveat as BifrostContextKeyUserID.
 	BifrostContextKeyUserName BifrostContextKey = "bifrost-user-name"
 
-	// string (to store the user email (set by enterprise auth middleware - DO NOT SET THIS MANUALLY))
+	// string (the user's email, aligned with user-id - DO NOT SET THIS MANUALLY)
 	//
-	// Deprecated: use ctx.Grant().Identity().User().Email instead.
+	// Deprecated: use ctx.Grant().Identity().User().Email instead, with the same checks and the same
+	// caveat as BifrostContextKeyUserID.
 	BifrostContextKeyUserEmail BifrostContextKey = "bifrost-user-email"
 )
 

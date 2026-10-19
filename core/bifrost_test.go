@@ -17,10 +17,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/maximhq/bifrost/core/internal/memtest"
 	"github.com/maximhq/bifrost/core/keyselectors"
+	"github.com/maximhq/bifrost/core/mcp"
 	mistralprovider "github.com/maximhq/bifrost/core/providers/mistral"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/tidwall/gjson"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
 )
@@ -7734,6 +7737,70 @@ func TestScenarioInferredFallbacksStopOnCallerFault(t *testing.T) {
 	}
 }
 
+// TestScenarioInferredFallbacksPassNoKeySupportsModel pins that a primary whose key pool has no
+// key for the model (400 no_key_supports_model, built before any upstream call) does not stop an
+// inferred chain: that 400 says this provider cannot serve the model, not that the request is
+// malformed. A caller-named chain falls back as before, and a caller-named provider with no
+// fallbacks still gets the 400.
+func TestScenarioInferredFallbacksPassNoKeySupportsModel(t *testing.T) {
+	restricted := scenarioKey("a1", 1)
+	restricted.Models = schemas.WhiteList{"other-model"}
+	for _, tc := range []struct {
+		name         string
+		fallbacks    []schemas.Fallback
+		wantFallback bool
+	}{
+		{name: "inferred chain falls back", fallbacks: []schemas.Fallback{{Provider: provB, Model: "m", Inferred: true}}, wantFallback: true},
+		{name: "caller-named chain falls back", fallbacks: []schemas.Fallback{{Provider: provB, Model: "m"}}, wantFallback: true},
+		{name: "caller-named provider without fallbacks returns the 400"},
+	} {
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%v", tc.name, stream), func(t *testing.T) {
+				u := newScenarioUpstream(t)
+				account := scenarioAccount(u, map[schemas.ModelProvider][]schemas.Key{
+					provA: {restricted},
+					provB: {scenarioKey("b1", 1)},
+				})
+				route := fixedRoute(schemas.Fallback{Provider: provA, Model: "m"}, tc.fallbacks...)
+				client := scenarioClient(t, account, &scenarioRouter{route: route}, nil)
+
+				ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(30*time.Second))
+				var bifrostErr *schemas.BifrostError
+				if stream {
+					var ch chan *schemas.BifrostStreamChunk
+					ch, bifrostErr = client.ChatCompletionStreamRequest(ctx, scenarioRequest("", "m", nil))
+					if bifrostErr == nil {
+						if _, errs := drainChatStream(ch); len(errs) > 0 {
+							t.Fatalf("stream emitted error chunks: %v", errs)
+						}
+					}
+				} else {
+					_, bifrostErr = client.ChatCompletionRequest(ctx, scenarioRequest("", "m", nil))
+				}
+
+				if got := u.count("sk-a1"); got != 0 {
+					t.Fatalf("primary with no key for the model reached the upstream %d times, want 0", got)
+				}
+				if tc.wantFallback {
+					if bifrostErr != nil {
+						t.Fatalf("want the fallback to serve, got error: %s", bifrostErr.GetErrorString())
+					}
+					if got := u.count("sk-b1"); got != 1 {
+						t.Fatalf("fallback reached the upstream %d times, want 1", got)
+					}
+					return
+				}
+				if bifrostErr == nil || bifrostErr.Type == nil || *bifrostErr.Type != schemas.NoKeySupportsModel {
+					t.Fatalf("want the primary's %s error, got %+v", schemas.NoKeySupportsModel, bifrostErr)
+				}
+				if bifrostErr.StatusCode == nil || *bifrostErr.StatusCode != http.StatusBadRequest {
+					t.Fatalf("status %v, want 400", bifrostErr.StatusCode)
+				}
+			})
+		}
+	}
+}
+
 // BenchmarkShouldTryFallbacks measures the fallback decision on a failed primary, for a
 // caller-named chain (the common case, which must stay a field check) and an inferred chain
 // refused as a caller fault (which classifies the error).
@@ -7755,5 +7822,197 @@ func BenchmarkShouldTryFallbacks(b *testing.B) {
 				_ = bifrost.shouldTryFallbacks(nil, req, primaryErr)
 			}
 		})
+	}
+}
+
+// TestSetMCPManager_ReceivesTheRegisteredFactory: an SDK caller may register
+// the openapi factory before injecting its own manager; the injected manager
+// gets the factory, and the two setters do not race (run with -race).
+func TestSetMCPManager_ReceivesTheRegisteredFactory(t *testing.T) {
+	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		return server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false)), nil
+	}
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer b.Shutdown()
+	b.SetMCPInProcessServerFactory(factory)
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	b.SetMCPManager(injected)
+	err = b.AddMCPClient(context.Background(), &schemas.MCPClientConfig{ID: "oa-id", Name: "oa", ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}})
+	if err != nil {
+		t.Fatalf("the injected manager did not get the registered factory: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); b.SetMCPInProcessServerFactory(factory) }()
+	go func() {
+		defer wg.Done()
+		b.SetMCPManager(mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil))
+	}()
+	wg.Wait()
+}
+
+// TestLazyMCPManager_ConcurrentFirstCallersDoNotRace: the first MCP calls on a
+// Bifrost without an mcp block create the manager lazily. Concurrent first
+// callers must not read the manager field while another publishes it (run
+// with -race), and a manager injected with SetMCPManager is never replaced.
+func TestLazyMCPManager_ConcurrentFirstCallersDoNotRace(t *testing.T) {
+	client := func(name string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{ID: name + "-id", Name: name, ConnectionType: schemas.MCPConnectionTypeOpenAPI, ToolsToExecute: schemas.WhiteList{"*"}, OpenAPIConfig: &schemas.MCPOpenAPIConfig{Spec: "x"}}
+	}
+	for i := 0; i < 10; i++ {
+		b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() { defer wg.Done(); _ = b.AddMCPClient(context.Background(), client("a")) }()
+		go func() {
+			defer wg.Done()
+			_, _, _, _ = b.VerifyHeadersConnection(context.Background(), client("b"), map[string]string{"X-Key": "v"})
+		}()
+		go func() {
+			defer wg.Done()
+			_, _, _, _ = b.VerifyPerUserOAuthConnection(context.Background(), client("c"), "token")
+		}()
+		wg.Wait()
+		b.Shutdown()
+	}
+
+	b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+	defer b.Shutdown()
+	injected := mcp.NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, NewNoOpLogger(), nil)
+	b.SetMCPManager(injected)
+	_ = b.AddMCPClient(context.Background(), client("d"))
+	if b.MCPManager != mcp.MCPManagerInterface(injected) {
+		t.Fatal("an injected MCP manager was replaced by the lazy one")
+	}
+}
+
+// TestSetMCPInProcessServerFactory_RacesLazyManagerCreation: the HTTP transport
+// registers the openapi factory after Init, while a request may be lazily
+// creating the MCP manager. Whichever wins, the manager that ends up serving
+// must carry the factory, and the registration must not race the creation.
+func TestSetMCPInProcessServerFactory_RacesLazyManagerCreation(t *testing.T) {
+	factory := func(context.Context, *schemas.MCPClientConfig, schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		return server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false)), nil
+	}
+	openAPIClient := func(name string) *schemas.MCPClientConfig {
+		return &schemas.MCPClientConfig{
+			ID:             name + "-id",
+			Name:           name,
+			ConnectionType: schemas.MCPConnectionTypeOpenAPI,
+			ToolsToExecute: schemas.WhiteList{"*"},
+			OpenAPIConfig:  &schemas.MCPOpenAPIConfig{Spec: "unused by the stub"},
+		}
+	}
+	for i := 0; i < 20; i++ {
+		// No MCPConfig: the manager is created lazily by the first MCP call.
+		b, err := Init(context.Background(), schemas.BifrostConfig{Account: NewMockAccount(), Logger: NewNoOpLogger()})
+		if err != nil {
+			t.Fatalf("Init failed: %v", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			b.SetMCPInProcessServerFactory(factory)
+		}()
+		go func() {
+			defer wg.Done()
+			_ = b.AddMCPClient(context.Background(), openAPIClient("first"))
+		}()
+		wg.Wait()
+		if err := b.AddMCPClient(context.Background(), openAPIClient("second")); err != nil {
+			t.Fatalf("iteration %d: the manager lost the registered factory: %v", i, err)
+		}
+		b.Shutdown()
+	}
+}
+
+// A Responses request that defers tools on a model with no tool search of its own
+// (gpt-4o) goes through the gateway-run search: the upstream first sees only the
+// eager tools plus bifrost_tool_search, the model searches, and the second upstream
+// call carries the loaded tool and the search turn. The caller sees one response.
+func TestResponsesRequest_GatewayToolSearch(t *testing.T) {
+	searchCall := `{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4o","output":[` +
+		`{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_s1","name":"bifrost_tool_search","arguments":"{\"query\":\"weather\"}"}],` +
+		`"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}`
+	weatherCall := `{"id":"resp_2","object":"response","created_at":1,"status":"completed","model":"gpt-4o","output":[` +
+		`{"id":"fc_2","type":"function_call","status":"completed","call_id":"call_w1","name":"get_weather","arguments":"{\"city\":\"Tokyo\"}"}],` +
+		`"usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}}`
+	upstream := newRecordingServer(func(attempt int, w http.ResponseWriter) {
+		if attempt == 1 {
+			writeJSON(w, http.StatusOK, searchCall)
+			return
+		}
+		writeJSON(w, http.StatusOK, weatherCall)
+	})
+	defer upstream.Close()
+
+	account := NewMockAccount()
+	configureUpstream(account, schemas.OpenAI, "openai-key", upstream.URL, 0)
+	client := newStreamTestClient(t, account)
+
+	tool := func(name string, deferred bool) schemas.ResponsesTool {
+		t := schemas.ResponsesTool{
+			Type: schemas.ResponsesToolTypeFunction, Name: schemas.Ptr(name), Description: schemas.Ptr(name + " tool"),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{Parameters: &schemas.ToolFunctionParameters{Type: "object"}},
+		}
+		if deferred {
+			t.DeferLoading = schemas.Ptr(true)
+		}
+		return t
+	}
+	ctx := schemas.NewBifrostContext(context.Background(), time.Now().Add(10*time.Second))
+	resp, bifrostErr := client.ResponsesRequest(ctx, &schemas.BifrostResponsesRequest{
+		Provider: schemas.OpenAI,
+		Model:    "gpt-4o",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("weather in Tokyo?")},
+		}},
+		Params: &schemas.ResponsesParameters{Tools: []schemas.ResponsesTool{tool("lookup_city", false), tool("get_weather", true)}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("request failed: %v", bifrostErr.Error)
+	}
+
+	bodies := upstream.snapshot()
+	if len(bodies) != 2 {
+		t.Fatalf("want 2 upstream calls, got %d", len(bodies))
+	}
+	names := func(body string) []string {
+		var out []string
+		for _, tool := range gjson.Get(body, "tools").Array() {
+			out = append(out, tool.Get("name").String())
+		}
+		return out
+	}
+	if got := names(bodies[0]); !slices.Equal(got, []string{"lookup_city", "bifrost_tool_search"}) {
+		t.Errorf("first call tools = %v, want the eager tool plus the search", got)
+	}
+	if strings.Contains(bodies[0], "defer_loading") {
+		t.Errorf("defer_loading must not reach a model without tool search: %s", bodies[0])
+	}
+	if got := names(bodies[1]); !slices.Equal(got, []string{"lookup_city", "get_weather", "bifrost_tool_search"}) {
+		t.Errorf("second call tools = %v, want the loaded tool too", got)
+	}
+	if out := gjson.Get(bodies[1], `input.#(type=="function_call_output").output`).String(); !strings.Contains(out, "get_weather") {
+		t.Errorf("second call must carry the search result, got input %s", gjson.Get(bodies[1], "input").Raw)
+	}
+
+	if len(resp.Output) != 1 || resp.Output[0].Name == nil || *resp.Output[0].Name != "get_weather" {
+		t.Fatalf("want only the get_weather call in the response, got %+v", resp.Output)
+	}
+	if resp.Usage == nil || resp.Usage.InputTokens != 30 || resp.Usage.OutputTokens != 5 {
+		t.Errorf("want usage summed across both calls, got %+v", resp.Usage)
 	}
 }

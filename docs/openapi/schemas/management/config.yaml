@@ -42,6 +42,11 @@ ClientConfig:
     enforce_auth_on_inference:
       type: boolean
       description: Whether to enforce virtual key authentication on inference requests
+    extra_fields_placement:
+      type: string
+      enum: [body, headers]
+      default: body
+      description: "Where inference responses carry Bifrost's extra_fields metadata. 'body' (default) keeps the extra_fields object in the JSON body. 'headers' removes extra_fields from the body (and from every streaming chunk) and sends its scalar fields as x-bifrost-* response headers. In 'headers' mode the large and nested fields are dropped and not sent anywhere: raw_request, raw_response, routing_metadata, guardrail_debug, parse_errors, and on errors key_statuses, billed_usage and mcp_auth_required. Streaming responses only carry the fields known before the first chunk (routing identity, fallback index, cache lookup); per-chunk latency, chunk_index and final totals are dropped."
     vk_rotation_cooldown:
       type: [string, integer]
       minimum: 0
@@ -140,6 +145,19 @@ ClientConfig:
         config.json. Link-local and cloud metadata addresses are always refused
         and cannot be listed. Omit to keep the current list; send [] to clear it.
         Changing it requires an authenticated admin session.
+    a2a_private_allowlist:
+      type: array
+      items:
+        type: string
+      description: >
+        Hosts, IP addresses, or CIDR ranges without a scheme or port that Agent
+        Gateway card discovery, OAuth, and runtime HTTP or gRPC calls may reach
+        when they resolve to private or loopback addresses. Link-local and cloud
+        metadata addresses are always blocked. Applies to agents registered by
+        an authenticated administrator or declared in config.json. Registrations
+        created with dashboard authentication bypassed cannot use private permissions.
+        Omit to keep the current list; send [] to clear it. Changing this setting
+        requires dashboard authentication.
     mcp_code_mode_limits:
       type: object
       description: >
@@ -189,6 +207,53 @@ ClientConfig:
       items:
         type: string
       description: Headers to capture in log metadata. Values are extracted from incoming requests and stored in the metadata field of log entries. Case-insensitive matching. No restart required.
+    a2a_external_client_url:
+      anyOf:
+      - type: string
+      - type: object
+        properties:
+          value:
+            type: string
+          ref:
+            type: string
+          type:
+            type: string
+            enum:
+            - plain_text
+            - env
+            - vault
+          env_var:
+            type: string
+          from_env:
+            type: boolean
+        additionalProperties: false
+      description: 'Bifrost''s public base URL for the Agent Gateway, used in served agent
+        cards and push-notification callback URLs. Required to enable Agent Gateway protocol
+        endpoints. When unset, agent traffic is rejected while management APIs remain
+        available. Supports env var syntax: "env.MY_VAR".'
+    skills_external_client_url:
+      anyOf:
+      - type: string
+      - type: object
+        properties:
+          value:
+            type: string
+          ref:
+            type: string
+          type:
+            type: string
+            enum:
+            - plain_text
+            - env
+            - vault
+          env_var:
+            type: string
+          from_env:
+            type: boolean
+        additionalProperties: false
+      description: Public base URL for Skills Repository marketplaces. Required to enable
+        Claude Code and Codex marketplace serving; skill management and downloads remain
+        available when unset. Supports env var and vault references.
     mcp_external_client_url:
       oneOf:
         - type: string
@@ -367,6 +432,12 @@ GetConfigResponse:
         Absent when no admin account has been configured yet (first-time setup).
         Once an admin account exists, this is always present. Available starting
         in Bifrost 2.0.0-prerelease3; earlier versions always returned this field.
+    skills_marketplace_base_url:
+      type: string
+      description: Resolved public Skills Repository marketplace base URL. Empty when the URL is unset.
+    is_git_available:
+      type: boolean
+      description: Whether Git is available on the Bifrost server for marketplace serving.
     is_db_connected:
       type: boolean
     is_cache_connected:

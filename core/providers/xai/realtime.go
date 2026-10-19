@@ -54,7 +54,7 @@ func (provider *XAIProvider) RealtimeHeaders(_ *schemas.BifrostContext, key sche
 	headers := map[string]string{}
 	for name, value := range provider.networkConfig.ExtraHeaders {
 		if !strings.EqualFold(name, "Authorization") {
-			headers[name] = value
+			headers[name] = value.GetValue()
 		}
 	}
 	headers["Authorization"] = "Bearer " + key.Value.GetValue()

@@ -297,7 +297,8 @@ VirtualKeyProviderConfig:
       type: string
     weight:
       type: [number, 'null']
-      description: Weight for provider load balancing. Null means excluded from weighted routing.
+      minimum: 0
+      description: Weight for provider load balancing. Null means excluded from weighted routing. A negative weight is rejected with 400; when every weight is 0, the first configured provider is picked.
     allowed_models:
       type: array
       items:
@@ -374,6 +375,16 @@ VirtualKey:
       type: string
     description:
       type: string
+    metadata:
+      type: object
+      description: >-
+        Custom key/value metadata attached to the key (for example cost_center, project, owner, environment). Omitted when the key has none.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+      additionalProperties:
+        type: string
+        maxLength: 512
     is_active:
       type: boolean
     expires_at:
@@ -480,6 +491,20 @@ CreateVirtualKeyRequest:
       type: string
     description:
       type: string
+    metadata:
+      type: object
+      description: >-
+        Custom key/value metadata for cost attribution (for example cost_center, project, owner, environment). Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+        not:
+          anyOf:
+            - const: isAsyncRequest
+            - pattern: '^bifrost_alb_'
+      additionalProperties:
+        type: string
+        maxLength: 512
     provider_configs:
       type: array
       description: Provider configurations. When allow_all_providers is omitted or false, an empty list allows no providers (deny-by-default); when true, providers without a config are allowed with all models and keys.
@@ -490,7 +515,8 @@ CreateVirtualKeyRequest:
             type: string
           weight:
             type: [number, 'null']
-            description: Weight for load balancing. Null means excluded from weighted routing.
+            minimum: 0
+            description: Weight for load balancing. Null means excluded from weighted routing. A negative weight is rejected with 400; when every weight is 0, the first configured provider is picked.
           allowed_models:
             type: array
             items:
@@ -589,6 +615,20 @@ UpdateVirtualKeyRequest:
       type: string
     description:
       type: string
+    metadata:
+      type: [object, 'null']
+      description: >-
+        Replaces the key's metadata as a whole. Omit (or send null) to leave it unchanged; send {} to clear it. Keys are 1-256 characters of letters, digits, '.', '_' and '-' and may not be system-reserved (isAsyncRequest, bifrost_alb_*); values are strings of at most 512 characters; at most 50 entries.
+      maxProperties: 50
+      propertyNames:
+        pattern: '^[a-zA-Z0-9._-]{1,256}$'
+        not:
+          anyOf:
+            - const: isAsyncRequest
+            - pattern: '^bifrost_alb_'
+      additionalProperties:
+        type: string
+        maxLength: 512
     provider_configs:
       type: array
       items:
@@ -600,7 +640,8 @@ UpdateVirtualKeyRequest:
             type: string
           weight:
             type: [number, 'null']
-            description: Weight for load balancing. Null means excluded from weighted routing.
+            minimum: 0
+            description: Weight for load balancing. Null means excluded from weighted routing. A negative weight is rejected with 400; when every weight is 0, the first configured provider is picked.
           allowed_models:
             type: array
             items:
@@ -1318,6 +1359,7 @@ TableKey:
         type: string
     weight:
       type: [number, 'null']
+      minimum: 0
     enabled:
       type: [boolean, 'null']
       default: true
@@ -1448,6 +1490,9 @@ RoutingRule:
     id:
       type: string
       description: Unique identifier for the routing rule
+    config_hash:
+      type: string
+      description: Hash of the config.json entry the rule was last synced from. Empty for rules created through the API.
     name:
       type: string
       description: Name of the routing rule
@@ -1457,6 +1502,9 @@ RoutingRule:
     enabled:
       type: boolean
       description: Whether the rule is enabled and active
+    chain_rule:
+      type: boolean
+      description: "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
     cel_expression:
       type: string
       description: CEL (Common Expression Language) expression for matching
@@ -1472,14 +1520,14 @@ RoutingRule:
       description: Ordered fallback chain, tried after the selected target fails
     scope:
       type: string
-      enum: [global, team, customer, virtual_key]
-      description: Scope level for the rule
+      enum: [global, team, customer, virtual_key, user]
+      description: Scope level for the rule. Scopes are evaluated in the order virtual_key, user, team, customer, global. The user scope can be set through the API and UI only; config.json does not support it.
     scope_id:
       type: [string, 'null']
-      description: ID for the scope (empty for global scope)
+      description: ID of the team, customer, virtual key or user the rule is scoped to; null for global scope
     priority:
       type: integer
-      description: Priority for rule evaluation (lower number = higher priority)
+      description: Priority for rule evaluation (lower number = higher priority). Unique within a scope and scope_id.
     query:
       type: [object, 'null']
       description: Visual rule tree structure from query builder
@@ -1502,7 +1550,7 @@ RoutingRule:
       properties:
         scope:
           type: string
-          enum: [team, customer, virtual_key]
+          enum: [team, customer, virtual_key, user]
         scope_id:
           type: string
       required:
@@ -1515,9 +1563,6 @@ CreateRoutingRuleRequest:
   description: Request to create a routing rule
   required:
     - name
-    - cel_expression
-    - scope
-    - priority
     - targets
   properties:
     name:
@@ -1528,10 +1573,15 @@ CreateRoutingRuleRequest:
       description: Optional description
     enabled:
       type: boolean
+      default: true
       description: Whether the rule is enabled
+    chain_rule:
+      type: boolean
+      default: false
+      description: "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
     cel_expression:
       type: string
-      description: CEL expression for matching
+      description: CEL expression for matching. Empty or omitted matches every request.
     targets:
       type: array
       minItems: 1
@@ -1545,14 +1595,16 @@ CreateRoutingRuleRequest:
       description: Ordered fallback chain, tried after the selected target fails
     scope:
       type: string
-      enum: [global, team, customer, virtual_key]
-      description: Scope level for the rule
+      enum: [global, team, customer, virtual_key, user]
+      default: global
+      description: Scope level for the rule. The team, customer or virtual key named by scope_id must exist (400 otherwise); a user scope_id is not checked.
     scope_id:
       type: [string, 'null']
-      description: ID for the scope (required if scope is not global)
+      description: ID for the scope. Required when scope is not global; stored as null for global.
     priority:
       type: integer
-      description: Priority for rule evaluation (lower number = higher priority)
+      default: 0
+      description: Priority for rule evaluation (lower number = higher priority). Must be unique within the same scope and scope_id; a duplicate returns 409.
     query:
       type: [object, 'null']
       description: Visual rule tree structure
@@ -1562,16 +1614,15 @@ CreateRoutingRuleRequest:
         scope:
           type: string
           enum: [global]
-      required:
-        - scope
-      description: Global scope routing rule
+      description: Global scope routing rule (scope omitted or global)
     - type: object
       properties:
         scope:
           type: string
-          enum: [team, customer, virtual_key]
+          enum: [team, customer, virtual_key, user]
         scope_id:
           type: string
+          minLength: 1
       required:
         - scope
         - scope_id
@@ -1583,10 +1634,14 @@ UpdateRoutingRuleRequest:
   properties:
     name:
       type: string
+      description: New name. An empty string is ignored.
     description:
       type: string
     enabled:
       type: boolean
+    chain_rule:
+      type: boolean
+      description: "When true, a match does not end evaluation: the rule's resolved provider and model become the new context and every rule is evaluated again from the top. Each rule fires at most once per request, up to the chain's maximum depth (default 10)."
     cel_expression:
       type: string
     targets:
@@ -1599,9 +1654,17 @@ UpdateRoutingRuleRequest:
       type: array
       items:
         $ref: '#/RoutingFallback'
-      description: Ordered fallback chain, tried after the selected target fails
+      description: Replaces the fallback chain when provided; send an empty array to clear it.
     priority:
       type: integer
+      description: Must stay unique within the rule's scope and scope_id; a conflict returns 409.
+    scope:
+      type: string
+      enum: [global, team, customer, virtual_key, user]
+      description: Moves the rule to another scope. An empty string is ignored. A scope other than global needs a scope_id, sent here or already stored; global clears scope_id.
+    scope_id:
+      type: [string, 'null']
+      description: New scope ID, checked against the scope when scope or scope_id is sent.
     query:
       type: [object, 'null']
 
@@ -1625,6 +1688,15 @@ ListRoutingRulesResponse:
     count:
       type: integer
       description: Number of routing rules returned
+    total_count:
+      type: integer
+      description: Number of rules matching the filter before limit and offset
+    limit:
+      type: integer
+      description: Page size applied (default 25, maximum 100). Without limit, offset or search, the number of rules returned.
+    offset:
+      type: integer
+      description: Offset applied; 0 without limit, offset or search
 
 # Model Configs
 

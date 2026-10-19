@@ -3,13 +3,15 @@ package handlers
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/configstore"
 	"github.com/maximhq/bifrost/framework/configstore/tables"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/framework/tracing"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -18,6 +20,66 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+// TestAgentGatewayGRPCTraceContext checks the shared trace setup used by unary and streaming RPCs.
+func TestAgentGatewayGRPCTraceContext(t *testing.T) {
+	for _, tc := range []struct {
+		name, session, harness, parent, wantSession string
+	}{
+		{name: "explicit", session: " session-1 ", harness: "harness", parent: "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01", wantSession: "session-1"},
+		{name: "harness fallback", harness: "harness", wantSession: "harness"},
+		{name: "oversized explicit", session: strings.Repeat("s", schemas.MaxSessionIDLength+1), harness: "harness"},
+		{name: "invalid parent", parent: "invalid"},
+		{name: "absent"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := tracing.NewTraceStore(time.Minute, nil)
+			defer store.Stop()
+			tracer := tracing.NewTracer(store, nil, nil)
+			defer tracer.Stop()
+			server := &AgentGatewayGRPCServer{tracing: NewTracingMiddleware(tracer)}
+			ctx, finish := server.startTrace(grpcTestContext(metadata.Pairs("x-bf-session-id", tc.session, "x-claude-code-session-id", tc.harness, "traceparent", tc.parent, "x-request-id", "grpc-test")), "/a2a.SendMessage")
+			id := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+			trace := store.GetTrace(id)
+			require.NotNil(t, trace)
+			require.Equal(t, tc.wantSession, schemas.TraceSessionID(trace.Attributes))
+			require.Equal(t, "grpc-test", ctx.Value(schemas.BifrostContextKeyRequestID))
+			if tc.name == "explicit" {
+				require.Equal(t, "0123456789abcdef0123456789abcdef", trace.TraceID)
+				require.Equal(t, "0123456789abcdef", trace.RootSpan.ParentID)
+				require.Equal(t, trace.TraceID, ctx.Value(schemas.BifrostContextKeyExportTraceID))
+			} else {
+				require.Empty(t, trace.ParentID)
+			}
+			finish(nil)
+		})
+	}
+}
+
+// BenchmarkAgentGatewayGRPCTraceContext measures trace setup and completion with and without metadata.
+func BenchmarkAgentGatewayGRPCTraceContext(b *testing.B) {
+	for _, withMetadata := range []bool{false, true} {
+		name := "empty"
+		ctx := context.Background()
+		if withMetadata {
+			name = "correlated"
+			ctx = metadata.NewIncomingContext(ctx, metadata.Pairs("x-bf-session-id", "benchmark", "traceparent", "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"))
+		}
+		b.Run(name, func(b *testing.B) {
+			store := tracing.NewTraceStore(time.Minute, nil)
+			defer store.Stop()
+			tracer := tracing.NewTracer(store, nil, nil)
+			defer tracer.Stop()
+			server := &AgentGatewayGRPCServer{tracing: NewTracingMiddleware(tracer)}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				_, finish := server.startTrace(ctx, "/a2a.SendMessage")
+				finish(nil)
+			}
+		})
+	}
+}
 
 func grpcTestContext(md metadata.MD) context.Context {
 	return metadata.NewIncomingContext(context.Background(), md)
@@ -220,4 +282,22 @@ func TestAgentGatewayGRPCAuthenticate(t *testing.T) {
 		defer cancel()
 		require.Nil(t, authedCtx.Value(schemas.BifrostContextKeyVirtualKey))
 	})
+}
+
+// TestAgentGatewayGRPCRequiresExternalURL rejects unary and streaming traffic before routing or authentication.
+func TestAgentGatewayGRPCRequiresExternalURL(t *testing.T) {
+	s := &AgentGatewayGRPCServer{config: &lib.Config{}}
+	called := false
+	_, err := s.unaryAuth(context.Background(), nil, &grpc.UnaryServerInfo{}, func(context.Context, any) (any, error) { called = true; return nil, nil })
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.False(t, called)
+	err = s.streamAuth(nil, &authenticatedServerStream{ctx: context.Background()}, &grpc.StreamServerInfo{}, func(any, grpc.ServerStream) error {
+		called = true
+		return nil
+	})
+	require.Equal(t, codes.Unavailable, status.Code(err))
+	require.False(t, called)
+	_, cancel, err := s.intercept(context.Background())
+	require.Nil(t, cancel)
+	require.Equal(t, codes.Unavailable, status.Code(err))
 }

@@ -115,6 +115,13 @@ describe("buildCloudflareMigrationPlan", () => {
 		expect(planNeedsInput(noHeader)).toBe(true);
 		expect(noHeader.headerToken?.needsValue).toBe(true);
 
+		const masked = buildCloudflareMigrationPlan(
+			custom("cloudflare", { network_config: { ...custom("x").network_config!, extra_headers: { Authorization: "<REDACTED>" } } }),
+			[],
+		);
+		expect(masked.warnings.join(" ")).toContain("stored as a literal value");
+		expect(masked.headerToken?.needsValue).toBe(true);
+
 		// Typing a token completes the plan, but the token still needs entering, so its input stays visible.
 		const typed = { ...noHeader, headerToken: { ...noHeader.headerToken!, value: { value: "c", ref: "" } } };
 		expect(planNeedsInput(typed)).toBe(false);

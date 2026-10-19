@@ -21,6 +21,16 @@ const (
 	DualCredentialConflictBehaviorPreferIDP DualCredentialConflictBehavior = "prefer_idp"
 )
 
+// ExtraFieldsPlacement controls where inference responses carry Bifrost's extra_fields metadata.
+type ExtraFieldsPlacement string
+
+const (
+	// ExtraFieldsPlacementBody keeps extra_fields in the JSON body (default when unset).
+	ExtraFieldsPlacementBody ExtraFieldsPlacement = "body"
+	// ExtraFieldsPlacementHeaders removes extra_fields from the body and sends its scalar fields as x-bifrost-* headers.
+	ExtraFieldsPlacementHeaders ExtraFieldsPlacement = "headers"
+)
+
 // TableClientConfig represents global client configuration in the database
 type TableClientConfig struct {
 	ID                                    uint                           `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -41,24 +51,26 @@ type TableClientConfig struct {
 	EnforceGovernanceHeader               bool                           `gorm:"" json:"enforce_governance_header"`
 	EnforceSCIMAuth                       bool                           `gorm:"default:false" json:"enforce_scim_auth"`
 	DualCredentialConflictBehavior        DualCredentialConflictBehavior `gorm:"column:dual_credential_conflict_behavior;type:varchar(20);not null;default:'prefer_idp'" json:"dual_credential_conflict_behavior"`
+	ExtraFieldsPlacement                  ExtraFieldsPlacement           `gorm:"column:extra_fields_placement;type:varchar(20);not null;default:'body'" json:"extra_fields_placement"`
 	MaxRequestBodySizeMB                  int                            `gorm:"default:100" json:"max_request_body_size_mb"`
 	MCPAgentDepth                         int                            `gorm:"default:10" json:"mcp_agent_depth"`
-	MCPToolExecutionTimeout               int                            `gorm:"default:30" json:"mcp_tool_execution_timeout"`               // Timeout for individual tool execution in seconds (default: 30)
-	MCPCodeModeBindingLevel               string                         `gorm:"default:server" json:"mcp_code_mode_binding_level"`          // How tools are exposed in VFS: "server" or "tool"
-	MCPToolSyncInterval                   int                            `gorm:"default:10" json:"mcp_tool_sync_interval"`                   // Global tool sync interval in minutes (default: 10, 0 = built-in default)
-	MCPDisableAutoToolInject              bool                           `gorm:"default:false" json:"mcp_disable_auto_tool_inject"`          // When true, MCP tools are not injected into requests by default
-	MCPMaxInstructionsPerClient           int                            `gorm:"default:0" json:"mcp_max_instructions_per_client"`           // Byte bound on one server's forwarded instructions; 0 is the default
-	MCPMaxInstructionsTotal               int                            `gorm:"default:0" json:"mcp_max_instructions_total"`                // Byte bound on the whole aggregate; 0 is the default
-	MCPEnableTempTokenAuth                bool                           `gorm:"default:false" json:"mcp_enable_temp_token_auth"`            // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
-	AsyncJobResultTTL                     int                            `gorm:"default:3600" json:"async_job_result_ttl"`                   // Default TTL for async job results in seconds (default: 3600 = 1 hour)
-	RequiredHeadersJSON                   string                         `gorm:"type:text" json:"-"`                                         // JSON serialized []string
-	LoggingHeadersJSON                    string                         `gorm:"type:text" json:"-"`                                         // JSON serialized []string
-	HideDeletedVirtualKeysInFilters       bool                           `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"`  // Hide deleted virtual keys in logs filter dropdowns
-	DeleteExpiredVirtualKeys              bool                           `gorm:"default:false" json:"delete_expired_virtual_keys"`           // Default for virtual keys without an explicit delete_after_expire: delete them once expired
-	EnforceVKObjectOwnership              bool                           `gorm:"default:true" json:"enforce_vk_object_ownership"`            // Restrict provider objects to the virtual key that created them
-	HiddenRequestTypesJSON                string                         `gorm:"type:text" json:"-"`                                         // JSON serialized []string of request types hidden from log reads
-	RoutingChainMaxDepth                  int                            `gorm:"default:10" json:"routing_chain_max_depth"`                  // Maximum depth for routing rule chain evaluation (default: 10)
-	MCPExternalClientURL                  string                         `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"` // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers
+	MCPToolExecutionTimeout               int                            `gorm:"default:30" json:"mcp_tool_execution_timeout"`                  // Timeout for individual tool execution in seconds (default: 30)
+	MCPCodeModeBindingLevel               string                         `gorm:"default:server" json:"mcp_code_mode_binding_level"`             // How tools are exposed in VFS: "server" or "tool"
+	MCPToolSyncInterval                   int                            `gorm:"default:10" json:"mcp_tool_sync_interval"`                      // Global tool sync interval in minutes (default: 10, 0 = built-in default)
+	MCPDisableAutoToolInject              bool                           `gorm:"default:false" json:"mcp_disable_auto_tool_inject"`             // When true, MCP tools are not injected into requests by default
+	MCPMaxInstructionsPerClient           int                            `gorm:"default:0" json:"mcp_max_instructions_per_client"`              // Byte bound on one server's forwarded instructions; 0 is the default
+	MCPMaxInstructionsTotal               int                            `gorm:"default:0" json:"mcp_max_instructions_total"`                   // Byte bound on the whole aggregate; 0 is the default
+	MCPEnableTempTokenAuth                bool                           `gorm:"default:false" json:"mcp_enable_temp_token_auth"`               // When true, scoped temp tokens can authorize MCP per-user OAuth and per-user-headers auth pages. User-mode flows never mint regardless.
+	AsyncJobResultTTL                     int                            `gorm:"default:3600" json:"async_job_result_ttl"`                      // Default TTL for async job results in seconds (default: 3600 = 1 hour)
+	RequiredHeadersJSON                   string                         `gorm:"type:text" json:"-"`                                            // JSON serialized []string
+	LoggingHeadersJSON                    string                         `gorm:"type:text" json:"-"`                                            // JSON serialized []string
+	HideDeletedVirtualKeysInFilters       bool                           `gorm:"default:false" json:"hide_deleted_virtual_keys_in_filters"`     // Hide deleted virtual keys in logs filter dropdowns
+	DeleteExpiredVirtualKeys              bool                           `gorm:"default:false" json:"delete_expired_virtual_keys"`              // Default for virtual keys without an explicit delete_after_expire: delete them once expired
+	EnforceVKObjectOwnership              bool                           `gorm:"default:true" json:"enforce_vk_object_ownership"`               // Restrict provider objects to the virtual key that created them
+	HiddenRequestTypesJSON                string                         `gorm:"type:text" json:"-"`                                            // JSON serialized []string of request types hidden from log reads
+	RoutingChainMaxDepth                  int                            `gorm:"default:10" json:"routing_chain_max_depth"`                     // Maximum depth for routing rule chain evaluation (default: 10)
+	MCPExternalClientURL                  string                         `gorm:"type:varchar(512)" json:"mcp_external_client_url,omitempty"`    // Public base URL used as redirect_uri when Bifrost acts as an OAuth client to upstream MCP servers
+	SkillsExternalClientURL               string                         `gorm:"type:varchar(512)" json:"skills_external_client_url,omitempty"` // Public base URL for Skills Repository marketplaces; empty disables marketplace serving
 	A2AStoreRawRequestResponse            bool                           `gorm:"column:a2a_store_raw_request_response;default:false" json:"a2a_store_raw_request_response"`
 	A2AExternalClientURL                  string                         `gorm:"type:varchar(512)" json:"a2a_external_client_url,omitempty"`      // Public base URL used for Agent Gateway push-notification callback URLs and served agent card URLs
 	WhitelistedRoutesJSON                 string                         `gorm:"type:text" json:"-"`                                              // JSON serialized []string
@@ -92,6 +104,7 @@ type TableClientConfig struct {
 	// deserialized into MCPCodeModeLimits by AfterFind.
 	MCPCodeModeLimitsJSON        string `gorm:"column:mcp_code_mode_limits_json;type:text" json:"-"`
 	MCPOAuthPrivateAllowlistJSON string `gorm:"column:mcp_oauth_private_allowlist_json;type:text" json:"-"` // JSON serialized []string
+	A2APrivateAllowlistJSON      string `gorm:"column:a2a_private_allowlist_json;type:text" json:"-"`       // JSON serialized []string
 
 	// Config hash is used to detect the changes synced from config.json file
 	// Every time we sync the config.json file, we will update the config hash
@@ -116,6 +129,7 @@ type TableClientConfig struct {
 	MCPCodeModeLimits *schemas.MCPCodeModeLimits `gorm:"-" json:"mcp_code_mode_limits,omitempty"` // Virtual: per-execution code mode limits
 
 	MCPOAuthPrivateAllowlist []string `gorm:"-" json:"mcp_oauth_private_allowlist,omitempty"` // Virtual: private targets the MCP OAuth chain may reach
+	A2APrivateAllowlist      []string `gorm:"-" json:"a2a_private_allowlist,omitempty"`       // Virtual: private targets the Agent Gateway may reach
 }
 
 // WebhookConfig holds global webhook delivery settings. Delivery
@@ -271,6 +285,15 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 	} else {
 		cc.MCPOAuthPrivateAllowlistJSON = ""
 	}
+	if len(cc.A2APrivateAllowlist) > 0 {
+		data, err := json.Marshal(cc.A2APrivateAllowlist)
+		if err != nil {
+			return err
+		}
+		cc.A2APrivateAllowlistJSON = string(data)
+	} else {
+		cc.A2APrivateAllowlistJSON = ""
+	}
 
 	return nil
 }
@@ -373,6 +396,13 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 		}
 	} else {
 		cc.MCPOAuthPrivateAllowlist = nil
+	}
+	if cc.A2APrivateAllowlistJSON != "" {
+		if err := json.Unmarshal([]byte(cc.A2APrivateAllowlistJSON), &cc.A2APrivateAllowlist); err != nil {
+			return err
+		}
+	} else {
+		cc.A2APrivateAllowlist = nil
 	}
 
 	return nil

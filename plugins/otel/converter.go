@@ -188,13 +188,14 @@ func convertSpanToOTELSpan(traceID string, span *schemas.Span, disableContentLog
 		Events:            convertSpanEvents(span.Events, disableContentLogging),
 	}
 
-	// Raw lives on span.LLM, never in Attributes, so non-opted connectors cannot see it.
-	if exportRawPayloads && !disableContentLogging && span.LLM != nil {
-		if span.LLM.RawRequest != "" {
-			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawRequest, span.LLM.RawRequest))
+	// Raw bodies never live in Attributes, so export always requires an opt-in.
+	if exportRawPayloads && !disableContentLogging {
+		request, response := span.RawPayloads()
+		if request != "" {
+			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawRequest, request))
 		}
-		if span.LLM.RawResponse != "" {
-			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawResponse, span.LLM.RawResponse))
+		if response != "" {
+			otelSpan.Attributes = append(otelSpan.Attributes, kvStr(schemas.AttrBifrostRawResponse, response))
 		}
 	}
 

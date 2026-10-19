@@ -108,6 +108,7 @@ This setting is also configurable via the UI (**MCP Gateway → MCP Settings**) 
 | `allowed_origins` | array | `["*"]` | CORS allowed origins: exact URIs, wildcard-host patterns such as `https://*.example.com`, or `"*"`. While dashboard auth is disabled, browser requests to the management API are accepted only from localhost origins, the gateway's own origin, and origins listed here explicitly; see the note below |
 | `enforce_auth_on_inference` | boolean | `false` | Require auth (virtual key, API key, or user token) on `/v1/*` inference routes. Realtime connections (`/v1/realtime`, `/v1/realtime/calls`) are refused with `401` at connect time unless they present one of those, or an ephemeral client secret from `POST /v1/realtime/client_secrets` |
 | `max_request_body_size_mb` | integer | `100` | Maximum allowed request body size in MB. It also caps what a compressed request body (`Content-Encoding: gzip`, `deflate`, `br` or `zstd`) may decompress to. Within that cap a body may expand to at most 100 times its compressed size, with a 1 MiB floor, and the gateway keeps at most four times this cap of decompressed request bytes in flight at once; a body past the ratio is refused with `413`, and a request whose decompressed bytes would push the in-flight total past that budget with `503`. Each body counts what it actually inflates to, so concurrent multi-MB gzipped requests are not refused for the cap they could have reached |
+| `dual_credential_conflict_behavior` | string | `prefer_idp` | **Enterprise.** What to do when an inference request carries both an IdP token (`Authorization: Bearer <jwt>`) and a virtual key. `prefer_idp` uses the IdP token's user and drops the virtual key once the token validates, `prefer_vk` ignores the IdP token and uses the virtual key, `error` rejects the request with `400` |
 | `whitelisted_routes` | array of strings | `[]` | Routes that bypass auth middleware |
 | `allowed_headers` | array of strings | `[]` | Additional headers permitted for CORS and WebSocket |
 | `allow_direct_keys` | boolean | `false` | Allow callers to bypass the registered key pool by sending `x-bf-direct-key: true` and a raw provider key in `Authorization` / `x-api-key` / `x-goog-api-key`. See [Direct API Key](../../providers/request-options#direct-api-key) |
@@ -186,6 +187,52 @@ Compatibility flags that let Bifrost silently adapt request/response shapes for 
   }
 }
 ```
+
+---
+
+## Agent Gateway and Skills Marketplace URLs
+
+Configure these public base URLs independently. Neither feature derives its public URL from request headers.
+
+Public base URLs for MCP, Agent Gateway, and Skills must use HTTP or HTTPS and must not contain userinfo, query strings, or fragments. Ports and path prefixes are supported. API updates reject invalid URLs without echoing their values. Config loading ignores invalid overrides: Agent Gateway and skills marketplace serving stay disabled, while MCP retains its request-derived callback fallback.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `a2a_external_client_url` | string or secret reference | Unset | Enables Agent Gateway protocol operations and supplies agent-card and push-callback URLs. |
+| `skills_external_client_url` | string or secret reference | Unset | Enables Skills Repository marketplace registration and serving. Git must also be installed on the server. |
+
+```json
+{
+  "client": {
+    "a2a_external_client_url": "https://bifrost.example.com",
+    "skills_external_client_url": "https://bifrost.example.com"
+  }
+}
+```
+
+Both fields support environment references such as `env.BIFROST_EXTERNAL_URL` and vault references. They may share a value, but there is no common base-URL setting.
+
+Without a resolved Agent Gateway URL, HTTP protocol endpoints return 503 and A2A gRPC operations return UNAVAILABLE. Agent registration and management remain available. Without a resolved skills URL, marketplace registration and serving are disabled; skill management and direct downloads remain available.
+
+Use **Agents → Agent Settings** or **Skills → Skills Settings** to update the corresponding URL in the dashboard. See [Agent Gateway configuration](/features/agent-gateway/configuration#set-the-public-base-url) and [Skills Repository marketplace access](/features/skills-repository#configure-marketplace-access).
+
+## Agent Gateway destination permissions
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `a2a_private_allowlist` | array of strings | `[]` | Private or loopback hosts, IP addresses, or CIDR ranges permitted for agent card discovery, OAuth, and runtime HTTP or gRPC connections. Entries have no scheme, port, or path. Link-local and cloud metadata addresses are always blocked. |
+
+```json
+{
+  "client": {
+    "a2a_private_allowlist": ["research.internal", "auth.internal"]
+  }
+}
+```
+
+Changing this setting through the dashboard or API requires dashboard authentication. Agents registered while dashboard authentication is bypassed cannot use these private permissions. Operator declarations in config.json can use them.
+
+Network permission does not authorize runtime calls to another service. Set `agents[].credential_origins` when the agent card advertises a runtime origin different from the card's origin. Every runtime endpoint needs origin approval, including requests without configured authentication, because callers can supply upstream credential headers. See [Additional agent endpoints](/features/agent-gateway/authentication#additional-agent-endpoints) for a complete example.
 
 ---
 

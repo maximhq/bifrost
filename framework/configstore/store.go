@@ -29,6 +29,9 @@ type VirtualKeyQueryParams struct {
 	ExcludeAccessProfileManagedVirtual bool   // When true, exclude VKs managed through enterprise access profiles
 	ExcludeAssignedVirtualKeys         bool   // When true, exclude VKs that already have any user assignment
 	ForUserAssignment                  bool   // When true, exclude VKs assigned to any entity (team, customer, access profile, or user) — intended for user-assignment pickers
+	// MetadataFilters narrows to keys whose metadata has every listed key set to exactly the given
+	// value (AND). Keys failing tables.IsValidVirtualKeyMetadataKey match nothing.
+	MetadataFilters map[string]string
 }
 
 // ModelConfigsQueryParams holds pagination, filtering, and search parameters for model configs queries.
@@ -1165,7 +1168,11 @@ type ConfigStore interface {
 }
 
 // NewConfigStore creates a new config store based on the configuration
-func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger) (ConfigStore, error) {
+func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger, opts ...Option) (ConfigStore, error) {
+	var o storeOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	if config == nil {
 		return nil, fmt.Errorf("config cannot be nil")
 	}
@@ -1181,7 +1188,7 @@ func NewConfigStore(ctx context.Context, config *Config, logger schemas.Logger) 
 		return nil, fmt.Errorf("invalid sqlite config: %T", config.Config)
 	case ConfigStoreTypePostgres:
 		if postgresConfig, ok := config.Config.(*PostgresConfig); ok {
-			return newPostgresConfigStore(ctx, postgresConfig, logger)
+			return newPostgresConfigStore(ctx, postgresConfig, logger, o.migrationMatViewPause)
 		}
 		return nil, fmt.Errorf("invalid postgres config: %T", config.Config)
 	}

@@ -1204,7 +1204,13 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 		return providerUtils.MarshalSorted(*mc.ContentStr)
 	}
 	if mc.ContentObj != nil {
-		return providerUtils.MarshalSorted(mc.ContentObj)
+		data, err := providerUtils.MarshalSorted(mc.ContentObj)
+		// Anthropic requires tool_references on a search result even when the search
+		// found nothing; omitempty would drop an empty list.
+		if err == nil && mc.ContentObj.Type == AnthropicContentBlockTypeToolSearchToolSearchResult && len(mc.ContentObj.ToolReferences) == 0 {
+			return providerUtils.SetRawJSONField(data, "tool_references", []byte("[]"))
+		}
+		return data, err
 	}
 	if mc.ContentBlocks != nil {
 		return providerUtils.MarshalSorted(mc.ContentBlocks)
@@ -1260,6 +1266,7 @@ const (
 	AnthropicContentBlockTypeBashCodeExecutionToolResult       AnthropicContentBlockType = "bash_code_execution_tool_result"
 	AnthropicContentBlockTypeTextEditorCodeExecutionToolResult AnthropicContentBlockType = "text_editor_code_execution_tool_result"
 	AnthropicContentBlockTypeToolSearchToolResult              AnthropicContentBlockType = "tool_search_tool_result"
+	AnthropicContentBlockTypeToolSearchToolSearchResult        AnthropicContentBlockType = "tool_search_tool_search_result" // content object of a tool_search_tool_result
 	AnthropicContentBlockTypeToolReference                     AnthropicContentBlockType = "tool_reference"
 	AnthropicContentBlockTypeContainerUpload                   AnthropicContentBlockType = "container_upload"
 	AnthropicContentBlockTypeAdvisorToolResult                 AnthropicContentBlockType = "advisor_tool_result"
@@ -1424,8 +1431,8 @@ const (
 // ToolReferences is declared flat, so live traffic never populates it:
 // AnthropicContent.UnmarshalJSON's single-object fallback parks the inner object in
 // Content.ContentBlocks, one level below where every reader was looking. Bifrost's
-// own rebuild (convertBifrostToolSearchCallToAnthropicBlocks) does set the flat
-// field, so both are honoured, flat first. The error variant
+// own rebuild (anthropicToolSearchResultBlock) nests it in Content.ContentObj; the
+// flat field is still honoured first for older payloads. The error variant
 // (tool_search_tool_result_error) legitimately carries none and yields nil.
 func (b *AnthropicContentBlock) DiscoveredToolReferences() []AnthropicContentBlock {
 	if b == nil {
@@ -1436,6 +1443,9 @@ func (b *AnthropicContentBlock) DiscoveredToolReferences() []AnthropicContentBlo
 	}
 	if b.Content == nil {
 		return nil
+	}
+	if b.Content.ContentObj != nil && len(b.Content.ContentObj.ToolReferences) > 0 {
+		return b.Content.ContentObj.ToolReferences
 	}
 	for _, inner := range b.Content.ContentBlocks {
 		if len(inner.ToolReferences) > 0 {

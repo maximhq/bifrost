@@ -82,14 +82,81 @@ ErrorField:
     event_id:
       type: string
 
-BifrostErrorExtraFields:
+RoutingInfo:
   type: object
+  description: Which provider, model and key handled the attempt that produced this response or error, and what the caller asked for. Also sent as x-bifrost-routing-info-* response headers.
   properties:
     provider:
       $ref: '#/ModelProvider'
-    model_requested:
+      description: Provider that ran the attempt
+    model:
       type: string
+      description: Model sent to that provider
+    key:
+      type: string
+      description: Name of the stored key used, never its ID or secret
+    resolved_key_alias:
+      $ref: '#/ResolvedKeyAlias'
+    is_fallback:
+      type: boolean
+      description: True when a fallback served the request or returned the error. Omitted when false.
+    primary_provider:
+      $ref: '#/ModelProvider'
+      description: The primary attempt's provider. Set only when a fallback ran.
+    primary_model:
+      type: string
+      description: The primary attempt's model. Set only when a fallback ran.
+    requested_provider:
+      $ref: '#/ModelProvider'
+      description: Provider the caller asked for, before routing rules, load balancing or session affinity changed it. Omitted when the caller sent a bare model.
+    requested_model:
+      type: string
+      description: Model the caller asked for, before anything changed it
+    server_side_fallback_model:
+      type: string
+      description: Model that answered when Anthropic switched models inside one call
+
+ResolvedKeyAlias:
+  type: object
+  description: Set only when the requested model matched a model alias on the key
+  required:
+    - model_id
+  properties:
+    model_id:
+      type: string
+      description: Model ID sent to the provider
+    model_name:
+      type: string
+      description: Canonical model name, used for pricing and logs
+    model_family:
+      type: string
+      description: Resolved model family
+
+BifrostErrorExtraFields:
+  type: object
+  properties:
+    routing_info:
+      $ref: '#/RoutingInfo'
+    provider:
+      $ref: '#/ModelProvider'
+      deprecated: true
+      description: "Deprecated: use routing_info.provider."
+    original_model_requested:
+      type: string
+      deprecated: true
+      description: "Deprecated: use routing_info.primary_model when routing_info.is_fallback is true, otherwise routing_info.model. For the model the caller asked for, read routing_info.requested_model."
+    resolved_model_used:
+      type: string
+      deprecated: true
+      description: "Deprecated: use routing_info.resolved_key_alias.model_id when an alias matched, otherwise routing_info.model."
     request_type:
+      type: string
+    mcp_request_type:
+      type: string
+    a2a_request_type:
+      type: string
+      description: Agent Gateway operation, for A2A errors
+    a2a_agent_name:
       type: string
     error_type:
       type: string
@@ -108,6 +175,54 @@ BifrostErrorExtraFields:
         milliseconds, read from its retry-after-ms or Retry-After header or
         its google.rpc.RetryInfo error detail, and clamped to between 1000 and
         300000. Absent when the provider gave no explicit hint.
+    raw_request:
+      description: Raw provider request, when raw request capture is enabled
+    raw_response:
+      description: Raw provider response, when raw response capture is enabled
+    converted_request_type:
+      type: string
+    dropped_compat_plugin_params:
+      type: array
+      items:
+        type: string
+    latency:
+      type: integer
+      format: int64
+      description: Latency in milliseconds
+    key_statuses:
+      type: array
+      description: Per-key results, for requests that ran on every key such as listing models
+      items:
+        type: object
+        properties:
+          key_id:
+            type: string
+          status:
+            type: string
+            enum: [success, list_models_failed]
+          provider:
+            $ref: '#/ModelProvider'
+          error:
+            $ref: '#/BifrostError'
+    mcp_auth_required:
+      type: object
+      description: Set when a per-user MCP tool needs the caller to complete an inline auth flow
+      properties:
+        kind:
+          type: string
+        mcp_client_id:
+          type: string
+        mcp_client_name:
+          type: string
+        message:
+          type: string
+        authorize_url:
+          type: string
+        session_id:
+          type: string
+    billed_usage:
+      $ref: './usage.yaml#/BifrostLLMUsage'
+      description: Usage the provider reported and billed even though the request failed
 
 BifrostResponseExtraFields:
   type: object
@@ -116,29 +231,170 @@ BifrostResponseExtraFields:
     request_type:
       type: string
       description: Type of request that was made
+    pricing_request_type:
+      type: string
+      description: Request type used for pricing, when it differs from request_type
+    routing_info:
+      $ref: '#/RoutingInfo'
     provider:
       $ref: '#/ModelProvider'
-    model_requested:
+      deprecated: true
+      description: "Deprecated: use routing_info.provider."
+    original_model_requested:
       type: string
-      description: The model that was requested
-    model_deployment:
+      deprecated: true
+      description: "Deprecated: use routing_info.primary_model when routing_info.is_fallback is true, otherwise routing_info.model. For the model the caller asked for, read routing_info.requested_model."
+    resolved_model_used:
       type: string
-      description: The actual model deployment used
+      deprecated: true
+      description: "Deprecated: use routing_info.resolved_key_alias.model_id when an alias matched, otherwise routing_info.model."
     latency:
       type: integer
       format: int64
-      description: Request latency in milliseconds
+      description: Request latency in milliseconds. On a stream each chunk carries its own latency and the last chunk the total.
+    upstream_latency:
+      type: integer
+      format: int64
+      description: Milliseconds spent waiting on the provider, summed over every attempt, retry and fallback. Absent when unknown.
     chunk_index:
       type: integer
-      description: Index of the chunk for streaming responses
+      description: Index of the chunk for streaming responses, 0 otherwise
     raw_request:
-      type: object
-      description: Raw request if enabled
+      description: Raw provider request, when raw request capture is enabled
     raw_response:
-      type: object
-      description: Raw response if enabled
+      description: Raw provider response, when raw response capture is enabled
     cache_debug:
       $ref: '#/BifrostCacheDebug'
+    routing_metadata:
+      type: object
+      description: Billable internal calls the routing plugin made while classifying the request's complexity
+      properties:
+        calls:
+          type: array
+          items:
+            type: object
+            properties:
+              request_type:
+                type: string
+              provider_used:
+                type: string
+              model_used:
+                type: string
+              input_tokens:
+                type: integer
+              output_tokens:
+                type: integer
+              count_toward_budgets:
+                type: boolean
+    guardrail_debug:
+      $ref: '#/BifrostGuardrailMetadata'
+    parse_errors:
+      type: array
+      description: Errors hit while parsing JSONL batch results
+      items:
+        $ref: './batch.yaml#/BatchError'
+    converted_request_type:
+      type: string
+    dropped_compat_plugin_params:
+      type: array
+      description: Parameters the compat plugin dropped because the model does not support them
+      items:
+        type: string
+    dropped_unsupported_tools:
+      type: array
+      description: Tool types removed because the target model does not support them
+      items:
+        type: string
+    provider_response_headers:
+      type: object
+      description: The provider's HTTP response headers, without transport-level headers
+      additionalProperties:
+        type: string
+    passthrough_path:
+      type: string
+      description: Provider path of a passthrough request
+
+BifrostGuardrailMetadata:
+  type: object
+  description: Guardrail judge calls and matches recorded for a request.
+  properties:
+    judge_calls:
+      type: array
+      description: Billable guardrail judge invocations (LLM-backed guardrail providers)
+      items:
+        $ref: '#/BifrostGuardrailJudgeCall'
+    detections:
+      type: array
+      description: Guardrail matches. Enforced rules record detect-only matches; output-monitor rules record every match they see, with the action enforcement would have taken.
+      items:
+        $ref: '#/BifrostGuardrailDetection'
+
+BifrostGuardrailDetection:
+  type: object
+  properties:
+    phase:
+      type: string
+      description: Phase the match was found in (input, output, or mcp-<source>)
+    rule_id:
+      type: integer
+    rule_name:
+      type: string
+    guardrail_name:
+      type: string
+      description: Guardrail profile that matched
+    guardrail_provider:
+      type: string
+      description: Guardrail provider type of the profile (for example regex or bedrock)
+    reason:
+      type: string
+    assessments:
+      type: array
+      description: Sanitized policy categories; never the matched text
+      items:
+        type: string
+    action:
+      type: string
+      enum: [detect, block, redact, transform]
+      description: What the guardrail did, or would have done when the rule only monitors
+    enforced:
+      type: boolean
+      description: False when an output-monitor rule recorded the match without acting on it
+
+BifrostGuardrailJudgeCall:
+  type: object
+  properties:
+    phase:
+      type: string
+    rule_id:
+      type: integer
+    rule_name:
+      type: string
+    guardrail_name:
+      type: string
+    guardrail_provider:
+      type: string
+    action:
+      type: string
+    reason:
+      type: string
+    judge_provider:
+      type: string
+    judge_model:
+      type: string
+    judge_request_type:
+      type: string
+    prompt_tokens:
+      type: integer
+    prompt_tokens_details:
+      type: object
+      additionalProperties: true
+    completion_tokens:
+      type: integer
+    completion_tokens_details:
+      type: object
+      additionalProperties: true
+    total_tokens:
+      type: integer
 
 BifrostCacheDebug:
   type: object
@@ -163,6 +419,10 @@ BifrostCacheDebug:
       type: number
     similarity:
       type: number
+    cache_hit_latency:
+      type: integer
+      format: int64
+      description: Milliseconds spent serving a cache hit. Set only on a hit.
 
 CacheControl:
   type: object

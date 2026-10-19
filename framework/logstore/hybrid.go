@@ -46,6 +46,7 @@ type uploadWork struct {
 	status    string
 	payload   []byte // JSON-encoded payload
 	tags      map[string]string
+	staleKey  string // object in the other format this upload replaces; deleted once the Put succeeds
 }
 
 // HybridLogStore wraps an existing LogStore and offloads large payload
@@ -72,6 +73,9 @@ type HybridLogStore struct {
 	excludedRequestTypes map[string]struct{}
 	// offloadErrorRawBodies: error_details is DB-resident only through databaseResidentPayloadFields, so its raw bodies are offloaded.
 	offloadErrorRawBodies bool
+	objectExt             string // suffix of new object keys; selects json or parquet encoding
+	parquetCompression    string // parquet page codec, used when objectExt is parquetObjectExt
+	singleFormat          bool   // the backend can only hold json objects, so the other format is never probed or deleted
 }
 
 type scopedDBLogStore interface {
@@ -86,11 +90,15 @@ type scopedDBLogStore interface {
 // moveErrorRawBodiesToObject sends to object storage. Content-hidden rows
 // still offload it with everything else.
 //
+// guardrail_debug backs the guardrail outcome filter (the Guardrails incidents
+// list) the same way. It holds sanitized rule metadata - rule, guardrail,
+// phase, reason, policy categories - and never matched request text.
+//
 // This applies to logs written from this change on. Rows written before it
 // hold error_details only in their object, so they stay out of the error
 // breakdowns: restoring them means one object read per failed log, with no
 // bound on the count, and is not done automatically.
-var databaseResidentPayloadFields = []string{"error_details"}
+var databaseResidentPayloadFields = []string{"error_details", "guardrail_debug"}
 
 // newHybridLogStore creates a HybridLogStore wrapping the given inner store.
 // excludeFields lists payload field DB column names that should be kept in the
@@ -124,6 +132,7 @@ func newHybridLogStore(inner LogStore, objects objectstore.ObjectStore, prefix s
 		excludedPayloadFields: excluded,
 		excludedRequestTypes:  excludedTypes,
 		offloadErrorRawBodies: offloadErrorRawBodies,
+		objectExt:             jsonObjectExt,
 	}
 	// Start upload workers, one per queue shard. Uploads for one log id always
 	// land on the same shard (see uploadShard), so an insert's upload and a
@@ -211,10 +220,18 @@ func (h *HybridLogStore) processUpload(work *uploadWork) {
 		work.payload = merged
 	}
 
-	if err := h.objects.Put(ctx, work.key, work.payload, work.tags); err != nil {
+	if err := h.putPayload(ctx, work.key, work.payload, work.tags); err != nil {
 		h.logger.Warn("objectstore: failed to upload log %s: %v", work.logID, err)
 		h.droppedUploads.Add(1)
 		return
+	}
+	// The new object carries everything the other-format copy held, so drop
+	// that copy: a later switch back must not find it first and serve or merge
+	// stale content.
+	if work.staleKey != "" {
+		if err := h.objects.Delete(ctx, work.staleKey); err != nil {
+			h.logger.Warn("objectstore: failed to delete replaced object %s for log %s: %v", work.staleKey, work.logID, err)
+		}
 	}
 
 	// Mark the DB row as having an object. Use a fresh context so that a slow
@@ -272,7 +289,7 @@ func isPayloadEmpty(payload map[string]string) bool {
 // content must never replace an object that may exist (for a hidden row that
 // object is the only copy of the input).
 func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *uploadWork) ([]byte, bool) {
-	existing, err := h.objects.Get(ctx, work.key)
+	existing, foundKey, err := h.getPayload(ctx, work.key)
 	if err != nil {
 		if errors.Is(err, objectstore.ErrNotFound) {
 			return work.payload, true
@@ -295,6 +312,10 @@ func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *upload
 	if base == nil {
 		base = make(map[string]string, len(overlay))
 	}
+	if foundKey != work.key {
+		// The stored copy is in the other format; the merged object replaces it.
+		work.staleKey = foundKey
+	}
 	for k, v := range overlay {
 		if v != "" {
 			base[k] = v
@@ -307,6 +328,98 @@ func (h *HybridLogStore) mergeIntoStoredObject(ctx context.Context, work *upload
 		return nil, false
 	}
 	return merged, true
+}
+
+// setObjectFormat selects how new payload objects are encoded. "parquet"
+// writes single-row parquet files under .parquet keys with the given page
+// codec; anything else keeps JSON under .json.gz keys. Objects already in the
+// bucket stay readable either way (see getPayload).
+func (h *HybridLogStore) setObjectFormat(format, compression string) {
+	if format == objectstore.FormatParquet {
+		h.objectExt = parquetObjectExt
+		h.parquetCompression = compression
+		return
+	}
+	h.objectExt = jsonObjectExt
+	h.parquetCompression = ""
+}
+
+func (h *HybridLogStore) logKey(timestamp time.Time, logID string) string {
+	return objectKey(h.prefix, "logs", timestamp, logID, h.objectExt)
+}
+
+func (h *HybridLogStore) mcpToolKey(timestamp time.Time, logID string) string {
+	return objectKey(h.prefix, "mcp-logs", timestamp, logID, h.objectExt)
+}
+
+func (h *HybridLogStore) agentLogKey(timestamp time.Time, logID string) string {
+	return objectKey(h.prefix, "agent-logs", timestamp, logID, h.objectExt)
+}
+
+// alternateKey returns the same object path in the other format (.parquet
+// for a .json.gz key and the reverse), or "" when the store only ever holds
+// JSON. A row's object stays under the key it was written with when
+// object_storage.format changes, so reads, merges and deletes also look there.
+func (h *HybridLogStore) alternateKey(key string) string {
+	if h.singleFormat {
+		return ""
+	}
+	if base, ok := strings.CutSuffix(key, parquetObjectExt); ok {
+		return base + jsonObjectExt
+	}
+	if base, ok := strings.CutSuffix(key, jsonObjectExt); ok {
+		return base + parquetObjectExt
+	}
+	return ""
+}
+
+// withAlternateKeys returns key plus its other-format key, if any, so
+// deletes also remove objects written before a format switch.
+func (h *HybridLogStore) withAlternateKeys(key string) []string {
+	if alt := h.alternateKey(key); alt != "" {
+		return []string{key, alt}
+	}
+	return []string{key}
+}
+
+// getPayload reads the object at key and returns it as JSON, along with the
+// key it was found under. A key with no object falls back to its other-format
+// key, and parquet bodies are decoded, so callers always receive the JSON the
+// payload was built from. The second lookup only happens on a not-found.
+func (h *HybridLogStore) getPayload(ctx context.Context, key string) ([]byte, string, error) {
+	found := key
+	data, err := h.objects.Get(ctx, key)
+	if err != nil && errors.Is(err, objectstore.ErrNotFound) {
+		if alt := h.alternateKey(key); alt != "" {
+			found = alt
+			data, err = h.objects.Get(ctx, alt)
+		}
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	if objectstore.IsParquet(data) {
+		decoded, err := objectstore.DecodeParquetToJSONObject(data)
+		return decoded, found, err
+	}
+	return data, found, nil
+}
+
+// putPayload writes a JSON payload in the encoding its key names: parquet
+// keys get a parquet body (with no outer gzip, since parquet compresses its
+// pages), every other key gets the JSON as is.
+func (h *HybridLogStore) putPayload(ctx context.Context, key string, payload []byte, tags map[string]string) error {
+	if !strings.HasSuffix(key, parquetObjectExt) {
+		return h.objects.Put(ctx, key, payload, tags)
+	}
+	encoded, err := objectstore.EncodeJSONObjectToParquet(payload, h.parquetCompression)
+	if err != nil {
+		return err
+	}
+	return objectstore.PutWith(ctx, h.objects, key, encoded, tags, objectstore.PutOptions{
+		ContentType:     objectstore.ContentTypeParquet,
+		SkipCompression: true,
+	})
 }
 
 // enqueueUpload pushes an upload job onto the queue. If the queue is full,
@@ -329,7 +442,7 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 		h.droppedUploads.Add(1)
 		return
 	}
-	h.enqueueRawUpload(logID, timestamp, ObjectKey(h.prefix, timestamp, logID), uploadKindLog, "", data, tags)
+	h.enqueueRawUpload(logID, timestamp, h.logKey(timestamp, logID), uploadKindLog, "", data, tags)
 }
 
 // enqueueRawUpload submits a pre-serialized payload to the upload queue.
@@ -338,6 +451,13 @@ func (h *HybridLogStore) enqueueUpload(logID string, timestamp time.Time, payloa
 // is full. Used by both regular log uploads (via enqueueUpload) and MCP tool
 // log uploads, which already hold raw JSON bytes.
 func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key string, kind uploadKind, status string, data []byte, tags map[string]string) {
+	h.enqueueReplacingUpload(logID, timestamp, key, "", kind, status, data, tags)
+}
+
+// enqueueReplacingUpload is enqueueRawUpload for a full rewrite whose stored
+// copy was read from staleKey (the other-format key); the worker deletes that
+// copy once the new object is written.
+func (h *HybridLogStore) enqueueReplacingUpload(logID string, timestamp time.Time, key, staleKey string, kind uploadKind, status string, data []byte, tags map[string]string) {
 	if h.closed.Load() || len(data) == 0 {
 		return
 	}
@@ -360,6 +480,7 @@ func (h *HybridLogStore) enqueueRawUpload(logID string, timestamp time.Time, key
 		status:    status,
 		payload:   data,
 		tags:      tags,
+		staleKey:  staleKey,
 	}:
 		h.pendingBytes.Add(int64(len(data)))
 	default:
@@ -502,7 +623,11 @@ func (h *HybridLogStore) skipsOffload(entry *Log) bool {
 	if entry.ContentHidden {
 		return false
 	}
-	_, ok := h.excludedRequestTypes[entry.Object]
+	if _, ok := h.excludedRequestTypes[entry.Object]; ok {
+		return true
+	}
+	// A passthrough row stored under its inferred type still honours an exclusion of passthrough.
+	_, ok := h.excludedRequestTypes[entry.PassthroughObjectType()]
 	return ok
 }
 
@@ -637,8 +762,8 @@ func (h *HybridLogStore) hydrateLog(ctx context.Context, log *Log, requestedFiel
 	if log == nil || !log.HasObject || log.ContentHidden {
 		return
 	}
-	key := ObjectKey(h.prefix, log.Timestamp, log.ID)
-	data, err := h.objects.Get(ctx, key)
+	key := h.logKey(log.Timestamp, log.ID)
+	data, _, err := h.getPayload(ctx, key)
 	if err != nil {
 		h.logger.Warn("objectstore: failed to fetch payload for log %s: %v", log.ID, err)
 		return // Graceful degradation
@@ -666,18 +791,25 @@ func (h *HybridLogStore) hydrateMCPToolLog(ctx context.Context, log *MCPToolLog)
 // the update path where the payload must be loaded even when has_object has
 // not yet been set on the DB row.
 func (h *HybridLogStore) hydrateMCPToolLogFromObject(ctx context.Context, log *MCPToolLog) error {
+	_, err := h.hydrateMCPToolLogFromObjectKey(ctx, log)
+	return err
+}
+
+// hydrateMCPToolLogFromObjectKey is hydrateMCPToolLogFromObject that also
+// returns the key the payload was read from ("" when log is nil).
+func (h *HybridLogStore) hydrateMCPToolLogFromObjectKey(ctx context.Context, log *MCPToolLog) (string, error) {
 	if log == nil {
-		return nil
+		return "", nil
 	}
-	key := MCPToolObjectKey(h.prefix, log.Timestamp, log.ID)
-	data, err := h.objects.Get(ctx, key)
+	key := h.mcpToolKey(log.Timestamp, log.ID)
+	data, found, err := h.getPayload(ctx, key)
 	if err != nil {
-		return fmt.Errorf("objectstore: fetch MCP tool log payload for %s: %w", log.ID, err)
+		return "", fmt.Errorf("objectstore: fetch MCP tool log payload for %s: %w", log.ID, err)
 	}
 	if mergeErr := MergeMCPToolLogPayloadFromJSON(log, data); mergeErr != nil {
-		return fmt.Errorf("objectstore: merge MCP tool log payload for %s: %w", log.ID, mergeErr)
+		return "", fmt.Errorf("objectstore: merge MCP tool log payload for %s: %w", log.ID, mergeErr)
 	}
-	return nil
+	return found, nil
 }
 
 // Update passes the update through to the inner store for index/scalar field
@@ -702,8 +834,13 @@ func (h *HybridLogStore) DeleteLog(ctx context.Context, id string) error {
 		return err
 	}
 	if log != nil && log.HasObject {
-		key := ObjectKey(h.prefix, log.Timestamp, log.ID)
-		if delErr := h.objects.Delete(ctx, key); delErr != nil {
+		var delErr error
+		if keys := h.withAlternateKeys(h.logKey(log.Timestamp, log.ID)); len(keys) == 1 {
+			delErr = h.objects.Delete(ctx, keys[0])
+		} else {
+			delErr = h.objects.DeleteBatch(ctx, keys)
+		}
+		if delErr != nil {
 			h.logger.Warn("objectstore: failed to delete object for log %s: %v", id, delErr)
 		}
 	}
@@ -723,7 +860,7 @@ func (h *HybridLogStore) DeleteLogs(ctx context.Context, ids []string) error {
 			return findErr
 		}
 		if log != nil && log.HasObject {
-			keys = append(keys, ObjectKey(h.prefix, log.Timestamp, log.ID))
+			keys = append(keys, h.withAlternateKeys(h.logKey(log.Timestamp, log.ID))...)
 		}
 	}
 	if err := h.inner.DeleteLogs(ctx, ids); err != nil {
@@ -1038,7 +1175,7 @@ func (h *HybridLogStore) hydrateLogForBilling(ctx context.Context, log *Log) err
 		fields = append(fields, col)
 	}
 
-	data, err := h.objects.Get(ctx, ObjectKey(h.prefix, log.Timestamp, log.ID))
+	data, _, err := h.getPayload(ctx, h.logKey(log.Timestamp, log.ID))
 	if err != nil {
 		return fmt.Errorf("fetch payload: %w", err)
 	}
@@ -1290,7 +1427,7 @@ func (h *HybridLogStore) BatchUpdate(ctx context.Context, entries []*Log) error 
 			h.droppedUploads.Add(1)
 			continue
 		}
-		h.enqueueRawUpload(u.logID, u.timestamp, ObjectKey(h.prefix, u.timestamp, u.logID), uploadKindLogMerge, "", data, BuildTags(u.tagRow))
+		h.enqueueRawUpload(u.logID, u.timestamp, h.logKey(u.timestamp, u.logID), uploadKindLogMerge, "", data, BuildTags(u.tagRow))
 	}
 	return nil
 }
@@ -1702,7 +1839,7 @@ func (h *HybridLogStore) CreateMCPToolLog(ctx context.Context, entry *MCPToolLog
 	if err := h.inner.CreateMCPToolLog(ctx, &dbEntry); err != nil {
 		return err
 	}
-	h.enqueueRawUpload(entry.ID, entry.Timestamp, MCPToolObjectKey(h.prefix, entry.Timestamp, entry.ID), uploadKindMCP, entry.Status, payload, tags)
+	h.enqueueRawUpload(entry.ID, entry.Timestamp, h.mcpToolKey(entry.Timestamp, entry.ID), uploadKindMCP, entry.Status, payload, tags)
 	return nil
 }
 
@@ -1749,7 +1886,7 @@ func (h *HybridLogStore) BatchCreateMCPToolLogsIfNotExists(ctx context.Context, 
 	}
 
 	for _, u := range uploads {
-		h.enqueueRawUpload(u.logID, u.timestamp, MCPToolObjectKey(h.prefix, u.timestamp, u.logID), uploadKindMCP, u.status, u.payload, u.tags)
+		h.enqueueRawUpload(u.logID, u.timestamp, h.mcpToolKey(u.timestamp, u.logID), uploadKindMCP, u.status, u.payload, u.tags)
 	}
 	return nil
 }
@@ -1772,7 +1909,8 @@ func (h *HybridLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry 
 	if err != nil {
 		return err
 	}
-	if err := h.hydrateMCPToolLogFromObject(ctx, current); err != nil {
+	foundKey, err := h.hydrateMCPToolLogFromObjectKey(ctx, current)
+	if err != nil {
 		return err
 	}
 	if err := applyMCPToolLogUpdate(current, entry); err != nil {
@@ -1793,7 +1931,12 @@ func (h *HybridLogStore) UpdateMCPToolLog(ctx context.Context, id string, entry 
 	if err != nil {
 		return fmt.Errorf("logstore: serialize MCP tool log update before offload: %w", err)
 	}
-	h.enqueueRawUpload(current.ID, current.Timestamp, MCPToolObjectKey(h.prefix, current.Timestamp, current.ID), uploadKindMCP, current.Status, payload, BuildMCPToolTags(current))
+	key := h.mcpToolKey(current.Timestamp, current.ID)
+	staleKey := ""
+	if foundKey != key {
+		staleKey = foundKey
+	}
+	h.enqueueReplacingUpload(current.ID, current.Timestamp, key, staleKey, uploadKindMCP, current.Status, payload, BuildMCPToolTags(current))
 	return nil
 }
 
@@ -1819,7 +1962,7 @@ func (h *HybridLogStore) BatchCreateAgentLogsIfNotExists(ctx context.Context, en
 		seen[entry.ID] = struct{}{}
 		dbEntry := *entry
 		if AgentLogHasPayload(entry) {
-			key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
+			key := h.agentLogKey(entry.Timestamp, entry.ID)
 			payload, err := MarshalAgentLogPayload(entry)
 			if err != nil {
 				return nil, fmt.Errorf("logstore: serialize A2A log before offload: %w", err)
@@ -1918,11 +2061,11 @@ func (h *HybridLogStore) hydrateAgentLog(ctx context.Context, entry *AgentLog) {
 	if entry == nil || !entry.HasObject || entry.ContentHidden {
 		return
 	}
-	key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
+	key := h.agentLogKey(entry.Timestamp, entry.ID)
 	if entry.PayloadReference != nil && *entry.PayloadReference != "" {
 		key = *entry.PayloadReference
 	}
-	data, err := h.objects.Get(ctx, key)
+	data, _, err := h.getPayload(ctx, key)
 	if err != nil {
 		h.logger.Warn("objectstore: failed to hydrate A2A log %s: %v", entry.ID, err)
 		return
@@ -1954,11 +2097,11 @@ func (h *HybridLogStore) hydrateAgentLogFromObject(ctx context.Context, entry *A
 	if entry == nil {
 		return nil
 	}
-	key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
+	key := h.agentLogKey(entry.Timestamp, entry.ID)
 	if entry.PayloadReference != nil && *entry.PayloadReference != "" {
 		key = *entry.PayloadReference
 	}
-	data, err := h.objects.Get(ctx, key)
+	data, _, err := h.getPayload(ctx, key)
 	if err != nil {
 		return fmt.Errorf("objectstore: fetch Agent log payload for %s: %w", entry.ID, err)
 	}
@@ -2031,7 +2174,7 @@ func (h *HybridLogStore) UpdateAgentLog(ctx context.Context, id string, entry an
 			dbUpdates[field] = value
 		}
 	}
-	key := AgentLogObjectKey(h.prefix, current.Timestamp, current.ID)
+	key := h.agentLogKey(current.Timestamp, current.ID)
 	if current.PayloadReference != nil && *current.PayloadReference != "" {
 		key = *current.PayloadReference
 	}
@@ -2073,11 +2216,11 @@ func (h *HybridLogStore) DeleteAgentLogs(ctx context.Context, ids []string) erro
 		if !entry.HasObject {
 			continue
 		}
-		key := AgentLogObjectKey(h.prefix, entry.Timestamp, entry.ID)
+		key := h.agentLogKey(entry.Timestamp, entry.ID)
 		if entry.PayloadReference != nil && *entry.PayloadReference != "" {
 			key = *entry.PayloadReference
 		}
-		keys = append(keys, key)
+		keys = append(keys, h.withAlternateKeys(key)...)
 	}
 	if err := h.inner.DeleteAgentLogs(ctx, ids); err != nil {
 		return err
@@ -2114,7 +2257,7 @@ func (h *HybridLogStore) DeleteMCPToolLogs(ctx context.Context, ids []string) er
 			return findErr
 		}
 		if log != nil && log.HasObject {
-			keys = append(keys, MCPToolObjectKey(h.prefix, log.Timestamp, log.ID))
+			keys = append(keys, h.withAlternateKeys(h.mcpToolKey(log.Timestamp, log.ID))...)
 		}
 	}
 	if err := h.inner.DeleteMCPToolLogs(ctx, ids); err != nil {

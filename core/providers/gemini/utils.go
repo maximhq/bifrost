@@ -862,6 +862,24 @@ func geminiResponsesStatus(stopReason string) (*string, *schemas.ResponsesRespon
 	return &status, details
 }
 
+// promptBlockError returns the Responses error for a prompt Gemini refused before generating
+// (promptFeedback.blockReason set, no candidates), or nil when the prompt was not blocked.
+// invalid_prompt is OpenAI's ResponseError code for a refused prompt.
+func (response *GenerateContentResponse) promptBlockError() *schemas.ResponsesResponseError {
+	feedback := response.PromptFeedback
+	if feedback == nil || len(response.Candidates) > 0 || feedback.BlockReason == "" || feedback.BlockReason == "BLOCK_REASON_UNSPECIFIED" {
+		return nil
+	}
+	message := feedback.BlockReasonMessage
+	if message == "" {
+		message = feedback.BlockReason
+	}
+	return &schemas.ResponsesResponseError{
+		Code:    "invalid_prompt",
+		Message: message,
+	}
+}
+
 // ConvertBifrostFinishReasonToGemini converts Bifrost canonical finish reasons back to Gemini format.
 func ConvertBifrostFinishReasonToGemini(bifrostReason string) FinishReason {
 	if geminiReason, ok := bifrostToGeminiFinishReason[bifrostReason]; ok {

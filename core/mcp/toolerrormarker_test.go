@@ -62,3 +62,31 @@ func TestCreateToolResponseMessageMarksError(t *testing.T) {
 		t.Fatalf("a successful MCP result must leave IsError nil, got %v", *ok.ChatToolMessage.IsError)
 	}
 }
+
+// TestMCPToolReportedError covers the span side of the same marker. A tool that answers
+// with a failure keeps a successful transport, so the span status stays ok and only this
+// predicate distinguishes the two for a backend.
+func TestMCPToolReportedError(t *testing.T) {
+	failed := &schemas.BifrostMCPResponse{ChatMessage: createToolResponseMessage(testToolCall("call_1"), "ENOENT", true)}
+	if !mcpToolReportedError(failed) {
+		t.Fatal("a tool result marked IsError must report an error to the span")
+	}
+
+	// Success must stay unmarked so the attribute never becomes a constant.
+	ok := &schemas.BifrostMCPResponse{ChatMessage: createToolResponseMessage(testToolCall("call_2"), "15 degrees", false)}
+	if mcpToolReportedError(ok) {
+		t.Fatal("a successful tool result must not report an error to the span")
+	}
+
+	// Ping and list_tools carry no ChatMessage, and a nil response is reachable when the
+	// op fails, so neither may panic on the way to the span.
+	for name, resp := range map[string]*schemas.BifrostMCPResponse{
+		"nil response":    nil,
+		"no chat message": {},
+		"no tool message": {ChatMessage: &schemas.ChatMessage{}},
+	} {
+		if mcpToolReportedError(resp) {
+			t.Fatalf("%s must not report an error", name)
+		}
+	}
+}

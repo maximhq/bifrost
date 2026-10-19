@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -2144,6 +2145,34 @@ func TestExtractPassthroughProviderResponseHeaders_StripsSensitiveCustomHeaders(
 	}
 }
 
+// TestExtractPassthroughProviderResponseHeaders_OmitsMissingContentType verifies that an upstream
+// response without content-type yields no content-type, so the stream handler applies its
+// text/event-stream fallback instead of fasthttp's text/plain default.
+func TestExtractPassthroughProviderResponseHeaders_OmitsMissingContentType(t *testing.T) {
+	resp := &fasthttp.Response{}
+	raw := "HTTP/1.1 200 OK\r\nX-Request-Id: req-789\r\nContent-Length: 0\r\n\r\n"
+	if err := resp.Read(bufio.NewReader(strings.NewReader(raw))); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+
+	headers := ExtractPassthroughProviderResponseHeaders(resp)
+	if v, ok := lookupHeaderFold(headers, "content-type"); ok {
+		t.Fatalf("missing upstream content-type was reported as %q", v)
+	}
+	if v, ok := lookupHeaderFold(headers, "x-request-id"); !ok || v != "req-789" {
+		t.Fatalf("benign header x-request-id was dropped: %v", headers)
+	}
+
+	sent := &fasthttp.Response{}
+	raw = "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: 0\r\n\r\n"
+	if err := sent.Read(bufio.NewReader(strings.NewReader(raw))); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if v, ok := lookupHeaderFold(ExtractPassthroughProviderResponseHeaders(sent), "content-type"); !ok || v != "text/plain; charset=utf-8" {
+		t.Fatalf("explicit upstream content-type was not preserved: got %q ok=%v", v, ok)
+	}
+}
+
 // TestExtractProviderResponseHeadersFromHTTP_StripsSensitiveCustomHeaders verifies the same for
 // the net/http extractor used by providers such as Bedrock, which shares the identical filter.
 func TestExtractProviderResponseHeadersFromHTTP_StripsSensitiveCustomHeaders(t *testing.T) {
@@ -4097,7 +4126,7 @@ func decisionUserMessage(parts ...schemas.DecisionInputPart) schemas.DecisionInp
 }
 
 func decisionTextPart(text string) schemas.DecisionInputPart {
-	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr(text)}
+	return schemas.DecisionInputPart{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText(text)}
 }
 
 func decisionImagePart(url string, detail *string) schemas.DecisionInputPart {

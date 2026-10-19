@@ -17,9 +17,9 @@ import (
 	ws "github.com/fasthttp/websocket"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	bfws "github.com/maximhq/bifrost/transports/bifrost-http/websocket"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	bfws "github.com/maximhq/bifrost/transports/v2/bifrost-http/websocket"
 	"github.com/valyala/fasthttp"
 )
 
@@ -1200,6 +1200,12 @@ func extractRealtimeTokenFromAuth(auth *authHeaders) string {
 	return ""
 }
 
+// governanceVirtualKeyMetadataContextKey is the context key under which the governance plugin
+// publishes the resolved virtual key's metadata (governance.VirtualKeyMetadataContextKey), which
+// the logging plugin snapshots onto realtime log rows. Declared locally, like the logging plugin's
+// copy, so it does not depend on a new core or governance release; the string must stay identical.
+const governanceVirtualKeyMetadataContextKey schemas.BifrostContextKey = "bifrost-governance-virtual-key-metadata"
+
 // realtimeMiddlewareKeys lists the BifrostContext keys that TransportInterceptorMiddleware
 // copies from the governance plugin's context onto individual fasthttp UserValue slots.
 // We snapshot exactly these keys before the WebSocket upgrade so the long-lived session
@@ -1207,6 +1213,7 @@ func extractRealtimeTokenFromAuth(auth *authHeaders) string {
 var realtimeMiddlewareKeys = []any{
 	schemas.BifrostContextKeyGovernanceVirtualKeyID,
 	schemas.BifrostContextKeyGovernanceVirtualKeyName,
+	governanceVirtualKeyMetadataContextKey,
 	schemas.BifrostContextKeyGovernanceRoutingRuleID,
 	schemas.BifrostContextKeyGovernanceRoutingRuleName,
 	schemas.BifrostContextKeyGovernanceCustomerID,

@@ -144,7 +144,7 @@ export GCP_SERVICE_ACCOUNT_KEY='{"type":"service_account","project_id":"...", ..
 
 The traces table is **partitioned by `DATE(timestamp)`** and **clustered by `provider`, `model`, `virtual_key_id`**. Partitioning keeps time-range queries cheap (BigQuery prunes partitions), and clustering speeds up filtering by provider, model, or virtual key.
 
-Each row corresponds to one trace — one full LLM request lifecycle. The columns you will reach for most are `timestamp`, `provider`, `model`, `status`, `latency_ms`, `total_tokens`, and `cost`, plus the governance columns (`team_name`, `customer_name`, `virtual_key_name`) for attribution. Expand a category below for the full column list.
+Each row corresponds to one completed trace, including LLM requests and Agent Gateway operations. The columns you will reach for most are `timestamp`, `provider`, `model`, `status`, `latency_ms`, `total_tokens`, and `cost`, plus the governance columns (`team_name`, `customer_name`, `virtual_key_name`) for attribution. Expand a category below for the full column list.
 
 <AccordionGroup>
 
@@ -237,7 +237,7 @@ Each row corresponds to one trace — one full LLM request lifecycle. The column
 
 </Accordion>
 
-<Accordion title="Governance attribution (16 columns)">
+<Accordion title="Governance attribution (19 columns)">
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -249,6 +249,7 @@ Each row corresponds to one trace — one full LLM request lifecycle. The column
 | `business_unit_id` / `business_unit_name` | `STRING` | Business unit. |
 | `user_id` / `user_name` | `STRING` | User. |
 | `project_id` / `project_name` | `STRING` | Project the request was scoped to. Not to be confused with the `project_id` in this plugin's own config, which is the GCP project holding the dataset. |
+| `prompt_id` / `prompt_name` / `prompt_version` | `STRING` | Stored prompt the request ran. Empty when the request named no prompt. |
 
 </Accordion>
 
@@ -280,6 +281,17 @@ Each row corresponds to one trace — one full LLM request lifecycle. The column
 | `session_id` | `STRING` | Session ID from the `x-bf-session-id` header. |
 | `parent_trace_id` | `STRING` | Parent trace ID from a W3C `traceparent`. |
 | `num_spans` | `INT64` | Number of spans in the trace. |
+
+</Accordion>
+
+<Accordion title="Agent Gateway (4 columns)">
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `agent_name` | `STRING` | Registered agent name. |
+| `a2a_task_id` | `STRING` | A2A task ID, when available. |
+| `a2a_task_state` | `STRING` | Final observed task state. |
+| `conversation_id` | `STRING` | A2A context ID, when available. |
 
 </Accordion>
 
@@ -471,6 +483,37 @@ By default every plugin's pre- and post-hook execution contributes its latency t
 <Note>
 Unlike the OTEL and Datadog connectors, BigQuery has no span tree — a filtered plugin span's latency is simply omitted from the flattened row, and no re-parenting occurs. Each observability connector has its own independent `plugin_span_filter`. It follows the standard plugin config precedence rules; to make a config.json value override UI-saved DB settings on restart, set `source_of_truth: "config.json"`. See [Source of Truth & Reconciliation](/deployment-guides/config-json/source-of-truth) for details.
 </Note>
+
+---
+
+## Agent Gateway
+
+A2A traces use the same table and writer as LLM traces. Each completed trace becomes a row, with the A2A operation name in `request_type` and the following additional nullable `STRING` columns:
+
+| Column | A2A value |
+| --- | --- |
+| `agent_name` | Registered agent name. |
+| `a2a_task_id` | Task ID, when available. |
+| `a2a_task_state` | Final observed task state. |
+| `conversation_id` | A2A context ID, when available. |
+
+Existing columns hold `trace_id`, `request_id`, `session_id`, status, errors, latency, and governance attribution. `stream` identifies streaming and subscription operations. Structured request content goes into `input_history`; response content, including returned tasks, artifacts, and accumulated streaming output, goes into `output_message`. A streaming operation produces a completed row rather than one row per stream event.
+
+`disable_content_logging` and virtual-key content suppression omit message content. `excluded_attributes` can exclude columns from the row. Raw HTTP payloads require Agent Gateway raw capture plus `export_raw_payloads`; gRPC has structured content but no raw HTTP capture.
+
+With `create_table_if_not_exists` enabled, startup appends missing columns to an existing table while preserving its rows. For manually managed tables, add these four nullable columns before enabling the updated connector. The UI's **View table schema** dialog provides the full current schema.
+
+```sql
+SELECT timestamp, request_type, agent_name, a2a_task_id,
+       a2a_task_state, conversation_id, status, latency_ms,
+       input_history, output_message
+FROM `my-gcp-project.bifrost_traces.traces`
+WHERE timestamp >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR)
+  AND agent_name IS NOT NULL
+ORDER BY timestamp DESC;
+```
+
+See [Agent Gateway observability](/features/agent-gateway/observability#export-to-observability-connectors) for operation coverage and correlation.
 
 ---
 

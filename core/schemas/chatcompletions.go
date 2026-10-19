@@ -1741,6 +1741,7 @@ type ChatAssistantMessageToolCall struct {
 	ID           *string                              `json:"id,omitempty"`
 	Function     ChatAssistantMessageToolCallFunction `json:"function"`
 	ExtraContent json.RawMessage                      `json:"extra_content,omitempty"`
+	CacheControl *CacheControl                        `json:"cache_control,omitempty"` // Anthropic-family cache breakpoint on the tool_use block
 }
 
 // ChatAssistantMessageToolCallFunction represents a call to a function.
@@ -1949,6 +1950,7 @@ type BifrostLLMUsage struct {
 	PromptTokensDetails     *ChatPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`
 	CompletionTokensDetails *ChatCompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+	ReasoningTokens         int                          `json:"reasoning_tokens,omitempty"` // SGLang's top-level spelling; folded by NormalizeReasoningTokens
 	TotalTokens             int                          `json:"total_tokens"`
 	// AudioSeconds carries duration-based audio usage when a provider reports
 	// seconds instead of tokens.
@@ -1977,6 +1979,21 @@ type BifrostLLMUsage struct {
 	// (CalculateCostForUsage) never sees RoutingInfo, so without it a fallback-served
 	// turn is priced at the requested model's rates.
 	ServerSideFallbackModel *string `json:"-"`
+}
+
+// NormalizeReasoningTokens folds a top-level reasoning_tokens into CompletionTokensDetails, keeping a nested value if set.
+// (sglang sets reasoning tokens in usage.reasoning_tokens instead of usage.completion_tokens_details.reasoning_tokens).
+func (u *BifrostLLMUsage) NormalizeReasoningTokens() {
+	if u == nil || u.ReasoningTokens == 0 {
+		return
+	}
+	if u.CompletionTokensDetails == nil {
+		u.CompletionTokensDetails = &ChatCompletionTokensDetails{}
+	}
+	if u.CompletionTokensDetails.ReasoningTokens == 0 {
+		u.CompletionTokensDetails.ReasoningTokens = u.ReasoningTokens
+	}
+	u.ReasoningTokens = 0
 }
 
 type ChatPromptTokensDetails struct {

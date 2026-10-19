@@ -2,6 +2,7 @@ package openai
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 
 	"github.com/maximhq/bifrost/core/providers/utils"
@@ -115,6 +116,12 @@ func ToOpenAIChatRequest(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifros
 	if chatUsesPromptCacheBreakpoints(caps, schemas.ResolveBaseProvider(ctx, bifrostReq.Provider), capModel) {
 		ceiling := promptCacheBreakpointCeiling(ctx, true, openaiReq.ChatParameters.PromptCacheOptions, openaiReq.ExtraParams)
 		openaiReq.Messages = applyChatCacheBreakpoints(openaiReq.Messages, ceiling)
+	}
+
+	// OpenRouter forwards cache_control verbatim to Claude, which rejects more than four
+	// markers outright, so clamp the same way the direct Anthropic path does.
+	if schemas.ResolveBaseProvider(ctx, bifrostReq.Provider) == schemas.OpenRouter && schemas.IsAnthropicModel(capModel) {
+		clampOpenRouterCacheControl(openaiReq, maxResponsesCacheBreakpoints)
 	}
 
 	switch bifrostReq.Provider {
@@ -278,7 +285,7 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 		if req.ChatParameters.Reasoning.Effort != nil {
 			// Native field is provided, use it (and clear max_tokens)
 			effort := *req.ChatParameters.Reasoning.Effort
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(effort, defaultEffortControl(caps.Model())))
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(normalizeReasoningEffort(req.Provider, caps, effort))
 			// Clear max_tokens since OpenAI doesn't use it
 			req.ChatParameters.Reasoning.MaxTokens = nil
 		} else if req.ChatParameters.Reasoning.MaxTokens != nil {
@@ -296,7 +303,7 @@ func (req *OpenAIChatRequest) normalizeReasoningEffort(caps schemas.ModelCaps) {
 		// A model that always reasons rejects "none"; "minimal" normalizes to its lowest level.
 		if e := req.ChatParameters.Reasoning.Effort; e != nil && *e == schemas.ReasoningEffortNone &&
 			!caps.CanDisableReasoning(defaultCanDisableReasoning(caps.Model())) {
-			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(caps.Model())))
+			req.ChatParameters.Reasoning.Effort = schemas.Ptr(caps.NormalizeReasoningEffort(schemas.ReasoningEffortMinimal, defaultEffortControl(req.Provider, caps.Model())))
 		}
 	}
 }
@@ -340,6 +347,13 @@ func (req *OpenAIChatRequest) applyMistralCompatibility() {
 	if req.Reasoning != nil && req.Reasoning.Effort != nil {
 		if *req.Reasoning.Effort != "none" && *req.Reasoning.Effort != "high" {
 			req.Reasoning.Effort = schemas.Ptr("high")
+		}
+	}
+
+	// Mistral rejects unknown assistant fields with 422 extra_forbidden, reasoning_content included
+	for i := range req.Messages {
+		if assistantMessage := req.Messages[i].OpenAIChatAssistantMessage; assistantMessage != nil {
+			assistantMessage.Reasoning = nil
 		}
 	}
 }
@@ -489,6 +503,79 @@ func chatUsesPromptCacheBreakpoints(caps schemas.ModelCaps, provider schemas.Mod
 		return caps.SupportsPromptCacheBreakpoint(schemas.ModelSupportsPromptCacheBreakpoint(model))
 	default:
 		return false
+	}
+}
+
+type openRouterCacheRef struct {
+	tool, msg, block, toolCall int
+}
+
+// clampOpenRouterCacheControl drops the earliest surplus markers so at most n remain
+// (same trade-off as clampAnthropicCacheBreakpoints).
+func clampOpenRouterCacheControl(req *OpenAIChatRequest, n int) {
+	if req == nil {
+		return
+	}
+	var buf [8]openRouterCacheRef // stays on the stack for the usual marker counts
+	refs := buf[:0]
+	for i := range req.ChatParameters.Tools {
+		if req.ChatParameters.Tools[i].CacheControl != nil {
+			refs = append(refs, openRouterCacheRef{tool: i, msg: -1, block: -1, toolCall: -1})
+		}
+	}
+	for i := range req.Messages {
+		msg := &req.Messages[i]
+		if msg.Content != nil {
+			for j := range msg.Content.ContentBlocks {
+				if msg.Content.ContentBlocks[j].CacheControl != nil {
+					refs = append(refs, openRouterCacheRef{tool: -1, msg: i, block: j, toolCall: -1})
+				}
+			}
+		}
+		if msg.OpenAIChatAssistantMessage != nil {
+			for j := range msg.OpenAIChatAssistantMessage.ToolCalls {
+				if msg.OpenAIChatAssistantMessage.ToolCalls[j].CacheControl != nil {
+					refs = append(refs, openRouterCacheRef{tool: -1, msg: i, block: -1, toolCall: j})
+				}
+			}
+		}
+	}
+	excess := len(refs) - n
+	if excess <= 0 {
+		return
+	}
+
+	toolsCopied := false
+	contentCopied := map[int]bool{}
+	assistantCopied := map[int]bool{}
+	for _, ref := range refs[:excess] {
+		switch {
+		case ref.tool >= 0:
+			if !toolsCopied {
+				req.ChatParameters.Tools = slices.Clone(req.ChatParameters.Tools)
+				toolsCopied = true
+			}
+			req.ChatParameters.Tools[ref.tool].CacheControl = nil
+			req.ChatParameters.Tools[ref.tool].InvalidateSerialized()
+		case ref.block >= 0:
+			msg := &req.Messages[ref.msg]
+			if !contentCopied[ref.msg] {
+				contentCopy := *msg.Content
+				contentCopy.ContentBlocks = slices.Clone(msg.Content.ContentBlocks)
+				msg.Content = &contentCopy
+				contentCopied[ref.msg] = true
+			}
+			msg.Content.ContentBlocks[ref.block].CacheControl = nil
+		case ref.toolCall >= 0:
+			msg := &req.Messages[ref.msg]
+			if !assistantCopied[ref.msg] {
+				assistantCopy := *msg.OpenAIChatAssistantMessage
+				assistantCopy.ToolCalls = slices.Clone(msg.OpenAIChatAssistantMessage.ToolCalls)
+				msg.OpenAIChatAssistantMessage = &assistantCopy
+				assistantCopied[ref.msg] = true
+			}
+			msg.OpenAIChatAssistantMessage.ToolCalls[ref.toolCall].CacheControl = nil
+		}
 	}
 }
 

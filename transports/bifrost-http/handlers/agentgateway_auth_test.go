@@ -28,7 +28,7 @@ import (
 	"github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/logstore"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttputil"
@@ -77,8 +77,9 @@ func (s *agentAuthStore) GetVirtualKeyByID(_ context.Context, id string) (*table
 }
 
 type recordingAgentRegistrationManager struct {
-	updateCalls int
-	deleteCalls int
+	updateCalls   int
+	deleteCalls   int
+	updateRequest agent.UpdateRequest
 }
 
 // CreateAgentRegistration records no state because these tests exercise only replacement and deletion.
@@ -87,8 +88,9 @@ func (*recordingAgentRegistrationManager) CreateAgentRegistration(context.Contex
 }
 
 // UpdateAgentRegistration records an attempted replacement.
-func (m *recordingAgentRegistrationManager) UpdateAgentRegistration(context.Context, string, agent.UpdateRequest) (schemas.AgentRegistrationView, error) {
+func (m *recordingAgentRegistrationManager) UpdateAgentRegistration(_ context.Context, _ string, req agent.UpdateRequest) (schemas.AgentRegistrationView, error) {
 	m.updateCalls++
+	m.updateRequest = req
 	return schemas.AgentRegistrationView{}, nil
 }
 
@@ -157,7 +159,7 @@ func (c *agentAuthCache) GetVirtualKeyByID(_ context.Context, id string) (*table
 }
 
 func newAgentAuthMiddleware(enforce bool, store *agentAuthStore) schemas.BifrostHTTPMiddleware {
-	return AgentGatewayAuthenticationMiddleware(&lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: enforce}}, &agentAuthCache{store: store}, nil)
+	return AgentGatewayAuthenticationMiddleware(&lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway"), EnforceAuthOnInference: enforce}}, &agentAuthCache{store: store}, nil)
 }
 
 func runAgentAuthentication(ctx *fasthttp.RequestCtx, middleware schemas.BifrostHTTPMiddleware) (agentAuthenticationResult, bool) {
@@ -286,7 +288,7 @@ func TestAgentGatewayCapturesOnlyAcceptedForwardableCredentials(t *testing.T) {
 	resolver := AgentGatewayIdentityResolver(func(_ context.Context, credential string) (string, bool) {
 		return "user-1", credential == "Bearer valid-jwt"
 	})
-	middleware := AgentGatewayAuthenticationMiddleware(&lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: true}}, &agentAuthCache{store: store}, resolver)
+	middleware := AgentGatewayAuthenticationMiddleware(&lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway"), EnforceAuthOnInference: true}}, &agentAuthCache{store: store}, resolver)
 
 	for _, tc := range []struct {
 		name   string
@@ -341,10 +343,10 @@ func TestAgentGatewayInspectRouteUsesAdminMiddlewareAndNormalizesSecurity(t *tes
 	upstream := httptest.NewServer(a2asrv.NewStaticAgentCardHandler(card))
 	defer upstream.Close()
 
-	manager, err := agent.NewManager(context.Background(), &agentAuthStore{}, nil, "", http.DefaultClient)
+	manager, err := agent.NewManager(context.Background(), &agentAuthStore{}, nil, "", http.DefaultClient, agent.ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer manager.Close()
-	h := NewAgentGatewayHandler(manager, nil, &lib.Config{}, nil)
+	h := NewAgentGatewayHandler(manager, nil, &lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway")}}, nil)
 	r := router.New()
 	authenticated := false
 	h.RegisterManagementRoutes(r, func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
@@ -695,17 +697,17 @@ func TestAgentGatewayRegisteredProtocolRouteResolvesUserAndEnforcesGrant(t *test
 	active := true
 	vk := &tables.TableVirtualKey{ID: "vk-1", Value: *schemas.NewSecretVar("sk-bf-one"), IsActive: &active}
 	store := &agentAuthStore{byID: map[string]*tables.TableVirtualKey{"vk-1": vk}, byValue: map[string]*tables.TableVirtualKey{"sk-bf-one": vk}}
-	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient)
+	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }})
 	require.NoError(t, err)
 	defer manager.Close()
-	view, err := manager.Create(context.Background(), agent.CreateRequest{Name: "route-fixture", AgentCardURL: upstream.URL + a2asrv.WellKnownAgentCardPath, VirtualKeyIDs: []string{"vk-1"}})
+	view, err := manager.Create(context.Background(), agent.CreateRequest{Name: "route-fixture", CredentialOrigins: []string{"http://unused"}, AgentCardURL: upstream.URL + a2asrv.WellKnownAgentCardPath, VirtualKeyIDs: []string{"vk-1"}})
 	require.NoError(t, err)
 
 	// Authorization is decided by the plugin gate, not the handler, so the grant
 	// under test lives in the pipeline rather than in the manager.
 	pipeline := &grantPipeline{granted: map[string]bool{"sk-bf-one": true}}
 	manager.SetPluginPipeline(func() agent.PluginPipeline { return pipeline }, func(agent.PluginPipeline) {})
-	h := NewAgentGatewayHandler(manager, nil, &lib.Config{ClientConfig: &configstore.ClientConfig{MCPServerAuthMode: tables.MCPServerAuthModeHeaders, EnforceAuthOnInference: true}}, nil)
+	h := NewAgentGatewayHandler(manager, nil, &lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway"), MCPServerAuthMode: tables.MCPServerAuthModeHeaders, EnforceAuthOnInference: true}}, nil)
 	r := router.New()
 	credential := "sk-bf-one"
 	r.GET("/agents/a2a/{name}/.well-known/agent-card.json", func(ctx *fasthttp.RequestCtx) {
@@ -776,7 +778,8 @@ func TestAgentGatewayRegisteredProtocolRouteResolvesUserAndEnforcesGrant(t *test
 	require.Equal(t, before, pipeline.denials.Load(), "anonymous traffic skips the grant lookup entirely")
 }
 
-func TestAgentGatewayCardUsesSafeBifrostRequestOrigin(t *testing.T) {
+// TestAgentGatewayCardUsesConfiguredOrigin verifies request headers cannot change published URLs.
+func TestAgentGatewayCardUsesConfiguredOrigin(t *testing.T) {
 	upstreamExecutor := &testAgentExecutor{execute: func(context.Context, *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 		return func(yield func(a2a.Event, error) bool) { yield(nil, a2a.ErrUnsupportedOperation) }
 	}}
@@ -788,8 +791,8 @@ func TestAgentGatewayCardUsesSafeBifrostRequestOrigin(t *testing.T) {
 	mux.Handle("/rpc", a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(upstreamExecutor)))
 
 	store := &agentAuthStore{}
-	config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: false}}
-	manager, err := agent.NewManager(context.Background(), store, nil, "", http.DefaultClient, agent.ManagerConfig{AuthPolicy: AgentGatewayAuthPolicy(config)})
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway"), EnforceAuthOnInference: false}}
+	manager, err := agent.NewManager(context.Background(), store, nil, "", http.DefaultClient, agent.ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }, AuthPolicy: AgentGatewayAuthPolicy(config)})
 	require.NoError(t, err)
 	defer manager.Close()
 	_, err = manager.Create(context.Background(), agent.CreateRequest{Name: "card-fixture", AgentCardURL: upstream.URL + a2asrv.WellKnownAgentCardPath})
@@ -813,6 +816,7 @@ func TestAgentGatewayCardUsesSafeBifrostRequestOrigin(t *testing.T) {
 	req.SetRequestURI("http://" + ln.Addr().String() + "/agents/a2a/card-fixture/.well-known/agent-card.json")
 	req.Header.SetHost("bifrost.example:8443")
 	req.Header.Set("X-Forwarded-Proto", "https, http")
+	req.Header.Set("X-Forwarded-Host", "attacker.example")
 	require.NoError(t, fasthttp.Do(req, resp))
 	require.Equal(t, fasthttp.StatusOK, resp.StatusCode())
 
@@ -852,11 +856,17 @@ func TestAgentGatewayCardUsesSafeBifrostRequestOrigin(t *testing.T) {
 	var strictCard a2a.AgentCard
 	require.NoError(t, json.Unmarshal(resp.Body(), &strictCard))
 	require.Len(t, strictCard.SupportedInterfaces, 2)
-	gatewayURL := "https://" + ln.Addr().String() + "/agents/a2a/card-fixture"
+	gatewayURL := "http://gateway/agents/a2a/card-fixture"
 	require.Equal(t, gatewayURL+agent.GatewayJSONRPCPathSuffix, strictCard.SupportedInterfaces[0].URL)
 	require.Equal(t, a2a.TransportProtocolJSONRPC, strictCard.SupportedInterfaces[0].ProtocolBinding)
 	require.Equal(t, gatewayURL+agent.GatewayRESTPathSuffix, strictCard.SupportedInterfaces[1].URL)
 	require.Equal(t, a2a.TransportProtocolHTTPJSON, strictCard.SupportedInterfaces[1].ProtocolBinding)
+	config.Mu.Lock()
+	config.ClientConfig.A2AExternalClientURL = nil
+	config.Mu.Unlock()
+	resp.Reset()
+	require.NoError(t, fasthttp.Do(req, resp))
+	require.Equal(t, fasthttp.StatusServiceUnavailable, resp.StatusCode())
 }
 
 // TestAgentGatewayRESTBindingSharesSecurityPath proves the HTTP+JSON routes are
@@ -879,8 +889,8 @@ func TestAgentGatewayRESTBindingSharesSecurityPath(t *testing.T) {
 	active := true
 	vk := &tables.TableVirtualKey{ID: "vk-1", Value: *schemas.NewSecretVar("sk-bf-one"), IsActive: &active}
 	store := &agentAuthStore{byID: map[string]*tables.TableVirtualKey{"vk-1": vk}, byValue: map[string]*tables.TableVirtualKey{"sk-bf-one": vk}}
-	config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: true}}
-	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{AuthPolicy: AgentGatewayAuthPolicy(config)})
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway"), EnforceAuthOnInference: true}}
+	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }, AuthPolicy: AgentGatewayAuthPolicy(config)})
 	require.NoError(t, err)
 	defer manager.Close()
 	pipeline := &grantPipeline{granted: map[string]bool{"sk-bf-one": true}}
@@ -939,8 +949,8 @@ func TestAgentGatewayGovernanceDenialIsNativeAndSkipsUpstream(t *testing.T) {
 	active := true
 	vk := &tables.TableVirtualKey{ID: "vk-denied", Value: *schemas.NewSecretVar("sk-bf-denied"), IsActive: &active}
 	store := &agentAuthStore{byID: map[string]*tables.TableVirtualKey{"vk-denied": vk}, byValue: map[string]*tables.TableVirtualKey{"sk-bf-denied": vk}}
-	config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: true}}
-	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{AuthPolicy: AgentGatewayAuthPolicy(config)})
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway"), EnforceAuthOnInference: true}}
+	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }, AuthPolicy: AgentGatewayAuthPolicy(config)})
 	require.NoError(t, err)
 	defer manager.Close()
 	manager.SetPluginPipeline(func() agent.PluginPipeline { return &grantPipeline{granted: map[string]bool{}} }, func(agent.PluginPipeline) {})
@@ -1026,8 +1036,8 @@ func TestAgentGatewayAnonymousProtocolFollowsLiveEnforcement(t *testing.T) {
 	mux.Handle("/rpc", a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(upstreamExecutor)))
 
 	store := &agentAuthStore{}
-	config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: false}}
-	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{AuthPolicy: AgentGatewayAuthPolicy(config)})
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway"), EnforceAuthOnInference: false}}
+	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }, AuthPolicy: AgentGatewayAuthPolicy(config)})
 	require.NoError(t, err)
 	defer manager.Close()
 	h := NewAgentGatewayHandler(manager, nil, config, nil)
@@ -1100,8 +1110,8 @@ func TestAgentGatewayExtendedCardFollowsEnforcementSetting(t *testing.T) {
 	vk := &tables.TableVirtualKey{ID: "vk-1", Value: *schemas.NewSecretVar("sk-bf-one"), IsActive: &active}
 	store := &agentAuthStore{byID: map[string]*tables.TableVirtualKey{"vk-1": vk}, byValue: map[string]*tables.TableVirtualKey{"sk-bf-one": vk}}
 	// Enforcement is deliberately disabled: anonymous traffic is otherwise allowed.
-	config := &lib.Config{ClientConfig: &configstore.ClientConfig{EnforceAuthOnInference: false, A2AExternalClientURL: schemas.NewSecretVar("http://gateway")}}
-	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{AuthPolicy: AgentGatewayAuthPolicy(config)})
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("http://gateway"), EnforceAuthOnInference: false}}
+	manager, err := agent.NewManager(context.Background(), store, nil, "http://gateway", http.DefaultClient, agent.ManagerConfig{PrivateAllowlistProvider: func() []string { return []string{"127.0.0.1"} }, AuthPolicy: AgentGatewayAuthPolicy(config)})
 	require.NoError(t, err)
 	defer manager.Close()
 	pipeline := &grantPipeline{granted: map[string]bool{"sk-bf-one": true}}
@@ -1191,4 +1201,103 @@ func TestAgentHistoryPreservesOAuthDefinitions(t *testing.T) {
 	require.Contains(t, *sanitized, `"Authorization":"REDACTED"`)
 	require.Contains(t, *sanitized, `"authorizationCode":"REDACTED"`)
 	require.NotContains(t, *sanitized, "private")
+}
+
+// TestAgentGatewayRequiresExternalURL keeps management available while every protocol route is disabled.
+func TestAgentGatewayRequiresExternalURL(t *testing.T) {
+	manager, err := agent.NewManager(context.Background(), &agentAuthStore{}, nil, "", http.DefaultClient, agent.ManagerConfig{})
+	require.NoError(t, err)
+	defer manager.Close()
+	h := NewAgentGatewayHandler(manager, nil, &lib.Config{}, nil)
+	r := router.New()
+	shortCircuit := func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) { ctx.SetStatusCode(fasthttp.StatusOK) }
+	}
+	h.RegisterProtocolRoutes(r, shortCircuit)
+	h.RegisterPushIngressRoute(r, shortCircuit)
+	h.RegisterManagementRoutes(r)
+	for _, request := range []struct{ method, path string }{
+		{"GET", "/agents/a2a/missing/.well-known/agent-card.json"},
+		{"POST", "/agents/a2a/missing/json-rpc"},
+		{"GET", "/agents/a2a/missing/rest/tasks/1"},
+		{"POST", "/agents/a2a/missing/push/callback"},
+	} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.SetMethod(request.method)
+		ctx.Request.SetRequestURI("http://spoofed.example" + request.path)
+		r.Handler(ctx)
+		require.Equal(t, fasthttp.StatusServiceUnavailable, ctx.Response.StatusCode(), request.path)
+		require.Contains(t, string(ctx.Response.Body()), "a2a_external_client_url")
+		var body schemas.BifrostError
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+		require.True(t, body.IsBifrostError, request.path)
+	}
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Request.SetRequestURI("http://spoofed.example/api/agents")
+	r.Handler(ctx)
+	require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode())
+}
+
+// BenchmarkAgentGatewayExternalURLRead measures the live configuration read added to protocol dispatch.
+func BenchmarkAgentGatewayExternalURLRead(b *testing.B) {
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{A2AExternalClientURL: schemas.NewSecretVar("https://gateway.example")}}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = config.GetA2AExternalClientURL()
+	}
+}
+
+// TestAgentGatewayLocalErrorAttribution preserves statuses while identifying gateway-generated failures.
+func TestAgentGatewayLocalErrorAttribution(t *testing.T) {
+	for _, status := range []int{400, 401, 403, 404, 409, 500, 503} {
+		ctx := &fasthttp.RequestCtx{}
+		sendAgentGatewayError(ctx, status, "gateway failure")
+		require.Equal(t, status, ctx.Response.StatusCode())
+		var body schemas.BifrostError
+		require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+		require.True(t, body.IsBifrostError)
+		require.Equal(t, "gateway failure", body.Error.Message)
+	}
+}
+
+// TestAgentGatewayInspectionErrorAttribution distinguishes local validation and policy from an upstream rejection.
+func TestAgentGatewayInspectionErrorAttribution(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
+	}))
+	defer upstream.Close()
+	for _, tc := range []struct {
+		name  string
+		url   string
+		allow []string
+		local bool
+	}{
+		{name: "invalid URL", url: "not-a-url", local: true},
+		{name: "private destination blocked", url: upstream.URL, local: true},
+		{name: "upstream rejection", url: upstream.URL, allow: []string{"127.0.0.1"}, local: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, err := agent.NewManager(context.Background(), &agentAuthStore{}, nil, "", http.DefaultClient, agent.ManagerConfig{
+				PrivateAllowlistProvider: func() []string { return tc.allow },
+			})
+			require.NoError(t, err)
+			defer manager.Close()
+			handler := NewAgentGatewayHandler(manager, nil, &lib.Config{}, nil)
+			ctx := &fasthttp.RequestCtx{}
+			ctx.Request.SetBodyString(`{"agent_card_url":` + strconv.Quote(tc.url) + `}`)
+			handler.inspect(ctx)
+			require.Equal(t, http.StatusBadRequest, ctx.Response.StatusCode())
+			var body schemas.BifrostError
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+			require.Equal(t, tc.local, body.IsBifrostError)
+			// Enabled registration performs the same discovery before persisting anything.
+			ctx = &fasthttp.RequestCtx{}
+			ctx.Request.SetBodyString(`{"name":"attribution-test","enabled":true,"agent_card_url":` + strconv.Quote(tc.url) + `}`)
+			handler.create(ctx)
+			require.Equal(t, http.StatusBadRequest, ctx.Response.StatusCode())
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &body))
+			require.Equal(t, tc.local, body.IsBifrostError)
+
+		})
+	}
 }

@@ -36,18 +36,6 @@ func ToPerplexityDecisionRequest(request *schemas.BifrostDecisionRequest) (*type
 	return native, nil
 }
 
-// ToBifrostDecisionResponse converts Perplexity's response, which is Typesafe's systemone
-// response, into the normalized shape. The body carries no id, so the caller passes the
-// one from the x-request-id header.
-func ToBifrostDecisionResponse(resp *typesafe.TypesafeDecisionResponse, request *schemas.BifrostDecisionRequest, id string) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
-	bifrostResp, bifrostErr := typesafe.ToBifrostDecisionResponse(resp, request)
-	if bifrostErr != nil {
-		return nil, bifrostErr
-	}
-	bifrostResp.ID = id
-	return bifrostResp, nil
-}
-
 // decisionRequestID returns the x-request-id response header. Header names keep the
 // casing the transport gave them, so the lookup ignores case.
 func decisionRequestID(headers map[string]string) string {

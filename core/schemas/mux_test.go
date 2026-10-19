@@ -259,6 +259,75 @@ func TestToResponsesMessages_EmitsReasoningMessageBeforeToolCalls(t *testing.T) 
 	}
 }
 
+func TestToResponsesMessages_ToolResultBlocksUseResponsesInputTypes(t *testing.T) {
+	// A chat tool message with array content must become a function_call_output whose
+	// output blocks use the Responses spellings; OpenAI rejects "text" there with
+	// "Invalid value: 'text'. Supported values are: 'input_text', ...".
+	cm := ChatMessage{
+		Role:            ChatMessageRoleTool,
+		ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_1")},
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{
+			{Type: ChatContentBlockTypeText, Text: Ptr("18C, light rain"), CacheControl: &CacheControl{Type: CacheControlTypeEphemeral}},
+			{Type: ChatContentBlockTypeImage, ImageURLStruct: &ChatInputImage{URL: "https://example.com/radar.png"}},
+		}},
+	}
+	want := []ResponsesMessageContentBlockType{ResponsesInputMessageContentBlockTypeText, ResponsesInputMessageContentBlockTypeImage}
+
+	check := func(t *testing.T, name string, msg *ResponsesMessage) {
+		if msg == nil || msg.Type == nil || *msg.Type != ResponsesMessageTypeFunctionCallOutput {
+			t.Fatalf("%s: expected a function_call_output message, got %#v", name, msg)
+		}
+		out := msg.ResponsesToolMessage.Output
+		if out == nil || out.ResponsesFunctionToolCallOutputBlocks == nil || len(out.ResponsesFunctionToolCallOutputBlocks) != 2 {
+			t.Fatalf("%s: expected 2 output blocks, got %#v", name, out)
+		}
+		for i, b := range out.ResponsesFunctionToolCallOutputBlocks {
+			if b.Type != want[i] {
+				t.Errorf("%s: output[%d].type = %q, want %q", name, i, b.Type, want[i])
+			}
+		}
+		if out.ResponsesFunctionToolCallOutputBlocks[0].CacheControl == nil {
+			t.Errorf("%s: cache_control on the tool result block must survive the conversion", name)
+		}
+	}
+
+	check(t, "ToResponsesToolMessage", cm.ToResponsesToolMessage())
+	msgs := cm.ToResponsesMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("ToResponsesMessages: expected 1 message, got %d", len(msgs))
+	}
+	check(t, "ToResponsesMessages", &msgs[0])
+}
+
+func TestToResponsesRequest_EmptyToolContentKeepsOutput(t *testing.T) {
+	// A tool that ran but printed nothing sends content "". OpenAI and Azure reject a
+	// function_call_output without output: "Missing required parameter: 'input[N].output'".
+	req := &BifrostChatRequest{
+		Provider: OpenAI,
+		Model:    "gpt-6-luna",
+		Input: []ChatMessage{
+			{Role: ChatMessageRoleUser, Content: &ChatMessageContent{ContentStr: Ptr("What is the weather in Berlin?")}},
+			{Role: ChatMessageRoleAssistant, ChatAssistantMessage: &ChatAssistantMessage{ToolCalls: []ChatAssistantMessageToolCall{{
+				ID: Ptr("call_1"), Type: Ptr("function"),
+				Function: ChatAssistantMessageToolCallFunction{Name: Ptr("get_weather"), Arguments: `{"location":"Berlin"}`},
+			}}}},
+			{Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_1")}, Content: &ChatMessageContent{ContentStr: Ptr("")}},
+		},
+	}
+
+	input := req.ToResponsesRequest().Input
+	if len(input) != 3 {
+		t.Fatalf("expected 3 input items, got %d", len(input))
+	}
+	data, err := MarshalSorted(input[2])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"output":""`) {
+		t.Fatalf(`function_call_output must carry "output":"", got %s`, data)
+	}
+}
+
 func TestToResponsesMessages_EmitsReasoningMessageBeforeTextContent(t *testing.T) {
 	reasoning := "Thinking about how to summarize."
 	cm := &ChatMessage{
@@ -985,6 +1054,74 @@ func TestToBifrostResponsesStreamResponse_ToolCallsOnlyInCompletedOutput(t *test
 	}
 	if item.Arguments == nil || *item.Arguments != `{"q":"test"}` {
 		t.Fatalf("expected arguments %q, got %v", `{"q":"test"}`, item.Arguments)
+	}
+}
+
+// TestToBifrostResponsesStreamResponse_ContentAfterToolStartNotEmittedPastDone pins the
+// /v1/responses side of text -> tool_call -> text: once the tool call closes the text
+// item (output_item.done), a trailing delta.content must not emit an output_text.delta
+// on that finished item, and must not leak into the completed output text.
+func TestToBifrostResponsesStreamResponse_ContentAfterToolStartNotEmittedPastDone(t *testing.T) {
+	state := AcquireChatToResponsesStreamState()
+	defer ReleaseChatToResponsesStreamState(state)
+
+	role := string(ChatMessageRoleAssistant)
+	text := "Running it."
+	newline := "\n"
+	toolCallsFinish := string(BifrostFinishReasonToolCalls)
+	funcName := "bash"
+	toolCallID := "call_1"
+
+	chunk := func(delta *ChatStreamResponseChoiceDelta, finish *string) *BifrostChatResponse {
+		return &BifrostChatResponse{
+			ID:    "chatcmpl-test",
+			Model: "test-model",
+			Choices: []BifrostResponseChoice{{
+				FinishReason:             finish,
+				ChatStreamResponseChoice: &ChatStreamResponseChoice{Delta: delta},
+			}},
+		}
+	}
+
+	var all []*BifrostResponsesStreamResponse
+	all = append(all, chunk(&ChatStreamResponseChoiceDelta{Role: &role, Content: &text}, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, chunk(&ChatStreamResponseChoiceDelta{ToolCalls: []ChatAssistantMessageToolCall{{
+		Index: 0, ID: &toolCallID, Function: ChatAssistantMessageToolCallFunction{Name: &funcName, Arguments: `{"command":`},
+	}}}, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, chunk(&ChatStreamResponseChoiceDelta{Content: &newline, ToolCalls: []ChatAssistantMessageToolCall{{
+		Index: 0, Function: ChatAssistantMessageToolCallFunction{Arguments: `"echo hi"}`},
+	}}}, nil).ToBifrostResponsesStreamResponse(state)...)
+	all = append(all, chunk(&ChatStreamResponseChoiceDelta{}, &toolCallsFinish).ToBifrostResponsesStreamResponse(state)...)
+
+	doneIndices := map[int]bool{}
+	var completed *BifrostResponsesStreamResponse
+	for _, evt := range all {
+		switch evt.Type {
+		case ResponsesStreamResponseTypeOutputItemDone:
+			doneIndices[*evt.OutputIndex] = true
+		case ResponsesStreamResponseTypeOutputTextDelta:
+			if doneIndices[*evt.OutputIndex] {
+				t.Fatalf("output_text.delta %q emitted for output_index %d after its output_item.done", *evt.Delta, *evt.OutputIndex)
+			}
+		case ResponsesStreamResponseTypeCompleted:
+			completed = evt
+		}
+	}
+
+	if completed == nil || completed.Response == nil {
+		t.Fatal("expected response.completed event")
+	}
+	for _, item := range completed.Response.Output {
+		if item.Type != nil && *item.Type == ResponsesMessageTypeMessage {
+			if got := *item.Content.ContentBlocks[0].Text; got != text {
+				t.Fatalf("completed text = %q, want %q", got, text)
+			}
+		}
+		if item.Type != nil && *item.Type == ResponsesMessageTypeFunctionCall {
+			if item.Arguments == nil || *item.Arguments != `{"command":"echo hi"}` {
+				t.Fatalf("function_call arguments = %v, want %q", item.Arguments, `{"command":"echo hi"}`)
+			}
+		}
 	}
 }
 
@@ -2200,5 +2337,23 @@ func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 		}
 	} else if len(blocks) != 1 || blocks[0].Text == nil || *blocks[0].Text != "Weather lookups are disabled." {
 		t.Errorf("system content = %+v, want only the text sibling", blocks)
+	}
+}
+
+// TestToChatMessages_DropsConfigurationUpdateItem pins #8616 on the Responses->Chat fallback:
+// Chat Completions has no mid-conversation effort item, so a configuration_update must be
+// dropped rather than emitted as a roleless, contentless chat message.
+func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"user","content":"Say hi."}]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	got := ToChatMessages(input)
+	if len(got) != 1 {
+		t.Fatalf("expected only the user message, got %d messages: %+v", len(got), got)
+	}
+	if got[0].Role != ChatMessageRoleUser {
+		t.Fatalf("expected the surviving message to be the user turn, got role %q", got[0].Role)
 	}
 }

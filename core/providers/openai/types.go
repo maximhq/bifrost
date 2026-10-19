@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
+	"unsafe"
 
 	"github.com/bytedance/sonic"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
@@ -541,7 +543,9 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 			// Copy message
 			processedMessages[i] = msg
 
-			// Strip the Bifrost-extension citation text from assistant annotations
+			// Strip the Bifrost-extension citation text from assistant annotations and
+			// the Anthropic cache_control marker from tool_calls entries (kept for OpenRouter,
+			// like the block and tool markers above).
 			if msg.OpenAIChatAssistantMessage != nil {
 				needsAnnotationStrip := false
 				for _, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
@@ -550,13 +554,30 @@ func (req *OpenAIChatRequest) MarshalJSON() ([]byte, error) {
 						break
 					}
 				}
-				if needsAnnotationStrip {
+				needsToolCallStrip := false
+				if !keepCacheControl {
+					for _, toolCall := range msg.OpenAIChatAssistantMessage.ToolCalls {
+						if toolCall.CacheControl != nil {
+							needsToolCallStrip = true
+							break
+						}
+					}
+				}
+				if needsAnnotationStrip || needsToolCallStrip {
 					assistantCopy := *msg.OpenAIChatAssistantMessage
-					assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(msg.OpenAIChatAssistantMessage.Annotations))
-					for j, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
-						annotationCopy := annotation
-						annotationCopy.URLCitation.Text = nil
-						assistantCopy.Annotations[j] = annotationCopy
+					if needsAnnotationStrip {
+						assistantCopy.Annotations = make([]schemas.ChatAssistantMessageAnnotation, len(msg.OpenAIChatAssistantMessage.Annotations))
+						for j, annotation := range msg.OpenAIChatAssistantMessage.Annotations {
+							annotationCopy := annotation
+							annotationCopy.URLCitation.Text = nil
+							assistantCopy.Annotations[j] = annotationCopy
+						}
+					}
+					if needsToolCallStrip {
+						assistantCopy.ToolCalls = slices.Clone(msg.OpenAIChatAssistantMessage.ToolCalls)
+						for j := range assistantCopy.ToolCalls {
+							assistantCopy.ToolCalls[j].CacheControl = nil
+						}
 					}
 					processedMessages[i].OpenAIChatAssistantMessage = &assistantCopy
 				}
@@ -729,6 +750,104 @@ func (req *OpenAIChatRequest) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// openAIChatRequestKnownFields are the top-level keys OpenAIChatRequest decodes,
+// read from its JSON tags so a field added to the type is never taken for an
+// unknown one, plus the reasoning_* shorthands ChatParameters accepts and
+// Bifrost's own extra_params wrapper.
+var openAIChatRequestKnownFields = func() map[string]bool {
+	known := map[string]bool{
+		"reasoning_effort":     true,
+		"reasoning_max_tokens": true,
+		"reasoning_display":    true,
+		"extra_params":         true,
+	}
+	addJSONFieldNames(reflect.TypeOf(OpenAIChatRequest{}), known)
+	return known
+}()
+
+// openAIChatRequestKnownFieldsFolded holds the known names lowercased. sonic, like
+// encoding/json, matches a key to a field case-insensitively, so "Messages" is decoded
+// and must not also be forwarded as an unknown field.
+var openAIChatRequestKnownFieldsFolded = func() map[string]bool {
+	folded := make(map[string]bool, len(openAIChatRequestKnownFields))
+	for name := range openAIChatRequestKnownFields {
+		folded[strings.ToLower(name)] = true
+	}
+	return folded
+}()
+
+// isKnownOpenAIChatRequestField reports whether the decoder takes name: an exact match,
+// else an ASCII case-folded one, lowered into a stack buffer so the lookup does not allocate.
+func isKnownOpenAIChatRequestField(name string) bool {
+	if openAIChatRequestKnownFields[name] {
+		return true
+	}
+	var buf [64]byte
+	if len(name) > len(buf) {
+		return openAIChatRequestKnownFieldsFolded[strings.ToLower(name)]
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		buf[i] = c
+	}
+	return openAIChatRequestKnownFieldsFolded[string(buf[:len(name)])]
+}
+
+// addJSONFieldNames adds the JSON names of t's fields to names, descending
+// into untagged embedded structs as encoding/json does.
+func addJSONFieldNames(t reflect.Type, names map[string]bool) {
+	for i := 0; i < t.NumField(); i++ {
+		field := t.Field(i)
+		tag := field.Tag.Get("json")
+		if tag == "-" {
+			continue
+		}
+		name, _, _ := strings.Cut(tag, ",")
+		if field.Anonymous && name == "" && field.Type.Kind() == reflect.Struct {
+			addJSONFieldNames(field.Type, names)
+			continue
+		}
+		if !field.IsExported() {
+			continue
+		}
+		if name == "" {
+			name = field.Name
+		}
+		names[name] = true
+	}
+}
+
+// OpenAIChatRequestUnknownFields returns the top-level fields of a chat body
+// that OpenAIChatRequest does not decode, each compacted, or nil when there are
+// none. A body with only known fields costs a scan and no allocation: the body
+// is read in place and only the fields kept are copied out of it.
+func OpenAIChatRequestUnknownFields(data []byte) map[string]interface{} {
+	if len(data) == 0 {
+		return nil
+	}
+	var unknown map[string]interface{}
+	gjson.Parse(unsafe.String(unsafe.SliceData(data), len(data))).ForEach(func(key, value gjson.Result) bool {
+		name := key.String()
+		if isKnownOpenAIChatRequestField(name) {
+			return true
+		}
+		if unknown == nil {
+			unknown = make(map[string]interface{})
+		}
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, []byte(value.Raw)); err == nil {
+			unknown[strings.Clone(name)] = json.RawMessage(compact.Bytes())
+		} else {
+			unknown[strings.Clone(name)] = json.RawMessage(value.Raw)
+		}
+		return true
+	})
+	return unknown
+}
+
 // IsStreamingRequested implements the StreamingRequest interface
 func (req *OpenAIChatRequest) IsStreamingRequested() bool {
 	return req.Stream != nil && *req.Stream
@@ -895,19 +1014,30 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 				// as an array of content blocks and has to be flattened here.
 				// Strict upstream implementations (e.g. Ollama Cloud) return a
 				// 400 otherwise.
-				if msg.ResponsesToolMessage.Output != nil &&
-					msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil &&
-					isFunctionCallOutputBlocksFlattenable(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks) {
-					flattened := flattenFunctionCallOutputBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+				// tool_reference is Anthropic-only; OpenAI has no block for it.
+				var outputBlocks []schemas.ResponsesMessageContentBlock
+				hadToolReferences := false
+				if msg.ResponsesToolMessage.Output != nil {
+					outputBlocks, hadToolReferences = withoutToolReferenceBlocks(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks)
+				}
+				if hadToolReferences && len(outputBlocks) == 0 {
+					empty := ""
+					outputCopy := *msg.ResponsesToolMessage.Output
+					outputCopy.ResponsesToolCallOutputStr = &empty
+					outputCopy.ResponsesFunctionToolCallOutputBlocks = nil
+					toolMsgCopy.Output = &outputCopy
+					toolMsgModified = true
+				} else if outputBlocks != nil && isFunctionCallOutputBlocksFlattenable(outputBlocks) {
+					flattened := flattenFunctionCallOutputBlocks(outputBlocks)
 					outputCopy := *msg.ResponsesToolMessage.Output
 					outputCopy.ResponsesToolCallOutputStr = &flattened
 					outputCopy.ResponsesFunctionToolCallOutputBlocks = nil
 					toolMsgCopy.Output = &outputCopy
 					toolMsgModified = true
-				} else if msg.ResponsesToolMessage.Output != nil && msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks != nil {
+				} else if outputBlocks != nil {
 					// Strip CacheControl and FileType from tool message output blocks if needed
-					hasToolModification := false
-					for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+					hasToolModification := hadToolReferences
+					for _, block := range outputBlocks {
 						if block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil) {
 							hasToolModification = true
 							break
@@ -916,8 +1046,8 @@ func (r *OpenAIResponsesRequestInput) MarshalJSON() ([]byte, error) {
 
 					if hasToolModification {
 						outputCopy := *msg.ResponsesToolMessage.Output
-						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks))
-						for j, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+						outputCopy.ResponsesFunctionToolCallOutputBlocks = make([]schemas.ResponsesMessageContentBlock, len(outputBlocks))
+						for j, block := range outputBlocks {
 							needsBlockCopy := block.CacheControl != nil || block.Citations != nil || block.MediaResolution != nil || (block.ResponsesInputMessageContentBlockFile != nil && block.ResponsesInputMessageContentBlockFile.FileType != nil)
 							if needsBlockCopy {
 								blockCopy := block
@@ -1138,6 +1268,13 @@ func hasFieldsToStripInChatMessage(msg OpenAIMessage, keepCacheControl bool) boo
 				return true
 			}
 		}
+		if !keepCacheControl {
+			for _, toolCall := range msg.OpenAIChatAssistantMessage.ToolCalls {
+				if toolCall.CacheControl != nil {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -1190,6 +1327,9 @@ func hasFieldsToStripInResponsesMessage(msg schemas.ResponsesMessage) bool {
 				return true
 			}
 			for _, block := range msg.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks {
+				if block.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference {
+					return true
+				}
 				if block.CacheControl != nil {
 					return true
 				}
@@ -1233,6 +1373,23 @@ func isFunctionCallOutputBlocksFlattenable(blocks []schemas.ResponsesMessageCont
 		}
 	}
 	return true
+}
+
+// withoutToolReferenceBlocks returns blocks minus any tool_reference blocks and
+// whether any were removed. The input slice is returned unchanged when none are.
+func withoutToolReferenceBlocks(blocks []schemas.ResponsesMessageContentBlock) ([]schemas.ResponsesMessageContentBlock, bool) {
+	if !slices.ContainsFunc(blocks, func(b schemas.ResponsesMessageContentBlock) bool {
+		return b.Type == schemas.ResponsesInputMessageContentBlockTypeToolReference
+	}) {
+		return blocks, false
+	}
+	filtered := make([]schemas.ResponsesMessageContentBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type != schemas.ResponsesInputMessageContentBlockTypeToolReference {
+			filtered = append(filtered, block)
+		}
+	}
+	return filtered, true
 }
 
 // flattenFunctionCallOutputBlocks concatenates the text of every block in the

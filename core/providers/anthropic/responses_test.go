@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -3323,5 +3324,336 @@ func TestClaudeCodeCacheMarkersOnGPTCallerExplicitModeWins(t *testing.T) {
 	}
 	if got := strings.Count(raw, `"prompt_cache_breakpoint"`); got != 3 {
 		t.Errorf("want 3 prompt_cache_breakpoint, got %d; raw=%s", got, raw)
+	}
+}
+
+// parallelToolsResponsesReq builds a two-tool Responses request for the parallel_tool_calls tests.
+func parallelToolsResponsesReq(choice *schemas.ResponsesToolChoice, parallel *bool) *schemas.BifrostResponsesRequest {
+	tool := func(name string) schemas.ResponsesTool {
+		return schemas.ResponsesTool{
+			Type:                  schemas.ResponsesToolTypeFunction,
+			Name:                  schemas.Ptr(name),
+			ResponsesToolFunction: &schemas.ResponsesToolFunction{},
+		}
+	}
+	return &schemas.BifrostResponsesRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-5",
+		Input: []schemas.ResponsesMessage{{
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("Weather in Tokyo, Paris and Lima?")},
+		}},
+		Params: &schemas.ResponsesParameters{
+			Tools:             []schemas.ResponsesTool{tool("get_weather"), tool("get_time")},
+			ToolChoice:        choice,
+			ParallelToolCalls: parallel,
+		},
+	}
+}
+
+// parallel_tool_calls: false on /v1/responses must reach Anthropic as
+// tool_choice.disable_parallel_tool_use, as it already does on the chat path.
+func TestToAnthropicResponsesRequest_ParallelToolCalls(t *testing.T) {
+	auto := string(schemas.ResponsesToolChoiceTypeAuto)
+	required := string(schemas.ResponsesToolChoiceTypeRequired)
+	none := string(schemas.ResponsesToolChoiceTypeNone)
+
+	tests := []struct {
+		name        string
+		choice      *schemas.ResponsesToolChoice
+		parallel    *bool
+		wantType    string // "" means no tool_choice is sent
+		wantDisable bool
+	}{
+		{"false with no tool choice synthesizes auto", nil, schemas.Ptr(false), "auto", true},
+		{"false with auto", &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &auto}, schemas.Ptr(false), "auto", true},
+		{"false with required", &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &required}, schemas.Ptr(false), "any", true},
+		{"false with none is not sent", &schemas.ResponsesToolChoice{ResponsesToolChoiceStr: &none}, schemas.Ptr(false), "none", false},
+		{"true sends nothing", nil, schemas.Ptr(true), "", false},
+		{"unset sends nothing", nil, nil, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			out, err := ToAnthropicResponsesRequest(ctx, parallelToolsResponsesReq(tt.choice, tt.parallel))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantType == "" {
+				if out.ToolChoice != nil {
+					t.Fatalf("expected no tool_choice, got %+v", out.ToolChoice)
+				}
+				return
+			}
+			if out.ToolChoice == nil {
+				t.Fatalf("expected tool_choice type %q, got nil", tt.wantType)
+			}
+			if out.ToolChoice.Type != tt.wantType {
+				t.Errorf("tool_choice.type = %q, want %q", out.ToolChoice.Type, tt.wantType)
+			}
+			gotDisable := out.ToolChoice.DisableParallelToolUse != nil && *out.ToolChoice.DisableParallelToolUse
+			if gotDisable != tt.wantDisable {
+				t.Errorf("disable_parallel_tool_use = %s, want %v", boolPtrString(out.ToolChoice.DisableParallelToolUse), tt.wantDisable)
+			}
+		})
+	}
+}
+
+// tool_choice.disable_parallel_tool_use on /anthropic/v1/messages must become
+// ParallelToolCalls so non-Anthropic targets (Bedrock Converse, OpenAI) honor it too.
+func TestAnthropicIngress_DisableParallelToolUseMapsToParallelToolCalls(t *testing.T) {
+	tests := []struct {
+		name    string
+		disable *bool
+		want    *bool
+	}{
+		{"disable true", schemas.Ptr(true), schemas.Ptr(false)},
+		{"disable false", schemas.Ptr(false), schemas.Ptr(true)},
+		{"absent", nil, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := &AnthropicMessageRequest{
+				Model:      "claude-sonnet-5",
+				MaxTokens:  256,
+				Messages:   []AnthropicMessage{{Role: AnthropicMessageRoleUser, Content: AnthropicContent{ContentStr: schemas.Ptr("Weather in Tokyo and Paris?")}}},
+				Tools:      []AnthropicTool{{Name: "get_weather", InputSchema: &schemas.ToolFunctionParameters{Type: "object"}}},
+				ToolChoice: &AnthropicToolChoice{Type: "auto", DisableParallelToolUse: tt.disable},
+			}
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			bifrostReq := req.ToBifrostResponsesRequest(ctx)
+			got := bifrostReq.Params.ParallelToolCalls
+			if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
+				t.Fatalf("ParallelToolCalls = %s, want %s", boolPtrString(got), boolPtrString(tt.want))
+			}
+
+			// Round trip back to Anthropic keeps the instruction.
+			out, err := ToAnthropicResponsesRequest(ctx, bifrostReq)
+			if err != nil {
+				t.Fatalf("egress error: %v", err)
+			}
+			if out.ToolChoice == nil || out.ToolChoice.Type != "auto" {
+				t.Fatalf("expected tool_choice auto after round trip, got %+v", out.ToolChoice)
+			}
+			gotDisable := out.ToolChoice.DisableParallelToolUse != nil && *out.ToolChoice.DisableParallelToolUse
+			wantDisable := tt.disable != nil && *tt.disable
+			if gotDisable != wantDisable {
+				t.Errorf("round-trip disable_parallel_tool_use = %s, want %v", boolPtrString(out.ToolChoice.DisableParallelToolUse), wantDisable)
+			}
+		})
+	}
+}
+
+func boolPtrString(b *bool) string {
+	if b == nil {
+		return "<nil>"
+	}
+	return fmt.Sprint(*b)
+}
+
+// BenchmarkToAnthropicResponsesRequestParallelToolCalls measures the Responses
+// conversion with parallel_tool_calls unset (the common case) and false.
+func BenchmarkToAnthropicResponsesRequestParallelToolCalls(b *testing.B) {
+	for _, bc := range []struct {
+		name     string
+		parallel *bool
+	}{
+		{"unset", nil},
+		{"false", schemas.Ptr(false)},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(nil, time.Time{})
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := ToAnthropicResponsesRequest(ctx, parallelToolsResponsesReq(nil, bc.parallel)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// TestToAnthropicResponsesRequest_InstructionsLeadSystemInput: top-level instructions and
+// system/developer input are complementary, so both reach system with instructions first
+// (OpenAI places instructions ahead of input). Previously instructions were dropped whenever
+// the input carried any system content.
+func TestToAnthropicResponsesRequest_InstructionsLeadSystemInput(t *testing.T) {
+	user := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")},
+	}
+	developer := schemas.ResponsesMessage{
+		Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleDeveloper),
+		Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("DEVELOPER_MUST_SURVIVE")},
+	}
+	cachedSystem := schemas.ResponsesMessage{
+		Role: schemas.Ptr(schemas.ResponsesInputMessageRoleSystem),
+		Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+			Type:         schemas.ResponsesInputMessageContentBlockTypeText,
+			Text:         schemas.Ptr("SYSTEM_MUST_SURVIVE"),
+			CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+		}}},
+	}
+
+	tests := []struct {
+		name         string
+		instructions *string
+		input        []schemas.ResponsesMessage
+		want         string
+	}{
+		{
+			name:         "instructions and developer input both reach system, instructions first",
+			instructions: schemas.Ptr("BASE_MUST_SURVIVE"),
+			input:        []schemas.ResponsesMessage{developer, user},
+			want:         `[{"type":"text","text":"BASE_MUST_SURVIVE"},{"type":"text","text":"DEVELOPER_MUST_SURVIVE"}]`,
+		},
+		{
+			name:         "cache_control on a system block survives behind instructions",
+			instructions: schemas.Ptr("BASE_MUST_SURVIVE"),
+			input:        []schemas.ResponsesMessage{cachedSystem, user},
+			want:         `[{"type":"text","text":"BASE_MUST_SURVIVE"},{"type":"text","text":"SYSTEM_MUST_SURVIVE","cache_control":{"type":"ephemeral"}}]`,
+		},
+		{
+			name:         "instructions alone keep the block form",
+			instructions: schemas.Ptr("BASE_MUST_SURVIVE"),
+			input:        []schemas.ResponsesMessage{user},
+			want:         `[{"type":"text","text":"BASE_MUST_SURVIVE"}]`,
+		},
+		{
+			name:  "developer input alone keeps the string form",
+			input: []schemas.ResponsesMessage{developer, user},
+			want:  `"DEVELOPER_MUST_SURVIVE"`,
+		},
+		{
+			name:         "empty instructions add nothing",
+			instructions: schemas.Ptr(""),
+			input:        []schemas.ResponsesMessage{developer, user},
+			want:         `"DEVELOPER_MUST_SURVIVE"`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := &schemas.BifrostResponsesRequest{
+				Provider: schemas.Anthropic,
+				Model:    "claude-opus-4-6",
+				Input:    tc.input,
+				Params:   &schemas.ResponsesParameters{Instructions: tc.instructions},
+			}
+			result, err := ToAnthropicResponsesRequest(schemas.NewBifrostContext(nil, time.Time{}), req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got, err := sonic.Marshal(result.System)
+			if err != nil {
+				t.Fatalf("marshal system: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("system mismatch\n got: %s\nwant: %s", got, tc.want)
+			}
+			if len(result.Messages) != 1 || result.Messages[0].Role != AnthropicMessageRoleUser {
+				t.Fatalf("expected only the user turn in messages, got %+v", result.Messages)
+			}
+		})
+	}
+}
+
+// TestGroupedConversion_ClientToolNamedLikeServerTool verifies that a client
+// tool_use whose name collides with an Anthropic server tool (web_search,
+// web_fetch) stays a function_call. Converting it to a web_search_call /
+// web_fetch_call orphans the matching tool_result, and Bedrock rejects the
+// replay with "The number of toolResult blocks ... exceeds the number of
+// toolUse blocks of previous turn".
+func TestGroupedConversion_ClientToolNamedLikeServerTool(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: string(AnthropicToolNameWebSearch), input: `{"query":"bifrost"}`},
+		{name: string(AnthropicToolNameWebFetch), input: `{"url":"https://example.com"}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assistant := schemas.ResponsesMessageRoleType(AnthropicMessageRoleAssistant)
+			msgs := convertAnthropicContentBlocksToResponsesMessagesGrouped([]AnthropicContentBlock{
+				{
+					Type:  AnthropicContentBlockTypeToolUse,
+					ID:    schemas.Ptr("toolu_client"),
+					Name:  schemas.Ptr(tc.name),
+					Input: json.RawMessage(tc.input),
+				},
+			}, &assistant, true)
+
+			if len(msgs) != 1 {
+				t.Fatalf("expected 1 converted message, got %d", len(msgs))
+			}
+			msg := msgs[0]
+			if msg.Type == nil || *msg.Type != schemas.ResponsesMessageTypeFunctionCall {
+				t.Fatalf("expected function_call, got %s", messageType(msg))
+			}
+			if msg.ResponsesToolMessage == nil || msg.ResponsesToolMessage.Name == nil || *msg.ResponsesToolMessage.Name != tc.name {
+				t.Fatalf("expected function name %q to be preserved", tc.name)
+			}
+			if msg.ResponsesToolMessage.Arguments == nil || *msg.ResponsesToolMessage.Arguments != tc.input {
+				t.Fatalf("expected arguments %q to be preserved, got %v", tc.input, msg.ResponsesToolMessage.Arguments)
+			}
+		})
+	}
+}
+
+// TestGroupedConversion_ServerWebSearchStillMapped guards the server tool path:
+// a server_tool_use web_search must still become a web_search_call.
+func TestGroupedConversion_ServerWebSearchStillMapped(t *testing.T) {
+	assistant := schemas.ResponsesMessageRoleType(AnthropicMessageRoleAssistant)
+	msgs := convertAnthropicContentBlocksToResponsesMessagesGrouped([]AnthropicContentBlock{
+		{
+			Type:  AnthropicContentBlockTypeServerToolUse,
+			ID:    schemas.Ptr("srvtoolu_server"),
+			Name:  schemas.Ptr(string(AnthropicToolNameWebSearch)),
+			Input: json.RawMessage(`{"query":"bifrost"}`),
+		},
+	}, &assistant, true)
+
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 converted message, got %d", len(msgs))
+	}
+	if msgs[0].Type == nil || *msgs[0].Type != schemas.ResponsesMessageTypeWebSearchCall {
+		t.Fatalf("expected web_search_call, got %s", messageType(msgs[0]))
+	}
+}
+
+func messageType(msg schemas.ResponsesMessage) string {
+	if msg.Type == nil {
+		return "<nil>"
+	}
+	return string(*msg.Type)
+}
+
+func BenchmarkGroupedConversion_ToolUseBlocks(b *testing.B) {
+	assistant := schemas.ResponsesMessageRoleType(AnthropicMessageRoleAssistant)
+	blocks := []AnthropicContentBlock{
+		{
+			Type:  AnthropicContentBlockTypeToolUse,
+			ID:    schemas.Ptr("toolu_client"),
+			Name:  schemas.Ptr(string(AnthropicToolNameWebSearch)),
+			Input: json.RawMessage(`{"query":"bifrost"}`),
+		},
+		{
+			Type:  AnthropicContentBlockTypeServerToolUse,
+			ID:    schemas.Ptr("srvtoolu_server"),
+			Name:  schemas.Ptr(string(AnthropicToolNameWebFetch)),
+			Input: json.RawMessage(`{"url":"https://example.com"}`),
+		},
+		{
+			Type:  AnthropicContentBlockTypeToolUse,
+			ID:    schemas.Ptr("toolu_other"),
+			Name:  schemas.Ptr("get_time"),
+			Input: json.RawMessage(`{"timezone":"UTC"}`),
+		},
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = convertAnthropicContentBlocksToResponsesMessagesGrouped(blocks, &assistant, true)
 	}
 }

@@ -340,8 +340,10 @@ func (p *LoggerPlugin) retryTransientBatch(ctx context.Context, size int, kind s
 //     large for statement_timeout still lands; a single row that times out is
 //     dropped.
 //   - any other transient error (connection lost, server shutting down, lock
-//     timeout): the batch was already retried whole by retryTransientBatch and
-//     is dropped; per-row retries cannot succeed against the same outage.
+//     timeout, SQLite busy/locked): the batch was already retried whole by
+//     retryTransientBatch and is dropped; per-row retries cannot succeed
+//     against the same outage, and on SQLite each one would wait out
+//     busy_timeout on the same writer lock.
 //   - anything else: the existing per-row fallback, perRow, isolates the bad
 //     row so one poisoned entry does not drop its neighbours. perRow reports
 //     false when ctx ended before the row was settled.
@@ -476,10 +478,12 @@ func (p *LoggerPlugin) processBatch(ctx context.Context, batch []*writeQueueEntr
 	agentLogs := make([]*logstore.AgentLog, 0, len(batch))
 	for _, entry := range batch {
 		if entry.log != nil {
+			p.applyParsedPassthrough(entry.log)
 			omitBinaryBodies(entry.log)
 			logs = append(logs, entry.log)
 		}
 		if entry.logUpdate != nil {
+			p.applyParsedPassthrough(entry.logUpdate)
 			omitBinaryBodies(entry.logUpdate)
 			logUpdates = append(logUpdates, entry.logUpdate)
 		}
@@ -788,7 +792,75 @@ func (p *LoggerPlugin) enqueueLogEntry(entry *logstore.Log, callback func(entry 
 	if p.closed.Load() {
 		return
 	}
+	// A row whose output-monitor guardrail result is still pending is written
+	// once that result lands (holdForDeferredGuardrail). The result is taken off
+	// the row here, so the row passes straight through when it comes back.
+	if deferred := entry.DeferredGuardrail; deferred != nil {
+		entry.DeferredGuardrail = nil
+		p.holdForDeferredGuardrail(deferred, entry, callback)
+		return
+	}
 	if !p.tryEnqueueLogEntry(entry, callback) {
+		p.countDrop()
+		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
+	}
+}
+
+// holdForDeferredGuardrail parks a completed row until its output-monitor
+// guardrail result lands, then writes it once with that result: the same
+// detections and redacted content an enforced rule would have recorded, and the
+// evaluation's plugin log lines after the request's own. No
+// goroutine waits; the guardrails plugin runs the callback when its background
+// evaluation finishes, which it always does within its own timeout. Cleanup
+// writes rows still held at shutdown as they were built.
+func (p *LoggerPlugin) holdForDeferredGuardrail(deferred *schemas.DeferredGuardrailResult, entry *logstore.Log, callback func(entry *logstore.Log)) {
+	p.heldGuardrailRows.Store(entry.ID, &writeQueueEntry{log: entry, callback: callback})
+	deferred.OnComplete(func(metadata *schemas.BifrostGuardrailMetadata, redaction schemas.RedactionData, pluginLogs []schemas.PluginLogEntry) {
+		if _, held := p.heldGuardrailRows.LoadAndDelete(entry.ID); !held {
+			return // Cleanup already wrote the row.
+		}
+		entry.GuardrailDebugParsed = metadata
+		entry.PluginLogs = appendPluginLogs(entry.PluginLogs, pluginLogs)
+		// Same rule as attachLogRedactionData: hidden content carries no mappings.
+		if !entry.ContentHidden && redaction.HasReplacements() {
+			entry.RedactionData = &redaction
+		}
+		p.writeHeldRow(entry, callback)
+	})
+}
+
+// releaseHeldGuardrailRows writes every row still waiting on an output-monitor
+// result as it was built, so shutdown loses only the late result, never the row.
+// Cleanup runs it after setting closed, so no row can be held behind it.
+func (p *LoggerPlugin) releaseHeldGuardrailRows() {
+	p.heldGuardrailRows.Range(func(key, _ any) bool {
+		if value, held := p.heldGuardrailRows.LoadAndDelete(key); held {
+			row := value.(*writeQueueEntry)
+			p.writeHeldRow(row.log, row.callback)
+		}
+		return true
+	})
+}
+
+// writeHeldRow queues a row that was held before Cleanup set closed. It skips
+// the closed check: the row was accepted before shutdown, and Cleanup drains
+// the queue after releasing held rows. A send racing the final channel close
+// is absorbed, as for any other producer.
+func (p *LoggerPlugin) writeHeldRow(entry *logstore.Log, callback func(entry *logstore.Log)) {
+	queued := func() (queued bool) {
+		defer func() {
+			if recover() != nil {
+				queued = false
+			}
+		}()
+		select {
+		case p.writeQueue <- &writeQueueEntry{log: entry, callback: callback}:
+			return true
+		default:
+			return false
+		}
+	}()
+	if !queued {
 		p.countDrop()
 		p.logger.Warn("log write queue full, dropping log entry %s", entry.ID)
 	}

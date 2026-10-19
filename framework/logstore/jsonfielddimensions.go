@@ -180,6 +180,32 @@ func jsonObjectFieldExpr(dialect, column, nestedUnder, field string) (string, bo
 	return "", false
 }
 
+// jsonArrayNotEmptyExpr returns a SQL predicate that is true when column is a
+// JSON object whose arrayKey holds a non-empty array, or ("", false) for an
+// unsupported dialect. Like jsonObjectFieldExpr it is false, never an error,
+// for a NULL, malformed or key-less column, and the length is only taken once
+// the value is known to be an array, since Postgres raises on a non-array.
+func jsonArrayNotEmptyExpr(dialect, column, arrayKey string) (string, bool) {
+	switch dialect {
+	case "postgres":
+		return fmt.Sprintf(
+			`(CASE WHEN %[1]s IS NOT NULL AND %[1]s IS JSON OBJECT AND jsonb_typeof(%[1]s::jsonb -> '%[2]s') = 'array' THEN jsonb_array_length(%[1]s::jsonb -> '%[2]s') > 0 ELSE FALSE END)`,
+			column, arrayKey,
+		), true
+	case "sqlite":
+		return fmt.Sprintf(
+			`(CASE WHEN %[1]s IS NOT NULL AND json_valid(%[1]s) AND json_type(%[1]s, '$.%[2]s') = 'array' THEN json_array_length(%[1]s, '$.%[2]s') > 0 ELSE 0 END)`,
+			column, arrayKey,
+		), true
+	case "clickhouse":
+		return fmt.Sprintf(
+			`(isValidJSON(ifNull(%[1]s, '')) AND JSONType(ifNull(%[1]s, ''), '%[2]s') = 'Array' AND JSONLength(ifNull(%[1]s, ''), '%[2]s') > 0)`,
+			column, arrayKey,
+		), true
+	}
+	return "", false
+}
+
 // jsonTopLevelNumberExpr returns a SQL expression yielding a numeric field at
 // the top level of a JSON object column as text ("429"), or ("", false) for an
 // unsupported dialect. Like jsonObjectFieldExpr it evaluates to NULL (”, on
