@@ -182,6 +182,7 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 
 	if original.Annotation != nil {
 		copyAnnotation := *original.Annotation
+		copyAnnotation.SourceContent = append([]string(nil), original.Annotation.SourceContent...)
 		copy.Annotation = &copyAnnotation
 	}
 
@@ -683,6 +684,9 @@ func deepCopyResponsesMessageContentBlock(original schemas.ResponsesMessageConte
 		// Annotations
 		if t.Annotations != nil {
 			t.Annotations = append([]schemas.ResponsesOutputMessageContentTextAnnotation(nil), t.Annotations...)
+			for i := range t.Annotations {
+				t.Annotations[i].SourceContent = append([]string(nil), t.Annotations[i].SourceContent...)
+			}
 		}
 		// LogProbs (and their inner slices)
 		if t.LogProbs != nil {

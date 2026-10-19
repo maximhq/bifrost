@@ -19,6 +19,23 @@ func testResponsesAccumulator(tb testing.TB) *Accumulator {
 	return acc
 }
 
+func TestDocumentCitationsCopyIsolation(t *testing.T) {
+	annotation := schemas.ResponsesOutputMessageContentTextAnnotation{Type: "content_block_location", SourceContent: []string{"Budget: $4.2M."}}
+	part := schemas.ResponsesMessageContentBlock{
+		Type: schemas.ResponsesOutputMessageContentTypeText,
+		ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+			Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{annotation},
+		},
+	}
+	copiedPart := deepCopyResponsesMessageContentBlock(part)
+	copiedPart.Annotations[0].SourceContent[0] = "changed"
+	require.Equal(t, "Budget: $4.2M.", part.Annotations[0].SourceContent[0])
+	original := &schemas.BifrostResponsesStreamResponse{Annotation: &annotation}
+	copiedEvent := deepCopyResponsesStreamResponse(original)
+	copiedEvent.Annotation.SourceContent[0] = "changed"
+	require.Equal(t, "Budget: $4.2M.", original.Annotation.SourceContent[0])
+}
+
 func TestDeepCopyResponsesMessageCopiesStructuredErrorPointers(t *testing.T) {
 	original := schemas.ResponsesMessage{ResponsesToolMessage: &schemas.ResponsesToolMessage{Error: &schemas.ResponsesToolMessageError{
 		ResponsesToolMessageErrorStruct: &schemas.ResponsesToolMessageErrorStruct{

@@ -303,6 +303,12 @@ type BedrockDocumentSource struct {
 	Source *BedrockDocumentSourceData `json:"source"` // Required: Document source data
 }
 
+// BedrockDocumentContentBlock is the text union used for custom document content
+// and the generated/source text fragments in citation blocks.
+type BedrockDocumentContentBlock struct {
+	Text *string `json:"text,omitempty"`
+}
+
 // BedrockDocumentSourceData represents the source of document data.
 // This is a tagged union — exactly one of Bytes, Text or S3Location should be set.
 // See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentSource.html
@@ -969,17 +975,32 @@ type BedrockWebCitationLocation struct {
 
 // BedrockCitationLocation represents the location of a citation (union type)
 type BedrockCitationLocation struct {
-	Web *BedrockWebCitationLocation `json:"web,omitempty"`
+	Web           *BedrockWebCitationLocation      `json:"web,omitempty"`
+	DocumentChunk *BedrockDocumentCitationLocation `json:"documentChunk,omitempty"`
+	DocumentChar  *BedrockDocumentCitationLocation `json:"documentChar,omitempty"`
+	DocumentPage  *BedrockDocumentCitationLocation `json:"documentPage,omitempty"`
 }
 
-// BedrockCitation represents a single citation returned by nova_grounding
+// BedrockDocumentCitationLocation carries the identical index/range fields of
+// the documentChunk, documentChar and documentPage location unions.
+type BedrockDocumentCitationLocation struct {
+	DocumentIndex *int `json:"documentIndex,omitempty"`
+	Start         *int `json:"start,omitempty"`
+	End           *int `json:"end,omitempty"`
+}
+
+// BedrockCitation represents a document or web citation.
 type BedrockCitation struct {
-	Location BedrockCitationLocation `json:"location"`
+	Location      BedrockCitationLocation       `json:"location"`
+	Title         *string                       `json:"title,omitempty"`
+	Source        *string                       `json:"source,omitempty"`
+	SourceContent []BedrockDocumentContentBlock `json:"sourceContent,omitempty"`
 }
 
 // BedrockCitationsContent represents the citations block embedded in a text content block
 type BedrockCitationsContent struct {
-	Citations []BedrockCitation `json:"citations"`
+	Citations []BedrockCitation             `json:"citations"`
+	Content   []BedrockDocumentContentBlock `json:"content,omitempty"`
 }
 
 // BedrockToolUseDelta represents incremental tool use content

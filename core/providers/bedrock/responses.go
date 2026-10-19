@@ -1825,26 +1825,18 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		}
 
 	case schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded:
-		// url_citation annotation → contentBlockDelta.citation
-		if bifrostResp.Annotation != nil && bifrostResp.Annotation.URL != nil {
+		if bifrostResp.Annotation != nil {
 			contentBlockIndex := 0
 			if bifrostResp.ContentIndex != nil {
 				contentBlockIndex = *bifrostResp.ContentIndex
 			}
-			domain := ""
-			if bifrostResp.Annotation.Title != nil {
-				domain = *bifrostResp.Annotation.Title
+			citation := bedrockCitationFromAnnotation(*bifrostResp.Annotation)
+			if citation == nil {
+				return nil, nil
 			}
 			event.ContentBlockIndex = &contentBlockIndex
 			event.Delta = &BedrockContentBlockDelta{
-				Citation: &BedrockCitation{
-					Location: BedrockCitationLocation{
-						Web: &BedrockWebCitationLocation{
-							URL:    *bifrostResp.Annotation.URL,
-							Domain: domain,
-						},
-					},
-				},
+				Citation: citation,
 			}
 		} else {
 			return nil, nil
@@ -4733,6 +4725,77 @@ func createTextMessage(
 	return bifrostMsg
 }
 
+func (citation BedrockCitation) toBifrostAnnotation() *schemas.ResponsesOutputMessageContentTextAnnotation {
+	annotation := &schemas.ResponsesOutputMessageContentTextAnnotation{}
+	var location *BedrockDocumentCitationLocation
+	switch {
+	case citation.Location.Web != nil:
+		annotation.Type = "url_citation"
+		annotation.URL = &citation.Location.Web.URL
+		annotation.Title = &citation.Location.Web.Domain
+	case citation.Location.DocumentChunk != nil:
+		location = citation.Location.DocumentChunk
+		annotation.Type = "content_block_location"
+		annotation.StartBlockIndex, annotation.EndBlockIndex = location.Start, location.End
+	case citation.Location.DocumentChar != nil:
+		location = citation.Location.DocumentChar
+		annotation.Type = "char_location"
+		annotation.StartCharIndex, annotation.EndCharIndex = location.Start, location.End
+	case citation.Location.DocumentPage != nil:
+		location = citation.Location.DocumentPage
+		annotation.Type = "page_location"
+		annotation.StartPageNumber, annotation.EndPageNumber = location.Start, location.End
+	default:
+		return nil
+	}
+	if location != nil {
+		annotation.Index = location.DocumentIndex
+		annotation.Filename = citation.Title
+		annotation.Source = citation.Source
+		for _, part := range citation.SourceContent {
+			if part.Text != nil {
+				annotation.SourceContent = append(annotation.SourceContent, *part.Text)
+			}
+		}
+		if len(annotation.SourceContent) > 0 {
+			annotation.Text = schemas.Ptr(strings.Join(annotation.SourceContent, ""))
+		}
+	}
+	return annotation
+}
+
+func bedrockCitationFromAnnotation(annotation schemas.ResponsesOutputMessageContentTextAnnotation) *BedrockCitation {
+	citation := &BedrockCitation{}
+	switch annotation.Type {
+	case "url_citation":
+		if annotation.URL == nil {
+			return nil
+		}
+		domain := ""
+		if annotation.Title != nil {
+			domain = *annotation.Title
+		}
+		citation.Location.Web = &BedrockWebCitationLocation{URL: *annotation.URL, Domain: domain}
+		return citation
+	case "content_block_location":
+		citation.Location.DocumentChunk = &BedrockDocumentCitationLocation{DocumentIndex: annotation.Index, Start: annotation.StartBlockIndex, End: annotation.EndBlockIndex}
+	case "char_location":
+		citation.Location.DocumentChar = &BedrockDocumentCitationLocation{DocumentIndex: annotation.Index, Start: annotation.StartCharIndex, End: annotation.EndCharIndex}
+	case "page_location":
+		citation.Location.DocumentPage = &BedrockDocumentCitationLocation{DocumentIndex: annotation.Index, Start: annotation.StartPageNumber, End: annotation.EndPageNumber}
+	default:
+		return nil
+	}
+	citation.Title, citation.Source = annotation.Filename, annotation.Source
+	for _, text := range annotation.SourceContent {
+		citation.SourceContent = append(citation.SourceContent, BedrockDocumentContentBlock{Text: schemas.Ptr(text)})
+	}
+	if len(citation.SourceContent) == 0 && annotation.Text != nil {
+		citation.SourceContent = []BedrockDocumentContentBlock{{Text: annotation.Text}}
+	}
+	return citation
+}
+
 // bedrockToolSearchArguments carries a replayed server_tool_use.input onto the neutral
 // item's Arguments, so the InvokeModel serializer can echo the block back unchanged.
 // An absent input stays nil and the rebuild falls back to {}.
@@ -4929,8 +4992,19 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 			outputMessages = append(outputMessages, bifrostMsg)
 
 		} else if block.CitationsContent != nil {
-			// Standalone citationsContent block — attach citations as url_citation annotations
-			// to the most recently created text message (interleaved in the Bedrock format).
+			// Document citations carry their generated text inside this block. Legacy
+			// Nova web citations without content still annotate the preceding text.
+			if len(block.CitationsContent.Content) > 0 {
+				texts := make([]string, 0, len(block.CitationsContent.Content))
+				for _, part := range block.CitationsContent.Content {
+					if part.Text != nil {
+						texts = append(texts, *part.Text)
+					}
+				}
+				text := strings.Join(texts, "")
+				lastTextOutputIdx = len(outputMessages)
+				outputMessages = append(outputMessages, createTextMessage(&text, convertBedrockRoleToBifrostRole(msg.Role), schemas.ResponsesOutputMessageContentTypeText, isOutputMessage))
+			}
 			if lastTextOutputIdx >= 0 {
 				lastMsg := &outputMessages[lastTextOutputIdx]
 				if lastMsg.Content != nil && len(lastMsg.Content.ContentBlocks) > 0 {
@@ -4942,16 +5016,13 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 						}
 					}
 					for _, citation := range block.CitationsContent.Citations {
-						if citation.Location.Web == nil {
+						annotation := citation.toBifrostAnnotation()
+						if annotation == nil {
 							continue
 						}
 						cb.ResponsesOutputMessageContentText.Annotations = append(
 							cb.ResponsesOutputMessageContentText.Annotations,
-							schemas.ResponsesOutputMessageContentTextAnnotation{
-								Type:  "url_citation",
-								URL:   schemas.Ptr(citation.Location.Web.URL),
-								Title: schemas.Ptr(citation.Location.Web.Domain),
-							},
+							*annotation,
 						)
 					}
 				}
@@ -5769,6 +5840,28 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 				continue
 			}
 
+			// Document-cited text is one citationsContent union member, rather than
+			// a text block followed by the web-only citation blocks used by Nova.
+			if bedrockBlock.Text != nil && block.ResponsesOutputMessageContentText != nil {
+				hasDocumentCitation := false
+				for _, annotation := range block.Annotations {
+					if annotation.Type == "char_location" || annotation.Type == "page_location" || annotation.Type == "content_block_location" {
+						hasDocumentCitation = true
+						break
+					}
+				}
+				if hasDocumentCitation {
+					cited := &BedrockCitationsContent{Content: []BedrockDocumentContentBlock{{Text: bedrockBlock.Text}}}
+					for _, annotation := range block.Annotations {
+						if citation := bedrockCitationFromAnnotation(annotation); citation != nil {
+							cited.Citations = append(cited.Citations, *citation)
+						}
+					}
+					bedrockBlock.Text = nil
+					bedrockBlock.CitationsContent = cited
+				}
+			}
+
 			// Only append if at least one required field is set
 			if bedrockBlock.Text != nil ||
 				bedrockBlock.Image != nil ||
@@ -5778,7 +5871,8 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 				bedrockBlock.ReasoningContent != nil ||
 				bedrockBlock.CachePoint != nil ||
 				bedrockBlock.JSON != nil ||
-				bedrockBlock.GuardContent != nil {
+				bedrockBlock.GuardContent != nil ||
+				bedrockBlock.CitationsContent != nil {
 				blocks = append(blocks, bedrockBlock)
 			}
 

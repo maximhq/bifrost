@@ -2111,7 +2111,8 @@ func deepCopyResponsesMessageContentBlock(original ResponsesMessageContentBlock)
 			copyText.Annotations = make([]ResponsesOutputMessageContentTextAnnotation, len(original.ResponsesOutputMessageContentText.Annotations))
 			for i, annotation := range original.ResponsesOutputMessageContentText.Annotations {
 				copyAnnotation := ResponsesOutputMessageContentTextAnnotation{
-					Type: annotation.Type,
+					Type:          annotation.Type,
+					SourceContent: append([]string(nil), annotation.SourceContent...),
 				}
 				if annotation.Index != nil {
 					copyIndex := *annotation.Index

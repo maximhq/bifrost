@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +23,70 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
+
+func TestDocumentCitationsResponseRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		location, kind, start, end string
+		first, last                int
+	}{
+		{"documentChunk", "content_block_location", "start_block_index", "end_block_index", 0, 1},
+		{"documentChar", "char_location", "start_char_index", "end_char_index", 0, 14},
+		{"documentPage", "page_location", "start_page_number", "end_page_number", 1, 2},
+	} {
+		t.Run(tc.location, func(t *testing.T) {
+			citation := fmt.Sprintf(`{"title":"pack","sourceContent":[{"text":"Budget: "},{"text":"$4.2M."}],"location":{"%s":{"documentIndex":0,"start":%d,"end":%d}}}`, tc.location, tc.first, tc.last)
+			var in bedrock.BedrockConverseResponse
+			require.NoError(t, json.Unmarshal([]byte(`{"output":{"message":{"role":"assistant","content":[{"citationsContent":{"content":[{"text":"The budget is $4.2M."}],"citations":[`+citation+`]}}]}},"stopReason":"end_turn"}`), &in))
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			resp, err := in.ToBifrostResponsesResponse(ctx)
+			require.NoError(t, err)
+			chat, err := in.ToBifrostChatResponse(ctx, "global.anthropic.claude-haiku-5-5")
+			require.NoError(t, err)
+			require.NotNil(t, chat.Choices[0].Message.Content.ContentStr)
+			require.Equal(t, "The budget is $4.2M.", *chat.Choices[0].Message.Content.ContentStr)
+			require.NotEmpty(t, resp.Output, "generated text in citationsContent was discarded")
+			resp.Output[0] = schemas.DeepCopyResponsesMessage(resp.Output[0])
+			block := resp.Output[0].Content.ContentBlocks[0]
+			require.Equal(t, "The budget is $4.2M.", *block.Text)
+			require.Len(t, block.Annotations, 1)
+			assert.Equal(t, tc.kind, block.Annotations[0].Type)
+			assert.Equal(t, "Budget: $4.2M.", *block.Annotations[0].Text)
+			native := anthropic.ToAnthropicResponsesResponse(ctx, resp)
+			wire, err := providerUtils.MarshalSorted(native)
+			require.NoError(t, err)
+			ann := gjson.GetBytes(wire, "content.0.citations.0")
+			assert.Equal(t, tc.kind, ann.Get("type").Str, "%s", wire)
+			assert.Equal(t, "pack", ann.Get("document_title").Str)
+			assert.True(t, ann.Get(tc.start).Exists(), "zero index lost: %s", wire)
+			assert.Equal(t, int64(tc.first), ann.Get(tc.start).Int())
+			assert.Equal(t, int64(tc.last), ann.Get(tc.end).Int())
+			out, err := bedrock.ToBedrockConverseResponse(resp)
+			require.NoError(t, err)
+			wire, err = providerUtils.MarshalSorted(out)
+			require.NoError(t, err)
+			nativeBlock := gjson.GetBytes(wire, "output.message.content.0.citationsContent")
+			assert.Equal(t, "The budget is $4.2M.", nativeBlock.Get("content.0.text").Str, "%s", wire)
+			assert.JSONEq(t, citation, nativeBlock.Get("citations.0").Raw)
+		})
+	}
+}
+
+func TestDocumentCitationsPreserveLegacyWeb(t *testing.T) {
+	var in bedrock.BedrockConverseResponse
+	raw := `{"output":{"message":{"role":"assistant","content":[{"text":"Answer"},{"citationsContent":{"citations":[{"location":{"web":{"url":"https://example.com","domain":"example.com"}}}]}}]}},"stopReason":"end_turn"}`
+	require.NoError(t, json.Unmarshal([]byte(raw), &in))
+	resp, err := in.ToBifrostResponsesResponse(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline))
+	require.NoError(t, err)
+	require.Len(t, resp.Output[0].Content.ContentBlocks[0].Annotations, 1)
+	require.Equal(t, "url_citation", resp.Output[0].Content.ContentBlocks[0].Annotations[0].Type)
+	out, err := bedrock.ToBedrockConverseResponse(resp)
+	require.NoError(t, err)
+	wire, err := providerUtils.MarshalSorted(out)
+	require.NoError(t, err)
+	require.JSONEq(t, gjson.Get(raw, "output.message").Raw, gjson.GetBytes(wire, "output.message").Raw)
+}
 
 func mustMarshalJSON(v interface{}) json.RawMessage {
 	b, err := json.Marshal(v)

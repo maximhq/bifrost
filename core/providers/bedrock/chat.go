@@ -134,6 +134,13 @@ func (response *BedrockConverseResponse) ToBifrostChatResponse(ctx context.Conte
 				}
 				contentBlocks = append(contentBlocks, chatContentBlock)
 			}
+			if contentBlock.CitationsContent != nil {
+				for _, part := range contentBlock.CitationsContent.Content {
+					if part.Text != nil && *part.Text != "" {
+						contentBlocks = append(contentBlocks, schemas.ChatContentBlock{Type: schemas.ChatContentBlockTypeText, Text: part.Text})
+					}
+				}
+			}
 
 			if contentBlock.ToolUse != nil {
 				// Check if this is the structured output tool
