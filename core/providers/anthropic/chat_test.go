@@ -2729,3 +2729,36 @@ func TestStopSequence_ChatResponseEgress(t *testing.T) {
 		})
 	}
 }
+
+// openAICompatibleMessageLevelCacheControl is a turn as the AI SDK openai-compatible
+// provider sends it: cache_control on the message objects, string content.
+const openAICompatibleMessageLevelCacheControl = `[
+  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
+  {"role":"user","content":"Create notes.txt"},
+  {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{\"path\":\"notes.txt\"}"}}]},
+  {"role":"tool","tool_call_id":"call_1","content":"Wrote notes.txt","cache_control":{"type":"ephemeral"}}
+]`
+
+func TestToAnthropicChatRequest_MessageLevelCacheControl(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(openAICompatibleMessageLevelCacheControl), &input))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-haiku-4-5",
+		Input:    input,
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, result.System)
+	require.NotEmpty(t, result.System.ContentBlocks)
+	assert.NotNil(t, result.System.ContentBlocks[len(result.System.ContentBlocks)-1].CacheControl,
+		"system breakpoint must reach Anthropic")
+
+	body, err := sonic.Marshal(result)
+	require.NoError(t, err)
+	assert.Equal(t, 2, strings.Count(string(body), `"cache_control"`),
+		"system and tool result breakpoints must both reach Anthropic: %s", body)
+}

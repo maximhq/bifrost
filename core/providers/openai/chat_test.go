@@ -2981,3 +2981,33 @@ func BenchmarkOpenAIChatRequestUnknownFields(b *testing.B) {
 		_ = OpenAIChatRequestUnknownFields(body)
 	}
 }
+
+// TestToOpenAIChatRequest_MessageLevelCacheControl_OpenRouter — a cache_control the
+// client set on the message object reaches OpenRouter as a block marker, and is still
+// stripped for a provider that does not take one.
+func TestToOpenAIChatRequest_MessageLevelCacheControl_OpenRouter(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+	  {"role":"system","content":"You are a coding agent.","cache_control":{"type":"ephemeral"}},
+	  {"role":"user","content":"Create notes.txt","cache_control":{"type":"ephemeral"}}
+	]`), &input))
+
+	for _, tc := range []struct {
+		name     string
+		provider schemas.ModelProvider
+		model    string
+		want     int
+	}{
+		{name: "openrouter keeps both breakpoints", provider: schemas.OpenRouter, model: "anthropic/claude-haiku-4.5", want: 2},
+		{name: "openai drops them as before", provider: schemas.OpenAI, model: "gpt-4o", want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			req := ToOpenAIChatRequest(ctx, &schemas.BifrostChatRequest{Provider: tc.provider, Model: tc.model, Input: input})
+			body, err := sonic.Marshal(req)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, strings.Count(string(body), `"cache_control"`), "%s", body)
+		})
+	}
+}
