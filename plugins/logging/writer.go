@@ -340,8 +340,10 @@ func (p *LoggerPlugin) retryTransientBatch(ctx context.Context, size int, kind s
 //     large for statement_timeout still lands; a single row that times out is
 //     dropped.
 //   - any other transient error (connection lost, server shutting down, lock
-//     timeout): the batch was already retried whole by retryTransientBatch and
-//     is dropped; per-row retries cannot succeed against the same outage.
+//     timeout, SQLite busy/locked): the batch was already retried whole by
+//     retryTransientBatch and is dropped; per-row retries cannot succeed
+//     against the same outage, and on SQLite each one would wait out
+//     busy_timeout on the same writer lock.
 //   - anything else: the existing per-row fallback, perRow, isolates the bad
 //     row so one poisoned entry does not drop its neighbours. perRow reports
 //     false when ctx ended before the row was settled.
