@@ -1203,9 +1203,10 @@ func spliceJSONObjects(fragments [][]byte) []byte {
 func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 	// Unmarshal the base fields directly
 	type baseFields struct {
-		Name    *string             `json:"name,omitempty"`
-		Role    ChatMessageRole     `json:"role,omitempty"`
-		Content *ChatMessageContent `json:"content,omitempty"`
+		Name         *string             `json:"name,omitempty"`
+		Role         ChatMessageRole     `json:"role,omitempty"`
+		Content      *ChatMessageContent `json:"content,omitempty"`
+		CacheControl *CacheControl       `json:"cache_control,omitempty"`
 	}
 	var base baseFields
 	if err := Unmarshal(data, &base); err != nil {
@@ -1240,7 +1241,44 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 		cm.ChatAssistantMessage = &assistantMsg
 	}
 
+	if base.CacheControl != nil {
+		cm.attachMessageCacheControl(base.CacheControl)
+	}
 	return nil
+}
+
+// attachMessageCacheControl places a cache_control the client set on the message
+// object (the shape OpenAI-compatible SDKs emit) where every provider converter
+// reads it: the last content block, promoting string content to a single text
+// block, or the last tool call when the message has no content. A block or tool
+// call that already carries its own marker keeps it. Empty string content is left
+// alone, since providers reject a breakpoint on an empty text block.
+func (cm *ChatMessage) attachMessageCacheControl(marker *CacheControl) {
+	if cm.Content != nil {
+		if cm.Content.ContentStr != nil {
+			if *cm.Content.ContentStr == "" {
+				return
+			}
+			cm.Content.ContentBlocks = []ChatContentBlock{{
+				Type:         ChatContentBlockTypeText,
+				Text:         cm.Content.ContentStr,
+				CacheControl: marker,
+			}}
+			cm.Content.ContentStr = nil
+			return
+		}
+		if n := len(cm.Content.ContentBlocks); n > 0 {
+			if cm.Content.ContentBlocks[n-1].CacheControl == nil {
+				cm.Content.ContentBlocks[n-1].CacheControl = marker
+			}
+			return
+		}
+	}
+	if cm.ChatAssistantMessage != nil {
+		if n := len(cm.ChatAssistantMessage.ToolCalls); n > 0 && cm.ChatAssistantMessage.ToolCalls[n-1].CacheControl == nil {
+			cm.ChatAssistantMessage.ToolCalls[n-1].CacheControl = marker
+		}
+	}
 }
 
 // ChatMessageContent represents a content in a message.
