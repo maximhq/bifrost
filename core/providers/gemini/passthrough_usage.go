@@ -213,7 +213,7 @@ func extractGeminiEmbeddingUsage(body []byte) *schemas.BifrostPassthroughUsage {
 
 	m := resp.UsageMetadata
 	total := int(m.TotalTokenCount)
-	prompt := int(m.PromptTokenCount)
+	prompt := geminiInputTokens(m)
 	if total == 0 && prompt == 0 {
 		return nil
 	}
@@ -235,11 +235,12 @@ func extractGeminiEmbeddingUsage(body []byte) *schemas.BifrostPassthroughUsage {
 // total_cached_tokens. service_tier "standard" is the default and is not forwarded.
 
 type geminiInteractionsUsage struct {
-	TotalTokens   int `json:"total_tokens"`
-	InputTokens   int `json:"total_input_tokens"`
-	OutputTokens  int `json:"total_output_tokens"`
-	ThoughtTokens int `json:"total_thought_tokens"`
-	CachedTokens  int `json:"total_cached_tokens"`
+	TotalTokens        int `json:"total_tokens"`
+	InputTokens        int `json:"total_input_tokens"`
+	ToolUseInputTokens int `json:"total_tool_use_tokens"`
+	OutputTokens       int `json:"total_output_tokens"`
+	ThoughtTokens      int `json:"total_thought_tokens"`
+	CachedTokens       int `json:"total_cached_tokens"`
 }
 
 type geminiInteractionsWrapper struct {
@@ -272,7 +273,7 @@ func extractGeminiInteractionsUsage(body []byte) *schemas.BifrostPassthroughUsag
 	}
 
 	usage := &schemas.BifrostLLMUsage{
-		PromptTokens:     u.InputTokens,
+		PromptTokens:     u.InputTokens + u.ToolUseInputTokens,
 		CompletionTokens: u.OutputTokens + u.ThoughtTokens,
 		TotalTokens:      u.TotalTokens,
 	}

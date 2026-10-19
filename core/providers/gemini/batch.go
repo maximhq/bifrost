@@ -443,7 +443,7 @@ func geminiGenerateContentToBatchResultBody(resp *GenerateContentResponse) map[s
 	if resp.UsageMetadata != nil {
 		completionTokens := resp.UsageMetadata.CandidatesTokenCount + resp.UsageMetadata.ThoughtsTokenCount
 		usage := map[string]interface{}{
-			"prompt_tokens":     resp.UsageMetadata.PromptTokenCount,
+			"prompt_tokens":     int32(geminiInputTokens(resp.UsageMetadata)),
 			"completion_tokens": completionTokens,
 			"total_tokens":      resp.UsageMetadata.TotalTokenCount,
 		}
@@ -526,7 +526,7 @@ func extractGeminiUsageMetadata(geminiResponse *GenerateContentResponse) (int, i
 	var inputTokens, outputTokens, totalTokens int
 	if geminiResponse.UsageMetadata != nil {
 		usageMetadata := geminiResponse.UsageMetadata
-		inputTokens = int(usageMetadata.PromptTokenCount)
+		inputTokens = geminiInputTokens(usageMetadata)
 		outputTokens = int(usageMetadata.CandidatesTokenCount)
 		totalTokens = int(usageMetadata.TotalTokenCount)
 	}

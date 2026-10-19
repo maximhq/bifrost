@@ -3612,7 +3612,7 @@ func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
 		return body
 	}
 	usage := map[string]any{
-		"prompt_tokens":     meta.PromptTokenCount,
+		"prompt_tokens":     meta.PromptTokenCount + meta.ToolUsePromptTokenCount,
 		"completion_tokens": meta.CandidatesTokenCount + meta.ThoughtsTokenCount,
 		"total_tokens":      meta.TotalTokenCount,
 	}
