@@ -298,9 +298,10 @@ type BedrockImageSourceData struct {
 
 // BedrockDocumentSource represents document content
 type BedrockDocumentSource struct {
-	Format string                     `json:"format"` // Required: Document format (pdf, csv, doc, docx, xls, xlsx, html, txt, md)
-	Name   string                     `json:"name"`   // Required: Document name
-	Source *BedrockDocumentSourceData `json:"source"` // Required: Document source data
+	Format    string                     `json:"format,omitempty"` // Omitted for custom-content documents
+	Name      string                     `json:"name"`             // Required: Document name
+	Source    *BedrockDocumentSourceData `json:"source"`           // Required: Document source data
+	Citations *schemas.Citations         `json:"citations,omitempty"`
 }
 
 // BedrockDocumentContentBlock is the text union used for custom document content
@@ -310,12 +311,13 @@ type BedrockDocumentContentBlock struct {
 }
 
 // BedrockDocumentSourceData represents the source of document data.
-// This is a tagged union — exactly one of Bytes, Text or S3Location should be set.
+// This is a tagged union — exactly one of Bytes, Text, Content or S3Location should be set.
 // See: https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_DocumentSource.html
 type BedrockDocumentSourceData struct {
-	Bytes      *string            `json:"bytes,omitempty"`      // Base64-encoded document bytes
-	Text       *string            `json:"text,omitempty"`       // Plain text content; Converse rejects it unless the block enables citations
-	S3Location *BedrockS3Location `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
+	Bytes      *string                       `json:"bytes,omitempty"`      // Base64-encoded document bytes
+	Text       *string                       `json:"text,omitempty"`       // Plain text content; Converse rejects it unless the block enables citations
+	S3Location *BedrockS3Location            `json:"s3Location,omitempty"` // Optional: S3 location (model-dependent support)
+	Content    []BedrockDocumentContentBlock `json:"content,omitempty"`
 }
 
 // BedrockVideoBlock represents a video content block.

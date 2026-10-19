@@ -4001,6 +4001,8 @@ func ConvertBifrostMessagesToBedrockMessages(ctx context.Context, model string, 
 									file.FileURL,
 									file.Filename,
 									file.FileType,
+									file.FileContent,
+									block.Citations,
 									bedrockDocumentSourceRequired,
 								)
 								if err != nil {
@@ -5267,8 +5269,20 @@ func convertSingleBedrockMessageToBifrostMessages(ctx *schemas.BifrostContext, m
 						fileDataURL = fmt.Sprintf("data:%s;base64,%s", fileType, fileDataURL)
 					}
 					fileBlock.ResponsesInputMessageContentBlockFile.FileData = &fileDataURL
+				} else if block.Document.Source.S3Location != nil {
+					fileBlock.ResponsesInputMessageContentBlockFile.FileURL = &block.Document.Source.S3Location.URI
+				} else if block.Document.Source.Content != nil {
+					content := make([]schemas.ResponsesMessageContentBlock, 0, len(block.Document.Source.Content))
+					for _, part := range block.Document.Source.Content {
+						content = append(content, schemas.ResponsesMessageContentBlock{Type: "text", Text: part.Text})
+					}
+					raw, err := providerUtils.MarshalSorted(content)
+					if err == nil {
+						fileBlock.ResponsesInputMessageContentBlockFile.FileContent = raw
+					}
 				}
 			}
+			fileBlock.Citations = block.Document.Citations
 
 			bifrostMsg := schemas.ResponsesMessage{
 				Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage),
@@ -5797,6 +5811,8 @@ func convertBifrostResponsesMessageContentBlocksToBedrockContentBlocks(ctx conte
 						file.FileURL,
 						file.Filename,
 						file.FileType,
+						file.FileContent,
+						block.Citations,
 						bedrockDocumentSourceRequired,
 					)
 					if err != nil {

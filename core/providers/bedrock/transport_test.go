@@ -36,6 +36,26 @@ func TestDocumentCitationsPooledStateReset(t *testing.T) {
 	releaseBedrockResponsesStreamState(state)
 }
 
+func BenchmarkDocumentCitationsConversion(b *testing.B) {
+	req := &schemas.BifrostResponsesRequest{Provider: schemas.Bedrock, Model: "global.anthropic.claude-haiku-5-5",
+		Input: []schemas.ResponsesMessage{{Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: []schemas.ResponsesMessageContentBlock{{
+				Type: schemas.ResponsesInputMessageContentBlockTypeFile,
+				ResponsesInputMessageContentBlockFile: &schemas.ResponsesInputMessageContentBlockFile{
+					Filename: schemas.Ptr("pack"), FileContent: json.RawMessage(`[{"type":"text","text":"Budget: $4.2M."}]`),
+				}, Citations: &schemas.Citations{Enabled: schemas.Ptr(true)},
+			}}},
+		}},
+	}
+	ctx := testBedrockCtx()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := ToBedrockResponsesRequest(ctx, req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkOrdinaryConverseStream(b *testing.B) {
 	model := "global.anthropic.claude-haiku-5-5"
 	chunks := []BedrockStreamEvent{

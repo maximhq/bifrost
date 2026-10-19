@@ -408,15 +408,48 @@ func materializeBedrockDocument(
 	fileURL *string,
 	filename *string,
 	fileType *string,
+	fileContent json.RawMessage,
+	citations *schemas.Citations,
 	sourceRequirement bedrockDocumentSourceRequirement,
 ) (*BedrockDocumentSource, error) {
 	document := &BedrockDocumentSource{
-		Name:   "document",
-		Format: "pdf",
-		Source: &BedrockDocumentSourceData{},
+		Name:      "document",
+		Format:    "pdf",
+		Source:    &BedrockDocumentSourceData{},
+		Citations: citations,
 	}
 	if filename != nil {
 		document.Name = normalizeBedrockFilename(*filename)
+	}
+
+	if len(fileContent) > 0 {
+		if bytes.Equal(bytes.TrimSpace(fileContent), []byte("null")) {
+			return nil, providerUtils.InvalidRequestErrorf("document file_content cannot be null")
+		}
+		if fileData != nil || (fileURL != nil && *fileURL != "") {
+			return nil, providerUtils.InvalidRequestErrorf("document file_content cannot be combined with file_data or file_url")
+		}
+		if citations == nil || citations.Enabled == nil || !*citations.Enabled {
+			return nil, providerUtils.InvalidRequestErrorf("Bedrock custom document file_content requires citations.enabled=true")
+		}
+		var text string
+		if err := sonic.Unmarshal(fileContent, &text); err == nil {
+			document.Source.Content = []BedrockDocumentContentBlock{{Text: &text}}
+		} else {
+			var blocks []schemas.ResponsesMessageContentBlock
+			if err := sonic.Unmarshal(fileContent, &blocks); err != nil || len(blocks) == 0 {
+				return nil, providerUtils.InvalidRequestErrorf("document file_content must be a string or a non-empty array of text blocks")
+			}
+			document.Source.Content = make([]BedrockDocumentContentBlock, 0, len(blocks))
+			for _, block := range blocks {
+				if (string(block.Type) != "text" && block.Type != schemas.ResponsesInputMessageContentBlockTypeText) || block.Text == nil {
+					return nil, providerUtils.InvalidRequestErrorf("Bedrock custom document file_content supports only text blocks")
+				}
+				document.Source.Content = append(document.Source.Content, BedrockDocumentContentBlock{Text: block.Text})
+			}
+		}
+		document.Format = ""
+		return document, nil
 	}
 
 	dataURLMediaType, dataURLPayload := "", ""
@@ -498,7 +531,7 @@ func materializeBedrockDocument(
 		if sourceRequirement == bedrockDocumentSourceOptional {
 			return document, nil
 		}
-		return nil, fmt.Errorf("bedrock document requires file_data or file_url")
+		return nil, providerUtils.InvalidRequestErrorf("bedrock document requires file_data, file_url or file_content")
 	}
 
 	if isDataURL {
@@ -2411,6 +2444,8 @@ func convertContentBlock(ctx context.Context, model string, block schemas.ChatCo
 			block.File.FileURL,
 			block.File.Filename,
 			block.File.FileType,
+			block.File.FileContent,
+			block.Citations,
 			bedrockDocumentSourceOptional,
 		)
 		if err != nil {
