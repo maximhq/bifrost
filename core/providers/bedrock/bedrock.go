@@ -2168,6 +2168,11 @@ func (provider *BedrockProvider) ResponsesStream(ctx *schemas.BifrostContext, po
 
 				progress.observe(message, &streamEvent)
 
+				// The stop payload only contains an index; its event-stream header
+				// identifies the union member and is not part of the JSON payload.
+				if eventType := message.Headers.Get(":event-type"); eventType != nil && eventType.String() == "contentBlockStop" {
+					streamEvent.ContentBlockStop = true
+				}
 				if streamEvent.Trace != nil {
 					streamTrace = streamEvent.Trace
 				}

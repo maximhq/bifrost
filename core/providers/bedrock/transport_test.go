@@ -28,6 +28,67 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestDocumentCitationsPooledStateReset(t *testing.T) {
+	state := acquireBedrockResponsesStreamState()
+	state.TextAnnotations = map[int][]schemas.ResponsesOutputMessageContentTextAnnotation{0: {{Type: "char_location"}}}
+	state.flush()
+	require.Empty(t, state.TextAnnotations, "pool reset must not retain previous citations")
+	releaseBedrockResponsesStreamState(state)
+}
+
+func BenchmarkOrdinaryConverseStream(b *testing.B) {
+	model := "global.anthropic.claude-haiku-5-5"
+	chunks := []BedrockStreamEvent{
+		{Role: schemas.Ptr("assistant")},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")}},
+		{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		state := acquireBedrockResponsesStreamState()
+		state.Model = &model
+		sequence := 0
+		for i := range chunks {
+			events, err, _ := chunks[i].ToBifrostResponsesStream(sequence, state)
+			if err != nil {
+				b.Fatal(err)
+			}
+			sequence += len(events)
+		}
+		FinalizeBedrockStream(state, sequence, &schemas.ResponsesResponseUsage{}, nil)
+		releaseBedrockResponsesStreamState(state)
+	}
+}
+
+func BenchmarkDocumentCitationsStream(b *testing.B) {
+	var citation BedrockCitation
+	if err := json.Unmarshal([]byte(`{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}`), &citation); err != nil {
+		b.Fatal(err)
+	}
+	model := "global.anthropic.claude-haiku-5-5"
+	chunks := []BedrockStreamEvent{
+		{Role: schemas.Ptr("assistant")},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Citation: &citation}},
+		{ContentBlockIndex: schemas.Ptr(0), Delta: &BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")}},
+		{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		state := acquireBedrockResponsesStreamState()
+		state.Model = &model
+		sequence := 0
+		for i := range chunks {
+			events, err, _ := chunks[i].ToBifrostResponsesStream(sequence, state)
+			if err != nil {
+				b.Fatal(err)
+			}
+			sequence += len(events)
+		}
+		FinalizeBedrockStream(state, sequence, &schemas.ResponsesResponseUsage{}, nil)
+		releaseBedrockResponsesStreamState(state)
+	}
+}
+
 // redirectTransport is an http.RoundTripper that rewrites every request's
 // host/scheme to a fixed target URL, used to redirect provider requests to a
 // local httptest.Server without modifying provider code.

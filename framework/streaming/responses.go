@@ -185,6 +185,10 @@ func deepCopyResponsesStreamResponse(original *schemas.BifrostResponsesStreamRes
 		copyAnnotation.SourceContent = append([]string(nil), original.Annotation.SourceContent...)
 		copy.Annotation = &copyAnnotation
 	}
+	if original.BedrockContentBlockIndex != nil {
+		index := *original.BedrockContentBlockIndex
+		copy.BedrockContentBlockIndex = &index
+	}
 
 	if original.AnnotationIndex != nil {
 		copyAnnotationIndex := *original.AnnotationIndex

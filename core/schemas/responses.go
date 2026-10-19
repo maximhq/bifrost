@@ -4586,7 +4586,8 @@ type BifrostResponsesStreamResponse struct {
 	// gateway compatibility guide), so the provider-native egress can restore them
 	// on the re-rendered frame. Deliberately NOT copied by WithDefaults: OpenAI-shaped
 	// surfaces never see it.
-	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
+	SafeguardResults         json.RawMessage `json:"safeguard_results,omitempty"`
+	BedrockContentBlockIndex *int            `json:"-"` // Native Converse index, distinct from the item-local content_index
 
 	// Perplexity-specific fields
 	SearchResults []SearchResult `json:"search_results,omitempty"`

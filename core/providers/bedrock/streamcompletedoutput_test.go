@@ -2,6 +2,7 @@ package bedrock_test
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"testing"
 
@@ -9,11 +10,161 @@ import (
 	"github.com/maximhq/bifrost/core/providers/anthropic"
 	"github.com/maximhq/bifrost/core/providers/bedrock"
 	"github.com/maximhq/bifrost/core/providers/gemini"
+	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestDocumentCitationsStreamOrdering(t *testing.T) {
+	for _, location := range []struct {
+		member, kind string
+		start, end   int
+	}{
+		{"documentChunk", "content_block_location", 0, 1},
+		{"documentChar", "char_location", 0, 14},
+		{"documentPage", "page_location", 1, 2},
+	} {
+		for _, citationFirst := range []bool{true, false} {
+			for _, stopBlock := range []bool{true, false} {
+				t.Run(fmt.Sprintf("%s/citationFirst=%t/stopBlock=%t", location.member, citationFirst, stopBlock), func(t *testing.T) {
+					state := bedrock.NewBedrockResponsesStreamState()
+					state.Model = schemas.Ptr("global.anthropic.claude-haiku-5-5")
+					var events []*schemas.BifrostResponsesStreamResponse
+					emit := func(raw string) {
+						var delta bedrock.BedrockContentBlockDelta
+						require.NoError(t, sonic.Unmarshal([]byte(raw), &delta))
+						out, err, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &delta}).ToBifrostResponsesStream(len(events), state)
+						require.Nil(t, err)
+						events = append(events, out...)
+					}
+					start, err, _ := (&bedrock.BedrockStreamEvent{Role: schemas.Ptr("assistant")}).ToBifrostResponsesStream(0, state)
+					require.Nil(t, err)
+					events = append(events, start...)
+					citation := fmt.Sprintf(`{"citation":{"title":"pack","sourceContent":[{"text":"Budget: $4.2M."}],"location":{"%s":{"documentIndex":0,"start":%d,"end":%d}}}}`, location.member, location.start, location.end)
+					if citationFirst {
+						emit(citation)
+					}
+					emit(`{"text":"The budget is "}`)
+					if !citationFirst {
+						emit(citation)
+					}
+					emit(`{"text":"$4.2M."}`)
+					if stopBlock {
+						out, err, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true}).ToBifrostResponsesStream(len(events), state)
+						require.Nil(t, err)
+						events = append(events, out...)
+					}
+					events = append(events, bedrock.FinalizeBedrockStream(state, len(events), &schemas.ResponsesResponseUsage{}, nil)...)
+					added, annotations, nativeCitations := 0, 0, 0
+					var text string
+					ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+					for _, event := range events {
+						if event.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded {
+							added++
+							require.NotNil(t, event.Item.ID)
+						}
+						if event.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta {
+							require.NotNil(t, event.ItemID, "citation-first delta has no initialized item")
+							text += *event.Delta
+						}
+						if event.Type == schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded {
+							require.Equal(t, 1, added, "annotation preceded item initialization")
+							require.Equal(t, location.kind, event.Annotation.Type)
+							annotations++
+						}
+						for _, native := range anthropic.ToAnthropicResponsesStreamResponse(ctx, event) {
+							if native.Delta != nil && native.Delta.Type == anthropic.AnthropicStreamDeltaTypeCitations {
+								nativeCitations++
+							}
+						}
+						native, err := bedrock.ToBedrockConverseStreamResponse(event)
+						require.NoError(t, err)
+						if event.Type == schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded {
+							require.NotNil(t, native, "Converse reverse converter dropped document citation")
+							wire, err := providerUtils.MarshalSorted(native)
+							require.NoError(t, err)
+							rangeJSON := gjson.GetBytes(wire, "delta.citation.location."+location.member)
+							require.True(t, rangeJSON.Get("start").Exists(), "%s", wire)
+							require.Equal(t, int64(location.start), rangeJSON.Get("start").Int())
+							require.Equal(t, int64(location.end), rangeJSON.Get("end").Int())
+						}
+						if event.Type == schemas.ResponsesStreamResponseTypeOutputItemDone {
+							require.Len(t, event.Item.Content.ContentBlocks[0].Annotations, 1)
+						}
+						if event.Type == schemas.ResponsesStreamResponseTypeCompleted {
+							require.Len(t, event.Response.Output, 1)
+							require.Len(t, event.Response.Output[0].Content.ContentBlocks[0].Annotations, 1)
+						}
+					}
+					assert.Equal(t, "The budget is $4.2M.", text)
+					assert.Equal(t, 1, added)
+					assert.Equal(t, 1, annotations)
+					assert.Equal(t, 1, nativeCitations, "Anthropic stream must not duplicate citations at completion")
+				})
+			}
+		}
+	}
+}
+
+func TestDocumentCitationsIgnoreUnknownAndClosedBlocks(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	state.Model = schemas.Ptr("global.anthropic.claude-haiku-5-5")
+	emit := func(delta *bedrock.BedrockContentBlockDelta) []*schemas.BifrostResponsesStreamResponse {
+		out, err, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(1), Delta: delta}).ToBifrostResponsesStream(0, state)
+		require.Nil(t, err)
+		return out
+	}
+	require.Empty(t, emit(&bedrock.BedrockContentBlockDelta{Citation: &bedrock.BedrockCitation{}}))
+	events := emit(&bedrock.BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")})
+	require.Equal(t, schemas.ResponsesStreamResponseTypeOutputItemAdded, events[0].Type, "unknown citation must not consume the item start")
+	_, err, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(1), ContentBlockStop: true}).ToBifrostResponsesStream(3, state)
+	require.Nil(t, err)
+	require.Empty(t, emit(&bedrock.BedrockContentBlockDelta{Text: schemas.Ptr("late text")}))
+	out, err, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(1), ContentBlockStop: true}).ToBifrostResponsesStream(6, state)
+	require.Nil(t, err)
+	require.Empty(t, out, "a repeated stop must not emit duplicate done events")
+}
+
+func TestDocumentCitationsDoneEventsDoNotShareText(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	state.Model = schemas.Ptr("global.anthropic.claude-haiku-5-5")
+	_, err, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &bedrock.BedrockContentBlockDelta{Text: schemas.Ptr("$4.2M.")}}).ToBifrostResponsesStream(0, state)
+	require.Nil(t, err)
+	events, err, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), ContentBlockStop: true}).ToBifrostResponsesStream(3, state)
+	require.Nil(t, err)
+	require.Len(t, events, 3)
+	*events[1].Part.Text = "changed by a post-hook"
+	require.Equal(t, "$4.2M.", *events[0].Text)
+	require.Equal(t, "$4.2M.", *events[2].Item.Content.ContentBlocks[0].Text)
+}
+
+func TestDocumentCitationsStreamClosesReasoningBeforeText(t *testing.T) {
+	state := bedrock.NewBedrockResponsesStreamState()
+	state.Model = schemas.Ptr("global.anthropic.claude-sonnet-5-5")
+	// Sonnet 5.5 omits thinking prose by default. This opaque test token
+	// exercises the signature-only lifecycle; it is not a live replay credential.
+	_, bErr, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(0), Delta: &bedrock.BedrockContentBlockDelta{
+		ReasoningContent: &bedrock.BedrockReasoningContentText{Text: schemas.Ptr(""), Signature: schemas.Ptr("fixture-signature")},
+	}}).ToBifrostResponsesStream(0, state)
+	require.Nil(t, bErr)
+	var delta bedrock.BedrockContentBlockDelta
+	require.NoError(t, sonic.Unmarshal([]byte(`{"citation":{"location":{"documentChunk":{"documentIndex":0,"start":0,"end":1}}}}`), &delta))
+	events, bErr, _ := (&bedrock.BedrockStreamEvent{ContentBlockIndex: schemas.Ptr(1), Delta: &delta}).ToBifrostResponsesStream(3, state)
+	require.Nil(t, bErr)
+	reasoningDone, textAdded := -1, -1
+	for i, event := range events {
+		if event.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && event.Item != nil && event.Item.Type != nil && *event.Item.Type == schemas.ResponsesMessageTypeReasoning {
+			reasoningDone = i
+		}
+		if event.Type == schemas.ResponsesStreamResponseTypeOutputItemAdded && event.Item != nil && event.Item.Type != nil && *event.Item.Type == schemas.ResponsesMessageTypeMessage {
+			textAdded = i
+		}
+	}
+	require.GreaterOrEqual(t, reasoningDone, 0)
+	require.Greater(t, textAdded, reasoningDone)
+}
 
 // driveBedrockTextStream replays the Converse event sequence AWS sends for a
 // plain text answer ("Hello world") and returns every emitted Responses event

@@ -31,6 +31,7 @@ type BedrockResponsesStreamState struct {
 	NovaGroundingCitations    map[int][]schemas.ResponsesWebSearchToolCallActionSearchSource // Collected citation sources per nova_grounding output index
 	CompletedOutputIndices    map[int]bool                                                   // Tracks which output indices have been completed
 	AnnotationIndices         map[int]int                                                    // Maps output_index to next annotation index for sequential citation numbering
+	TextAnnotations           map[int][]schemas.ResponsesOutputMessageContentTextAnnotation  // Allocated only for cited streams; owned and cleared with this pooled state
 	TextBuffers               map[int]*strings.Builder                                       // Maps output_index to accumulated text content for done events
 	ReasoningTextBuffers      map[int]*strings.Builder                                       // Maps output_index to accumulated reasoning text for reasoning done events
 	ReasoningSignatures       map[int]string                                                 // Maps output_index to the reasoning block's replay token (signature or redacted blob)
@@ -155,6 +156,7 @@ func acquireBedrockResponsesStreamState() *BedrockResponsesStreamState {
 	} else {
 		clear(state.OutputItems)
 	}
+	clear(state.TextAnnotations)
 	// Reset other fields
 	state.CurrentOutputIndex = 0
 	state.MessageID = nil
@@ -184,6 +186,7 @@ func releaseBedrockResponsesStreamState(state *BedrockResponsesStreamState) {
 }
 
 func (state *BedrockResponsesStreamState) flush() {
+	clear(state.TextAnnotations)
 	// Clear maps (reuse if already initialized, otherwise initialize)
 	if state.ContentIndexToOutputIndex == nil {
 		state.ContentIndexToOutputIndex = make(map[int]int)
@@ -362,7 +365,37 @@ func recordBedrockOutputItems(state *BedrockResponsesStreamState, responses []*s
 	if state == nil {
 		return
 	}
+	// Uncited streams keep the original recording path behind one empty check.
+	if len(state.TextAnnotations) > 0 {
+		for _, response := range responses {
+			if response == nil || response.OutputIndex == nil {
+				continue
+			}
+			annotations := state.TextAnnotations[*response.OutputIndex]
+			if len(annotations) == 0 {
+				continue
+			}
+			if response.Type == schemas.ResponsesStreamResponseTypeContentPartDone && response.Part != nil && response.Part.ResponsesOutputMessageContentText != nil {
+				response.Part.Annotations = append([]schemas.ResponsesOutputMessageContentTextAnnotation(nil), annotations...)
+			}
+			if response.Type == schemas.ResponsesStreamResponseTypeOutputItemDone && response.Item != nil && response.Item.Content != nil {
+				for i := range response.Item.Content.ContentBlocks {
+					block := &response.Item.Content.ContentBlocks[i]
+					if block.ResponsesOutputMessageContentText != nil {
+						block.Annotations = append([]schemas.ResponsesOutputMessageContentTextAnnotation(nil), annotations...)
+					}
+				}
+			}
+		}
+	}
 	for _, response := range responses {
+		// Each Bedrock block becomes a separate Responses item with one content
+		// part. Retain a nonzero native index for Converse egress before making
+		// the Responses index item-local. Index-zero streams allocate nothing extra.
+		if response != nil && response.ContentIndex != nil && *response.ContentIndex != 0 {
+			response.BedrockContentBlockIndex = response.ContentIndex
+			response.ContentIndex = schemas.Ptr(0)
+		}
 		if response == nil || response.Type != schemas.ResponsesStreamResponseTypeOutputItemDone {
 			continue
 		}
@@ -556,81 +589,7 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 					continue
 				}
 
-				prevAccText := ""
-				if buf := state.TextBuffers[prevOutputIndex]; buf != nil {
-					prevAccText = buf.String()
-				}
-
-				// Emit output_text.done with accumulated text
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(prevOutputIndex),
-					ContentIndex:   &prevContentIndex,
-					ItemID:         &prevItemID,
-					Text:           &prevAccText,
-					LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
-				})
-
-				// Emit content_part.done for text with accumulated text
-				prevPartText := prevAccText
-				part := &schemas.ResponsesMessageContentBlock{
-					Type: schemas.ResponsesOutputMessageContentTypeText,
-					Text: &prevPartText,
-					ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-						LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-						Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-					},
-				}
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(prevOutputIndex),
-					ContentIndex:   &prevContentIndex,
-					ItemID:         &prevItemID,
-					Part:           part,
-				})
-
-				// Emit output_item.done for text with content blocks
-				statusCompleted := "completed"
-				var prevContentBlocks []schemas.ResponsesMessageContentBlock
-				if prevAccText != "" {
-					prevItemText := prevAccText
-					prevContentBlocks = []schemas.ResponsesMessageContentBlock{
-						{
-							Type: schemas.ResponsesOutputMessageContentTypeText,
-							Text: &prevItemText,
-							ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-								Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-								LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-							},
-						},
-					}
-				}
-				messageType := schemas.ResponsesMessageTypeMessage
-				role := schemas.ResponsesInputMessageRoleAssistant
-				doneItem := &schemas.ResponsesMessage{
-					Type:   &messageType,
-					Role:   &role,
-					Status: &statusCompleted,
-					Content: &schemas.ResponsesMessageContent{
-						ContentBlocks: prevContentBlocks,
-					},
-				}
-				if prevItemID != "" {
-					doneItem.ID = &prevItemID
-				}
-				responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-					Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-					SequenceNumber: sequenceNumber + len(responses),
-					OutputIndex:    schemas.Ptr(prevOutputIndex),
-					ContentIndex:   &prevContentIndex,
-					Item:           doneItem,
-				})
-				delete(state.TextBuffers, prevOutputIndex)
-
-				// Mark this output index as completed
-				state.CompletedOutputIndices[prevOutputIndex] = true
+				responses = appendBedrockTextDoneEvents(responses, state, prevOutputIndex, prevContentIndex, sequenceNumber)
 			}
 
 			// Close any open tool call blocks before starting a new one (Anthropic completes each block before starting next)
@@ -827,12 +786,20 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 		// Handle contentBlockDelta event
 		contentBlockIndex := *chunk.ContentBlockIndex
 		outputIndex, exists := state.ContentIndexToOutputIndex[contentBlockIndex]
+		if exists && state.CompletedOutputIndices[outputIndex] {
+			return nil, nil, false
+		}
 		if !exists {
+			isTextBlock := chunk.Delta.Text != nil || (chunk.Delta.Citation != nil && (chunk.Delta.Citation.Location.Web != nil ||
+				chunk.Delta.Citation.Location.DocumentChunk != nil || chunk.Delta.Citation.Location.DocumentChar != nil || chunk.Delta.Citation.Location.DocumentPage != nil))
+			if chunk.Delta.Citation != nil && !isTextBlock {
+				return nil, nil, false // An unknown citation must not reserve an uninitialized text item.
+			}
 			// Check if this is a new content block that should close previous reasoning blocks
 			var responses []*schemas.BifrostResponsesStreamResponse
 
 			// If this is a text delta with a new content block index, close any open reasoning blocks
-			if chunk.Delta.Text != nil && contentBlockIndex > 0 {
+			if isTextBlock && contentBlockIndex > 0 {
 				for prevContentIndex := range state.ReasoningContentIndices {
 					if prevContentIndex < contentBlockIndex {
 						prevOutputIndex, prevExists := state.ContentIndexToOutputIndex[prevContentIndex]
@@ -923,7 +890,7 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 			state.ContentIndexToOutputIndex[contentBlockIndex] = outputIndex
 
 			// If this is a text delta for a new content block, create the text item
-			if chunk.Delta.Text != nil {
+			if isTextBlock {
 				// Generate stable ID for text item
 				var itemID string
 				if state.MessageID == nil {
@@ -997,6 +964,11 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 				responses = append(responses, textDeltaResponse)
 			}
 
+			if chunk.Delta.Citation != nil {
+				if event := chunk.Delta.Citation.toBifrostStreamAnnotation(state, outputIndex, contentBlockIndex, sequenceNumber+len(responses)); event != nil {
+					responses = append(responses, event)
+				}
+			}
 			// If we have responses to return (either from closing reasoning or creating text item), return them first
 			if len(responses) > 0 {
 				return responses, nil, false
@@ -1029,39 +1001,7 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 			}
 
 		case chunk.Delta.Citation != nil:
-			citation := chunk.Delta.Citation
-			if citation.Location.Web != nil {
-				if state.NovaGroundingIndices[outputIndex] {
-					domain := citation.Location.Web.Domain
-					state.NovaGroundingCitations[outputIndex] = append(
-						state.NovaGroundingCitations[outputIndex],
-						schemas.ResponsesWebSearchToolCallActionSearchSource{
-							Type:  "url",
-							URL:   citation.Location.Web.URL,
-							Title: &domain,
-						},
-					)
-				}
-				// Emit as url_citation annotation (covers both nova_grounding and text blocks).
-				itemID := state.ItemIDs[outputIndex]
-				annotationIndex := state.AnnotationIndices[outputIndex]
-				state.AnnotationIndices[outputIndex]++
-				annotation := &schemas.ResponsesOutputMessageContentTextAnnotation{
-					Type:  "url_citation",
-					URL:   schemas.Ptr(citation.Location.Web.URL),
-					Title: schemas.Ptr(citation.Location.Web.Domain),
-				}
-				response := &schemas.BifrostResponsesStreamResponse{
-					Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
-					SequenceNumber:  sequenceNumber,
-					OutputIndex:     schemas.Ptr(outputIndex),
-					ContentIndex:    &contentBlockIndex,
-					AnnotationIndex: &annotationIndex,
-					Annotation:      annotation,
-				}
-				if itemID != "" {
-					response.ItemID = &itemID
-				}
+			if response := chunk.Delta.Citation.toBifrostStreamAnnotation(state, outputIndex, contentBlockIndex, sequenceNumber); response != nil {
 				return []*schemas.BifrostResponsesStreamResponse{response}, nil, false
 			}
 
@@ -1226,6 +1166,15 @@ func (chunk *BedrockStreamEvent) toBifrostResponsesStream(sequenceNumber int, st
 			}
 		}
 
+	case chunk.ContentBlockStop && chunk.ContentBlockIndex != nil:
+		contentIndex := *chunk.ContentBlockIndex
+		outputIndex, exists := state.ContentIndexToOutputIndex[contentIndex]
+		if exists && !state.CompletedOutputIndices[outputIndex] && !state.ReasoningContentIndices[contentIndex] &&
+			state.ToolCallIDs[outputIndex] == "" && state.ItemIDs[outputIndex] != "" {
+			return appendBedrockTextDoneEvents(nil, state, outputIndex, contentIndex, sequenceNumber), nil, false
+		}
+		// Reasoning and tool blocks retain their existing close paths.
+
 	case chunk.StopReason != nil:
 		// Stop reason - track it for the final response
 		stopReason := convertBedrockStopReason(*chunk.StopReason)
@@ -1328,6 +1277,69 @@ func emitNovaGroundingDoneEvents(outputIndex, contentIndex int, itemID string, c
 			Item:           doneItem,
 		},
 	}
+}
+
+// appendBedrockTextDoneEvents closes a text item at a native block stop, before a
+// tool starts, or at EOF. Keeping these paths together preserves the same text
+// and annotation lifecycle regardless of which boundary closes the item first.
+func appendBedrockTextDoneEvents(responses []*schemas.BifrostResponsesStreamResponse, state *BedrockResponsesStreamState, outputIndex, contentIndex, sequenceNumber int) []*schemas.BifrostResponsesStreamResponse {
+	itemID := state.ItemIDs[outputIndex]
+	text := ""
+	if buf := state.TextBuffers[outputIndex]; buf != nil {
+		text = buf.String()
+	}
+	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
+		SequenceNumber: sequenceNumber + len(responses),
+		OutputIndex:    &outputIndex,
+		ContentIndex:   &contentIndex,
+		ItemID:         &itemID,
+		Text:           &text,
+		LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
+	})
+	part := &schemas.ResponsesMessageContentBlock{
+		Type: schemas.ResponsesOutputMessageContentTypeText,
+		Text: schemas.Ptr(text),
+		ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+			Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+			LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+		},
+	}
+	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
+		SequenceNumber: sequenceNumber + len(responses),
+		OutputIndex:    &outputIndex,
+		ContentIndex:   &contentIndex,
+		ItemID:         &itemID,
+		Part:           part,
+	})
+	contentBlocks := []schemas.ResponsesMessageContentBlock{}
+	if text != "" || len(state.TextAnnotations[outputIndex]) > 0 {
+		contentBlocks = append(contentBlocks, schemas.ResponsesMessageContentBlock{
+			Type: schemas.ResponsesOutputMessageContentTypeText,
+			Text: schemas.Ptr(text),
+			ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
+				Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
+				LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
+			},
+		})
+	}
+	responses = append(responses, &schemas.BifrostResponsesStreamResponse{
+		Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
+		SequenceNumber: sequenceNumber + len(responses),
+		OutputIndex:    &outputIndex,
+		ContentIndex:   &contentIndex,
+		Item: &schemas.ResponsesMessage{
+			ID:      &itemID,
+			Type:    schemas.Ptr(schemas.ResponsesMessageTypeMessage),
+			Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			Status:  schemas.Ptr("completed"),
+			Content: &schemas.ResponsesMessageContent{ContentBlocks: contentBlocks},
+		},
+	})
+	delete(state.TextBuffers, outputIndex)
+	state.CompletedOutputIndices[outputIndex] = true
+	return responses
 }
 
 // FinalizeBedrockStream finalizes the stream by closing any open items and emitting completed event
@@ -1458,79 +1470,7 @@ func FinalizeBedrockStream(state *BedrockResponsesStreamState, sequenceNumber in
 				})
 			} // end else (regular function call)
 		} else {
-			// This is likely a text item that needs to be closed
-			accText := ""
-			if buf := state.TextBuffers[outputIndex]; buf != nil {
-				accText = buf.String()
-			}
-
-			// Emit output_text.done with accumulated text
-			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeOutputTextDone,
-				SequenceNumber: sequenceNumber + len(responses),
-				OutputIndex:    schemas.Ptr(outputIndex),
-				ContentIndex:   &contentIndex,
-				ItemID:         &itemID,
-				Text:           &accText,
-				LogProbs:       []schemas.ResponsesOutputMessageContentTextLogProb{},
-			})
-
-			// Emit content_part.done for text with accumulated text
-			partText := accText
-			part := &schemas.ResponsesMessageContentBlock{
-				Type: schemas.ResponsesOutputMessageContentTypeText,
-				Text: &partText,
-				ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-					LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-					Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-				},
-			}
-			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeContentPartDone,
-				SequenceNumber: sequenceNumber + len(responses),
-				OutputIndex:    schemas.Ptr(outputIndex),
-				ContentIndex:   &contentIndex,
-				ItemID:         &itemID,
-				Part:           part,
-			})
-
-			// Emit output_item.done for text with content blocks
-			statusCompleted := "completed"
-			contentBlocks := []schemas.ResponsesMessageContentBlock{}
-			if accText != "" {
-				itemText := accText
-				contentBlocks = []schemas.ResponsesMessageContentBlock{
-					{
-						Type: schemas.ResponsesOutputMessageContentTypeText,
-						Text: &itemText,
-						ResponsesOutputMessageContentText: &schemas.ResponsesOutputMessageContentText{
-							Annotations: []schemas.ResponsesOutputMessageContentTextAnnotation{},
-							LogProbs:    []schemas.ResponsesOutputMessageContentTextLogProb{},
-						},
-					},
-				}
-			}
-			messageType := schemas.ResponsesMessageTypeMessage
-			role := schemas.ResponsesInputMessageRoleAssistant
-			doneItem := &schemas.ResponsesMessage{
-				Type:   &messageType,
-				Role:   &role,
-				Status: &statusCompleted,
-				Content: &schemas.ResponsesMessageContent{
-					ContentBlocks: contentBlocks,
-				},
-			}
-			if itemID != "" {
-				doneItem.ID = &itemID
-			}
-			responses = append(responses, &schemas.BifrostResponsesStreamResponse{
-				Type:           schemas.ResponsesStreamResponseTypeOutputItemDone,
-				SequenceNumber: sequenceNumber + len(responses),
-				OutputIndex:    schemas.Ptr(outputIndex),
-				ContentIndex:   &contentIndex,
-				Item:           doneItem,
-			})
-			delete(state.TextBuffers, outputIndex)
+			responses = appendBedrockTextDoneEvents(responses, state, outputIndex, contentIndex, sequenceNumber)
 		}
 
 		// Mark this output index as completed
@@ -2017,6 +1957,9 @@ func ToBedrockConverseStreamResponse(bifrostResp *schemas.BifrostResponsesStream
 		return nil, nil
 	}
 
+	if event.ContentBlockIndex != nil && bifrostResp.BedrockContentBlockIndex != nil {
+		event.ContentBlockIndex = bifrostResp.BedrockContentBlockIndex
+	}
 	return event, nil
 }
 
@@ -4762,6 +4705,35 @@ func (citation BedrockCitation) toBifrostAnnotation() *schemas.ResponsesOutputMe
 		}
 	}
 	return annotation
+}
+
+func (citation BedrockCitation) toBifrostStreamAnnotation(state *BedrockResponsesStreamState, outputIndex, contentIndex, sequenceNumber int) *schemas.BifrostResponsesStreamResponse {
+	annotation := citation.toBifrostAnnotation()
+	if annotation == nil {
+		return nil
+	}
+	if citation.Location.Web != nil && state.NovaGroundingIndices[outputIndex] {
+		state.NovaGroundingCitations[outputIndex] = append(state.NovaGroundingCitations[outputIndex],
+			schemas.ResponsesWebSearchToolCallActionSearchSource{Type: "url", URL: *annotation.URL, Title: annotation.Title})
+	}
+	annotationIndex := state.AnnotationIndices[outputIndex]
+	state.AnnotationIndices[outputIndex]++
+	if state.TextAnnotations == nil {
+		state.TextAnnotations = make(map[int][]schemas.ResponsesOutputMessageContentTextAnnotation)
+	}
+	state.TextAnnotations[outputIndex] = append(state.TextAnnotations[outputIndex], *annotation)
+	event := &schemas.BifrostResponsesStreamResponse{
+		Type:            schemas.ResponsesStreamResponseTypeOutputTextAnnotationAdded,
+		SequenceNumber:  sequenceNumber,
+		OutputIndex:     &outputIndex,
+		ContentIndex:    &contentIndex,
+		AnnotationIndex: &annotationIndex,
+		Annotation:      annotation,
+	}
+	if itemID := state.ItemIDs[outputIndex]; itemID != "" {
+		event.ItemID = &itemID
+	}
+	return event
 }
 
 func bedrockCitationFromAnnotation(annotation schemas.ResponsesOutputMessageContentTextAnnotation) *BedrockCitation {
