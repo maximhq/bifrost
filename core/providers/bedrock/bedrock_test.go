@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func mustMarshalJSON(v interface{}) json.RawMessage {
@@ -2745,6 +2746,115 @@ func TestGuardrailTraceResponseRoundTrip(t *testing.T) {
 		require.NotNil(t, result.Trace.Guardrail.Action)
 		assert.Equal(t, "INTERVENED", *result.Trace.Guardrail.Action)
 	})
+}
+
+// converseStopSequenceResponse is the Converse body Bedrock returns when Claude stops on a
+// caller stop sequence and the request asked for additionalModelResponseFieldPaths ["/stop_sequence"].
+func converseStopSequenceResponse(stopReason string, fields json.RawMessage) *bedrock.BedrockConverseResponse {
+	return &bedrock.BedrockConverseResponse{
+		StopReason: stopReason,
+		Output: &bedrock.BedrockConverseOutput{
+			Message: &bedrock.BedrockMessage{
+				Role:    bedrock.BedrockMessageRoleAssistant,
+				Content: []bedrock.BedrockContentBlock{{Text: schemas.Ptr("one, two, ")}},
+			},
+		},
+		Usage:                         &bedrock.BedrockTokenUsage{InputTokens: 20, OutputTokens: 6, TotalTokens: 26},
+		Metrics:                       &bedrock.BedrockConverseMetrics{LatencyMs: 100},
+		AdditionalModelResponseFields: fields,
+	}
+}
+
+// TestConverseResponseStopSequenceRoundTrip pins that the /bedrock/model/{model}/converse
+// egress returns the native stopReason and additionalModelResponseFields Bedrock sent:
+// stop_sequence folds into Bifrost's "stop", which maps back to end_turn unless the native
+// reason is kept, and additionalModelResponseFields had no slot in the Bifrost response.
+func TestConverseResponseStopSequenceRoundTrip(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	t.Run("BedrockUpstream_StopSequenceAndFields", func(t *testing.T) {
+		fields := json.RawMessage(`{"stop_sequence":"three"}`)
+		bifrostResp, err := converseStopSequenceResponse("stop_sequence", fields).ToBifrostResponsesResponse(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, bifrostResp.StopReason)
+		assert.Equal(t, "stop", *bifrostResp.StopReason)
+		require.NotNil(t, bifrostResp.StopSequence, "the matched sequence reported in additionalModelResponseFields must reach StopSequence")
+		assert.Equal(t, "three", *bifrostResp.StopSequence)
+
+		result, err := bedrock.ToBedrockConverseResponse(bifrostResp)
+		require.NoError(t, err)
+		assert.Equal(t, "stop_sequence", result.StopReason)
+		assert.JSONEq(t, `{"stop_sequence":"three"}`, string(result.AdditionalModelResponseFields))
+	})
+
+	t.Run("BedrockUpstream_StopSequenceWithoutFields", func(t *testing.T) {
+		bifrostResp, err := converseStopSequenceResponse("stop_sequence", nil).ToBifrostResponsesResponse(ctx)
+		require.NoError(t, err)
+		assert.Nil(t, bifrostResp.StopSequence, "no matched sequence is invented when Bedrock did not report one")
+
+		result, err := bedrock.ToBedrockConverseResponse(bifrostResp)
+		require.NoError(t, err)
+		assert.Equal(t, "stop_sequence", result.StopReason)
+		assert.Empty(t, result.AdditionalModelResponseFields)
+	})
+
+	t.Run("BedrockUpstream_JSONDecodedProviderExtraFields", func(t *testing.T) {
+		bifrostResp, err := converseStopSequenceResponse("stop_sequence", json.RawMessage(`{"stop_sequence":"three"}`)).ToBifrostResponsesResponse(ctx)
+		require.NoError(t, err)
+		raw, err := json.Marshal(bifrostResp)
+		require.NoError(t, err)
+		var decoded schemas.BifrostResponsesResponse
+		require.NoError(t, json.Unmarshal(raw, &decoded))
+
+		result, err := bedrock.ToBedrockConverseResponse(&decoded)
+		require.NoError(t, err)
+		assert.Equal(t, "stop_sequence", result.StopReason)
+		assert.JSONEq(t, `{"stop_sequence":"three"}`, string(result.AdditionalModelResponseFields))
+	})
+
+	t.Run("BedrockUpstream_EndTurnKeepsProviderExtraFieldsNil", func(t *testing.T) {
+		bifrostResp, err := converseStopSequenceResponse("end_turn", nil).ToBifrostResponsesResponse(ctx)
+		require.NoError(t, err)
+		assert.Nil(t, bifrostResp.ProviderExtraFields, "a round-trippable stop reason adds nothing to the response")
+
+		result, err := bedrock.ToBedrockConverseResponse(bifrostResp)
+		require.NoError(t, err)
+		assert.Equal(t, "end_turn", result.StopReason)
+	})
+
+	t.Run("AnthropicUpstream_StopSequence", func(t *testing.T) {
+		// The Anthropic converter reports a stop-sequence finish as StopReason "stop" plus StopSequence.
+		result, err := bedrock.ToBedrockConverseResponse(&schemas.BifrostResponsesResponse{
+			StopReason:   schemas.Ptr("stop"),
+			StopSequence: schemas.Ptr("three"),
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "stop_sequence", result.StopReason)
+	})
+
+	t.Run("OpenAIStyleStop_StaysEndTurn", func(t *testing.T) {
+		result, err := bedrock.ToBedrockConverseResponse(&schemas.BifrostResponsesResponse{StopReason: schemas.Ptr("stop")})
+		require.NoError(t, err)
+		assert.Equal(t, "end_turn", result.StopReason)
+	})
+}
+
+// BenchmarkConverseResponseRoundTripEndTurn measures the common Converse round trip
+// (upstream body -> Bifrost -> /bedrock converse egress) with a plain end_turn finish.
+func BenchmarkConverseResponseRoundTripEndTurn(b *testing.B) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	upstream := converseStopSequenceResponse("end_turn", nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		bifrostResp, err := upstream.ToBifrostResponsesResponse(ctx)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if _, err := bedrock.ToBedrockConverseResponse(bifrostResp); err != nil {
+			b.Fatal(err)
+		}
+	}
 }
 
 func TestToBedrockResponsesRequest_AnthropicTextFormatUsesOutputConfig(t *testing.T) {
@@ -7641,6 +7751,85 @@ func TestConverseAdditionalModelRequestFieldsStoreReachesParams(t *testing.T) {
 				forwardedJSON, err := json.Marshal(forwarded)
 				require.NoError(t, err)
 				assert.JSONEq(t, tc.storeJSON, string(forwardedJSON), "Converse additionalModelRequestFields.store")
+			}
+		})
+	}
+}
+
+// TestConverseAdditionalModelRequestFieldsPromptCacheOptionsReachesParams pins that a
+// prompt_cache_options object in additionalModelRequestFields - the only place the AWS
+// SDK's ConverseInput can carry it - lands on Params.PromptCacheOptions, so a gpt-5.6
+// Responses target (OpenAI, Azure, Bedrock Mantle) runs in the mode the caller chose.
+// Since #8334 Bifrost leaves gpt-5.6 in implicit mode, so this key is the only way a
+// /bedrock caller can limit caching to its own cachePoint, or turn caching off (#8554).
+func TestConverseAdditionalModelRequestFieldsPromptCacheOptionsReachesParams(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name        string
+		optionsJSON string // raw JSON for the prompt_cache_options key; empty omits it
+		want        *schemas.PromptCacheOptions
+	}{
+		{"explicit", `{"mode": "explicit"}`, &schemas.PromptCacheOptions{Mode: schemas.Ptr("explicit")}},
+		{"implicit_with_ttl", `{"mode": "implicit", "ttl": "30m"}`, &schemas.PromptCacheOptions{Mode: schemas.Ptr("implicit"), TTL: schemas.Ptr("30m")}},
+		{"absent", ``, nil},
+		{"non_object_ignored", `"explicit"`, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			optionsField := ""
+			if tc.optionsJSON != "" {
+				optionsField = `, "prompt_cache_options": ` + tc.optionsJSON
+			}
+			body := []byte(`{
+				"system": [{"text": "You are a terse assistant."}, {"cachePoint": {"type": "default"}}],
+				"messages": [{"role": "user", "content": [{"text": "What is 17*23? Answer briefly."}]}],
+				"additionalModelRequestFields": {"store": false` + optionsField + `}
+			}`)
+
+			var req bedrock.BedrockConverseRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			req.ModelID = "azure/gpt-5.6-luna"
+
+			mid, err := req.ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, mid.Params, "Params is nil")
+			assert.Equal(t, tc.want, mid.Params.PromptCacheOptions, "Params.PromptCacheOptions")
+
+			// The Responses body every gpt-5.6 host builds: the caller's mode is on the wire
+			// next to the breakpoint translated from the system cachePoint.
+			wire, err := json.Marshal(openai.ToOpenAIResponsesRequest(ctx, mid))
+			require.NoError(t, err)
+			got := gjson.GetBytes(wire, "prompt_cache_options")
+			if tc.want == nil {
+				assert.False(t, got.Exists(), "outbound body must not invent prompt_cache_options: %s", wire)
+			} else if assert.True(t, got.Exists(), "outbound body dropped prompt_cache_options: %s", wire) {
+				assert.JSONEq(t, tc.optionsJSON, got.Raw, "outbound prompt_cache_options: %s", wire)
+			}
+			assert.Equal(t, 1, strings.Count(string(wire), `"prompt_cache_breakpoint"`),
+				"the system cachePoint must still become exactly one breakpoint: %s", wire)
+
+			// Models without a Responses endpoint take the Chat fallback.
+			chatReq := mid.ToChatRequest()
+			require.NotNil(t, chatReq.Params, "chat fallback Params is nil")
+			assert.Equal(t, tc.want, chatReq.Params.PromptCacheOptions, "chat fallback Params.PromptCacheOptions")
+
+			// Bedrock Converse has no typed slot for it; the key keeps riding in
+			// additionalModelRequestFields exactly as it did before the fix.
+			converse, err := bedrock.ToBedrockResponsesRequest(ctx, mid)
+			require.NoError(t, err)
+			var forwarded interface{}
+			forwardedOK := false
+			if converse.AdditionalModelRequestFields != nil {
+				forwarded, forwardedOK = converse.AdditionalModelRequestFields.Get("prompt_cache_options")
+			}
+			if tc.optionsJSON == "" {
+				assert.False(t, forwardedOK, "Converse egress must not invent prompt_cache_options")
+			} else if assert.True(t, forwardedOK, "Converse egress dropped prompt_cache_options from additionalModelRequestFields") {
+				forwardedJSON, err := json.Marshal(forwarded)
+				require.NoError(t, err)
+				assert.JSONEq(t, tc.optionsJSON, string(forwardedJSON), "Converse additionalModelRequestFields.prompt_cache_options")
 			}
 		})
 	}

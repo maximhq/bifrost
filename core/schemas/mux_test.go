@@ -2405,3 +2405,21 @@ func TestToChatMessages_DropsToolChangeBlocks(t *testing.T) {
 		t.Errorf("system content = %+v, want only the wrapped text sibling", blocks)
 	}
 }
+
+// TestToChatMessages_DropsConfigurationUpdateItem pins #8616 on the Responses->Chat fallback:
+// Chat Completions has no mid-conversation effort item, so a configuration_update must be
+// dropped rather than emitted as a roleless, contentless chat message.
+func TestToChatMessages_DropsConfigurationUpdateItem(t *testing.T) {
+	var input []ResponsesMessage
+	if err := Unmarshal([]byte(`[{"type":"configuration_update","reasoning":{"effort":"high"}},{"role":"user","content":"Say hi."}]`), &input); err != nil {
+		t.Fatalf("unmarshal input: %v", err)
+	}
+
+	got := ToChatMessages(input)
+	if len(got) != 1 {
+		t.Fatalf("expected only the user message, got %d messages: %+v", len(got), got)
+	}
+	if got[0].Role != ChatMessageRoleUser {
+		t.Fatalf("expected the surviving message to be the user turn, got role %q", got[0].Role)
+	}
+}

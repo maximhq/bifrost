@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/maximhq/bifrost/framework/logstore"
 	"github.com/maximhq/bifrost/framework/postgresconn"
@@ -117,6 +118,64 @@ func TestProcessBatchConnectionErrorDoesNotFanOutPerRow(t *testing.T) {
 	}
 	if dropped := plugin.droppedRequests.Load(); dropped != N {
 		t.Fatalf("expected %d dropped requests after retries were exhausted, got %d", N, dropped)
+	}
+}
+
+// TestProcessBatchSQLiteBusyRetriesWholeBatch pins the writer's handling of a
+// contended SQLite writer lock. SQLITE_BUSY (or SQLITE_LOCKED) says nothing
+// about the rows in the batch, so the batch must be retried whole with the
+// backoff and land once the lock clears. Fanning out into per-row inserts
+// instead turns one lock wait into one per row (each up to busy_timeout), which
+// is what put the SQLite writer minutes behind under a parallel load.
+func TestProcessBatchSQLiteBusyRetriesWholeBatch(t *testing.T) {
+	for name, busyErr := range map[string]error{
+		"busy":   sqlite3.Error{Code: sqlite3.ErrBusy},
+		"locked": sqlite3.Error{Code: sqlite3.ErrLocked},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var attempts atomic.Int32
+			store := &failingBatchStore{
+				LogStore: newTestStore(t),
+				fail: func(int) error {
+					if attempts.Add(1) == 1 {
+						return fmt.Errorf("write logs: %w", busyErr)
+					}
+					return nil
+				},
+			}
+			plugin, err := Init(context.Background(), &Config{}, testLogger{}, store, nil, nil, nil)
+			if err != nil {
+				t.Fatalf("Init() error = %v", err)
+			}
+			t.Cleanup(func() { _ = plugin.Cleanup() })
+
+			const N = 20
+			batch := make([]*writeQueueEntry, 0, N)
+			for i := 0; i < N; i++ {
+				batch = append(batch, &writeQueueEntry{log: makeTestLog(fmt.Sprintf("busy-%s-%d", name, i))})
+			}
+			if unwritten := plugin.processBatch(context.Background(), batch); len(unwritten) != 0 {
+				t.Fatalf("expected every entry written, %d handed back", len(unwritten))
+			}
+
+			sizes := store.sizes()
+			for _, size := range sizes {
+				if size != N {
+					t.Fatalf("SQLite %s fanned out to a %d-row insert; attempts were %v", name, size, sizes)
+				}
+			}
+			if len(sizes) != 2 {
+				t.Fatalf("expected one failed whole-batch attempt and one successful retry, got attempts %v", sizes)
+			}
+			if dropped := plugin.droppedRequests.Load(); dropped != 0 {
+				t.Fatalf("expected 0 dropped requests, got %d", dropped)
+			}
+			for i := 0; i < N; i++ {
+				if _, err := store.FindByID(context.Background(), fmt.Sprintf("busy-%s-%d", name, i)); err != nil {
+					t.Fatalf("row %d missing after retry: %v", i, err)
+				}
+			}
+		})
 	}
 }
 
