@@ -43317,13 +43317,19 @@
                   "  pm.expect(text, 'Responses rejected the tool result block type').to.not.include(\"Invalid value: 'text'\");",
                   "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
                   "});",
-                  "pm.test('openai: function_call_output blocks use the Responses input_text spelling, not the chat text one', function () {",
+                  "pm.test('openai: function_call_output never carries the chat text block spelling', function () {",
                   "  var raw = pm.response.json().extra_fields.raw_request;",
                   "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
                   "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
                   "  pm.expect(outs.length, 'expected one function_call_output in the converted request: ' + JSON.stringify(raw)).to.equal(1);",
-                  "  pm.expect(Array.isArray(outs[0].output), 'array content must stay an array of blocks: ' + JSON.stringify(outs[0])).to.equal(true);",
-                  "  pm.expect(outs[0].output[0].type, 'block type on the wire').to.equal('input_text');",
+                  "  // Text-only blocks are flattened to a string on the OpenAI egress (core/providers/openai/types.go); a block array is only kept when it carries something a string cannot.",
+                  "  var out = outs[0].output;",
+                  "  if (typeof out === 'string') {",
+                  "    pm.expect(out, 'flattened tool output lost the tool text: ' + JSON.stringify(outs[0])).to.equal('18C, light rain');",
+                  "  } else {",
+                  "    pm.expect(Array.isArray(out) && out.length > 0, 'output must be a string or a non-empty block array: ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "    out.forEach(function (blk) { pm.expect(blk.type, 'block type on the wire: ' + JSON.stringify(outs[0])).to.equal('input_text'); });",
+                  "  }",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -43364,7 +43370,7 @@
           }
         },
         {
-          "name": "azure/gpt-4o-mini compat chat->responses: array-content tool result becomes input_text output blocks - chat-responses-tool-replay",
+          "name": "azure/gpt-5.6-sol compat chat->responses: array-content tool result becomes input_text output blocks - chat-responses-tool-replay",
           "event": [
             {
               "listen": "test",
@@ -43375,13 +43381,19 @@
                   "  pm.expect(text, 'Responses rejected the tool result block type').to.not.include(\"Invalid value: 'text'\");",
                   "  pm.expect(pm.response.code, 'failed: ' + text).to.equal(200);",
                   "});",
-                  "pm.test('azure: function_call_output blocks use the Responses input_text spelling, not the chat text one', function () {",
+                  "pm.test('azure: function_call_output never carries the chat text block spelling', function () {",
                   "  var raw = pm.response.json().extra_fields.raw_request;",
                   "  if (typeof raw === 'string') { raw = JSON.parse(raw); }",
                   "  var outs = (raw.input || []).filter(function (i) { return i.type === 'function_call_output'; });",
                   "  pm.expect(outs.length, 'expected one function_call_output in the converted request: ' + JSON.stringify(raw)).to.equal(1);",
-                  "  pm.expect(Array.isArray(outs[0].output), 'array content must stay an array of blocks: ' + JSON.stringify(outs[0])).to.equal(true);",
-                  "  pm.expect(outs[0].output[0].type, 'block type on the wire').to.equal('input_text');",
+                  "  // Text-only blocks are flattened to a string on the OpenAI egress (core/providers/openai/types.go); a block array is only kept when it carries something a string cannot.",
+                  "  var out = outs[0].output;",
+                  "  if (typeof out === 'string') {",
+                  "    pm.expect(out, 'flattened tool output lost the tool text: ' + JSON.stringify(outs[0])).to.equal('18C, light rain');",
+                  "  } else {",
+                  "    pm.expect(Array.isArray(out) && out.length > 0, 'output must be a string or a non-empty block array: ' + JSON.stringify(outs[0])).to.equal(true);",
+                  "    out.forEach(function (blk) { pm.expect(blk.type, 'block type on the wire: ' + JSON.stringify(outs[0])).to.equal('input_text'); });",
+                  "  }",
                   "});"
                 ],
                 "type": "text/javascript"
@@ -43406,7 +43418,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"model\": \"azure/gpt-4o-mini\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_paris_blocks\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_paris_blocks\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Thanks. Is that warm?\"\n    }\n  ]\n}"
+              "raw": "{\n  \"model\": \"azure/gpt-5.6-sol\",\n  \"max_tokens\": 32,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"function\": {\n        \"name\": \"get_weather\",\n        \"description\": \"Get the current weather for a city.\",\n        \"parameters\": {\n          \"type\": \"object\",\n          \"properties\": {\n            \"city\": {\n              \"type\": \"string\"\n            }\n          },\n          \"required\": [\n            \"city\"\n          ]\n        }\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"You are a weather assistant.\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"What is the weather in Paris?\"\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": null,\n      \"tool_calls\": [\n        {\n          \"id\": \"call_paris_blocks\",\n          \"type\": \"function\",\n          \"function\": {\n            \"name\": \"get_weather\",\n            \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"tool\",\n      \"tool_call_id\": \"call_paris_blocks\",\n      \"content\": [\n        {\n          \"type\": \"text\",\n          \"text\": \"18C, light rain\"\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"Thanks. Is that warm?\"\n    }\n  ]\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/v1/chat/completions",
@@ -195752,7 +195764,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 128,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:generateContent",
@@ -195801,7 +195813,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 128,\n    \"thinkingConfig\": {\n      \"thinkingBudget\": 0\n    }\n  }\n}"
+              "raw": "{\n  \"contents\": [\n    {\n      \"role\": \"user\",\n      \"parts\": [\n        {\n          \"text\": \"In one sentence, what is https://www.wikipedia.org/ about?\"\n        }\n      ]\n    }\n  ],\n  \"tools\": [\n    {\n      \"urlContext\": {}\n    }\n  ],\n  \"generationConfig\": {\n    \"maxOutputTokens\": 1024\n  }\n}"
             },
             "url": {
               "raw": "{{baseUrl}}/genai/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse",
