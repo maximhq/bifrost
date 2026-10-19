@@ -1,3 +1,0 @@
-- fix: Agent Gateway requests honor destination permissions and credential boundaries (#8552)
-- chore: upgraded core to v1.13.0 and framework to v1.10.0
-- [feat]: stamp the resolved virtual key's metadata on the request context for logging [@jimseiwert](https://github.com/jimseiwert)

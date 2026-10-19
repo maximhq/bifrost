@@ -557,7 +557,9 @@
               {
                 "group": "Cohere SDK",
                 "icon": "c",
-                "pages": ["integrations/cohere-sdk/overview"]
+                "pages": [
+                  "integrations/cohere-sdk/overview"
+                ]
               },
               "integrations/litellm-sdk",
               "integrations/langchain-sdk",
@@ -2000,6 +2002,7 @@
             "item": "Open Source",
             "icon": "rocket",
             "pages": [
+              "changelogs/v2.3.1",
               "changelogs/v2.3.0",
               "changelogs/v2.2.6",
               "changelogs/v2.2.5",

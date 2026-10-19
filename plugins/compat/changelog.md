@@ -1,2 +1,0 @@
-- feat: decision emulation defers to native Azure and Databricks decision support (#8485, #8498)
-- chore: upgraded core to v1.13.0 and framework to v1.10.0

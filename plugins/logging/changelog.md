@@ -1,4 +1,0 @@
-- feat: passthrough calls are stored as parsed conversations under their inferred request type, including non-text routes and multipart uploads (#8520, #8522, #8523, #8524)
-- fix: SQLite busy and locked batches are retried whole instead of row by row (#8707)
-- chore: upgraded core to v1.13.0 and framework to v1.10.0
-- [feat]: snapshot virtual key metadata onto log metadata; the key's values override request-supplied entries [@jimseiwert](https://github.com/jimseiwert)
