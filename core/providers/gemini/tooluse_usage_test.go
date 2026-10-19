@@ -254,7 +254,7 @@ func TestExtractGeminiPassthroughUsage_ToolUsePromptTokens(t *testing.T) {
 		body := []byte(`{
 			"usage": {
 				"total_input_tokens": 27,
-				"tool_use_input_tokens": 10309,
+				"total_tool_use_tokens": 10309,
 				"total_thought_tokens": 31,
 				"total_output_tokens": 45,
 				"total_tokens": 10412

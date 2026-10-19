@@ -237,7 +237,7 @@ func extractGeminiEmbeddingUsage(body []byte) *schemas.BifrostPassthroughUsage {
 type geminiInteractionsUsage struct {
 	TotalTokens        int `json:"total_tokens"`
 	InputTokens        int `json:"total_input_tokens"`
-	ToolUseInputTokens int `json:"tool_use_input_tokens"`
+	ToolUseInputTokens int `json:"total_tool_use_tokens"`
 	OutputTokens       int `json:"total_output_tokens"`
 	ThoughtTokens      int `json:"total_thought_tokens"`
 	CachedTokens       int `json:"total_cached_tokens"`
