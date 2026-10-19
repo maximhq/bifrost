@@ -1722,8 +1722,12 @@ func TestFindRedactedKeyDeletedSuffix(t *testing.T) {
 }
 
 func TestParseBucketSizeOverride(t *testing.T) {
-	end := time.Date(2026, 10, 19, 14, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 10, 19, 14, 5, 0, 0, time.UTC)
 	week := end.Add(-7 * 24 * time.Hour)
+	after := end.Add(time.Hour)
+	// An aligned start and 5000 ten-minute buckets, with the end halfway into the last one.
+	capStart := end.Add(-(4999*600 + 300) * time.Second)
+	overCapStart := capStart.Add(-600 * time.Second)
 	cases := []struct {
 		name    string
 		raw     string
@@ -1731,7 +1735,10 @@ func TestParseBucketSizeOverride(t *testing.T) {
 		want    int64
 		wantErr bool
 	}{
-		{name: "absent keeps the range default", raw: "", start: &week, want: 0},
+		{name: "empty value", raw: "", start: &week, wantErr: true},
+		{name: "reversed window", raw: "600", start: &after, wantErr: true},
+		{name: "exactly the bucket cap", raw: "600", start: &capStart, want: 600},
+		{name: "one bucket over the cap", raw: "600", start: &overCapStart, wantErr: true},
 		{name: "ten minutes", raw: "600", start: &week, want: 600},
 		{name: "three hours", raw: "10800", start: &week, want: 10800},
 		{name: "not a number", raw: "abc", start: &week, wantErr: true},
