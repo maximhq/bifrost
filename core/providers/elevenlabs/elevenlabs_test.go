@@ -1,14 +1,55 @@
 package elevenlabs_test
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/internal/llmtests"
-
+	"github.com/maximhq/bifrost/core/providers/elevenlabs"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func TestElevenlabsListModelsWithoutCatalog(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusUnauthorized} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(status)
+				if status == http.StatusOK {
+					_, _ = w.Write([]byte(`[{"model_id":"eleven_turbo_v2_5","name":"Turbo"}]`))
+				} else {
+					_, _ = w.Write([]byte(`{"detail":{"status":"invalid_api_key","message":"invalid api key"}}`))
+				}
+			}))
+			defer server.Close()
+			provider := elevenlabs.NewElevenlabsProvider(&schemas.ProviderConfig{
+				NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL, AllowPrivateNetwork: true},
+			}, bifrost.NewNoOpLogger())
+			ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+			defer ctx.Cancel()
+			response, failure := provider.ListModels(ctx, []schemas.Key{{
+				ID: "key-1", Models: schemas.WhiteList{"*"}, Value: *schemas.NewSecretVar("test-key"),
+			}}, &schemas.BifrostListModelsRequest{Provider: schemas.Elevenlabs})
+			if status != http.StatusOK {
+				if failure == nil || failure.StatusCode == nil || *failure.StatusCode != status {
+					t.Fatalf("upstream status must be preserved, got %+v", failure)
+				}
+				return
+			}
+			if failure != nil {
+				t.Fatal(failure.GetErrorString())
+			}
+			if len(response.Data) != 1 || response.Data[0].ID != "elevenlabs/eleven_turbo_v2_5" {
+				t.Fatalf("SDK without a catalog must retain the upstream-only listing, got %+v", response.Data)
+			}
+		})
+	}
+}
 
 func TestElevenlabs(t *testing.T) {
 	t.Parallel()
