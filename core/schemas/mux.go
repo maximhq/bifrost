@@ -744,6 +744,7 @@ func (cm *ChatMessage) ToResponsesMessages() []ResponsesMessage {
 						respBlocks[i].ResponsesInputMessageContentBlockFile = &ResponsesInputMessageContentBlockFile{
 							FileData:    block.File.FileData,
 							FileContent: block.File.FileContent,
+							FileURL:     block.File.FileURL,
 							Filename:    block.File.Filename,
 							FileType:    block.File.FileType,
 						}

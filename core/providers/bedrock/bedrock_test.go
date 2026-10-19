@@ -225,6 +225,53 @@ func TestDocumentCitationsConfigIngressRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDocumentCitationsToolFileURLThroughChatMux(t *testing.T) {
+	for _, model := range []string{"us.amazon.nova-2-lite-v1:0", "global.anthropic.claude-haiku-5-5"} {
+		for _, directHelper := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/directHelper=%t", model, directHelper), func(t *testing.T) {
+				tool := schemas.ChatMessage{Role: schemas.ChatMessageRoleTool, ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr("call_document")},
+					Content: &schemas.ChatMessageContent{ContentBlocks: []schemas.ChatContentBlock{{
+						Type: schemas.ChatContentBlockTypeFile, File: &schemas.ChatInputFile{FileURL: schemas.Ptr("s3://bucket/pack.pdf"), Filename: schemas.Ptr("pack.pdf"), FileType: schemas.Ptr("application/pdf")},
+					}}},
+				}
+				chat := &schemas.BifrostChatRequest{Provider: schemas.Bedrock, Model: model, Input: []schemas.ChatMessage{
+					{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("Read the document.")}},
+					{Role: schemas.ChatMessageRoleAssistant, ChatAssistantMessage: &schemas.ChatAssistantMessage{ToolCalls: []schemas.ChatAssistantMessageToolCall{{
+						ID: schemas.Ptr("call_document"), Type: schemas.Ptr("function"), Function: schemas.ChatAssistantMessageToolCallFunction{Name: schemas.Ptr("get_document"), Arguments: "{}"},
+					}}}}, tool,
+				}}
+				req := chat.ToResponsesRequest()
+				if directHelper {
+					req.Input[len(req.Input)-1] = *tool.ToResponsesToolMessage()
+				}
+				out, err := bedrock.ToBedrockResponsesRequest(schemas.NewBifrostContext(context.Background(), schemas.NoDeadline), req)
+				if model == "global.anthropic.claude-haiku-5-5" {
+					bad, ok := providerUtils.AsBifrostBadRequestError(err)
+					require.True(t, ok)
+					require.Contains(t, bad.Error.Message, "does not support s3://")
+					return
+				}
+				require.NoError(t, err)
+				var document *bedrock.BedrockDocumentSource
+				for _, message := range out.Messages {
+					for _, block := range message.Content {
+						if block.ToolResult != nil {
+							for _, result := range block.ToolResult.Content {
+								if result.Document != nil {
+									document = result.Document
+								}
+							}
+						}
+					}
+				}
+				require.NotNil(t, document)
+				require.NotNil(t, document.Source.S3Location)
+				require.Equal(t, "s3://bucket/pack.pdf", document.Source.S3Location.URI)
+			})
+		}
+	}
+}
+
 func TestDocumentCitationsUnsupportedContentIsBadRequest(t *testing.T) {
 	for _, content := range []string{`[{"type":"text","text":"budget"}]`, `[]`, `[{"type":"image","text":"not an image"}]`} {
 		var req schemas.BifrostResponsesRequest

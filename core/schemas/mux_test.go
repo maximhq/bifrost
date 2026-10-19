@@ -299,6 +299,60 @@ func TestToResponsesMessages_ToolResultBlocksUseResponsesInputTypes(t *testing.T
 	check(t, "ToResponsesMessages", &msgs[0])
 }
 
+func TestToResponsesMessages_ToolResultFilesPreserveSources(t *testing.T) {
+	for _, file := range []ChatInputFile{
+		{FileURL: Ptr("https://example.test/document.pdf"), Filename: Ptr("pack.pdf"), FileType: Ptr("application/pdf")},
+		{FileURL: Ptr("s3://bucket/document.pdf"), Filename: Ptr("pack.pdf"), FileType: Ptr("application/pdf")},
+		{FileData: Ptr("QnVkZ2V0Lg=="), Filename: Ptr("pack.txt"), FileType: Ptr("text/plain")},
+		{FileContent: json.RawMessage(`[{"type":"text","text":"Budget."}]`), Filename: Ptr("pack")},
+	} {
+		cm := ChatMessage{
+			Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_document")},
+			Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+				Type: ChatContentBlockTypeFile, File: &file, Citations: &Citations{Enabled: Ptr(true)},
+			}}},
+		}
+		messages := cm.ToResponsesMessages()
+		if len(messages) != 1 {
+			t.Fatalf("expected one tool result, got %d", len(messages))
+		}
+		for name, message := range map[string]*ResponsesMessage{
+			"ToResponsesMessages": &messages[0], "ToResponsesToolMessage": cm.ToResponsesToolMessage(),
+		} {
+			if message == nil || message.ResponsesToolMessage == nil || message.ResponsesToolMessage.Output == nil {
+				t.Fatalf("%s: missing structured tool result", name)
+			}
+			blocks := message.ResponsesToolMessage.Output.ResponsesFunctionToolCallOutputBlocks
+			if len(blocks) != 1 || blocks[0].ResponsesInputMessageContentBlockFile == nil {
+				t.Fatalf("%s: expected one file block, got %#v", name, blocks)
+			}
+			want := &ResponsesInputMessageContentBlockFile{
+				FileData: file.FileData, FileContent: file.FileContent, FileURL: file.FileURL,
+				Filename: file.Filename, FileType: file.FileType,
+			}
+			if !reflect.DeepEqual(want, blocks[0].ResponsesInputMessageContentBlockFile) {
+				t.Errorf("%s: file source changed: want %+v, got %+v", name, want, blocks[0].ResponsesInputMessageContentBlockFile)
+			}
+			if blocks[0].Citations == nil || blocks[0].Citations.Enabled == nil || !*blocks[0].Citations.Enabled {
+				t.Errorf("%s: citation configuration was lost", name)
+			}
+		}
+	}
+}
+
+func BenchmarkToResponsesMessagesToolFileURL(b *testing.B) {
+	message := ChatMessage{
+		Role: ChatMessageRoleTool, ChatToolMessage: &ChatToolMessage{ToolCallID: Ptr("call_document")},
+		Content: &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
+			Type: ChatContentBlockTypeFile, File: &ChatInputFile{FileURL: Ptr("s3://bucket/document.pdf"), Filename: Ptr("pack.pdf")},
+		}}},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		message.ToResponsesMessages()
+	}
+}
+
 func TestToResponsesRequest_EmptyToolContentKeepsOutput(t *testing.T) {
 	// A tool that ran but printed nothing sends content "". OpenAI and Azure reject a
 	// function_call_output without output: "Missing required parameter: 'input[N].output'".
