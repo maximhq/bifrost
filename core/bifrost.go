@@ -7448,6 +7448,15 @@ func executeRequestWithRetries[T any](
 			}
 		}
 
+		// The provider may complete a buffered stream before requestHandler returns.
+		// Register its span before dispatch so terminal hooks can accumulate usage
+		// and finalize it even when no caller has received the channel yet.
+		if isStreamRequest {
+			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+				tracer.StoreDeferredSpan(traceID, handle)
+			}
+		}
+
 		// Attempt the request
 		result, bifrostError = requestHandler(currentKey)
 
@@ -7515,14 +7524,14 @@ func executeRequestWithRetries[T any](
 				isStreamChan = true
 			}
 		}
-		if isStreamChan {
-			// For streaming requests, store the span handle in TraceStore keyed by trace ID
-			// This allows the provider's streaming goroutine to retrieve it later
-			if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
-				tracer.StoreDeferredSpan(traceID, handle)
+		if !isStreamChan {
+			// No provider finalizer owns a startup failure or an empty stream. Remove
+			// the registration before ending it synchronously or starting a retry.
+			if isStreamRequest {
+				if traceID, ok := ctx.Value(schemas.BifrostContextKeyTraceID).(string); ok && traceID != "" {
+					tracer.ClearDeferredSpan(traceID)
+				}
 			}
-			// Don't end the span here - it will be ended when streaming completes
-		} else {
 			// Populate LLM response attributes for non-streaming responses
 			if resp, ok := any(result).(*schemas.BifrostResponse); ok {
 				// Populate ExtraFields with provider/model/requestType before cost
