@@ -131934,6 +131934,7 @@
             "type": "string",
             "description": "How to combine the approval with an active override on the budget. Empty or `add` adds the amount\nand returns `409` when the lifetimes differ. `replace` replaces the active override.\n`add_keep_lifetime` adds the amount and keeps the active override's mode and remaining cycles.\n",
             "enum": [
+              "",
               "add",
               "replace",
               "add_keep_lifetime"
