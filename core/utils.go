@@ -636,6 +636,12 @@ func isModellessVideoRequestType(reqType schemas.RequestType) bool {
 	}
 }
 
+// isToolsRequestType returns true for the standalone web tools operations. DeepSeek's Search and
+// Fetch contracts carry no model, so key selection and pricing must both tolerate an absent one.
+func isToolsRequestType(reqType schemas.RequestType) bool {
+	return reqType == schemas.SearchRequest || reqType == schemas.FetchRequest
+}
+
 // isPassthroughRequestType returns true if the given request type is a passthrough request.
 func isPassthroughRequestType(reqType schemas.RequestType) bool {
 	return reqType == schemas.PassthroughRequest || reqType == schemas.PassthroughStreamRequest
