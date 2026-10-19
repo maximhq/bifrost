@@ -27,11 +27,19 @@ tools-search:
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '401':
-        description: Invalid DeepSeek API key.
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
       '402':
         description: Insufficient DeepSeek account balance. Top up rather than retry.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '429':
         description: The 5 QPS per-account search limit was exceeded.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:
@@ -68,15 +76,31 @@ tools-fetch:
       '400':
         $ref: '../../openapi.yaml#/components/responses/BadRequest'
       '401':
-        description: Invalid DeepSeek API key.
+        $ref: '../../openapi.yaml#/components/responses/Unauthorized'
       '402':
         description: Insufficient DeepSeek account balance. Top up rather than retry.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '403':
         description: The page was rejected by DeepSeek's fetch security policy.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '404':
         description: The page carried no usable content.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '429':
         description: The 5 QPS per-account fetch limit was exceeded.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/inference/common.yaml#/BifrostError'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
     security:

@@ -2261,13 +2261,34 @@
             }
           },
           "401": {
-            "description": "Invalid DeepSeek API key."
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "402": {
-            "description": "Insufficient DeepSeek account balance. Top up rather than retry."
+            "description": "Insufficient DeepSeek account balance. Top up rather than retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "429": {
-            "description": "The 5 QPS per-account search limit was exceeded."
+            "description": "The 5 QPS per-account search limit was exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "500": {
             "description": "Internal server error",
@@ -2333,19 +2354,54 @@
             }
           },
           "401": {
-            "description": "Invalid DeepSeek API key."
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "402": {
-            "description": "Insufficient DeepSeek account balance. Top up rather than retry."
+            "description": "Insufficient DeepSeek account balance. Top up rather than retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "403": {
-            "description": "The page was rejected by DeepSeek's fetch security policy."
+            "description": "The page was rejected by DeepSeek's fetch security policy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "404": {
-            "description": "The page carried no usable content."
+            "description": "The page carried no usable content.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "429": {
-            "description": "The 5 QPS per-account fetch limit was exceeded."
+            "description": "The 5 QPS per-account fetch limit was exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
           },
           "500": {
             "description": "Internal server error",
@@ -117092,7 +117148,18 @@
           },
           "usage": {
             "type": "object",
-            "description": "Carries the flat per-request cost of this call."
+            "description": "Carries the flat per-request cost of this call.",
+            "properties": {
+              "cost": {
+                "type": "object",
+                "properties": {
+                  "total_cost": {
+                    "type": "number",
+                    "example": 0.00075
+                  }
+                }
+              }
+            }
           },
           "extra_fields": {
             "type": "object",

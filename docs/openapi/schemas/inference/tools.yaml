@@ -130,6 +130,13 @@ FetchResponse:
     usage:
       type: object
       description: Carries the flat per-request cost of this call.
+      properties:
+        cost:
+          type: object
+          properties:
+            total_cost:
+              type: number
+              example: 0.00075
     extra_fields:
       type: object
       description: Bifrost metadata (latency, provider, request type, headers).
