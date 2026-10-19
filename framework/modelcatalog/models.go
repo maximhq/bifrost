@@ -22,6 +22,7 @@ var providersWithPartialListModels = map[schemas.ModelProvider]bool{
 	schemas.Vertex:     true,
 	schemas.Runware:    true,
 	schemas.Databricks: true,
+	schemas.Elevenlabs: true, // /v1/models omits Scribe transcription models.
 }
 
 // providersWithListModelsOnly enumerates providers whose unfiltered model list
