@@ -1643,6 +1643,7 @@ func (s *RDBLogStore) listSelectColumns() string {
 		// rows it can carry the provider's full (unbounded) error payload, and 25+ such
 		// rows can push the /api/logs response past Cloud Run's 32MB body limit (500s).
 		// The full error is still served by the detail endpoint (GetLog / GET /api/logs/{id}).
+		// Only guardrail blocks, whose errors are bounded, are listed (see below).
 		"latency", "upstream_latency", "overhead_latency", "token_usage", "cost", "status", "stream",
 		fmt.Sprintf("substr(content_summary, 1, %d) AS content_summary", maxContentSummaryBytes),
 		"metadata", "cache_debug",
@@ -1658,7 +1659,21 @@ func (s *RDBLogStore) listSelectColumns() string {
 		"has_object", "content_hidden",
 		"service_tier", "speed", "inference_geo",
 		"created_at",
+		// guardrail_debug holds only sanitized rule metadata (never matched
+		// text), so it stays small; the Guardrail Incidents view reads the
+		// rule, guardrail, phase and action of each row from it.
+		"guardrail_debug",
 	}, ", ")
+
+	// A guardrail block's error_details is the short message the guardrails
+	// plugin writes, unlike a provider error, so it is safe to list. It lets a
+	// block logged before interventions were recorded still name its reason.
+	guardrailErrorExpr := "NULL AS error_details"
+	if typeExpr, ok := jsonObjectFieldExpr(s.db.Dialector.Name(), "error_details", "error", "type"); ok {
+		guardrailErrorExpr = fmt.Sprintf("CASE WHEN %s = '%s' THEN error_details ELSE NULL END AS error_details",
+			typeExpr, guardrailInterventionErrorType)
+	}
+	baseCols += ", " + guardrailErrorExpr
 
 	var inputHistoryExpr, responsesInputExpr, outputMessageExpr string
 	switch s.db.Dialector.Name() {

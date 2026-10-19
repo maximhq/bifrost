@@ -116,7 +116,10 @@ func TestClaudeMarketplaceGitRepoContainsMarketplaceAndCloneablePlugin(t *testin
 	defer ln.Close()
 
 	baseURL := "http://" + ln.Addr().String()
+	// The server is already serving, so the write must take Mu like any live config update.
+	handler.config.Mu.Lock()
 	handler.config.ClientConfig.SkillsExternalClientURL = schemas.NewSecretVar(baseURL)
+	handler.config.Mu.Unlock()
 	marketplaceURL := baseURL + "/api/skills/serve/claude-code.git"
 	cloneDir := filepath.Join(t.TempDir(), "marketplace")
 	cloneGitRepo(t, marketplaceURL, cloneDir)
