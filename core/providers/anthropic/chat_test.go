@@ -532,7 +532,7 @@ func TestToAnthropicChatRequest_CachingDeterminism(t *testing.T) {
 // (chat.go:759-808) only ever copied a content block's CacheControl onto the nested block itself
 // (line 784), never onto the outer tool_result block, so every cached tool result built via the
 // unified chat-completions dialect was wire-invalid for Anthropic-family providers. The fix
-// hoists the first CacheControl found among a tool message's content blocks onto the tool_result
+// hoists the last CacheControl found among a tool message's content blocks onto the tool_result
 // block itself and strips it from the nested block, mirroring the same hoist-to-outer-level
 // pattern already used for Bedrock's nested cachePoint (core/providers/bedrock/responses.go).
 func TestToAnthropicChatRequest_ToolResultCacheControlHoistedToBlock(t *testing.T) {
@@ -2761,4 +2761,42 @@ func TestToAnthropicChatRequest_MessageLevelCacheControl(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, strings.Count(string(body), `"cache_control"`),
 		"system and tool result breakpoints must both reach Anthropic: %s", body)
+}
+
+// A tool result carries one breakpoint on Anthropic, hoisted onto the tool_result
+// block, which ends where the last nested block ends. When nested blocks carry more
+// than one marker, the last one is the one that describes that position, including a
+// message-level marker that decoding placed on the last block.
+func TestToAnthropicChatRequest_ToolResultHoistsLastCacheControl(t *testing.T) {
+	var input []schemas.ChatMessage
+	require.NoError(t, schemas.Unmarshal([]byte(`[
+	  {"role":"user","content":"Create notes.txt"},
+	  {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"write","arguments":"{}"}}]},
+	  {"role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"}},{"type":"text","text":"b"}],"cache_control":{"type":"ephemeral","ttl":"1h"}}
+	]`), &input))
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "my-anthropic-model",
+		Input:    input,
+	})
+	require.NoError(t, err)
+
+	var toolResult *AnthropicContentBlock
+	for i := range result.Messages {
+		for j := range result.Messages[i].Content.ContentBlocks {
+			if result.Messages[i].Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolResult {
+				toolResult = &result.Messages[i].Content.ContentBlocks[j]
+			}
+		}
+	}
+	require.NotNil(t, toolResult)
+	require.NotNil(t, toolResult.CacheControl)
+	require.NotNil(t, toolResult.CacheControl.TTL, "the last marker, with its 1h ttl, must be the one hoisted")
+	assert.Equal(t, "1h", *toolResult.CacheControl.TTL)
+	for _, nested := range toolResult.Content.ContentBlocks {
+		assert.Nil(t, nested.CacheControl, "Anthropic rejects cache_control inside tool_result.content")
+	}
 }
