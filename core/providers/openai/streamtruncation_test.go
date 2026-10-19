@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1870,5 +1871,66 @@ func TestChatStreamRawCaptureIsBoundedByBytes(t *testing.T) {
 	const limit = (1 << 20) + (8 << 10)
 	if capturedBytes > limit {
 		t.Errorf("captured raw response is %d bytes, above the %d byte ceiling; an upstream streaming non-forwarding frames can grow this without bound", capturedBytes, limit)
+	}
+}
+
+func TestChatStreamPartialTokenMeasurements(t *testing.T) {
+	for _, mode := range []string{"chat", "responses", "chat_to_responses"} {
+		t.Run(mode, func(t *testing.T) {
+			stop := "stop"
+			body := chatChunk("hello", nil) + chatChunk("", &stop) +
+				"data: {\"id\":\"chatcmpl-repro\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"repro-model\",\"choices\":[],\"usage\":{\"prompt_tokens\":20}}\n\ndata: [DONE]\n\n"
+			if mode == "responses" {
+				body = "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":1,\"response\":{\"id\":\"resp-repro\",\"object\":\"response\",\"model\":\"repro-model\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":20}}}\n\n"
+			}
+			server := completeSSEServer(t, body)
+			defer server.Close()
+			config := &schemas.ProviderConfig{NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL}}
+			if mode == "chat_to_responses" {
+				config.CustomProviderConfig = &schemas.CustomProviderConfig{AllowedRequests: &schemas.AllowedRequests{ChatCompletionStream: true, ResponsesStream: false}}
+			}
+			provider := NewOpenAIProvider(config, testNoopLogger{})
+			var stream chan *schemas.BifrostStreamChunk
+			var failure *schemas.BifrostError
+			if mode == "chat" {
+				stream, failure = provider.ChatCompletionStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), basicChatRequest())
+			} else {
+				request := &schemas.BifrostResponsesRequest{Provider: schemas.OpenAI, Model: "repro-model", Input: []schemas.ResponsesMessage{{Type: schemas.Ptr(schemas.ResponsesMessageTypeMessage), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleUser), Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("hi")}}}}
+				stream, failure = provider.ResponsesStream(newStreamTestContext(), passthroughPostHook, nil, testKey(), request)
+			}
+			if failure != nil {
+				t.Fatalf("stream setup: %+v", failure)
+			}
+			var receipt any
+			for _, chunk := range collectChunks(t, stream) {
+				if chunk.BifrostError != nil {
+					t.Fatalf("stream failed: %+v", chunk.BifrostError)
+				}
+				if chunk.BifrostChatResponse != nil && chunk.BifrostChatResponse.Usage != nil {
+					receipt = chunk.BifrostChatResponse.Usage
+				}
+				if chunk.BifrostResponsesStreamResponse != nil && chunk.BifrostResponsesStreamResponse.Response != nil && chunk.BifrostResponsesStreamResponse.Response.Usage != nil {
+					receipt = chunk.BifrostResponsesStreamResponse.Response.Usage
+				}
+			}
+			if receipt == nil {
+				t.Fatal("missing partial receipt")
+			}
+			data, err := schemas.Marshal(receipt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]any
+			if err := json.Unmarshal(data, &fields); err != nil {
+				t.Fatal(err)
+			}
+			input, output := "input_tokens", "output_tokens"
+			if mode == "chat" {
+				input, output = "prompt_tokens", "completion_tokens"
+			}
+			if fields[input] != float64(20) || fields[output] != nil || fields["total_tokens"] != nil {
+				t.Fatalf("partial measurements changed: %s", data)
+			}
+		})
 	}
 }

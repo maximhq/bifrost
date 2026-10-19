@@ -1119,6 +1119,7 @@ func (cu *BifrostLLMUsage) ToResponsesResponseUsage() *ResponsesResponseUsage {
 	}
 
 	usage := &ResponsesResponseUsage{
+		tokenPresence:  cu.tokenPresence,
 		InputTokens:    cu.PromptTokens,
 		OutputTokens:   cu.CompletionTokens,
 		TotalTokens:    cu.TotalTokens,
@@ -1158,6 +1159,7 @@ func (ru *ResponsesResponseUsage) ToBifrostLLMUsage() *BifrostLLMUsage {
 	}
 
 	usage := &BifrostLLMUsage{
+		tokenPresence:    ru.tokenPresence,
 		PromptTokens:     ru.InputTokens,
 		CompletionTokens: ru.OutputTokens,
 		TotalTokens:      ru.TotalTokens,

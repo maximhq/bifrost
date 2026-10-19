@@ -1614,6 +1614,20 @@ type OpenAIUsage struct {
 	Cost *float64 `json:"cost,omitempty"`
 }
 
+// MarshalJSON keeps the flattened cost override while preserving the embedded
+// usage's counter presence; its promoted marshaler cannot encode this wrapper.
+func (u OpenAIUsage) MarshalJSON() ([]byte, error) {
+	type usageAlias schemas.BifrostLLMUsage
+	input, output, total := u.BifrostLLMUsage.TokenMeasurements()
+	return schemas.Marshal(&struct {
+		*usageAlias
+		Input  *int     `json:"prompt_tokens,omitempty"`
+		Output *int     `json:"completion_tokens,omitempty"`
+		Total  *int     `json:"total_tokens,omitempty"`
+		Cost   *float64 `json:"cost,omitempty"`
+	}{(*usageAlias)(u.BifrostLLMUsage), input, output, total, u.Cost})
+}
+
 // newOpenAIUsage wraps u so cost serializes as the bare total float. Copies the
 // total into a local, so the wrapper never aliases into the shared response.
 func newOpenAIUsage(u *schemas.BifrostLLMUsage) *OpenAIUsage {
@@ -1631,6 +1645,18 @@ func newOpenAIUsage(u *schemas.BifrostLLMUsage) *OpenAIUsage {
 type openAIResponsesUsage struct {
 	*schemas.ResponsesResponseUsage
 	Cost *float64 `json:"cost,omitempty"`
+}
+
+func (u openAIResponsesUsage) MarshalJSON() ([]byte, error) {
+	type usageAlias schemas.ResponsesResponseUsage
+	input, output, total := u.ResponsesResponseUsage.TokenMeasurements()
+	return schemas.Marshal(&struct {
+		*usageAlias
+		Input  *int     `json:"input_tokens,omitempty"`
+		Output *int     `json:"output_tokens,omitempty"`
+		Total  *int     `json:"total_tokens,omitempty"`
+		Cost   *float64 `json:"cost,omitempty"`
+	}{(*usageAlias)(u.ResponsesResponseUsage), input, output, total, u.Cost})
 }
 
 type openAIImageUsage struct {

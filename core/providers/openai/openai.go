@@ -1465,7 +1465,7 @@ func HandleOpenAIChatCompletionStreaming(
 		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
 
 		chunkIndex := -1
-		usage := &schemas.BifrostLLMUsage{}
+		usage := schemas.NewTokenUsageAccumulator()
 		// Register the accumulating usage handle so a mid-stream
 		// cancel/timeout can bill for tokens the provider already processed.
 		ctx.SetValue(schemas.BifrostContextKeyStreamAccumulatedUsage, usage)
@@ -1653,18 +1653,7 @@ func HandleOpenAIChatCompletionStreaming(
 				// Accumulate usage across chunks; attached to final event below.
 				if response.Usage != nil {
 					usageSeen = true
-					if response.Usage.PromptTokens > usage.PromptTokens {
-						usage.PromptTokens = response.Usage.PromptTokens
-					}
-					if response.Usage.CompletionTokens > usage.CompletionTokens {
-						usage.CompletionTokens = response.Usage.CompletionTokens
-					}
-					if response.Usage.TotalTokens > usage.TotalTokens {
-						usage.TotalTokens = response.Usage.TotalTokens
-					}
-					if calculatedTotal := usage.PromptTokens + usage.CompletionTokens; calculatedTotal > usage.TotalTokens {
-						usage.TotalTokens = calculatedTotal
-					}
+					usage.AccumulateTokenUsage(response.Usage)
 					if response.Usage.PromptTokensDetails != nil {
 						usage.PromptTokensDetails = response.Usage.PromptTokensDetails
 					}
@@ -1772,19 +1761,7 @@ func HandleOpenAIChatCompletionStreaming(
 					// Here in some cases usage comes before final message
 					// So we need to check if the response.Usage is nil and then if usage != nil
 					// then add up all tokens
-					if response.Usage.PromptTokens > usage.PromptTokens {
-						usage.PromptTokens = response.Usage.PromptTokens
-					}
-					if response.Usage.CompletionTokens > usage.CompletionTokens {
-						usage.CompletionTokens = response.Usage.CompletionTokens
-					}
-					if response.Usage.TotalTokens > usage.TotalTokens {
-						usage.TotalTokens = response.Usage.TotalTokens
-					}
-					calculatedTotal := usage.PromptTokens + usage.CompletionTokens
-					if calculatedTotal > usage.TotalTokens {
-						usage.TotalTokens = calculatedTotal
-					}
+					usage.AccumulateTokenUsage(response.Usage)
 					if response.Usage.PromptTokensDetails != nil {
 						usage.PromptTokensDetails = response.Usage.PromptTokensDetails
 					}

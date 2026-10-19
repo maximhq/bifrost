@@ -1,12 +1,66 @@
 package integrations
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/schemas"
 )
+
+func BenchmarkOpenAIUsageCounterPresence(b *testing.B) {
+	response := &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{
+		PromptTokens: 20, CompletionTokens: 4, TotalTokens: 24,
+		Cost: &schemas.BifrostCost{TotalCost: 0.25},
+	}}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := sonic.Marshal(openAIWireCostResponse(response)); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestOpenAIWireCostPreservesPartialTokenMeasurements(t *testing.T) {
+	var chat schemas.BifrostLLMUsage
+	var responses schemas.ResponsesResponseUsage
+	if err := schemas.Unmarshal([]byte(`{"prompt_tokens":20}`), &chat); err != nil {
+		t.Fatal(err)
+	}
+	if err := schemas.Unmarshal([]byte(`{"input_tokens":20}`), &responses); err != nil {
+		t.Fatal(err)
+	}
+	chat.Cost = &schemas.BifrostCost{TotalCost: 3}
+	responses.Cost = &schemas.BifrostCost{TotalCost: 3}
+	for _, tc := range []struct {
+		name          string
+		response      any
+		input, output string
+	}{
+		{"chat", &schemas.BifrostChatResponse{Usage: &chat}, "prompt_tokens", "completion_tokens"},
+		{"responses", &schemas.BifrostResponsesResponse{Usage: &responses}, "input_tokens", "output_tokens"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := sonic.Marshal(openAIWireCostResponse(tc.response))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wire struct {
+				Usage map[string]any `json:"usage"`
+			}
+			if err := json.Unmarshal(data, &wire); err != nil {
+				t.Fatal(err)
+			}
+			if wire.Usage[tc.input] != float64(20) || wire.Usage[tc.output] != nil || wire.Usage["total_tokens"] != nil || wire.Usage["cost"] != float64(3) {
+				t.Fatalf("partial usage or flattened cost changed: %s", data)
+			}
+		})
+	}
+	if chat.Cost.TotalCost != 3 || responses.Cost.TotalCost != 3 {
+		t.Fatal("shared usage cost was mutated")
+	}
+}
 
 // TestOpenAIWireCostResponse verifies 2A: the OpenAI-compatible wire renders
 // usage.cost as the bare total (float), the legacy shape SDKs accept, instead of

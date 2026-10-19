@@ -276454,6 +276454,532 @@
           }
         }
       ]
+    },
+    {
+      "name": "261. OpenAI partial token measurements (partial token measurements)",
+      "description": "Local provider-error fixture, no paid API calls. An input-only receipt must preserve input and omit output/total through Chat and Responses, buffered/streamed, and native/OpenAI SDK entrypoints. Enable providerErrorFixture=1 with provider-error-fixture.config.json. Complete and measured-zero receipts remain covered by schema, stream and existing usage-presence regressions.",
+      "item": [
+        {
+          "name": "261.1 openai input-only buffered on /v1/chat/completions (partial token measurements)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var receipts = [];",
+                  "pm.test('the fixture request succeeds', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(raw, raw).to.include('hello');",
+                  "  pm.expect(raw, raw).to.not.match(/\"error\"\\s*:/);",
+                  "});",
+                  "receipts.push(JSON.parse(raw).usage);",
+                  "pm.test('input survives without invented output or total', function () {",
+                  "  pm.expect(receipts.length, raw).to.be.above(0);",
+                  "  receipts.forEach(function (usage) {",
+                  "    pm.expect(usage, raw).to.have.property('prompt_tokens', 20);",
+                  "    pm.expect(usage, raw).to.not.have.property('completion_tokens');",
+                  "    pm.expect(usage, raw).to.not.have.property('total_tokens');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-partial\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "261.2 openai input-only stream on /v1/chat/completions (partial token measurements)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var receipts = [];",
+                  "pm.test('the fixture request succeeds', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(raw, raw).to.include('hello');",
+                  "  pm.expect(raw, raw).to.not.match(/\"error\"\\s*:/);",
+                  "});",
+                  "raw.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "  var data = frame.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) { return line.slice(5).trim(); }).join('\\n');",
+                  "  if (!data || data === '[DONE]') return;",
+                  "  var chunk = JSON.parse(data);",
+                  "  var usage = chunk.response ? chunk.response.usage : chunk.usage;",
+                  "  if (usage !== undefined && usage !== null) receipts.push(usage);",
+                  "});",
+                  "pm.test('input survives without invented output or total', function () {",
+                  "  pm.expect(receipts.length, raw).to.be.above(0);",
+                  "  receipts.forEach(function (usage) {",
+                  "    pm.expect(usage, raw).to.have.property('prompt_tokens', 20);",
+                  "    pm.expect(usage, raw).to.not.have.property('completion_tokens');",
+                  "    pm.expect(usage, raw).to.not.have.property('total_tokens');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-partial\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "261.3 openai input-only buffered on /v1/responses (partial token measurements)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var receipts = [];",
+                  "pm.test('the fixture request succeeds', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(raw, raw).to.include('hello');",
+                  "  pm.expect(raw, raw).to.not.match(/\"error\"\\s*:/);",
+                  "});",
+                  "receipts.push(JSON.parse(raw).usage);",
+                  "pm.test('input survives without invented output or total', function () {",
+                  "  pm.expect(receipts.length, raw).to.be.above(0);",
+                  "  receipts.forEach(function (usage) {",
+                  "    pm.expect(usage, raw).to.have.property('input_tokens', 20);",
+                  "    pm.expect(usage, raw).to.not.have.property('output_tokens');",
+                  "    pm.expect(usage, raw).to.not.have.property('total_tokens');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-partial\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 32,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "261.4 openai input-only stream on /v1/responses (partial token measurements)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var receipts = [];",
+                  "pm.test('the fixture request succeeds', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(raw, raw).to.include('hello');",
+                  "  pm.expect(raw, raw).to.not.match(/\"error\"\\s*:/);",
+                  "});",
+                  "raw.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "  var data = frame.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) { return line.slice(5).trim(); }).join('\\n');",
+                  "  if (!data || data === '[DONE]') return;",
+                  "  var chunk = JSON.parse(data);",
+                  "  var usage = chunk.response ? chunk.response.usage : chunk.usage;",
+                  "  if (usage !== undefined && usage !== null) receipts.push(usage);",
+                  "});",
+                  "pm.test('input survives without invented output or total', function () {",
+                  "  pm.expect(receipts.length, raw).to.be.above(0);",
+                  "  receipts.forEach(function (usage) {",
+                  "    pm.expect(usage, raw).to.have.property('input_tokens', 20);",
+                  "    pm.expect(usage, raw).to.not.have.property('output_tokens');",
+                  "    pm.expect(usage, raw).to.not.have.property('total_tokens');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-partial\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 32,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "261.5 openai input-only buffered on /openai/v1/chat/completions (partial token measurements)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var receipts = [];",
+                  "pm.test('the fixture request succeeds', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(raw, raw).to.include('hello');",
+                  "  pm.expect(raw, raw).to.not.match(/\"error\"\\s*:/);",
+                  "});",
+                  "receipts.push(JSON.parse(raw).usage);",
+                  "pm.test('input survives without invented output or total', function () {",
+                  "  pm.expect(receipts.length, raw).to.be.above(0);",
+                  "  receipts.forEach(function (usage) {",
+                  "    pm.expect(usage, raw).to.have.property('prompt_tokens', 20);",
+                  "    pm.expect(usage, raw).to.not.have.property('completion_tokens');",
+                  "    pm.expect(usage, raw).to.not.have.property('total_tokens');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-partial\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "261.6 openai input-only stream on /openai/v1/chat/completions (partial token measurements)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var receipts = [];",
+                  "pm.test('the fixture request succeeds', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(raw, raw).to.include('hello');",
+                  "  pm.expect(raw, raw).to.not.match(/\"error\"\\s*:/);",
+                  "});",
+                  "raw.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "  var data = frame.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) { return line.slice(5).trim(); }).join('\\n');",
+                  "  if (!data || data === '[DONE]') return;",
+                  "  var chunk = JSON.parse(data);",
+                  "  var usage = chunk.response ? chunk.response.usage : chunk.usage;",
+                  "  if (usage !== undefined && usage !== null) receipts.push(usage);",
+                  "});",
+                  "pm.test('input survives without invented output or total', function () {",
+                  "  pm.expect(receipts.length, raw).to.be.above(0);",
+                  "  receipts.forEach(function (usage) {",
+                  "    pm.expect(usage, raw).to.have.property('prompt_tokens', 20);",
+                  "    pm.expect(usage, raw).to.not.have.property('completion_tokens');",
+                  "    pm.expect(usage, raw).to.not.have.property('total_tokens');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-partial\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"hi\"\n    }\n  ],\n  \"max_tokens\": 32,\n  \"stream\": true,\n  \"stream_options\": {\n    \"include_usage\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/chat/completions",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "chat",
+                "completions"
+              ]
+            }
+          }
+        },
+        {
+          "name": "261.7 openai input-only buffered on /openai/v1/responses (partial token measurements)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var receipts = [];",
+                  "pm.test('the fixture request succeeds', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(raw, raw).to.include('hello');",
+                  "  pm.expect(raw, raw).to.not.match(/\"error\"\\s*:/);",
+                  "});",
+                  "receipts.push(JSON.parse(raw).usage);",
+                  "pm.test('input survives without invented output or total', function () {",
+                  "  pm.expect(receipts.length, raw).to.be.above(0);",
+                  "  receipts.forEach(function (usage) {",
+                  "    pm.expect(usage, raw).to.have.property('input_tokens', 20);",
+                  "    pm.expect(usage, raw).to.not.have.property('output_tokens');",
+                  "    pm.expect(usage, raw).to.not.have.property('total_tokens');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-partial\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 32,\n  \"stream\": false\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "261.8 openai input-only stream on /openai/v1/responses (partial token measurements)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.variables.get('providerErrorFixture') !== '1') { pm.execution.skipRequest(); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var raw = pm.response.text() || '';",
+                  "var receipts = [];",
+                  "pm.test('the fixture request succeeds', function () {",
+                  "  pm.expect(pm.response.code, raw).to.equal(200);",
+                  "  pm.expect(raw, raw).to.include('hello');",
+                  "  pm.expect(raw, raw).to.not.match(/\"error\"\\s*:/);",
+                  "});",
+                  "raw.split(/\\r?\\n\\r?\\n/).forEach(function (frame) {",
+                  "  var data = frame.split(/\\r?\\n/).filter(function (line) { return line.indexOf('data:') === 0; }).map(function (line) { return line.slice(5).trim(); }).join('\\n');",
+                  "  if (!data || data === '[DONE]') return;",
+                  "  var chunk = JSON.parse(data);",
+                  "  var usage = chunk.response ? chunk.response.usage : chunk.usage;",
+                  "  if (usage !== undefined && usage !== null) receipts.push(usage);",
+                  "});",
+                  "pm.test('input survives without invented output or total', function () {",
+                  "  pm.expect(receipts.length, raw).to.be.above(0);",
+                  "  receipts.forEach(function (usage) {",
+                  "    pm.expect(usage, raw).to.have.property('input_tokens', 20);",
+                  "    pm.expect(usage, raw).to.not.have.property('output_tokens');",
+                  "    pm.expect(usage, raw).to.not.have.property('total_tokens');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"openai/upstream-usage-partial\",\n  \"input\": \"hi\",\n  \"max_output_tokens\": 32,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/openai/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "openai",
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }
