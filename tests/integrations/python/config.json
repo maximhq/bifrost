@@ -1,13 +1,18 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
+  "setup_token": "bifrost-e2e-setup-token",
   "mcp": {
+    "tool_manager_config": {
+      "oauth_private_allowlist": ["localhost", "127.0.0.1", "::1"],
+      "disable_auto_tool_inject": true
+    },
     "client_configs": [
       {
         "name": "sse_mcp",
         "connection_type": "sse",
         "connection_string": "http://localhost:3012/sse",
-        "tools_to_execute": ["*"],
-        "tools_to_auto_execute": ["*"]
+        "tools_to_execute": ["echo", "add", "greet"],
+        "tools_to_auto_execute": ["echo", "add", "greet"]
       }
     ]
   },
@@ -59,6 +64,74 @@
           "use_for_batch_api": false
         }
       ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "typesafe_custom": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Typesafe Custom API Key",
+          "value": "env.TYPESAFE_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "typesafe",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "typesafe_custom_gated": {
+      "keys": [
+        {
+          "name": "Typesafe Custom Gated API Key",
+          "value": "env.TYPESAFE_API_KEY",
+          "weight": 1,
+          "models": ["*"],
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "typesafe",
+        "is_key_less": false,
+        "allowed_requests": {
+          "list_models": true,
+          "decisions": false
+        }
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "openai_decisions_optin": {
+      "keys": [
+        {
+          "name": "OpenAI Decisions Opt-in API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["kserve-decider"],
+          "aliases": {
+            "kserve-decider": { "model_id": "gpt-6-luna", "model_name": "kserve-decider" }
+          },
+          "use_for_batch_api": false
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false,
+        "allowed_requests": {
+          "list_models": false,
+          "decisions": true
+        }
+      },
       "network_config": {
         "default_request_timeout_in_seconds": 300
       }
@@ -191,7 +264,8 @@
           "vertex_key_config": {
             "project_id": "env.VERTEX_PROJECT_ID",
             "region": "global",
-            "auth_credentials": "env.VERTEX_CREDENTIALS"
+            "auth_credentials": "env.VERTEX_CREDENTIALS",
+            "use_session_routing": true
           },
           "weight": 1,
           "models": [
@@ -261,6 +335,25 @@
         "default_request_timeout_in_seconds": 300
       }
     },
+    "cloudflare": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Cloudflare API Token",
+          "value": "env.CLOUDFLARE_API_TOKEN",
+          "weight": 1,
+          "models": ["*"],
+          "cloudflare_key_config": {
+            "account_id": "env.CLOUDFLARE_ACCOUNT_ID"
+          }
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
     "groq": {
       "send_back_raw_request": true,
       "send_back_raw_response": true,
@@ -287,6 +380,25 @@
           "value": "env.PERPLEXITY_API_KEY",
           "weight": 1,
           "models": ["*"]
+        }
+      ],
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      }
+    },
+    "ollama": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Local Ollama",
+          "value": "",
+          "weight": 1,
+          "models": ["tev1:0.8b-q8_0", "tev1:bifrost-harness-missing"],
+          "ollama_key_config": {
+            "url": "http://localhost:11434"
+          }
         }
       ],
       "network_config": {
@@ -337,6 +449,9 @@
         {
           "name": "Azure API Key",
           "value": "env.AZURE_API_KEY",
+          "aliases": {
+            "Microsoft-Decision-1": "Decision-1"
+          },
           "azure_key_config": {
             "endpoint": "env.AZURE_ENDPOINT",
             "deployments": {
@@ -388,6 +503,22 @@
         "auto_inject": false,
         "ttl": "1h"
       }
+    },
+    "databricks": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Databricks PAT",
+          "value": "env.DATABRICKS_TOKEN",
+          "weight": 1,
+          "models": ["ai_decide"],
+          "databricks_key_config": {
+            "workspace_url": "env.DATABRICKS_WORKSPACE_URL"
+          }
+        }
+      ]
     },
     "bedrock": {
       "send_back_raw_request": true,
@@ -454,7 +585,8 @@
         {
           "name": "Runware API Key",
           "value": "env.RUNWARE_API_KEY",
-          "weight": 1
+          "weight": 1,
+          "models": ["*"]
         }
       ],
       "network_config": {
@@ -558,6 +690,151 @@
         "auto_inject": true,
         "ttl": "1h"
       }
+    },
+    "openai_websearch": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "web_search",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        }
+      ]
+    },
+    "openai_injectedtools": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "lighthouse_lookup",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        }
+      ]
+    },
+    "openai_injectedalias": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "lighthouse_lookup",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        },
+        {
+          "name": "sse_mcp-web_search",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "echo"
+        }
+      ]
+    },
+    "openai_injectedfirstrow": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "OpenAI API Key",
+          "value": "env.OPENAI_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "web_search",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "no_such_tool"
+        },
+        {
+          "name": "web_search",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        }
+      ]
+    },
+    "anthropic_websearch": {
+      "send_back_raw_request": true,
+      "send_back_raw_response": true,
+      "store_raw_request_response": true,
+      "keys": [
+        {
+          "name": "Anthropic API Key",
+          "value": "env.ANTHROPIC_API_KEY",
+          "weight": 1,
+          "models": ["*"]
+        }
+      ],
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "is_key_less": false
+      },
+      "network_config": {
+        "default_request_timeout_in_seconds": 300
+      },
+      "injected_tools": [
+        {
+          "name": "web_search",
+          "mcp_client_name": "sse_mcp",
+          "tool_name": "web_search"
+        }
+      ]
     },
     "gemini_pc_auto": {
       "send_back_raw_request": true,
@@ -762,7 +1039,8 @@
           "name": "OpenAI API Key",
           "value": "env.OPENAI_API_KEY",
           "weight": 1,
-          "models": ["*"]
+          "models": ["*"],
+          "use_for_batch_api": true
         }
       ],
       "custom_provider_config": {
@@ -941,7 +1219,7 @@
       "max_batch_size": 100,
       "batch_interval": "1s",
       "max_batch_bytes": 10485760,
-      "write_queue_capacity": 1000,
+      "write_queue_capacity": 10000,
       "deferred_usage_concurrency": 10
     }
   },
@@ -1084,9 +1362,7 @@
             "weight": 1
           }
         ],
-        "fallbacks": [
-          "openai_pc_auto/gpt-4o-mini"
-        ]
+        "fallbacks": ["openai_pc_auto/gpt-4o-mini"]
       },
       {
         "id": "harness-custom-provider-fallback-boot-provider-only",
@@ -1120,7 +1396,30 @@
         ]
       }
     ],
+    "budgets": [
+      {
+        "id": "harness-cfgbudget-daily",
+        "max_limit": 0.0000001,
+        "reset_duration": "1d",
+        "virtual_key_id": "vk-harness-cfgbudget"
+      }
+    ],
     "virtual_keys": [
+      {
+        "name": "Harness config.json budget key",
+        "id": "vk-harness-cfgbudget",
+        "value": "sk-bf-harness-cfgbudget",
+        "is_active": true,
+        "calendar_aligned": true,
+        "provider_configs": [
+          {
+            "provider": "openai",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          }
+        ]
+      },
       {
         "name": "Test Key",
         "id": "vk-test",
@@ -1189,6 +1488,12 @@
           },
           {
             "provider": "parasail",
+            "allowed_models": ["*"],
+            "key_ids": ["*"],
+            "weight": 1.0
+          },
+          {
+            "provider": "cloudflare",
             "allowed_models": ["*"],
             "key_ids": ["*"],
             "weight": 1.0
@@ -1265,12 +1570,17 @@
   },
   "client": {
     "allow_per_request_raw_override": true,
+    "allow_direct_keys": true,
     "drop_excess_requests": false,
     "initial_pool_size": 300,
     "allowed_origins": ["*"],
     "enable_logging": true,
     "enforce_auth_on_inference": false,
-    "max_request_body_size_mb": 100
+    "max_request_body_size_mb": 100,
+    "mcp_server_auth_mode": "both",
+    "oauth2_server_config": {
+      "issuer_url": "http://localhost:8080"
+    }
   },
   "vector_store": {
     "enabled": true,

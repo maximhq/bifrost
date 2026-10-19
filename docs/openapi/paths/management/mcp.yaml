@@ -1217,3 +1217,106 @@ per-user-headers-credential:
         $ref: '../../openapi.yaml#/components/responses/NotFound'
       '500':
         $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client-openapi-preview:
+  post:
+    operationId: previewOpenAPISpec
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:Create` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Preview an OpenAPI spec as MCP tools
+    description: |
+      Parses an OpenAPI or Swagger document (Swagger 2.0, OpenAPI 3.0, 3.1 and
+      3.2, JSON or YAML) and returns the MCP tools Bifrost would synthesize from
+      it, the operations it cannot expose (with the reason), the document's
+      servers and security schemes, and the resolved upstream base URL. Nothing
+      is persisted; the UI's "New MCP Server → OpenAPI" flow calls this before
+      creating the client so the operations can be picked.
+
+      Supply the document inline as `spec`, or as `spec_url` to have Bifrost
+      fetch it (the fetched text is echoed back in `spec` so it can be stored
+      inline on create). Documents are capped at 5 MiB. When dashboard
+      authentication is disabled or unconfigured, `spec_url` must resolve to a
+      public address and is refused with 403 otherwise.
+    tags:
+      - MCP
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../../schemas/management/mcp.yaml#/MCPOpenAPIPreviewRequest'
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The synthesized tool set and document summary.
+        content:
+          application/json:
+            schema:
+              $ref: '../../schemas/management/mcp.yaml#/MCPOpenAPIPreviewResponse'
+      '400':
+        description: Neither spec nor spec_url was given, or the document does not parse as a supported OpenAPI/Swagger version, or declares no operations.
+      '403':
+        description: The request was not genuinely authenticated and spec_url resolves to a loopback, private-network, link-local or CGNAT address (or cannot be resolved).
+      '413':
+        description: The document exceeds 5 MiB.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'
+
+client-openapi-spec:
+  get:
+    operationId: getMCPClientOpenAPISpec
+    x-mint:
+      content: |
+        **Required Permissions**
+
+        | Permission | Granted via |
+        | --- | --- |
+        | `MCPGateway:View` | RBAC role or API key scope |
+
+        [How permissions work](/api/procuring-api-keys#required-permissions)
+    summary: Get the stored OpenAPI spec of an MCP client
+    description: |
+      Returns the OpenAPI document an `openapi` connection-type client was
+      created from, as JSON or YAML text. `GET /api/mcp/clients` leaves the
+      document out of `openapi_config` because it can be large; this endpoint
+      serves it on demand (the UI's "Replace spec" flow seeds its editor from
+      it). 404 for clients of other connection types and for openapi clients
+      configured with a `spec_url` only, whose document is fetched at connect
+      time rather than stored.
+    tags:
+      - MCP
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        description: MCP client ID
+    security:
+      - ManagementBearerAuth: []
+      - BasicAuth: []
+    responses:
+      '200':
+        description: The stored document.
+        content:
+          application/json:
+            schema:
+              type: string
+              description: The OpenAPI document as it was stored (JSON text).
+          application/yaml:
+            schema:
+              type: string
+              description: The OpenAPI document as it was stored (YAML text).
+      '404':
+        description: No openapi client with this ID, or the client stores no document.
+      '500':
+        $ref: '../../openapi.yaml#/components/responses/InternalError'

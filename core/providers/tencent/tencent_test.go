@@ -341,7 +341,7 @@ func TestNetworkConfigMapsAreCopied(t *testing.T) {
 	config := &schemas.ProviderConfig{
 		NetworkConfig: schemas.NetworkConfig{
 			BaseURL:                        server.URL,
-			ExtraHeaders:                   map[string]string{"X-Test-Header": "original"},
+			ExtraHeaders:                   map[string]schemas.SecretVar{"X-Test-Header": {Val: "original"}},
 			DefaultRequestTimeoutInSeconds: 5,
 		},
 	}
@@ -351,7 +351,7 @@ func TestNetworkConfigMapsAreCopied(t *testing.T) {
 	}
 
 	// The caller still holds config; mutate the map the constructor received.
-	config.NetworkConfig.ExtraHeaders["X-Test-Header"] = "mutated"
+	config.NetworkConfig.ExtraHeaders["X-Test-Header"] = schemas.SecretVar{Val: "mutated"}
 
 	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
 	msg := "hello"

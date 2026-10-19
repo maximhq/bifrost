@@ -3,8 +3,12 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -12,10 +16,12 @@ import (
 	"runtime"
 	"runtime/debug"
 	"slices"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	ws "github.com/fasthttp/websocket"
 	"github.com/google/uuid"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	"github.com/maximhq/bifrost/core/schemas"
@@ -24,9 +30,10 @@ import (
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
+	"golang.org/x/sync/semaphore"
 )
 
 var loggingSkipPaths = []string{"/health", "/_next", "/api/dev/"}
@@ -97,8 +104,9 @@ func RecoveryMiddleware(cors *CorsMiddleware) schemas.BifrostHTTPMiddleware {
 	}
 }
 
-// restoreCorrelationHeaders re-sets the x-request-id and x-bifrost-trace-id response
-// headers TracingMiddleware set, after RecoveryMiddleware resets a panicked response.
+// restoreCorrelationHeaders re-sets the x-bifrost-request-id, x-request-id and
+// x-bifrost-trace-id response headers TracingMiddleware set, after RecoveryMiddleware
+// resets a panicked response.
 // It reads them back from the request header and user value Tracing wrote, so nothing
 // is saved up front on the normal path. It is a no-op when Tracing did not run.
 func restoreCorrelationHeaders(ctx *fasthttp.RequestCtx) {
@@ -106,8 +114,58 @@ func restoreCorrelationHeaders(ctx *fasthttp.RequestCtx) {
 	if !ok || exportTraceID == "" {
 		return
 	}
-	ctx.Response.Header.SetBytesV("x-request-id", ctx.Request.Header.Peek("x-request-id"))
-	ctx.Response.Header.Set("x-bifrost-trace-id", exportTraceID)
+	requestID := ctx.Request.Header.Peek("x-request-id")
+	ctx.Response.Header.SetBytesV(lib.HeaderBifrostRequestID, requestID)
+	ctx.Response.Header.SetBytesV(lib.HeaderRequestID, requestID)
+	ctx.Response.Header.Set(lib.HeaderBifrostTraceID, exportTraceID)
+}
+
+// recoverWebSocketSession is deferred first inside every WebSocket upgrade callback.
+// A hijacked connection is served on its own goroutine after the HTTP handler, and
+// therefore after RecoveryMiddleware, has returned, so a panic there would otherwise
+// end the whole process. The panic is logged the same way and only this connection is
+// dropped (the callback's own deferred conn.Close runs after this recover).
+func recoverWebSocketSession(conn *ws.Conn) {
+	if r := recover(); r != nil {
+		logWebSocketPanic(conn, r)
+	}
+}
+
+// runWebSocketRelay runs one relay of a WebSocket session on the current goroutine and turns a
+// panic inside it into the error it returns, logged like recoverWebSocketSession. The relays
+// of a session run on their own goroutines, past the recover deferred by the upgrade callback,
+// so without this a panic in a plugin hook on the relay path would end the process rather
+// than the session. The error carries the panic summary only, never the panic value.
+func runWebSocketRelay(conn *ws.Conn, relay func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			logWebSocketPanic(conn, r)
+			err = fmt.Errorf("websocket relay panicked: %T", r)
+		}
+	}()
+	return relay()
+}
+
+// logWebSocketPanic logs a recovered panic of a WebSocket session with the peer address and
+// the panic value's type only. Plugin hooks run on these paths, and a runtime.Error they raise
+// may carry whatever they put in its text, so unlike the request path the text is never kept.
+func logWebSocketPanic(conn *ws.Conn, r any) {
+	logger.Error(fmt.Sprintf("recovered from panic in websocket session (%s): %T\n%s", webSocketPeer(conn), r, debug.Stack()))
+}
+
+// webSocketPeer is the peer address of a connection, or empty when there is none to read: a
+// hijacked connection fasthttp has already recycled has no net.Conn underneath, and asking it
+// would panic inside the panic report.
+func webSocketPeer(conn *ws.Conn) (remote string) {
+	defer func() {
+		if recover() != nil {
+			remote = ""
+		}
+	}()
+	if conn == nil || conn.RemoteAddr() == nil {
+		return ""
+	}
+	return conn.RemoteAddr().String()
 }
 
 // panicSummary describes a recovered panic value without echoing arbitrary content.
@@ -276,7 +334,9 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 		isLocalhostOrigin(origin) ||
 		slices.Contains(cfg.allowedOrigins, origin)
 
-	allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID"}
+	// SetupTokenHeader is sent by the dashboard on every call while the OSS setup lock is
+	// active, so a UI served from another origin must be able to preflight it.
+	allowedHeaders := []string{"Content-Type", "Authorization", "X-Requested-With", "X-Stainless-Timeout", "X-Api-Key", "X-OpenAI-Agents-SDK", "X-Operation-ID", SetupTokenHeader}
 	if slices.Contains(cfg.allowedHeaders, "*") {
 		if credentialed {
 			// Per the Fetch spec, Access-Control-Allow-Headers: * is NOT treated as a
@@ -307,9 +367,53 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 			ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
 		}
 		ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
+		// Lets browser clients read the x-bifrost-* headers, which carry extra_fields in headers mode.
+		ctx.Response.Header.Set("Access-Control-Expose-Headers", lib.ExposedResponseHeaders)
 		// Vary: Origin tells caches that the response varies based on the Origin
 		// request header, preventing incorrect CORS headers from being served.
 		ctx.Response.Header.Set("Vary", "Origin")
+	}
+	return allowed
+}
+
+const (
+	// requestDecompressionMaxRatio bounds how far a compressed request body may expand relative
+	// to the bytes received. Real JSON compresses a few times to a few tens of times; only a bomb
+	// does better than this.
+	requestDecompressionMaxRatio = 100
+	// requestDecompressionFloor is the expansion every body is allowed whatever its size, so a
+	// small, well-compressed request is never refused for compressing well.
+	requestDecompressionFloor = 1 << 20
+	// requestDecompressionBudgetFactor sizes the process-wide budget of decompressed bytes in
+	// flight, as a multiple of the request body cap. Bodies are charged what they inflate to.
+	requestDecompressionBudgetFactor = 4
+)
+
+// requestBodyCap is the configured request body cap in bytes, 100 MiB when unset.
+func requestBodyCap(config *lib.Config) int {
+	if config != nil && config.ClientConfig != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
+		return config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
+	}
+	return 100 * 1024 * 1024
+}
+
+// decompressionAllowance is what a compressed body of compressedLen bytes may expand to: at
+// most requestDecompressionMaxRatio times its size, never below the floor, never above the cap.
+// A negative length (a chunked body, whose size is unknown) is allowed the cap.
+func decompressionAllowance(compressedLen, maxRequestBodyBytes int) int {
+	if compressedLen < 0 {
+		return maxRequestBodyBytes
+	}
+	// Compared before multiplying: a length past this would overflow int and wrap below the floor.
+	if compressedLen > maxRequestBodyBytes/requestDecompressionMaxRatio {
+		return maxRequestBodyBytes
+	}
+	allowed := compressedLen * requestDecompressionMaxRatio
+	if allowed < requestDecompressionFloor {
+		allowed = requestDecompressionFloor
+	}
+	if allowed > maxRequestBodyBytes {
+		allowed = maxRequestBodyBytes
 	}
 	return allowed
 }
@@ -321,7 +425,20 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 //     matching the response-side pattern in core/providers/utils.
 //   - Small (CL ≤ threshold): buffered decompression via io.ReadAll + SetBodyRaw,
 //     with decompression bomb protection via MaxRequestBodySizeMB.
+//
+// This middleware wraps the router, so it runs before route matching and before every auth
+// middleware, for anyone who can reach the listener. The work it does must therefore stay in
+// proportion to what the caller sent: the cap alone is the wire cap too, and lets a few hundred
+// bytes become a 100 MiB buffer. Two bounds keep it proportional. Each body may expand only to
+// its decompressionAllowance, and each buffered decompression charges the bytes it actually
+// inflates to a process-wide budget, as they are produced, for the life of the request, so
+// buffers cannot stack up without bound; a request that cannot be charged is answered 503 at
+// once. The allowance is not reserved up front: past cap/requestDecompressionMaxRatio
+// compressed it is the whole cap, and booking that for every multi-MB SDK body would refuse
+// the fifth concurrent one while the process holds a fraction of the budget. Streaming bodies
+// are not buffered here and take no charge.
 func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddleware {
+	budget := semaphore.NewWeighted(int64(requestDecompressionBudgetFactor) * int64(requestBodyCap(config)))
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
 			if len(ctx.Request.Header.ContentEncoding()) == 0 {
@@ -329,8 +446,26 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				return
 			}
 
+			// The decompressed-output cap applies on both paths: the LimitedReader
+			// bounds what any codec may expand to, and the zstd decoder itself refuses
+			// frames whose declared window or content size exceeds its bounds before
+			// allocating them (providerUtils.ZstdDecoderMaxWindow).
+			maxRequestBodyBytes := requestBodyCap(config)
+			allowed := decompressionAllowance(ctx.Request.Header.ContentLength(), maxRequestBodyBytes)
+			refuseExpansion := func(compressedLen int) {
+				if allowed >= maxRequestBodyBytes {
+					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+					return
+				}
+				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds the expansion allowed for a %d-byte compressed body: at most %d bytes (%dx its size, never below %d bytes or above %d bytes)", compressedLen, allowed, requestDecompressionMaxRatio, requestDecompressionFloor, maxRequestBodyBytes))
+			}
+
 			if shouldStreamDecompress(config, ctx) {
-				cleanup, applied, err := streamingDecompress(ctx)
+				cleanup, applied, err := streamingDecompress(ctx, allowed)
+				if providerUtils.IsDecompressionSizeLimitError(err) {
+					SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("compressed request body declares a size beyond the max allowed %d bytes: %v", maxRequestBodyBytes, err))
+					return
+				}
 				if err != nil {
 					SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("invalid compressed request body: %v", err))
 					return
@@ -346,15 +481,21 @@ func RequestDecompressionMiddleware(config *lib.Config) schemas.BifrostHTTPMiddl
 				// through to the buffered decompression path below.
 			}
 
-			// Buffered path: small compressed request — materialize fully.
-			maxRequestBodyBytes := 100 * 1024 * 1024 // default 100 MB (matches decodeRequestBodyWithLimit fallback)
-			if config != nil && config.ClientConfig.MaxRequestBodySizeMB > 0 {
-				maxRequestBodyBytes = config.ClientConfig.MaxRequestBodySizeMB * 1024 * 1024
+			// Buffered path: small compressed request — materialize fully. The body is in hand
+			// now, so the allowance follows its real length rather than the declared one.
+			allowed = decompressionAllowance(len(ctx.Request.Body()), maxRequestBodyBytes)
+			body, charged, err := decodeRequestBodyWithLimit(&ctx.Request, allowed, budget)
+			defer budget.Release(charged)
+			if errors.Is(err, errDecompressionBudgetExhausted) {
+				SendError(ctx, fasthttp.StatusServiceUnavailable, "too many compressed request bodies are being decompressed at once; retry shortly or send the body uncompressed")
+				return
 			}
-
-			body, err := decodeRequestBodyWithLimit(&ctx.Request, maxRequestBodyBytes)
 			if errors.Is(err, errRequestBodyTooLarge) {
-				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("decompressed request body exceeds max allowed size of %d bytes", maxRequestBodyBytes))
+				refuseExpansion(len(ctx.Request.Body()))
+				return
+			}
+			if providerUtils.IsDecompressionSizeLimitError(err) {
+				SendError(ctx, fasthttp.StatusRequestEntityTooLarge, fmt.Sprintf("compressed request body declares a size beyond the max allowed %d bytes: %v", maxRequestBodyBytes, err))
 				return
 			}
 			if err != nil {
@@ -390,12 +531,15 @@ func shouldStreamDecompress(config *lib.Config, ctx *fasthttp.RequestCtx) bool {
 
 // streamingDecompress wraps the request body stream with a streaming decompression
 // reader, avoiding full body materialization for large compressed requests.
+// The decompressed stream is capped at maxRequestBodyBytes: once a handler has
+// read past the cap the stream fails with errRequestBodyTooLarge, so a
+// decompression bomb cannot expand beyond the configured request limit.
 // Returns (cleanup, applied, err):
 //   - applied=true: body stream was wrapped; caller must invoke cleanup after the
 //     handler chain completes and the body is fully consumed.
 //   - applied=false: no body stream available (StreamRequestBody not enabled on the
 //     server). Caller should fall back to the buffered decompression path.
-func streamingDecompress(ctx *fasthttp.RequestCtx) (cleanup func(), applied bool, err error) {
+func streamingDecompress(ctx *fasthttp.RequestCtx, maxRequestBodyBytes int) (cleanup func(), applied bool, err error) {
 	bodyStream := ctx.RequestBodyStream()
 	if bodyStream == nil {
 		return func() {}, false, nil
@@ -410,7 +554,7 @@ func streamingDecompress(ctx *fasthttp.RequestCtx) (cleanup func(), applied bool
 		return nil, false, err
 	}
 
-	ctx.Request.SetBodyStream(decompReader, -1)
+	ctx.Request.SetBodyStream(newLimitedBodyReader(decompReader, maxRequestBodyBytes), -1)
 	ctx.Request.Header.Del(fasthttp.HeaderContentEncoding)
 	ctx.Request.Header.Del(fasthttp.HeaderContentLength)
 
@@ -419,35 +563,87 @@ func streamingDecompress(ctx *fasthttp.RequestCtx) (cleanup func(), applied bool
 
 var errRequestBodyTooLarge = errors.New("decompressed request body exceeds max allowed size")
 
-// decodeRequestBodyWithLimit decodes the request body with a limit on the size of the body.
-func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int) ([]byte, error) {
+// limitedBodyReader fails with errRequestBodyTooLarge once more than max bytes
+// have been read, unlike io.LimitedReader which silently reports EOF at the cap.
+type limitedBodyReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+// newLimitedBodyReader wraps r so that reading past maxRequestBodyBytes is an
+// error rather than a truncation. A non-positive limit falls back to 100 MB.
+func newLimitedBodyReader(r io.Reader, maxRequestBodyBytes int) *limitedBodyReader {
+	if maxRequestBodyBytes <= 0 {
+		maxRequestBodyBytes = 100 * 1024 * 1024 // 100 MB hard cap
+	}
+	// One byte of headroom: reading exactly max bytes is fine, the (max+1)th
+	// byte is what proves the body exceeds the limit.
+	return &limitedBodyReader{r: r, remaining: int64(maxRequestBodyBytes) + 1}
+}
+
+func (l *limitedBodyReader) Read(p []byte) (int, error) {
+	if l.remaining <= 0 {
+		return 0, errRequestBodyTooLarge
+	}
+	if int64(len(p)) > l.remaining {
+		p = p[:l.remaining]
+	}
+	n, err := l.r.Read(p)
+	l.remaining -= int64(n)
+	return n, err
+}
+
+var errDecompressionBudgetExhausted = errors.New("decompressed request bytes in flight exceed the process budget")
+
+// budgetedReader charges every byte it hands out to budget, failing with
+// errDecompressionBudgetExhausted once the budget cannot cover them. The caller releases charged.
+type budgetedReader struct {
+	r       io.Reader
+	budget  *semaphore.Weighted
+	charged int64
+}
+
+func (b *budgetedReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if n > 0 {
+		if !b.budget.TryAcquire(int64(n)) {
+			return 0, errDecompressionBudgetExhausted
+		}
+		b.charged += int64(n)
+	}
+	return n, err
+}
+
+// decodeRequestBodyWithLimit decodes the request body with a limit on the size of the body. With
+// a non-nil budget the decoded bytes are charged to it as they are produced; charged is what the
+// caller must release, whether or not decoding succeeded.
+func decodeRequestBodyWithLimit(req *fasthttp.Request, maxRequestBodyBytes int, budget *semaphore.Weighted) (body []byte, charged int64, err error) {
 	encoding := strings.ToLower(strings.TrimSpace(string(req.Header.ContentEncoding())))
 	bodyReader := bytes.NewReader(req.Body())
 
 	var reader io.Reader = bodyReader
 	cleanup := func() {}
 	if encoding != "" {
-		var err error
 		reader, cleanup, err = newDecompressReader(bodyReader, encoding)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 	defer cleanup()
 
-	if maxRequestBodyBytes <= 0 {
-		maxRequestBodyBytes = 100 * 1024 * 1024 // 100 MB hard cap
+	var budgeted *budgetedReader
+	if budget != nil {
+		budgeted = &budgetedReader{r: reader, budget: budget}
+		reader = budgeted
 	}
-
-	limitedReader := &io.LimitedReader{R: reader, N: int64(maxRequestBodyBytes + 1)}
-	body, err := io.ReadAll(limitedReader)
+	body, err = io.ReadAll(newLimitedBodyReader(reader, maxRequestBodyBytes))
+	if budgeted != nil {
+		charged = budgeted.charged
+	}
 	if err != nil {
-		return nil, err
+		return nil, charged, err
 	}
-	if len(body) > maxRequestBodyBytes {
-		return nil, errRequestBodyTooLarge
-	}
-	return body, nil
+	return body, charged, nil
 }
 
 // newDecompressReader wraps r with a decompression reader for the given encoding.
@@ -1008,6 +1204,22 @@ func fasthttpResponseToHTTPResponse(ctx *fasthttp.RequestCtx, resp *schemas.HTTP
 	if deferred, ok := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool); ok && deferred {
 		return
 	}
+	// Same rule for any handler that installed a body stream directly without the
+	// defer-trace flag, e.g. the Agent Gateway SSE bridge. Body() on a body-stream
+	// response blocks until upstream EOF and drains the stream into memory, so the
+	// downstream client would receive nothing until the stream ended.
+	//
+	// Such handlers intentionally do not use DeferTraceCompletion: that flag exists
+	// for LLM/MCP streaming, whose authoritative telemetry (trace completion,
+	// transport post-hooks) is produced by this middleware chain and must therefore
+	// be deferred until the stream drains. The Agent Gateway records its telemetry
+	// in the A2A plugin pipeline instead (per-event rows during the stream, and the
+	// aggregate row with full-stream latency in PostA2A at stream end), so it needs
+	// nothing deferred here — only this guard, so the post-hook body capture never
+	// touches a live stream.
+	if ctx.Response.IsBodyStream() {
+		return
+	}
 	// Skip response body copy when large payload/response mode is active — the response is
 	// streamed directly to the client and materializing it here would spike memory.
 	if isLargePayload, ok := ctx.UserValue(schemas.BifrostContextKeyLargePayloadMode).(bool); ok && isLargePayload {
@@ -1118,6 +1330,7 @@ func virtualKeyFromHeaders(ctx *fasthttp.RequestCtx) string {
 type AuthMiddleware struct {
 	store             configstore.ConfigStore
 	whitelistedRoutes atomic.Pointer[[]string]
+	allowedOrigins    atomic.Pointer[[]string] // client_config.allowed_origins; read while auth is disabled
 	authConfig        atomic.Pointer[configstore.AuthConfig]
 	wsTicketStore     *WSTicketStore
 	tempTokensService *temptoken.Service // optional; when nil, temp-token fallback is disabled
@@ -1132,6 +1345,7 @@ type AuthMiddleware struct {
 	// /api/config-plants-admin-credentials path while a fresh, not-yet-configured
 	// instance is reachable over the network.
 	bootstrapToken atomic.Pointer[string]
+	setupToken     atomic.Pointer[string] // the configured setup token, kept for the life of the process
 }
 
 // InitAuthMiddleware initializes the auth middleware. The tempTokens service
@@ -1155,6 +1369,9 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	}
 
 	am.authConfig.Store(authConfig)
+	if configuredSetupToken != "" {
+		am.setupToken.Store(&configuredSetupToken)
+	}
 
 	if authConfig == nil {
 		if configuredSetupToken != "" {
@@ -1181,6 +1398,7 @@ func InitAuthMiddleware(store configstore.ConfigStore, wsTicketStore *WSTicketSt
 	clientConfig, err := store.GetClientConfig(context.Background())
 	if err == nil && clientConfig != nil {
 		am.whitelistedRoutes.Store(&clientConfig.WhitelistedRoutes)
+		am.allowedOrigins.Store(&clientConfig.AllowedOrigins)
 		am.tempTokensEnabled.Store(clientConfig.MCPEnableTempTokenAuth)
 	} else {
 		emptyRoutes := []string{}
@@ -1217,9 +1435,154 @@ func (m *AuthMiddleware) ClearBootstrapToken() {
 	m.bootstrapToken.Store(nil)
 }
 
+// CheckConfiguredSetupToken reports whether token matches the operator-configured setup
+// token (config.json setup_token or BIFROST_SETUP_TOKEN). Unlike CheckBootstrapToken it does
+// not open up once an admin account exists and is never cleared: it is the operator's proof
+// of control for auth_config changes made while dashboard auth is disabled (see
+// ConfigHandler.verifyStoredAdminCredential). It is false when no token is configured.
+func (m *AuthMiddleware) CheckConfiguredSetupToken(token string) bool {
+	current := m.setupToken.Load()
+	if current == nil || token == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(*current), []byte(token)) == 1
+}
+
 // UpdateWhitelistedRoutes updates the configured whitelisted routes that bypass auth middleware.
 func (m *AuthMiddleware) UpdateWhitelistedRoutes(routes []string) {
 	m.whitelistedRoutes.Store(&routes)
+}
+
+// UpdateAllowedOrigins updates the allowed origins the auth-disabled branch consults
+// (see refuseCrossOriginWhileAuthDisabled). Called alongside UpdateWhitelistedRoutes
+// whenever the client config is reloaded.
+func (m *AuthMiddleware) UpdateAllowedOrigins(origins []string) {
+	m.allowedOrigins.Store(&origins)
+}
+
+// originExplicitlyAllowed reports whether origin is a localhost origin or matches an
+// allowed_origins entry other than the bare "*" wildcard. A "*.example.com" pattern
+// counts as explicit: the operator named that domain.
+func originExplicitlyAllowed(origin string, allowedOrigins []string) bool {
+	if isLocalhostOrigin(origin) {
+		return true
+	}
+	for _, entry := range allowedOrigins {
+		if entry == "*" {
+			continue
+		}
+		if entry == origin || (strings.Contains(entry, "*") && matchesWildcardPattern(origin, entry)) {
+			return true
+		}
+	}
+	return false
+}
+
+// isSameOrigin reports whether origin names the host the request was sent to. Browsers send
+// Origin on same-origin writes too, so the bundled dashboard served from any address carries its
+// own origin on PUT /api/config and similar calls; that is not a cross-origin request. Hosts are
+// compared case-insensitively with default ports (80 for http, 443 for https) made explicit. It
+// runs on every dashboard write, so it splits the strings in place rather than parsing a URL.
+func isSameOrigin(origin, host string) bool {
+	scheme, rest, ok := strings.Cut(origin, "://")
+	if !ok || host == "" {
+		return false
+	}
+	var defaultPort string
+	switch {
+	case strings.EqualFold(scheme, "http"):
+		defaultPort = "80"
+	case strings.EqualFold(scheme, "https"):
+		defaultPort = "443"
+	default:
+		return false
+	}
+	if end := strings.IndexAny(rest, "/?#"); end >= 0 {
+		rest = rest[:end]
+	}
+	if at := strings.LastIndexByte(rest, '@'); at >= 0 {
+		rest = rest[at+1:]
+	}
+	originHost, originPort, ok := splitOriginHostPort(rest, defaultPort)
+	if !ok {
+		return false
+	}
+	requestHost, requestPort, ok := splitOriginHostPort(host, defaultPort)
+	return ok && originPort == requestPort && strings.EqualFold(originHost, requestHost)
+}
+
+// splitOriginHostPort splits a host[:port] (an IPv6 host in brackets) into the host and its port,
+// defaultPort when none is given. ok is false for an empty host or a port that is not a number.
+func splitOriginHostPort(hostport, defaultPort string) (host, port string, ok bool) {
+	host, port = hostport, defaultPort
+	if strings.HasPrefix(hostport, "[") {
+		end := strings.IndexByte(hostport, ']')
+		if end < 0 {
+			return "", "", false
+		}
+		host, rest := hostport[1:end], hostport[end+1:]
+		switch {
+		case rest == "":
+		case strings.HasPrefix(rest, ":"):
+			port = rest[1:]
+		default:
+			return "", "", false
+		}
+		return host, port, host != "" && isPortNumber(port)
+	}
+	if colon := strings.LastIndexByte(hostport, ':'); colon >= 0 {
+		host, port = hostport[:colon], hostport[colon+1:]
+		if strings.IndexByte(host, ':') >= 0 {
+			return "", "", false
+		}
+	}
+	return host, port, host != "" && isPortNumber(port)
+}
+
+// isPortNumber reports a non-empty run of ASCII digits.
+func isPortNumber(port string) bool {
+	if port == "" {
+		return false
+	}
+	for i := 0; i < len(port); i++ {
+		if port[i] < '0' || port[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// refuseCrossOriginWhileAuthDisabled closes the one browser path into the open
+// management API. With dashboard auth disabled the API is intentionally reachable
+// by anyone who can route to the port, on the assumption that network position is
+// the control. A web page the operator visits has that position too, and the
+// default allowed_origins of "*" would let it read and change the config from any
+// origin. So while auth is disabled, a request carrying an Origin header reaches a
+// management route only from a localhost origin, its own origin, or one the operator
+// listed by name; the bare "*" does not count. Requests without an Origin (CLI, SDKs, same-origin
+// dashboard navigation) and inference routes are unaffected. Returns true if the
+// request was refused (the error response has already been written).
+func (m *AuthMiddleware) refuseCrossOriginWhileAuthDisabled(ctx *fasthttp.RequestCtx) bool {
+	var allowed []string
+	if stored := m.allowedOrigins.Load(); stored != nil {
+		allowed = *stored
+	}
+	return refuseCrossOriginOnOpenAPI(ctx, allowed)
+}
+
+// refuseCrossOriginOnOpenAPI is the rule behind refuseCrossOriginWhileAuthDisabled with the
+// allowed origins passed in, so the no-config-store path, which has no AuthMiddleware to read
+// them from, applies the same one. Returns true if the request was refused.
+func refuseCrossOriginOnOpenAPI(ctx *fasthttp.RequestCtx, allowedOrigins []string) bool {
+	origin := string(ctx.Request.Header.Peek("Origin"))
+	if origin == "" {
+		return false
+	}
+	if originExplicitlyAllowed(origin, allowedOrigins) || isSameOrigin(origin, string(ctx.Host())) {
+		return false
+	}
+	SendError(ctx, fasthttp.StatusForbidden, fmt.Sprintf("Cross-origin requests to the management API from %q are refused while dashboard auth is disabled; enable dashboard authentication, or list the origin explicitly in client_config.allowed_origins (localhost origins are always allowed).", origin))
+	return true
 }
 
 // UpdateTempTokenAuthEnabled updates whether scoped temp-token fallback auth is accepted.
@@ -1305,6 +1668,78 @@ func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 	}, true)
 }
 
+// apiSystemWhitelistedRoutes are exact API paths that never require a credential.
+var apiSystemWhitelistedRoutes = []string{
+	"/api/session/is-auth-enabled",
+	"/api/session/login",
+	// Idempotent: the handler clears the cookie and returns 200 whether or
+	// not a session token is present, so a repeat logout must not 401 here.
+	"/api/session/logout",
+	"/api/oauth/callback",
+	"/health",
+	"/login",
+	"/favicon.ico",
+	"/assets/*",
+	"/api/scim/oauth/config",
+	"/api/scim/oauth/callback",
+	"/api/scim/oauth/refresh",
+	"/api/scim/oauth/logout",
+	"/health",
+	"/api/version",
+}
+
+// apiWhitelistedPrefixes are API path prefixes that never require a credential.
+var apiWhitelistedPrefixes = []string{
+	// "/api/oauth/callback" is also in apiSystemWhitelistedRoutes above as an
+	// exact match — that's the only OAuth route that must be public (it's
+	// hit by the browser after the upstream provider redirects back, with
+	// no cookie context). DO NOT add a broad "/api/oauth" prefix here:
+	// it would whitelist /api/oauth/per-user/* (auth-via-temp-token) and
+	// /api/oauth/config/* (admin-only) and bypass the temp-token fallback
+	// in tryTempTokenOrUnauthorized.
+	// Trailing slash is required: the dev routes live under "/api/dev/pprof".
+	// A bare "/api/dev" prefix also matches "/api/devices" (and any other
+	// "/api/dev*" route), which would silently bypass auth on those routes.
+	"/api/dev/",
+	// Skills serving endpoints are public — marketplace URLs cannot carry
+	// credentials securely. Management endpoints under /api/skills (without
+	// /serve/) remain authenticated.
+	"/api/skills/serve/",
+	// OAuth2 discovery endpoints (RFC 8414 AS metadata, RFC 9728 protected
+	// resource metadata, RFC 7517 JWKS) must be reachable without auth so
+	// clients can bootstrap the flow. Each handler still gates availability
+	// behind discoveryEnabled() and serves 404 when OAuth mode is off.
+	"/.well-known/",
+}
+
+// isAPIRouteWhitelisted reports whether url (the raw PathOriginal) is a public API route:
+// a system route, a system prefix, or an operator-configured whitelisted route. Shared by
+// APIMiddleware and SetupLockMiddleware so both agree on what never needs a credential.
+func (m *AuthMiddleware) isAPIRouteWhitelisted(url string) bool {
+	var configuredRoutes []string
+	if stored := m.whitelistedRoutes.Load(); stored != nil {
+		configuredRoutes = *stored
+	}
+	return isAPIRouteWhitelistedAmong(url, configuredRoutes)
+}
+
+// isAPIRouteWhitelistedAmong is isAPIRouteWhitelisted with the operator-configured routes passed
+// in, for the no-config-store path that has no AuthMiddleware holding them.
+func isAPIRouteWhitelistedAmong(url string, configuredRoutes []string) bool {
+	if slices.Contains(apiSystemWhitelistedRoutes, url) ||
+		slices.IndexFunc(apiWhitelistedPrefixes, func(prefix string) bool {
+			return strings.HasPrefix(url, prefix)
+		}) != -1 {
+		return true
+	}
+	return slices.Contains(configuredRoutes, url) || slices.IndexFunc(configuredRoutes, func(route string) bool {
+		if before, ok := strings.CutSuffix(route, "*"); ok {
+			return strings.HasPrefix(url, before)
+		}
+		return false
+	}) != -1
+}
+
 // APIMiddleware is for API requests if authConfig is set, it will verify authentication based on the request type.
 // Three authentication methods are supported:
 //   - Basic auth: Uses username + password validation (no session tracking). Used for inference API calls.
@@ -1314,66 +1749,158 @@ func (m *AuthMiddleware) InferenceMiddleware() schemas.BifrostHTTPMiddleware {
 // Basic auth may be acceptable for limited use cases, while Bearer and WebSocket flows provide
 // session-based authentication suitable for production environments.
 func (m *AuthMiddleware) APIMiddleware() schemas.BifrostHTTPMiddleware {
-	systemWhitelistedRoutes := []string{
-		"/api/session/is-auth-enabled",
-		"/api/session/login",
-		// Idempotent: the handler clears the cookie and returns 200 whether or
-		// not a session token is present, so a repeat logout must not 401 here.
-		"/api/session/logout",
-		"/api/oauth/callback",
-		"/health",
-		"/login",
-		"/favicon.ico",
-		"/assets/*",
-		"/api/scim/oauth/config",
-		"/api/scim/oauth/callback",
-		"/api/scim/oauth/refresh",
-		"/api/scim/oauth/logout",
-		"/health",
-		"/api/version",
-	}
-	whitelistedPrefixes := []string{
-		// "/api/oauth/callback" is also in systemWhitelistedRoutes above as an
-		// exact match — that's the only OAuth route that must be public (it's
-		// hit by the browser after the upstream provider redirects back, with
-		// no cookie context). DO NOT add a broad "/api/oauth" prefix here:
-		// it would whitelist /api/oauth/per-user/* (auth-via-temp-token) and
-		// /api/oauth/config/* (admin-only) and bypass the temp-token fallback
-		// in tryTempTokenOrUnauthorized.
-		// Trailing slash is required: the dev routes live under "/api/dev/pprof".
-		// A bare "/api/dev" prefix also matches "/api/devices" (and any other
-		// "/api/dev*" route), which would silently bypass auth on those routes.
-		"/api/dev/",
-		// Skills serving endpoints are public — marketplace URLs cannot carry
-		// credentials securely. Management endpoints under /api/skills (without
-		// /serve/) remain authenticated.
-		"/api/skills/serve/",
-		// OAuth2 discovery endpoints (RFC 8414 AS metadata, RFC 9728 protected
-		// resource metadata, RFC 7517 JWKS) must be reachable without auth so
-		// clients can bootstrap the flow. Each handler still gates availability
-		// behind discoveryEnabled() and serves 404 when OAuth mode is off.
-		"/.well-known/",
-	}
 	return m.middleware(func(authConfig *configstore.AuthConfig, url string) bool {
-		if slices.Contains(systemWhitelistedRoutes, url) ||
-			slices.IndexFunc(whitelistedPrefixes, func(prefix string) bool {
-				return strings.HasPrefix(url, prefix)
-			}) != -1 {
-			return true
-		}
-		// Check user-configured whitelisted routes
-		if configuredRoutes := m.whitelistedRoutes.Load(); configuredRoutes != nil {
-			if slices.Contains(*configuredRoutes, url) || slices.IndexFunc(*configuredRoutes, func(route string) bool {
-				if before, ok := strings.CutSuffix(route, "*"); ok {
-					return strings.HasPrefix(url, before)
-				}
-				return false
-			}) != -1 {
-				return true
-			}
-		}
-		return false
+		return m.isAPIRouteWhitelisted(url)
 	}, false)
+}
+
+// SetupTokenHeader carries the operator-configured setup token (config.json setup_token
+// or BIFROST_SETUP_TOKEN) on API calls made while dashboard auth is not active.
+const SetupTokenHeader = "X-Bifrost-Setup-Token"
+
+// SetupSessionCookie is the HttpOnly cookie the dashboard holds in place of the setup
+// token. POST /api/session/setup trades the token for it once; the browser then sends it on
+// every call (including reloads and WebSocket upgrades) and no script can read it.
+const SetupSessionCookie = "bifrost_setup_session"
+
+// SetupSessionTTL bounds how long a setup session cookie stays valid.
+const SetupSessionTTL = 12 * time.Hour
+
+const setupSessionVersion = "v1"
+
+// setupSessionKey derives the HMAC key for setup session cookies from the configured setup
+// token. Every node configured with the same token verifies the same cookies, and changing
+// the token invalidates every cookie issued under the old one.
+func setupSessionKey(token string) []byte {
+	sum := sha256.Sum256([]byte("bifrost-setup-session:" + token))
+	return sum[:]
+}
+
+func signSetupSession(key []byte, payload string) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(payload))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// IssueSetupSession mints a setup session cookie value: "v1.<expiry>.<nonce>.<hmac>". It
+// carries no part of the token, only an expiry and a random nonce, signed with a key
+// derived from the token. It fails when no setup token is configured.
+func (m *AuthMiddleware) IssueSetupSession(now time.Time) (string, time.Time, error) {
+	current := m.setupToken.Load()
+	if current == nil {
+		return "", time.Time{}, fmt.Errorf("no setup token is configured")
+	}
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", time.Time{}, err
+	}
+	expires := now.Add(SetupSessionTTL)
+	payload := fmt.Sprintf("%s.%d.%s", setupSessionVersion, expires.Unix(), hex.EncodeToString(nonce))
+	return payload + "." + signSetupSession(setupSessionKey(*current), payload), expires, nil
+}
+
+// validSetupSession reports whether value is an unexpired setup session cookie signed under
+// the currently configured setup token.
+func (m *AuthMiddleware) validSetupSession(value string, now time.Time) bool {
+	current := m.setupToken.Load()
+	if current == nil || value == "" {
+		return false
+	}
+	idx := strings.LastIndexByte(value, '.')
+	if idx <= 0 {
+		return false
+	}
+	payload, sig := value[:idx], value[idx+1:]
+	parts := strings.Split(payload, ".")
+	if len(parts) != 3 || parts[0] != setupSessionVersion {
+		return false
+	}
+	expiry, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || !now.Before(time.Unix(expiry, 0)) {
+		return false
+	}
+	return hmac.Equal([]byte(sig), []byte(signSetupSession(setupSessionKey(*current), payload)))
+}
+
+// IsDashboardAuthActive reports whether an admin account exists and dashboard auth is on.
+func (m *AuthMiddleware) IsDashboardAuthActive() bool {
+	authConfig := m.authConfig.Load()
+	return authConfig != nil && authConfig.IsEnabled
+}
+
+// HasSetupToken reports whether the operator configured a setup token.
+func (m *AuthMiddleware) HasSetupToken() bool {
+	return m.setupToken.Load() != nil
+}
+
+// SetupLockMiddleware locks the OSS admin API while dashboard auth is not active (no admin
+// account, or an admin account with auth disabled). In that state every non-public /api call
+// must carry the operator's setup token in SetupTokenHeader, or the setup session cookie the
+// dashboard got for it (POST /api/session/setup); with either, the request runs as the admin. Once dashboard auth is enabled this middleware is a no-op and APIMiddleware's normal
+// session/Basic auth applies, so the setup token stops working.
+//
+// It must run before APIMiddleware, whose auth-off branch lets every request through. It is
+// registered by the OSS server only: enterprise builds its own chain around APIMiddleware and
+// never installs this gate.
+func (m *AuthMiddleware) SetupLockMiddleware() schemas.BifrostHTTPMiddleware {
+	if !m.IsDashboardAuthActive() {
+		logger.Warn("================================================================")
+		if m.authConfig.Load() == nil {
+			logger.Warn("No admin account is configured for this Bifrost instance yet.")
+		} else {
+			logger.Warn("Dashboard auth is disabled for this Bifrost instance.")
+		}
+		if m.HasSetupToken() {
+			logger.Warn("The /api surface is locked until dashboard auth is enabled. Open")
+			logger.Warn("the dashboard and enter the setup token, or send it in the")
+			logger.Warn("%s header.", SetupTokenHeader)
+		} else {
+			logger.Warn("The /api surface is locked and no setup token is configured. Set")
+			logger.Warn("setup_token in config.json (or the BIFROST_SETUP_TOKEN environment")
+			logger.Warn("variable) and restart to finish setup.")
+		}
+		logger.Warn("================================================================")
+	}
+	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
+		return func(ctx *fasthttp.RequestCtx) {
+			if m.IsDashboardAuthActive() {
+				next(ctx)
+				return
+			}
+			if isAPIKeyAuth, ok := ctx.UserValue(schemas.IsAPIKeyAuthContextKey).(bool); ok && isAPIKeyAuth {
+				next(ctx)
+				return
+			}
+			// Raw path, for the same router-congruence reason as middleware().
+			if m.isAPIRouteWhitelisted(string(ctx.Request.URI().PathOriginal())) {
+				next(ctx)
+				return
+			}
+			if m.setupToken.Load() == nil {
+				SendError(ctx, fasthttp.StatusForbidden, "dashboard auth is not configured and no setup token is set; set setup_token in config.json (or the BIFROST_SETUP_TOKEN env var) and restart Bifrost")
+				return
+			}
+			// An explicit header wins: API clients send it, and a wrong one is a 403 even if
+			// a setup session cookie is also present.
+			if token := string(ctx.Request.Header.Peek(SetupTokenHeader)); token != "" {
+				if !m.CheckConfiguredSetupToken(token) {
+					SendError(ctx, fasthttp.StatusForbidden, "invalid setup token")
+					return
+				}
+				ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
+				next(ctx)
+				return
+			}
+			// The dashboard holds an HttpOnly setup session cookie instead of the token.
+			// Browsers send it on WebSocket upgrades too, so no ticket is needed.
+			if m.validSetupSession(string(ctx.Request.Header.Cookie(SetupSessionCookie)), time.Now()) {
+				ctx.SetUserValue(schemas.BifrostContextKeySetupTokenAuthenticated, true)
+				next(ctx)
+				return
+			}
+			SendError(ctx, fasthttp.StatusUnauthorized, fmt.Sprintf("dashboard auth is not configured; send the setup token in the %s header", SetupTokenHeader))
+		}
+	}
 }
 
 // middleware is the core authentication middleware that checks if the request should be authenticated or not.
@@ -1387,8 +1914,16 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				return
 			}
 			authConfig := m.authConfig.Load()
+			// Match the whitelist against the RAW request path (PathOriginal); see the comment below.
+			url := string(ctx.Request.URI().PathOriginal())
 			if authConfig == nil || !authConfig.IsEnabled {
 				// logger.Debug("auth middleware is disabled because auth config is not present or not enabled")
+				// The open management API is still not a cross-origin one: a browser
+				// page from an unlisted origin is refused, while whitelisted routes
+				// (health, login, assets) and inference routes keep today's behaviour.
+				if !allowVirtualKeyAuth && !shouldSkip(authConfig, url) && m.refuseCrossOriginWhileAuthDisabled(ctx) {
+					return
+				}
 				ctx.SetUserValue(schemas.BifrostContextKeySessionToken, "")
 				// Mark as local admin so downstream RBAC bypasses cleanly when
 				// auth is fully disabled; otherwise RBAC 401s and the UI enters
@@ -1399,7 +1934,11 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 				// checked at all" so handlers gating especially dangerous capabilities
 				// (e.g. native plugin/subprocess loading) can require real authentication
 				// even while the rest of the API is intentionally left open.
-				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+				// A request the OSS setup-lock gate already authenticated with the
+				// setup token did pass a credential check, so it is not a bypass.
+				if setupAuthed, _ := ctx.UserValue(schemas.BifrostContextKeySetupTokenAuthenticated).(bool); !setupAuthed {
+					ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+				}
 				next(ctx)
 				return
 			}
@@ -1414,9 +1953,11 @@ func (m *AuthMiddleware) middleware(shouldSkip func(*configstore.AuthConfig, str
 			// while the router dispatched it to a protected, parameterized admin handler.
 			// Using the same raw string the router uses keeps this decision congruent with
 			// router dispatch for every route, not just the specific one in a given PoC.
-			url := string(ctx.Request.URI().PathOriginal())
 			// We skip authorization for the login route
 			if shouldSkip(authConfig, url) {
+				// No credential was checked, so handlers that gate on genuine auth
+				// must not mistake a whitelisted request for an authenticated admin.
+				ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
 				next(ctx)
 				return
 			}
@@ -1688,8 +2229,11 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			if headerTraceID == "" {
 				headerTraceID = traceID
 			}
-			ctx.Response.Header.Set("x-request-id", requestID)
-			ctx.Response.Header.Set("x-bifrost-trace-id", headerTraceID)
+			// x-bifrost-request-id is the one to read: a provider that answers with its own
+			// x-request-id replaces the deprecated header, which is kept for compatibility.
+			ctx.Response.Header.Set(lib.HeaderBifrostRequestID, requestID)
+			ctx.Response.Header.Set(lib.HeaderRequestID, requestID)
+			ctx.Response.Header.Set(lib.HeaderBifrostTraceID, headerTraceID)
 			// Store dimensions and session ID at the trace level (not as span
 			// attributes) so connectors like BigQuery can export them without
 			// changing the OTEL/Datadog span payloads.
@@ -1718,6 +2262,11 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			parentSpanID := tracing.ExtractTraceParentSpanID(&ctx.Request.Header)
 			if parentSpanID != "" {
 				ctx.SetUserValue(schemas.BifrostContextKeyParentSpanID, parentSpanID)
+				// Vendor trace state, for connectors that rebuild the parent context. Only
+				// alongside a parent span ID, since there is nothing to parent to without one.
+				if traceState := tracing.ExtractTraceState(&ctx.Request.Header); traceState != "" {
+					tracer.SetTraceAttribute(traceID, schemas.TraceAttrTraceState, traceState)
+				}
 			}
 			// Store a trace completion callback for streaming handlers to use.
 			// Accepts transport plugin logs as a parameter so it never reads from
@@ -1799,6 +2348,12 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			}
 			defer func() {
 				deferred, _ := ctx.UserValue(schemas.BifrostContextKeyDeferTraceCompletion).(bool)
+				// Completing here would flush an incomplete trace and recycle the span
+				// the worker is still writing to.
+				workerOwned := tracer.IsTraceCompletionDeferred(traceID)
+				if !deferred && workerOwned {
+					deferred = true
+				}
 				// Record response status on the root span
 				if rootSpan != nil {
 					tracer.SetAttribute(rootSpan, schemas.AttrHTTPResponseStatusCode, ctx.Response.StatusCode())
@@ -1824,6 +2379,14 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 				// If deferred, the streaming handler will complete the trace (and end the
 				// root span via the trace completer) after the stream ends.
 				if deferred {
+					// Only this defer can see the transport logs, and the worker completes
+					// the trace, so attach them and release it.
+					if workerOwned {
+						if transportLogs, ok := ctx.UserValue(schemas.BifrostContextKeyTransportPluginLogs).([]schemas.PluginLogEntry); ok && len(transportLogs) > 0 {
+							tracer.AttachPluginLogs(traceID, transportLogs)
+						}
+						tracer.SignalTransportHandoff(traceID)
+					}
 					return
 				}
 				// Attach transport plugin logs to trace before completion
@@ -1866,9 +2429,28 @@ func GetObservabilityPlugins(plugins []schemas.BasePlugin) []schemas.Observabili
 // (and so no auth at all), so handlers that require genuine auth for dangerous changes - which
 // key off BifrostContextKeyAuthBypassed - still refuse them in that mode instead of reading an
 // unmarked request as authenticated and failing open.
-func AuthBypassedMiddleware() schemas.BifrostHTTPMiddleware {
+//
+// The management API is as open here as with dashboard auth disabled, so the same browser rule
+// applies: a request carrying an Origin reaches a non-whitelisted route only from a localhost
+// origin, its own origin, or one listed by name in allowedOrigins (see
+// refuseCrossOriginWhileAuthDisabled). Both lists are snapshots: without a config store the
+// configuration only changes with a restart.
+func AuthBypassedMiddleware(allowedOrigins, whitelistedRoutes []string) schemas.BifrostHTTPMiddleware {
+	allowedOrigins = slices.Clone(allowedOrigins)
+	whitelistedRoutes = slices.Clone(whitelistedRoutes)
 	return func(next fasthttp.RequestHandler) fasthttp.RequestHandler {
 		return func(ctx *fasthttp.RequestCtx) {
+			// Only a request carrying an Origin can be refused, so CLI and SDK calls, which send
+			// none, skip the route and origin checks entirely.
+			if len(ctx.Request.Header.Peek("Origin")) > 0 &&
+				!isAPIRouteWhitelistedAmong(string(ctx.Request.URI().PathOriginal()), whitelistedRoutes) &&
+				refuseCrossOriginOnOpenAPI(ctx, allowedOrigins) {
+				return
+			}
+			// Mirror the auth-disabled branch of the real middleware: the request
+			// acts as the local admin for ordinary handlers, and the bypass marker
+			// keeps the guards on dangerous changes closed.
+			ctx.SetUserValue(schemas.IsLocalAdminContextKey, true)
 			ctx.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
 			next(ctx)
 		}

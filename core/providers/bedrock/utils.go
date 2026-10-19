@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"mime"
 	"net/url"
 	"path/filepath"
@@ -27,8 +28,10 @@ import (
 // awsRegionRegex matches valid AWS region identifiers (e.g. "us-east-1", "eu-north-1", "us-gov-east-1").
 // (?:-[a-z]+)+ allows multi-segment directional parts so GovCloud regions (us-gov-east-1) are
 // recognised alongside standard single-segment ones (eu-north-1, ap-southeast-2).
-var awsRegionRegex = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
-var bedrockUnsafeToolNameCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
+var (
+	awsRegionRegex                 = regexp.MustCompile(`^[a-z]{2,3}(?:-[a-z]+)+-\d+$`)
+	bedrockUnsafeToolNameCharRegex = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
+)
 
 // bedrockUnsafeToolUseIDCharRegex matches characters outside Bedrock's toolUseId charset
 // (^[a-zA-Z0-9_.:-]+$), which is wider than the tool-name charset above.
@@ -630,7 +633,10 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	// literally contain "nova-2" fails the check and drops web_search/code_execution
 	// instead of converting them. Mirrors ToBedrockResponsesRequest, which already
 	// passes the canonical model to the same check.
-	toolConfig, modelDropped := convertToolConfigFromFiltered(ctx, caps.Model(), caps, bifrostReq.Params, filteredTools)
+	toolConfig, modelDropped, err := convertToolConfigFromFiltered(ctx, caps.Model(), caps, bifrostReq.Params, filteredTools)
+	if err != nil {
+		return err
+	}
 	if toolConfig != nil {
 		bedrockReq.ToolConfig = toolConfig
 	}
@@ -670,6 +676,14 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 			}
 		}
 	}
+
+	var eagerFlags []*bool
+	for _, tool := range filteredTools {
+		if tool.Function != nil {
+			eagerFlags = append(eagerFlags, tool.EagerInputStreaming)
+		}
+	}
+	applyBedrockFineGrainedToolStreaming(ctx, bedrockReq, bifrostReq.Model, caps, eagerFlags)
 
 	// Convert reasoning config
 	if bifrostReq.Params.Reasoning != nil {
@@ -888,7 +902,7 @@ func convertChatParameters(ctx *schemas.BifrostContext, bifrostReq *schemas.Bifr
 	bedrockReq.ServiceTier = bedrockServiceTierForModel(caps, bifrostReq.Params.ServiceTier)
 	// Add extra parameters
 	if len(bifrostReq.Params.ExtraParams) > 0 {
-		bedrockReq.ExtraParams = bifrostReq.Params.ExtraParams
+		bedrockReq.ExtraParams = withoutTopLevelCacheControl(bifrostReq.Params.ExtraParams)
 		if err := applyBedrockExtraParams(bedrockReq.ExtraParams, bedrockReq); err != nil {
 			return err
 		}
@@ -1544,6 +1558,53 @@ func appendAnthropicBetaToFields(fields *schemas.OrderedMap, header string) {
 	fields.Set("anthropic_beta", append(existing, header))
 }
 
+// applyBedrockFineGrainedToolStreaming opts a Claude Converse request into
+// fine-grained tool streaming. Without it Claude emits tool input one complete
+// JSON value at a time, so a long argument arrives as one burst after a long
+// silence. Converse has no slot for the per-tool eager_input_streaming flag
+// and Bedrock's edge consumes the outer anthropic-beta header, so the beta
+// must ride in additionalModelRequestFields.anthropic_beta.
+//
+// eagerFlags holds each custom function tool's eager_input_streaming value.
+// The beta is added when a tool sets it to true, the caller's anthropic-beta
+// asks for it, or a tool leaves it unset and
+// anthropic.ShouldDefaultEagerInputStreaming holds for the model. A request
+// whose custom tools all set it to false is left alone.
+func applyBedrockFineGrainedToolStreaming(ctx *schemas.BifrostContext, bedrockReq *BedrockConverseRequest, model string, caps schemas.ModelCaps, eagerFlags []*bool) {
+	if len(eagerFlags) == 0 || !schemas.IsAnthropicModelFamily(ctx, model) {
+		return
+	}
+	if !caps.SupportsEagerInputStreaming(anthropic.ProviderFeatures[schemas.Bedrock].EagerInputStreaming) {
+		return
+	}
+	want, hasUnset := false, false
+	for _, flag := range eagerFlags {
+		if flag == nil {
+			hasUnset = true
+		} else if *flag {
+			want = true
+		}
+	}
+	if !want {
+		for _, beta := range anthropic.MergeBetaHeaders(ctx, nil) {
+			if strings.HasPrefix(beta, anthropic.AnthropicEagerInputStreamingBetaHeaderPrefix) {
+				want = true
+				break
+			}
+		}
+	}
+	if !want && hasUnset {
+		want = anthropic.ShouldDefaultEagerInputStreaming(schemas.Bedrock, caps.Model())
+	}
+	if !want {
+		return
+	}
+	if bedrockReq.AdditionalModelRequestFields == nil {
+		bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+	}
+	appendAnthropicBetaToFields(bedrockReq.AdditionalModelRequestFields, anthropic.AnthropicEagerInputStreamingBetaHeader)
+}
+
 // ensureChatToolConfigForConversation ensures toolConfig is present when tool content exists
 func ensureChatToolConfigForConversation(ctx context.Context, bifrostReq *schemas.BifrostChatRequest, bedrockReq *BedrockConverseRequest) {
 	if bedrockReq.ToolConfig != nil {
@@ -1563,7 +1624,6 @@ func ensureChatToolConfigForConversation(ctx context.Context, bifrostReq *schema
 // model is the canonical model id, carried down to the content-block converters because
 // two source unions are model-dependent: see schemas.BedrockModelSupportsS3Location.
 func convertMessages(ctx context.Context, model string, bifrostMessages []schemas.ChatMessage) ([]BedrockMessage, []BedrockSystemMessage, error) {
-
 	docNamer := newBedrockDocNamer()
 	var messages []BedrockMessage
 	var systemMessages []BedrockSystemMessage
@@ -1737,24 +1797,174 @@ const foreignRedactedContentPrefix = "bifrost:redacted:v1:"
 // Bedrock blob) untouched and wraps anything else. Canonical, not merely decodable:
 // SDKs replay the decoded bytes re-encoded, so only a canonical blob comes back
 // byte-identical.
-func encodeRedactedContentForConverse(token string) string {
+//
+// A wrapped token also carries the reasoning item id it was issued under
+// (providerUtils.EmbedReasoningItemID). OpenAI and Azure bind encrypted reasoning
+// to that id and reject a replay under any other, and Converse has no field for it
+// (#7729). No provider gate is needed: the wrapper is Bifrost's own and is always
+// unwrapped on ingress, so the id never reaches an upstream inside a payload.
+//
+// The canonical check only guesses at origin from the token's characters. A caller
+// that knows a non-Bedrock upstream served the token wraps it with
+// wrapRedactedContentForConverse instead, since a foreign token can be canonical too.
+func encodeRedactedContentForConverse(id *string, token string) string {
 	if decoded, err := base64.StdEncoding.DecodeString(token); err == nil && base64.StdEncoding.EncodeToString(decoded) == token {
 		return token
 	}
-	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + token))
+	return wrapRedactedContentForConverse(id, token)
+}
+
+// wrapRedactedContentForConverse wraps token unconditionally, embedding id.
+func wrapRedactedContentForConverse(id *string, token string) string {
+	return base64.StdEncoding.EncodeToString([]byte(foreignRedactedContentPrefix + providerUtils.EmbedReasoningItemID(id, token)))
 }
 
 // decodeRedactedContentFromConverse unwraps a blob encodeRedactedContentForConverse
-// wrapped and returns every other blob unchanged.
-func decodeRedactedContentFromConverse(blob string) string {
+// wrapped, returning the reasoning item id it carried (nil if none) and the
+// upstream's token. Every other blob comes back unchanged with a nil id.
+func decodeRedactedContentFromConverse(blob string) (*string, string) {
 	decoded, err := base64.StdEncoding.DecodeString(blob)
 	if err != nil {
-		return blob
+		return nil, blob
 	}
-	if token, ok := strings.CutPrefix(string(decoded), foreignRedactedContentPrefix); ok {
-		return token
+	token, ok := strings.CutPrefix(string(decoded), foreignRedactedContentPrefix)
+	if !ok {
+		return nil, blob
 	}
-	return blob
+	if id, rest, found := providerUtils.ExtractReasoningItemID(token); found {
+		return id, rest
+	}
+	return nil, token
+}
+
+// bedrockTopLevelCacheControl reads Anthropic's request-level cache_control (automatic caching)
+// out of ExtraParams. The value arrives as *schemas.CacheControl from the Anthropic ingress, as
+// json.RawMessage from the InvokeModel ingress and as a decoded map from the /v1 routes. Returns
+// nil when the field is absent, unparseable or not an ephemeral marker.
+func bedrockTopLevelCacheControl(extraParams map[string]interface{}) *schemas.CacheControl {
+	raw, ok := extraParams["cache_control"]
+	if !ok || raw == nil {
+		return nil
+	}
+	var cc *schemas.CacheControl
+	switch v := raw.(type) {
+	case *schemas.CacheControl:
+		cc = v
+	case schemas.CacheControl:
+		cc = &v
+	default:
+		var data []byte
+		switch b := v.(type) {
+		case json.RawMessage:
+			data = b
+		case []byte:
+			data = b
+		default:
+			var err error
+			if data, err = providerUtils.MarshalSorted(v); err != nil {
+				return nil
+			}
+		}
+		var parsed schemas.CacheControl
+		if sonic.Unmarshal(data, &parsed) != nil {
+			return nil
+		}
+		cc = &parsed
+	}
+	if cc == nil || cc.Type != schemas.CacheControlTypeEphemeral {
+		return nil
+	}
+	return cc
+}
+
+// withoutTopLevelCacheControl returns extraParams minus "cache_control", cloning only when the key
+// is present. The map belongs to the Bifrost request, which fallbacks reuse, so it is never written.
+func withoutTopLevelCacheControl(extraParams map[string]interface{}) map[string]interface{} {
+	if _, ok := extraParams["cache_control"]; !ok {
+		return extraParams
+	}
+	out := maps.Clone(extraParams)
+	delete(out, "cache_control")
+	return out
+}
+
+// applyBedrockAutomaticCachePoint translates Anthropic automatic caching (a top-level
+// cache_control) into the Converse cachePoint Bedrock understands. Converse has no request-level
+// marker, so the breakpoint goes where the Claude API puts it: after the last cacheable block,
+// walking backward past blocks that cannot carry one (reasoning, empty text, existing markers),
+// across messages and then the system prompt. When that block already ends in an explicit marker,
+// a matching TTL is a no-op and a different one is a caller error, matching the Claude API (which
+// answers both with a 400 rather than silently picking one retention). Runs before the
+// cache-point gate and clamp so unsupported models still have it stripped and the 4-marker cap
+// still applies.
+func applyBedrockAutomaticCachePoint(req *BedrockConverseRequest, cc *schemas.CacheControl) error {
+	if req == nil || cc == nil {
+		return nil
+	}
+	// Unlike block-level markers, which newBedrockCachePoint normalizes to the default, an
+	// automatic marker with a TTL Bedrock cannot honour is rejected, as on the Claude API.
+	if cc.TTL != nil && *cc.TTL != "" && *cc.TTL != "5m" && *cc.TTL != "1h" {
+		return providerUtils.InvalidRequestErrorf("top-level cache_control ttl %q is not supported: Bedrock accepts \"5m\" or \"1h\"", *cc.TTL)
+	}
+	marker := newBedrockCachePoint(cc.TTL)
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		content := req.Messages[i].Content
+		for j := len(content) - 1; j >= 0; j-- {
+			if !isBedrockCacheableBlock(&content[j]) {
+				continue
+			}
+			if j+1 < len(content) && content[j+1].CachePoint != nil {
+				return checkAutomaticCachePointTTL(content[j+1].CachePoint, marker)
+			}
+			if tr := content[j].ToolResult; tr != nil && len(tr.Content) > 0 && tr.Content[len(tr.Content)-1].CachePoint != nil {
+				return checkAutomaticCachePointTTL(tr.Content[len(tr.Content)-1].CachePoint, marker)
+			}
+			req.Messages[i].Content = slices.Insert(content, j+1, BedrockContentBlock{CachePoint: marker})
+			return nil
+		}
+	}
+	for i := len(req.System) - 1; i >= 0; i-- {
+		if req.System[i].Text == nil || *req.System[i].Text == "" {
+			continue
+		}
+		if req.System[i].CachePoint != nil {
+			return checkAutomaticCachePointTTL(req.System[i].CachePoint, marker)
+		}
+		if i+1 < len(req.System) && req.System[i+1].CachePoint != nil {
+			return checkAutomaticCachePointTTL(req.System[i+1].CachePoint, marker)
+		}
+		req.System = slices.Insert(req.System, i+1, BedrockSystemMessage{CachePoint: marker})
+		return nil
+	}
+	return nil
+}
+
+// checkAutomaticCachePointTTL compares an explicit marker with the automatic one that would have
+// landed on the same block. An absent TTL is Bedrock's 5m default on both sides.
+func checkAutomaticCachePointTTL(explicit, automatic *BedrockCachePoint) error {
+	explicitTTL, automaticTTL := bedrockCachePointTTL(explicit), bedrockCachePointTTL(automatic)
+	if explicitTTL == automaticTTL {
+		return nil
+	}
+	return providerUtils.InvalidRequestErrorf("top-level cache_control ttl %q conflicts with the explicit cache_control ttl %q on the last cacheable block", automaticTTL, explicitTTL)
+}
+
+func bedrockCachePointTTL(cp *BedrockCachePoint) string {
+	if cp.TTL == nil {
+		return "5m"
+	}
+	return *cp.TTL
+}
+
+// isBedrockCacheableBlock reports whether a cachePoint may follow this message block.
+func isBedrockCacheableBlock(block *BedrockContentBlock) bool {
+	switch {
+	case block.CachePoint != nil, block.ReasoningContent != nil:
+		return false
+	case block.Text != nil:
+		return *block.Text != ""
+	}
+	return true
 }
 
 // newBedrockCachePoint builds a default cache point, attaching the TTL only for the values
@@ -1967,6 +2177,11 @@ func convertMessage(ctx context.Context, model string, msg schemas.ChatMessage, 
 	if msg.ChatAssistantMessage != nil && msg.ChatAssistantMessage.ToolCalls != nil {
 		for _, toolCall := range msg.ChatAssistantMessage.ToolCalls {
 			contentBlocks = append(contentBlocks, convertToolCallToContentBlock(ctx, toolCall))
+			if toolCall.CacheControl != nil {
+				contentBlocks = append(contentBlocks, BedrockContentBlock{
+					CachePoint: newBedrockCachePoint(toolCall.CacheControl.TTL),
+				})
+			}
 		}
 	}
 
@@ -2023,6 +2238,8 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 
 	for _, msg := range msgs {
 		var toolResultContent []BedrockContentBlock
+		// Converse ignores a cachePoint inside toolResult content, so the last marker trails the block.
+		var cacheControl *schemas.CacheControl
 		if msg.Content.ContentStr != nil {
 			// Bedrock expects JSON to be a parsed object, not a string. The helper
 			// validates, compacts, wraps arrays and primitives, falls back to a text
@@ -2037,11 +2254,8 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 						toolResultContent = append(toolResultContent, BedrockContentBlock{
 							Text: block.Text,
 						})
-						// Cache point must be in a separate block
 						if block.CacheControl != nil {
-							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
-							})
+							cacheControl = block.CacheControl
 						}
 					}
 				case schemas.ChatContentBlockTypeImage:
@@ -2053,11 +2267,8 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 						toolResultContent = append(toolResultContent, BedrockContentBlock{
 							Image: imageSource,
 						})
-						// Cache point must be in a separate block
 						if block.CacheControl != nil {
-							toolResultContent = append(toolResultContent, BedrockContentBlock{
-								CachePoint: newBedrockCachePoint(block.CacheControl.TTL),
-							})
+							cacheControl = block.CacheControl
 						}
 					}
 				}
@@ -2086,6 +2297,11 @@ func convertToolMessages(ctx context.Context, model string, msgs []schemas.ChatM
 		}
 
 		contentBlocks = append(contentBlocks, toolResultBlock)
+		if cacheControl != nil {
+			contentBlocks = append(contentBlocks, BedrockContentBlock{
+				CachePoint: newBedrockCachePoint(cacheControl.TTL),
+			})
+		}
 	}
 
 	bedrockMsg.Content = contentBlocks
@@ -2817,6 +3033,7 @@ func buildBedrockServerToolChoice(params *schemas.ChatParameters, filtered []sch
 		}
 	}
 
+	var choice map[string]any
 	switch choiceType {
 	case schemas.ChatToolChoiceTypeFunction, schemas.ChatToolChoiceTypeCustom,
 		schemas.ChatToolChoiceType("tool"):
@@ -2828,14 +3045,10 @@ func buildBedrockServerToolChoice(params *schemas.ChatParameters, filtered []sch
 		if _, ok := serverToolNames[pinnedName]; !ok {
 			return nil, false
 		}
-		bytes, err := providerUtils.MarshalSorted(map[string]any{
+		choice = map[string]any{
 			"type": "tool",
 			"name": pinnedName,
-		})
-		if err != nil {
-			return nil, false
 		}
-		return json.RawMessage(bytes), true
 
 	case schemas.ChatToolChoiceTypeAny, schemas.ChatToolChoiceTypeRequired:
 		// When function/custom tools are present, Converse's typed
@@ -2843,16 +3056,50 @@ func buildBedrockServerToolChoice(params *schemas.ChatParameters, filtered []sch
 		if hasFunctionOrCustom || len(serverToolNames) == 0 {
 			return nil, false
 		}
-		bytes, err := providerUtils.MarshalSorted(map[string]any{"type": "any"})
-		if err != nil {
-			return nil, false
-		}
-		return json.RawMessage(bytes), true
+		choice = map[string]any{"type": "any"}
 
 	default:
 		// auto, none, allowed_tools, empty, unknown — no tunneling.
 		return nil, false
 	}
+
+	// This choice is the only tool_choice Claude sees, so parallel_tool_calls rides on it.
+	if params.ParallelToolCalls != nil && !*params.ParallelToolCalls {
+		choice["disable_parallel_tool_use"] = true
+	}
+	bytes, err := providerUtils.MarshalSorted(choice)
+	if err != nil {
+		return nil, false
+	}
+	return json.RawMessage(bytes), true
+}
+
+// applyBedrockParallelToolUse carries parallel_tool_calls=false to Claude, which Converse can
+// only express as additionalModelRequestFields.tool_choice.disable_parallel_tool_use.
+func applyBedrockParallelToolUse(bedrockReq *BedrockConverseRequest) {
+	// A tunneled server-tool choice already carries the flag, and a caller-supplied one wins.
+	if _, ok := bedrockReq.AdditionalModelRequestFields.Get("tool_choice"); ok {
+		return
+	}
+	_, hasServerTools := bedrockReq.AdditionalModelRequestFields.Get("tools")
+	hasTools := bedrockReq.ToolConfig != nil && len(bedrockReq.ToolConfig.Tools) > 0
+	if !hasTools && !hasServerTools {
+		return
+	}
+	choice := schemas.NewOrderedMap()
+	if hasTools {
+		// A type here conflicts with toolConfig.toolChoice (ValidationException), so the typed field holds it.
+		if bedrockReq.ToolConfig.ToolChoice == nil {
+			bedrockReq.ToolConfig.ToolChoice = &BedrockToolChoice{Auto: &BedrockToolChoiceAuto{}}
+		}
+	} else {
+		choice.Set("type", "auto")
+	}
+	choice.Set("disable_parallel_tool_use", true)
+	if bedrockReq.AdditionalModelRequestFields == nil {
+		bedrockReq.AdditionalModelRequestFields = schemas.NewOrderedMap()
+	}
+	bedrockReq.AdditionalModelRequestFields.Set("tool_choice", choice)
 }
 
 // deriveBedrockBetaHeadersForToolType maps an Anthropic server-tool Type string
@@ -2898,7 +3145,7 @@ func convertToolConfig(model string, params *schemas.ChatParameters) *BedrockToo
 	}
 	// Strip unsupported server tools before the conversion loop.
 	filtered, _ := anthropic.ValidateChatToolsForProvider(params.Tools, schemas.ResolveModelCaps(schemas.Bedrock, model))
-	toolConfig, _ := convertToolConfigFromFiltered(nil, model, schemas.ResolveModelCaps(schemas.Bedrock, model), params, filtered)
+	toolConfig, _, _ := convertToolConfigFromFiltered(nil, model, schemas.ResolveModelCaps(schemas.Bedrock, model), params, filtered)
 	return toolConfig
 }
 
@@ -2930,9 +3177,9 @@ func convertToNovaSystemTool(systemToolName BedrockSystemToolType, isNova2 bool)
 // survive ValidateChatToolsForProvider via the Nova carve-out but only actually
 // work on Nova2 models). Callers combine this with ValidateChatToolsForProvider's
 // own dropped list for a complete picture.
-func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, caps schemas.ModelCaps, params *schemas.ChatParameters, filtered []schemas.ChatTool) (*BedrockToolConfig, []string) {
+func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, caps schemas.ModelCaps, params *schemas.ChatParameters, filtered []schemas.ChatTool) (*BedrockToolConfig, []string, error) {
 	if params == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	isNova2 := schemas.IsNova2Model(model)
@@ -2942,11 +3189,17 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		if tool.Function != nil {
 			// Serialize the parameters (or a default empty schema) to json.RawMessage
 			var schemaObjectBytes []byte
-			if tool.Function.Parameters != nil {
+			if parameters := tool.Function.Parameters; parameters != nil {
+				var err error
+				// Claude rejects oneOf/anyOf/allOf at the input_schema root.
+				if (len(parameters.OneOf) > 0 || len(parameters.AnyOf) > 0 || len(parameters.AllOf) > 0) && schemas.IsAnthropicModelFamily(ctx, model) {
+					if parameters, err = anthropic.NormalizeAnthropicToolInputSchema(parameters); err != nil {
+						return nil, nil, err
+					}
+				}
 				// ToolFunctionParameters.MarshalJSON handles all fields including
 				// properties, required, enum, additionalProperties, $defs, etc.
-				var err error
-				schemaObjectBytes, err = providerUtils.MarshalSorted(tool.Function.Parameters)
+				schemaObjectBytes, err = providerUtils.MarshalSorted(parameters)
 				if err != nil {
 					continue
 				}
@@ -3003,7 +3256,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 	// doesn't support), omit ToolConfig entirely so the request is valid and
 	// the model simply answers without tool access.
 	if len(bedrockTools) == 0 {
-		return nil, droppedForModel
+		return nil, droppedForModel, nil
 	}
 
 	toolConfig := &BedrockToolConfig{
@@ -3060,7 +3313,7 @@ func convertToolConfigFromFiltered(ctx *schemas.BifrostContext, model string, ca
 		}
 	}
 
-	return toolConfig, droppedForModel
+	return toolConfig, droppedForModel, nil
 }
 
 // convertToolChoice converts Bifrost tool choice to Bedrock format
@@ -3592,9 +3845,9 @@ func clampBedrockCachePoints(req *BedrockConverseRequest) int {
 				total++
 			}
 			// Nested tool-result markers count against the same per-request cap — AWS counts
-			// checkpoints across `messages` as a whole, and convertToolMessages emits a CachePoint
-			// inside ToolResult.Content whenever a client puts cache_control on a tool-result
-			// block. Both sibling passes (stripCachePointsFromBedrockRequest,
+			// checkpoints across `messages` as a whole, and injectContentBlockCachePoints (invoke.go) emits
+			// a CachePoint inside ToolResult.Content whenever a client puts cache_control on a block
+			// nested in a tool_result. Both sibling passes (stripCachePointsFromBedrockRequest,
 			// downgradeExtendedCacheTTLInBedrockRequest) already recurse here; missing it would
 			// let a request with 4 direct plus 1 nested marker reach Bedrock at 5 and be rejected
 			// by the very limit this clamp exists to respect.

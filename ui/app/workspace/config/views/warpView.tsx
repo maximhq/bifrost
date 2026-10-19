@@ -47,9 +47,10 @@ import {
 	isFiniteNumber,
 	retainedWarpBackfillForSpace,
 	retainFinishedWarpBackfill,
-	type RetainedWarpBackfill,
+	validateWarpMaxIterations,
 	validateWarpRetentionDays,
 	warpSavedSpaceKey,
+	type RetainedWarpBackfill,
 } from "./warpView.utils";
 
 /**
@@ -68,7 +69,7 @@ const DEFAULT_HISTORY_RETENTION_DAYS = 30;
 const DEFAULT_TEMPERATURE = 1;
 const DEFAULT_EMBEDDING_DIMENSION = 1536;
 const DEFAULT_VECTOR_NAMESPACE = "BifrostWarpLogs";
-const DEFAULT_SEARCH_THRESHOLD = 0.7;
+const DEFAULT_SEARCH_THRESHOLD = 0.5;
 const DEFAULT_SEARCH_LIMIT = 10;
 const DEFAULT_BACKFILL_PERIOD = "7d";
 
@@ -405,7 +406,8 @@ export default function WarpView() {
 	const modelErrors = validateWarpModelRows(form.models, form.enabled);
 	// Covers missingRequired too: the default row reports it.
 	const modelsInvalid = modelErrors.some((error) => error !== null);
-	const iterationsInvalid = !isFiniteNumber(form.maxIterations) || form.maxIterations < 1 || form.maxIterations > 20;
+	const iterationsError = validateWarpMaxIterations(form.maxIterations);
+	const iterationsInvalid = iterationsError !== true;
 	const timeoutInvalid = !isFiniteNumber(form.requestTimeoutSeconds) || form.requestTimeoutSeconds < 1;
 	// No upper bound: the per-owner conversation cap already limits the table, so
 	// how long a transcript stays readable is a policy choice with no ceiling.
@@ -526,7 +528,7 @@ export default function WarpView() {
 	};
 
 	return (
-		<div className="mx-auto w-full max-w-7xl space-y-4" data-testid="warp-config-view">
+		<div className="mx-auto w-full max-w-4xl space-y-4" data-testid="warp-config-view">
 			<form onSubmit={onSubmit} className="space-y-4">
 				<PageTitle title="Warp">
 					Warp answers questions about your Bifrost data in natural language. It runs on its own model, configured here and kept separate
@@ -716,7 +718,7 @@ export default function WarpView() {
 									label="Max iterations"
 									htmlFor="warp-max-iterations"
 									hint="Query-and-reconsider rounds per answer. Each one is billed."
-									error={iterationsInvalid ? "Must be between 1 and 20" : undefined}
+									error={iterationsInvalid ? iterationsError : undefined}
 								>
 									<Input
 										id="warp-max-iterations"
@@ -927,7 +929,7 @@ export default function WarpView() {
 								<WarpField
 									label="Similarity threshold"
 									htmlFor="warp-search-threshold"
-									hint="0.01 to 1. Higher returns fewer, closer matches."
+									hint="0.01 to 1, where 0.5 is unrelated and 1 is identical. Higher returns fewer, closer matches."
 								>
 									<Input
 										id="warp-search-threshold"
@@ -968,7 +970,7 @@ export default function WarpView() {
 								</p>
 							)}
 
-							<div className="-mx-4 space-y-3 border-t px-4 pt-4" data-testid="warp-backfill-section">
+							<div className="@container/backfill -mx-4 space-y-3 border-t px-4 pt-4" data-testid="warp-backfill-section">
 								<div className="space-y-0.5">
 									<h4 className="text-sm font-medium">Backfill embeddings</h4>
 									<p className="text-muted-foreground text-xs">
@@ -977,7 +979,7 @@ export default function WarpView() {
 									</p>
 								</div>
 
-								<div className="flex flex-col gap-2 md:flex-row md:items-center">
+								<div className="flex flex-col gap-2 @2xl/backfill:flex-row @2xl/backfill:items-center">
 									<div className="min-w-0 flex-1">
 										<DateTimePickerWithRange
 											buttonClassName="w-full"
@@ -1007,7 +1009,7 @@ export default function WarpView() {
 										/>
 									</div>
 
-									<div className="flex shrink-0 items-center justify-end gap-2">
+									<div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
 										{isBackfillActive ? (
 											<Button
 												type="button"

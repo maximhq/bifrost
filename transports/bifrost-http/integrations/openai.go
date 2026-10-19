@@ -17,7 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -236,6 +236,9 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 
 		case *openai.OpenAIChatRequest:
 			r.Model = setModel(r.Model)
+			if deploymentProviderStr == "" || schemas.ModelProvider(deploymentProviderStr) == schemas.Azure {
+				forwardAzureDeploymentChatFields(ctx, bifrostCtx, r)
+			}
 
 		case *openai.OpenAIResponsesRequest:
 			r.Model = setModel(r.Model)
@@ -270,15 +273,49 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 	}
 }
 
+// forwardAzureDeploymentChatFields keeps the top-level fields of an Azure
+// deployments chat body that OpenAIChatRequest does not model (On Your Data
+// data_sources, or a field a newer Azure SDK sends) and turns on extra-params
+// passthrough, so they reach the deployment as the Azure SDK sent them instead
+// of being dropped at decode. The route is Azure's own wire, so no header is
+// needed; it is called only when the deployment resolves to Azure, since a
+// provider-prefixed path names a provider whose wire these fields are not.
+// Fields nested under extra_params (lifted by the router when the passthrough
+// header is set) win over a top-level field of the same name. A large payload
+// is streamed unparsed and is left alone.
+func forwardAzureDeploymentChatFields(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req *openai.OpenAIChatRequest) {
+	if bifrostCtx == nil {
+		return
+	}
+	if isLargePayload, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); isLargePayload {
+		return
+	}
+	unknown := openai.OpenAIChatRequestUnknownFields(ctx.Request.Body())
+	if len(unknown) == 0 {
+		return
+	}
+	for name, value := range req.ExtraParams {
+		unknown[name] = value
+	}
+	req.SetExtraParams(unknown)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+}
+
+// openAIRawPassthrough reports whether the raw upstream bytes are already the
+// caller's OpenAI wire format. A converted request (chat served through Responses,
+// text through chat, Responses through chat) carries the other API's raw bytes, so
+// the Bifrost response is serialized instead.
+func openAIRawPassthrough(extra *schemas.BifrostResponseExtraFields) bool {
+	return extra.Provider == schemas.OpenAI && extra.RawResponse != nil && extra.ConvertedRequestType == ""
+}
+
 // openAIResponsesWireConverter maps a Bifrost responses payload to the OpenAI wire JSON shape.
 func openAIResponsesWireConverter(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesResponse) (interface{}, error) {
-	if resp != nil && resp.ExtraFields.Provider == schemas.OpenAI {
-		if resp.ExtraFields.RawResponse != nil {
-			return resp.ExtraFields.RawResponse, nil
-		}
-	}
 	if resp == nil {
 		return nil, nil
+	}
+	if openAIRawPassthrough(&resp.ExtraFields) {
+		return resp.ExtraFields.RawResponse, nil
 	}
 	return openAIWireCostResponse(resp.WithDefaults()), nil
 }
@@ -289,7 +326,7 @@ func openAIResponsesWireConverter(ctx *schemas.BifrostContext, resp *schemas.Bif
 // a bundle must be emitted as preformatted SSE with a prefix on every frame.
 // Keep the raw capture itself unchanged for logging and plugins.
 func openAIChatStreamWireConverter(_ *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (string, interface{}, error) {
-	if resp.ExtraFields.Provider == schemas.OpenAI && resp.ExtraFields.RawResponse != nil {
+	if openAIRawPassthrough(&resp.ExtraFields) {
 		raw := resp.ExtraFields.RawResponse
 		if frames, ok := raw.(string); ok && strings.Contains(frames, "\n\n") {
 			var framed strings.Builder
@@ -452,18 +489,14 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			return nil, errors.New("invalid request type")
 		},
 		ChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.OpenAI {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
+			if openAIRawPassthrough(&resp.ExtraFields) {
+				return resp.ExtraFields.RawResponse, nil
 			}
 			return openAIWireCostResponse(resp), nil
 		},
 		TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.OpenAI {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
+			if openAIRawPassthrough(&resp.ExtraFields) {
+				return resp.ExtraFields.RawResponse, nil
 			}
 			return openAIWireCostResponse(resp), nil
 		},
@@ -475,14 +508,9 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			}
 			return resp, nil
 		},
-		SpeechResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostSpeechResponse) (interface{}, error) {
-			if resp.ExtraFields.Provider == schemas.OpenAI {
-				if resp.ExtraFields.RawResponse != nil {
-					return resp.ExtraFields.RawResponse, nil
-				}
-			}
-			return resp, nil
-		},
+		// No SpeechResponseConverter: like /v1/audio/speech, the router then writes the raw
+		// audio bytes, which is what the Azure OpenAI SDK reads. A converter's return value is
+		// JSON-encoded, which turned the audio into {"audio":"<base64>"}.
 		TranscriptionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTranscriptionResponse) (interface{}, error) {
 			if schemas.IsPlainTextTranscriptionFormat(resp.ResponseFormat) {
 				return []byte(resp.Text), nil
@@ -506,10 +534,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 		StreamConfig: &StreamConfig{
 			ChatStreamResponseConverter: openAIChatStreamWireConverter,
 			TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return "", resp.ExtraFields.RawResponse, nil
-					}
+				if openAIRawPassthrough(&resp.ExtraFields) {
+					return "", resp.ExtraFields.RawResponse, nil
 				}
 				return "", openAIWireCostResponse(resp), nil
 			},
@@ -538,10 +564,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return "", openAIWireCostResponse(resp), nil
 			},
 			ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return string(resp.Type), resp.ExtraFields.RawResponse, nil
-					}
+				if openAIRawPassthrough(&resp.ExtraFields) {
+					return string(resp.Type), resp.ExtraFields.RawResponse, nil
 				}
 				converted := resp.WithDefaults()
 				if converted == nil {
@@ -585,10 +609,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type")
 			},
 			ChatResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostChatResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return resp.ExtraFields.RawResponse, nil
-					}
+				if openAIRawPassthrough(&resp.ExtraFields) {
+					return resp.ExtraFields.RawResponse, nil
 				}
 				// Here we will combine content blocks into a single text block as required by openai SDK
 				if len(resp.Choices) == 0 {
@@ -673,10 +695,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 				return nil, errors.New("invalid request type")
 			},
 			TextResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (interface{}, error) {
-				if resp.ExtraFields.Provider == schemas.OpenAI {
-					if resp.ExtraFields.RawResponse != nil {
-						return resp.ExtraFields.RawResponse, nil
-					}
+				if openAIRawPassthrough(&resp.ExtraFields) {
+					return resp.ExtraFields.RawResponse, nil
 				}
 				return openAIWireCostResponse(resp), nil
 			},
@@ -685,10 +705,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 			StreamConfig: &StreamConfig{
 				TextStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostTextCompletionResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
-						if resp.ExtraFields.RawResponse != nil {
-							return "", resp.ExtraFields.RawResponse, nil
-						}
+					if openAIRawPassthrough(&resp.ExtraFields) {
+						return "", resp.ExtraFields.RawResponse, nil
 					}
 					return "", openAIWireCostResponse(resp), nil
 				},
@@ -747,10 +765,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			},
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
-						if resp.ExtraFields.RawResponse != nil {
-							return string(resp.Type), resp.ExtraFields.RawResponse, nil
-						}
+					if openAIRawPassthrough(&resp.ExtraFields) {
+						return string(resp.Type), resp.ExtraFields.RawResponse, nil
 					}
 					converted := resp.WithDefaults()
 					if converted == nil {
@@ -841,10 +857,8 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 			ResponsesResponseConverter: openAIResponsesWireConverter,
 			StreamConfig: &StreamConfig{
 				ResponsesStreamResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostResponsesStreamResponse) (string, interface{}, error) {
-					if resp.ExtraFields.Provider == schemas.OpenAI {
-						if resp.ExtraFields.RawResponse != nil {
-							return string(resp.Type), resp.ExtraFields.RawResponse, nil
-						}
+					if openAIRawPassthrough(&resp.ExtraFields) {
+						return string(resp.Type), resp.ExtraFields.RawResponse, nil
 					}
 					converted := resp.WithDefaults()
 					if converted == nil {
@@ -1036,6 +1050,57 @@ func CreateOpenAIRouteConfigs(pathPrefix string, handlerStore lib.HandlerStore) 
 					}
 				}
 				return resp, nil
+			},
+			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
+				return err
+			},
+		})
+	}
+
+	// Decisions endpoint. The route speaks OpenAI's Decisions API, and any
+	// decision model can answer: the request is converted to the normalized
+	// shape, so Typesafe-based models and emulation serve it as well as
+	// OpenAI's own decisions models. It registers no large-payload hook: a
+	// decision body is small, and the hook would leave the questions unparsed.
+	for _, path := range []string{
+		"/v1/decisions",
+		"/decisions",
+	} {
+		routes = append(routes, RouteConfig{
+			Type:   RouteConfigTypeOpenAI,
+			Path:   pathPrefix + path,
+			Method: "POST",
+			GetHTTPRequestType: func(ctx *fasthttp.RequestCtx) schemas.RequestType {
+				return schemas.DecisionRequest
+			},
+			GetRequestTypeInstance: func(ctx context.Context) interface{} {
+				return &openai.OpenAIDecisionRequest{}
+			},
+			RequestConverter: func(ctx *schemas.BifrostContext, req interface{}) (*schemas.BifrostRequest, error) {
+				decisionReq, ok := req.(*openai.OpenAIDecisionRequest)
+				if !ok {
+					return nil, errors.New("invalid decision request type")
+				}
+				bifrostDecisionReq, err := decisionReq.ToBifrostDecisionRequest()
+				if err != nil {
+					return nil, err
+				}
+				// The route is OpenAI's wire shape: a field a newer SDK sends
+				// always reaches the provider, no header needed.
+				if len(decisionReq.ExtraParams) > 0 && ctx != nil {
+					ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+				}
+				return &schemas.BifrostRequest{DecisionRequest: bifrostDecisionReq}, nil
+			},
+			DecisionResponseConverter: func(ctx *schemas.BifrostContext, resp *schemas.BifrostDecisionResponse) (interface{}, error) {
+				// As on the other OpenAI routes, the upstream body is relayed only
+				// when raw responses were asked for; otherwise the normalized
+				// response, as plugins left it, is rendered. Custom providers report
+				// their own name, so match on the base provider that served it.
+				if schemas.ResolveBaseProvider(ctx, resp.ExtraFields.Provider) == schemas.OpenAI && resp.ExtraFields.RawResponse != nil {
+					return resp.ExtraFields.RawResponse, nil
+				}
+				return openai.ToOpenAIDecisionResponse(resp), nil
 			},
 			ErrorConverter: func(ctx *schemas.BifrostContext, err *schemas.BifrostError) interface{} {
 				return err
@@ -1776,7 +1841,12 @@ func extractOpenAIModelRetrieveParams(ctx *fasthttp.RequestCtx, bifrostCtx *sche
 	}
 
 	rawModel, _ := ctx.UserValue("model").(string)
-	rawModel = strings.Trim(strings.TrimSpace(rawModel), "/")
+	// The router hands the catch-all over still percent-encoded, and OpenAI SDKs send "provider%2Fmodel".
+	decodedModel, err := url.PathUnescape(rawModel)
+	if err != nil {
+		return errors.New("invalid model encoding")
+	}
+	rawModel = strings.Trim(strings.TrimSpace(decodedModel), "/")
 	if rawModel == "" {
 		return errors.New("model parameter is required")
 	}
@@ -3499,6 +3569,23 @@ func OpenAIRealtimePaths(pathPrefix string) []string {
 		paths = append(paths, pathPrefix+p)
 	}
 	return paths
+}
+
+// OpenAILivePaths returns WebSocket paths for GPT Live primary sessions under an integration prefix.
+func OpenAILivePaths(pathPrefix string) []string {
+	return []string{
+		pathPrefix + "/v1/live/sessions",
+		pathPrefix + "/live/sessions",
+	}
+}
+
+// OpenAILiveSessionPaths returns paths for an action on an existing GPT Live session (attach,
+// content, ...) under an integration prefix.
+func OpenAILiveSessionPaths(pathPrefix, action string) []string {
+	return []string{
+		pathPrefix + "/v1/live/sessions/{session_id}/" + action,
+		pathPrefix + "/live/sessions/{session_id}/" + action,
+	}
 }
 
 // OpenAIRealtimeWebRTCCallsPaths returns HTTP POST paths for the GA /realtime/calls

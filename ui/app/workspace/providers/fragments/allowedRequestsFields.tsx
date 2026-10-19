@@ -39,12 +39,17 @@ const ProviderEndpoints: Partial<Record<BaseProvider, Partial<Record<RequestType
 		image_edit_stream: "/v1/images/edits",
 		image_variation: "/v1/images/variations",
 		count_tokens: "/v1/responses/tokens",
+		decisions: "/v1/decisions",
 	},
 	anthropic: {
 		chat_completion: "/v1/messages",
 		chat_completion_stream: "/v1/messages",
 		responses: "/v1/messages",
 		responses_stream: "/v1/messages",
+	},
+	typesafe: {
+		list_models: "/v1/models",
+		decisions: "/v1/systemone",
 	},
 	cohere: {
 		chat_completion: "/v2/chat",
@@ -87,6 +92,8 @@ const RequestTypes: Array<{ key: RequestType; label: string }> = [
 	{ key: "image_edit_stream", label: "Image Edit Stream" },
 	{ key: "image_variation", label: "Image Variation" },
 	{ key: "count_tokens", label: "Count Tokens" },
+	{ key: "decisions", label: "Decisions" },
+	{ key: "live", label: "Live" },
 ];
 
 // Path overrides replace the default path verbatim; these request paths embed a
@@ -177,7 +184,12 @@ export function AllowedRequestsFields({
 										<Tooltip>
 											<TooltipTrigger asChild>
 												<div>
-													<Switch checked={isDisabled ? false : allowedField.value} disabled={true} size="md" />
+													<Switch
+														checked={isDisabled ? false : allowedField.value}
+														disabled={true}
+														size="md"
+														data-testid={`allowed-request-switch-${requestType.key}`}
+													/>
 												</div>
 											</TooltipTrigger>
 											<TooltipContent>
@@ -186,7 +198,13 @@ export function AllowedRequestsFields({
 										</Tooltip>
 									</TooltipProvider>
 								) : (
-									<Switch checked={allowedField.value} onCheckedChange={allowedField.onChange} size="md" disabled={disabled} />
+									<Switch
+										checked={allowedField.value}
+										onCheckedChange={allowedField.onChange}
+										size="md"
+										disabled={disabled}
+										data-testid={`allowed-request-switch-${requestType.key}`}
+									/>
 								)}
 							</FormControl>
 						</div>

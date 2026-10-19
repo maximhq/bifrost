@@ -1,3 +1,5 @@
+import { CalendarAlignmentNotice } from "@/components/calendarAlignmentNotice";
+import { calendarWindowDurations, isMultiUnitDuration } from "@/lib/constants/governance";
 import { useVirtualKeyUsage } from "@/app/workspace/virtual-keys/hooks/useVirtualKeyUsage";
 import { BudgetOverrideDialog } from "@/components/budgetOverrideDialog";
 import { MCPClientConfigsEditor } from "@/components/mcp/mcpClientConfigsEditor";
@@ -25,6 +27,7 @@ import MultiBudgetLines from "@/components/ui/multibudgets";
 import { MultiSelect } from "@/components/ui/multiSelect";
 import NumberAndSelect from "@/components/ui/numberAndSelect";
 import { ProviderConfigsEditor } from "@/components/ui/providerConfigsEditor";
+import { HeadersTable } from "@/components/ui/headersTable";
 import { DottedSeparator } from "@/components/ui/separator";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Switch } from "@/components/ui/switch";
@@ -36,6 +39,7 @@ import { resetDurationOptions, supportsCalendarAlignment } from "@/lib/constants
 import { ProviderLabels, ProviderName } from "@/lib/constants/logs";
 import { getBusinessUnitPicker } from "@/lib/registries/businessUnitPicker";
 import { getUserPicker } from "@/lib/registries/userPicker";
+import { validateVirtualKeyMetadata, virtualKeyMetadataUpdate } from "@/lib/utils/virtualKeyMetadata";
 import {
 	getErrorMessage,
 	useAttachVirtualMCPVirtualKeyMutation,
@@ -51,6 +55,7 @@ import {
 	useSetVirtualKeyBudgetOverrideMutation,
 	useUpdateVirtualKeyMutation,
 } from "@/lib/store";
+import { AgentGrantsEditor } from "@/components/agents/agentGrantsEditor";
 import { VirtualMcpAssignmentsEditor } from "@/components/mcp/virtualMcpAssignmentsEditor";
 import { createDeleteAfterExpire, diffVmcpAssignments, updateDeleteAfterExpire, vmcpAssignmentsDirty } from "./virtualKeySheet.utils";
 import { BudgetOverrideRequest, CreateVirtualKeyRequest, UpdateVirtualKeyRequest, VirtualKey } from "@/lib/types/governance";
@@ -164,6 +169,7 @@ const formSchema = z
 		// When true, all providers are allowed; providerConfigs remain optional per-provider overrides.
 		allowAllProviders: z.boolean(),
 		mcpConfigs: z.array(mcpConfigSchema).optional(),
+		agentGrants: z.array(z.string()).optional(),
 		entityType: z.enum(["team", "customer", "business_unit", "user", "none"]),
 		teamId: z.string().optional(),
 		customerId: z.string().optional(),
@@ -175,6 +181,11 @@ const formSchema = z
 		expiresAt: z.string().nullable().optional(), // ISO 8601 datetime-local string, or null to clear
 		// Content logging for this key's traffic: inherit the client setting, force it off, or force it on.
 		contentLogging: z.enum(["inherit", "disabled", "enabled"]),
+		// Custom key/value attribution, validated against the same rules the server applies.
+		metadata: z.record(z.string(), z.string()).superRefine((metadata, ctx) => {
+			const error = validateVirtualKeyMetadata(metadata);
+			if (error) ctx.addIssue({ code: "custom", message: error });
+		}),
 		deleteAfterExpire: z.boolean(), // Only meaningful with an expiry; the daily cleanup job deletes the key once expired
 		// Budget
 		budgetCalendarAligned: z.boolean(),
@@ -365,6 +376,7 @@ function withoutKeyGovernance<T extends CreateVirtualKeyRequest | UpdateVirtualK
 	const {
 		provider_configs: _providerConfigs,
 		mcp_configs: _mcpConfigs,
+		agent_grants: _agentGrants,
 		budgets: _budgets,
 		rate_limit: _rateLimit,
 		calendar_aligned: _calendarAligned,
@@ -578,6 +590,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					})),
 				})) || [],
 			allowAllProviders: virtualKey?.allow_all_providers ?? false,
+			agentGrants: virtualKey?.agent_grants?.map((grant) => grant.agent_name) || [],
 			mcpConfigs:
 				virtualKey?.mcp_configs?.map((config) => ({
 					id: config.id,
@@ -598,6 +611,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 			userId: "",
 			isActive: virtualKey?.is_active ?? true,
 			contentLogging: contentLoggingChoice(virtualKey?.disable_content_logging),
+			metadata: virtualKey?.metadata ?? {},
 			deleteAfterExpire: virtualKey?.delete_after_expire ?? deleteExpiredByDefault,
 			expiresAt: virtualKey?.expires_at
 				? (() => {
@@ -758,13 +772,23 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 	const hasAnyAlignableBudget =
 		watchedBudgets &&
 		watchedBudgets.length > 0 &&
-		watchedBudgets.some((b) => b.max_limit !== undefined && b.max_limit !== null && supportsCalendarAlignment(b.reset_duration || "1M"));
+		watchedBudgets.some(
+			(b) =>
+				b.max_limit !== undefined &&
+				b.max_limit !== null &&
+				(supportsCalendarAlignment(b.reset_duration || "1M") || isMultiUnitDuration(b.reset_duration || "1M")),
+		);
 	const hasAnyAlignableRateLimit =
-		(watchedTokenMaxLimit !== undefined && watchedTokenMaxLimit !== null && supportsCalendarAlignment(watchedTokenResetDuration || "1h")) ||
+		(watchedTokenMaxLimit !== undefined &&
+			watchedTokenMaxLimit !== null &&
+			(supportsCalendarAlignment(watchedTokenResetDuration || "1h") || isMultiUnitDuration(watchedTokenResetDuration || "1h"))) ||
 		(watchedRequestMaxLimit !== undefined &&
 			watchedRequestMaxLimit !== null &&
-			supportsCalendarAlignment(watchedRequestResetDuration || "1h"));
-	const showCalendarAlignToggle = hasAnyAlignableBudget || hasAnyAlignableRateLimit;
+			(supportsCalendarAlignment(watchedRequestResetDuration || "1h") || isMultiUnitDuration(watchedRequestResetDuration || "1h")));
+	const showCalendarAlignToggle =
+		hasAnyAlignableBudget ||
+		hasAnyAlignableRateLimit ||
+		calendarWindowDurations(providerConfigs).some((duration) => supportsCalendarAlignment(duration) || isMultiUnitDuration(duration));
 
 	// Handle adding a new MCP client configuration
 	const handleAddMCPClient = (mcpClientName: string) => {
@@ -1080,6 +1104,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 						// Content logging is the key's own privacy setting, not profile-governed access, so a
 						// managed key keeps it editable and the save must carry it (null clears to inherit).
 						disable_content_logging: contentLoggingValue(data.contentLogging),
+						// Metadata is attribution on the key itself, not profile-governed access, so it stays editable too.
+						// Sent only when edited: the server replaces it as a whole.
+						...virtualKeyMetadataUpdate(form.formState.defaultValues?.metadata, data.metadata),
 					},
 				}).unwrap();
 				toast.success("Virtual key updated");
@@ -1127,6 +1154,9 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					storedOverride: virtualKey.delete_after_expire,
 				});
 				const deleteAfterExpirePayload = deleteAfterExpire !== undefined ? { delete_after_expire: deleteAfterExpire } : {};
+				const agentGrantsPayload = form.formState.dirtyFields.agentGrants
+					? { agent_grants: (data.agentGrants ?? []).map((agent_name) => ({ agent_name })) }
+					: {};
 
 				const updateData: UpdateVirtualKeyRequest = {
 					name: data.name,
@@ -1143,6 +1173,10 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					// null clears the key back to inheriting the client setting; the server keeps omitted and
 					// null apart, so this is always sent.
 					disable_content_logging: contentLoggingValue(data.contentLogging),
+					...agentGrantsPayload,
+					// Sent only when edited, since it replaces the stored metadata as a whole ({} clears it);
+					// an untouched form copy may be older than what is stored now.
+					...virtualKeyMetadataUpdate(form.formState.defaultValues?.metadata, data.metadata),
 					...expiryPayload,
 					...deleteAfterExpirePayload,
 				};
@@ -1227,6 +1261,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 					description: data.description || undefined,
 					provider_configs: normalizedProviderConfigs,
 					mcp_configs: data.mcpConfigs,
+					agent_grants: (data.agentGrants ?? []).map((agent_name) => ({ agent_name })),
 					team_id: ownerIdFor("team", data.teamId),
 					customer_id: ownerIdFor("customer", data.customerId),
 					business_unit_id: ownerIdFor("business_unit", data.businessUnitId),
@@ -1244,6 +1279,7 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 						: {}),
 					// Omitted means inherit on create.
 					...(data.contentLogging !== "inherit" ? { disable_content_logging: data.contentLogging === "disabled" } : {}),
+					...(Object.keys(data.metadata).length > 0 ? { metadata: data.metadata } : {}),
 				};
 
 				// Add budgets if enabled
@@ -1345,6 +1381,20 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 				<Form {...form}>
 					<form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col gap-6">
 						<div className="grow space-y-4 px-4 md:px-8">
+							{isVkCreationPolicyUnresolved && (
+								<Alert variant="warning">
+									<AlertTriangle className="h-4 w-4" />
+									<AlertDescription className="flex items-center justify-between gap-4">
+										<span>
+											Couldn&apos;t check whether an access profile governs the keys you create. You can still create one — if a profile
+											does govern it, the profile&apos;s providers, budgets, rate limits and MCP access replace what you set here.
+										</span>
+										<Button type="button" size="sm" variant="outline" onClick={() => refetchVkCreationPolicy()}>
+											Retry
+										</Button>
+									</AlertDescription>
+								</Alert>
+							)}
 							{ownerProfileFailed && (
 								<Alert variant="destructive" data-testid="vk-owner-profile-error">
 									<AlertTriangle className="h-4 w-4" />
@@ -1468,6 +1518,30 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 										</FormItem>
 									)}
 								/>
+								{/* Metadata is attribution on the key itself (cost center, owner, ...), so like content logging it
+								stays editable for a profile-managed key. */}
+								<FormField
+									control={form.control}
+									name="metadata"
+									render={({ field }) => (
+										<FormItem data-testid="vk-metadata-section">
+											<HeadersTable
+												label="Metadata"
+												value={field.value ?? {}}
+												onChange={field.onChange}
+												keyPlaceholder="e.g., cost_center"
+												valuePlaceholder="e.g., cc-1234"
+												useSecretVarInput={false}
+											/>
+											<p className="text-muted-foreground text-xs">
+												Key/value labels for cost attribution. They are copied onto every log entry this key produces, so logs and spend can
+												be filtered by them, and they override request headers with the same name. Keys use letters, digits, &quot;.&quot;,
+												&quot;_&quot; and &quot;-&quot;.
+											</p>
+											<FormMessage />
+										</FormItem>
+									)}
+								/>
 							</div>
 							{!isManagedByProfile && (
 								<div className="space-y-4">
@@ -1553,6 +1627,12 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 											    (its assignment baseline) once it loads, and vmcpDetailReady keeps Save from acting on a
 											    diff before that baseline is in. */}
 											<VirtualMcpAssignmentsEditor value={assignedVmcpIds} onChange={setAssignedVmcpIds} />
+
+											{/* Agent access grants for the registered agents this key may call. */}
+											<AgentGrantsEditor
+												value={form.watch("agentGrants") ?? []}
+												onChange={(next) => form.setValue("agentGrants", next, { shouldDirty: true })}
+											/>
 											<DottedSeparator className="mt-6 mb-5" />
 											{/* Budget Configuration */}
 											<div className="space-y-4">
@@ -1673,6 +1753,23 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 												/>
 											</div>
 											{/* Calendar alignment: VK-wide setting that applies to both budgets and rate limits */}
+											<CalendarAlignmentNotice
+												enabled={watchedBudgetCalendarAligned}
+												durations={[
+													...calendarWindowDurations([
+														{
+															budgets: watchedBudgets,
+															rate_limit: {
+																token_max_limit: watchedTokenMaxLimit,
+																token_reset_duration: watchedTokenResetDuration,
+																request_max_limit: watchedRequestMaxLimit,
+																request_reset_duration: watchedRequestResetDuration,
+															},
+														},
+														...providerConfigs,
+													]),
+												]}
+											/>
 											{showCalendarAlignToggle && (
 												<div className="flex items-center justify-between gap-4 rounded-md border px-3 py-2">
 													<div className="space-y-0.5">
@@ -1681,7 +1778,8 @@ export default function VirtualKeySheet({ virtualKey, defaultOwner, onSave, onCa
 														</Label>
 														<p id="vk-budget-calendar-aligned-description" className="text-muted-foreground text-xs">
 															Reset budgets and rate limits at the start of each period (e.g. 1st of month) instead of rolling from creation
-															date. Quarterly budgets always align to fiscal quarter starts. Applies to durations of a day or longer.
+															date. Single-unit day, week, month, quarter and year windows align to calendar boundaries. Other durations
+															remain rolling.
 														</p>
 													</div>
 													<Switch

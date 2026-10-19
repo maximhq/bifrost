@@ -251,6 +251,7 @@ type TableVirtualKey struct {
 	DeleteAfterExpire *bool                           `gorm:"type:boolean" json:"delete_after_expire,omitempty"`                           // Nil inherits client.delete_expired_virtual_keys; true/false override it for this key
 	ProviderConfigs   []TableVirtualKeyProviderConfig `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"provider_configs"` // Empty means no providers allowed (deny-by-default)
 	MCPConfigs        []TableVirtualKeyMCPConfig      `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"mcp_configs"`
+	AgentGrants       []TableVirtualKeyAgentGrant     `gorm:"foreignKey:VirtualKeyID;constraint:OnDelete:CASCADE" json:"agent_grants"`
 
 	// Foreign key relationships. TeamID, CustomerID and BusinessUnitID are mutually exclusive: a
 	// key belongs to at most one owner, which is what decides whose money it spends and whose
@@ -273,6 +274,11 @@ type TableVirtualKey struct {
 	// observability connector keeps its own flag). No gorm default: a default tag would make GORM
 	// write the default for a nil pointer on insert and collapse "inherit" into "false".
 	DisableContentLogging *bool `gorm:"type:boolean" json:"disable_content_logging,omitempty"`
+
+	// Metadata is free-form key/value data the operator attaches to the key (cost center, project,
+	// owner, environment, ...) for cost attribution. Validated by ValidateVirtualKeyMetadata; an
+	// empty map is stored as NULL, and a nil map on UpdateVirtualKey keeps the stored value.
+	Metadata map[string]string `gorm:"type:text;serializer:json" json:"metadata,omitempty"`
 
 	// Relationships
 	Team      *TableTeam      `gorm:"foreignKey:TeamID" json:"team,omitempty"`
@@ -478,6 +484,14 @@ func (vk *TableVirtualKey) BeforeSave(tx *gorm.DB) error {
 	}
 	if owners > 1 {
 		return fmt.Errorf("virtual key cannot belong to more than one of team, customer or business unit")
+	}
+
+	if err := ValidateVirtualKeyMetadata(vk.Metadata); err != nil {
+		return err
+	}
+	// One representation for "no metadata": NULL, never "{}".
+	if len(vk.Metadata) == 0 {
+		vk.Metadata = nil
 	}
 
 	// Hash must be computed before encryption (from plaintext value).

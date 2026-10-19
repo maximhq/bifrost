@@ -77,11 +77,24 @@ func ResolvePromptCacheConfig(ctx *schemas.BifrostContext, cfg *schemas.PromptCa
 // A caller that supplied any marker of its own is left completely alone. Injection is
 // a default for clients that say nothing, never an override of a client that spoke.
 func InjectResponsesCacheBreakpoints(cfg *schemas.PromptCacheConfig, input []schemas.ResponsesMessage) []schemas.ResponsesMessage {
+	return InjectResponsesCacheBreakpointsSkipping(cfg, input, -1)
+}
+
+// InjectResponsesCacheBreakpointsSkipping is InjectResponsesCacheBreakpoints with the item at
+// skip treated as absent: positions, roles and the auto strategy resolve against the remaining
+// items, and the skipped item is sent unmarked. It is how a message the gateway added (MCP
+// server instructions) is kept out of the caller's transcript. A negative skip skips nothing.
+func InjectResponsesCacheBreakpointsSkipping(cfg *schemas.PromptCacheConfig, input []schemas.ResponsesMessage, skip int) []schemas.ResponsesMessage {
 	if cfg == nil || len(input) == 0 || responsesHasCacheMarker(input) {
 		return input
 	}
 
-	targets := responsesInjectionTargets(cfg, input)
+	var targets []injectionTarget
+	if skip < 0 || skip >= len(input) {
+		targets = responsesInjectionTargets(cfg, input)
+	} else {
+		targets = shiftTargetsPast(responsesInjectionTargets(cfg, withoutIndex(input, skip)), skip)
+	}
 	if len(targets) == 0 {
 		return input
 	}
@@ -96,6 +109,10 @@ func InjectResponsesCacheBreakpoints(cfg *schemas.PromptCacheConfig, input []sch
 			copied[t.msg] = true
 		}
 		msg := &out[t.msg]
+		if t.toolOutput {
+			msg.CacheControl = marker
+			continue
+		}
 		if t.promoteStr {
 			// A bare string has nowhere to hang a marker, so it becomes a single
 			// text block. Deterministic: the same message always renders the same
@@ -117,11 +134,22 @@ func InjectResponsesCacheBreakpoints(cfg *schemas.PromptCacheConfig, input []sch
 // InjectChatCacheBreakpoints is the Chat Completions parallel of
 // InjectResponsesCacheBreakpoints. Same rules, same copy-on-write guarantee.
 func InjectChatCacheBreakpoints(cfg *schemas.PromptCacheConfig, input []schemas.ChatMessage) []schemas.ChatMessage {
+	return InjectChatCacheBreakpointsSkipping(cfg, input, -1)
+}
+
+// InjectChatCacheBreakpointsSkipping is the Chat Completions parallel of
+// InjectResponsesCacheBreakpointsSkipping.
+func InjectChatCacheBreakpointsSkipping(cfg *schemas.PromptCacheConfig, input []schemas.ChatMessage, skip int) []schemas.ChatMessage {
 	if cfg == nil || len(input) == 0 || chatHasCacheMarker(input) {
 		return input
 	}
 
-	targets := chatInjectionTargets(cfg, input)
+	var targets []injectionTarget
+	if skip < 0 || skip >= len(input) {
+		targets = chatInjectionTargets(cfg, input)
+	} else {
+		targets = shiftTargetsPast(chatInjectionTargets(cfg, withoutIndex(input, skip)), skip)
+	}
 	if len(targets) == 0 {
 		return input
 	}
@@ -197,6 +225,24 @@ func hasChatCachePoint(block schemas.ChatContentBlock) bool {
 	return block.CachePoint != nil
 }
 
+// withoutIndex returns a copy of input without the element at skip (0 <= skip < len(input)).
+func withoutIndex[T any](input []T, skip int) []T {
+	view := make([]T, 0, len(input)-1)
+	view = append(view, input[:skip]...)
+	return append(view, input[skip+1:]...)
+}
+
+// shiftTargetsPast maps targets resolved on a view without the element at skip back onto the
+// full input.
+func shiftTargetsPast(targets []injectionTarget, skip int) []injectionTarget {
+	for i := range targets {
+		if targets[i].msg >= skip {
+			targets[i].msg++
+		}
+	}
+	return targets
+}
+
 // injectionTarget names one place to write a marker. promoteStr means the message
 // carries a bare ContentStr that must become a block first, in which case block is
 // meaningless.
@@ -204,6 +250,30 @@ type injectionTarget struct {
 	msg        int
 	block      int
 	promoteStr bool
+	toolOutput bool // mark the function_call_output item itself (message-level marker)
+}
+
+// isResponsesToolOutput reports whether a message is a function_call_output item
+// with a body. Such an item has no role and no Content of its own; its marker lives
+// on the message, which every converter reads (Anthropic as tool_result.cache_control,
+// OpenAI gpt-5.6+ as a prompt_cache_breakpoint on the output's last part).
+func isResponsesToolOutput(msg *schemas.ResponsesMessage) bool {
+	return msg.Type != nil && *msg.Type == schemas.ResponsesMessageTypeFunctionCallOutput &&
+		msg.ResponsesToolMessage != nil && msg.ResponsesToolMessage.Output != nil
+}
+
+// responsesRoleAt is the role an injection point sees for a Responses item. A
+// function_call_output carries none on the wire, but it is the client-supplied turn
+// that follows a tool call - Anthropic places the same content inside a user message -
+// so a point on role "user" reaches it, as does any index that lands on it.
+func responsesRoleAt(msg *schemas.ResponsesMessage) string {
+	if isResponsesToolOutput(msg) {
+		return string(schemas.ResponsesInputMessageRoleUser)
+	}
+	if msg.Role == nil {
+		return ""
+	}
+	return string(*msg.Role)
 }
 
 // responsesHasCacheMarker reports whether the caller already expressed caching
@@ -304,15 +374,17 @@ func responsesPointTargets(points []schemas.CacheControlInjectionPoint, input []
 	seen := make(map[int]bool)
 	for _, p := range points {
 		for _, idx := range matchMessageIndices(p, len(input), func(i int) string {
-			if input[i].Role == nil {
-				return ""
-			}
-			return string(*input[i].Role)
+			return responsesRoleAt(&input[i])
 		}) {
 			if seen[idx] || len(out) >= MaxInjectedCacheBreakpoints {
 				continue
 			}
 			msg := input[idx]
+			if isResponsesToolOutput(&msg) {
+				out = append(out, injectionTarget{msg: idx, toolOutput: true})
+				seen[idx] = true
+				continue
+			}
 			if msg.Content == nil {
 				continue
 			}
@@ -335,6 +407,11 @@ func chatPointTargets(points []schemas.CacheControlInjectionPoint, input []schem
 	seen := make(map[int]bool)
 	for _, p := range points {
 		for _, idx := range matchMessageIndices(p, len(input), func(i int) string {
+			// A tool message is the same client-supplied turn as a Responses
+			// function_call_output, so role "user" reaches it here too.
+			if input[i].Role == schemas.ChatMessageRoleTool {
+				return string(schemas.ChatMessageRoleUser)
+			}
 			return string(input[i].Role)
 		}) {
 			if seen[idx] || len(out) >= MaxInjectedCacheBreakpoints {

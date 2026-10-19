@@ -11,8 +11,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/maximhq/bifrost/core/network"
@@ -49,13 +51,153 @@ func SetDiscoveryDialContextForTests(dial func(ctx context.Context, network, add
 // oauthDiscoveryTransport is the one guarded transport every OAuth discovery,
 // registration and token-exchange client shares, so connections are reused
 // across flows and idle sockets are bounded instead of accumulating per call.
-var oauthDiscoveryTransport = newOAuthDiscoveryTransport(network.SSRFSafeDialContext(10 * time.Second))
+//
+// Two such transports exist, one per destination policy (see
+// requirePublicTargetFrom), so a pooled connection dialed under the
+// allowlisted policy is never reused by a request that must stay public-only.
+// The allowlisted one is replaced whenever the allowlist changes; see
+// SetPrivateTargetAllowlist.
+var (
+	oauthDiscoveryTransport            = newOAuthDiscoveryTransport(oauthDialContext(10*time.Second, network.SSRFSafeDialContext(10*time.Second), proxiesFromEnvironment()...))
+	oauthAllowlistedDiscoveryTransport atomic.Pointer[http.Transport]
+)
+
+func init() {
+	oauthAllowlistedDiscoveryTransport.Store(newAllowlistedTransport())
+}
+
+// newAllowlistedTransport builds a transport for the allowlisted destination
+// policy, with an empty connection pool.
+func newAllowlistedTransport() *http.Transport {
+	return newOAuthAllowlistedDiscoveryTransport(oauthDialContext(10*time.Second, network.AllowlistedPrivateDialContext(10*time.Second, privateTargetAllowlist.Load), proxiesFromEnvironment()...))
+}
+
+// privateTargetAllowlist holds the operator-approved private hosts and ranges
+// (tool_manager_config.oauth_private_allowlist) the OAuth chain may reach for
+// an MCP client that was not registered with auth bypassed. Nil permits none.
+// Read on every dial, so SetPrivateTargetAllowlist applies to the next
+// connection without rebuilding a transport.
+var privateTargetAllowlist atomic.Pointer[network.Allowlist]
+
+// SetPrivateTargetAllowlist replaces the private-target allowlist for MCP
+// OAuth discovery, registration and token requests. Pass nil to permit only
+// public destinations. Build the allowlist with
+// network.ValidatePrivateTargetAllowlist.
+//
+// The allowlist is checked only when a connection is dialed, so the
+// allowlisted transport is replaced as well: a keep-alive connection approved
+// under the previous list must not serve a later request. Requests already in
+// flight finish on the old transport, whose pool no new request draws from.
+func SetPrivateTargetAllowlist(allow *network.Allowlist) {
+	privateTargetAllowlist.Store(allow)
+	if old := oauthAllowlistedDiscoveryTransport.Swap(newAllowlistedTransport()); old != nil {
+		old.CloseIdleConnections()
+	}
+}
+
+// requirePublicTargetKey carries an OAuth request's destination policy on its
+// context; see withRequirePublicTarget.
+type requirePublicTargetKey struct{}
+
+// withRequirePublicTarget records the destination policy for the OAuth
+// requests made under ctx. requirePublicTarget mirrors the owning MCP client's
+// RequirePublicTarget: true (registered with auth bypassed) keeps every hop
+// public-only; false additionally permits privateTargetAllowlist.
+func withRequirePublicTarget(ctx context.Context, requirePublicTarget bool) context.Context {
+	return context.WithValue(ctx, requirePublicTargetKey{}, requirePublicTarget)
+}
+
+// requirePublicTargetFrom reports the destination policy recorded on ctx. A
+// context that records none gets the public-only policy: an OAuth request
+// whose MCP client could not be identified must not reach a private address.
+func requirePublicTargetFrom(ctx context.Context) bool {
+	if ctx == nil {
+		return true
+	}
+	requirePublic, ok := ctx.Value(requirePublicTargetKey{}).(bool)
+	return !ok || requirePublic
+}
+
+// oauthDialContext returns guarded with one distinction: a dial addressed to
+// an operator-configured proxy (exact host:port, as http.Transport dials it)
+// goes straight through. The proxy is trusted configuration, and the
+// destination it forwards to has already been checked by oauthProxySelector.
+// Every other dial keeps guarded's destination policy, so a destination can
+// never be reached directly on an address that policy refuses.
+func oauthDialContext(timeout time.Duration, guarded func(ctx context.Context, network, addr string) (net.Conn, error), proxies ...*url.URL) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	direct := (&net.Dialer{Timeout: timeout}).DialContext
+	trusted := make(map[string]struct{}, len(proxies))
+	for _, p := range proxies {
+		if p == nil {
+			continue
+		}
+		trusted[proxyDialAddr(p)] = struct{}{}
+	}
+	return func(ctx context.Context, netw, addr string) (net.Conn, error) {
+		if _, ok := trusted[addr]; ok {
+			return direct(ctx, netw, addr)
+		}
+		// The global proxy is configuration that can change at runtime, so it is
+		// looked up per dial rather than captured like the environment proxies.
+		if factory := network.DefaultHTTPClientFactory(); factory != nil {
+			if p := factory.ProxyURLForPurpose(network.ClientPurposeAPI); p != nil && proxyDialAddr(p) == addr {
+				return direct(ctx, netw, addr)
+			}
+		}
+		return guarded(ctx, netw, addr)
+	}
+}
+
+// proxyDialAddr is the host:port http.Transport dials for a proxy URL, with
+// the scheme's default port filled in the way the transport does.
+func proxyDialAddr(p *url.URL) string {
+	if p.Port() != "" {
+		return net.JoinHostPort(p.Hostname(), p.Port())
+	}
+	port := "80"
+	if p.Scheme == "https" {
+		port = "443"
+	}
+	return net.JoinHostPort(p.Hostname(), port)
+}
+
+// proxiesFromEnvironment parses the proxy URLs http.ProxyFromEnvironment will
+// select from, so the dialer can recognise them. Unparseable entries are
+// ignored; they would never be selected either.
+func proxiesFromEnvironment() []*url.URL {
+	var out []*url.URL
+	for _, name := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
+		raw := strings.TrimSpace(os.Getenv(name))
+		if raw == "" {
+			continue
+		}
+		if !strings.Contains(raw, "://") {
+			raw = "http://" + raw
+		}
+		if p, err := url.Parse(raw); err == nil && p.Hostname() != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 // newOAuthDiscoveryTransport builds a transport around dial with bounded idle
 // connection settings. Production uses the single shared instance above; a
 // test dialer override gets its own transport so it never mutates the shared one.
 func newOAuthDiscoveryTransport(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
+	return newOAuthTransportWithProxy(dial, oauthProxySelector(network.DefaultProxyFunc(network.ClientPurposeAPI)))
+}
+
+// newOAuthAllowlistedDiscoveryTransport is newOAuthDiscoveryTransport for the
+// allowlisted destination policy: its proxy selector also lets through an
+// IP-literal destination privateTargetAllowlist permits.
+func newOAuthAllowlistedDiscoveryTransport(dial func(ctx context.Context, network, addr string) (net.Conn, error)) *http.Transport {
+	return newOAuthTransportWithProxy(dial, oauthAllowlistedProxySelector(network.DefaultProxyFunc(network.ClientPurposeAPI), privateTargetAllowlist.Load))
+}
+
+func newOAuthTransportWithProxy(dial func(ctx context.Context, network, addr string) (net.Conn, error), proxy func(*http.Request) (*url.URL, error)) *http.Transport {
 	return &http.Transport{
+		Proxy:               proxy,
 		DialContext:         dial,
 		MaxIdleConns:        32,
 		MaxIdleConnsPerHost: 4,
@@ -64,8 +206,54 @@ func newOAuthDiscoveryTransport(dial func(ctx context.Context, network, addr str
 	}
 }
 
-func newOAuthDiscoveryHTTPClient(timeout time.Duration) *http.Client {
+// oauthProxySelector wraps a proxy chooser (network.DefaultProxyFunc in
+// production: the global proxy when it is enabled for API traffic, else the
+// environment) so proxy-only installations keep working without losing the
+// destination guard. When a proxy is chosen, http.Transport hands DialContext
+// the proxy's address rather than the OAuth endpoint's, so the dial-time check
+// alone would validate the proxy and let it forward to a blocked target. What
+// can be verified without DNS is verified here: an IP-literal destination must
+// be public. A hostname is left to the proxy to resolve, which is operator
+// configuration, exactly as core/mcp does for MCP connections.
+func oauthProxySelector(next func(*http.Request) (*url.URL, error)) func(*http.Request) (*url.URL, error) {
+	return func(req *http.Request) (*url.URL, error) {
+		proxyURL, err := next(req)
+		if err != nil || proxyURL == nil {
+			return proxyURL, err
+		}
+		host := req.URL.Hostname()
+		if ip := net.ParseIP(host); ip != nil && !network.IsPublicIP(ip) {
+			return nil, fmt.Errorf("blocked proxied connection to non-public address %s", host)
+		}
+		return proxyURL, nil
+	}
+}
+
+// oauthAllowlistedProxySelector is oauthProxySelector for the allowlisted
+// destination policy: an IP-literal destination must be public, or permitted
+// by allow and outside the link-local, metadata and unspecified ranges. A
+// hostname is still left to the proxy to resolve.
+func oauthAllowlistedProxySelector(next func(*http.Request) (*url.URL, error), allow func() *network.Allowlist) func(*http.Request) (*url.URL, error) {
+	return func(req *http.Request) (*url.URL, error) {
+		proxyURL, err := next(req)
+		if err != nil || proxyURL == nil {
+			return proxyURL, err
+		}
+		if err := network.CheckAllowlistedPrivateLiteral(req.URL.Hostname(), allow()); err != nil {
+			return nil, fmt.Errorf("blocked proxied connection: %w", err)
+		}
+		return proxyURL, nil
+	}
+}
+
+// newOAuthDiscoveryHTTPClient returns a client for the OAuth chain whose
+// transport applies the destination policy recorded on ctx (see
+// requirePublicTargetFrom).
+func newOAuthDiscoveryHTTPClient(ctx context.Context, timeout time.Duration) *http.Client {
 	transport := oauthDiscoveryTransport
+	if !requirePublicTargetFrom(ctx) {
+		transport = oauthAllowlistedDiscoveryTransport.Load()
+	}
 	if testDialContextOverride != nil {
 		transport = newOAuthDiscoveryTransport(testDialContextOverride)
 	}
@@ -73,6 +261,12 @@ func newOAuthDiscoveryHTTPClient(timeout time.Duration) *http.Client {
 		Timeout:   timeout,
 		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// A 307/308 on the token or registration POST would make Go replay
+			// the credential-bearing body at the new location; only discovery
+			// GETs may follow a redirect.
+			if len(via) > 0 && via[0].Method != http.MethodGet {
+				return fmt.Errorf("refusing to follow a redirect for a %s request", via[0].Method)
+			}
 			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
 				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)
 			}
@@ -127,7 +321,7 @@ func DiscoverOAuthMetadata(ctx context.Context, serverURL string) (*OAuthMetadat
 	}
 
 	// Step 1: Attempt to connect to MCP server, expect 401 with WWW-Authenticate header
-	client := newOAuthDiscoveryHTTPClient(10 * time.Second)
+	client := newOAuthDiscoveryHTTPClient(ctx, 10*time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", serverURL, nil)
 	if err != nil {
@@ -238,7 +432,7 @@ func parseWWWAuthenticateHeader(header string) (resourceMetadataURL string, scop
 
 // fetchResourceMetadata fetches OAuth metadata from resource metadata endpoint (RFC 9728)
 func fetchResourceMetadata(ctx context.Context, metadataURL string) ([]string, []string, string, error) {
-	client := newOAuthDiscoveryHTTPClient(10 * time.Second)
+	client := newOAuthDiscoveryHTTPClient(ctx, 10*time.Second)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", metadataURL, nil)
 	if err != nil {
@@ -337,7 +531,7 @@ func fetchSingleAuthServerMetadata(ctx context.Context, issuer string) (*OAuthMe
 		strings.TrimSuffix(issuer, "/"), // Try the issuer URL itself
 	)
 
-	client := newOAuthDiscoveryHTTPClient(10 * time.Second)
+	client := newOAuthDiscoveryHTTPClient(ctx, 10*time.Second)
 
 	for _, candidateURL := range candidateURLs {
 		logger.Debug(fmt.Sprintf("[OAuth Discovery] Trying metadata endpoint: %s", candidateURL))
@@ -532,7 +726,7 @@ func RegisterDynamicClient(ctx context.Context, registrationURL string, req *Dyn
 	httpReq.Header.Set("Accept", "application/json")
 
 	// Send request
-	client := newOAuthDiscoveryHTTPClient(15 * time.Second)
+	client := newOAuthDiscoveryHTTPClient(ctx, 15*time.Second)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("registration request failed: %w", err)

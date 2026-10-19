@@ -70,9 +70,6 @@ func (a *sessionAffinity) ResolveRoute(ctx *schemas.BifrostContext, requested sc
 	if a == nil || a.kv == nil || ctx == nil {
 		return chain
 	}
-	// A context can carry what an earlier request on it followed, so this request starts clean:
-	// Observe must never take a stale resolution for its own.
-	ctx.ClearValue(sessionAffinityResolvedKey)
 	if len(chain) == 0 {
 		return chain
 	}
@@ -138,9 +135,11 @@ func (a *sessionAffinity) ResolveRoute(ctx *schemas.BifrostContext, requested sc
 // ResolveKey implements schemas.SessionAffinity: the key that last served the session on this
 // provider and model is used while it is still eligible. Only the primary provider of a
 // request answers from a binding; a fallback provider serves because the primary could not,
-// and what it serves with is settled by the outcome.
+// and what it serves with is settled by the outcome. A pool of one key has nothing to choose, so
+// it never answers from a binding; a binding to a key that left the pool is still dropped there,
+// as from a larger pool, so the key coming back does not take the session back.
 func (a *sessionAffinity) ResolveKey(ctx *schemas.BifrostContext, provider schemas.ModelProvider, model string, eligible []schemas.Key) (schemas.Key, bool) {
-	if a == nil || a.kv == nil || ctx == nil || len(eligible) < 2 {
+	if a == nil || a.kv == nil || ctx == nil || len(eligible) == 0 {
 		return schemas.Key{}, false
 	}
 	if fallbackIndex, _ := ctx.Value(schemas.BifrostContextKeyFallbackIndex).(int); fallbackIndex > 0 {
@@ -148,7 +147,7 @@ func (a *sessionAffinity) ResolveKey(ctx *schemas.BifrostContext, provider schem
 	}
 	key := SessionStateKey(ctx, SessionStateKindKey, string(provider), model)
 	boundID, found := SessionStateString(a.kv, key)
-	if !found {
+	if !found || (len(eligible) == 1 && eligible[0].ID == boundID) {
 		return schemas.Key{}, false
 	}
 	for _, candidate := range eligible {
@@ -179,7 +178,10 @@ func (a *sessionAffinity) ResolveKey(ctx *schemas.BifrostContext, provider schem
 // failed this session, and keeping it would send every request for the rest of the TTL back
 // there first. A failure writes nothing else, a binding the request did not follow says
 // nothing about the failure and is left alone, and a request the caller cancelled keeps
-// everything, since that failure is not the provider's.
+// everything, since that failure is not the provider's. A request that carried a direct key
+// and was served by a fallback binds no route: only the first route is tried with the caller's
+// key, so the fallback served on the gateway's keys and says nothing about where the caller's
+// key works.
 func (a *sessionAffinity) Observe(ctx *schemas.BifrostContext, requested schemas.Route, outcome schemas.RouteOutcome) {
 	if a == nil || a.kv == nil || ctx == nil {
 		return
@@ -209,7 +211,19 @@ func (a *sessionAffinity) Observe(ctx *schemas.BifrostContext, requested schemas
 	// Only a request that left the provider to routing binds a route; one that named it has
 	// nothing to remember at that level, even when a fallback served.
 	if requested.Provider == "" {
-		a.settle(SessionStateKey(ctx, SessionStateKindRoute, string(requested.Provider), requested.Model), RouteStateValue(served), resolved.route, ttl)
+		routeKey := SessionStateKey(ctx, SessionStateKindRoute, string(requested.Provider), requested.Model)
+		if outcome.DirectKey && outcome.Fallback {
+			// Binding the fallback would put it first on the next request, and send the caller's
+			// key to a provider it may not be for. A binding the request followed did not serve,
+			// so it is dropped as for a failure, and the next request follows the routing decision.
+			if resolved.route != "" {
+				a.forget(routeKey, fmt.Sprintf("route binding to %s", resolved.route))
+			}
+			ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Fallback %s served %s without the caller's own key, so the session does not bind to it and the next request follows the routing decision", RouteStateValue(served), requested.Model))
+			schemas.AppendToContextList(ctx, schemas.BifrostContextKeyRoutingEnginesUsed, schemas.RoutingEngineSessionAffinity)
+		} else {
+			a.settle(routeKey, RouteStateValue(served), resolved.route, ttl)
+		}
 	}
 	if outcome.KeyID != "" {
 		key := SessionStateKey(ctx, SessionStateKindKey, string(served.Provider), served.Model)
@@ -291,6 +305,10 @@ func ParseRouteState(value string) (schemas.Route, bool) {
 // produced for req and applies its answer: the first route becomes the primary, the rest its
 // fallbacks. A request no hook could route is left for validation to refuse.
 func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, requested schemas.Route, req *schemas.BifrostRequest) {
+	// A context can carry what an earlier request on it followed. It is forgotten before anything
+	// else, so whichever way this request goes, including the returns below that never ask the
+	// affinity, Observe cannot take the earlier request's choices for this one's.
+	ctx.ClearValue(sessionAffinityResolvedKey)
 	if !schemas.IsSessionAffinityActive(ctx) {
 		// A request that carries a session but switched affinity off is routed as if it had none.
 		// Say so: the session id is on the log record either way, so a trail that stayed silent
@@ -302,6 +320,15 @@ func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, request
 	}
 	provider, model, fallbacks := req.GetRequestFields()
 	if provider == "" {
+		return
+	}
+	// A key the caller pinned belongs to one provider. When that provider heads the chain, the
+	// request names it as firmly as a provider-prefixed model does, and the session does not move it:
+	// the promoted provider has no such key, so that attempt would fail at key selection and the
+	// fallback would run without the pin. A pin on another provider's key is left to the session,
+	// which may well be moving the request to that provider.
+	if bifrost.callerPinsKeyOf(ctx, provider) {
+		ctx.AppendRoutingEngineLog(schemas.RoutingEngineSessionAffinity, schemas.LogLevelInfo, fmt.Sprintf("Request pins the caller's key on %s, so the session keeps the routing decision for %s", provider, requested.Model))
 		return
 	}
 	// Every route carries the key pinned for it: the primary's is the routing pin
@@ -322,9 +349,11 @@ func (bifrost *Bifrost) resolveSessionRoute(ctx *schemas.BifrostContext, request
 	req.SetModel(resolved[0].Model)
 	// A demoted primary keeps its pin as a fallback pin, which the fallback loop re-applies
 	// after clearing the previous attempt's context; a promoted fallback brings its own.
+	// The session only reorders the chain the hooks produced, so a chain Bifrost inferred stays inferred.
+	inferred := len(fallbacks) > 0 && fallbacks[0].Inferred
 	next := make([]schemas.Fallback, 0, len(resolved)-1)
 	for _, route := range resolved[1:] {
-		next = append(next, schemas.Fallback{Provider: route.Provider, Model: route.Model, KeyID: route.KeyID})
+		next = append(next, schemas.Fallback{Provider: route.Provider, Model: route.Model, KeyID: route.KeyID, Inferred: inferred})
 	}
 	req.SetFallbacks(next)
 	if resolved[0].KeyID == primaryKeyPin {
@@ -350,6 +379,35 @@ func routingKeyPinFromContext(ctx *schemas.BifrostContext) string {
 	return strings.TrimSpace(pin)
 }
 
+// callerPinsKeyOf reports whether the caller pinned the request, by key id or name, to one of
+// provider's keys. A routing rule's pin takes the primary attempt over entirely: RunPreRequestHooks
+// commits it into the same api-key-id and key selection reads that id before any name, so with a
+// rule pin present the caller's pins say nothing about the primary, and the session moves the rule's
+// pin with its route as usual.
+func (bifrost *Bifrost) callerPinsKeyOf(ctx *schemas.BifrostContext, provider schemas.ModelProvider) bool {
+	if routingKeyPinFromContext(ctx) != "" {
+		return false
+	}
+	id, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyID).(string)
+	id = strings.TrimSpace(id)
+	name, _ := ctx.Value(schemas.BifrostContextKeyAPIKeyName).(string)
+	name = strings.TrimSpace(name)
+	if id == "" && name == "" {
+		return false
+	}
+	keys, err := bifrost.account.GetKeysForProvider(ctx, provider)
+	if err != nil {
+		return false
+	}
+	for _, key := range keys {
+		// Key selection matches the id first and the name only when no id was given.
+		if (id != "" && key.ID == id) || (id == "" && key.Name == name) {
+			return true
+		}
+	}
+	return false
+}
+
 // setRoutingPin makes keyID the pin the primary attempt reads, in the routing pin and in the
 // api-key-id it is committed into, or clears both when keyID is empty so the attempt selects a
 // key normally. It runs after the hooks' blocked phase, where the reserved key is writable, as
@@ -366,13 +424,16 @@ func setRoutingPin(ctx *schemas.BifrostContext, keyID string) {
 }
 
 // observeSessionOutcome tells the session affinity how a request ended: the route that served
-// it and the key that route used, or nothing served and the error it ended in.
-func (bifrost *Bifrost) observeSessionOutcome(ctx *schemas.BifrostContext, requested schemas.Route, served *schemas.Route, fallback bool, err *schemas.BifrostError) {
+// it and the key that route used, or nothing served and the error it ended in, and whether the
+// request carried a direct key, which the caller reads before the first fallback clears it.
+func (bifrost *Bifrost) observeSessionOutcome(ctx *schemas.BifrostContext, requested schemas.Route, served *schemas.Route, fallback, directKey bool, err *schemas.BifrostError) {
 	if !schemas.IsSessionAffinityActive(ctx) {
 		return
 	}
-	outcome := schemas.RouteOutcome{Served: served, Fallback: fallback, Err: err}
-	if served != nil {
+	outcome := schemas.RouteOutcome{Served: served, Fallback: fallback, DirectKey: directKey, Err: err}
+	// The primary attempt of a request that carried a direct key served on the caller's own key,
+	// which is no key of the pool: a key binding naming it could never be followed.
+	if served != nil && !(directKey && !fallback) {
 		outcome.KeyID, _ = ctx.Value(schemas.BifrostContextKeySelectedKeyID).(string)
 	}
 	bifrost.sessionAffinity.Observe(ctx, requested, outcome)

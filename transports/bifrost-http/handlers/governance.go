@@ -25,7 +25,7 @@ import (
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/plugins/governance"
 	"github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -60,7 +60,10 @@ type GovernanceManager interface {
 	RemoveCustomer(ctx context.Context, id string) error
 	ReloadModelConfig(ctx context.Context, id string) (*configstoreTables.TableModelConfig, error)
 	RemoveModelConfig(ctx context.Context, id string) error
-	ReloadProvider(ctx context.Context, provider schemas.ModelProvider) (*configstoreTables.TableProvider, error)
+	// ModelConfigIndexKey is the spelling the governance store indexes a config for
+	// (model, provider) under; two configs with the same key shadow each other.
+	ModelConfigIndexKey(model string, provider *string) string
+	ReloadProvider(ctx context.Context, provider schemas.ModelProvider, isNew bool) (*configstoreTables.TableProvider, error)
 	RemoveProvider(ctx context.Context, provider schemas.ModelProvider) error
 	UpsertPricingOverride(ctx context.Context, override *configstoreTables.TablePricingOverride) error
 	DeletePricingOverride(ctx context.Context, id string) error
@@ -398,6 +401,12 @@ type CreateVirtualKeyRequest struct {
 	// client.disable_content_logging; true forces content off for this key's traffic, false forces
 	// it on for the log store.
 	DisableContentLogging *bool `json:"disable_content_logging,omitempty"`
+	// Metadata is free-form key/value attribution (cost center, owner, ...). See
+	// configstoreTables.ValidateVirtualKeyMetadata for the rules.
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	AgentGrants []struct {
+		AgentName string `json:"agent_name" validate:"required"`
+	} `json:"agent_grants,omitempty"` // Empty means no agents allowed (deny-by-default)
 }
 
 // vkModelBudgetRequest is one per-model budget/rate-limit group under a provider config
@@ -453,6 +462,12 @@ type UpdateVirtualKeyRequest struct {
 	// DisableContentLogging is tri-state on the wire: omitted leaves the current decision, null
 	// clears it back to inheriting client.disable_content_logging, true/false set it.
 	DisableContentLogging schemas.OptionalJSON[bool] `json:"disable_content_logging,omitempty"`
+	// Metadata replaces the key's metadata as a whole: omitted (or null) leaves it unchanged,
+	// {} clears it, and any other object becomes the new metadata.
+	Metadata    *map[string]string `json:"metadata,omitempty"`
+	AgentGrants []struct {
+		AgentName string `json:"agent_name" validate:"required"`
+	} `json:"agent_grants,omitempty"` // Omitted leaves grants unchanged; [] clears all grants
 }
 
 var errVirtualKeyDualAssociation = errors.New("VirtualKey cannot be attached to more than one of Team, Customer or Business Unit")
@@ -1890,10 +1905,17 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		// only budget/rate-limit ids), so a user_id filter cannot be applied here. Reject
 		// the combination rather than silently dropping the filter: the database path
 		// fails closed on user_id, and returning every cached key instead would be the
-		// exact inverse of that contract. The other filters keep their long-standing
-		// ignored-under-from_memory behaviour.
+		// exact inverse of that contract. Metadata filters are applied below; the
+		// other filters keep their long-standing ignored-under-from_memory behaviour.
 		if len(ctx.QueryArgs().Peek("user_id")) > 0 {
 			SendError(ctx, 400, "user_id filter is not supported with from_memory=true; omit from_memory to filter virtual keys by user")
+			return
+		}
+		// Metadata filters are applied to the cached keys too, with the same validation as the
+		// database path, so from_memory never returns keys a filter would have excluded.
+		metadataFilters, err := parseVirtualKeyMetadataFilters(ctx)
+		if err != nil {
+			SendError(ctx, 400, err.Error())
 			return
 		}
 		data := h.governanceManager.GetGovernanceData(ctx)
@@ -1904,7 +1926,9 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 		// Convert map to slice to match the non-memory response format (array)
 		virtualKeys := make([]*configstoreTables.TableVirtualKey, 0, len(data.VirtualKeys))
 		for _, vk := range data.VirtualKeys {
-			virtualKeys = append(virtualKeys, vk)
+			if virtualKeyMatchesMetadataFilters(vk, metadataFilters) {
+				virtualKeys = append(virtualKeys, vk)
+			}
 		}
 		sort.Slice(virtualKeys, func(i, j int) bool {
 			return virtualKeys[i].CreatedAt.Before(virtualKeys[j].CreatedAt)
@@ -1949,8 +1973,13 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	excludeAccessProfileManagedVirtual := string(ctx.QueryArgs().Peek("exclude_access_profile_managed_virtual")) == "true"
 	excludeAssignedVirtualKeys := string(ctx.QueryArgs().Peek("exclude_assigned_virtual_keys")) == "true"
 	forUserAssignment := string(ctx.QueryArgs().Peek("for_user_assignment")) == "true"
+	metadataFilters, err := parseVirtualKeyMetadataFilters(ctx)
+	if err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 
-	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || businessUnitID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment {
+	if limitStr != "" || offsetStr != "" || search != "" || customerID != "" || teamID != "" || businessUnitID != "" || userID != "" || sortBy != "" || isExport || excludeAccessProfileManagedVirtual || excludeAssignedVirtualKeys || forUserAssignment || len(metadataFilters) > 0 {
 		// Paginated/filtered path
 		params := configstore.VirtualKeyQueryParams{
 			Search:                             search,
@@ -1964,6 +1993,7 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 			ExcludeAccessProfileManagedVirtual: excludeAccessProfileManagedVirtual,
 			ExcludeAssignedVirtualKeys:         excludeAssignedVirtualKeys,
 			ForUserAssignment:                  forUserAssignment,
+			MetadataFilters:                    metadataFilters,
 		}
 		if limitStr != "" {
 			n, err := strconv.Atoi(limitStr)
@@ -2048,6 +2078,55 @@ func (h *GovernanceHandler) getVirtualKeys(ctx *fasthttp.RequestCtx) {
 	})
 }
 
+// parseVirtualKeyMetadataFilters collects metadata_<key>=<value> query parameters, the same
+// shape the logs endpoints accept. An invalid key is a 400 rather than a silently ignored
+// filter, which would return every key.
+func parseVirtualKeyMetadataFilters(ctx *fasthttp.RequestCtx) (map[string]string, error) {
+	var filters map[string]string
+	// invalidFound is tracked separately from the key's text: an empty key ("metadata_=x") is
+	// invalid too, and its text is "".
+	var invalid string
+	invalidFound := false
+	ctx.QueryArgs().VisitAll(func(key, value []byte) { //nolint:staticcheck
+		metadataKey, ok := strings.CutPrefix(string(key), "metadata_")
+		if !ok {
+			return
+		}
+		if !configstoreTables.IsValidVirtualKeyMetadataKey(metadataKey) {
+			if !invalidFound {
+				invalid, invalidFound = metadataKey, true
+			}
+			return
+		}
+		if filters == nil {
+			filters = make(map[string]string)
+		}
+		filters[metadataKey] = string(value)
+	})
+	if invalidFound {
+		return nil, fmt.Errorf("invalid metadata filter key %q: keys must be 1-%d characters of letters, digits, '.', '_' or '-'", invalid, configstoreTables.MaxVirtualKeyMetadataKeyLength)
+	}
+	return filters, nil
+}
+
+// virtualKeyMatchesMetadataFilters reports whether vk's metadata carries every key/value pair in
+// filters (exact value match), the in-memory counterpart of the store's metadata filter.
+func virtualKeyMatchesMetadataFilters(vk *configstoreTables.TableVirtualKey, filters map[string]string) bool {
+	for key, value := range filters {
+		if got, ok := vk.Metadata[key]; !ok || got != value {
+			return false
+		}
+	}
+	return true
+}
+
+func classifyAgentGrantReplacementError(err error) error {
+	if errors.Is(err, configstore.ErrInvalidAgentGrant) {
+		return &badRequestError{err: err}
+	}
+	return err
+}
+
 // createVirtualKey handles POST /api/governance/virtual-keys - Create a new virtual key
 func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 	var req CreateVirtualKeyRequest
@@ -2102,6 +2181,10 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, "delete_after_expire requires expires_at")
 		return
 	}
+	if err := configstoreTables.ValidateVirtualKeyMetadata(req.Metadata); err != nil {
+		SendError(ctx, 400, err.Error())
+		return
+	}
 	// Set defaults: nil means "use DB default (true)"
 	isActive := req.IsActive
 	if isActive == nil {
@@ -2135,6 +2218,7 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 			DeleteAfterExpire: req.DeleteAfterExpire,
 			// Stored as given: nil is inherit, so no defaulting here.
 			DisableContentLogging: req.DisableContentLogging,
+			Metadata:              req.Metadata,
 		}
 		if err := h.configStore.CreateVirtualKey(ctx, &vk, tx); err != nil {
 			return err
@@ -2160,6 +2244,11 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				}
 				if err := pc.KeyIDs.Validate(); err != nil {
 					return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
+				}
+				if pc.Weight != nil {
+					if err := validateWeight(*pc.Weight); err != nil {
+						return &badRequestError{err: fmt.Errorf("invalid weight for provider %s: %w", pc.Provider, err)}
+					}
 				}
 
 				// Get keys for this provider config if specified
@@ -2251,6 +2340,24 @@ func (h *GovernanceHandler) createVirtualKey(ctx *fasthttp.RequestCtx) {
 				}, tx); err != nil {
 					return err
 				}
+			}
+		}
+		if req.AgentGrants != nil {
+			// Check for duplicate AgentName values before processing
+			seenAgentNames := make(map[string]bool)
+			agentNames := make([]string, 0, len(req.AgentGrants))
+			for _, ag := range req.AgentGrants {
+				if seenAgentNames[ag.AgentName] {
+					return &badRequestError{err: fmt.Errorf("duplicate agent_name: %s", ag.AgentName)}
+				}
+				seenAgentNames[ag.AgentName] = true
+				agentNames = append(agentNames, ag.AgentName)
+			}
+			// Grants are written in the same transaction as the rest of the key, and the
+			// store validates the names before deleting anything, so unknown or empty
+			// names are the caller's fault and surface as 400.
+			if err := h.configStore.ReplaceVirtualKeyAgentGrants(ctx, vk.ID, agentNames, tx); err != nil {
+				return classifyAgentGrantReplacementError(err)
 			}
 		}
 		return nil
@@ -2449,6 +2556,12 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		SendError(ctx, 400, errVirtualKeyDualAssociation.Error())
 		return
 	}
+	if req.Metadata != nil {
+		if err := configstoreTables.ValidateVirtualKeyMetadata(*req.Metadata); err != nil {
+			SendError(ctx, 400, err.Error())
+			return
+		}
+	}
 	// The operator's explicit "reset usage" choice, surfaced by the UI's
 	// Preserve / Reset dialog. Carried into budget reconciliation and collected
 	// there, so the in-memory store can be cleared once the transaction commits.
@@ -2516,6 +2629,9 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 		}
 		if req.Description != nil {
 			vk.Description = *req.Description
+		}
+		if req.Metadata != nil {
+			vk.Metadata = *req.Metadata
 		}
 		if err := applyVirtualKeyOwnershipUpdate(vk, &req); err != nil {
 			if errors.Is(err, errVirtualKeyDualAssociation) {
@@ -2598,6 +2714,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					if err := pc.KeyIDs.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
 					}
+					if pc.Weight != nil {
+						if err := validateWeight(*pc.Weight); err != nil {
+							return &badRequestError{err: fmt.Errorf("invalid weight for provider %s: %w", pc.Provider, err)}
+						}
+					}
 
 					// Get keys for this provider config if specified
 					var keys []configstoreTables.TableKey
@@ -2662,6 +2783,11 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 					}
 					if err := pc.KeyIDs.Validate(); err != nil {
 						return &badRequestError{err: fmt.Errorf("invalid key_ids for provider %s: %w", pc.Provider, err)}
+					}
+					if pc.Weight != nil {
+						if err := validateWeight(*pc.Weight); err != nil {
+							return &badRequestError{err: fmt.Errorf("invalid weight for provider %s: %w", pc.Provider, err)}
+						}
 					}
 					existing.Provider = string(providerName)
 					existing.Weight = pc.Weight
@@ -2838,6 +2964,26 @@ func (h *GovernanceHandler) updateVirtualKey(ctx *fasthttp.RequestCtx) {
 						return err
 					}
 				}
+			}
+		}
+
+		// A nil AgentGrants slice means the caller omitted the field, which preserves
+		// existing grants; an explicit empty list reaches the store and clears them.
+		if req.AgentGrants != nil {
+			// Check for duplicate AgentName values among all grants before processing
+			seenAgentNames := make(map[string]bool)
+			agentNames := make([]string, 0, len(req.AgentGrants))
+			for _, ag := range req.AgentGrants {
+				if seenAgentNames[ag.AgentName] {
+					return &badRequestError{err: fmt.Errorf("duplicate agent_name: %s", ag.AgentName)}
+				}
+				seenAgentNames[ag.AgentName] = true
+				agentNames = append(agentNames, ag.AgentName)
+			}
+			// Only this VK's grants are replaced, inside the same transaction as the
+			// rest of the update, with validation performed before any deletion.
+			if err := h.configStore.ReplaceVirtualKeyAgentGrants(ctx, vk.ID, agentNames, tx); err != nil {
+				return classifyAgentGrantReplacementError(err)
 			}
 		}
 
@@ -4337,6 +4483,48 @@ func (h *GovernanceHandler) prefetchModelConfigScopeNames(ctx context.Context, c
 }
 
 // createModelConfig handles POST /api/governance/model-configs - Create a new model config
+// rejectModelConfigSpellingCollision refuses a create or rename whose model name canonicalises
+// (governance.CanonicalModelConfigName: trim, lower-case, own-provider prefix stripped) to the
+// same key as another config in the same scope, scope_id and provider. The governance store
+// indexes configs by that key, so two such configs would shadow each other and one set of
+// limits would silently stop being enforced. excludeID is the config being renamed, so a
+// re-spelling of its own name is not a collision. On rejection the 409 has been sent and true
+// is returned; the caller must return immediately.
+func (h *GovernanceHandler) rejectModelConfigSpellingCollision(ctx *fasthttp.RequestCtx, scope string, scopeID, provider *string, modelName, excludeID string) bool {
+	all, err := h.configStore.GetModelConfigs(ctx)
+	if err != nil {
+		logger.Error("failed to list model configs for spelling check: %v", err)
+		SendError(ctx, 500, "Failed to check existing model configs")
+		return true
+	}
+	sameRef := func(a, b *string) bool {
+		if a == nil || b == nil {
+			return a == nil && b == nil
+		}
+		return strings.EqualFold(strings.TrimSpace(*a), strings.TrimSpace(*b))
+	}
+	// Compare on the key the governance store indexes by: catalog-aware when the manager is
+	// available (a provider-less dated alias collapses onto its base model), the
+	// catalog-independent canonical spelling otherwise.
+	indexKey := governance.CanonicalModelConfigName
+	if h.governanceManager != nil {
+		indexKey = h.governanceManager.ModelConfigIndexKey
+	}
+	want := indexKey(modelName, provider)
+	for i := range all {
+		existing := &all[i]
+		if existing.ID == excludeID || existing.Scope != scope || !sameRef(existing.ScopeID, scopeID) || !sameRef(existing.Provider, provider) {
+			continue
+		}
+		if indexKey(existing.ModelName, existing.Provider) != want {
+			continue
+		}
+		SendError(ctx, 409, fmt.Sprintf("Model config '%s' would be keyed the same as existing model config '%s' (id %s): names are compared case-insensitively with the provider prefix stripped, and a provider-less config is keyed by its base model", modelName, existing.ModelName, existing.ID))
+		return true
+	}
+	return false
+}
+
 func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 	var req CreateModelConfigRequest
 	if err := json.Unmarshal(ctx.PostBody(), &req); err != nil {
@@ -4399,6 +4587,9 @@ func (h *GovernanceHandler) createModelConfig(ctx *fasthttp.RequestCtx) {
 		} else {
 			SendError(ctx, 409, fmt.Sprintf("Model config for model '%s' (%s) already exists", req.ModelName, scopeDesc))
 		}
+		return
+	}
+	if h.rejectModelConfigSpellingCollision(ctx, req.Scope, req.ScopeID, req.Provider, req.ModelName, "") {
 		return
 	}
 	// Validate budgets if provided
@@ -4506,6 +4697,18 @@ func (h *GovernanceHandler) updateModelConfig(ctx *fasthttp.RequestCtx) {
 		}
 		SendError(ctx, 500, "Failed to retrieve model config")
 		return
+	}
+	if req.ModelName != nil || req.Provider != nil {
+		nextName, nextProvider := mc.ModelName, mc.Provider
+		if req.ModelName != nil {
+			nextName = *req.ModelName
+		}
+		if req.Provider != nil {
+			nextProvider = req.Provider
+		}
+		if h.rejectModelConfigSpellingCollision(ctx, mc.Scope, mc.ScopeID, nextProvider, nextName, mc.ID) {
+			return
+		}
 	}
 	if err := h.configStore.ExecuteTransaction(ctx, func(tx *gorm.DB) error {
 		// Track rate-limit ID to delete after updating the model config (to avoid FK constraint).

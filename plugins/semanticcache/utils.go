@@ -301,7 +301,75 @@ func (plugin *Plugin) buildRequestMetadataForCaching(state *cacheState, req *sch
 		return nil, fmt.Errorf("unsupported request type for semantic caching")
 	}
 
+	// identity_scope keeps entries with the identity that wrote them (see
+	// resolveIdentityScope). Like request_family it is set after the params, so a
+	// request body field of the same name can never claim another identity's
+	// scope; with scoping disabled such a field is dropped rather than hashed, so
+	// the key stays the plugin's own in both modes.
+	if state != nil && state.IdentityScope != nil {
+		metadata["identity_scope"] = state.IdentityScope
+	} else {
+		delete(metadata, "identity_scope")
+	}
+
 	return metadata, nil
+}
+
+// responseHasToolCalls reports whether a response (or stream chunk) carries a
+// tool call the client would execute: chat tool_calls on a message or delta,
+// or a Responses API output item of a tool-call type. Server-side tool items
+// (web search, file search, code interpreter, image generation) are not
+// client-executed and do not count.
+func responseHasToolCalls(res *schemas.BifrostResponse) bool {
+	if res == nil {
+		return false
+	}
+	switch {
+	case res.ChatResponse != nil:
+		for _, choice := range res.ChatResponse.Choices {
+			if choice.ChatNonStreamResponseChoice != nil && choice.Message != nil &&
+				choice.Message.ChatAssistantMessage != nil && len(choice.Message.ToolCalls) > 0 {
+				return true
+			}
+			if choice.ChatStreamResponseChoice != nil && choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 {
+				return true
+			}
+		}
+	case res.ResponsesResponse != nil:
+		return responsesOutputHasToolCalls(res.ResponsesResponse.Output)
+	case res.ResponsesStreamResponse != nil:
+		if item := res.ResponsesStreamResponse.Item; item != nil && item.Type != nil && isResponsesToolCallItem(*item.Type) {
+			return true
+		}
+		if full := res.ResponsesStreamResponse.Response; full != nil {
+			return responsesOutputHasToolCalls(full.Output)
+		}
+	}
+	return false
+}
+
+func responsesOutputHasToolCalls(output []schemas.ResponsesMessage) bool {
+	for _, item := range output {
+		if item.Type != nil && isResponsesToolCallItem(*item.Type) {
+			return true
+		}
+	}
+	return false
+}
+
+func isResponsesToolCallItem(t schemas.ResponsesMessageType) bool {
+	switch t {
+	case schemas.ResponsesMessageTypeFunctionCall,
+		schemas.ResponsesMessageTypeCustomToolCall,
+		schemas.ResponsesMessageTypeComputerCall,
+		schemas.ResponsesMessageTypeLocalShellCall,
+		schemas.ResponsesMessageTypeShellCall,
+		schemas.ResponsesMessageTypeApplyPatchCall,
+		schemas.ResponsesMessageTypeMCPCall,
+		schemas.ResponsesMessageTypeMCPApprovalRequest:
+		return true
+	}
+	return false
 }
 
 // extractAttachmentsForCaching collects image/file URLs referenced by the
@@ -994,6 +1062,9 @@ func (plugin *Plugin) extractSpeechParametersToMetadata(params *schemas.SpeechPa
 func (plugin *Plugin) extractEmbeddingParametersToMetadata(params *schemas.EmbeddingParameters, metadata map[string]interface{}) {
 	putIfSet(metadata, "encoding_format", params.EncodingFormat)
 	putIfSet(metadata, "dimensions", params.Dimensions)
+	putIfSet(metadata, "task_type", params.TaskType)
+	putIfSet(metadata, "title", params.Title)
+	putIfSet(metadata, "auto_truncate", params.AutoTruncate)
 	if len(params.ExtraParams) > 0 {
 		maps.Copy(metadata, params.ExtraParams)
 	}

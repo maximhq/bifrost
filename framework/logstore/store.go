@@ -135,6 +135,12 @@ type LogStore interface {
 	// timestamp but greater log ID are included to avoid skipping same-timestamp rows.
 	GetNodeUsageAfter(ctx context.Context, nodeID string, cursor NodeUsageCursor) (*NodeUsageAggregate, error)
 	Update(ctx context.Context, id string, entry any) error
+	// BatchUpdate applies the non-zero fields of each entry onto the existing row
+	// with that ID; rows that do not exist are skipped, never inserted.
+	// content_hidden is the exception: it is always written from the entry, since
+	// it carries the request's final visibility decision and must be able to
+	// clear a flag saved earlier.
+	BatchUpdate(ctx context.Context, entries []*Log) error
 	BulkUpdateCost(ctx context.Context, updates map[string]CostUpdate) error
 	Flush(ctx context.Context, since time.Time) error
 	Close(ctx context.Context) error
@@ -186,6 +192,27 @@ type LogStore interface {
 	// GetAvailableMCPApps returns distinct backend-detected app labels from MCP tool logs.
 	GetAvailableMCPApps(ctx context.Context, limit int, query string) ([]string, error)
 	GetAvailableMCPVirtualKeys(ctx context.Context, limit int, query string) ([]MCPToolLog, error)
+
+	// Agent Gateway log methods.
+	BatchCreateAgentLogsIfNotExists(ctx context.Context, entries []*AgentLog) ([]string, error)
+	// ReconcileAgentCorrelation fills missing task and context IDs from persisted
+	// rows related to the inserted entries. Existing values are never changed.
+	ReconcileAgentCorrelation(ctx context.Context, entries []*AgentLog) error
+	FindAgentLog(ctx context.Context, id string) (*AgentLog, error)
+	FindAgentLogsForDeletion(ctx context.Context, ids []string) ([]*AgentLog, error)
+	ListAgentLogHistory(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogHistoryResult, error)
+	ListAgentLogOperations(ctx context.Context, filter AgentLogHistoryFilter, pagination PaginationOptions) (*AgentLogOperationResult, error)
+	FindAgentLogOperation(ctx context.Context, id string) (*AgentLogOperation, error)
+	GetAgentLogStats(ctx context.Context, filter AgentLogHistoryFilter) (*AgentLogStats, error)
+	GetAgentHistogram(ctx context.Context, filter AgentLogHistoryFilter, bucketSizeSeconds int64) (*AgentHistogramResult, error)
+	GetAgentTopAgents(ctx context.Context, filter AgentLogHistoryFilter, limit int) (*AgentTopAgentsResult, error)
+	GetAgentFilterData(ctx context.Context, dimensions []string, limit int, query string) (*AgentFilterData, error)
+	UpdateAgentLog(ctx context.Context, id string, entry any) error
+	// DeleteAgentLogs deletes the identified rows together with every row sharing
+	// their request IDs, so an operation's correlated stream events never
+	// outlive the aggregate request row shown in the UI.
+	DeleteAgentLogs(ctx context.Context, ids []string) error
+	FlushAgentLogs(ctx context.Context, since time.Time) error
 
 	// Async Job methods
 	CreateAsyncJob(ctx context.Context, job *AsyncJob) error
@@ -250,7 +277,10 @@ func NewLogStore(ctx context.Context, config *Config, logger schemas.Logger) (Lo
 			_ = inner.Close(ctx)
 			return nil, fmt.Errorf("failed to ping object store: %w", err)
 		}
-		return newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields), nil
+		hybrid := newHybridLogStore(inner, objStore, config.ObjectStorage.GetPrefix(), logger, config.ObjectStorageExcludeFields, config.ObjectStorageExcludeRequestTypes)
+		hybrid.setObjectFormat(config.ObjectStorage.ResolvedFormat(), config.ObjectStorage.ResolvedCompression())
+		hybrid.singleFormat = config.ObjectStorage.Type == objectstore.StoreTypeGCS // gcs rejects parquet, so no object is ever in the other format
+		return hybrid, nil
 	}
 	return inner, nil
 }

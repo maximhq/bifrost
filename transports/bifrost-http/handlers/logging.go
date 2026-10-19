@@ -22,7 +22,7 @@ import (
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	"github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/sync/errgroup"
 	"gorm.io/gorm"
@@ -597,7 +597,7 @@ func (h *LoggingHandler) getLogSessionByID(ctx *fasthttp.RequestCtx) {
 
 	for i, log := range result.Logs {
 		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
-			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName)
+			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName, log.Object)
 		}
 		if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 			result.Logs[i].VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
@@ -690,9 +690,11 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	parseAgentNamesFilter(ctx, filters)
 	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
 		filters.SessionID = sessionID
 	}
+	parseAgentCorrelationIDFilter(ctx, filters)
 	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
@@ -705,7 +707,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := ResolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period, string(ctx.QueryArgs().Peek("timezone"))); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 		}
@@ -748,6 +750,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	if cacheHitTypes := string(ctx.QueryArgs().Peek("cache_hit_types")); cacheHitTypes != "" {
 		filters.CacheHitTypes = parseCommaSeparated(cacheHitTypes)
 	}
+	parseGuardrailOutcomesFilter(ctx, filters)
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
@@ -859,7 +862,7 @@ func (h *LoggingHandler) getLogs(ctx *fasthttp.RequestCtx) {
 	// Add selected key, virtual key, and routing rule to the result
 	for i, log := range result.Logs {
 		if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
-			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName)
+			result.Logs[i].SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName, log.Object)
 		}
 		if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 			result.Logs[i].VirtualKey = findRedactedVirtualKey(redactedVirtualKeys, *log.VirtualKeyID, *log.VirtualKeyName)
@@ -903,7 +906,7 @@ func (h *LoggingHandler) getLogByID(ctx *fasthttp.RequestCtx) {
 	// populated by GetLog) so the detail view receives the same structure as the list endpoint.
 	if log.SelectedKeyID != "" && log.SelectedKeyName != "" {
 		redactedKeys := h.redactedKeysManager.GetAllRedactedKeys(ctx, []string{log.SelectedKeyID})
-		log.SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName)
+		log.SelectedKey = findRedactedKey(redactedKeys, log.SelectedKeyID, log.SelectedKeyName, log.Object)
 	}
 	if log.VirtualKeyID != nil && log.VirtualKeyName != nil && *log.VirtualKeyID != "" && *log.VirtualKeyName != "" {
 		redactedVirtualKeys := h.redactedKeysManager.GetAllRedactedVirtualKeys(ctx, []string{*log.VirtualKeyID})
@@ -978,9 +981,11 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	parseAgentNamesFilter(ctx, filters)
 	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
 		filters.SessionID = sessionID
 	}
+	parseAgentCorrelationIDFilter(ctx, filters)
 	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
@@ -993,7 +998,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := ResolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period, string(ctx.QueryArgs().Peek("timezone"))); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 		}
@@ -1036,6 +1041,7 @@ func (h *LoggingHandler) getLogsStats(ctx *fasthttp.RequestCtx) {
 	if cacheHitTypes := string(ctx.QueryArgs().Peek("cache_hit_types")); cacheHitTypes != "" {
 		filters.CacheHitTypes = parseCommaSeparated(cacheHitTypes)
 	}
+	parseGuardrailOutcomesFilter(ctx, filters)
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
@@ -1147,6 +1153,14 @@ func calculateBucketSize(start, end *time.Time) int64 {
 	return logstore.DefaultBucketSize(start, end)
 }
 
+func parseAgentNamesFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	filters.AgentNames = parseCommaSeparated(string(ctx.QueryArgs().Peek("agent_names")))
+}
+
+func parseAgentCorrelationIDFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	filters.AgentCorrelationID = strings.TrimSpace(string(ctx.QueryArgs().Peek("agent_correlation_id")))
+}
+
 // parseComplexityFilters extracts the structured complexity filters shared by
 // log search, aggregate, and histogram endpoints.
 func parseComplexityFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
@@ -1164,6 +1178,15 @@ func parseComplexityFilters(ctx *fasthttp.RequestCtx, filters *logstore.SearchFi
 func parseToolCallNamesFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
 	if names := string(ctx.QueryArgs().Peek("tool_call_names")); names != "" {
 		filters.ToolCallNames = parseCommaSeparated(names)
+	}
+}
+
+// parseGuardrailOutcomesFilter reads the comma-separated guardrail_outcomes
+// query param ("blocked", "detected") into filters. Shared like
+// parseToolCallNamesFilter so the guardrail incidents list and its counts agree.
+func parseGuardrailOutcomesFilter(ctx *fasthttp.RequestCtx, filters *logstore.SearchFilters) {
+	if outcomes := string(ctx.QueryArgs().Peek("guardrail_outcomes")); outcomes != "" {
+		filters.GuardrailOutcomes = parseCommaSeparated(outcomes)
 	}
 }
 
@@ -1226,9 +1249,11 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if apps := string(ctx.QueryArgs().Peek("apps")); apps != "" {
 		filters.Apps = parseStringArrayParam(apps)
 	}
+	parseAgentNamesFilter(ctx, filters)
 	if sessionID := strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id"))); sessionID != "" {
 		filters.SessionID = sessionID
 	}
+	parseAgentCorrelationIDFilter(ctx, filters)
 	parseComplexityFilters(ctx, filters)
 	if startTime := string(ctx.QueryArgs().Peek("start_time")); startTime != "" {
 		if t, err := time.Parse(time.RFC3339Nano, startTime); err == nil {
@@ -1241,7 +1266,7 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := ResolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period, string(ctx.QueryArgs().Peek("timezone"))); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 		}
@@ -1284,6 +1309,7 @@ func parseHistogramFilters(ctx *fasthttp.RequestCtx) *logstore.SearchFilters {
 	if cacheHitTypes := string(ctx.QueryArgs().Peek("cache_hit_types")); cacheHitTypes != "" {
 		filters.CacheHitTypes = parseCommaSeparated(cacheHitTypes)
 	}
+	parseGuardrailOutcomesFilter(ctx, filters)
 	if contentSearch := string(ctx.QueryArgs().Peek("content_search")); contentSearch != "" {
 		filters.ContentSearch = contentSearch
 	}
@@ -1502,10 +1528,23 @@ func (h *LoggingHandler) getLogsDimensionLatencyHistogram(ctx *fasthttp.RequestC
 	SendJSON(ctx, result)
 }
 
+// maintenanceDropReporter is the optional LogManager extension that splits out
+// drops incurred while the log writer was paused for a logstore migration. It is
+// asserted rather than added to LogManager so other implementations keep compiling.
+type maintenanceDropReporter interface {
+	GetDroppedDuringMaintenance(ctx context.Context) int64
+}
+
 // getDroppedRequests handles GET /api/logs/dropped - Get the number of dropped requests
 func (h *LoggingHandler) getDroppedRequests(ctx *fasthttp.RequestCtx) {
-	droppedRequests := h.logManager.GetDroppedRequests(ctx)
-	SendJSON(ctx, map[string]int64{"dropped_requests": droppedRequests})
+	// Read the maintenance subset before the total: a drop counted between the
+	// two reads then lands only in the total, so the subset never exceeds it.
+	response := map[string]int64{}
+	if reporter, ok := h.logManager.(maintenanceDropReporter); ok {
+		response["dropped_during_maintenance"] = reporter.GetDroppedDuringMaintenance(ctx)
+	}
+	response["dropped_requests"] = h.logManager.GetDroppedRequests(ctx)
+	SendJSON(ctx, response)
 }
 
 // ParseRankingLimit reads the row-cap query parameters shared by the ranking
@@ -1735,8 +1774,8 @@ func (h *LoggingHandler) applyCurrentRankingNames(ctx context.Context, result *l
 	ids := make([]string, 0, len(result.Rankings))
 	for _, row := range result.Rankings {
 		// The redacted lookups return every row for an empty id list, so only
-		// real entity ids are sent, never "" or the Unassigned bucket.
-		if row.ID != "" && row.ID != logstore.UnassignedDimensionID {
+		// real entity ids are sent, never "" or the Unassigned / Other buckets.
+		if row.ID != "" && row.ID != logstore.UnassignedDimensionID && row.ID != logstore.OtherDimensionID {
 			ids = append(ids, row.ID)
 		}
 	}
@@ -2431,10 +2470,15 @@ func (h *LoggingHandler) recalculateLogCosts(ctx *fasthttp.RequestCtx) {
 
 	filters := payload.Filters.SearchFilters
 	if payload.Filters.Period != "" {
-		if start, end := ResolvePeriod(payload.Filters.Period); start != nil {
-			filters.StartTime = start
-			filters.EndTime = end
+		// An unknown period must not fall through to an unbounded window: that
+		// would recalculate every log instead of the range the caller meant.
+		start, end := ResolvePeriod(payload.Filters.Period, payload.Filters.Timezone)
+		if start == nil {
+			SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("Invalid period: %s", payload.Filters.Period))
+			return
 		}
+		filters.StartTime = start
+		filters.EndTime = end
 	}
 	// MissingCostOnly is driven by the request payload:
 	//   true  -> only logs that currently have no cost are recalculated
@@ -2621,35 +2665,22 @@ func recalcJobStatusFromRow(job *tables.TableSidekiqJob) recalcJobStatus {
 
 // Helper functions
 
-// findRedactedKey matches a redacted provider key or returns a deleted-key placeholder.
-func findRedactedKey(redactedKeys []schemas.Key, id string, name string) *schemas.Key {
-	if len(redactedKeys) == 0 {
-		return &schemas.Key{
-			ID: id,
-			Name: func() string {
-				if name != "" {
-					return name + " (deleted)"
-				} else {
-					return ""
-				}
-			}(),
-		}
-	}
+// findRedactedKey matches a redacted provider key, else returns the logged name, marked deleted unless the log is passthrough.
+func findRedactedKey(redactedKeys []schemas.Key, id string, name string, object string) *schemas.Key {
 	for _, key := range redactedKeys {
 		if key.ID == id {
 			return &key
 		}
 	}
-	return &schemas.Key{
-		ID: id,
-		Name: func() string {
-			if name != "" {
-				return name + " (deleted)"
-			} else {
-				return ""
-			}
-		}(),
+	if name != "" && !isPassthroughObject(object) {
+		name += " (deleted)"
 	}
+	return &schemas.Key{ID: id, Name: name}
+}
+
+// isPassthroughObject reports whether a log's object type is a passthrough request type.
+func isPassthroughObject(object string) bool {
+	return object == string(schemas.PassthroughRequest) || object == string(schemas.PassthroughStreamRequest)
 }
 
 // findRedactedVirtualKey matches a redacted virtual key or returns a deleted-key placeholder.
@@ -2782,7 +2813,14 @@ type recalculateCostRequest struct {
 
 type recalculateCostFilters struct {
 	logstore.SearchFilters
-	Period string `json:"period,omitempty"`
+	Period   string `json:"period,omitempty"`
+	Timezone string `json:"timezone,omitempty"` // IANA zone for calendar periods; empty means UTC
+}
+
+func parseMCPCorrelationFilters(ctx *fasthttp.RequestCtx, filters *logstore.MCPToolLogSearchFilters) {
+	filters.AgentNames = parseCommaSeparated(string(ctx.QueryArgs().Peek("agent_names")))
+	filters.SessionID = strings.TrimSpace(string(ctx.QueryArgs().Peek("session_id")))
+	filters.AgentCorrelationID = strings.TrimSpace(string(ctx.QueryArgs().Peek("agent_correlation_id")))
 }
 
 // parseMCPFiltersAndPagination parses MCP tool log filters and pagination from query parameters.
@@ -2814,6 +2852,7 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
 		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
 	}
+	parseMCPCorrelationFilters(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
@@ -2838,7 +2877,7 @@ func parseMCPFiltersAndPagination(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLo
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := ResolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period, string(ctx.QueryArgs().Peek("timezone"))); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 			startTimeErr = nil
@@ -2946,6 +2985,7 @@ func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilter
 	if llmRequestIDs := string(ctx.QueryArgs().Peek("llm_request_ids")); llmRequestIDs != "" {
 		filters.LLMRequestIDs = parseCommaSeparated(llmRequestIDs)
 	}
+	parseMCPCorrelationFilters(ctx, filters)
 	if userAgents := string(ctx.QueryArgs().Peek("user_agents")); userAgents != "" {
 		filters.UserAgents = parseStringArrayParam(userAgents)
 	}
@@ -2972,7 +3012,7 @@ func parseMCPFilters(ctx *fasthttp.RequestCtx) (*logstore.MCPToolLogSearchFilter
 		}
 	}
 	if period := string(ctx.QueryArgs().Peek("period")); period != "" {
-		if start, end := ResolvePeriod(period); start != nil {
+		if start, end := ResolvePeriod(period, string(ctx.QueryArgs().Peek("timezone"))); start != nil {
 			filters.StartTime = start
 			filters.EndTime = end
 			timeParseErr = nil
@@ -3247,6 +3287,11 @@ func (h *LoggingHandler) getMCPLogsFilterData(ctx *fasthttp.RequestCtx) {
 
 // deleteMCPLogs handles DELETE /api/mcp-logs - Delete MCP tool logs by their IDs
 func (h *LoggingHandler) deleteMCPLogs(ctx *fasthttp.RequestCtx) {
+	if isAuthBypassed(ctx) {
+		SendError(ctx, fasthttp.StatusForbidden, "Deleting MCP tool logs requires an authenticated admin session; authentication was bypassed for this request")
+		return
+	}
+
 	var req struct {
 		IDs []string `json:"ids"`
 	}

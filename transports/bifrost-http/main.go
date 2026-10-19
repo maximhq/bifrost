@@ -59,15 +59,16 @@ import (
 	"os"
 	"strings"
 	"time"
+	_ "time/tzdata" // Calendar log periods need IANA zones and the Alpine image ships none; clickhouse-go embeds this too, but do not rely on that
 
 	_ "go.uber.org/automaxprocs" // Automatically set GOMAXPROCS based on container cgroup limits
 
 	bifrost "github.com/maximhq/bifrost/core"
 	schemas "github.com/maximhq/bifrost/core/schemas"
-	"github.com/maximhq/bifrost/transports/bifrost-http/handlers"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
-	"github.com/maximhq/bifrost/transports/bifrost-http/profiling"
-	bifrostServer "github.com/maximhq/bifrost/transports/bifrost-http/server"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/handlers"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/profiling"
+	bifrostServer "github.com/maximhq/bifrost/transports/v2/bifrost-http/server"
 )
 
 //go:embed all:ui

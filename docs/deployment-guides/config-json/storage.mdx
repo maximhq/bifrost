@@ -237,6 +237,7 @@ ClickHouse is a **`logs_store`-only** backend. The `config_store` supports only 
 | `protocol` | `native` | Wire protocol: `"native"` or `"http"` |
 | `secure` | `false` | Enable TLS |
 | `dial_timeout` | `10000` | Connection dial timeout in **milliseconds** |
+| `max_query_size` | `16777216` | ClickHouse `max_query_size` setting in **bytes**. Team-scoped log reads put every member and virtual key id in the SQL, so large teams need more than the 256 KiB server default. Lower it if your ClickHouse profile caps this setting |
 | `cluster` | - | Optional cluster name. When set, DDL runs `ON CLUSTER` with replicated table engines for a clustered ClickHouse deployment |
 
 **TLS + HTTP protocol** against a managed ClickHouse (e.g. ClickHouse Cloud):
@@ -337,6 +338,7 @@ Set `matview_refresh_interval` (Go duration string) to slow down refreshes when 
 
 **Notes**
 
+- The interval is a **cluster-wide** cadence. Every replica runs its own refresh ticker, but each refresh is recorded in the database (`matview_refresh_state`), and a replica skips any view whose last successful refresh, by any replica, finished less than `matview_refresh_interval` ago. So adding replicas does not add refreshes, and a pass that takes longer than the interval is followed by a quiet gap of at least the interval rather than an immediate next pass. A failed or cancelled refresh does not count, so that view is retried on the next tick.
 - Refreshes are already **activity-gated**: when no INSERT/UPDATE/DELETE has hit the `logs` table since the last refresh, the scheduled tick short-circuits without touching the views. So idle clusters don't pay for the configured cadence — they only pay when there's actual log activity.
 - Dashboard freshness lag will be **at most** the configured interval. Stats and histograms over the last 24 hours come straight from the raw `logs` table (no matview), so short-window dashboards stay real-time regardless of this setting.
 - A 10-minute safety-net refresh runs even on totally idle clusters so the rolling 30-day filter dropdown window evicts aged-out values.
@@ -354,6 +356,28 @@ Set `matview_refresh_interval` (Go duration string) to slow down refreshes when 
 **When to turn it off:**
 
 - You don't use the Bifrost dashboard (e.g. Bifrost runs headless behind your own observability stack). With `"off"`, the views are neither created nor refreshed, and any dashboard query transparently uses the raw tables.
+
+#### Materialized views during upgrades
+
+Schema migrations pause materialized-view refreshes on every replica for as long as they run. On a large `logs` table a single refresh pass can take many minutes, and while it runs it holds a snapshot that every `CREATE INDEX CONCURRENTLY` in the database waits on, plus a lock that `ALTER TABLE logs` cannot get past. The pause works during a rolling upgrade too: older replicas skip their refresh when the migrating pod holds the refresh lock.
+
+A refresh pass that is already running when migrations start is given `migration_matview_cancel_after` to finish. After that its `REFRESH` statements are cancelled. A cancelled concurrent refresh rolls back harmlessly: the view keeps its previous contents and is refreshed again once migrations finish. Sessions are never terminated, and nothing other than a `REFRESH MATERIALIZED VIEW` is ever cancelled.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `migration_matview_cancel_after` | `"60s"` | How long migrations (log store, config store and enterprise) wait for an in-flight refresh pass before cancelling it. Config store migrations read it from `logs_store` in config.json; if the log store is configured only through the UI/database, config store migrations use the 60s default because they run before that configuration can be read. Accepts a Go duration string. Set `"off"` to never cancel: migrations then wait for the pass to end on its own, and if it can't be paused within 10 minutes they proceed without the pause. |
+
+#### Lock waits during upgrades
+
+A migration that alters a table (`ALTER TABLE logs ADD COLUMN`, for example) needs an exclusive lock, which it only gets in a gap between other sessions' queries on that table. Each attempt waits at most 5 seconds, then the step backs off and retries. The first timeout logs the sessions holding the table, with a `pg_cancel_backend` hint, so an operator can cancel an old replica's long read instead of waiting it out. When the budget runs out the process exits and the next start retries from where it left off.
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `migration_lock_retry_budget` | `"10m"` | How long one migration step keeps retrying after lock timeouts. Set on `config_store.config` for config store and enterprise migrations and on `logs_store.config` for log store migrations. Accepts a Go duration string. Raise it on large deployments where older replicas run long queries during a rolling upgrade, and keep the Kubernetes startup probe (`startupProbe` in the Helm chart, 30 minutes by default) at least as long, or the pod is killed before the budget is spent. |
+
+<Note>
+Upgrading to a release **without** this pause (for example 2.2.x to 2.3.0) on a large log store: the old replicas keep refreshing and the new pods' migrations can stall behind them. Before you roll, either restart the old replicas with `matview_refresh_interval` set to `"off"` (restore it after the upgrade), or have an operator cancel `REFRESH MATERIALIZED VIEW` statements from the old pods with `pg_cancel_backend` while the new pods migrate.
+</Note>
 
 ### Object Storage for Logs
 
@@ -428,7 +452,9 @@ The IAM user or role needs the following permissions on your bucket:
 |-------|-------------|
 | `bucket` | S3 bucket name (supports `env.` prefix) |
 | `prefix` | Key prefix for stored objects (default: `"bifrost"`) |
-| `compress` | Enable gzip compression (default: `false`) |
+| `compress` | Legacy gzip switch, same as `"compression": "gzip"` (default: `false`) |
+| `format` | Payload object format: `json` (default) or `parquet` (S3 only). See [Log exports](/enterprise/log-exports#payload-format-json-or-parquet) |
+| `compression` | `none`, `gzip`, `snappy` or `zstd`. JSON allows `none` or `gzip` (whole object); Parquet uses it as the page codec (default `snappy`) |
 | `region` | AWS region |
 | `access_key_id` | AWS access key ID (omit for default credential chain) |
 | `secret_access_key` | AWS secret access key |

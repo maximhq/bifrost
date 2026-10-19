@@ -167,6 +167,8 @@ func TestExtractOpenAIModelRetrieveParams(t *testing.T) {
 		{"header wins over the path", "gpt-5", "azure", schemas.ModelProvider("azure"), "gpt-5"},
 		{"header strips its own prefix", "myproxy/gpt-5", "myproxy", schemas.ModelProvider("myproxy"), "gpt-5"},
 		{"unknown prefix stays in the model", "myproxy/gpt-5", "", schemas.OpenAI, "myproxy/gpt-5"},
+		{"encoded provider/model (what OpenAI SDKs send)", "anthropic%2Fclaude-sonnet-4-5", "", schemas.Anthropic, "claude-sonnet-4-5"},
+		{"encoded namespaced id under the header", "openai%2Fgpt-oss-120b", "groq", schemas.ModelProvider("groq"), "openai/gpt-oss-120b"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := &fasthttp.RequestCtx{}
@@ -186,6 +188,14 @@ func TestExtractOpenAIModelRetrieveParams(t *testing.T) {
 				t.Errorf("model = %q, want %q", req.Model, test.wantModel)
 			}
 		})
+	}
+}
+
+func TestExtractOpenAIModelRetrieveParamsRejectsMalformedEncoding(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.SetUserValue("model", "openai%2")
+	if err := extractOpenAIModelRetrieveParams(ctx, listModelsCtx(), &schemas.BifrostModelRetrieveRequest{}); err == nil {
+		t.Fatal("expected an error for a malformed percent-encoding")
 	}
 }
 

@@ -171,10 +171,11 @@ export default function LoggingView() {
 									Disable Content Logging
 								</label>
 								<p className="text-muted-foreground text-sm">
-									When enabled, only usage metadata (latency, cost, token count, status, routing IDs, etc.) is logged. Request/response
-									content (messages, params, tool calls, and any raw provider bytes) is dropped from log records, even when{" "}
-									<code className="text-xs">store_raw_request_response</code> is on. Raw-byte send-back to callers via{" "}
-									<code className="text-xs">send_back_raw_*</code> is unaffected.
+									Applies to LLM, MCP, and agent logs. When enabled, only usage metadata (latency, cost, token count, status, routing IDs,
+									etc.) is logged. Request/response content (messages, params, tool calls, and any raw provider bytes) is dropped from log
+									records, even when <code className="text-xs">store_raw_request_response</code> is on. Raw-byte send-back to callers via{" "}
+									<code className="text-xs">send_back_raw_*</code> is unaffected. Agent protocol bodies follow this setting; upstream raw
+									captures also require Capture Raw Request and Response in Agent Gateway settings.
 								</p>
 							</div>
 							<Switch
@@ -340,7 +341,7 @@ export default function LoggingView() {
 				)}
 			</div>
 
-			<div className="flex justify-end pt-2">
+			<div className="bg-card sticky bottom-0 flex justify-end py-2">
 				<Button onClick={handleSave} disabled={!hasChanges || isLoading || !hasSettingsUpdateAccess}>
 					{isLoading ? "Saving..." : "Save Changes"}
 				</Button>

@@ -58,6 +58,8 @@ const (
 	AnthropicMCPClientBetaHeader = "mcp-client-2025-11-20"
 	// AnthropicMCPClientBetaHeaderDeprecated is the previous MCP beta header (kept for fallback).
 	AnthropicMCPClientBetaHeaderDeprecated = "mcp-client-2025-04-04"
+	// AnthropicMCPClientInlineToolsBetaHeader is required for an mcp_toolset defined by value in a tool_addition block.
+	AnthropicMCPClientInlineToolsBetaHeader = "mcp-client-2026-09-15"
 	// AnthropicPromptCachingScopeBetaHeader is required for prompt caching scope.
 	AnthropicPromptCachingScopeBetaHeader = "prompt-caching-scope-2026-01-05"
 	// AnthropicCompactionBetaHeader is required for compaction.
@@ -106,6 +108,10 @@ const (
 	// while the tools array (and the cached prefix) stays fixed. Native Anthropic surface
 	// (Claude API direct + Claude in Amazon Bedrock via Mantle); Bedrock is Opus 5 only.
 	AnthropicMidConversationToolChangesBetaHeader = "mid-conversation-tool-changes-2026-07-01"
+	// AnthropicInlineToolsBetaHeader lets a tool_addition block carry the tool by value
+	// ({type: tool_definition, definition: {...}}). It also enables the by-reference blocks,
+	// so it can be sent alone. Claude API direct (+ Bedrock Mantle, which forwards the body).
+	AnthropicInlineToolsBetaHeader = "inline-tools-2026-09-15"
 	// AnthropicMidConversationOutputConfigBetaHeader enables output_config.effort on a
 	// role:"system" message inside messages (per-message effort), so the effort level can
 	// change from that point on without invalidating the cached prefix. Claude API direct;
@@ -143,6 +149,7 @@ const (
 	// Mid-conversation tool changes (Opus 5).
 	AnthropicMidConversationToolChangesBetaHeaderPrefix  = "mid-conversation-tool-changes-"
 	AnthropicMidConversationOutputConfigBetaHeaderPrefix = "mid-conversation-output-config-"
+	AnthropicInlineToolsBetaHeaderPrefix                 = "inline-tools-"
 )
 
 // ProviderFeatureSupport defines which Anthropic features a given provider supports.
@@ -1197,7 +1204,13 @@ func (mc AnthropicContent) MarshalJSON() ([]byte, error) {
 		return providerUtils.MarshalSorted(*mc.ContentStr)
 	}
 	if mc.ContentObj != nil {
-		return providerUtils.MarshalSorted(mc.ContentObj)
+		data, err := providerUtils.MarshalSorted(mc.ContentObj)
+		// Anthropic requires tool_references on a search result even when the search
+		// found nothing; omitempty would drop an empty list.
+		if err == nil && mc.ContentObj.Type == AnthropicContentBlockTypeToolSearchToolSearchResult && len(mc.ContentObj.ToolReferences) == 0 {
+			return providerUtils.SetRawJSONField(data, "tool_references", []byte("[]"))
+		}
+		return data, err
 	}
 	if mc.ContentBlocks != nil {
 		return providerUtils.MarshalSorted(mc.ContentBlocks)
@@ -1253,6 +1266,7 @@ const (
 	AnthropicContentBlockTypeBashCodeExecutionToolResult       AnthropicContentBlockType = "bash_code_execution_tool_result"
 	AnthropicContentBlockTypeTextEditorCodeExecutionToolResult AnthropicContentBlockType = "text_editor_code_execution_tool_result"
 	AnthropicContentBlockTypeToolSearchToolResult              AnthropicContentBlockType = "tool_search_tool_result"
+	AnthropicContentBlockTypeToolSearchToolSearchResult        AnthropicContentBlockType = "tool_search_tool_search_result" // content object of a tool_search_tool_result
 	AnthropicContentBlockTypeToolReference                     AnthropicContentBlockType = "tool_reference"
 	AnthropicContentBlockTypeContainerUpload                   AnthropicContentBlockType = "container_upload"
 	AnthropicContentBlockTypeAdvisorToolResult                 AnthropicContentBlockType = "advisor_tool_result"
@@ -1261,7 +1275,9 @@ const (
 	AnthropicContentBlockTypeThinking                          AnthropicContentBlockType = "thinking"
 	AnthropicContentBlockTypeRedactedThinking                  AnthropicContentBlockType = "redacted_thinking"
 	AnthropicContentBlockTypeCompaction                        AnthropicContentBlockType = "compaction"
-	AnthropicContentBlockTypeFallback                          AnthropicContentBlockType = "fallback" // server-side fallback boundary marker (server-side-fallback-2026-06-01)
+	AnthropicContentBlockTypeFallback                          AnthropicContentBlockType = "fallback"      // server-side fallback boundary marker (server-side-fallback-2026-06-01)
+	AnthropicContentBlockTypeToolAddition                      AnthropicContentBlockType = "tool_addition" // role:"system" only; mid-conversation-tool-changes / inline-tools betas
+	AnthropicContentBlockTypeToolRemoval                       AnthropicContentBlockType = "tool_removal"  // role:"system" only; tool is always a reference
 
 	// code_execution inner result-content discriminators (the "content" object on
 	// a *_code_execution_tool_result block; ContentObj.Type carries these).
@@ -1375,7 +1391,30 @@ type AnthropicContentBlock struct {
 	From    *AnthropicFallbackModel   `json:"from,omitempty"`    // declining model
 	To      *AnthropicFallbackModel   `json:"to,omitempty"`      // model that continues
 	Trigger *AnthropicFallbackTrigger `json:"trigger,omitempty"` // why the handoff happened
+
+	// tool_addition / tool_removal block — the tool named or defined
+	Tool *AnthropicToolChangeTarget `json:"tool,omitempty"`
+	// compaction block — server-recorded tool_addition / tool_removal entries of the compacted range, replayed verbatim
+	ToolChanges []AnthropicContentBlock `json:"tool_changes,omitempty"`
 }
+
+// AnthropicToolChangeTarget is the `tool` field of a tool_addition / tool_removal block, a
+// discriminated union on Type: tool_reference (Name), mcp_tool_reference (ServerName, Name),
+// mcp_toolset_reference (ServerName), tool_definition (Definition, any tools[] entry).
+// https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages
+type AnthropicToolChangeTarget struct {
+	Type       string         `json:"type"`
+	Name       *string        `json:"name,omitempty"`
+	ServerName *string        `json:"server_name,omitempty"`
+	Definition *AnthropicTool `json:"definition,omitempty"`
+}
+
+const (
+	AnthropicToolChangeTargetTypeToolReference       = "tool_reference"
+	AnthropicToolChangeTargetTypeMCPToolReference    = "mcp_tool_reference"
+	AnthropicToolChangeTargetTypeMCPToolsetReference = "mcp_toolset_reference"
+	AnthropicToolChangeTargetTypeToolDefinition      = "tool_definition"
+)
 
 // DiscoveredToolReferences returns the tool_reference blocks a
 // tool_search_tool_result carries, accepting both shapes the payload arrives in.
@@ -1392,8 +1431,8 @@ type AnthropicContentBlock struct {
 // ToolReferences is declared flat, so live traffic never populates it:
 // AnthropicContent.UnmarshalJSON's single-object fallback parks the inner object in
 // Content.ContentBlocks, one level below where every reader was looking. Bifrost's
-// own rebuild (convertBifrostToolSearchCallToAnthropicBlocks) does set the flat
-// field, so both are honoured, flat first. The error variant
+// own rebuild (anthropicToolSearchResultBlock) nests it in Content.ContentObj; the
+// flat field is still honoured first for older payloads. The error variant
 // (tool_search_tool_result_error) legitimately carries none and yields nil.
 func (b *AnthropicContentBlock) DiscoveredToolReferences() []AnthropicContentBlock {
 	if b == nil {
@@ -1404,6 +1443,9 @@ func (b *AnthropicContentBlock) DiscoveredToolReferences() []AnthropicContentBlo
 	}
 	if b.Content == nil {
 		return nil
+	}
+	if b.Content.ContentObj != nil && len(b.Content.ContentObj.ToolReferences) > 0 {
+		return b.Content.ContentObj.ToolReferences
 	}
 	for _, inner := range b.Content.ContentBlocks {
 		if len(inner.ToolReferences) > 0 {
@@ -2247,6 +2289,8 @@ type AnthropicStreamDelta struct {
 	// Container is the code-execution sandbox container, surfaced on the final
 	// message_delta of a response that used the code execution tool.
 	Container *AnthropicResponseContainer `json:"container,omitempty"`
+	// SafeguardResults carries Claude Code's auto-mode verdicts on the final message_delta.
+	SafeguardResults json.RawMessage `json:"safeguard_results,omitempty"`
 }
 
 // ==================== MODEL TYPES ====================

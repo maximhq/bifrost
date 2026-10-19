@@ -127,8 +127,9 @@ type Profile struct {
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
 
-	// ExportRawPayloads attaches raw provider bodies to LLM spans. Off by default;
-	// requires store_raw_request_response and is suppressed by disable_content_logging.
+	// ExportRawPayloads attaches captured provider or agent bodies to operation
+	// spans. Off by default; requires the corresponding raw-storage setting and
+	// is suppressed by disable_content_logging.
 	ExportRawPayloads bool `json:"export_raw_payloads,omitempty"`
 
 	// ExcludedAttributes lists span-attribute names to drop before export, matched
@@ -958,13 +959,15 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 			if t.metricsExporter != nil {
 				p.recordMetricsFromTrace(ctx, t.metricsExporter, trace, t.overheadBreakdownEnabled)
 				p.recordMCPMetricsFromTrace(ctx, t.metricsExporter, trace)
+				p.recordA2AMetricsFromTrace(ctx, t.metricsExporter, trace)
 			}
 			if t.client == nil || t.breakerOpen() {
 				return
 			}
 			// Free when unconfigured: an empty list returns the trace unchanged.
+			disableContent := t.disableContentLogging || schemas.ContentLoggingDisabledForTrace(trace)
 			traceForTarget := schemas.StripTraceAttributes(trace, t.excludedAttributes)
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, traceForTarget, t.requestHeaders, t.disableContentLogging, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, traceForTarget, t.requestHeaders, disableContent, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
 			// Again after conversion: it adds root-span attributes of its own
 			// (session.id, request id, instance attrs, captured headers).
 			stripExcludedFromResourceSpan(resourceSpan, t.excludedAttributes)
@@ -1305,6 +1308,63 @@ func (p *OtelPlugin) recordMCPMetricsFromTrace(ctx context.Context, exporter *Me
 			durationSeconds = span.EndTime.Sub(span.StartTime).Seconds()
 		}
 		exporter.RecordMCPOperationDuration(ctx, durationSeconds, mcpAttrs...)
+	}
+}
+
+// buildA2ASpanAttrs builds the duration-metric dimensions for one Agent
+// operation span. Every sample carries the Bifrost operation name; JSON-RPC
+// operations additionally carry their strict-v1 method name.
+func buildA2ASpanAttrs(span *schemas.Span) []attribute.KeyValue {
+	attrs := span.Attributes
+	out := []attribute.KeyValue{
+		attribute.String(schemas.AttrBifrostA2AOperationName, schemas.GetStringAttr(attrs, schemas.AttrBifrostA2AOperationName)),
+	}
+	if method := schemas.GetStringAttr(attrs, schemas.AttrA2AMethodName); method != "" {
+		out = append(out, attribute.String(schemas.AttrA2AMethodName, method))
+	}
+	if transport := schemas.GetStringAttr(attrs, schemas.AttrBifrostA2AUpstreamTransport); transport != "" {
+		out = append(out, attribute.String(schemas.AttrBifrostA2AUpstreamTransport, transport))
+	}
+	// Governance identity: bifrost.* span attrs → flat metric label names.
+	for spanKey, labelKey := range mcpGovernanceLabelMap {
+		if v := schemas.GetStringAttr(attrs, spanKey); v != "" {
+			out = append(out, attribute.String(labelKey, v))
+		}
+	}
+	return out
+}
+
+// recordA2AMetricsFromTrace records the duration metric once per A2A op span.
+// Called from Inject alongside recordMCPMetricsFromTrace.
+func (p *OtelPlugin) recordA2AMetricsFromTrace(ctx context.Context, exporter *MetricsExporter, trace *schemas.Trace) {
+	if trace == nil || exporter == nil {
+		return
+	}
+	for _, span := range trace.Spans {
+		if span == nil || span.Kind != schemas.SpanKindA2AOperation {
+			continue
+		}
+		// Skip un-enriched spans so we never emit an empty operation dimension.
+		if schemas.GetStringAttr(span.Attributes, schemas.AttrBifrostA2AOperationName) == "" {
+			continue
+		}
+		a2aAttrs := buildA2ASpanAttrs(span)
+		if span.Status == schemas.SpanStatusError {
+			errorType := schemas.GetStringAttr(span.Attributes, schemas.AttrErrorTypeSpec)
+			if errorType == "" {
+				errorType = "_OTHER"
+			}
+			a2aAttrs = append(a2aAttrs, attribute.String(schemas.AttrErrorTypeSpec, errorType))
+		}
+		// Prefer the gateway-measured wire latency over span wall-time (which
+		// covers the PostHooks). Fall back to wall-time when it's absent.
+		var durationSeconds float64
+		if opMs := schemas.GetIntAttr(span.Attributes, schemas.AttrBifrostA2AOperationDurationMs); opMs > 0 {
+			durationSeconds = float64(opMs) / 1000.0
+		} else if !span.StartTime.IsZero() && !span.EndTime.IsZero() {
+			durationSeconds = span.EndTime.Sub(span.StartTime).Seconds()
+		}
+		exporter.RecordA2AOperationDuration(ctx, durationSeconds, a2aAttrs...)
 	}
 }
 

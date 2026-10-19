@@ -2,17 +2,27 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
+	"github.com/mark3labs/mcp-go/server"
+	"github.com/maximhq/bifrost/core/network"
+	"github.com/maximhq/bifrost/core/network/proxytest"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -619,7 +629,7 @@ func TestCloseAndMarkNeedsReauth_PerCallSharedOAuth_ReturnsReconnectNotApplicabl
 // carries no dial guard at all.
 func TestBuildTLSHTTPClientNeverFallsBackToUnguardedDefault(t *testing.T) {
 	for _, tlsCfg := range []*schemas.MCPTLSConfig{nil, {InsecureSkipVerify: true}} {
-		httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(tlsCfg)
+		httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{TLSConfig: tlsCfg})
 		require.NoError(t, err)
 		require.NotNil(t, httpClient)
 
@@ -634,7 +644,7 @@ func TestBuildTLSHTTPClientNeverFallsBackToUnguardedDefault(t *testing.T) {
 // endpoint) - the one class of target with no legitimate MCP use case under
 // any deployment topology, authenticated or not.
 func TestBuildTLSHTTPClientBlocksLinkLocal(t *testing.T) {
-	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
 	require.NoError(t, err)
 	transport := httpClient.Transport.(*http.Transport)
 
@@ -666,7 +676,7 @@ func TestBuildTLSHTTPClientAllowsLoopback(t *testing.T) {
 		}
 	}()
 
-	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
 	require.NoError(t, err)
 	transport := httpClient.Transport.(*http.Transport)
 
@@ -749,7 +759,7 @@ func TestBuildTLSHTTPClientRoutesThroughConfiguredProxy(t *testing.T) {
 	base.Proxy = http.ProxyURL(proxyURL)
 	t.Cleanup(func() { base.Proxy = origProxy })
 
-	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
 	require.NoError(t, err)
 	httpClient.Timeout = 5 * time.Second
 	target := targetLn.Addr().String()
@@ -830,7 +840,7 @@ func TestBuildTLSHTTPClientRefusesProxyingBlockedLiteral(t *testing.T) {
 	for _, scheme := range []string{"http", "https"} {
 		for _, tc := range targets {
 			t.Run(scheme+"/"+tc.host, func(t *testing.T) {
-				httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+				httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
 				require.NoError(t, err)
 				httpClient.Timeout = 5 * time.Second
 
@@ -880,7 +890,7 @@ func TestBuildTLSHTTPClientProxiedHostnameNeedsNoLocalDNS(t *testing.T) {
 	base.Proxy = http.ProxyURL(proxyURL)
 	t.Cleanup(func() { base.Proxy = origProxy })
 
-	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
 	require.NoError(t, err)
 	httpClient.Timeout = 5 * time.Second
 
@@ -916,7 +926,7 @@ func TestBuildTLSHTTPClientBypassedProxyDialsDirect(t *testing.T) {
 	base.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
 	t.Cleanup(func() { base.Proxy = origProxy })
 
-	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(nil)
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{})
 	require.NoError(t, err)
 	httpClient.Timeout = 5 * time.Second
 
@@ -941,14 +951,82 @@ func TestBuildTLSHTTPClientBypassedProxyDialsDirect(t *testing.T) {
 // behaviors: a nil selector stays nil so a transport without one is unchanged,
 // and an error from the wrapped selector is returned as-is.
 func TestMCPProxySelectorPassthrough(t *testing.T) {
-	require.Nil(t, mcpProxySelector(nil))
+	require.Nil(t, mcpProxySelector(nil, false, net.DefaultResolver))
 
 	wantErr := errors.New("selector failed")
-	sel := mcpProxySelector(func(*http.Request) (*url.URL, error) { return nil, wantErr })
+	sel := mcpProxySelector(func(*http.Request) (*url.URL, error) { return nil, wantErr }, false, net.DefaultResolver)
 	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1/mcp", nil)
 	require.NoError(t, err)
 	_, err = sel(req)
 	require.ErrorIs(t, err, wantErr)
+}
+
+// mcpDialContext returns the DialContext buildTLSHTTPClient installed for
+// config, so a test can exercise the dial-time policy without a transport.
+func mcpDialContext(t *testing.T, config *schemas.MCPClientConfig) func(context.Context, string, string) (net.Conn, error) {
+	t.Helper()
+	httpClient, err := (&MCPManager{logger: &MockLogger{}}).buildTLSHTTPClient(config)
+	require.NoError(t, err)
+	switch tr := httpClient.Transport.(type) {
+	case *http.Transport:
+		return tr.DialContext
+	case *network.ProxyAwareTransport:
+		return tr.Direct.DialContext
+	}
+	t.Fatalf("unexpected transport %T", httpClient.Transport)
+	return nil
+}
+
+// TestBuildTLSHTTPClientRequirePublicTargetRefusesPrivateAddresses pins the
+// dial-time half of the unauthenticated-registration restriction: a client
+// flagged RequirePublicTarget must refuse loopback and RFC1918 destinations on
+// every dial, so a name that resolved publicly at registration and privately
+// afterwards is still never connected to. An unflagged client keeps the
+// documented ability to reach a local MCP server.
+func TestBuildTLSHTTPClientRequirePublicTargetRefusesPrivateAddresses(t *testing.T) {
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer local.Close()
+	localAddr := local.Listener.Addr().String()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	strict := mcpDialContext(t, &schemas.MCPClientConfig{Name: "unauthenticated", RequirePublicTarget: true})
+	for _, addr := range []string{localAddr, "10.0.0.1:443"} {
+		conn, err := strict(ctx, "tcp", addr)
+		if conn != nil {
+			require.NoError(t, conn.Close())
+		}
+		require.Error(t, err, "flagged client dialed %s", addr)
+		require.Contains(t, err.Error(), "blocked connection to non-public address", "dial to %s", addr)
+	}
+
+	permissive := mcpDialContext(t, &schemas.MCPClientConfig{Name: "admin"})
+	conn, err := permissive(ctx, "tcp", localAddr)
+	require.NoError(t, err, "an unflagged client must still reach a loopback MCP server")
+	require.NoError(t, conn.Close())
+}
+
+// TestMCPProxySelectorRequirePublicTargetRefusesPrivateLiteral pins the
+// proxied path for a flagged client: the dialer only sees the proxy there, so
+// a private IP-literal destination has to be refused by the selector.
+func TestMCPProxySelectorRequirePublicTargetRefusesPrivateLiteral(t *testing.T) {
+	proxyURL, err := url.Parse("http://proxy.example:3128")
+	require.NoError(t, err)
+	next := func(*http.Request) (*url.URL, error) { return proxyURL, nil }
+
+	req, err := http.NewRequest(http.MethodGet, "http://10.0.0.1/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = mcpProxySelector(next, true, net.DefaultResolver)(req)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "blocked connection to non-public address")
+
+	got, err := mcpProxySelector(next, false, net.DefaultResolver)(req)
+	require.NoError(t, err, "an unflagged client may reach a private literal through the proxy")
+	require.Equal(t, proxyURL, got)
 }
 
 // SetClientTools carries the instructions from the same handshake that found the tools,
@@ -1008,4 +1086,750 @@ func TestWriteBackDiscoveredToolsKeepsInstructionsWhenNotRediscovered(t *testing
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	assert.Equal(t, "keep me", m.clientMap[config.ID].ServerInstructions)
+}
+
+// stubResolver answers every lookup with a fixed IP set or error.
+type stubResolver struct {
+	ips []net.IP
+	err error
+}
+
+func (r stubResolver) LookupIP(context.Context, string, string) ([]net.IP, error) {
+	return r.ips, r.err
+}
+
+// TestBuildTLSHTTPClientRequirePublicTargetReachesPrivateProxy: the strict
+// policy is about the MCP destination, not the proxy that carries the
+// connection. A flagged client in a proxy-only deployment must still be able
+// to dial the operator's proxy on a private or loopback address, while a dial
+// to the same kind of address that is NOT the selected proxy stays refused.
+func TestBuildTLSHTTPClientRequirePublicTargetReachesPrivateProxy(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer other.Close()
+
+	// mcp.example resolves to a public address through the stub, which is what lets the
+	// strict proxied-path check admit it; the proxy itself is dialed by IP.
+	httpClient, err := (&MCPManager{logger: &MockLogger{}}).buildTLSHTTPClientWithProxyAndResolver(
+		&schemas.MCPClientConfig{Name: "unauthenticated", RequirePublicTarget: true},
+		func(*http.Request) (*url.URL, error) { return proxyURL, nil },
+		stubResolver{ips: []net.IP{net.ParseIP("93.184.216.34")}},
+	)
+	require.NoError(t, err)
+	tr, ok := httpClient.Transport.(*network.ProxyAwareTransport)
+	require.True(t, ok, "a flagged client routes per request between a direct and a via-proxy transport")
+
+	req, err := http.NewRequest(http.MethodGet, "https://mcp.example/mcp", nil)
+	require.NoError(t, err)
+	got, err := tr.ViaProxy.Proxy(req)
+	require.NoError(t, err)
+	require.Equal(t, proxyURL, got)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := tr.ViaProxy.DialContext(ctx, "tcp", proxy.Listener.Addr().String())
+	require.NoError(t, err, "the selected proxy must be dialable even on a loopback address")
+	require.NoError(t, conn.Close())
+
+	conn, err = tr.Direct.DialContext(ctx, "tcp", other.Listener.Addr().String())
+	if conn != nil {
+		require.NoError(t, conn.Close())
+	}
+	require.Error(t, err, "a loopback address that is not the selected proxy stays refused")
+	require.Contains(t, err.Error(), "blocked connection to non-public address")
+}
+
+// TestMCPProxySelectorAppliesPolicyToHostnames: on the proxied path the
+// selector is the only place that sees the MCP destination, so a hostname is
+// held to the same policy as a literal, against what the local resolver
+// answers. A name only the proxy can resolve is left to the proxy.
+func TestMCPProxySelectorAppliesPolicyToHostnames(t *testing.T) {
+	proxyURL, err := url.Parse("http://proxy.example:3128")
+	require.NoError(t, err)
+	next := func(*http.Request) (*url.URL, error) { return proxyURL, nil }
+	cases := []struct {
+		name     string
+		strict   bool
+		resolver stubResolver
+		wantErr  string
+	}{
+		{"strict refuses a hostname resolving to a private address", true, stubResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}, "blocked connection to non-public address"},
+		{"strict refuses a hostname resolving to loopback", true, stubResolver{ips: []net.IP{net.ParseIP("127.0.0.1")}}, "blocked connection to non-public address"},
+		{"strict proxies a hostname resolving to a public address", true, stubResolver{ips: []net.IP{net.ParseIP("93.184.216.34")}}, ""},
+		{"strict refuses an unresolvable hostname rather than trusting the proxy", true, stubResolver{err: errors.New("no such host")}, "DNS lookup failed"},
+		{"unflagged leaves an unresolvable hostname to the proxy", false, stubResolver{err: errors.New("no such host")}, ""},
+		{"unflagged proxies a hostname resolving to a private address", false, stubResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}, ""},
+		{"unflagged refuses a hostname resolving to metadata", false, stubResolver{ips: []net.IP{net.ParseIP("169.254.169.254")}}, "link-local"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, "http://mcp.corp/mcp", nil)
+			require.NoError(t, err)
+			got, err := mcpProxySelector(next, tc.strict, tc.resolver)(req)
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				require.Equal(t, proxyURL, got)
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// TestBuildTLSHTTPClientRequirePublicTargetProxyClassificationIsPerRequest: which policy a dial
+// gets must follow the request's own routing decision, not an address seen earlier. After a
+// proxied request has used a loopback proxy, a direct request (no proxy selected for it) whose
+// destination is that very address is still a destination dial and must be refused by the
+// strict policy.
+func TestBuildTLSHTTPClientRequirePublicTargetProxyClassificationIsPerRequest(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Served-By", "proxy")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer proxy.Close()
+	proxyURL, err := url.Parse(proxy.URL)
+	require.NoError(t, err)
+
+	// Only requests for mcp.example go through the proxy; everything else is direct.
+	selector := func(req *http.Request) (*url.URL, error) {
+		if req.URL.Hostname() == "mcp.example" {
+			return proxyURL, nil
+		}
+		return nil, nil
+	}
+	httpClient, err := (&MCPManager{logger: &MockLogger{}}).buildTLSHTTPClientWithProxyAndResolver(
+		&schemas.MCPClientConfig{Name: "unauthenticated", RequirePublicTarget: true}, selector,
+		stubResolver{ips: []net.IP{net.ParseIP("93.184.216.34")}})
+	require.NoError(t, err)
+
+	resp, err := httpClient.Get("http://mcp.example/mcp")
+	require.NoError(t, err, "the proxied request must reach the loopback proxy")
+	require.Equal(t, "proxy", resp.Header.Get("X-Served-By"))
+	resp.Body.Close()
+
+	resp, err = httpClient.Get(proxy.URL + "/mcp")
+	if resp != nil {
+		resp.Body.Close()
+	}
+	require.Error(t, err, "a direct request to the proxy's own address is a loopback destination and must be refused")
+	require.Contains(t, err.Error(), "blocked connection to non-public address")
+}
+
+// TestBuildTLSHTTPClientUsesGlobalProxy pins that MCP client transports honour the
+// global proxy when it is enabled for API traffic, while the destination guard still
+// refuses instance metadata without anything reaching the proxy. They used to follow
+// only HTTP_PROXY / HTTPS_PROXY.
+func TestBuildTLSHTTPClientUsesGlobalProxy(t *testing.T) {
+	set := proxytest.NewSet(t)
+	network.SetDefaultHTTPClientFactory(network.NewHTTPClientFactory(&network.GlobalProxyConfig{
+		Enabled: true, Type: network.GlobalProxyTypeHTTP, URL: "http://127.0.0.1:" + set.Config.Port(), EnableForAPI: true,
+	}, nil))
+	t.Cleanup(func() { network.SetDefaultHTTPClientFactory(nil) })
+
+	httpClient, err := (&MCPManager{logger: defaultLogger}).buildTLSHTTPClient(&schemas.MCPClientConfig{Name: "proxied"})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://mcp.bifrost.test/sse", nil)
+	if resp, err := httpClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
+	proxytest.AssertRoute(t, set, proxytest.Route{Proxy: "config"}, "mcp.bifrost.test:443", nil)
+
+	// MCP allows private networks (local MCP servers) but never instance metadata.
+	set.Reset()
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, "https://169.254.169.254/sse", nil)
+	_, err = httpClient.Do(req)
+	require.Error(t, err, "a metadata address must be refused")
+	proxytest.AssertRoute(t, set, proxytest.Direct, "", nil)
+}
+
+// ---------------------------------------------------------------------------
+// OpenAPI connection type: synthesized in-process servers via the factory hook
+// ---------------------------------------------------------------------------
+
+// stubOpenAPIFactory stands in for framework/openapimcp.Factory: it builds one
+// tool per comma-separated name found in openapi_config.spec and records what
+// core handed it. Each tool echoes the headers the resolver produced so the
+// layering core owns (static config headers, credentials, allow-listed extras)
+// is observable from the tool result.
+type stubOpenAPIFactory struct {
+	calls         atomic.Int32
+	sawClient     atomic.Bool
+	toolsOverride atomic.Pointer[string] // when set, used instead of openapi_config.spec (a changed remote document)
+}
+
+func (f *stubOpenAPIFactory) factory() schemas.InProcessServerFactory {
+	return func(_ context.Context, config *schemas.MCPClientConfig, deps schemas.InProcessServerDeps) (*server.MCPServer, error) {
+		f.calls.Add(1)
+		f.sawClient.Store(deps.HTTPClient != nil)
+		if strings.Contains(config.OpenAPIConfig.Spec, "fail") {
+			return nil, fmt.Errorf("%w: stub factory refused spec %q", schemas.ErrMCPOpenAPIConfigInvalid, config.OpenAPIConfig.Spec)
+		}
+		spec := config.OpenAPIConfig.Spec
+		if override := f.toolsOverride.Load(); override != nil {
+			spec = *override
+		}
+		s := server.NewMCPServer("stub-openapi", "1.0.0", server.WithToolCapabilities(false))
+		for _, name := range strings.Split(spec, ",") {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			s.AddTool(
+				mcpgo.NewToolWithRawSchema(name, "stub "+name, json.RawMessage(`{"type":"object","properties":{}}`)),
+				func(ctx context.Context, _ mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
+					headers, err := deps.Headers(ctx)
+					if err != nil {
+						return mcpgo.NewToolResultError(err.Error()), nil
+					}
+					keys := make([]string, 0, len(headers))
+					for k := range headers {
+						keys = append(keys, k)
+					}
+					sort.Strings(keys)
+					var b strings.Builder
+					for _, k := range keys {
+						fmt.Fprintf(&b, "%s=%s;", k, strings.Join(headers[k], ","))
+					}
+					return mcpgo.NewToolResultText(b.String()), nil
+				},
+			)
+		}
+		return s, nil
+	}
+}
+
+func newOpenAPITestConfig(name, spec string) *schemas.MCPClientConfig {
+	return &schemas.MCPClientConfig{
+		ID:                  name + "-id",
+		Name:                name,
+		ConnectionType:      schemas.MCPConnectionTypeOpenAPI,
+		AuthType:            schemas.MCPAuthTypeHeaders,
+		Headers:             map[string]schemas.SecretVar{"X-Static": *schemas.NewSecretVar("static-value"), "Authorization": *schemas.NewSecretVar("Bearer shared-token")},
+		AllowedExtraHeaders: schemas.WhiteList{"X-Trace"},
+		ToolsToExecute:      schemas.WhiteList{"*"},
+		OpenAPIConfig:       &schemas.MCPOpenAPIConfig{Spec: spec},
+	}
+}
+
+func openAPIToolNames(t *testing.T, m *MCPManager, id string) []string {
+	t.Helper()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	state, ok := m.clientMap[id]
+	require.True(t, ok, "client %s not registered", id)
+	names := make([]string, 0, len(state.ToolMap))
+	for name := range state.ToolMap {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TestCreateOpenAPIConnection_RequiresFactory: without a registered factory
+// the connect must fail with an error that names the missing hook, so a Go SDK
+// user who declares connection_type openapi learns what to wire rather than
+// seeing a generic connect failure.
+func TestCreateOpenAPIConnection_RequiresFactory(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	_, _, err := m.createOpenAPIConnection(context.Background(), newOpenAPITestConfig("nofactory", "echo"), nil)
+	require.ErrorContains(t, err, "InProcessServerFactory")
+
+	_, _, err = m.createOpenAPIConnection(context.Background(), &schemas.MCPClientConfig{Name: "noconfig", ConnectionType: schemas.MCPConnectionTypeOpenAPI}, nil)
+	require.ErrorContains(t, err, "openapi_config")
+}
+
+// TestAddClient_OpenAPI_SynthesizesServerAndLayersHeaders drives the full path
+// an openapi client takes: AddClient -> connectToMCPClient -> factory ->
+// in-process client -> tool discovery with the client-name prefix -> tool
+// execution with the header resolver core built. The factory must receive a
+// guarded HTTP client, and the resolver must layer static config headers, the
+// shared credential and the caller's allow-listed extras (and nothing else).
+func TestAddClient_OpenAPI_SynthesizesServerAndLayersHeaders(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets, getPet")
+
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	assert.Equal(t, int32(1), stub.calls.Load(), "factory builds the server exactly once per connect")
+	assert.True(t, stub.sawClient.Load(), "core must hand the factory a configured HTTP client")
+	assert.Equal(t, []string{"petstore-getPet", "petstore-listPets"}, openAPIToolNames(t, m, config.ID))
+
+	m.mu.RLock()
+	state := m.clientMap[config.ID]
+	m.mu.RUnlock()
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, state.State)
+	assert.NotNil(t, state.Conn, "openapi clients hold one sticky in-process connection")
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyMCPExtraHeaders, map[string][]string{
+		"X-Trace":  {"trace-123"},
+		"X-Denied": {"must-not-pass"},
+	})
+	name := "petstore-listPets"
+	callID := "call-1"
+	msg, bifrostErr := m.ExecuteChatTool(ctx, &schemas.ChatAssistantMessageToolCall{
+		ID:       &callID,
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: &name, Arguments: "{}"},
+	})
+	require.Nil(t, bifrostErr, "tool call failed: %+v", bifrostErr)
+	require.NotNil(t, msg)
+	require.NotNil(t, msg.Content)
+	require.NotNil(t, msg.Content.ContentStr)
+	got := *msg.Content.ContentStr
+	assert.Contains(t, got, "X-Static=static-value;", "static config headers reach the upstream")
+	assert.Contains(t, got, "Authorization=Bearer shared-token;", "the shared credential is resolved through the credential store")
+	assert.Contains(t, got, "X-Trace=trace-123;", "allow-listed per-request extras are forwarded")
+	assert.NotContains(t, got, "X-Denied", "extras outside allowed_extra_headers never reach the upstream")
+}
+
+// TestUpdateClient_OpenAPI_SpecChangeRebuildsServer: a changed openapi_config
+// must rebuild the synthesized server (factory called again, connection
+// generation bumped, new tools discovered), while an update that leaves it
+// untouched (or omits it, PATCH-style) must not.
+func TestUpdateClient_OpenAPI_SpecChangeRebuildsServer(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	var toolsChanges atomic.Int32
+	m.SetToolsChangeCallback(func(string, string, map[string]schemas.ChatTool, map[string]string, string) { toolsChanges.Add(1) })
+
+	m.mu.RLock()
+	genBefore := m.clientMap[config.ID].ConnGeneration
+	m.mu.RUnlock()
+
+	// Omitting openapi_config keeps the stored one: no rebuild.
+	unchanged := newOpenAPITestConfig("petstore", "")
+	unchanged.OpenAPIConfig = nil
+	unchanged.ToolExecutionTimeout = 5 * time.Second
+	require.NoError(t, m.UpdateClient(config.ID, unchanged))
+	assert.Equal(t, int32(1), stub.calls.Load(), "an update without openapi_config must not rebuild")
+	m.mu.RLock()
+	assert.Equal(t, "listPets", m.clientMap[config.ID].ExecutionConfig.OpenAPIConfig.Spec, "stored openapi_config carried forward")
+	assert.Equal(t, 5*time.Second, m.clientMap[config.ID].ExecutionConfig.ToolExecutionTimeout)
+	m.mu.RUnlock()
+
+	// Same spec sent again: still no rebuild.
+	require.NoError(t, m.UpdateClient(config.ID, newOpenAPITestConfig("petstore", "listPets")))
+	assert.Equal(t, int32(1), stub.calls.Load(), "an identical openapi_config must not rebuild")
+
+	// Changed spec: rebuild, fresh generation, new tool set.
+	require.NoError(t, m.UpdateClient(config.ID, newOpenAPITestConfig("petstore", "listPets, createPet")))
+	assert.Equal(t, int32(2), stub.calls.Load(), "a changed spec rebuilds the server")
+	assert.Equal(t, []string{"petstore-createPet", "petstore-listPets"}, openAPIToolNames(t, m, config.ID))
+	m.mu.RLock()
+	assert.Greater(t, m.clientMap[config.ID].ConnGeneration, genBefore, "the rebuild is a genuinely new connection")
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, m.clientMap[config.ID].State)
+	m.mu.RUnlock()
+	assert.GreaterOrEqual(t, toolsChanges.Load(), int32(1), "rediscovered tools must be offered for persistence")
+
+	// A rebuild that fails leaves the client Unstable with the new config, and
+	// reports the failure to the caller. The spec error is permanent, so it must
+	// not sit through the connect retry schedule (~31s) before surfacing.
+	start := time.Now()
+	err := m.UpdateClient(config.ID, newOpenAPITestConfig("petstore", "fail"))
+	require.ErrorIs(t, err, ErrMCPSharedConnectFailedAfterUpdate)
+	// The connect plugin gate flattens the dial error into a BifrostError, so the
+	// sentinel is not in the chain here; the message and the timing are the pins.
+	require.ErrorContains(t, err, "cannot produce a server")
+	assert.Less(t, time.Since(start), 5*time.Second, "permanent synthesis errors must fail fast, not retry")
+	m.mu.RLock()
+	assert.Equal(t, schemas.MCPConnectionStateUnstable, m.clientMap[config.ID].State)
+	m.mu.RUnlock()
+}
+
+// TestUpdateClient_OpenAPI_RejectsInvalidReplacementConfig: a replacement
+// openapi_config is validated before it is stored. Otherwise a bad edit from a
+// Go SDK caller closes the working connection first and the factory rejects it
+// afterwards, leaving the client disconnected with the bad config saved.
+func TestUpdateClient_OpenAPI_RejectsInvalidReplacementConfig(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	relative := "/v1"
+	for name, cfg := range map[string]*schemas.MCPOpenAPIConfig{
+		"no spec source":     {MaxResponseBytes: 1},
+		"relative base url":  {Spec: "listPets, createPet", BaseURL: &relative},
+		"negative max bytes": {Spec: "listPets, createPet", MaxResponseBytes: -1},
+	} {
+		update := newOpenAPITestConfig("petstore", "")
+		update.OpenAPIConfig = cfg
+		require.Error(t, m.UpdateClient(config.ID, update), name)
+	}
+	assert.Equal(t, int32(1), stub.calls.Load(), "an invalid replacement must not rebuild the server")
+	m.mu.RLock()
+	assert.Equal(t, schemas.MCPConnectionStateHealthy, m.clientMap[config.ID].State)
+	assert.Equal(t, "listPets", m.clientMap[config.ID].ExecutionConfig.OpenAPIConfig.Spec, "the stored config is kept")
+	m.mu.RUnlock()
+}
+
+// TestUpdateClient_OpenAPI_ConfigMutatedInPlaceStillRebuilds: the manager keeps
+// its own copy of openapi_config, so a caller that edits the struct it passed
+// earlier and sends it again still triggers a rebuild.
+func TestUpdateClient_OpenAPI_ConfigMutatedInPlaceStillRebuilds(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	config.OpenAPIConfig.Spec = "listPets, createPet"
+	require.NoError(t, m.UpdateClient(config.ID, config))
+	assert.Equal(t, int32(2), stub.calls.Load(), "a spec edited on the struct passed to AddClient must rebuild")
+
+	config.OpenAPIConfig.Spec = "listPets, createPet, deletePet"
+	require.NoError(t, m.UpdateClient(config.ID, config))
+	assert.Equal(t, int32(3), stub.calls.Load(), "a spec edited on the struct passed to UpdateClient must rebuild")
+	assert.Equal(t, []string{"petstore-createPet", "petstore-deletePet", "petstore-listPets"}, openAPIToolNames(t, m, config.ID))
+}
+
+// TestUpdateClient_OpenAPI_ConnectionInputsMutatedInPlaceRebuild: headers,
+// the extras allow-list and TLS settings are baked into the synthesized
+// server, so the manager keeps its own copies; editing the caller's values in
+// place and sending them again must still rebuild.
+func TestUpdateClient_OpenAPI_ConnectionInputsMutatedInPlaceRebuild(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	config.Headers["X-Static"] = *schemas.NewSecretVar("edited")
+	require.NoError(t, m.UpdateClient(config.ID, config))
+	assert.Equal(t, int32(2), stub.calls.Load(), "a header edited on the map passed to AddClient must rebuild")
+
+	config.AllowedExtraHeaders[0] = "X-Other"
+	require.NoError(t, m.UpdateClient(config.ID, config))
+	assert.Equal(t, int32(3), stub.calls.Load(), "an allow-list edited in place must rebuild")
+
+	config.TLSConfig = &schemas.MCPTLSConfig{}
+	require.NoError(t, m.UpdateClient(config.ID, config))
+	assert.Equal(t, int32(4), stub.calls.Load(), "adding TLS settings rebuilds")
+	config.TLSConfig.InsecureSkipVerify = true
+	require.NoError(t, m.UpdateClient(config.ID, config))
+	assert.Equal(t, int32(5), stub.calls.Load(), "TLS settings edited on the struct passed to UpdateClient must rebuild")
+}
+
+// TestUpdateClient_RequirePublicTargetOnlyTightens: an update can turn the
+// public-target restriction on (an unauthenticated caller changed where the
+// client connects) but never off.
+func TestUpdateClient_RequirePublicTargetOnlyTightens(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	tightened := newOpenAPITestConfig("petstore", "listPets")
+	tightened.RequirePublicTarget = true
+	require.NoError(t, m.UpdateClient(config.ID, tightened))
+	m.mu.RLock()
+	assert.True(t, m.clientMap[config.ID].ExecutionConfig.RequirePublicTarget, "an update may turn the restriction on")
+	m.mu.RUnlock()
+	assert.Equal(t, int32(2), stub.calls.Load(), "turning it on rebuilds the server, so its HTTP client gets the strict dialer")
+
+	require.NoError(t, m.UpdateClient(config.ID, newOpenAPITestConfig("petstore", "listPets")))
+	m.mu.RLock()
+	assert.True(t, m.clientMap[config.ID].ExecutionConfig.RequirePublicTarget, "an update never turns it off")
+	m.mu.RUnlock()
+}
+
+// TestUpdateClient_OpenAPI_RenameRebuildsServer: synthesized tool names are
+// shortened to fit beside the client name, so a rename rebuilds the server
+// rather than only swapping the prefix on the old names.
+func TestUpdateClient_OpenAPI_RenameRebuildsServer(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	require.NoError(t, m.UpdateClient(config.ID, newOpenAPITestConfig("zoo", "listPets")))
+	assert.Equal(t, int32(2), stub.calls.Load(), "a rename must rebuild the synthesized server")
+	assert.Equal(t, []string{"zoo-listPets"}, openAPIToolNames(t, m, config.ID))
+}
+
+// callOpenAPIStubTool runs one tool call through the manager and returns the
+// header echo the stub factory's handler produced.
+func callOpenAPIStubTool(t *testing.T, m *MCPManager, toolName string) string {
+	t.Helper()
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	callID := "call-" + toolName
+	msg, bifrostErr := m.ExecuteChatTool(ctx, &schemas.ChatAssistantMessageToolCall{
+		ID:       &callID,
+		Function: schemas.ChatAssistantMessageToolCallFunction{Name: &toolName, Arguments: "{}"},
+	})
+	require.Nil(t, bifrostErr, "tool call failed: %+v", bifrostErr)
+	require.NotNil(t, msg)
+	require.NotNil(t, msg.Content)
+	require.NotNil(t, msg.Content.ContentStr)
+	return *msg.Content.ContentStr
+}
+
+// TestUpdateClient_OpenAPI_HeaderEditRebuildsServer: the synthesized server's
+// header resolver and guarded HTTP client are built from the config at connect
+// time, so an edit to the static headers, the extras allow-list, the per-user
+// keys or TLS must rebuild it even when openapi_config itself is untouched.
+// Otherwise the saved edit never reaches the upstream.
+func TestUpdateClient_OpenAPI_HeaderEditRebuildsServer(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+	require.Contains(t, callOpenAPIStubTool(t, m, "petstore-listPets"), "X-Static=static-value;")
+
+	edited := newOpenAPITestConfig("petstore", "listPets")
+	edited.Headers["X-Static"] = *schemas.NewSecretVar("edited-value")
+	require.NoError(t, m.UpdateClient(config.ID, edited))
+	assert.Equal(t, int32(2), stub.calls.Load(), "a static header edit rebuilds the server")
+	assert.Contains(t, callOpenAPIStubTool(t, m, "petstore-listPets"), "X-Static=edited-value;", "the edited header reaches the upstream")
+
+	allowList := newOpenAPITestConfig("petstore", "listPets")
+	allowList.Headers["X-Static"] = *schemas.NewSecretVar("edited-value")
+	allowList.AllowedExtraHeaders = schemas.WhiteList{"X-Trace", "X-Other"}
+	require.NoError(t, m.UpdateClient(config.ID, allowList))
+	assert.Equal(t, int32(3), stub.calls.Load(), "an allowed_extra_headers edit rebuilds the server")
+
+	// Same headers again: no rebuild.
+	require.NoError(t, m.UpdateClient(config.ID, allowList))
+	assert.Equal(t, int32(3), stub.calls.Load(), "an update with unchanged headers must not rebuild")
+}
+
+// TestUpdateClient_OpenAPI_DisabledClientDefersRebuild: connectToMCPClient
+// refuses a disabled client, so a spec edit saved while the client is disabled
+// must not dial. The new config is stored and EnableClient builds from it.
+func TestUpdateClient_OpenAPI_DisabledClientDefersRebuild(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+	require.NoError(t, m.DisableClient(config.ID))
+
+	edited := newOpenAPITestConfig("petstore", "listPets, createPet")
+	edited.Disabled = true
+	require.NoError(t, m.UpdateClient(config.ID, edited), "editing a disabled client's spec must save without dialing")
+	assert.Equal(t, int32(1), stub.calls.Load(), "no rebuild while disabled")
+	m.mu.RLock()
+	assert.Equal(t, schemas.MCPConnectionStateDisabled, m.clientMap[config.ID].State)
+	assert.Equal(t, "listPets, createPet", m.clientMap[config.ID].ExecutionConfig.OpenAPIConfig.Spec, "the new spec is stored")
+	m.mu.RUnlock()
+
+	require.NoError(t, m.EnableClient(config.ID))
+	assert.Equal(t, int32(2), stub.calls.Load(), "enable builds the server from the stored spec")
+	assert.Equal(t, []string{"petstore-createPet", "petstore-listPets"}, openAPIToolNames(t, m, config.ID))
+}
+
+// headerRewritingPipeline is a plugin pipeline whose PreMCPConnectionHook
+// replaces the connect request's static headers, as a header-injecting plugin
+// would.
+type headerRewritingPipeline struct {
+	headers map[string]string
+}
+
+func (p *headerRewritingPipeline) RunMCPPreHooks(_ *schemas.BifrostContext, req *schemas.BifrostMCPRequest) (*schemas.BifrostMCPRequest, *schemas.MCPPluginShortCircuit, int) {
+	return req, nil, 0
+}
+
+func (p *headerRewritingPipeline) RunMCPPostHooks(_ *schemas.BifrostContext, resp *schemas.BifrostMCPResponse, bifrostErr *schemas.BifrostError, _ int) (*schemas.BifrostMCPResponse, *schemas.BifrostError) {
+	return resp, bifrostErr
+}
+
+func (p *headerRewritingPipeline) RunMCPPreConnectionHooks(_ *schemas.BifrostContext, req *schemas.BifrostMCPConnectRequest) (*schemas.BifrostMCPConnectRequest, *schemas.MCPConnectionShortCircuit, int) {
+	clone := *req
+	clone.Headers = maps.Clone(p.headers)
+	return &clone, nil, 0
+}
+
+func (p *headerRewritingPipeline) RunMCPPostConnectionHooks(_ *schemas.BifrostContext, resp *schemas.BifrostMCPConnectResponse, bifrostErr *schemas.BifrostError, _ int) (*schemas.BifrostMCPConnectResponse, *schemas.BifrostError) {
+	return resp, bifrostErr
+}
+
+// TestConnect_OpenAPI_PluginAdjustedHeadersReachUpstream: as for HTTP and SSE,
+// the static headers a PreMCPConnectionHook leaves on the connect request are
+// what the upstream receives. A header the plugin adds is sent, one it drops is
+// not, and the credential-store header is still layered on top.
+func TestConnect_OpenAPI_PluginAdjustedHeadersReachUpstream(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	pipeline := &headerRewritingPipeline{headers: map[string]string{"X-Plugin": "added"}}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{
+		InProcessServerFactory: stub.factory(),
+		PluginPipelineProvider: func() interface{} { return pipeline },
+		ReleasePluginPipeline:  func(interface{}) {},
+	}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	got := callOpenAPIStubTool(t, m, "petstore-listPets")
+	assert.Contains(t, got, "X-Plugin=added;", "a plugin-added header reaches the upstream")
+	assert.NotContains(t, got, "X-Static", "a header the plugin dropped is not sent")
+	assert.Contains(t, got, "Authorization=Bearer shared-token;", "the credential is layered on the plugin-adjusted headers")
+}
+
+// TestRefreshClientTools_OpenAPI_RebuildsServer: refresh on an openapi client
+// re-resolves the document and re-synthesizes the server, so a spec_url whose
+// remote content changed shows its new operations without a reconnect.
+func TestRefreshClientTools_OpenAPI_RebuildsServer(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	changed := "listPets, createPet"
+	stub.toolsOverride.Store(&changed)
+	count, err := m.RefreshClientTools(context.Background(), config.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), stub.calls.Load(), "refresh rebuilds the synthesized server")
+	assert.Equal(t, 2, count)
+	assert.Equal(t, []string{"petstore-createPet", "petstore-listPets"}, openAPIToolNames(t, m, config.ID))
+}
+
+// TestRefreshClientTools_OpenAPI_RespectsExclusiveOp: the rebuild a refresh
+// performs is a reconnect, so it takes the same per-client guard as UpdateClient
+// and ReconnectClient. While another operation holds it, refresh must refuse
+// rather than dial with a config that operation is about to replace.
+func TestRefreshClientTools_OpenAPI_RespectsExclusiveOp(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("petstore", "listPets")
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	finish, ok := m.beginExclusiveClientOp(config.ID) // an in-flight update
+	require.True(t, ok)
+	_, err := m.RefreshClientTools(context.Background(), config.ID)
+	require.ErrorContains(t, err, "in progress")
+	assert.Equal(t, int32(1), stub.calls.Load(), "no rebuild while another operation holds the client")
+	finish(nil)
+
+	_, err = m.RefreshClientTools(context.Background(), config.ID)
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), stub.calls.Load(), "refresh rebuilds once the guard is free")
+}
+
+// TestAcquireClientConn_OpenAPIPerUserHeaders_PreflightsCredential: an openapi
+// client is sticky even with per_user_headers, so AcquireClientConn hands out
+// the shared in-process connection — but only after resolving the caller's
+// credential, so the typed auth error reaches the caller instead of being
+// flattened inside the synthesized handler.
+func TestAcquireClientConn_OpenAPIPerUserHeaders_PreflightsCredential(t *testing.T) {
+	stub := &stubOpenAPIFactory{}
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{InProcessServerFactory: stub.factory()}, nil, &MockLogger{}, nil)
+	config := newOpenAPITestConfig("peruser", "listPets")
+	config.AuthType = schemas.MCPAuthTypePerUserHeaders
+	config.PerUserHeaderKeys = []string{"X-User-Token"}
+	require.NoError(t, m.AddClient(context.Background(), config))
+	t.Cleanup(func() { _ = m.RemoveClient(config.ID) })
+
+	m.mu.RLock()
+	state := m.clientMap[config.ID]
+	m.mu.RUnlock()
+	require.Equal(t, schemas.MCPConnectionStateHealthy, state.State, "openapi clients never park in pending_verification")
+	require.NotNil(t, state.Conn)
+
+	// No headers provider is configured on this manager, so the per-user
+	// resolver fails: that failure must surface here, before any CallTool.
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	conn, release, err := m.AcquireClientConn(ctx, state)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "per-user headers")
+	assert.Nil(t, conn)
+	assert.Nil(t, release)
+}
+
+func TestAwaitsAdminVerification_OpenAPINeverWaits(t *testing.T) {
+	cfg := newOpenAPITestConfig("peruser", "listPets")
+	cfg.AuthType = schemas.MCPAuthTypePerUserHeaders
+	cfg.PerUserHeaderKeys = []string{"X-User-Token"}
+	assert.False(t, awaitsAdminVerification(cfg), "nothing upstream to verify for a synthesized server")
+
+	httpCfg := *cfg
+	httpCfg.ConnectionType = schemas.MCPConnectionTypeHTTP
+	assert.True(t, awaitsAdminVerification(&httpCfg), "control: the same auth type over HTTP still awaits verification")
+}
+
+func TestOpenAPIConfigChanged(t *testing.T) {
+	str := func(s string) *string { return &s }
+	base := func() *schemas.MCPOpenAPIConfig {
+		return &schemas.MCPOpenAPIConfig{
+			Spec:    "spec-v1",
+			BaseURL: str("https://api.example.com"),
+			SecurityCredentials: map[string]schemas.MCPOpenAPICredential{
+				"ApiKey": {Value: schemas.NewSecretVar("k1")},
+			},
+			SpecHash: "h1",
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		mutate func(c *schemas.MCPOpenAPIConfig)
+		want   bool
+	}{
+		{name: "identical", mutate: func(*schemas.MCPOpenAPIConfig) {}},
+		{name: "metadata only", mutate: func(c *schemas.MCPOpenAPIConfig) { c.SpecHash = "h2"; c.OperationCount = 9 }},
+		{name: "spec", mutate: func(c *schemas.MCPOpenAPIConfig) { c.Spec = "spec-v2" }, want: true},
+		{name: "base url", mutate: func(c *schemas.MCPOpenAPIConfig) { c.BaseURL = str("https://other.example.com") }, want: true},
+		{name: "base url cleared", mutate: func(c *schemas.MCPOpenAPIConfig) { c.BaseURL = nil }, want: true},
+		{name: "spec url", mutate: func(c *schemas.MCPOpenAPIConfig) { c.SpecURL = str("https://x/openapi.json") }, want: true},
+		{name: "credential value", mutate: func(c *schemas.MCPOpenAPIConfig) {
+			c.SecurityCredentials["ApiKey"] = schemas.MCPOpenAPICredential{Value: schemas.NewSecretVar("k2")}
+		}, want: true},
+		{name: "credential added", mutate: func(c *schemas.MCPOpenAPIConfig) {
+			c.SecurityCredentials["Basic"] = schemas.MCPOpenAPICredential{Username: schemas.NewSecretVar("u")}
+		}, want: true},
+		{name: "credential removed", mutate: func(c *schemas.MCPOpenAPIConfig) { delete(c.SecurityCredentials, "ApiKey") }, want: true},
+		{name: "include deprecated", mutate: func(c *schemas.MCPOpenAPIConfig) { c.IncludeDeprecated = true }, want: true},
+		{name: "response cap", mutate: func(c *schemas.MCPOpenAPIConfig) { c.MaxResponseBytes = 10 }, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			next := base()
+			tc.mutate(next)
+			assert.Equal(t, tc.want, openAPIConfigChanged(base(), next))
+		})
+	}
+	assert.True(t, openAPIConfigChanged(nil, base()))
+	assert.True(t, openAPIConfigChanged(base(), nil))
+	assert.False(t, openAPIConfigChanged(nil, nil))
+}
+
+// TestOpenAPIHeaderResolver_NoRequestContextLeaksNoGoroutines: header
+// resolution without a request BifrostContext (connect-time probes) builds a
+// fallback context, and repeated calls must not accumulate goroutines.
+func TestOpenAPIHeaderResolver_NoRequestContextLeaksNoGoroutines(t *testing.T) {
+	m := NewMCPManager(context.Background(), schemas.MCPConfig{}, nil, &MockLogger{}, nil)
+	resolve := m.openAPIHeaderResolver(newOpenAPITestConfig("petstore", "listPets"), map[string]string{"X-Static": "v"})
+	before := runtime.NumGoroutine()
+	for i := 0; i < 1000; i++ {
+		_, err := resolve(context.Background())
+		require.NoError(t, err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	assert.LessOrEqual(t, runtime.NumGoroutine(), before+5, "fallback contexts must not leave watcher goroutines behind")
+}
+
+// TestUnmatchedToolSelections: after an OpenAPI rebuild (a rename can change
+// shortened tool names), selections that no longer name a tool are reported so
+// a Go SDK caller learns which tools went unavailable.
+func TestUnmatchedToolSelections(t *testing.T) {
+	tools := map[string]schemas.ChatTool{"zoo-listPets": {}, "zoo-createPet": {}}
+	assert.Equal(t, []string{"a_very_long_operation_name_cut"}, unmatchedToolSelections(schemas.WhiteList{"listPets", "a_very_long_operation_name_cut"}, tools, "zoo"))
+	assert.Empty(t, unmatchedToolSelections(schemas.WhiteList{"*"}, tools, "zoo"))
+	assert.Empty(t, unmatchedToolSelections(schemas.WhiteList{"listPets", "createPet"}, tools, "zoo"))
 }

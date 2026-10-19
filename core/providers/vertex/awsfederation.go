@@ -90,12 +90,14 @@ func newAWSFederatedTokenSource(ctx context.Context, cfg *schemas.VertexAWSWorkl
 	if err != nil {
 		return nil, err
 	}
-	return newAWSFederatedTokenSourceWithSupplier(cfg, supplier)
+	return newAWSFederatedTokenSourceWithSupplier(ctx, cfg, supplier)
 }
 
 // newAWSFederatedTokenSourceWithSupplier wires a subject-token supplier into the Google external
 // account flow. The library caches and refreshes the resulting tokens, so no extra wrapping is needed.
-func newAWSFederatedTokenSourceWithSupplier(cfg *schemas.VertexAWSWorkloadIdentityConfig, supplier externalaccount.SubjectTokenSupplier) (oauth2.TokenSource, error) {
+// ctx is kept by the token source for every exchange and refresh, so an oauth2.HTTPClient on it
+// (the provider's proxy-aware auth client) carries the STS and impersonation calls.
+func newAWSFederatedTokenSourceWithSupplier(ctx context.Context, cfg *schemas.VertexAWSWorkloadIdentityConfig, supplier externalaccount.SubjectTokenSupplier) (oauth2.TokenSource, error) {
 	conf := externalaccount.Config{
 		Audience:             cfg.Audience.GetValue(),
 		SubjectTokenType:     awsSubjectTokenType,
@@ -108,7 +110,7 @@ func newAWSFederatedTokenSourceWithSupplier(cfg *schemas.VertexAWSWorkloadIdenti
 			gcpIAMCredentialsBaseURL, url.PathEscape(email))
 		conf.ServiceAccountImpersonationLifetimeSeconds = cfg.TokenLifetimeSeconds
 	}
-	ts, err := externalaccount.NewTokenSource(context.Background(), conf)
+	ts, err := externalaccount.NewTokenSource(ctx, conf)
 	if err != nil {
 		return nil, fmt.Errorf("vertex aws federation: gcp token exchange setup: %w", err)
 	}
@@ -304,7 +306,7 @@ func newAWSFederatedTokenSourceFromJSON(ctx context.Context, jsonData []byte) (o
 	if conf.TokenURL == "" {
 		conf.TokenURL = gcpSTSTokenURL
 	}
-	ts, err := externalaccount.NewTokenSource(context.Background(), conf)
+	ts, err := externalaccount.NewTokenSource(ctx, conf)
 	if err != nil {
 		return nil, fmt.Errorf("vertex aws federation: gcp token exchange setup: %w", err)
 	}
@@ -345,12 +347,9 @@ func jsonImpersonationLifetimeSeconds(jsonData []byte) (int, error) {
 	if r.Type != gjson.Number {
 		return 0, fmt.Errorf("vertex aws federation: %s must be a json integer, got %s", field, r.Raw)
 	}
-	n, err := strconv.ParseInt(r.Raw, 10, 64)
+	n, err := strconv.Atoi(r.Raw)
 	if err != nil {
-		return 0, fmt.Errorf("vertex aws federation: %s must be a json integer that fits in 64 bits, got %s", field, r.Raw)
+		return 0, fmt.Errorf("vertex aws federation: %s must be a json integer that fits in an int, got %s", field, r.Raw)
 	}
-	if int64(int(n)) != n {
-		return 0, fmt.Errorf("vertex aws federation: %s is out of range: %s", field, r.Raw)
-	}
-	return int(n), nil
+	return n, nil
 }

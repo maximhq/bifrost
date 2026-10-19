@@ -59,7 +59,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.2"
 
       - name: Setup Go workspace
         run: make setup-workspace
@@ -108,6 +108,7 @@ jobs:
             registry.npmjs.org:443
             release-assets.githubusercontent.com:443
             releases.astral.sh:443
+            static.snyk.io:443
             storage.googleapis.com:443
             sum.golang.org:443
 
@@ -132,7 +133,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
         with:
-          go-version: "1.27.0"
+          go-version: "1.27.2"
 
       - name: Setup Go workspace
         run: make setup-workspace

@@ -76,7 +76,7 @@ func NewTencentProvider(config *schemas.ProviderConfig, logger schemas.Logger) (
 	// in-flight Tencent requests.
 	networkConfig := config.NetworkConfig
 	if networkConfig.ExtraHeaders != nil {
-		extraHeaders := make(map[string]string, len(networkConfig.ExtraHeaders))
+		extraHeaders := make(map[string]schemas.SecretVar, len(networkConfig.ExtraHeaders))
 		maps.Copy(extraHeaders, networkConfig.ExtraHeaders)
 		networkConfig.ExtraHeaders = extraHeaders
 	}

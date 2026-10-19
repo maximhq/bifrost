@@ -5,7 +5,17 @@ import { waitForNetworkIdle } from '../../../core/utils/test-helpers'
 /**
  * Connection types supported by MCP clients
  */
-export type MCPConnectionType = 'http' | 'sse' | 'stdio'
+export type MCPConnectionType = 'http' | 'sse' | 'stdio' | 'openapi'
+
+/** How an OpenAPI document is supplied in the create sheet */
+export type OpenAPISourceMode = 'paste' | 'url' | 'upload'
+
+/** In-memory file handed to setInputFiles for the Upload source */
+export interface OpenAPISpecFile {
+  name: string
+  mimeType: string
+  buffer: Buffer
+}
 
 /**
  * Authentication types for HTTP/SSE connections
@@ -37,6 +47,17 @@ export interface MCPClientConfig {
   oauthAuthorizeUrl?: string
   oauthTokenUrl?: string
   oauthScopes?: string
+  // OpenAPI specific (connection_type 'openapi')
+  openapiSourceMode?: OpenAPISourceMode
+  openapiSpecText?: string
+  openapiSpecUrl?: string
+  openapiSpecFile?: OpenAPISpecFile
+  /** Tool names to untick in the preview after parsing (all are ticked by default) */
+  openapiDeselectTools?: string[]
+  /** Credential values keyed by securitySchemes name (apiKey / bearer schemes) */
+  openapiCredentials?: Record<string, string>
+  /** Custom base URL typed into the preview panel */
+  openapiBaseUrl?: string
 }
 
 /**
@@ -164,9 +185,23 @@ export class MCPRegistryPage extends BasePage {
   }
 
   /**
-   * Select connection type from dropdown
+   * Select the server source and connection type. "openapi" is a server source
+   * of its own (Generate from an OpenAPI spec); the transports live in the
+   * Connection Type dropdown of the MCP server source.
    */
   async selectConnectionType(type: MCPConnectionType): Promise<void> {
+    if (type === 'openapi') {
+      const openapiSource = this.page.getByTestId('mcp-server-source-openapi')
+      await expect(openapiSource).toBeVisible({ timeout: 5000 })
+      await openapiSource.click()
+      await expect(this.page.getByTestId('openapi-spec-source')).toBeVisible({ timeout: 5000 })
+      return
+    }
+    const mcpSource = this.page.getByTestId('mcp-server-source-mcp')
+    if (await mcpSource.isVisible().catch(() => false)) {
+      await mcpSource.click()
+    }
+
     // Click the connection type select trigger
     const selectTrigger = this.page.locator('[data-testid="connection-type-select"]')
     await expect(selectTrigger).toBeVisible({ timeout: 5000 })
@@ -254,8 +289,6 @@ export class MCPRegistryPage extends BasePage {
     // Select connection type if specified
     if (config.connectionType) {
       await this.selectConnectionType(config.connectionType)
-      // Wait for the form to update after connection type change
-      await this.page.waitForTimeout(500)
     }
 
     // Toggle code mode if specified (Radix Switch uses data-state="checked"/"unchecked")
@@ -288,15 +321,12 @@ export class MCPRegistryPage extends BasePage {
       // Select auth type if specified
       if (config.authType) {
         await this.selectAuthType(config.authType)
-        await this.page.waitForTimeout(500)
       }
 
       // Fill connection URL
       if (config.connectionUrl) {
         await expect(this.connectionUrlInput).toBeVisible({ timeout: 5000 })
         await this.connectionUrlInput.fill(config.connectionUrl)
-        // Wait for React to process the input
-        await this.page.waitForTimeout(500)
       }
 
       // Fill headers when auth_type is 'headers' (required for SSE test; export MCP_SSE_HEADERS in your environment)
@@ -315,13 +345,11 @@ export class MCPRegistryPage extends BasePage {
           await keyInput.scrollIntoViewIfNeeded()
           await keyInput.click()
           await keyInput.fill(key)
-          await this.page.waitForTimeout(400)
           const valueEl = valueInput.first()
           await valueEl.waitFor({ state: 'visible', timeout: 3000 })
           await valueEl.scrollIntoViewIfNeeded()
           await valueEl.click()
           await valueEl.fill(valueStr)
-          await this.page.waitForTimeout(500)
         }
       }
 
@@ -344,13 +372,26 @@ export class MCPRegistryPage extends BasePage {
           await this.oauthScopesInput.fill(config.oauthScopes)
         }
       }
+    } else if (config.connectionType === 'openapi') {
+      await this.parseOpenAPISpec({ supply: () => this.fillOpenAPISource(config) })
+      for (const tool of config.openapiDeselectTools ?? []) {
+        await this.toggleOpenAPITool(tool)
+      }
+      for (const [scheme, value] of Object.entries(config.openapiCredentials ?? {})) {
+        await this.fillOpenAPICredential(scheme, value)
+      }
+      if (config.openapiBaseUrl) {
+        await this.setOpenAPICustomBaseUrl(config.openapiBaseUrl)
+      }
+      if (config.authType && config.authType !== 'none') {
+        await expect(this.authTypeSelect).toBeVisible({ timeout: 5000 })
+        await this.selectAuthType(config.authType)
+      }
     } else if (config.connectionType === 'stdio') {
       // Fill STDIO specific fields - wait for them to be visible after type change
       if (config.command) {
         await expect(this.commandInput).toBeVisible({ timeout: 5000 })
         await this.commandInput.fill(config.command)
-        // Wait for React to process the input
-        await this.page.waitForTimeout(500)
       }
       if (config.args) {
         await expect(this.argsInput).toBeVisible({ timeout: 5000 })
@@ -363,6 +404,158 @@ export class MCPRegistryPage extends BasePage {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // OpenAPI connection type
+  // ---------------------------------------------------------------------------
+
+  /** Pick the Paste / URL / Upload tab of the OpenAPI source control */
+  async selectOpenAPISourceMode(mode: OpenAPISourceMode): Promise<void> {
+    const tab = this.sheet.getByTestId(`openapi-spec-source-tab-${mode}`)
+    await expect(tab).toBeVisible({ timeout: 5000 })
+    await tab.click()
+  }
+
+  /** Type a document into the Paste editor (Monaco), replacing its content */
+  async pasteOpenAPISpec(text: string): Promise<void> {
+    const editor = this.sheet.getByTestId('openapi-spec-paste-editor')
+    await expect(editor).toBeVisible({ timeout: 10000 })
+    const textarea = editor.locator('textarea.inputarea')
+    await textarea.waitFor({ state: 'attached', timeout: 10000 })
+    await editor.locator('.monaco-editor').first().click()
+    await this.page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
+    await this.page.keyboard.press('Backspace')
+    // insertText bypasses Monaco's auto-closing brackets/quotes, which would
+    // otherwise corrupt a typed JSON document.
+    await this.page.keyboard.insertText(text)
+  }
+
+  async fillOpenAPISpecUrl(url: string): Promise<void> {
+    const input = this.sheet.getByTestId('openapi-spec-url-input')
+    await expect(input).toBeVisible({ timeout: 5000 })
+    await input.fill(url)
+  }
+
+  async uploadOpenAPISpec(file: OpenAPISpecFile): Promise<void> {
+    const input = this.sheet.getByTestId('openapi-spec-upload-input')
+    await input.setInputFiles({ name: file.name, mimeType: file.mimeType, buffer: file.buffer })
+  }
+
+  /** Supply the document in whichever mode the config names (paste by default) */
+  async fillOpenAPISource(config: MCPClientConfig): Promise<void> {
+    const mode = config.openapiSourceMode ?? 'paste'
+    await this.selectOpenAPISourceMode(mode)
+    if (mode === 'url') {
+      if (!config.openapiSpecUrl) throw new Error('openapiSpecUrl is required for url mode')
+      await this.fillOpenAPISpecUrl(config.openapiSpecUrl)
+    } else if (mode === 'upload') {
+      if (!config.openapiSpecFile) throw new Error('openapiSpecFile is required for upload mode')
+      await this.uploadOpenAPISpec(config.openapiSpecFile)
+      await expect(this.sheet.getByTestId('openapi-spec-upload-filename')).toContainText(config.openapiSpecFile.name, { timeout: 5000 })
+    } else {
+      if (!config.openapiSpecText) throw new Error('openapiSpecText is required for paste mode')
+      await this.pasteOpenAPISpec(config.openapiSpecText)
+    }
+  }
+
+  /**
+   * Supply the document and wait for the preview endpoint. A pasted or uploaded
+   * document parses on its own; a URL is fetched with the Fetch button. The
+   * wait starts before the document is supplied so the automatic parse is not
+   * missed. Returns the response status so a test can assert a rejection
+   * without the preview ever rendering.
+   */
+  async parseOpenAPISpec(options: { supply: () => Promise<void>; expectOk?: boolean }): Promise<number> {
+    const expectOk = options.expectOk ?? true
+    const responsePromise = this.page.waitForResponse(
+      (response) => response.url().includes('/mcp/openapi/preview') && response.request().method() === 'POST',
+      { timeout: 30000 }
+    )
+    await options.supply()
+    if ((await this.sheet.getByTestId('openapi-spec-source-tab-url').getAttribute('data-state')) === 'active') {
+      await this.sheet.getByTestId('openapi-parse-btn').click()
+    }
+    const response = await responsePromise
+    if (expectOk) {
+      if (!response.ok()) {
+        throw new Error(`OpenAPI preview failed: ${response.status()} ${await response.text().catch(() => '')}`)
+      }
+      await expect(this.sheet.getByTestId('openapi-preview-title')).toBeVisible({ timeout: 10000 })
+    }
+    return response.status()
+  }
+
+  async getOpenAPIParseError(): Promise<string> {
+    const err = this.sheet.getByTestId('openapi-parse-error')
+    await expect(err).toBeVisible({ timeout: 5000 })
+    return (await err.textContent())?.trim() ?? ''
+  }
+
+  /** Names of every operation row in the preview (supported and unsupported) */
+  async getOpenAPIPreviewToolNames(): Promise<string[]> {
+    const rows = this.sheet.locator('[data-testid^="openapi-tool-row-"]')
+    const count = await rows.count()
+    const names: string[] = []
+    for (let i = 0; i < count; i++) {
+      const testId = await rows.nth(i).getAttribute('data-testid')
+      if (testId) names.push(testId.replace('openapi-tool-row-', ''))
+    }
+    return names
+  }
+
+  async isOpenAPIToolDisabled(name: string): Promise<boolean> {
+    return await this.sheet.getByTestId(`openapi-tool-checkbox-${name}`).isDisabled()
+  }
+
+  async isOpenAPIToolChecked(name: string): Promise<boolean> {
+    const state = await this.sheet.getByTestId(`openapi-tool-checkbox-${name}`).getAttribute('data-state')
+    return state === 'checked'
+  }
+
+  async toggleOpenAPITool(name: string): Promise<void> {
+    const checkbox = this.sheet.getByTestId(`openapi-tool-checkbox-${name}`)
+    await expect(checkbox).toBeVisible({ timeout: 5000 })
+    await checkbox.click()
+  }
+
+  async getOpenAPISelectedCountText(): Promise<string> {
+    return (await this.sheet.getByTestId('openapi-tools-selected-count').textContent())?.trim() ?? ''
+  }
+
+  /** Fill the value of an apiKey or bearer scheme credential */
+  async fillOpenAPICredential(scheme: string, value: string): Promise<void> {
+    const input = this.sheet.getByTestId(`openapi-security-${scheme}-input`)
+    await expect(input).toBeVisible({ timeout: 5000 })
+    await input.fill(value)
+  }
+
+  async setOpenAPICustomBaseUrl(url: string): Promise<void> {
+    const select = this.sheet.getByTestId('openapi-base-url-select')
+    if (await select.isVisible().catch(() => false)) {
+      await select.click()
+      await this.page.getByTestId('openapi-base-url-option-custom').click()
+    }
+    const input = this.sheet.getByTestId('openapi-base-url-input')
+    await expect(input).toBeVisible({ timeout: 5000 })
+    await input.fill(url)
+  }
+
+  /** Summary line of the stored document on the edit sheet's General tab */
+  async getOpenAPISummaryText(): Promise<string> {
+    const summary = this.detailSheet.getByTestId('mcp-client-sheet-openapi-summary')
+    await expect(summary).toBeVisible({ timeout: 10000 })
+    return (await summary.textContent())?.trim() ?? ''
+  }
+
+  /** Open the Replace spec card on the edit sheet (waits for the stored document to load) */
+  async openReplaceSpec(): Promise<void> {
+    const responsePromise = this.page
+      .waitForResponse((response) => response.url().includes('/openapi-spec') && response.request().method() === 'GET', { timeout: 15000 })
+      .catch(() => null)
+    await this.detailSheet.getByTestId('openapi-replace-spec-btn').click()
+    await expect(this.detailSheet.getByTestId('openapi-replace-spec-panel')).toBeVisible({ timeout: 5000 })
+    await responsePromise
+  }
+
   /**
    * Create an MCP client with full configuration
    */
@@ -373,9 +566,6 @@ export class MCPRegistryPage extends BasePage {
 
     // Fill the form
     await this.fillClientForm(config)
-
-    // Wait for form validation to complete
-    await this.page.waitForTimeout(1500)
 
     // Wait for save button to be enabled (validation passed)
     await expect(this.saveBtn).toBeEnabled({ timeout: 10000 })
@@ -490,7 +680,6 @@ export class MCPRegistryPage extends BasePage {
     await expect(this.sheet).toBeVisible({ timeout: 5000 })
 
     await this.fillClientForm(config)
-    await this.page.waitForTimeout(1500)
     await expect(this.saveBtn).toBeEnabled({ timeout: 10000 })
 
     const responsePromise = this.page.waitForResponse(
@@ -564,7 +753,6 @@ export class MCPRegistryPage extends BasePage {
     await this.closeSheet()
     await this.dismissToasts()
     await this.table.waitFor({ state: 'visible', timeout: 10000 }).catch(() => {})
-    await this.page.waitForTimeout(500)
 
     for (const name of names) {
       const tryDelete = async (): Promise<void> => {
@@ -704,16 +892,42 @@ export class MCPRegistryPage extends BasePage {
    */
   async getClientStatus(name: string): Promise<string> {
     const row = this.getClientRow(name)
-    const statusBadge = row
-      .locator('[class*="badge"]')
-      .or(row.locator('span').filter({ hasText: /connected|disconnected|connecting|error/i }))
-      .last()
-    const statusText = await statusBadge.textContent()
-    return statusText?.toLowerCase().trim() || ''
+    // The State column shows a badge such as "Healthy" or "Needs Reauth".
+    const headers = await this.page.locator('table thead th').allTextContents()
+    const index = headers.findIndex((h) => h.trim().startsWith('State'))
+    const statusText = await row.locator('td').nth(index).locator('[data-slot="badge"]').first().textContent()
+    return statusText?.toLowerCase().trim().replace(/\s+/g, '_') || ''
   }
 
   /**
-   * Get connection type displayed in the table (HTTP, SSE, STDIO)
+   * Opens the filter sidebar if it is collapsed, clears any active facet, and
+   * selects exactly these connection types (an empty list leaves no filter).
+   */
+  async setConnectionTypeFilter(types: string[]): Promise<void> {
+    const show = this.page.getByTestId('mcpClientsFilterSidebar-toggle-show')
+    if (await show.isVisible().catch(() => false)) {
+      await show.click()
+    }
+    const reset = this.page.getByTestId('mcpClientsFilterSidebar-reset-button')
+    if (await reset.isVisible().catch(() => false)) {
+      await reset.click()
+    }
+    for (const type of types) {
+      const checkbox = this.page.getByTestId(`mcp-clients-filter-connection-type-checkbox-${type}`)
+      if (!(await checkbox.isVisible().catch(() => false))) {
+        await this.page.getByTestId('mcp-clients-filter-connection-type-toggle').click()
+      }
+      await checkbox.click()
+    }
+  }
+
+  /** The connection type shown on every client row currently in the table. */
+  async getVisibleConnectionTypes(): Promise<string[]> {
+    return (await this.table.locator('tbody tr').getByTestId('mcp-client-connection-type').allTextContents()).map((t) => t.trim())
+  }
+
+  /**
+   * Get connection type displayed in the table (HTTP, SSE, STDIO, OpenAPI)
    */
   async getClientConnectionType(name: string): Promise<string> {
     const row = this.getClientRow(name)
@@ -733,10 +947,11 @@ export class MCPRegistryPage extends BasePage {
    * Assumes the detail sheet is already open
    */
   async getToolsCount(): Promise<number> {
-    // Tools are displayed in a table in the detail sheet
+    // Tools live in a table on the detail sheet's Tools tab.
+    await this.detailSheet.getByTestId('mcpclient-tab-tools').click()
     const toolRows = this.detailSheet.locator('table tbody tr')
-    const count = await toolRows.count()
-    return count
+    await toolRows.first().waitFor({ timeout: 10000 }).catch(() => {})
+    return await toolRows.count()
   }
 
   /**
@@ -744,7 +959,11 @@ export class MCPRegistryPage extends BasePage {
    */
   async getEnabledToolsCount(name: string): Promise<string | null> {
     const row = this.getClientRow(name)
-    // Enabled tools is typically shown as "X/Y" format
+    // Enabled tools is shown as "X/Y"; prefer the cell's testid over its index.
+    const cell = row.getByTestId('mcp-client-enabled-tools')
+    if ((await cell.count()) > 0) {
+      return (await cell.first().textContent())?.trim() ?? null
+    }
     const cells = row.locator('td')
     const count = await cells.count()
     if (count >= 5) {

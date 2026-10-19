@@ -82,11 +82,14 @@ func TestGroqModelRetrieve(t *testing.T) {
 
 	var mu sync.Mutex
 	var gotPath, gotMethod, gotAuth string
+	dispatched := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		gotPath, gotMethod, gotAuth = r.URL.Path, r.Method, r.Header.Get("Authorization")
+		dispatched++
 		mu.Unlock()
-		_, _ = w.Write([]byte(`{"id":"llama-3.3-70b-versatile","object":"model","created":1693721698,"owned_by":"Meta","context_window":131072}`))
+		id := strings.TrimPrefix(r.URL.Path, "/v1/models/")
+		_, _ = w.Write([]byte(`{"id":"` + id + `","object":"model","created":1693721698,"owned_by":"Meta","context_window":131072}`))
 	}))
 	defer server.Close()
 
@@ -112,7 +115,24 @@ func TestGroqModelRetrieve(t *testing.T) {
 	require.Equal(t, schemas.Ptr("Meta"), response.OwnedBy)
 	require.Equal(t, schemas.Ptr(131072), response.ContextLength)
 
-	_, bifrostErr = provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: "../models"})
-	require.NotNil(t, bifrostErr)
-	require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode)
+	// Most current Groq models are namespaced ("openai/gpt-oss-120b"); each segment is a path segment.
+	response, bifrostErr = provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: "openai/gpt-oss-120b"})
+	require.Nil(t, bifrostErr)
+	mu.Lock()
+	path = gotPath
+	mu.Unlock()
+	require.Equal(t, "/v1/models/openai/gpt-oss-120b", path)
+	require.Equal(t, "groq/openai/gpt-oss-120b", response.ID)
+
+	mu.Lock()
+	before := dispatched
+	mu.Unlock()
+	for _, invalid := range []string{"../models", "openai/../models", "openai/./gpt", "openai//gpt", "/openai", "openai/", "openai/%2e%2e", "openai/gpt?x=1", "openai\\gpt"} {
+		_, bifrostErr = provider.ModelRetrieve(ctx, key, &schemas.BifrostModelRetrieveRequest{Model: invalid})
+		require.NotNil(t, bifrostErr, invalid)
+		require.Equal(t, schemas.Ptr(http.StatusBadRequest), bifrostErr.StatusCode, invalid)
+	}
+	mu.Lock()
+	require.Equal(t, before, dispatched, "a path-shaping model id must never be dispatched upstream")
+	mu.Unlock()
 }

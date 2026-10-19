@@ -597,6 +597,82 @@ func TestToAnthropicChatRequest_ToolResultCacheControlHoistedToBlock(t *testing.
 	}
 }
 
+func TestToAnthropicChatRequest_ToolCallCacheControlCarriedToToolUse(t *testing.T) {
+	toolCallID := "toolu_1"
+	req := &schemas.BifrostChatRequest{
+		Provider: schemas.Anthropic,
+		Model:    "claude-sonnet-4-6",
+		Input: []schemas.ChatMessage{
+			{
+				Role:    schemas.ChatMessageRoleUser,
+				Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("what is the weather in nyc")},
+			},
+			{
+				Role: schemas.ChatMessageRoleAssistant,
+				ChatAssistantMessage: &schemas.ChatAssistantMessage{
+					ToolCalls: []schemas.ChatAssistantMessageToolCall{
+						{
+							ID:   schemas.Ptr(toolCallID),
+							Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("get_weather"),
+								Arguments: `{"city":"nyc"}`,
+							},
+							CacheControl: &schemas.CacheControl{Type: schemas.CacheControlTypeEphemeral},
+						},
+						{
+							ID:   schemas.Ptr("toolu_2"),
+							Type: schemas.Ptr(string(schemas.ChatToolTypeFunction)),
+							Function: schemas.ChatAssistantMessageToolCallFunction{
+								Name:      schemas.Ptr("get_weather"),
+								Arguments: `{"city":"sf"}`,
+							},
+						},
+					},
+				},
+			},
+			{
+				Role:            schemas.ChatMessageRoleTool,
+				ChatToolMessage: &schemas.ChatToolMessage{ToolCallID: schemas.Ptr(toolCallID)},
+				Content:         &schemas.ChatMessageContent{ContentStr: schemas.Ptr("68F, partly cloudy.")},
+			},
+		},
+	}
+
+	ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+	defer cancel()
+	result, err := ToAnthropicChatRequest(ctx, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var toolUseBlocks []AnthropicContentBlock
+	for i := range result.Messages {
+		msg := result.Messages[i]
+		if msg.Role != "assistant" || msg.Content.ContentBlocks == nil {
+			continue
+		}
+		for j := range msg.Content.ContentBlocks {
+			if msg.Content.ContentBlocks[j].Type == AnthropicContentBlockTypeToolUse {
+				toolUseBlocks = append(toolUseBlocks, msg.Content.ContentBlocks[j])
+			}
+		}
+	}
+	if len(toolUseBlocks) != 2 {
+		t.Fatalf("expected 2 tool_use blocks in the converted request, got %d", len(toolUseBlocks))
+	}
+
+	if toolUseBlocks[0].CacheControl == nil {
+		t.Fatal("expected cache_control on the tool_calls entry to be carried onto its tool_use block")
+	}
+	if toolUseBlocks[0].CacheControl.Type != schemas.CacheControlTypeEphemeral {
+		t.Errorf("tool_use cache_control type = %q, want %q", toolUseBlocks[0].CacheControl.Type, schemas.CacheControlTypeEphemeral)
+	}
+	if toolUseBlocks[1].CacheControl != nil {
+		t.Error("tool_use block without a marker on its tool_calls entry must not gain cache_control")
+	}
+}
+
 func TestToAnthropicChatRequest_NestedProperties_Preserved(t *testing.T) {
 	params := &schemas.ToolFunctionParameters{
 		Type: "object",
@@ -2617,4 +2693,39 @@ func TestToAnthropicChatRequest_AllowedToolsNoneNameableStillMeansNone(t *testin
 	})
 	assert.Equal(t, 0, countFunctionTools(filtered), "no function tool was allowed, so the choice must be none")
 	assert.Len(t, filtered, 2, "both server tools are still there")
+}
+
+// TestStopSequence_ChatResponseEgress verifies that a chat response's StopString becomes
+// stop_reason "stop_sequence" with the matched string, while a plain stop maps to end_turn.
+func TestStopSequence_ChatResponseEgress(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		stopString *string
+		wantReason AnthropicStopReason
+		wantSeq    *string
+	}{
+		{"matched sequence", schemas.Ptr("###"), AnthropicStopReasonStopSequence, schemas.Ptr("###")},
+		{"plain stop", nil, AnthropicStopReasonEndTurn, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := ToAnthropicChatResponse(&schemas.BifrostChatResponse{
+				Model: "claude-sonnet-4-5",
+				Choices: []schemas.BifrostResponseChoice{{
+					FinishReason: schemas.Ptr(string(schemas.BifrostFinishReasonStop)),
+					ChatNonStreamResponseChoice: &schemas.ChatNonStreamResponseChoice{
+						Message: &schemas.ChatMessage{
+							Role:    schemas.ChatMessageRoleAssistant,
+							Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("1 2 3")},
+						},
+						StopString: tt.stopString,
+					},
+				}},
+			})
+			assertStopFields(t, result.StopReason, result.StopSequence, tt.wantReason, tt.wantSeq)
+		})
+	}
 }

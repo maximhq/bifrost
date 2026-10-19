@@ -136,9 +136,17 @@ func deepCopyChatStreamDelta(original *schemas.ChatStreamResponseChoiceDelta) *s
 	return copy
 }
 
-// buildCompleteMessageFromChunks builds a complete message from accumulated chunks.
-// Uses strings.Builder for O(n) accumulation instead of O(n²) string concatenation.
+// buildCompleteMessageFromChatStreamChunks builds a complete message from accumulated chunks.
 func (a *Accumulator) buildCompleteMessageFromChatStreamChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage {
+	return BuildChatMessageFromChunks(chunks)
+}
+
+// BuildChatMessageFromChunks assembles the complete assistant message from a stream's chat chunks
+// (content, refusal, reasoning, reasoning details, audio, annotations and tool calls). It sorts
+// chunks in place by ChunkIndex and holds no state, so callers that rebuild a stream outside the
+// Accumulator (e.g. from a recorded passthrough body) get the same result the live path produces.
+// Uses strings.Builder for O(n) accumulation instead of O(n²) string concatenation.
+func BuildChatMessageFromChunks(chunks []*ChatStreamChunk) *schemas.ChatMessage {
 	completeMessage := &schemas.ChatMessage{
 		Role:    schemas.ChatMessageRoleAssistant,
 		Content: &schemas.ChatMessageContent{},

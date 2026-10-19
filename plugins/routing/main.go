@@ -260,7 +260,7 @@ func (p *RoutingPlugin) storeComplexityAnalyzerConfig(config *complexity.Analyze
 	p.sessionEnabled.Store(resolved.SessionRoutingEnabled())
 	if p.semanticClassifier != nil {
 		semanticConfig := resolved
-		if resolved.Classifier == complexity.ClassifierJev {
+		if resolved.Classifier == complexity.ClassifierDecision {
 			copyConfig := *resolved
 			copyConfig.Semantic = nil
 			semanticConfig = &copyConfig
@@ -301,7 +301,7 @@ func (p *RoutingPlugin) ValidateComplexityAnalyzerConfig(config *complexity.Anal
 	if err != nil {
 		return err
 	}
-	usesSemantic := resolved.Classifier != complexity.ClassifierJev
+	usesSemantic := resolved.Classifier != complexity.ClassifierDecision
 	if usesSemantic && resolved.Semantic != nil && p.semanticClassifier == nil {
 		return fmt.Errorf("semantic complexity classifier is unavailable")
 	}
@@ -313,9 +313,9 @@ func (p *RoutingPlugin) ValidateComplexityAnalyzerConfig(config *complexity.Anal
 			return err
 		}
 	}
-	usesJev := resolved.Classifier == complexity.ClassifierJev || (resolved.Semantic != nil && resolved.Semantic.Fallback == configstore.ComplexitySemanticFallbackJev)
-	if usesJev && p.decisionExecutor() == nil {
-		return fmt.Errorf("Jev complexity decision executor is unavailable")
+	usesDecision := resolved.Classifier == complexity.ClassifierDecision || (resolved.Semantic != nil && resolved.Semantic.Fallback == configstore.ComplexitySemanticFallbackDecision)
+	if usesDecision && p.decisionExecutor() == nil {
+		return fmt.Errorf("decision-model executor is unavailable")
 	}
 	if resolved.SessionRoutingEnabled() && p.sessionStore == nil {
 		return fmt.Errorf("complexity session routing requires a KV store")
@@ -433,10 +433,11 @@ func (p *RoutingPlugin) PreRequestHook(ctx *schemas.BifrostContext, req *schemas
 
 	_, routedModel, _ := req.GetRequestFields()
 
-	// Downstream routing layers (load balancing, model-catalog resolution) and core
-	// enforcement intersect their candidates with this allowlist, so a later layer cannot
-	// select a provider the request may not use for the routed model. A request that carries no
-	// grants at all has nothing to allow or deny, and the call is a no-op.
+	// Downstream routing layers (load balancing, model-catalog resolution) intersect their
+	// candidates with this allowlist, so a later layer does not select a provider the request may
+	// not use for the routed model. Core never reads it: governance's PreLLMHook refuses a
+	// disallowed provider or model on every routed LLM attempt. A request with no grant, or with no
+	// permits, has nothing to allow or deny, and publishing is a no-op.
 	p.governance.PublishRoutingAllowlist(ctx, routedModel)
 	return p.governance.LoadBalanceProvider(ctx, req)
 }

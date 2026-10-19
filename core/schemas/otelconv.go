@@ -5,6 +5,10 @@ package schemas
 // can't flow through OTelOperationName.
 const OTelOperationNameExecuteTool = "execute_tool"
 
+// OTelOperationNameInvokeAgent is the gen_ai.operation.name value for A2A
+// message operations, per the OTel GenAI agent span conventions.
+const OTelOperationNameInvokeAgent = "invoke_agent"
+
 // OTelOperationName maps a Bifrost RequestType to the value that should be
 // emitted under gen_ai.operation.name. Values not modeled by the spec fall
 // through to the raw RequestType string.

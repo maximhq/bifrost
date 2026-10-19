@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/examples/plugins/multi-interface
 
-go 1.27.0
+go 1.27.2
 
 replace github.com/maximhq/bifrost/core => ../../../core
 

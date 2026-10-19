@@ -26,7 +26,7 @@ import {
 	parseLogSearchInput,
 } from "@/lib/utils/logSearch";
 import { getApiBaseUrl } from "@/lib/utils/port";
-import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
+import { getRangeForPeriod, TIME_PERIODS, withPeriodTimezone } from "@/lib/utils/timeRange";
 import { Calculator, ChevronDown, ListTree, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -319,7 +319,7 @@ export function LogsHeaderView({
 		// justify-between only once the row can hold everything: while the controls
 		// wrap, spreading them pushes the last row's two icon buttons to opposite
 		// edges of the card and burns a whole row on two buttons.
-		<div className="flex grow flex-wrap items-center justify-start gap-2 lg:flex-nowrap lg:justify-between">
+		<div className="flex grow flex-wrap items-center justify-start gap-2 @4xl/logs-header:flex-nowrap @4xl/logs-header:justify-between">
 			<Button
 				data-testid="logs-refresh-btn"
 				variant="outline"
@@ -368,7 +368,7 @@ export function LogsHeaderView({
 			</Tooltip>
 			{/* Full width while the row wraps, so the search field owns its own line
 			    instead of squeezing to its 12rem minimum beside the date picker. */}
-			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center overflow-hidden rounded-sm border lg:basis-auto">
+			<div className="border-input flex h-7.5 min-w-[12rem] flex-1 basis-full items-center overflow-hidden rounded-sm border @4xl/logs-header:basis-auto">
 				<Search className="mr-2 ml-2 size-4 shrink-0" />
 				<Input
 					type="text"
@@ -526,7 +526,7 @@ async function startRecalculateCostJob(
 		credentials: "include",
 		headers,
 		// Override the page's own missing_cost_only filter with the mode chosen in the dialog.
-		body: JSON.stringify({ filters: { ...filters, missing_cost_only: missingCostOnly } }),
+		body: JSON.stringify({ filters: { ...withPeriodTimezone(filters), missing_cost_only: missingCostOnly } }),
 	});
 
 	// 202 Accepted (new job) and 409 Conflict (already running) both carry a status.

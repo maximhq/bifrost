@@ -621,16 +621,15 @@ export const ProviderIcons = {
 		return (
 			<svg
 				fill="currentColor"
-				fillRule="evenodd"
 				height={resolvedSize}
 				style={{ flex: "none", lineHeight: "1" }}
-				viewBox="0 0 24 24"
+				viewBox="0 -147 1024 1024"
 				width={resolvedSize}
 				xmlns="http://www.w3.org/2000/svg"
 				className={className}
 			>
 				<title>OpenRouter</title>
-				<path d="M16.804 1.957l7.22 4.105v.087L16.73 10.21l.017-2.117-.821-.03c-1.059-.028-1.611.002-2.268.11-1.064.175-2.038.577-3.147 1.352L8.345 11.03c-.284.195-.495.336-.68.455l-.515.322-.397.234.385.23.53.338c.476.314 1.17.796 2.701 1.866 1.11.775 2.083 1.177 3.147 1.352l.3.045c.694.091 1.375.094 2.825.033l.022-2.159 7.22 4.105v.087L16.589 22l.014-1.862-.635.022c-1.386.042-2.137.002-3.138-.162-1.694-.28-3.26-.926-4.881-2.059l-2.158-1.5a21.997 21.997 0 00-.755-.498l-.467-.28a55.927 55.927 0 00-.76-.43C2.908 14.73.563 14.116 0 14.116V9.888l.14.004c.564-.007 2.91-.622 3.809-1.124l1.016-.58.438-.274c.428-.28 1.072-.726 2.686-1.853 1.621-1.133 3.186-1.78 4.881-2.059 1.152-.19 1.974-.213 3.814-.138l.02-1.907z"></path>
+				<path d="M795.893 0C915.776 0 1012.95 97.9963 1012.95 218.88C1012.95 339.764 915.776 437.76 795.893 437.76L1011.2 654.869C1038.55 682.447 1019.18 729.6 980.504 729.6H361.77C161.97 729.6 0 566.273 0 364.8C0 163.327 161.97 0 361.77 0L795.893 0ZM361.77 145.92C241.89 145.92 144.708 243.916 144.708 364.8C144.708 485.684 241.89 583.68 361.77 583.68C481.649 583.68 578.831 485.684 578.831 364.8C578.831 243.916 481.649 145.92 361.77 145.92Z"></path>
 			</svg>
 		);
 	},
@@ -675,6 +674,48 @@ export const ProviderIcons = {
 				alt="nebius"
 				width={14}
 				height={14}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
+	},
+	// Laya, Nimble, and Clef (on Cloudflare Workers AI) are decision models reached through
+	// custom providers, so they have no provider name of their own to match. The complexity
+	// router picks these marks by model family.
+	laya: ({ className = "" }: IconProps) => {
+		return (
+			<img
+				src="/images/laya.png"
+				alt="laya"
+				width={16}
+				height={16}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
+	},
+	nimble: ({ className = "" }: IconProps) => {
+		return (
+			<img
+				src="/images/nimble.png"
+				alt="nimble"
+				width={16}
+				height={16}
+				loading="lazy"
+				decoding="async"
+				className={cn("object-contain", className)}
+			/>
+		);
+	},
+	clef: ({ className = "" }: IconProps) => {
+		return (
+			<img
+				src="/images/clef.png"
+				alt="clef"
+				width={16}
+				height={16}
 				loading="lazy"
 				decoding="async"
 				className={cn("object-contain", className)}
@@ -867,13 +908,7 @@ export const ProviderIcons = {
 		const resolvedSize = resolveSize(size);
 
 		return (
-			<svg
-				width={resolvedSize}
-				height={resolvedSize}
-				viewBox="255 77 555 393"
-				xmlns="http://www.w3.org/2000/svg"
-				className={className}
-			>
+			<svg width={resolvedSize} height={resolvedSize} viewBox="255 77 555 393" xmlns="http://www.w3.org/2000/svg" className={className}>
 				<title>Tencent TokenHub</title>
 				<path
 					fill="#00A3FF"
@@ -886,6 +921,19 @@ export const ProviderIcons = {
 				<path
 					fill="#006EFF"
 					d="M685.3,188.5c-24.7-66.3-88-110.4-158.8-110.5c-84.8,0-152.2,62.8-165.3,140.8c6.5,0,13.1-2.1,21.8-2.1 c8.7,0,19.6,2.1,28.3,2.1c10.9-54.2,58.7-93.2,115.3-93.2c47.8,0,89.2,28.2,108.7,69.3c0,0,2.2,2.2,2.2,0 C652.6,192.8,670,188.5,685.3,188.5L685.3,188.5"
+				/>
+			</svg>
+		);
+	},
+	cloudflare: ({ size = "md", className = "" }: IconProps) => {
+		const resolvedSize = resolveSize(size);
+
+		return (
+			<svg width={resolvedSize} height={resolvedSize} viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" className={className}>
+				<title>Cloudflare</title>
+				<path
+					d="M16.5088 16.8447c.1475-.5068.0908-.9707-.1553-1.3154-.2246-.3164-.6045-.499-1.0615-.5205l-8.6592-.1123a.1559.1559 0 0 1-.1333-.0713c-.0283-.042-.0351-.0986-.021-.1553.0278-.084.1123-.1484.2036-.1562l8.7359-.1123c1.0351-.0489 2.1601-.8868 2.5537-1.9136l.499-1.3013c.0215-.0561.0293-.1128.0147-.168-.5625-2.5463-2.835-4.4453-5.5499-4.4453-2.5039 0-4.6284 1.6177-5.3876 3.8614-.4927-.3658-1.1187-.5625-1.794-.499-1.2026.119-2.1665 1.083-2.2861 2.2856-.0283.31-.0069.6128.0635.894C1.5683 13.171 0 14.7754 0 16.752c0 .1748.0142.3515.0352.5273.0141.083.0844.1475.1689.1475h15.9814c.0909 0 .1758-.0645.2032-.1553l.12-.4268zm2.7568-5.5634c-.0771 0-.1611 0-.2383.0112-.0566 0-.1054.0415-.127.0976l-.3378 1.1744c-.1475.5068-.0918.9707.1543 1.3164.2256.3164.6055.498 1.0625.5195l1.8437.1133c.0557 0 .1055.0263.1329.0703.0283.043.0351.1074.0214.1562-.0283.084-.1132.1485-.204.1553l-1.921.1123c-1.041.0488-2.1582.8867-2.5527 1.914l-.1406.3585c-.0283.0713.0215.1416.0986.1416h6.5977c.0771 0 .1474-.0489.169-.126.1122-.4082.1757-.837.1757-1.2803 0-2.6025-2.125-4.727-4.7344-4.727"
+					fill="#F38020"
 				/>
 			</svg>
 		);

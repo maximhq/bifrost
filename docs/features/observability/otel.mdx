@@ -907,6 +907,34 @@ Nothing is built unless a connector asks for it. With no profile setting `export
 - Latency and timing (start/end timestamps)
 - Error details with status codes
 
+For streaming requests, two time-to-first-token values are exported, and they answer
+different questions:
+
+| Attribute | Unit | Measures |
+| --- | --- | --- |
+| `bifrost.response.time_to_first_token_ms` | milliseconds | Request received to first chunk — the full wait a client experiences, including queueing, plugin hooks, key selection and the provider's own time to first byte |
+| `gen_ai.response.time_to_first_chunk` | seconds | First chunk measured from provider stream setup, so it reflects only the provider's streaming behaviour |
+
+Use `bifrost.response.time_to_first_token_ms` for latency dashboards and alerting that
+should track what callers actually see. It is set on both the `llm.call` span and the
+root span, so a trace-level dashboard can read it without drilling in.
+
+### Failed Requests
+
+Failures are classified on the root span as well as the `llm.call` span, so a dashboard
+built on root spans can distinguish causes rather than seeing only an HTTP status:
+
+| Attribute | Description |
+| --- | --- |
+| `bifrost.error.type` | Normalized failure category, identical to the `error_type` metric label |
+| `error.type` | The provider's or Bifrost's own error type |
+| `gen_ai.error` | The error message |
+| `gen_ai.error.code` | The error code, when the provider supplies one |
+
+This also covers requests rejected before they reach a provider — no key supports the
+requested model, a governance refusal, an unknown model. Those carry the requested model
+and provider too, so they can be grouped the same way as provider-side failures.
+
 ### Caller-Supplied Headers
 
 Headers Bifrost forwards to the upstream provider — both `x-bf-eh-*` prefixed headers and headers matched by the [direct allowlist](/deployment-guides/config-json/client#header-filtering) — are also surfaced on the `llm.call` span as `gen_ai.request.extra_header.<name>` attributes. This makes it easy to filter or correlate traces by caller context (session ID, tenant ID, correlation IDs) without standing up extra plumbing.
@@ -1164,6 +1192,7 @@ These are the same **Prometheus-style metrics** from the telemetry plugin, pushe
 | `bifrost_stream_inter_token_latency_seconds` | Histogram | Inter-token latency |
 | `bifrost_request_retries` | Histogram | Retries used per request (observed once per request) |
 | `mcp.client.operation.duration` | Histogram | MCP request duration observed by the client (see [Metrics Push](#metrics-push-cluster-mode) for dimensions) |
+| `a2a.client.operation.duration` | Histogram | Agent Gateway operation duration in seconds; see [Agent Gateway](#agent-gateway) for dimensions. |
 | `http_requests_total` | Counter | Total HTTP requests |
 | `http_request_duration_seconds` | Histogram | HTTP request duration |
 | `http_request_size_bytes` | Histogram | HTTP request body size |
@@ -1387,6 +1416,20 @@ Use the [Maxim Plugin](./maxim) for:
 - Team collaboration and governance
 - Production monitoring with alerts
 - Dataset management and curation
+
+---
+
+## Agent Gateway
+
+Agent Gateway operations are exported through the same OTel profiles as LLM and MCP calls. Each A2A operation becomes a client span with `bifrost.a2a.operation.name`, the agent name, status, timing, and available task and conversation IDs. Protocol methods also carry `a2a.method.name`; gateway-owned operations such as `push_delivery` use the Bifrost operation name. Streaming status and artifact updates appear as span events.
+
+Structured request and response content uses `gen_ai.input.messages` and `gen_ai.output.messages`. Returned tasks, artifacts, and accumulated streaming output are represented in that content. Profile-level `disable_content_logging`, virtual-key content suppression, `disable_root_span_content`, and `excluded_attributes` apply to A2A exports too. Disabling content leaves operation metadata available.
+
+Raw HTTP bodies require both Agent Gateway raw capture and the profile's `export_raw_payloads`. Enabling capture alone does not export raw bodies. gRPC operations retain structured content but do not have raw HTTP capture.
+
+When metrics are enabled, `a2a.client.operation.duration` records one duration in seconds per operation. Dimensions include `bifrost.a2a.operation.name`, the available method and upstream transport, governance attribution, and `error.type` on failures. Task, message, and session IDs are not metric dimensions.
+
+See [Agent Gateway observability](/features/agent-gateway/observability#export-to-observability-connectors) for operation coverage and correlation.
 
 ---
 

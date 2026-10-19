@@ -185,6 +185,95 @@ test("--shard composes with the other predicates instead of replacing them", () 
   for (const n of sliced) assert.ok(whole.includes(n), `${n} passed the slice but not the folder filter`);
 });
 
+// ----- [SERIAL] folders --------------------------------------------------------------------------
+
+// A folder that changes gateway-wide state: setup, the request under test, cleanup. Nothing chains
+// them through a variable, so producer expansion does not hold them together - the request under
+// test only works because the setup before it already ran against the same gateway.
+const serialStep = (name) => ({ ...row(0), name });
+const SERIAL_STEPS = ["serial setup", "serial act", "serial cleanup"];
+const OTHER_SERIAL_STEPS = ["other setup", "other act", "other cleanup"];
+const SERIAL_SOURCE = join(WORK, "source-serial.json");
+writeFileSync(
+  SERIAL_SOURCE,
+  JSON.stringify({
+    ...COLLECTION,
+    item: [
+      { name: "Chat folder", item: Array.from({ length: 20 }, (_, i) => row(i + 1)) },
+      { name: "Gateway state case [SERIAL]", item: SERIAL_STEPS.map(serialStep) },
+      { name: "Another gateway state case [SERIAL]", item: OTHER_SERIAL_STEPS.map(serialStep) },
+    ],
+  })
+);
+const serialRowsOf = (names) => names.filter((n) => /^(serial|other) /.test(n));
+
+// Split across slices, the request under test runs in a process that never did its setup, while
+// the cleanup in another slice undoes the setup under a third. Two such folders in different
+// slices would do the same to each other, so every one of them rides in the first slice.
+test("a [SERIAL] folder is never split across --shard slices", () => {
+  for (const count of [2, 3, 4, 6]) {
+    const slices = Array.from({ length: count }, (_, k) =>
+      serialRowsOf(runFilter(["--provider", "anthropic", "--shard", `${k + 1}/${count}`], { source: SERIAL_SOURCE }))
+    );
+    assert.deepEqual(slices[0], [...SERIAL_STEPS, ...OTHER_SERIAL_STEPS], `slice 1/${count} must hold both folders whole, in order`);
+    for (const [k, rows] of slices.slice(1).entries()) {
+      assert.deepEqual(rows, [], `slice ${k + 2}/${count} holds part of a [SERIAL] folder`);
+    }
+  }
+});
+
+// The class axis forks concurrently too, and the steps of one folder classify differently (a
+// config PUT is "other", the chat it sets up is "chat"). All of them go to one class.
+test("a [SERIAL] folder lands whole in the other class", () => {
+  assert.deepEqual(serialRowsOf(runFilter(["--provider", "anthropic", "--class", "chat"], { source: SERIAL_SOURCE })), []);
+  assert.deepEqual(serialRowsOf(runFilter(["--provider", "anthropic", "--class", "other"], { source: SERIAL_SOURCE })), [
+    ...SERIAL_STEPS,
+    ...OTHER_SERIAL_STEPS,
+  ]);
+});
+
+// A filter that names one step (a rerun of the failed request, a narrow FEATURE) must not replay
+// it without its setup, nor leave the gateway changed by dropping the cleanup.
+test("selecting one step of a [SERIAL] folder selects the whole folder", () => {
+  assert.deepEqual(runFilter(["--feature", "serial act"], { source: SERIAL_SOURCE }), SERIAL_STEPS);
+});
+
+test("[SERIAL] folders keep the slices a partition", () => {
+  const whole = runFilter(["--provider", "anthropic"], { source: SERIAL_SOURCE });
+  const seen = new Map();
+  for (const k of [1, 2, 3]) {
+    for (const n of runFilter(["--provider", "anthropic", "--shard", `${k}/3`], { source: SERIAL_SOURCE })) {
+      seen.set(n, (seen.get(n) || 0) + 1);
+    }
+  }
+  assert.deepEqual(whole.filter((n) => seen.get(n) !== 1), [], "rows that do not run exactly once across the slices");
+});
+
+// The harness runs [SERIAL] folders in a pass of their own, after the parallel sweep, so nothing else
+// hits the gateway while one of them has changed gateway-wide state. --exclude-serial makes the sweep
+// and --only-serial makes that pass; together they cover every row exactly once.
+test("--exclude-serial leaves every [SERIAL] folder out of the sweep, even one a filter names", () => {
+  assert.deepEqual(serialRowsOf(runFilter(["--provider", "anthropic", "--exclude-serial"], { source: SERIAL_SOURCE })), []);
+  assert.deepEqual(serialRowsOf(runFilter(["--feature", "serial act", "--exclude-serial"], { source: SERIAL_SOURCE })), []);
+  for (const k of [1, 2, 3]) {
+    assert.deepEqual(serialRowsOf(runFilter(["--provider", "anthropic", "--exclude-serial", "--shard", `${k}/3`], { source: SERIAL_SOURCE })), []);
+  }
+});
+
+test("--only-serial selects the [SERIAL] folders whole, in collection order", () => {
+  assert.deepEqual(runFilter(["--only-serial"], { source: SERIAL_SOURCE }), [...SERIAL_STEPS, ...OTHER_SERIAL_STEPS]);
+  assert.deepEqual(runFilter(["--only-serial", "--feature", "serial act"], { source: SERIAL_SOURCE }), SERIAL_STEPS);
+});
+
+test("the sweep and the serial pass together run every row exactly once", () => {
+  const whole = runFilter(["--provider", "anthropic"], { source: SERIAL_SOURCE });
+  const split = [
+    ...runFilter(["--provider", "anthropic", "--exclude-serial"], { source: SERIAL_SOURCE }),
+    ...runFilter(["--provider", "anthropic", "--only-serial"], { source: SERIAL_SOURCE }),
+  ];
+  assert.deepEqual([...split].sort(), [...whole].sort());
+});
+
 // ----- rejected forms ----------------------------------------------------------------------------
 
 // An out-of-range or malformed shard must fail loudly. Silently treating it as "no sharding" would
@@ -570,6 +659,38 @@ test("--rerun-failed of a failed read round pulls its write round back in", () =
   );
   const kept = runFilter(["--rerun-failed", "--report", report], { source: CACHE_SOURCE });
   assert.deepEqual(kept, [writeRound.name, readRound.name], "the rerun must replay the write round before the read");
+});
+
+// ----- the serial pass ------------------------------------------------------------------------
+
+// Runs the REAL serial-pass filter step and its "nothing to run" check, with every make reference
+// expanded to nothing (USE_NODE to a no-op), the recipe's helpers stubbed, and a `node` that fails
+// the way filter-collection.mjs does on a real fault. Returns NEWMAN_EXIT afterwards.
+function serialFilterStepExit() {
+  const s = lines.findIndex((l) => l.includes("rm -f tmp/harness-serial-filtered.json"));
+  const e = lines.findIndex((l, i) => i > s && l.includes("nothing to run."));
+  assert.ok(s !== -1 && e !== -1, "could not locate the serial pass filter step in the Makefile");
+  // One shell command line, as make hands it to the shell: continuations joined, make references
+  // expanded (innermost first; a shell's `$$(...)` is left alone), then `$$` undone.
+  let block = lines
+    .slice(s, e + 1)
+    .map((l) => l.replace(/\\$/, ""))
+    .join(" ")
+    .replace(/\$\(USE_NODE\)/g, ":");
+  for (let prev = ""; prev !== block; ) {
+    prev = block;
+    block = block.replace(/(?<!\$)\$\([^()$]*\)/g, "");
+  }
+  block = block.replace(/\$\$/g, "$");
+  const stubs = 'say() { :; }; run_quiet() { "$@"; }; node() { return 2; }; FEATURE_ANY_FLAG=; EXCLUDE_FLAG=; NEWMAN_EXIT=0\n';
+  return execFileSync("bash", ["-c", `set -u\n${stubs}${block} fi\necho "$NEWMAN_EXIT"`], { cwd: WORK, encoding: "utf8" }).trim();
+}
+
+// A serial filter that fails leaves no filtered collection, which reads as a scope with no [SERIAL]
+// folder. The run must fail rather than pass without running a single serial check, as a shard
+// whose filter fails already does.
+test("a serial filter that fails fails the run instead of skipping the serial pass", () => {
+  assert.notEqual(serialFilterStepExit(), "0", "the serial pass was skipped and NEWMAN_EXIT stayed 0");
 });
 
 rmSync(WORK, { recursive: true, force: true });

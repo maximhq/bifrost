@@ -374,3 +374,160 @@ func TestWarpVirtualKeyRankingSaysWhoseKeysItRanks(t *testing.T) {
 	_, present := resultMap(t, out)["guidance"]
 	require.False(t, present)
 }
+
+// A store that scopes per read leaves no queryscope on the context, so the
+// context alone cannot tell a team-scoped user from an admin. The resolver is
+// what does: without it that user's team total was tagged "deployment".
+func TestWarpScopeCallerRestrictionResolver(t *testing.T) {
+	identified := context.WithValue(context.Background(), schemas.BifrostContextKeyUserID, "user-7")
+	restricted := func(context.Context) CallerRestriction {
+		return CallerRestriction{Restricted: true, Visibility: "their teams' traffic"}
+	}
+
+	t.Run("no resolver leaves the context's answer", func(t *testing.T) {
+		scope := withCallerRestriction(identified, ScopeFromContext(identified), nil)
+		require.True(t, scope.Unrestricted)
+		require.Empty(t, scope.Visibility)
+	})
+
+	t.Run("a restricted caller defaults to themselves and is never the deployment", func(t *testing.T) {
+		scope := withCallerRestriction(identified, ScopeFromContext(identified), restricted)
+		require.False(t, scope.Unrestricted)
+		require.Equal(t, "their teams' traffic", scope.Visibility)
+
+		filters := &logstore.SearchFilters{}
+		applyScope(filters, scope, false)
+		require.Equal(t, []string{"user-7"}, filters.UserIDs)
+		require.Equal(t, "self", scopeNote(filters, scope))
+		require.Equal(t, "all", scopeNote(&logstore.SearchFilters{}, scope))
+	})
+
+	t.Run("an unrestricted answer changes nothing", func(t *testing.T) {
+		scope := withCallerRestriction(identified, ScopeFromContext(identified), func(context.Context) CallerRestriction {
+			return CallerRestriction{Visibility: "ignored"}
+		})
+		require.True(t, scope.Unrestricted)
+		require.Empty(t, scope.Visibility)
+	})
+
+	// The resolver only narrows: a scope already on the context is a fact, and
+	// a resolver that knows nothing must not talk Warp out of it.
+	t.Run("never widens a scope the context carries", func(t *testing.T) {
+		scoped := queryscope.WithQueryScope(identified, func(db *gorm.DB) *gorm.DB { return db })
+		scope := withCallerRestriction(scoped, ScopeFromContext(scoped), func(context.Context) CallerRestriction {
+			return CallerRestriction{}
+		})
+		require.False(t, scope.Unrestricted)
+	})
+
+	t.Run("the local admin is not asked", func(t *testing.T) {
+		admin := context.WithValue(identified, schemas.IsLocalAdminContextKey, true)
+		scope := withCallerRestriction(admin, ScopeFromContext(admin), func(context.Context) CallerRestriction {
+			t.Fatal("the local admin bypasses row-level scoping; the resolver must not run")
+			return CallerRestriction{}
+		})
+		require.True(t, scope.Unrestricted)
+	})
+
+	// describe_filter_space is where the model learns what "all" covers.
+	t.Run("describe_filter_space names what the caller may see", func(t *testing.T) {
+		scope := withCallerRestriction(identified, ScopeFromContext(identified), restricted)
+		deps := &ToolDeps{logManager: &fakeLogReader{}, scope: scope}
+		out := resultMap(t, mustRunTool(t, "describe_filter_space", deps, map[string]any{}))
+		require.Equal(t, "the person asking", out["default_scope"])
+		require.Equal(t, "their teams' traffic", out["caller_can_see"])
+
+		unrestricted := &ToolDeps{logManager: &fakeLogReader{}, scope: ScopeFromContext(identified)}
+		out = resultMap(t, mustRunTool(t, "describe_filter_space", unrestricted, map[string]any{}))
+		require.NotContains(t, out, "caller_can_see")
+	})
+}
+
+// The resolver has to be consulted with the context the turn runs under: that
+// snapshot is the only identity the agent's goroutine holds.
+func TestWarpRunTurnAsksTheCallerRestrictionResolver(t *testing.T) {
+	model := &scriptedModel{}
+	service := chatService(model, &fakeLogReader{})
+	var asked []string
+	WithCallerRestrictionResolver(func(ctx context.Context) CallerRestriction {
+		userID, _ := ctx.Value(schemas.BifrostContextKeyUserID).(string)
+		asked = append(asked, userID)
+		return CallerRestriction{Restricted: true}
+	})(service)
+
+	turn, err := service.NewTurn(context.Background(), &ChatRequest{Messages: []ChatMessage{{Role: "user", Content: "hi"}}}, 32)
+	require.NoError(t, err)
+	service.RunTurn(ownerCtx("user-7"), turn, nil)
+	require.Equal(t, []string{"user-7"}, asked)
+}
+
+// A restricted caller's result has to say what it covers on the result itself.
+// caller_can_see used to come back from describe_filter_space alone, so a turn
+// that never called it had only the "all" tag to go on - and described a team's
+// rows as "all users, teams and customers", the provenance template's own words.
+func TestWarpToolResultsSayWhatARestrictedCallerSees(t *testing.T) {
+	restricted := Scope{HasIdentity: true, UserID: "user-7", Visibility: "their teams' traffic"}
+	run := func(t *testing.T, scope Scope, name, arguments string) (string, bool) {
+		t.Helper()
+		agent := newTestAgent(&scriptedModel{}, &fakeLogReader{getLogFunc: func(context.Context, string) (*logstore.Log, error) {
+			return nil, nil
+		}}, 8)
+		agent.deps.scope = scope
+		return agent.executeTool(context.Background(), name, arguments)
+	}
+
+	t.Run("a result over everything they may see names it", func(t *testing.T) {
+		result, failed := run(t, restricted, "query_logs", `{"filters":{"scope":"all"}}`)
+		require.False(t, failed, result)
+		require.Contains(t, result, `"scope":"all"`)
+		require.Contains(t, result, `"caller_can_see":"their teams' traffic"`)
+	})
+
+	// A team they cannot see comes back empty, exactly like a team with no
+	// traffic. Without this the model called the id mistyped.
+	t.Run("a result narrowed to a named team names it too", func(t *testing.T) {
+		result, failed := run(t, restricted, "query_logs", `{"filters":{"team_ids":["team-elsewhere"]}}`)
+		require.False(t, failed, result)
+		require.Contains(t, result, `"scope":"named"`)
+		require.Contains(t, result, `"caller_can_see":"their teams' traffic"`)
+	})
+
+	t.Run("their own traffic needs no such note", func(t *testing.T) {
+		result, failed := run(t, restricted, "query_logs", `{"filters":{}}`)
+		require.False(t, failed, result)
+		require.Contains(t, result, `"scope":"self"`)
+		require.NotContains(t, result, "caller_can_see")
+	})
+
+	t.Run("an unrestricted caller's results are unchanged", func(t *testing.T) {
+		result, failed := run(t, Scope{HasIdentity: true, UserID: "user-7", Unrestricted: true}, "query_logs", `{"filters":{"scope":"all"}}`)
+		require.False(t, failed, result)
+		require.NotContains(t, result, "caller_can_see")
+	})
+
+	// A row outside their view is indistinguishable from one that does not
+	// exist, and must stay so - but "that id does not exist" is a claim the
+	// lookup cannot support for someone who sees a slice.
+	t.Run("a log they cannot load is not called nonexistent", func(t *testing.T) {
+		for _, tool := range []string{"get_log_detail", "get_request_trace"} {
+			result, failed := run(t, restricted, tool, `{"log_id":"log-1"}`)
+			require.True(t, failed, tool)
+			require.Contains(t, result, "no log found with id log-1", tool)
+			require.Contains(t, result, "their teams' traffic", tool)
+
+			result, _ = run(t, Scope{Unrestricted: true}, tool, `{"log_id":"log-1"}`)
+			require.NotContains(t, result, "may see", tool)
+		}
+	})
+}
+
+// The provenance block's example used to read "Scope: all users, teams and
+// customers", and an example outweighs the rule beside it: a restricted
+// caller's answers ended with that line verbatim.
+func TestWarpSystemPromptScopeLineIsNotAnAnswer(t *testing.T) {
+	content := systemInstructions(&schemas.WarpConfig{}, true)
+
+	require.NotContains(t, content, "Scope: all users, teams and customers")
+	require.Contains(t, content, "When a result carries caller_can_see")
+	require.Contains(t, content, "never call such a result the whole deployment or all users")
+}

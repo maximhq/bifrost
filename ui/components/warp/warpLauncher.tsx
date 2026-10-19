@@ -58,7 +58,7 @@ export default function WarpLauncher() {
 					onClick={warp.toggle}
 					className="text-muted-foreground hover:bg-accent hover:text-accent-foreground data-[state=open]:bg-card data-[state=open]:text-accent-foreground flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-md transition-colors data-[state=open]:border"
 				>
-					<WarpIcon className="size-5" />
+					<WarpIcon className="size-4" strokeWidth={2} />
 				</button>
 			</TooltipTrigger>
 			<TooltipContent sideOffset={8} className="flex items-center gap-1.5 px-2 py-1 text-xs">

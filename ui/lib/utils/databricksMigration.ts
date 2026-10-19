@@ -11,7 +11,7 @@ import {
 } from "@/lib/types/config";
 import { DefaultNetworkConfig, DefaultPerformanceConfig } from "@/lib/constants/config";
 import { SecretVar } from "@/lib/types/schemas";
-import { toSecretVarFormValue } from "@/lib/utils/secretVarForm";
+import { isSecretVarSet, toSecretVarFormValue } from "@/lib/utils/secretVarForm";
 import { isRedacted } from "@/lib/utils/validation";
 
 /**
@@ -89,7 +89,7 @@ export const deriveDatabricksWorkspace = (baseUrl: string | undefined): DerivedW
 	return { workspaceUrl, apiFormat, warnings };
 };
 
-export type AuthHeaderProblem = "missing" | "not_bearer";
+export type AuthHeaderProblem = "missing" | "not_bearer" | "masked";
 
 export interface ExtractedAuth {
 	token?: SecretVar;
@@ -97,6 +97,9 @@ export interface ExtractedAuth {
 }
 
 const isSecretRef = (value: string): boolean => value.startsWith("env.") || value.startsWith("vault.");
+
+/** True when an extra header value came back from the API masked; secret references stay portable. */
+export const isMaskedHeaderValue = (value: string): boolean => !isSecretRef(value.trim()) && isRedacted(value.trim());
 
 /** Pulls the personal access token out of an `Authorization: Bearer <token>` extra header. */
 export const extractAuthFromHeaders = (headers: Record<string, string> | undefined): ExtractedAuth => {
@@ -106,6 +109,7 @@ export const extractAuthFromHeaders = (headers: Record<string, string> | undefin
 	if (!raw) return { problem: "missing" };
 	// A whole-header secret reference (env.X / vault.X) is assumed to resolve to the raw token.
 	if (isSecretRef(raw)) return { token: toSecretVarFormValue(raw) };
+	if (isMaskedHeaderValue(raw)) return { problem: "masked" };
 	const match = raw.match(/^bearer\s+(.+)$/i);
 	if (!match) return { problem: "not_bearer" };
 	const token = match[1].trim();
@@ -124,7 +128,7 @@ export const maskSecret = (secret: SecretVar | undefined): string => {
 	return `${value.slice(0, 4)}****${value.slice(-4)}`;
 };
 
-export const isSecretVarSet = (secret: SecretVar | undefined): boolean => Boolean(secret?.value?.trim() || secret?.ref?.trim());
+export { isSecretVarSet };
 
 /** True when a secret came back from the API as a masked placeholder and cannot be re-sent. */
 const isMaskedLiteral = (secret: SecretVar | undefined): boolean => {
@@ -187,9 +191,22 @@ export interface ExistingTarget {
 	keys: ModelProviderKey[];
 }
 
-const stripAuthorizationHeader = (headers: Record<string, string> | undefined): Record<string, string> | undefined => {
+/**
+ * Extra headers that can move to a new provider: the Authorization header becomes a key, and
+ * literal values arrive masked from the API so cannot be copied (the add endpoint rejects them).
+ */
+const portableExtraHeaders = (headers: Record<string, string> | undefined, warnings: string[]): Record<string, string> | undefined => {
 	if (!headers) return undefined;
-	const rest = Object.fromEntries(Object.entries(headers).filter(([key]) => key.trim().toLowerCase() !== "authorization"));
+	const rest = Object.fromEntries(
+		Object.entries(headers).filter(([key, value]) => {
+			if (key.trim().toLowerCase() === "authorization") return false;
+			if (isMaskedHeaderValue(value)) {
+				warnings.push(`The "${key}" extra header is stored as a literal value and cannot be copied; re-enter it on the Databricks provider after migrating.`);
+				return false;
+			}
+			return true;
+		}),
+	);
 	return Object.keys(rest).length > 0 ? rest : undefined;
 };
 
@@ -211,7 +228,7 @@ const buildProviderSettings = (source: ModelProvider, warnings: string[]): Updat
 		retry_backoff_max: net?.retry_backoff_max ?? DefaultNetworkConfig.retry_backoff_max,
 	};
 	if (net) {
-		const extra_headers = stripAuthorizationHeader(net.extra_headers);
+		const extra_headers = portableExtraHeaders(net.extra_headers, warnings);
 		if (extra_headers) network_config.extra_headers = extra_headers;
 		if (net.insecure_skip_verify !== undefined) network_config.insecure_skip_verify = net.insecure_skip_verify;
 		if (net.stream_idle_timeout_in_seconds !== undefined)
@@ -248,6 +265,7 @@ const buildProviderSettings = (source: ModelProvider, warnings: string[]): Updat
 	if (source.send_back_raw_request !== undefined) settings.send_back_raw_request = source.send_back_raw_request;
 	if (source.send_back_raw_response !== undefined) settings.send_back_raw_response = source.send_back_raw_response;
 	if (source.store_raw_request_response !== undefined) settings.store_raw_request_response = source.store_raw_request_response;
+	if (source.ignore_provider_cost !== undefined) settings.ignore_provider_cost = source.ignore_provider_cost;
 	return settings;
 };
 
@@ -300,6 +318,8 @@ export const buildDatabricksMigrationPlan = (
 			warnings.push("No Authorization header was found on the custom provider; enter the personal access token below.");
 		} else if (auth.problem === "not_bearer") {
 			warnings.push("The Authorization header is not a Bearer token; enter the personal access token below.");
+		} else if (auth.problem === "masked") {
+			warnings.push("The Authorization header is stored as a literal value and cannot be copied; enter the personal access token below.");
 		}
 		keys.push({
 			tempId: "header",
@@ -611,6 +631,7 @@ export const runDatabricksMigration = async (
 				send_back_raw_request: provider.send_back_raw_request,
 				send_back_raw_response: provider.send_back_raw_response,
 				store_raw_request_response: provider.store_raw_request_response,
+				ignore_provider_cost: provider.ignore_provider_cost,
 				custom_provider_config: provider.custom_provider_config,
 			}),
 		);

@@ -380,10 +380,10 @@ func (c *ComplexitySemanticConfig) Validate() error {
 			ComplexitySemanticVectorStoreEmbedded, ComplexitySemanticVectorStoreConfigured, c.VectorStore)
 	}
 	switch c.Fallback {
-	case ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM, ComplexitySemanticFallbackJev:
+	case ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM, ComplexitySemanticFallbackDecision:
 	default:
 		return fmt.Errorf("semantic fallback must be %q, %q, or %q, got %q",
-			ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM, ComplexitySemanticFallbackJev, c.Fallback)
+			ComplexitySemanticFallbackNone, ComplexitySemanticFallbackLLM, ComplexitySemanticFallbackDecision, c.Fallback)
 	}
 	return nil
 }
@@ -391,22 +391,29 @@ func (c *ComplexitySemanticConfig) Validate() error {
 // Semantic fallback selection names the optional classifier invoked when semantic
 // classification produces no tier. The fallback is only used by the semantic primary.
 const (
-	ComplexityClassifierSemantic   = "semantic"
-	ComplexityClassifierJev        = "jev"
-	ComplexitySemanticFallbackNone = "none"
-	ComplexitySemanticFallbackLLM  = "llm"
-	ComplexitySemanticFallbackJev  = "jev"
+	ComplexityClassifierSemantic       = "semantic"
+	ComplexityClassifierDecision       = "decision"
+	ComplexitySemanticFallbackNone     = "none"
+	ComplexitySemanticFallbackLLM      = "llm"
+	ComplexitySemanticFallbackDecision = "decision"
 )
 
-// DefaultComplexityJevTimeout bounds one Typesafe Jev decision call.
-const DefaultComplexityJevTimeout = 1500 * time.Millisecond
+// DefaultComplexityDecisionProvider and DefaultComplexityDecisionModel are the
+// decision model the classifier calls when its block names none: Typesafe Jev.
+const (
+	DefaultComplexityDecisionProvider = schemas.Typesafe
+	DefaultComplexityDecisionModel    = "jev-latest"
+)
 
-// DefaultComplexityJevPreviousMessageCount is the number of prior user messages
-// sent when the Jev classifier does not specify a history window.
-const DefaultComplexityJevPreviousMessageCount = 1
+// DefaultComplexityDecisionTimeout bounds one decision-model call.
+const DefaultComplexityDecisionTimeout = 1500 * time.Millisecond
 
-// MaxComplexityJevPreviousMessageCount bounds the number of prior user messages sent to Jev.
-const MaxComplexityJevPreviousMessageCount = 5
+// DefaultComplexityDecisionPreviousMessageCount is the number of prior user messages
+// sent when the decision-model classifier does not specify a history window.
+const DefaultComplexityDecisionPreviousMessageCount = 1
+
+// MaxComplexityDecisionPreviousMessageCount bounds the number of prior user messages sent to the decision model.
+const MaxComplexityDecisionPreviousMessageCount = 5
 
 // DefaultComplexityLLMTimeout bounds one LLM classification call. It is
 // deliberately larger than the semantic default: a chat completion is slower
@@ -577,35 +584,41 @@ func (c *ComplexityLLMConfig) Validate() error {
 	return nil
 }
 
-// ComplexityJevConfig controls the Typesafe Jev classification request.
-// Jev uses the configured Typesafe provider credentials and a fixed model; this
-// block controls request history, the classifier timeout, and each tier's
-// editable definition, signals, and examples. The question, decision and
-// context rules, and tier order are fixed by the gateway.
-type ComplexityJevConfig struct {
+// ComplexityDecisionConfig controls the decision-model classification request.
+// Provider and Model name any decision-capable model reachable through
+// /v1/decisions (Typesafe Jev by default, or a custom provider serving Laya,
+// Nimble, or Clef); credentials come from that provider. The block also
+// controls request history, the classifier timeout, and each tier's editable
+// definition, signals, and examples. The question, decision and context rules,
+// and tier order are fixed by the gateway.
+type ComplexityDecisionConfig struct {
+	// Provider and Model select the decision model. Both empty selects the
+	// default (DefaultComplexityDecisionProvider/Model); otherwise both are set.
+	Provider schemas.ModelProvider `json:"provider,omitempty"`
+	Model    string                `json:"model,omitempty"`
 	// PreviousMessageCount is the number of preceding user messages sent before
 	// the current human request. Assistant messages are excluded.
 	PreviousMessageCount *int          `json:"previous_message_count,omitempty"`
 	Timeout              time.Duration `json:"timeout,omitempty"`
 	// Criteria overrides per-tier definitions, signals, and examples, keyed by
 	// tier name. Any tier or field left unset sends the shipped default.
-	Criteria map[string]ComplexityJevTierCriteria `json:"criteria,omitempty"`
+	Criteria map[string]ComplexityDecisionTierCriteria `json:"criteria,omitempty"`
 }
 
 // UnmarshalJSON accepts Timeout as a duration string or milliseconds and rejects unknown fields.
-func (c *ComplexityJevConfig) UnmarshalJSON(data []byte) error {
+func (c *ComplexityDecisionConfig) UnmarshalJSON(data []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
 	for field := range fields {
 		switch field {
-		case "previous_message_count", "timeout", "criteria":
+		case "provider", "model", "previous_message_count", "timeout", "criteria":
 		default:
-			return fmt.Errorf("unknown jev complexity field %q", field)
+			return fmt.Errorf("unknown decision complexity field %q", field)
 		}
 	}
-	type alias ComplexityJevConfig
+	type alias ComplexityDecisionConfig
 	aux := &struct {
 		Timeout json.RawMessage `json:"timeout,omitempty"`
 		*alias
@@ -620,25 +633,25 @@ func (c *ComplexityJevConfig) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(aux.Timeout, &duration); err == nil {
 		parsed, err := time.ParseDuration(duration)
 		if err != nil {
-			return fmt.Errorf("failed to parse jev timeout duration string %q: %w", duration, err)
+			return fmt.Errorf("failed to parse decision timeout duration string %q: %w", duration, err)
 		}
 		c.Timeout = parsed
 	} else {
 		var milliseconds float64
 		if err := json.Unmarshal(aux.Timeout, &milliseconds); err != nil {
-			return fmt.Errorf("unsupported jev timeout value: %s", string(aux.Timeout))
+			return fmt.Errorf("unsupported decision timeout value: %s", string(aux.Timeout))
 		}
 		c.Timeout = time.Duration(milliseconds * float64(time.Millisecond))
 	}
 	if c.Timeout < 0 {
-		return fmt.Errorf("jev timeout must be non-negative, got %v", c.Timeout)
+		return fmt.Errorf("decision timeout must be non-negative, got %v", c.Timeout)
 	}
 	return nil
 }
 
 // MarshalJSON writes Timeout as a duration string for a stable round trip.
-func (c ComplexityJevConfig) MarshalJSON() ([]byte, error) {
-	type alias ComplexityJevConfig
+func (c ComplexityDecisionConfig) MarshalJSON() ([]byte, error) {
+	type alias ComplexityDecisionConfig
 	var timeout string
 	if c.Timeout != 0 {
 		timeout = c.Timeout.String()
@@ -649,41 +662,51 @@ func (c ComplexityJevConfig) MarshalJSON() ([]byte, error) {
 	}{Timeout: timeout, alias: alias(c)})
 }
 
-// normalized returns a Jev config copy with its default history and timeout,
-// and guidance overrides reduced to the values that differ from the defaults.
-func (c *ComplexityJevConfig) normalized() *ComplexityJevConfig {
+// normalized returns a decision-model config copy with its default model, history,
+// and timeout, and guidance overrides reduced to the values that differ from the
+// defaults.
+func (c *ComplexityDecisionConfig) normalized() *ComplexityDecisionConfig {
 	if c == nil {
 		return nil
 	}
-	out := &ComplexityJevConfig{
+	out := &ComplexityDecisionConfig{
+		Provider: normalizeComplexityProvider(c.Provider),
+		Model:    strings.TrimSpace(c.Model),
 		Timeout:  c.Timeout,
-		Criteria: normalizeComplexityJevCriteria(c.Criteria),
+		Criteria: normalizeComplexityDecisionCriteria(c.Criteria),
+	}
+	if out.Provider == "" && out.Model == "" {
+		out.Provider = DefaultComplexityDecisionProvider
+		out.Model = DefaultComplexityDecisionModel
 	}
 	if c.PreviousMessageCount == nil {
-		count := DefaultComplexityJevPreviousMessageCount
+		count := DefaultComplexityDecisionPreviousMessageCount
 		out.PreviousMessageCount = &count
 	} else {
 		count := *c.PreviousMessageCount
 		out.PreviousMessageCount = &count
 	}
 	if out.Timeout == 0 {
-		out.Timeout = DefaultComplexityJevTimeout
+		out.Timeout = DefaultComplexityDecisionTimeout
 	}
 	return out
 }
 
-// Validate checks the Jev request history and timeout bounds.
-func (c *ComplexityJevConfig) Validate() error {
+// Validate checks the decision-model selection, request history, and timeout bounds.
+func (c *ComplexityDecisionConfig) Validate() error {
 	if c == nil {
 		return nil
 	}
+	if (strings.TrimSpace(string(c.Provider)) == "") != (strings.TrimSpace(c.Model) == "") {
+		return fmt.Errorf("decision provider and model must be set together, or both left empty for the default %s/%s", DefaultComplexityDecisionProvider, DefaultComplexityDecisionModel)
+	}
 	if c.Timeout < 0 {
-		return fmt.Errorf("jev timeout must be non-negative, got %v", c.Timeout)
+		return fmt.Errorf("decision timeout must be non-negative, got %v", c.Timeout)
 	}
-	if c.PreviousMessageCount != nil && (*c.PreviousMessageCount < 0 || *c.PreviousMessageCount > MaxComplexityJevPreviousMessageCount) {
-		return fmt.Errorf("jev previous_message_count must be between 0 and %d, got %d", MaxComplexityJevPreviousMessageCount, *c.PreviousMessageCount)
+	if c.PreviousMessageCount != nil && (*c.PreviousMessageCount < 0 || *c.PreviousMessageCount > MaxComplexityDecisionPreviousMessageCount) {
+		return fmt.Errorf("decision previous_message_count must be between 0 and %d, got %d", MaxComplexityDecisionPreviousMessageCount, *c.PreviousMessageCount)
 	}
-	return validateComplexityJevGuidance(c)
+	return validateComplexityDecisionGuidance(c)
 }
 
 // ComplexitySessionConfig controls monotonic complexity-tier retention across
@@ -744,8 +767,8 @@ type ComplexityAnalyzerConfigHashes struct {
 	SemanticSettings string `json:"semantic_settings,omitempty"`
 	// ClassifierSettings tracks the primary classifier selection.
 	ClassifierSettings string `json:"classifier_settings,omitempty"`
-	// JevSettings tracks the Typesafe Jev history window and timeout.
-	JevSettings string `json:"jev_settings,omitempty"`
+	// DecisionSettings tracks the decision-model history window and timeout.
+	DecisionSettings string `json:"decision_settings,omitempty"`
 	// LLMSettings covers the llm block (provider, model, timeout, prompt,
 	// history window, budgets flag). The fallback selector rides the
 	// SemanticSettings hash: it is a field of the semantic block.
@@ -761,7 +784,7 @@ type legacyComplexityAnalyzerConfigHashes struct {
 	SimpleKeywords     string `json:"simple_keywords,omitempty"`
 	SemanticSettings   string `json:"semantic_settings,omitempty"`
 	ClassifierSettings string `json:"classifier_settings,omitempty"`
-	JevSettings        string `json:"jev_settings,omitempty"`
+	DecisionSettings   string `json:"decision_settings,omitempty"`
 	LLMSettings        string `json:"llm_settings,omitempty"`
 	SessionSettings    string `json:"session_settings,omitempty"`
 }
@@ -795,7 +818,7 @@ func (h *ComplexityAnalyzerConfigHashes) UnmarshalJSON(data []byte) error {
 			ComplexKeywords:    legacy.ReasoningKeywords,
 			SemanticSettings:   legacy.SemanticSettings,
 			ClassifierSettings: legacy.ClassifierSettings,
-			JevSettings:        legacy.JevSettings,
+			DecisionSettings:   legacy.DecisionSettings,
 			LLMSettings:        legacy.LLMSettings,
 			SessionSettings:    legacy.SessionSettings,
 		}
@@ -829,8 +852,8 @@ type ComplexityAnalyzerConfig struct {
 	// defaults to semantic for compatibility with existing configurations.
 	Classifier string                    `json:"classifier,omitempty"`
 	Semantic   *ComplexitySemanticConfig `json:"semantic,omitempty"`
-	// Jev configures the optional Typesafe Jev classifier and its history window.
-	Jev *ComplexityJevConfig `json:"jev,omitempty"`
+	// Decision configures the optional decision-model classifier and its history window.
+	Decision *ComplexityDecisionConfig `json:"decision,omitempty"`
 	// LLM configures the chat-completion fallback classifier, engaged only
 	// when Semantic.Fallback selects "llm". It may be present while the
 	// fallback says "none": the block is retained so toggling the fallback
@@ -893,7 +916,7 @@ type complexitySemanticConfigRecord struct {
 	Keywords             ComplexityEditableKeywordConfig `json:"keywords"`
 	Classifier           string                          `json:"classifier,omitempty"`
 	Semantic             *ComplexitySemanticConfig       `json:"semantic,omitempty"`
-	Jev                  *ComplexityJevConfig            `json:"jev,omitempty"`
+	Decision             *ComplexityDecisionConfig       `json:"decision,omitempty"`
 	LLM                  *ComplexityLLMConfig            `json:"llm,omitempty"`
 	Session              *ComplexitySessionConfig        `json:"session,omitempty"`
 	ConfigHashes         complexitySemanticRowHashes     `json:"_config_hashes,omitempty"`
@@ -908,7 +931,7 @@ type complexitySemanticRowHashes struct {
 	ComplexKeywords    string `json:"complex_keywords,omitempty"`
 	SemanticSettings   string `json:"semantic_settings,omitempty"`
 	ClassifierSettings string `json:"classifier_settings,omitempty"`
-	JevSettings        string `json:"jev_settings,omitempty"`
+	DecisionSettings   string `json:"decision_settings,omitempty"`
 	LLMSettings        string `json:"llm_settings,omitempty"`
 	SessionSettings    string `json:"session_settings,omitempty"`
 }
@@ -950,13 +973,13 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	if len(missing) > 0 {
 		return fmt.Errorf("keyword lists must be non-empty: %s", strings.Join(missing, ", "))
 	}
-	if c.Classifier != "" && c.Classifier != ComplexityClassifierSemantic && c.Classifier != ComplexityClassifierJev {
-		return fmt.Errorf("complexity classifier must be %q or %q, got %q", ComplexityClassifierSemantic, ComplexityClassifierJev, c.Classifier)
+	if c.Classifier != "" && c.Classifier != ComplexityClassifierSemantic && c.Classifier != ComplexityClassifierDecision {
+		return fmt.Errorf("complexity classifier must be %q or %q, got %q", ComplexityClassifierSemantic, ComplexityClassifierDecision, c.Classifier)
 	}
 	if err := c.Semantic.Validate(); err != nil {
 		return err
 	}
-	if err := c.Jev.Validate(); err != nil {
+	if err := c.Decision.Validate(); err != nil {
 		return err
 	}
 	if c.Semantic != nil {
@@ -970,7 +993,7 @@ func (c *ComplexityAnalyzerConfig) Validate() error {
 	if c.Semantic != nil && c.Semantic.Fallback == ComplexitySemanticFallbackLLM && c.LLM == nil {
 		return fmt.Errorf("semantic fallback %q requires an llm config block", ComplexitySemanticFallbackLLM)
 	}
-	if c.SessionRoutingEnabled() && c.Semantic == nil && c.Classifier != ComplexityClassifierJev {
+	if c.SessionRoutingEnabled() && c.Semantic == nil && c.Classifier != ComplexityClassifierDecision {
 		return fmt.Errorf("complexity session routing requires a semantic config block")
 	}
 	return nil
@@ -989,9 +1012,9 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 	if classifier == "" {
 		classifier = ComplexityClassifierSemantic
 	}
-	jev := c.Jev.normalized()
-	if jev == nil && (classifier == ComplexityClassifierJev || (c.Semantic != nil && c.Semantic.Fallback == ComplexitySemanticFallbackJev)) {
-		jev = (&ComplexityJevConfig{}).normalized()
+	decision := c.Decision.normalized()
+	if decision == nil && (classifier == ComplexityClassifierDecision || (c.Semantic != nil && c.Semantic.Fallback == ComplexitySemanticFallbackDecision)) {
+		decision = (&ComplexityDecisionConfig{}).normalized()
 	}
 	return ComplexityAnalyzerConfig{
 		TierBoundaries: tierBoundaries,
@@ -1002,7 +1025,7 @@ func (c *ComplexityAnalyzerConfig) Normalized() ComplexityAnalyzerConfig {
 		},
 		Classifier:           classifier,
 		Semantic:             c.Semantic.normalized(),
-		Jev:                  jev,
+		Decision:             decision,
 		LLM:                  c.LLM.normalized(),
 		Session:              c.Session.normalized(),
 		ConfigHashes:         c.ConfigHashes,
@@ -1102,7 +1125,7 @@ func MergeComplexityAnalyzerConfig(base, file *ComplexityAnalyzerConfig) (*Compl
 			ComplexKeywords: mergeComplexityKeywordLists(normalizedBase.Keywords.ComplexKeywords, normalizedFile.Keywords.ComplexKeywords),
 		},
 		Semantic:             mergeComplexitySemanticConfig(normalizedBase.Semantic, normalizedFile.Semantic),
-		Jev:                  mergeComplexityJevConfig(normalizedBase.Jev, normalizedFile.Jev),
+		Decision:             mergeComplexityDecisionConfig(normalizedBase.Decision, normalizedFile.Decision),
 		LLM:                  mergeComplexityLLMConfig(normalizedBase.LLM, normalizedFile.LLM),
 		Session:              mergeComplexitySessionConfig(normalizedBase.Session, normalizedFile.Session),
 		ConfigHashes:         normalizedFile.ConfigHashes,
@@ -1124,8 +1147,8 @@ func mergeComplexitySemanticConfig(base, file *ComplexitySemanticConfig) *Comple
 	return file.normalized()
 }
 
-// mergeComplexityJevConfig overlays file Jev settings. A nil file section keeps the base.
-func mergeComplexityJevConfig(base, file *ComplexityJevConfig) *ComplexityJevConfig {
+// mergeComplexityDecisionConfig overlays file decision-model settings. A nil file section keeps the base.
+func mergeComplexityDecisionConfig(base, file *ComplexityDecisionConfig) *ComplexityDecisionConfig {
 	if file == nil {
 		return base.normalized()
 	}
@@ -1190,9 +1213,9 @@ func MergeComplexityAnalyzerConfigByHashes(base, file *ComplexityAnalyzerConfig)
 		merged.Classifier = normalizedFile.Classifier
 		merged.ConfigHashes.ClassifierSettings = normalizedFile.ConfigHashes.ClassifierSettings
 	}
-	if file.Jev != nil && (merged.Jev == nil || merged.ConfigHashes.JevSettings != normalizedFile.ConfigHashes.JevSettings) {
-		merged.Jev = normalizedFile.Jev.normalized()
-		merged.ConfigHashes.JevSettings = normalizedFile.ConfigHashes.JevSettings
+	if file.Decision != nil && (merged.Decision == nil || merged.ConfigHashes.DecisionSettings != normalizedFile.ConfigHashes.DecisionSettings) {
+		merged.Decision = normalizedFile.Decision.normalized()
+		merged.ConfigHashes.DecisionSettings = normalizedFile.ConfigHashes.DecisionSettings
 	}
 	// A config.json without a semantic section leaves DB semantic state (and its
 	// section hash) untouched: the section is optional, so absence means "no
@@ -1303,7 +1326,7 @@ func encodeComplexitySemanticConfigRow(config ComplexityAnalyzerConfig) ([]byte,
 		Keywords:   config.Keywords,
 		Classifier: config.Classifier,
 		Semantic:   config.Semantic,
-		Jev:        config.Jev,
+		Decision:   config.Decision,
 		LLM:        config.LLM,
 		Session:    config.Session,
 		ConfigHashes: complexitySemanticRowHashes{
@@ -1312,7 +1335,7 @@ func encodeComplexitySemanticConfigRow(config ComplexityAnalyzerConfig) ([]byte,
 			ComplexKeywords:    config.ConfigHashes.ComplexKeywords,
 			SemanticSettings:   config.ConfigHashes.SemanticSettings,
 			ClassifierSettings: config.ConfigHashes.ClassifierSettings,
-			JevSettings:        config.ConfigHashes.JevSettings,
+			DecisionSettings:   config.ConfigHashes.DecisionSettings,
 			LLMSettings:        config.ConfigHashes.LLMSettings,
 			SessionSettings:    config.ConfigHashes.SessionSettings,
 		},
@@ -1335,7 +1358,7 @@ func applyComplexitySemanticConfigRow(base *ComplexityAnalyzerConfig, row *compl
 	combined.Keywords = row.Keywords
 	combined.Classifier = row.Classifier
 	combined.Semantic = row.Semantic
-	combined.Jev = row.Jev
+	combined.Decision = row.Decision
 	combined.LLM = row.LLM
 	combined.Session = row.Session
 	combined.ConfigHashes.SimpleKeywords = row.ConfigHashes.SimpleKeywords
@@ -1343,7 +1366,7 @@ func applyComplexitySemanticConfigRow(base *ComplexityAnalyzerConfig, row *compl
 	combined.ConfigHashes.ComplexKeywords = row.ConfigHashes.ComplexKeywords
 	combined.ConfigHashes.SemanticSettings = row.ConfigHashes.SemanticSettings
 	combined.ConfigHashes.ClassifierSettings = row.ConfigHashes.ClassifierSettings
-	combined.ConfigHashes.JevSettings = row.ConfigHashes.JevSettings
+	combined.ConfigHashes.DecisionSettings = row.ConfigHashes.DecisionSettings
 	combined.ConfigHashes.LLMSettings = row.ConfigHashes.LLMSettings
 	combined.ConfigHashes.SessionSettings = row.ConfigHashes.SessionSettings
 	combined.EmbeddingFingerprint = row.EmbeddingFingerprint

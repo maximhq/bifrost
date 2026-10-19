@@ -68,22 +68,28 @@ func semanticSearchLogsTool() Tool {
 	return Tool{
 		name: SemanticSearchToolName,
 		description: "Find logged conversations by meaning. Use this when the question is about what users discussed, wanted, reported, or what assistants answered, even when the wording differs. " +
+			"Give several phrasings of the same topic in one call; they are searched together and each conversation keeps its closest score. " +
+			"Results are ranked by similarity, not judged: real matches often score only 0.6 to 0.75, and unrelated conversations can score close to them. " +
+			"Read each row's content and keep only the rows actually about what was asked before you count, quote or summarize them; if none are, report that no matching conversations were found. " +
 			"Use query_logs, count_logs, or query_metrics for exact fields, counts, latency, cost, and trends.",
 		schemaJSON: `{
   "type": "object",
   "properties": {
-    "query": {"type": "string", "maxLength": ` + strconv.Itoa(MaxSemanticQueryChars) + `, "description": "A natural-language description of the conversations to find."},
+    "queries": {"type": "array", "minItems": 1, "maxItems": ` + strconv.Itoa(MaxSemanticQueries) + `, "items": {"type": "string", "maxLength": ` + strconv.Itoa(MaxSemanticQueryChars) + `}, "description": "2 to ` + strconv.Itoa(MaxSemanticQueries) + ` phrasings of the conversations to find, searched together. Describe the requests themselves (\"users asking for help planning a trip\", \"travel itinerary for a city\"), not a bare keyword (\"travel\") - a description scores far closer to a logged conversation."},
     "filters": ` + FilterSchema + `,
     "limit": {"type": "integer", "minimum": 1, "maximum": 25, "description": "Matches to return. Also capped by the configured semantic search limit."}
   },
-  "required": ["query", "filters"]
+  "required": ["queries", "filters"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			query, _ := args["query"].(string)
+			queries, err := stringSliceArg(args, "queries")
+			if err != nil {
+				return nil, err
+			}
 			if deps.semantic == nil {
 				return nil, fmt.Errorf("semantic log search is not configured")
 			}
-			filters, err := filterArg(args, Now(), deps.scope)
+			filters, err := filterArg(args, deps.now(), deps.scope)
 			if err != nil {
 				return nil, err
 			}
@@ -93,7 +99,9 @@ func semanticSearchLogsTool() Tool {
 			if err != nil {
 				return nil, err
 			}
-			result, err := deps.semantic.Search(ctx, query, filters, limit)
+			// The caller's visibility rides along so the index is asked for
+			// their rows, rather than for the deployment's and then filtered.
+			result, err := deps.semantic.SearchVisible(ctx, queries, filters, deps.scope.Visible, limit)
 			if err != nil {
 				return nil, err
 			}
@@ -111,7 +119,7 @@ func semanticSearchLogsTool() Tool {
 				// happened and what the legitimate next moves are.
 				response["hint"] = fmt.Sprintf("No stored conversation scored above the similarity threshold of %.2f. "+
 					"For a topic question - one that names something to look for - do not fall back to count_logs or query_logs to answer a question about meaning: "+
-					"widen the time range once, rephrase the query, or report that no matching conversations were found. "+
+					"widen the time range once, try other phrasings, or report that no matching conversations were found. "+
 					"For a survey question - what someone was doing, what the themes or topics are - this was the wrong first step, because a description of activity is not a conversation and does not embed near one: "+
 					"take the sample with query_logs using include_content and limit 25, and say in the answer that it was drawn from a sample and is not representative of the entire traffic.", result.Threshold)
 			}
@@ -138,7 +146,7 @@ func queryLogsTool() Tool {
   "required": ["filters"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
@@ -216,7 +224,7 @@ func getLogDetailTool() Tool {
 				return nil, fmt.Errorf("could not load log %s: %w", id, err)
 			}
 			if entry == nil {
-				return nil, fmt.Errorf("no log found with id %s", id)
+				return nil, logNotFound(id, deps.scope)
 			}
 			return projectLog(entry, true, DetailContentChars), nil
 		},
@@ -253,7 +261,7 @@ func countLogsTool() Tool {
   "required": ["filters"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
@@ -343,7 +351,7 @@ func queryMetricsTool() Tool {
   "required": ["filters", "metrics"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
@@ -955,7 +963,7 @@ func queryUsageByTool() Tool {
 				return nil, fmt.Errorf("unknown dimension %q; supported: %s", raw, strings.Join(enumValues, ", "))
 			}
 
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, rankingScope(deps.scope, string(dimension)))
 			if err != nil {
 				return nil, err
@@ -1031,7 +1039,7 @@ func queryModelsTool() Tool {
   "required": ["filters"]
 }`,
 		execute: func(ctx context.Context, deps *ToolDeps, args map[string]any) (any, error) {
-			now := Now()
+			now := deps.now()
 			filters, err := filterArg(args, now, deps.scope)
 			if err != nil {
 				return nil, err
@@ -1157,6 +1165,12 @@ func describeFilterSpaceTool() Tool {
 			}
 			if deps.scope.HasIdentity {
 				out["caller_user_id"] = deps.scope.UserID
+			}
+			// What "all" covers for this caller. Without it the model can only
+			// say "everything you may see", which is true and tells the reader
+			// nothing about whether a total is their own, their team's or wider.
+			if deps.scope.Visibility != "" {
+				out["caller_can_see"] = deps.scope.Visibility
 			}
 
 			models, err := deps.logManager.GetAvailableModels(ctx, limit, query)

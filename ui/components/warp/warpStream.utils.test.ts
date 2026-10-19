@@ -8,6 +8,8 @@ import {
 	formatWarpChartValue,
 	formatWarpChartX,
 	formatWarpUsage,
+	holdPartialWarpTable,
+	holdWarpProvenance,
 	indexStatusLabel,
 	isEncodedTurnError,
 	isInternalWarpLink,
@@ -133,12 +135,49 @@ describe("errorMessage", () => {
 		expect(detail.suggestions.join(" ")).toContain("Request Timeout");
 	});
 
+	it("does not blame the provider when governance refused the model call", () => {
+		const detail = warpErrorDetail("access_denied", "no model access is configured");
+		expect(detail.summary).toContain("access");
+		expect(detail.cause).not.toContain("unreachable");
+		expect(detail.suggestions.join(" ")).toContain("administrator");
+		expect(detail.raw).toBe("no model access is configured");
+		expect(isEncodedTurnError(encodeTurnError("access_denied", "refused"))).toBe(true);
+	});
+
+	it("headlines a spent budget as a budget, not as missing access", () => {
+		const detail = warpErrorDetail("budget_exceeded", "user budget exceeded: 0.0600 >= 0.0500 dollars");
+		expect(detail.summary).toContain("budget");
+		expect(detail.summary).not.toContain("access");
+		expect(detail.cause).not.toContain("access profile");
+		expect(detail.raw).toBe("user budget exceeded: 0.0600 >= 0.0500 dollars");
+		expect(isEncodedTurnError(encodeTurnError("budget_exceeded", "refused"))).toBe(true);
+	});
+
+	it("headlines rate limits and blocked models as what they are", () => {
+		expect(warpErrorDetail("rate_limited", "").summary).toContain("rate limit");
+		expect(warpErrorDetail("model_blocked", "").summary).toContain("isn't allowed");
+		for (const code of ["rate_limited", "model_blocked"]) {
+			expect(warpErrorDetail(code, "").summary, code).not.toContain("access");
+			expect(isEncodedTurnError(encodeTurnError(code, "refused")), code).toBe(true);
+		}
+	});
+
 	it("keeps the raw server message", () => {
 		expect(warpErrorDetail("upstream_error", "provider exploded").raw).toBe("provider exploded");
 	});
 
 	it("has guidance for every code it recognises", () => {
-		for (const code of ["not_configured", "max_iterations", "timeout", "upstream_error", "tool_error"]) {
+		for (const code of [
+			"not_configured",
+			"max_iterations",
+			"timeout",
+			"upstream_error",
+			"access_denied",
+			"budget_exceeded",
+			"rate_limited",
+			"model_blocked",
+			"tool_error",
+		]) {
 			const detail = warpErrorDetail(code, "");
 			expect(detail.summary, code).not.toBe("");
 			expect(detail.cause, code).not.toBe("");
@@ -312,6 +351,34 @@ describe("question events", () => {
 		expect(event?.finish_reason).toBe("question");
 	});
 });
+// The finished turn folds the scope block into a toggle, so streaming it as a code block flashes, then jumps.
+describe("holdWarpProvenance", () => {
+	const answer = "| User | Requests |\n|---|---:|\n| Unassigned | 83 |";
+
+	it("holds back a complete scope block", () => {
+		expect(holdWarpProvenance(answer + "\n\n```warp-scope\nWindow: last 30 days\nScope: whole deployment\n```")).toBe(answer);
+	});
+
+	it("holds back a scope block that is still streaming", () => {
+		expect(holdWarpProvenance(answer + "\n\n```warp-scope\nWindow: last")).toBe(answer);
+	});
+
+	it("holds back a half-written scope fence line", () => {
+		expect(holdWarpProvenance(answer + "\n\n```warp-sc")).toBe(answer);
+		expect(holdWarpProvenance(answer + "\n\n```w")).toBe(answer);
+	});
+
+	// A bare fence at the end may be closing an ordinary code block.
+	it("keeps a bare fence and other code blocks", () => {
+		expect(holdWarpProvenance("```sql\nselect 1\n```")).toBe("```sql\nselect 1\n```");
+		expect(holdWarpProvenance("```ts\nconst a = 1;")).toBe("```ts\nconst a = 1;");
+	});
+
+	it("leaves an answer without a scope block alone", () => {
+		expect(holdWarpProvenance(answer)).toBe(answer);
+	});
+});
+
 describe("splitWarpAnswer", () => {
 	it("lifts the provenance block out of the answer", () => {
 		const { answer, provenance } = splitWarpAnswer(
@@ -407,6 +474,27 @@ describe("isInternalWarpLink", () => {
 });
 
 describe("turnsFromStoredMessages", () => {
+	it("reopens a failed turn with the same headline it had live", () => {
+		const message =
+			"This deployment's governance rules refused Warp's model call for your account: user budget exceeded: 0.0600 >= 0.0500 dollars";
+		const [turn] = turnsFromStoredMessages([
+			{ role: "assistant", content: "", error: message, error_code: "budget_exceeded", created_at: "2026-10-09T00:00:00Z" },
+		]);
+		const { code, message: decoded } = decodeTurnError(turn.error ?? "");
+		expect(code).toBe("budget_exceeded");
+		expect(decoded).toBe(message);
+		expect(warpErrorDetail(code, decoded).summary).toBe("You've used up your budget.");
+	});
+
+	it("keeps a stored error with no code whole, colons included", () => {
+		const [turn] = turnsFromStoredMessages([
+			{ role: "assistant", content: "", error: "TypeError: Failed to fetch", created_at: "2026-10-09T00:00:00Z" },
+		]);
+		const { code, message } = decodeTurnError(turn.error ?? "");
+		expect(code).toBe("");
+		expect(message).toBe("TypeError: Failed to fetch");
+	});
+
 	it("maps stored messages onto transcript turns", () => {
 		const turns = turnsFromStoredMessages([
 			{ role: "user", content: "what did we spend?", created_at: "2026-09-05T00:00:00Z" },
@@ -422,7 +510,7 @@ describe("turnsFromStoredMessages", () => {
 				cost: 0.0123,
 				created_at: "2026-09-05T00:00:01Z",
 			},
-			{ role: "assistant", content: "", error: "upstream_error:boom", created_at: "2026-09-05T00:00:02Z" },
+			{ role: "assistant", content: "", error: "boom", error_code: "upstream_error", created_at: "2026-09-05T00:00:02Z" },
 		]);
 		expect(turns).toHaveLength(3);
 		expect(turns[0]).toMatchObject({ role: "user", content: "what did we spend?" });
@@ -784,6 +872,40 @@ describe("splitWarpCharts", () => {
 
 	it("leaves text without charts as one segment", () => {
 		expect(splitWarpCharts("Just prose.", false)).toEqual([{ kind: "text", text: "Just prose." }]);
+	});
+});
+
+// A header row renders as a line of pipes until its delimiter row arrives, then snaps into a table.
+describe("holdPartialWarpTable", () => {
+	it("holds a header row back until its delimiter row arrives", () => {
+		expect(holdPartialWarpTable("Top models:\n\n| Model | Requests |")).toBe("Top models:\n");
+		expect(holdPartialWarpTable("Top models:\n\n| Model | Requests |\n")).toBe("Top models:\n");
+		expect(holdPartialWarpTable("Top models:\n\n| Model | Requests |\n|---")).toBe("Top models:\n");
+	});
+
+	it("holds a delimiter row with fewer cells than the header", () => {
+		expect(holdPartialWarpTable("| Model | Requests | Cost |\n|---|---|")).toBe("");
+	});
+
+	it("releases the table once the delimiter row matches the header", () => {
+		const text = "Top models:\n\n| Model | Requests |\n| :--- | ---: |\n| gpt-4o | 12";
+		expect(holdPartialWarpTable(text)).toBe(text);
+		expect(holdPartialWarpTable("| Model | Requests |\n|---|---|")).toBe("| Model | Requests |\n|---|---|");
+	});
+
+	it("does not count escaped pipes as cell boundaries", () => {
+		const text = "| a \\| b | c |\n|---|---|";
+		expect(holdPartialWarpTable(text)).toBe(text);
+	});
+
+	it("leaves pipes inside an open code fence alone", () => {
+		const text = "```\n| not | a table |";
+		expect(holdPartialWarpTable(text)).toBe(text);
+	});
+
+	it("leaves text without a trailing table alone", () => {
+		expect(holdPartialWarpTable("Just prose.")).toBe("Just prose.");
+		expect(holdPartialWarpTable("")).toBe("");
 	});
 });
 

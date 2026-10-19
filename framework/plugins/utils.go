@@ -31,11 +31,22 @@ const maxPluginDownloadBytes int64 = 200 * 1024 * 1024
 // bypass the default private-network block (see ServerConfig.PluginDownloadPrivateAllowlist);
 // pass nil for the fully locked-down default.
 func NewPluginDownloadClient(allow *network.Allowlist) *http.Client {
+	return NewProxiedPluginDownloadClient(allow, nil)
+}
+
+// NewProxiedPluginDownloadClient is NewPluginDownloadClient that also honours the global
+// proxy for API traffic when factory is non-nil, under the same SSRF policy and
+// allowlist (see network.PolicyTransport).
+func NewProxiedPluginDownloadClient(allow *network.Allowlist, factory *network.HTTPClientFactory) *http.Client {
+	var transport http.RoundTripper = &http.Transport{
+		DialContext: network.SSRFSafeDialContextWithAllowlist(10*time.Second, allow),
+	}
+	if factory != nil {
+		transport = factory.PolicyTransport(network.ClientPurposeAPI, network.SSRFPolicyWithDialTimeout(10*time.Second, allow))
+	}
 	return &http.Client{
-		Timeout: 120 * time.Second,
-		Transport: &http.Transport{
-			DialContext: network.SSRFSafeDialContextWithAllowlist(10*time.Second, allow),
-		},
+		Timeout:   120 * time.Second,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if req.URL.Scheme != "http" && req.URL.Scheme != "https" {
 				return fmt.Errorf("blocked redirect to unsupported scheme %q", req.URL.Scheme)

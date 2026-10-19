@@ -1,509 +1,416 @@
 /**
  * Single global setup for all E2E tests.
- * 1. Builds test plugin (plugins) and copies to /tmp.
- * 2. Builds and starts MCP test servers (HTTP/SSE on 3001, STDIO test-tools-server).
- * 3. Ensures TestClient001 MCP client exists and is healthy (create or reconnect as needed).
- * 4. Sends a POST /v1/responses request to validate the proxy with MCP.
- * Returns a teardown function that stops MCP servers.
+ * 1. Builds the test plugin into tmp/bifrost-test-plugin.so.
+ * 2. Builds and starts the MCP test servers (HTTP/SSE on 3001, auth on 3002,
+ *    OAuth on 3003, STDIO test-tools-server), reusing any already listening.
+ * Bifrost state (providers, TestClient001, auth) comes from env/config.json and
+ * log seeding from scripts/run-e2e.mjs. Returns a teardown that stops the servers.
  */
-import { execFileSync, execSync, spawn, type ChildProcess } from 'child_process'
-import { existsSync } from 'fs'
-import * as http from 'http'
-import * as os from 'os'
-import { join, resolve } from 'path'
-import { setTimeout } from 'timers/promises'
+import {
+  execFileSync,
+  execSync,
+  spawn,
+  type ChildProcess,
+} from "child_process";
+import { existsSync, statSync } from "fs";
+import * as http from "http";
+import * as net from "net";
+import * as os from "os";
+import { join, resolve } from "path";
+import { setTimeout } from "timers/promises";
 
-const TEST_MCP_CLIENT_NAME = 'TestClient001'
-const BIFROST_BASE_URL = process.env.BIFROST_BASE_URL ?? 'http://localhost:8080'
+const REPO_ROOT = resolve(__dirname, "../..");
+const TEST_PLUGIN_PATH = join(REPO_ROOT, "tmp", "bifrost-test-plugin.so");
 
-const REPO_ROOT = resolve(__dirname, '../..')
-const TEST_PLUGIN_PATH = join(REPO_ROOT, 'tmp', 'bifrost-test-plugin.so')
+const MCP_SERVERS: ChildProcess[] = [];
+const isWindows = os.platform() === "win32";
+const npmCommand = isWindows ? "npm.cmd" : "npm";
+const goCommand = isWindows ? "go.exe" : "go";
+const httpServerBinaryName = isWindows ? "http-server.exe" : "http-server";
+const httpServerExec = isWindows ? "http-server.exe" : "./http-server";
 
-const MCP_SERVERS: ChildProcess[] = []
-const isWindows = os.platform() === 'win32'
-const npmCommand = isWindows ? 'npm.cmd' : 'npm'
-const goCommand = isWindows ? 'go.exe' : 'go'
-const   httpServerBinaryName = isWindows ? 'http-server.exe' : 'http-server'
-const httpServerExec = isWindows ? 'http-server.exe' : './http-server'
-
-function runCommand(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
+function runCommand(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+) {
   execFileSync(command, args, {
-    stdio: 'inherit',
+    stdio: "inherit",
     ...options,
-  })
+  });
 }
 
-async function checkServerReady(port: number, maxAttempts = 15): Promise<boolean> {
-  const hosts = ['127.0.0.1', 'localhost', '[::1]']
-  const paths = ['/mcp', '/']
+async function checkServerReady(
+  port: number,
+  maxAttempts = 15,
+): Promise<boolean> {
+  const hosts = ["127.0.0.1", "localhost", "[::1]"];
+  const paths = ["/mcp", "/"];
 
   const tryInitialize = async (url: string): Promise<boolean> =>
     new Promise((res) => {
-      const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' })
+      const body = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+      });
       const req = http.request(
         url,
         {
-          method: 'POST',
+          method: "POST",
           headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': Buffer.byteLength(body),
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(body),
           },
         },
         (response) => {
-          response.on('data', () => {})
-          response.on('end', () => res(Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 300)))
-        }
-      )
-      req.on('error', () => res(false))
+          response.on("data", () => {});
+          response.on("end", () =>
+            res(
+              Boolean(
+                response.statusCode &&
+                response.statusCode >= 200 &&
+                response.statusCode < 300,
+              ),
+            ),
+          );
+        },
+      );
+      req.on("error", () => res(false));
       req.setTimeout(1000, () => {
-        req.destroy()
-        res(false)
-      })
-      req.write(body)
-      req.end()
-    })
+        req.destroy();
+        res(false);
+      });
+      req.write(body);
+      req.end();
+    });
 
   for (let i = 0; i < maxAttempts; i++) {
     for (const host of hosts) {
       for (const path of paths) {
-        if (await tryInitialize(`http://${host}:${port}${path}`)) return true
+        if (await tryInitialize(`http://${host}:${port}${path}`)) return true;
       }
     }
-    await setTimeout(1000)
+    await setTimeout(1000);
   }
-  return false
+  return false;
 }
 
-interface HttpResult {
-  statusCode: number
-  body: string
-}
-
-function httpRequest(
-  baseUrl: string,
-  method: string,
-  path: string,
-  options: { body?: string; headers?: Record<string, string> } = {}
-): Promise<HttpResult> {
-  const u = new URL(baseUrl)
-  const port = u.port ? parseInt(u.port, 10) : (u.protocol === 'https:' ? 443 : 80)
-  const body = options.body ?? ''
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...options.headers,
-  }
-  if (body && !headers['Content-Length']) {
-    headers['Content-Length'] = String(Buffer.byteLength(body))
-  }
-  return new Promise((resolve, reject) => {
-    const req = http.request(
-      {
-        hostname: u.hostname,
-        port,
-        path,
-        method,
-        headers,
-      },
-      (res) => {
-        const chunks: Buffer[] = []
-        res.on('data', (chunk) => chunks.push(chunk))
-        res.on('end', () => resolve({ statusCode: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }))
-      }
-    )
-    req.on('error', reject)
-    req.setTimeout(15000, () => {
-      req.destroy()
-      reject(new Error('request timeout'))
-    })
-    if (body) req.write(body)
-    req.end()
-  })
-}
-
-async function waitForBifrostAPI(baseUrl: string, maxAttempts = 30): Promise<void> {
-  for (let i = 0; i < maxAttempts; i++) {
-    try {
-      const r = await httpRequest(baseUrl, 'GET', '/health')
-      if (r.statusCode >= 200 && r.statusCode < 300) return
-    } catch {
-      // ignore
-    }
-    await setTimeout(1000)
-  }
-  throw new Error(`Bifrost API at ${baseUrl} did not become ready after ${maxAttempts} attempts`)
-}
-
-interface MCPClientItem {
-  config: { name: string; client_id: string }
-  state: string
-}
-
-async function ensureTestClient001AndSendResponses(baseUrl: string): Promise<void> {
-  const clientsRes = await httpRequest(baseUrl, 'GET', '/api/mcp/clients')
-  if (clientsRes.statusCode !== 200) {
-    throw new Error(`GET /api/mcp/clients failed: ${clientsRes.statusCode} ${clientsRes.body}`)
-  }
-  let clients: MCPClientItem[]
-  try {
-    const parsed = JSON.parse(clientsRes.body) as { clients?: MCPClientItem[] } | MCPClientItem[]
-    clients = Array.isArray(parsed) ? parsed : (parsed.clients ?? [])
-  } catch {
-    throw new Error('Invalid JSON from GET /api/mcp/clients')
-  }
-  const existing = clients.find((c) => c.config?.name === TEST_MCP_CLIENT_NAME)
-  let clientId: string
-
-  if (!existing) {
-    console.log(`Creating MCP client "${TEST_MCP_CLIENT_NAME}" via POST /api/mcp/client...`)
-    const createBody = JSON.stringify({
-      name: TEST_MCP_CLIENT_NAME,
-      is_code_mode_client: false,
-      is_ping_available: false,
-      connection_type: 'http',
-      connection_string: { value: 'http://localhost:3001/', env_var: '', from_env: false },
-      auth_type: 'none',
-      tools_to_execute: ['*'],
-      tools_to_auto_execute: ['*'],
-    })
-    const createRes = await httpRequest(baseUrl, 'POST', '/api/mcp/client', { body: createBody })
-    if (createRes.statusCode < 200 || createRes.statusCode >= 300) {
-      throw new Error(`POST /api/mcp/client failed: ${createRes.statusCode} ${createRes.body}`)
-    }
-  }
-
-  const listResAfter = await httpRequest(baseUrl, 'GET', '/api/mcp/clients')
-  if (listResAfter.statusCode !== 200) {
-    throw new Error(`GET /api/mcp/clients failed after create: ${listResAfter.statusCode} ${listResAfter.body}`)
-  }
-  const parsedAfter = JSON.parse(listResAfter.body) as { clients?: MCPClientItem[] } | MCPClientItem[]
-  const listAfter = Array.isArray(parsedAfter) ? parsedAfter : (parsedAfter.clients ?? [])
-  const clientAfter = listAfter.find((c) => c.config?.name === TEST_MCP_CLIENT_NAME)
-  if (!clientAfter) {
-    throw new Error(`MCP client "${TEST_MCP_CLIENT_NAME}" not found after create.`)
-  }
-  clientId = clientAfter.config.client_id
-  // 'connected' was renamed to 'healthy' (core/schemas/mcp.go) to also cover
-  // per-call auth types that never hold a single shared connection.
-  if (clientAfter.state !== 'healthy') {
-    console.log(`MCP client "${TEST_MCP_CLIENT_NAME}" not healthy (state=${clientAfter.state}); reloading via POST /api/mcp/client/${clientId}/reconnect...`)
-    const reconnectRes = await httpRequest(baseUrl, 'POST', `/api/mcp/client/${encodeURIComponent(clientId)}/reconnect`)
-    if (reconnectRes.statusCode < 200 || reconnectRes.statusCode >= 300) {
-      // A plain "http" client with no needs_session_stickiness defaults to
-      // per-call connections, which have no persistent connection to
-      // reconnect and go straight to healthy at creation time instead — the
-      // reconnect call above was only ever needed for sticky clients that
-      // failed to connect. Only a genuine reconnect failure should fail setup.
-      const isPerCallNotApplicable = /per-call connections/.test(reconnectRes.body)
-      if (!isPerCallNotApplicable) {
-        throw new Error(
-          `POST /api/mcp/client/.../reconnect failed: ${reconnectRes.statusCode} ${reconnectRes.body}. Ensure MCP server is running and reload Bifrost if needed.`
-        )
-      }
-      console.log(`MCP client "${TEST_MCP_CLIENT_NAME}" uses per-call connections; reconnect not applicable, continuing.`)
-    }
-  }
-
-  const listRes2 = await httpRequest(baseUrl, 'GET', '/api/mcp/clients')
-  if (listRes2.statusCode !== 200) {
-    throw new Error(`GET /api/mcp/clients failed after reconnect: ${listRes2.statusCode} ${listRes2.body}`)
-  }
-  const parsed2 = JSON.parse(listRes2.body) as { clients?: MCPClientItem[] } | MCPClientItem[]
-  const list2 = (Array.isArray(parsed2) ? parsed2 : (parsed2.clients ?? [])).filter((c) => c.config?.name === TEST_MCP_CLIENT_NAME)
-  const client = list2[0]
-  if (!client || client.state !== 'healthy') {
-    throw new Error(
-      `MCP client "${TEST_MCP_CLIENT_NAME}" is not healthy after create/reconnect (state=${client?.state}). Reload the MCP server and ensure it is running, then re-run global setup.`
-    )
-  }
-  console.log(`✓ MCP client "${TEST_MCP_CLIENT_NAME}" is healthy`)
+function isPortListening(port: number): Promise<boolean> {
+  return new Promise((res) => {
+    const socket = net.connect({ port, host: "127.0.0.1" });
+    socket.once("connect", () => {
+      socket.destroy();
+      res(true);
+    });
+    socket.once("error", () => res(false));
+    socket.setTimeout(1000, () => {
+      socket.destroy();
+      res(false);
+    });
+  });
 }
 
 async function runPluginSetup(): Promise<void> {
-  console.log('Setting up test plugin for E2E tests...')
+  console.log("Setting up test plugin for E2E tests...");
   if (existsSync(TEST_PLUGIN_PATH)) {
-    console.log(`✓ Test plugin already exists at ${TEST_PLUGIN_PATH}`)
-    return
+    console.log(`✓ Test plugin already exists at ${TEST_PLUGIN_PATH}`);
+    return;
   }
   try {
-    console.log('Running make build-test-plugin from repo root...')
-    execSync('make build-test-plugin', { cwd: REPO_ROOT, stdio: 'inherit' })
+    console.log("Running make build-test-plugin from repo root...");
+    execSync("make build-test-plugin", { cwd: REPO_ROOT, stdio: "inherit" });
     if (existsSync(TEST_PLUGIN_PATH)) {
-      console.log(`✓ Test plugin ready at ${TEST_PLUGIN_PATH}`)
+      console.log(`✓ Test plugin ready at ${TEST_PLUGIN_PATH}`);
     } else {
-      throw new Error(`Plugin build reported success but file not found at ${TEST_PLUGIN_PATH}`)
+      throw new Error(
+        `Plugin build reported success but file not found at ${TEST_PLUGIN_PATH}`,
+      );
     }
   } catch (error: unknown) {
-    const errorMsg = error instanceof Error ? error.message : String(error)
-    console.error(`\n⚠️  Failed to build test plugin: ${errorMsg}`)
-    console.error('\nBuild manually from repo root: make build-test-plugin\n')
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.error(`\n⚠️  Failed to build test plugin: ${errorMsg}`);
+    console.error("\nBuild manually from repo root: make build-test-plugin\n");
     // Don't throw - allow tests to run and fail gracefully if plugin is missing
   }
 }
 
-async function runMCPSetup(): Promise<void> {
-  console.log('Setting up MCP test servers...')
-
-  const httpServerDir = join(REPO_ROOT, 'examples', 'mcps', 'http-no-ping-server')
-  const httpServerBinary = join(httpServerDir, httpServerBinaryName)
-
+async function startHttpServer(
+  httpServerDir: string,
+  httpServerBinary: string,
+): Promise<void> {
+  console.log("Starting HTTP/SSE server on port 3001...");
   if (!existsSync(httpServerBinary)) {
-    console.log('Building HTTP/SSE server...')
-    runCommand(goCommand, ['build', '-o', httpServerBinaryName, 'main.go'], {
-      cwd: httpServerDir,
-      env: { ...process.env, CGO_ENABLED: '0' },
-    })
-  } else {
-    console.log('✓ HTTP/SSE server binary already exists')
-  }
-
-  console.log('Starting HTTP/SSE server on port 3001...')
-  if (!existsSync(httpServerBinary)) {
-    throw new Error(`HTTP server binary not found at ${httpServerBinary}`)
+    throw new Error(`HTTP server binary not found at ${httpServerBinary}`);
   }
 
   const httpServer = spawn(httpServerExec, [], {
     cwd: httpServerDir,
     detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
+    stdio: ["ignore", "pipe", "pipe"],
+  });
 
-  let serverOutput = ''
-  httpServer.stdout?.on('data', (data) => {
-    const output = data.toString()
-    serverOutput += output
-    console.log(`[HTTP Server] ${output.trim()}`)
-  })
-  httpServer.stderr?.on('data', (data) => {
-    const output = data.toString()
-    serverOutput += output
-    console.error(`[HTTP Server Error] ${output.trim()}`)
-  })
-  httpServer.on('exit', (code, signal) => {
+  let serverOutput = "";
+  httpServer.stdout?.on("data", (data) => {
+    const output = data.toString();
+    serverOutput += output;
+    console.log(`[HTTP Server] ${output.trim()}`);
+  });
+  httpServer.stderr?.on("data", (data) => {
+    const output = data.toString();
+    serverOutput += output;
+    console.error(`[HTTP Server Error] ${output.trim()}`);
+  });
+  httpServer.on("exit", (code, signal) => {
     if (code !== null && code !== 0) {
-      console.error(`HTTP server exited with code ${code}, signal ${signal}`)
-      console.error(`Server output: ${serverOutput}`)
+      console.error(`HTTP server exited with code ${code}, signal ${signal}`);
+      console.error(`Server output: ${serverOutput}`);
     }
-  })
-  httpServer.on('error', (err) => {
-    console.error(`Failed to spawn HTTP server: ${err.message}`)
-  })
+  });
+  httpServer.on("error", (err) => {
+    console.error(`Failed to spawn HTTP server: ${err.message}`);
+  });
 
   if (!httpServer.pid) {
-    throw new Error('Failed to start HTTP server - no PID assigned')
+    throw new Error("Failed to start HTTP server - no PID assigned");
   }
-  console.log(`HTTP server started with PID: ${httpServer.pid}`)
-  httpServer.unref()
-  MCP_SERVERS.push(httpServer)
+  console.log(`HTTP server started with PID: ${httpServer.pid}`);
+  httpServer.unref();
+  MCP_SERVERS.push(httpServer);
 
-  await setTimeout(2000)
-  console.log('Waiting for HTTP/SSE server to be ready...')
-  const isReady = await checkServerReady(3001, 20)
+  await setTimeout(2000);
+  console.log("Waiting for HTTP/SSE server to be ready...");
+  const isReady = await checkServerReady(3001, 20);
   if (!isReady) {
     if (httpServer.pid) {
       try {
-        process.kill(httpServer.pid, 'SIGTERM')
+        process.kill(httpServer.pid, "SIGTERM");
       } catch (e) {
-        console.error(`Failed to kill server: ${e}`)
+        console.error(`Failed to kill server: ${e}`);
       }
     }
-    throw new Error(`HTTP server failed to start on port 3001 after 20 attempts. Server output: ${serverOutput || 'No output captured'}`)
+    throw new Error(
+      `HTTP server failed to start on port 3001 after 20 attempts. Server output: ${serverOutput || "No output captured"}`,
+    );
   }
 
-  await setTimeout(1000)
-  const stillReady = await checkServerReady(3001, 2)
+  await setTimeout(1000);
+  const stillReady = await checkServerReady(3001, 2);
   if (!stillReady) {
-    throw new Error('HTTP server started but then stopped immediately')
+    throw new Error("HTTP server started but then stopped immediately");
   }
-  console.log('✓ HTTP/SSE server is ready on http://localhost:3001/')
+  console.log("✓ HTTP/SSE server is ready on http://localhost:3001/");
+}
 
-  const stdioServerDir = join(REPO_ROOT, 'examples', 'mcps', 'test-tools-server')
-  const stdioServerDist = join(stdioServerDir, 'dist', 'index.js')
-  if (!existsSync(stdioServerDist)) {
-    console.log('Building STDIO server...')
-    runCommand(npmCommand, ['install'], { cwd: stdioServerDir })
-    runCommand(npmCommand, ['run', 'build'], { cwd: stdioServerDir })
+async function runMCPSetup(): Promise<void> {
+  console.log("Setting up MCP test servers...");
+
+  const httpServerDir = join(
+    REPO_ROOT,
+    "examples",
+    "mcps",
+    "http-no-ping-server",
+  );
+  const httpServerBinary = join(httpServerDir, httpServerBinaryName);
+
+  if (!existsSync(httpServerBinary)) {
+    console.log("Building HTTP/SSE server...");
+    runCommand(goCommand, ["build", "-o", httpServerBinaryName, "main.go"], {
+      cwd: httpServerDir,
+      env: { ...process.env, CGO_ENABLED: "0" },
+    });
   } else {
-    console.log('✓ STDIO server already built')
+    console.log("✓ HTTP/SSE server binary already exists");
+  }
+
+  if (await checkServerReady(3001, 1)) {
+    console.log("✓ HTTP/SSE server already listening on 3001, reusing it");
+  } else {
+    await startHttpServer(httpServerDir, httpServerBinary);
+  }
+
+  const stdioServerDir = join(
+    REPO_ROOT,
+    "examples",
+    "mcps",
+    "test-tools-server",
+  );
+  const stdioServerDist = join(stdioServerDir, "dist", "index.js");
+  if (!existsSync(stdioServerDist)) {
+    console.log("Building STDIO server...");
+    runCommand(npmCommand, ["install"], { cwd: stdioServerDir });
+    runCommand(npmCommand, ["run", "build"], { cwd: stdioServerDir });
+  } else {
+    console.log("✓ STDIO server already built");
   }
 
   // Build and start auth-demo-server on port 3002
   try {
-    const authServerBinaryName = isWindows ? 'auth-demo-server.exe' : 'auth-demo-server'
-    const authServerDir = join(REPO_ROOT, 'examples', 'mcps', 'auth-demo-server')
-    const authServerBinary = join(authServerDir, authServerBinaryName)
-    const authServerExec = isWindows ? authServerBinaryName : './auth-demo-server'
+    const authServerBinaryName = isWindows
+      ? "auth-demo-server.exe"
+      : "auth-demo-server";
+    const authServerDir = join(
+      REPO_ROOT,
+      "examples",
+      "mcps",
+      "auth-demo-server",
+    );
+    const authServerBinary = join(authServerDir, authServerBinaryName);
+    const authServerExec = isWindows
+      ? authServerBinaryName
+      : "./auth-demo-server";
 
     if (!existsSync(authServerBinary)) {
-      console.log('Building auth-demo-server...')
-      runCommand(goCommand, ['build', '-o', authServerBinaryName, 'main.go'], {
+      console.log("Building auth-demo-server...");
+      runCommand(goCommand, ["build", "-o", authServerBinaryName, "main.go"], {
         cwd: authServerDir,
-        env: { ...process.env, CGO_ENABLED: '0' },
-      })
+        env: { ...process.env, CGO_ENABLED: "0" },
+      });
     } else {
-      console.log('✓ auth-demo-server binary already exists')
+      console.log("✓ auth-demo-server binary already exists");
     }
 
-    console.log('Starting auth-demo-server on port 3002...')
-    const authServer = spawn(authServerExec, [], {
-      cwd: authServerDir,
-      detached: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    authServer.stdout?.on('data', (data) => console.log(`[Auth Server] ${data.toString().trim()}`))
-    authServer.stderr?.on('data', (data) => console.error(`[Auth Server Error] ${data.toString().trim()}`))
-    if (authServer.pid) {
-      authServer.unref()
-      MCP_SERVERS.push(authServer)
-      await setTimeout(1000)
-      console.log('✓ auth-demo-server started on http://localhost:3002/')
+    if (await isPortListening(3002)) {
+      console.log(
+        "✓ port 3002 already in use, assuming auth-demo-server is running",
+      );
+    } else {
+      console.log("Starting auth-demo-server on port 3002...");
+      const authServer = spawn(authServerExec, [], {
+        cwd: authServerDir,
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      authServer.stdout?.on("data", (data) =>
+        console.log(`[Auth Server] ${data.toString().trim()}`),
+      );
+      authServer.stderr?.on("data", (data) =>
+        console.error(`[Auth Server Error] ${data.toString().trim()}`),
+      );
+      if (authServer.pid) {
+        authServer.unref();
+        MCP_SERVERS.push(authServer);
+        await setTimeout(1000);
+        console.log("✓ auth-demo-server started on http://localhost:3002/");
+      }
     }
   } catch (err) {
-    console.warn(`⚠️  Failed to start auth-demo-server (header auth tests may skip): ${(err as Error).message}`)
+    console.warn(
+      `⚠️  Failed to start auth-demo-server (header auth tests may skip): ${(err as Error).message}`,
+    );
   }
 
   // Build and start oauth-demo-server on port 3003
   try {
-    const oauthServerBinaryName = isWindows ? 'oauth-demo-server.exe' : 'oauth-demo-server'
-    const oauthServerDir = join(REPO_ROOT, 'examples', 'mcps', 'oauth-demo-server')
-    const oauthServerBinary = join(oauthServerDir, oauthServerBinaryName)
-    const oauthServerExec = isWindows ? oauthServerBinaryName : './oauth-demo-server'
+    const oauthServerBinaryName = isWindows
+      ? "oauth-demo-server.exe"
+      : "oauth-demo-server";
+    const oauthServerDir = join(
+      REPO_ROOT,
+      "examples",
+      "mcps",
+      "oauth-demo-server",
+    );
+    const oauthServerBinary = join(oauthServerDir, oauthServerBinaryName);
+    const oauthServerExec = isWindows
+      ? oauthServerBinaryName
+      : "./oauth-demo-server";
 
-    if (!existsSync(oauthServerBinary)) {
-      console.log('Building oauth-demo-server...')
-      runCommand(goCommand, ['build', '-o', oauthServerBinaryName, 'main.go'], {
+    // Rebuild when main.go changed: the OAuth specs select elements of the page it serves.
+    const oauthServerStale =
+      !existsSync(oauthServerBinary) ||
+      statSync(join(oauthServerDir, "main.go")).mtimeMs >
+        statSync(oauthServerBinary).mtimeMs;
+    if (oauthServerStale) {
+      console.log("Building oauth-demo-server...");
+      runCommand(goCommand, ["build", "-o", oauthServerBinaryName, "main.go"], {
         cwd: oauthServerDir,
-        env: { ...process.env, CGO_ENABLED: '0' },
-      })
+        env: { ...process.env, CGO_ENABLED: "0" },
+      });
     } else {
-      console.log('✓ oauth-demo-server binary already exists')
+      console.log("✓ oauth-demo-server binary already exists");
     }
 
-    console.log('Starting oauth-demo-server on port 3003...')
-    const oauthServer = spawn(oauthServerExec, [], {
-      cwd: oauthServerDir,
-      detached: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    oauthServer.stdout?.on('data', (data) => console.log(`[OAuth Server] ${data.toString().trim()}`))
-    oauthServer.stderr?.on('data', (data) => console.error(`[OAuth Server Error] ${data.toString().trim()}`))
-    if (oauthServer.pid) {
-      oauthServer.unref()
-      MCP_SERVERS.push(oauthServer)
-      await setTimeout(1000)
-      console.log('✓ oauth-demo-server started on http://localhost:3003/')
+    if (await isPortListening(3003)) {
+      console.log(
+        "✓ port 3003 already in use, assuming oauth-demo-server is running",
+      );
+    } else {
+      console.log("Starting oauth-demo-server on port 3003...");
+      const oauthServer = spawn(oauthServerExec, [], {
+        cwd: oauthServerDir,
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      oauthServer.stdout?.on("data", (data) =>
+        console.log(`[OAuth Server] ${data.toString().trim()}`),
+      );
+      oauthServer.stderr?.on("data", (data) =>
+        console.error(`[OAuth Server Error] ${data.toString().trim()}`),
+      );
+      if (oauthServer.pid) {
+        oauthServer.unref();
+        MCP_SERVERS.push(oauthServer);
+        await setTimeout(1000);
+        console.log("✓ oauth-demo-server started on http://localhost:3003/");
+      }
     }
   } catch (err) {
-    console.warn(`⚠️  Failed to start oauth-demo-server (OAuth tests may fail): ${(err as Error).message}`)
+    console.warn(
+      `⚠️  Failed to start oauth-demo-server (OAuth tests may fail): ${(err as Error).message}`,
+    );
   }
 
-  console.log('✓ MCP servers ready')
-  console.log('  - HTTP/SSE server: http://localhost:3001/')
-  console.log('  - Auth demo server: http://localhost:3002/')
-  console.log('  - OAuth demo server: http://localhost:3003/')
-  console.log('  - STDIO server: test-tools-server/dist/index.js')
-}
-
-/**
- * Seed LLM logs by sending a few chat completion requests through Bifrost.
- * This ensures the Logs and Dashboard pages have data to display during tests.
- * Uses anthropic/claude-sonnet-4-5-20250929 by default; falls back gracefully.
- */
-async function seedLLMLogs(baseUrl: string, count = 5): Promise<void> {
-  console.log(`Seeding ${count} LLM log entries via ${baseUrl}/v1/chat/completions...`)
-  const model = process.env.SEED_MODEL ?? 'openai/gpt-4o-mini'
-  // Run seed calls in parallel batches of 5 for speed
-  const batchSize = 5
-  let successCount = 0
-  for (let batch = 0; batch < count; batch += batchSize) {
-    const batchEnd = Math.min(batch + batchSize, count)
-    const promises = []
-    for (let i = batch; i < batchEnd; i++) {
-      const body = JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: `E2E seed message ${i + 1}: say hello in ${(i % 5) + 1} words` }],
-        max_tokens: 30,
-      })
-      promises.push(
-        httpRequest(baseUrl, 'POST', '/v1/chat/completions', { body })
-          .then((res) => {
-            if (res.statusCode >= 200 && res.statusCode < 300) {
-              successCount++
-            } else {
-              console.warn(`  Seed call ${i + 1} returned ${res.statusCode}: ${res.body.slice(0, 120)}`)
-            }
-          })
-          .catch((err) => {
-            console.warn(`  Seed call ${i + 1} failed: ${err}`)
-          })
-      )
-    }
-    await Promise.all(promises)
-  }
-  if (successCount > 0) {
-    console.log(`✓ Seeded ${successCount}/${count} LLM log entries`)
-  } else {
-    console.warn(`⚠️  No seed calls succeeded. LLM Logs tests may see empty state.`)
-  }
-}
-
-async function runBifrostMCPAndResponsesSetup(): Promise<void> {
-  if (!process.env.BIFROST_BASE_URL) {
-    console.log('Skipping Bifrost MCP client and /v1/responses (BIFROST_BASE_URL not set)')
-    return
-  }
-  console.log(`Waiting for Bifrost API at ${BIFROST_BASE_URL}...`)
-  await waitForBifrostAPI(BIFROST_BASE_URL)
-  console.log(`✓ Bifrost API ready`)
-  await ensureTestClient001AndSendResponses(BIFROST_BASE_URL)
-  await seedLLMLogs(BIFROST_BASE_URL, 30)
+  console.log("✓ MCP servers ready");
+  console.log("  - HTTP/SSE server: http://localhost:3001/");
+  console.log("  - Auth demo server: http://localhost:3002/");
+  console.log("  - OAuth demo server: http://localhost:3003/");
+  console.log("  - STDIO server: test-tools-server/dist/index.js");
 }
 
 function runMCPTeardown(): void {
-  console.log('Tearing down MCP test servers...')
+  console.log("Tearing down MCP test servers...");
   MCP_SERVERS.forEach((server, index) => {
     try {
       if (server.pid && !server.killed) {
         try {
-          process.kill(-server.pid, 'SIGTERM')
-          console.log(`✓ Stopped MCP server ${index + 1} (PID: ${server.pid})`)
+          process.kill(-server.pid, "SIGTERM");
+          console.log(`✓ Stopped MCP server ${index + 1} (PID: ${server.pid})`);
         } catch {
-          server.kill('SIGTERM')
+          server.kill("SIGTERM");
         }
       } else if (!server.killed) {
-        server.kill('SIGTERM')
-        console.log(`✓ Stopped MCP server ${index + 1}`)
+        server.kill("SIGTERM");
+        console.log(`✓ Stopped MCP server ${index + 1}`);
       }
     } catch (error) {
-      console.error(`Failed to stop MCP server ${index + 1}:`, error)
+      console.error(`Failed to stop MCP server ${index + 1}:`, error);
     }
-  })
+  });
 }
 
 async function globalSetup(): Promise<() => Promise<void>> {
-  await runPluginSetup()
+  await runPluginSetup();
   try {
-    await runMCPSetup()
+    await runMCPSetup();
   } catch (error: unknown) {
-    const err = error as Error
-    console.error(`\n❌ Failed to setup MCP servers: ${err?.message || String(error)}`)
-    console.error('\nTo setup manually:')
-    console.error('  cd examples/mcps/http-no-ping-server && go build -o http-server main.go && ./http-server &')
-    console.error('  cd examples/mcps/test-tools-server && npm install && npm run build')
-    runMCPTeardown()
-    throw error
-  }
-  try {
-    await runBifrostMCPAndResponsesSetup()
-  } catch (error: unknown) {
-    const err = error as Error
-    console.error(`\n❌ Bifrost MCP client / v1/responses setup failed: ${err?.message || String(error)}`)
-    console.error(`   Ensure Bifrost is running at ${BIFROST_BASE_URL} and OPENAI_API_KEY is set for /v1/responses.`)
-    runMCPTeardown()
-    throw error
+    const err = error as Error;
+    console.error(
+      `\n❌ Failed to setup MCP servers: ${err?.message || String(error)}`,
+    );
+    console.error("\nTo setup manually:");
+    console.error(
+      "  cd examples/mcps/http-no-ping-server && go build -o http-server main.go && ./http-server &",
+    );
+    console.error(
+      "  cd examples/mcps/test-tools-server && npm install && npm run build",
+    );
+    runMCPTeardown();
+    throw error;
   }
   return async () => {
-    runMCPTeardown()
-  }
+    runMCPTeardown();
+  };
 }
 
-export default globalSetup
+export default globalSetup;

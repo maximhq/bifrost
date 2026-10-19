@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -281,6 +282,26 @@ func TestAllowlist_PermitsBareIPAsSingleHostMatch(t *testing.T) {
 	}
 }
 
+// TestAllowlist_PermitsIPv4MappedEntries pins that an IPv4-mapped IPv6 entry
+// matches its IPv4 destination: Permits unmaps the dialed address, so a mapped
+// entry left as an IPv6 prefix would be accepted and then never match.
+func TestAllowlist_PermitsIPv4MappedEntries(t *testing.T) {
+	al, err := NewAllowlist([]string{"::ffff:127.0.0.1", "::ffff:10.0.0.0/104"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, ip := range []string{"127.0.0.1", "::ffff:127.0.0.1", "10.1.2.3"} {
+		if !al.Permits("irrelevant.example", net.ParseIP(ip)) {
+			t.Fatalf("expected %s to be permitted by its IPv4-mapped entry", ip)
+		}
+	}
+	for _, ip := range []string{"127.0.0.2", "11.0.0.1"} {
+		if al.Permits("irrelevant.example", net.ParseIP(ip)) {
+			t.Fatalf("expected %s to remain blocked", ip)
+		}
+	}
+}
+
 func TestAllowlist_NilReceiverPermitsNothing(t *testing.T) {
 	var al *Allowlist
 	if al.Permits("anything.example", net.ParseIP("10.0.0.1")) {
@@ -526,6 +547,155 @@ func TestCheckPrivateNetworkLiteral(t *testing.T) {
 	}
 }
 
+// TestAllowlistedPrivateDialContextPermitsListedPrivateTargets pins the MCP
+// OAuth allowlist policy: a private address passes only when the allowlist
+// names it (by hostname or CIDR), public addresses always pass, and every
+// validated address is tried in turn so a dual-stack "localhost" still reaches
+// an IPv4-only server.
+func TestAllowlistedPrivateDialContextPermitsListedPrivateTargets(t *testing.T) {
+	al, err := NewAllowlist([]string{"mcp.internal", "10.1.0.0/16"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	allow := func() *Allowlist { return al }
+	dialErr := errors.New("stop before real network")
+	for _, tc := range []struct {
+		host string
+		ips  []string
+		want []string
+	}{
+		{"mcp.internal", []string{"::1", "127.0.0.1"}, []string{"[::1]:443", "127.0.0.1:443"}},
+		{"other.example", []string{"10.1.2.3"}, []string{"10.1.2.3:443"}},
+		{"public.example", []string{"93.184.216.34"}, []string{"93.184.216.34:443"}},
+	} {
+		var resolved []net.IP
+		for _, ip := range tc.ips {
+			resolved = append(resolved, net.ParseIP(ip))
+		}
+		var dialed []string
+		dial := allowlistedPrivateDialContext(&fakeResolver{ips: resolved}, func(_ context.Context, _, addr string) (net.Conn, error) {
+			dialed = append(dialed, addr)
+			return nil, dialErr
+		}, allow)
+		if _, err := dial(context.Background(), "tcp", net.JoinHostPort(tc.host, "443")); !errors.Is(err, dialErr) {
+			t.Fatalf("%s: expected sentinel dial error, got %v", tc.host, err)
+		}
+		if strings.Join(dialed, ",") != strings.Join(tc.want, ",") {
+			t.Fatalf("%s: dialed %v, want %v", tc.host, dialed, tc.want)
+		}
+	}
+}
+
+// TestAllowlistedPrivateDialContextRefusesUnlistedAndMetadata proves the
+// allowlist only widens the public policy by the entries it names, and never
+// reaches link-local or cloud metadata addresses even when an entry covers
+// them (a hostname entry can resolve anywhere).
+func TestAllowlistedPrivateDialContextRefusesUnlistedAndMetadata(t *testing.T) {
+	al, err := NewAllowlist([]string{"mcp.internal"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, tc := range []struct {
+		name  string
+		allow *Allowlist
+		host  string
+		ip    string
+		want  string
+	}{
+		{"unlisted private", al, "other.internal", "10.0.0.5", "blocked connection to non-public address"},
+		{"nil allowlist", nil, "mcp.internal", "127.0.0.1", "blocked connection to non-public address"},
+		{"listed name resolving to link-local", al, "mcp.internal", "169.254.169.254", "blocked connection to link-local address"},
+		{"listed name resolving to metadata", al, "mcp.internal", "100.100.100.200", "blocked connection to cloud metadata endpoint"},
+		{"listed name resolving to unspecified", al, "mcp.internal", "0.0.0.0", "blocked connection to unspecified address"},
+	} {
+		allow := tc.allow
+		dial := allowlistedPrivateDialContext(&fakeResolver{ips: []net.IP{net.ParseIP(tc.ip)}}, func(_ context.Context, _, _ string) (net.Conn, error) {
+			t.Fatalf("%s: dial must not be reached", tc.name)
+			return nil, nil
+		}, func() *Allowlist { return allow })
+		if _, err := dial(context.Background(), "tcp", net.JoinHostPort(tc.host, "443")); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: expected %q, got %v", tc.name, tc.want, err)
+		}
+	}
+}
+
+// TestAllowlistedPrivateDialContextReadsAllowlistPerDial proves a hot-reloaded
+// allowlist applies to the next dial without rebuilding the dialer.
+func TestAllowlistedPrivateDialContextReadsAllowlistPerDial(t *testing.T) {
+	var current atomic.Pointer[Allowlist]
+	dialErr := errors.New("stop before real network")
+	dial := allowlistedPrivateDialContext(&fakeResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}, func(_ context.Context, _, _ string) (net.Conn, error) {
+		return nil, dialErr
+	}, current.Load)
+	if _, err := dial(context.Background(), "tcp", "mcp.internal:443"); err == nil || errors.Is(err, dialErr) {
+		t.Fatalf("expected refusal before the allowlist names the host, got %v", err)
+	}
+	al, err := NewAllowlist([]string{"mcp.internal"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	current.Store(al)
+	if _, err := dial(context.Background(), "tcp", "mcp.internal:443"); !errors.Is(err, dialErr) {
+		t.Fatalf("expected the reloaded allowlist to permit the dial, got %v", err)
+	}
+}
+
+func TestCheckAllowlistedPrivateLiteral(t *testing.T) {
+	al, err := NewAllowlist([]string{"127.0.0.1", "10.0.0.0/8", "169.254.169.254"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, host := range []string{"127.0.0.1", "10.2.3.4", "93.184.216.34", "mcp.invalid"} {
+		if err := CheckAllowlistedPrivateLiteral(host, al); err != nil {
+			t.Fatalf("%s: expected permitted, got %v", host, err)
+		}
+	}
+	for _, tc := range []struct {
+		host  string
+		allow *Allowlist
+		want  string
+	}{
+		{"192.168.1.1", al, "blocked connection to non-public address"},
+		{"127.0.0.1", nil, "blocked connection to non-public address"},
+		{"169.254.169.254", al, "blocked connection to link-local address"},
+	} {
+		if err := CheckAllowlistedPrivateLiteral(tc.host, tc.allow); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%s: expected %q, got %v", tc.host, tc.want, err)
+		}
+	}
+}
+
+func TestValidatePrivateTargetAllowlist(t *testing.T) {
+	al, err := ValidatePrivateTargetAllowlist([]string{"localhost", "127.0.0.1", "::1", "10.0.0.0/8", "mcp.corp.internal"})
+	if err != nil {
+		t.Fatalf("expected valid entries to pass, got %v", err)
+	}
+	if !al.Permits("localhost", net.ParseIP("127.0.0.1")) {
+		t.Fatal("expected localhost to be permitted")
+	}
+	for _, entry := range []string{
+		"169.254.169.254",
+		"169.254.0.0/16",
+		"fe80::1",
+		"0.0.0.0",
+		"0.0.0.0/0",
+		"::/0",
+		"100.100.100.200",
+		"100.64.0.0/10",
+		"fd00:ec2::254",
+		"::ffff:169.254.169.254",
+		"::ffff:100.100.100.200",
+		"::ffff:0:0/96",
+		"metadata.google.internal",
+		"metadata",
+		"http://localhost:3000",
+	} {
+		if _, err := ValidatePrivateTargetAllowlist([]string{entry}); err == nil {
+			t.Fatalf("%s: expected the entry to be refused", entry)
+		}
+	}
+}
+
 // TestPrivateNetworkDialContextBlocksMetadataEndpoints proves the direct
 // dialer refuses the non-link-local metadata endpoints before any dial.
 func TestPrivateNetworkDialContextBlocksMetadataEndpoints(t *testing.T) {
@@ -738,6 +908,38 @@ func TestGuardedRedirectViaProxyToleratesProxyOnlyDNS(t *testing.T) {
 	}
 }
 
+// TestNewSSRFSafeHTTPClientReachesConfiguredPrivateProxy pins that the SSRF-safe client
+// can use a global API proxy that sits on a private or loopback address, the normal
+// self-hosted setup. The proxy is dialed with the private-network policy; direct
+// destinations keep the public-only dialer, and the destination is still vetted before
+// it is handed to the proxy.
+func TestNewSSRFSafeHTTPClientReachesConfiguredPrivateProxy(t *testing.T) {
+	var seen atomic.Value
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen.Store(r.URL.Host)
+		_, _ = w.Write([]byte("via-proxy"))
+	}))
+	defer proxy.Close()
+	SetDefaultHTTPClientFactory(NewHTTPClientFactory(&GlobalProxyConfig{
+		Enabled: true, Type: GlobalProxyTypeHTTP, URL: proxy.URL, EnableForAPI: true,
+	}, nil))
+	t.Cleanup(func() { SetDefaultHTTPClientFactory(nil) })
+
+	client := NewSSRFSafeHTTPClient(5 * time.Second)
+	resp, err := client.Get("http://203.0.113.10/catalog.json")
+	if err != nil {
+		t.Fatalf("a loopback API proxy must be reachable, got %v", err)
+	}
+	resp.Body.Close()
+	if got, _ := seen.Load().(string); got != "203.0.113.10" {
+		t.Fatalf("proxy saw target %q, want 203.0.113.10", got)
+	}
+
+	if _, err := client.Get("http://10.0.0.5/catalog.json"); err == nil || !strings.Contains(err.Error(), "non-public") {
+		t.Fatalf("a private destination must still be refused before the proxy, got %v", err)
+	}
+}
+
 // TestGuardedRedirectViaProxyStillAppliesPolicyWhenResolvable: a proxied hop
 // is not a policy bypass. When the local resolver does answer, a hostname that
 // maps to a blocked address is refused before the proxy is asked for it.
@@ -784,5 +986,132 @@ func TestGuardedProxySelectorAppliesPolicyToHostnames(t *testing.T) {
 				t.Fatalf("expected refusal containing %q, got url=%v err=%v", tc.wantErr, got, err)
 			}
 		})
+	}
+}
+
+// TestProxyAwareTransportRoutesByEachRequestsProxyDecision: a request the
+// selector routes through the proxy is served by ViaProxy (whose dialer only
+// ever sees the proxy), one it does not goes through Direct, and the decision
+// is made per request with nothing carried over - a direct request whose
+// destination is the proxy's own address still gets the destination policy.
+func TestProxyAwareTransportRoutesByEachRequestsProxyDecision(t *testing.T) {
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Served-By", "proxy")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer proxy.Close()
+	proxyURL, _ := url.Parse(proxy.URL)
+
+	direct := &http.Transport{DialContext: SSRFSafeDialContext(5 * time.Second)}
+	via := &http.Transport{Proxy: func(*http.Request) (*url.URL, error) { return proxyURL, nil }, DialContext: PrivateNetworkDialContext(5 * time.Second)}
+	rt := &ProxyAwareTransport{
+		Proxy: func(req *http.Request) (*url.URL, error) {
+			if req.URL.Hostname() == "mcp.example" {
+				return proxyURL, nil
+			}
+			return nil, nil
+		},
+		Direct:   direct,
+		ViaProxy: via,
+	}
+	client := &http.Client{Transport: rt}
+
+	resp, err := client.Get("http://mcp.example/mcp")
+	if err != nil {
+		t.Fatalf("proxied request: %v", err)
+	}
+	resp.Body.Close()
+	if resp.Header.Get("X-Served-By") != "proxy" {
+		t.Fatalf("proxied request must be answered by the proxy, got %q", resp.Header.Get("X-Served-By"))
+	}
+
+	mustFailGet(t, client, proxy.URL+"/mcp", "blocked connection to non-public address")
+
+	if _, err := (&ProxyAwareTransport{Proxy: func(*http.Request) (*url.URL, error) { return nil, errors.New("selector failed") }, Direct: direct, ViaProxy: via}).RoundTrip(&http.Request{URL: &url.URL{Scheme: "http", Host: "x.example"}}); err == nil || err.Error() != "selector failed" {
+		t.Fatalf("a selector error must be returned as is, got %v", err)
+	}
+	rt.CloseIdleConnections()
+}
+
+// TestCheckProxiedDestination pins the two policies on the proxied path.
+func TestCheckProxiedDestination(t *testing.T) {
+	cases := []struct {
+		name     string
+		host     string
+		strict   bool
+		resolver *fakeResolver
+		wantErr  string
+	}{
+		{"strict refuses private answer", "mcp.corp", true, &fakeResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}, "non-public"},
+		{"strict refuses loopback literal", "127.0.0.1", true, &fakeResolver{err: errors.New("no dns")}, "non-public"},
+		{"strict accepts public answer", "mcp.example", true, &fakeResolver{ips: []net.IP{net.ParseIP("93.184.216.34")}}, ""},
+		{"strict refuses an unresolvable name rather than trusting the proxy", "only.proxy.knows", true, &fakeResolver{err: errors.New("no dns")}, "DNS lookup failed"},
+		{"permissive leaves an unresolvable name to the proxy", "only.proxy.knows", false, &fakeResolver{err: errors.New("no dns")}, ""},
+		{"permissive accepts private answer", "mcp.corp", false, &fakeResolver{ips: []net.IP{net.ParseIP("10.0.0.5")}}, ""},
+		{"permissive refuses metadata answer", "md.corp", false, &fakeResolver{ips: []net.IP{net.ParseIP("169.254.169.254")}}, "link-local"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := CheckProxiedDestination(context.Background(), tc.host, tc.strict, tc.resolver)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected acceptance, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected refusal containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// hostResolver answers per hostname, so a test can make the target public and
+// everything else unreachable. IP literals resolve to themselves, like net.Resolver.
+type hostResolver map[string][]net.IP
+
+func (h hostResolver) LookupIP(_ context.Context, _, host string) ([]net.IP, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		return []net.IP{ip}, nil
+	}
+	if ips, ok := h[host]; ok {
+		return ips, nil
+	}
+	return nil, errors.New("no such host")
+}
+
+func TestPublicTargetCheck_PublicTargetReturnsItsAddresses(t *testing.T) {
+	ips, err := publicTargetCheck(hostResolver{"files.example": {net.ParseIP("203.0.113.10")}}, nil)(context.Background(), "files.example")
+	if err != nil {
+		t.Fatalf("public target refused: %v", err)
+	}
+	if len(ips) != 1 || !ips[0].Equal(net.ParseIP("203.0.113.10")) {
+		t.Fatalf("checked addresses = %v, want [203.0.113.10]: the caller tunnels to these", ips)
+	}
+}
+
+func TestPublicTargetCheck_RefusesNonPublicTargets(t *testing.T) {
+	tests := map[string]hostResolver{
+		// One public and one private record: the private one blocks, as on the direct path.
+		"internal.example": {"internal.example": {net.ParseIP("203.0.113.10"), net.ParseIP("10.0.0.5")}},
+		"127.0.0.1":        {},
+		"169.254.169.254":  {},
+		"fd00:ec2::254":    {},
+	}
+	for host, resolver := range tests {
+		ips, err := publicTargetCheck(resolver, nil)(context.Background(), host)
+		if err == nil || !strings.Contains(err.Error(), "blocked connection to non-public address") {
+			t.Errorf("%s: expected a non-public address error, got %v", host, err)
+		}
+		if ips != nil {
+			t.Errorf("%s: a refused target must return no addresses to dial, got %v", host, ips)
+		}
+	}
+}
+
+func TestPublicTargetCheck_UnresolvableTargetIsRefused(t *testing.T) {
+	_, err := publicTargetCheck(hostResolver{}, nil)(context.Background(), "only-the-proxy-knows.example")
+	if err == nil || !strings.Contains(err.Error(), "DNS lookup failed") {
+		t.Fatalf("expected a DNS failure, got %v", err)
 	}
 }

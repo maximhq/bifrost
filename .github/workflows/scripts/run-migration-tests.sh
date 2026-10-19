@@ -900,6 +900,10 @@ governance_model_pricing|input_cost_per_token_ultrafast|NULL|id = 1
 governance_model_pricing|output_cost_per_token_ultrafast|NULL|id = 1
 governance_model_pricing|cache_read_input_token_cost_ultrafast|NULL|id = 1
 governance_model_pricing|cache_creation_input_token_cost_ultrafast|NULL|id = 1
+governance_model_pricing|input_cost_per_token_above_272k_tokens_ultrafast|NULL|id = 1
+governance_model_pricing|output_cost_per_token_above_272k_tokens_ultrafast|NULL|id = 1
+governance_model_pricing|cache_read_input_token_cost_above_272k_tokens_ultrafast|NULL|id = 1
+governance_model_pricing|cache_creation_input_token_cost_above_272k_tokens_ultrafast|NULL|id = 1
 governance_model_pricing|output_cost_per_image_above_4_megapixels|NULL|id = 1
 governance_model_pricing|output_cost_per_image_above_8_megapixels|NULL|id = 1
 governance_model_pricing|output_cost_per_image_above_16_megapixels|NULL|id = 1
@@ -1121,6 +1125,7 @@ append_v220_fixtures() {
     fi
   done <<'V220_COLUMNS'
 config_keys|use_openai_endpoints|false|name = 'migration-test-key-anthropic'
+config_keys|cloudflare_account_id|NULL|name = 'migration-test-key-anthropic'
 governance_model_pricing|off_peak_cost_multiplier|NULL|id = 1
 governance_model_pricing|peak_hours|NULL|id = 1
 mcp_tool_logs|user_name|'Migration Test User'|id = 'mcp-log-migration-001'
@@ -2475,6 +2480,11 @@ append_dynamic_columns_postgres() {
     echo "UPDATE config_client SET dual_credential_conflict_behavior = 'prefer_idp' WHERE id = 1;" >> "$output_file"
   fi
 
+  # config_client.extra_fields_placement (added via add_client_config_extra_fields_placement_column)
+  if column_exists_postgres "config_client" "extra_fields_placement"; then
+    echo "UPDATE config_client SET extra_fields_placement = 'headers' WHERE id = 1;" >> "$output_file"
+  fi
+
   # config_client.webhook_config_json (added via add_webhook_config_client_column)
   # Seeded as '' rather than NULL: BeforeSave writes '' for a nil WebhookConfig, so '' is stable either way.
   if column_exists_postgres "config_client" "webhook_config_json"; then
@@ -2544,6 +2554,7 @@ append_dynamic_columns_postgres() {
     cache_creation_input_token_cost_flex \
     cache_creation_input_token_cost_flex_above_272k_tokens \
     cache_creation_input_token_cost_priority \
+    cache_creation_input_token_cost_above_272k_tokens_priority \
     cache_creation_input_token_cost_fast \
     cache_creation_input_token_cost_above_1hr_fast \
     cache_read_input_token_cost_fast \
@@ -2592,6 +2603,7 @@ append_dynamic_columns_postgres() {
     cache_creation_input_token_cost_flex \
     cache_creation_input_token_cost_flex_above_272k_tokens \
     cache_creation_input_token_cost_priority \
+    cache_creation_input_token_cost_above_272k_tokens_priority \
     cache_creation_input_token_cost_fast \
     cache_creation_input_token_cost_above_1hr_fast \
     cache_read_input_token_cost_fast \
@@ -3804,6 +3816,7 @@ append_dynamic_columns_sqlite() {
       cache_creation_input_token_cost_flex \
       cache_creation_input_token_cost_flex_above_272k_tokens \
       cache_creation_input_token_cost_priority \
+      cache_creation_input_token_cost_above_272k_tokens_priority \
       cache_creation_input_token_cost_fast \
       cache_creation_input_token_cost_above_1hr_fast \
       cache_read_input_token_cost_fast \
@@ -3921,6 +3934,11 @@ append_dynamic_columns_sqlite() {
     # config_client.dual_credential_conflict_behavior (added via add_dual_credential_conflict_behavior_column)
     if column_exists_sqlite "$config_db" "config_client" "dual_credential_conflict_behavior"; then
       echo "UPDATE config_client SET dual_credential_conflict_behavior = 'prefer_idp' WHERE id = 1;" >> "$output_file"
+    fi
+
+    # config_client.extra_fields_placement (added via add_client_config_extra_fields_placement_column)
+    if column_exists_sqlite "$config_db" "config_client" "extra_fields_placement"; then
+      echo "UPDATE config_client SET extra_fields_placement = 'headers' WHERE id = 1;" >> "$output_file"
     fi
 
     # config_client.webhook_config_json (added via add_webhook_config_client_column)

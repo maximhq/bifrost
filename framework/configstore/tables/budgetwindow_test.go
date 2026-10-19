@@ -14,6 +14,20 @@ func utcDate(year int, month time.Month, day, hour int) time.Time {
 	return time.Date(year, month, day, hour, 0, 0, 0, time.UTC)
 }
 
+func BenchmarkWindowStartCalendarDurations(b *testing.B) {
+	for _, duration := range []string{"1d", "7d", "1w", "2w", "1M", "3M"} {
+		b.Run(duration, func(b *testing.B) {
+			created := utcDate(2026, time.March, 10, 0)
+			budget := TableBudget{ResetDuration: duration, CreatedAt: created, LastReset: created, IsCalendarAligned: true}
+			now := created.Add(36 * time.Hour)
+			b.ReportAllocs()
+			for b.Loop() {
+				budget.WindowStart(now)
+			}
+		})
+	}
+}
+
 // TestCountCalendarPeriods verifies the override-cycle counter counts exactly the
 // boundaries GetCalendarPeriodStart produces.
 //
@@ -58,27 +72,24 @@ func TestCountCalendarPeriods(t *testing.T) {
 	}
 }
 
-// TestCountCalendarPeriodsIgnoresDurationMultiplier pins a surprising inherited
-// behaviour rather than silently diverging from it.
-//
-// GetCalendarPeriodStart ignores the numeric prefix: "7d" snaps to midnight today,
-// so a calendar-aligned "7d" budget actually resets daily, not weekly. This counter
-// must reproduce that exactly, because a mismatch would make a finite override count
-// windows at a different rate than the budget resets at. Changing either one without
-// the other is the bug this test exists to catch, so a deliberate fix to the
-// multiplier must update both and edit this test.
-func TestCountCalendarPeriodsIgnoresDurationMultiplier(t *testing.T) {
-	from := utcDate(2026, time.March, 10, 0)
-	to := utcDate(2026, time.March, 13, 0)
-
-	assert.Equal(t, 3, CountCalendarPeriods("7d", from, to, QuarterStartNotApplicable),
-		`"7d" must count days, matching GetCalendarPeriodStart which snaps "7d" to midnight today`)
-	assert.Equal(t, CountCalendarPeriods("1d", from, to, QuarterStartNotApplicable), CountCalendarPeriods("7d", from, to, QuarterStartNotApplicable),
-		`"1d" and "7d" must agree because GetCalendarPeriodStart treats them identically`)
-
-	// The reset path's view, asserted directly so the two cannot drift apart.
-	assert.True(t, GetCalendarPeriodStart("7d", to, QuarterStartNotApplicable).Equal(GetCalendarPeriodStart("1d", to, QuarterStartNotApplicable)),
-		`GetCalendarPeriodStart must treat "7d" and "1d" identically for this counter to be correct`)
+// Multi-unit calendar settings must follow the rolling duration for both resets
+// and finite override cycle accounting.
+func TestCalendarAlignedMultipliersUseRollingWindows(t *testing.T) {
+	created := utcDate(2026, time.March, 10, 0)
+	for _, duration := range []string{"7d", "2w", "3M", "2Q", "2Y"} {
+		t.Run(duration, func(t *testing.T) {
+			span, err := ParseDuration(duration)
+			require.NoError(t, err)
+			budget := TableBudget{ResetDuration: duration, CreatedAt: created, LastReset: created, IsCalendarAligned: true}
+			assert.False(t, IsCalendarAlignableDuration(duration))
+			assert.Equal(t, created, budget.WindowStart(created.Add(span-time.Second)))
+			assert.Equal(t, created.Add(span), budget.WindowStart(created.Add(span)))
+			assert.Equal(t, 0, CountCalendarPeriods(duration, created, created.Add(span), time.January))
+			budget.OverrideAnchorReset = &created
+			budget.LastReset = created.Add(2 * span)
+			assert.Equal(t, 2, budget.WindowsSinceAnchor())
+		})
+	}
 }
 
 // TestRollingWindowStart verifies the rolling lattice is a pure function of
@@ -249,7 +260,7 @@ func TestCalendarAlignedOverrideToleratesWireJitter(t *testing.T) {
 // calendar boundary, alongside the day/week/month/year windows.
 func TestIsCalendarAlignableDurationIncludesQuarter(t *testing.T) {
 	assert.True(t, IsCalendarAlignableDuration("1Q"))
-	assert.True(t, IsCalendarAlignableDuration("2Q"))
+	assert.False(t, IsCalendarAlignableDuration("2Q"))
 	assert.False(t, IsCalendarAlignableDuration("1q"))
 	assert.False(t, IsCalendarAlignableDuration("1h"))
 	assert.False(t, IsCalendarAlignableDuration("30m"))
@@ -367,20 +378,11 @@ func TestGetCalendarPeriodStartQuarterWrapsAcrossTheYear(t *testing.T) {
 		GetCalendarPeriodStart("1Q", jan2026, time.November))
 }
 
-// TestGetCalendarPeriodStartQuarterIgnoresMultiplier pins the inherited
-// convention that calendar snapping ignores the numeric prefix, matching how
-// "7d" snaps to midnight today rather than to a seven-day block. It is the
-// reason a quarter needs its own suffix instead of reusing "3M".
-func TestGetCalendarPeriodStartQuarterIgnoresMultiplier(t *testing.T) {
-	probe := time.Date(2026, time.May, 20, 0, 0, 0, 0, time.UTC)
-	assert.Equal(t,
-		GetCalendarPeriodStart("1Q", probe, time.January),
-		GetCalendarPeriodStart("2Q", probe, time.January))
-
-	// "3M" is a month window, not a quarter: it snaps to the 1st of May.
-	assert.Equal(t,
-		time.Date(2026, time.May, 1, 0, 0, 0, 0, time.UTC),
-		GetCalendarPeriodStart("3M", probe, time.January))
+func TestGetCalendarPeriodStartMultiUnitDoesNotSnap(t *testing.T) {
+	probe := time.Date(2026, time.May, 20, 12, 30, 0, 0, time.UTC)
+	for _, duration := range []string{"7d", "2w", "3M", "2Q", "2Y"} {
+		assert.Equal(t, probe, GetCalendarPeriodStart(duration, probe, time.January), duration)
+	}
 }
 
 // TestCountCalendarPeriodsQuarter verifies the override-cycle counter counts

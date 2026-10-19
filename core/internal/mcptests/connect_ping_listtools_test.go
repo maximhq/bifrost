@@ -941,3 +941,28 @@ func TestRefreshClientTools_UnchangedInstructionsStayPut(t *testing.T) {
 
 	assert.Equal(t, before, manager.GetAggregatedServerInstructions(ctx))
 }
+
+// RefreshMCPClientTools is advertised as working across every client type, but the
+// refresh tests above all run over HTTP. STDIO takes a different path — a child process
+// and a pipe rather than a socket — so it is worth pinning that an on-demand refresh
+// there returns the tool set rather than erroring or emptying it.
+func TestRefreshClientTools_WorksOverSTDIO(t *testing.T) {
+	t.Parallel()
+
+	InitMCPServerPaths(t)
+	cfg := GetGoTestServerConfig(GetBifrostRoot(t))
+	manager := setupMCPManager(t, cfg)
+	ctx := createTestContext()
+
+	before := manager.GetToolPerClient(ctx)[cfg.Name]
+	require.NotEmpty(t, before, "STDIO client should expose tools before the refresh")
+
+	count, err := manager.RefreshClientTools(ctx, cfg.ID)
+	require.NoError(t, err, "refresh must work for a STDIO client")
+	assert.Positive(t, count, "refresh should report the rediscovered tools")
+
+	// An upstream that did not change must come back with the same tool set: a refresh
+	// that quietly emptied it would leave the client connected but useless.
+	assert.Len(t, manager.GetToolPerClient(ctx)[cfg.Name], len(before),
+		"refresh must not drop tools for an unchanged STDIO upstream")
+}
