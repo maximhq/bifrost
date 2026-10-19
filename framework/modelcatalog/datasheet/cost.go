@@ -544,6 +544,15 @@ func (s *Store) calculateBaseCost(result *schemas.BifrostResponse, scopes Lookup
 		return input.imageUsage.Cost
 	}
 
+	// A Search that matched nothing is a successful answer DeepSeek does not bill, which is why
+	// its response carries no usage. That absence must not reach the per-request fallback below,
+	// where a catalog row's cost_per_request would price a call the provider charged nothing for.
+	// This sits after the provider-cost short-circuit on purpose: if a provider ever does report
+	// a fee on an empty result set, that report wins.
+	if input.emptySearchResults {
+		return nil
+	}
+
 	// If no usage data at all, nothing to price.
 	//
 	// Rerank, Search and Fetch are exempt: each bills per request rather than per unit of
@@ -750,6 +759,7 @@ func extractCostInput(result *schemas.BifrostResponse) costInput {
 	// response because the calls carry no model for the pricing store to look up.
 	case result.SearchResponse != nil:
 		input.usage = result.SearchResponse.Usage
+		input.emptySearchResults = len(result.SearchResponse.Results) == 0
 
 	case result.FetchResponse != nil:
 		input.usage = result.FetchResponse.Usage
