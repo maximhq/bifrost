@@ -380,3 +380,30 @@ func TestHTTPExchangeObserverOmitsSignedURLFromErrors(t *testing.T) {
 		t.Fatalf("observer error: %v", record.err)
 	}
 }
+
+// Token exchanges and URL fetches run on fasthttpRoundTripper with the request
+// context's values; their bodies carry credentials and are not provider exchanges.
+func TestHTTPExchangeObserverSkipsRoundTripperClients(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"access_token":"secret-token"}`)
+	}))
+	defer server.Close()
+	ctx := context.WithValue(t.Context(), schemas.BifrostContextKeyHTTPExchangeObserver, schemas.HTTPExchangeObserverFactory(func() schemas.HTTPExchangeObserver {
+		t.Error("round-tripper client reached inference observer")
+		return nil
+	}))
+	for name, client := range map[string]*http.Client{
+		"provider auth": NewProviderHTTPClient(nil, schemas.NetworkConfig{DefaultRequestTimeoutInSeconds: 5}, nil),
+		"bare":          newRoundTripperClient(nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, strings.NewReader("client_secret=secret"))
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+		})
+	}
+}

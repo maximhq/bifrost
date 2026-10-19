@@ -1244,7 +1244,9 @@ func (rt *fasthttpRoundTripper) RoundTrip(req *http.Request) (*http.Response, er
 		freq.SetBody(body)
 	}
 
-	ctx := req.Context()
+	// Token exchanges and URL fetches are not provider exchanges, and their bodies
+	// carry credentials. Keep them out of the inference observer.
+	ctx := context.WithValue(req.Context(), schemas.BifrostContextKeyHTTPExchangeObserver, schemas.HTTPExchangeObserverFactory(nil))
 	unbind := bindRequestContext(freq, ctx)
 	done := make(chan error, 1)
 	go func() {
