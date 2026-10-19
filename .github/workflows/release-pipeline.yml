@@ -1897,6 +1897,13 @@ jobs:
           echo "$PWD/node_modules/.bin" >> "$GITHUB_PATH"
         working-directory: .github/workflows/tools
 
+      # The content-logging matrix reads raw log rows from the Postgres logs store through `pg`,
+      # pinned in tests/e2e/api/package-lock.json. --ignore-scripts skips better-sqlite3's native
+      # build: this job's logs store is Postgres, so the SQLite reader is never loaded.
+      - name: Install e2e API test deps (lockfile)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: tests/e2e/api
+
       - name: Set up Docker Compose
         run: |
           docker --version
