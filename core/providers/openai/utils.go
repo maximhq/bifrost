@@ -289,6 +289,7 @@ func ConvertOpenAIMessagesToBifrostMessages(messages []OpenAIMessage) []schemas.
 				ToolCalls:        message.OpenAIChatAssistantMessage.ToolCalls,
 			}
 		}
+		bifrostMessages[i].AttachMessageCacheControl(message.CacheControl)
 	}
 	return bifrostMessages
 }

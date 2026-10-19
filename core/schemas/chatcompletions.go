@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/tidwall/gjson"
@@ -1241,42 +1242,49 @@ func (cm *ChatMessage) UnmarshalJSON(data []byte) error {
 		cm.ChatAssistantMessage = &assistantMsg
 	}
 
-	if base.CacheControl != nil {
-		cm.attachMessageCacheControl(base.CacheControl)
-	}
+	cm.AttachMessageCacheControl(base.CacheControl)
 	return nil
 }
 
-// attachMessageCacheControl places a cache_control the client set on the message
+// AttachMessageCacheControl places a cache_control the client set on the message
 // object (the shape OpenAI-compatible SDKs emit) where every provider converter
 // reads it: the last content block, promoting string content to a single text
 // block, or the last tool call when the message has no content. A block or tool
 // call that already carries its own marker keeps it. Empty string content is left
-// alone, since providers reject a breakpoint on an empty text block.
-func (cm *ChatMessage) attachMessageCacheControl(marker *CacheControl) {
+// alone, since providers reject a breakpoint on an empty text block. Content and
+// tool calls are copied before they are changed, so values shared with the caller
+// are never modified.
+func (cm *ChatMessage) AttachMessageCacheControl(marker *CacheControl) {
+	if marker == nil {
+		return
+	}
 	if cm.Content != nil {
 		if cm.Content.ContentStr != nil {
 			if *cm.Content.ContentStr == "" {
 				return
 			}
-			cm.Content.ContentBlocks = []ChatContentBlock{{
+			cm.Content = &ChatMessageContent{ContentBlocks: []ChatContentBlock{{
 				Type:         ChatContentBlockTypeText,
 				Text:         cm.Content.ContentStr,
 				CacheControl: marker,
-			}}
-			cm.Content.ContentStr = nil
+			}}}
 			return
 		}
 		if n := len(cm.Content.ContentBlocks); n > 0 {
 			if cm.Content.ContentBlocks[n-1].CacheControl == nil {
-				cm.Content.ContentBlocks[n-1].CacheControl = marker
+				blocks := slices.Clone(cm.Content.ContentBlocks)
+				blocks[n-1].CacheControl = marker
+				cm.Content = &ChatMessageContent{ContentBlocks: blocks}
 			}
 			return
 		}
 	}
 	if cm.ChatAssistantMessage != nil {
 		if n := len(cm.ChatAssistantMessage.ToolCalls); n > 0 && cm.ChatAssistantMessage.ToolCalls[n-1].CacheControl == nil {
-			cm.ChatAssistantMessage.ToolCalls[n-1].CacheControl = marker
+			assistant := *cm.ChatAssistantMessage
+			assistant.ToolCalls = slices.Clone(assistant.ToolCalls)
+			assistant.ToolCalls[n-1].CacheControl = marker
+			cm.ChatAssistantMessage = &assistant
 		}
 	}
 }
