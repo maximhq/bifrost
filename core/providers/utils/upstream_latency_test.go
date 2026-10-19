@@ -1,15 +1,19 @@
 package utils
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/maximhq/bifrost/core/schemas"
+
+	"github.com/valyala/fasthttp"
 )
 
 func accumCtx() *schemas.BifrostContext {
@@ -252,5 +256,103 @@ func TestIdleTimeoutReaderWithoutAccumulator(t *testing.T) {
 	}
 	if _, ok := schemas.GetUpstreamLatency(ctx); ok {
 		t.Fatal("accumulator appeared without a reset")
+	}
+}
+
+// Both HTTP stacks expose the same payload observer without parsing the payload.
+type recordedExchange struct {
+	mu                sync.Mutex
+	request, response []byte
+	status            int
+	done              int
+	err               error
+}
+
+func (r *recordedExchange) Request(_, _ string, b []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.request = append(r.request, b...)
+}
+func (r *recordedExchange) Response(status int, _, _ string, b []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status = status
+	r.response = append(r.response, b...)
+}
+func (r *recordedExchange) Done(err error) { r.mu.Lock(); defer r.mu.Unlock(); r.done++; r.err = err }
+
+func TestHTTPExchangeObserverAcrossTransports(t *testing.T) {
+	const request = `{"number":9007199254740993}`
+	const response = "data: invalid-json\n\ndata: [DONE]\n\n"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if string(b) != request {
+			t.Errorf("changed request: %s", b)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(429)
+		_, _ = io.WriteString(w, response)
+	}))
+	defer server.Close()
+	for _, mode := range []string{"buffered", "streamed", "nethttp"} {
+		t.Run(mode, func(t *testing.T) {
+			record := &recordedExchange{}
+			ctx := context.WithValue(context.Background(), schemas.BifrostContextKeyHTTPExchangeObserver, schemas.HTTPExchangeObserverFactory(func() schemas.HTTPExchangeObserver { return record }))
+			if mode == "nethttp" {
+				req, _ := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, strings.NewReader(request))
+				resp, err := DoHTTPRequest(server.Client(), req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				b, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = resp.Body.Close()
+				_ = resp.Body.Close()
+				if string(b) != response {
+					t.Fatalf("changed response: %s", b)
+				}
+			} else {
+				client := &fasthttp.Client{Transport: NewContextTransport(), StreamResponseBody: mode == "streamed"}
+				defer client.CloseIdleConnections()
+				req, resp := fasthttp.AcquireRequest(), fasthttp.AcquireResponse()
+				defer fasthttp.ReleaseRequest(req)
+				defer fasthttp.ReleaseResponse(resp)
+				req.SetRequestURI(server.URL)
+				req.Header.SetMethod("POST")
+				req.SetBodyString(request)
+				if mode == "streamed" {
+					if err := DoStreamingRequest(ctx, client, req, resp); err != nil {
+						t.Fatal(err)
+					}
+					b, err := io.ReadAll(resp.BodyStream())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if string(b) != response {
+						t.Fatalf("changed response: %s", b)
+					}
+					resp.CloseBodyStream()
+					resp.CloseBodyStream()
+				} else {
+					_, err, wait := MakeRequestWithContext(ctx, client, req, resp)
+					wait()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if string(resp.Body()) != response {
+						t.Fatalf("changed response: %s", resp.Body())
+					}
+				}
+				req.Reset()
+				resp.Reset() // captured bytes cannot alias fasthttp's pool
+			}
+			record.mu.Lock()
+			defer record.mu.Unlock()
+			if !bytes.Equal(record.request, []byte(request)) || !bytes.Equal(record.response, []byte(response)) || record.status != 429 || record.done != 1 || record.err != nil {
+				t.Fatalf("capture: %+v", record)
+			}
+		})
 	}
 }

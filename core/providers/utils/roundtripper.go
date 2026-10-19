@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/valyala/fasthttp"
 )
 
@@ -60,10 +61,10 @@ var requestContexts sync.Map // *fasthttp.Request -> context.Context
 
 // bindRequestContext associates ctx with req for the duration of a client.Do call
 // so contextTransport can honor its deadline and cancellation. The returned unbind
-// is idempotent and must run after client.Do has returned. A ctx that can never be
-// cancelled or expire binds nothing.
+// is idempotent and must run after client.Do has returned. Context values also
+// carry optional HTTP exchange observers, even without a cancellation deadline.
 func bindRequestContext(req *fasthttp.Request, ctx context.Context) (unbind func()) {
-	if req == nil || ctx == nil || ctx.Done() == nil {
+	if req == nil || ctx == nil || (ctx.Done() == nil && ctx.Value(schemas.BifrostContextKeyHTTPExchangeObserver) == nil) {
 		return func() {}
 	}
 	requestContexts.Store(req, ctx)
@@ -124,6 +125,26 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 		return false, ErrStreamFirstTokenTimeout
 	}
 
+	var observer schemas.HTTPExchangeObserver
+	if factory, ok := ctx.Value(schemas.BifrostContextKeyHTTPExchangeObserver).(schemas.HTTPExchangeObserverFactory); ok && factory != nil {
+		observer = factory()
+	}
+	handedOver := false
+	if observer != nil {
+		var body []byte
+		if !req.IsBodyStream() {
+			body = req.Body()
+			if body == nil {
+				body = []byte{}
+			}
+		}
+		observer.Request(string(req.Header.ContentType()), string(req.Header.Peek("Content-Encoding")), body)
+		defer func() {
+			if !handedOver {
+				observer.Done(err)
+			}
+		}()
+	}
 	customSkipBody := resp.SkipBody
 
 	cc, err := hc.AcquireConn(0, req.ConnectionClose())
@@ -198,6 +219,9 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 			return retryOn(err), watcher.classify(err)
 		}
 		err = readBufferedBody(resp, br, hc.MaxResponseBodySize)
+		if observer != nil {
+			observer.Response(resp.StatusCode(), string(resp.Header.ContentType()), string(resp.Header.Peek("Content-Encoding")), resp.Body())
+		}
 		hc.ReleaseReader(br)
 		if err != nil {
 			hc.CloseConn(cc)
@@ -252,9 +276,16 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 	// releases), so it is re-checked lazily like fasthttp's default transport
 	// does, since a consumer may mark the connection unusable mid-body.
 	closeConn := resetConnection || req.ConnectionClose() || resp.ConnectionClose()
+	if observer != nil {
+		observer.Response(resp.StatusCode(), string(resp.Header.ContentType()), string(resp.Header.Peek("Content-Encoding")), nil)
+	}
 	body := &streamBody{
-		reader: newStreamBodyReader(resp, br),
-		conn:   conn,
+		reader:          newStreamBodyReader(resp, br),
+		observer:        observer,
+		status:          resp.StatusCode(),
+		contentType:     string(resp.Header.ContentType()),
+		contentEncoding: string(resp.Header.Peek("Content-Encoding")),
+		conn:            conn,
 		release: func(discard bool) {
 			hc.ReleaseReader(br)
 			if discard || closeConn || resp.ConnectionClose() {
@@ -265,6 +296,7 @@ func (t *contextTransport) RoundTrip(hc *fasthttp.HostClient, req *fasthttp.Requ
 		},
 	}
 	resp.SetBodyStream(body, resp.Header.ContentLength())
+	handedOver = true
 	return false, nil
 }
 
@@ -394,13 +426,17 @@ func (c *chunkedBody) Read(p []byte) (int, error) {
 // read is running. Only CloseWithError is implemented, never io.Closer, because
 // fasthttp's closeBodyStreamReader would call both.
 type streamBody struct {
-	reader    io.Reader
-	conn      net.Conn
-	release   func(discard bool)
-	closed    atomic.Bool
-	fullyRead bool
-	readLock  sync.Mutex
-	closeOnce sync.Once
+	observer                     schemas.HTTPExchangeObserver
+	status                       int
+	contentType, contentEncoding string
+	readErr                      error
+	reader                       io.Reader
+	conn                         net.Conn
+	release                      func(discard bool)
+	closed                       atomic.Bool
+	fullyRead                    bool
+	readLock                     sync.Mutex
+	closeOnce                    sync.Once
 }
 
 func (s *streamBody) Read(p []byte) (int, error) {
@@ -413,6 +449,10 @@ func (s *streamBody) Read(p []byte) (int, error) {
 		return 0, io.ErrClosedPipe
 	}
 	n, err := s.reader.Read(p)
+	if s.observer != nil {
+		s.observer.Response(s.status, s.contentType, s.contentEncoding, p[:n])
+	}
+	s.readErr = err
 	if errors.Is(err, io.EOF) {
 		s.fullyRead = true
 	} else if errors.Is(err, io.ErrUnexpectedEOF) {
@@ -449,6 +489,15 @@ func (s *streamBody) CloseWithError(err error) error {
 		}
 		defer s.readLock.Unlock()
 		s.release(discard)
+		if s.observer != nil {
+			if err == nil && !s.fullyRead {
+				err = s.readErr
+			}
+			if errors.Is(err, io.EOF) || errors.Is(err, errStreamParkedAfterFinish) {
+				err = nil
+			}
+			s.observer.Done(err)
+		}
 	})
 	return nil
 }

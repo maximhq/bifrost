@@ -560,9 +560,40 @@ func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, erro
 		}()
 		req = req.WithContext(attemptCtx)
 	}
+	var observer schemas.HTTPExchangeObserver
+	if factory, ok := req.Context().Value(schemas.BifrostContextKeyHTTPExchangeObserver).(schemas.HTTPExchangeObserverFactory); ok && factory != nil {
+		observer = factory()
+	}
+	if observer != nil {
+		contentType, encoding := req.Header.Get("Content-Type"), req.Header.Get("Content-Encoding")
+		if req.Body == nil {
+			observer.Request(contentType, encoding, []byte{})
+		} else if req.GetBody != nil {
+			// Snapshot replayable bodies before net/http can rewind them internally.
+			body, readErr := req.GetBody()
+			if readErr == nil {
+				observed := &observedHTTPBody{ReadCloser: body, observe: func(p []byte) { observer.Request(contentType, encoding, p) }}
+				_, _ = io.Copy(io.Discard, observed)
+				_ = observed.Close()
+			} else {
+				observer.Request(contentType, encoding, nil)
+			}
+		} else {
+			req.Body = &observedHTTPBody{ReadCloser: req.Body, observe: func(p []byte) { observer.Request(contentType, encoding, p) }}
+		}
+	}
 	startTime := time.Now()
 	resp, err := client.Do(req)
 	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
+	if observer != nil {
+		if err != nil {
+			observer.Done(err)
+		} else {
+			contentType, encoding := resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding")
+			observer.Response(resp.StatusCode, contentType, encoding, nil)
+			resp.Body = &observedHTTPBody{ReadCloser: resp.Body, observe: func(p []byte) { observer.Response(resp.StatusCode, contentType, encoding, p) }, done: observer.Done}
+		}
+	}
 	if err == nil && resp != nil && resp.Body != nil {
 		resp.Body = &upstreamTimingBody{inner: resp.Body, ctx: req.Context()}
 	}
@@ -5646,4 +5677,41 @@ func hasDecisionImage(messages []schemas.DecisionInputMessage) bool {
 		}
 	}
 	return false
+}
+
+// observedHTTPBody leaves ownership and cancellation with net/http's body.
+type observedHTTPBody struct {
+	io.ReadCloser
+	observe  func([]byte)
+	done     func(error)
+	readErr  error
+	readLock sync.Mutex
+	once     sync.Once
+}
+
+func (b *observedHTTPBody) Read(p []byte) (int, error) {
+	b.readLock.Lock()
+	defer b.readLock.Unlock()
+	n, err := b.ReadCloser.Read(p)
+	b.observe(p[:n])
+	b.readErr = err
+	return n, err
+}
+func (b *observedHTTPBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.once.Do(func() {
+		b.readLock.Lock()
+		defer b.readLock.Unlock()
+		if b.done != nil {
+			observedErr := err
+			if observedErr == nil {
+				observedErr = b.readErr
+			}
+			if errors.Is(observedErr, io.EOF) {
+				observedErr = nil
+			}
+			b.done(observedErr)
+		}
+	})
+	return err
 }
