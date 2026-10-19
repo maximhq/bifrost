@@ -5434,15 +5434,54 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 	// its earlier actions, which need a filler tool_result beside the one screenshot.
 	computerCallFillerIDs := make(map[string][]string)
 
+	// Match the item converters below without building content blocks here.
+	// mcp_call is either a call or a result, distinguished by Name.
+	startsAssistantTurn := func(nextMsg *schemas.ResponsesMessage) bool {
+		if nextMsg.Type == nil || *nextMsg.Type == schemas.ResponsesMessageTypeMessage {
+			return nextMsg.Role != nil && *nextMsg.Role == schemas.ResponsesInputMessageRoleAssistant
+		}
+		switch *nextMsg.Type {
+		case schemas.ResponsesMessageTypeFunctionCall,
+			schemas.ResponsesMessageTypeComputerCall,
+			schemas.ResponsesMessageTypeWebFetchCall:
+			return nextMsg.ResponsesToolMessage != nil
+		case schemas.ResponsesMessageTypeToolSearchCall:
+			return nextMsg.ResponsesToolMessage != nil && (nextMsg.CallID != nil || nextMsg.ID != nil)
+		case schemas.ResponsesMessageTypeWebSearchCall:
+			return nextMsg.ResponsesToolMessage != nil && nextMsg.Action != nil &&
+				nextMsg.Action.ResponsesWebSearchToolCallAction != nil
+		case schemas.ResponsesMessageTypeCodeInterpreterCall:
+			return nextMsg.ResponsesToolMessage != nil &&
+				(nextMsg.ResponsesCodeExecutionCall != nil || nextMsg.ResponsesCodeInterpreterToolCall != nil)
+		case schemas.ResponsesMessageTypeAdvisorCall:
+			return true
+		case schemas.ResponsesMessageTypeMCPCall, schemas.ResponsesMessageTypeMCPApprovalRequest:
+			return nextMsg.ResponsesToolMessage != nil && nextMsg.ResponsesToolMessage.Name != nil
+		case schemas.ResponsesMessageTypeItemReference:
+			return nextMsg.Role != nil && *nextMsg.Role == schemas.ResponsesInputMessageRoleAssistant &&
+				nextMsg.Content != nil && nextMsg.Content.ContentStr != nil
+		case schemas.ResponsesMessageTypeFileSearchCall,
+			schemas.ResponsesMessageTypeLocalShellCall,
+			schemas.ResponsesMessageTypeShellCall,
+			schemas.ResponsesMessageTypeApplyPatchCall,
+			schemas.ResponsesMessageTypeCustomToolCall,
+			schemas.ResponsesMessageTypeImageGenerationCall:
+			// Keep the existing explicit-assistant placement for calls rendered as text.
+			return nextMsg.Role != nil && *nextMsg.Role == schemas.ResponsesInputMessageRoleAssistant &&
+				nextMsg.ResponsesToolMessage != nil
+		default:
+			return false
+		}
+	}
+
 	// midConvPlacementOK reports whether a mid-conversation system message at input index i can
 	// legally be forwarded as role:"system". Anthropic enforces two clauses and rejects a
 	// violation of either with "messages.N: role 'system' must follow a 'user' message ...":
 	// the turn must FOLLOW a user message (or an assistant message ending in server-tool use),
 	// and it must be either the last entry or be followed by an assistant turn.
 	//
-	// The check is deliberately conservative — it looks at what has actually been emitted rather
-	// than trying to predict how the remaining input items will map to output messages, and it
-	// recognizes the assistant-ending-in-server-tool-result exception only by the last emitted
+	// The preceding clause looks at what has actually been emitted, and recognizes the
+	// assistant-ending-in-server-tool-result exception only by the last emitted
 	// block's type. A false negative costs little for text (the caller falls back to inlining,
 	// which is cache-preserving and always accepted) but drops tool-change blocks, which the
 	// inline form cannot carry. A false positive would be a 400.
@@ -5485,7 +5524,39 @@ func ConvertBifrostMessagesToAnthropicMessages(ctx *schemas.BifrostContext, bifr
 		if next == len(bifrostMessages) {
 			return true
 		}
-		return bifrostMessages[next].Role != nil && *bifrostMessages[next].Role == schemas.ResponsesInputMessageRoleAssistant
+		nextMsg := &bifrostMessages[next]
+		if nextMsg.Type == nil || *nextMsg.Type != schemas.ResponsesMessageTypeReasoning {
+			return startsAssistantTurn(nextMsg)
+		}
+		// Reasoning is buffered, not emitted immediately. Empty reasoning is skipped,
+		// and an output/result can emit a user turn before that buffer is flushed.
+		hasReasoning := nextMsg.ResponsesReasoning != nil && (len(nextMsg.Summary) > 0 ||
+			(nextMsg.EncryptedContent != nil && *nextMsg.EncryptedContent != ""))
+		if nextMsg.Content != nil {
+			for _, block := range nextMsg.Content.ContentBlocks {
+				if block.Type == schemas.ResponsesOutputMessageContentTypeReasoning && block.Text != nil {
+					hasReasoning = true
+					break
+				}
+			}
+		}
+		if !hasReasoning {
+			return false
+		}
+		for following := next + 1; following < len(bifrostMessages); following++ {
+			item := &bifrostMessages[following]
+			if item.Type == nil || *item.Type == schemas.ResponsesMessageTypeMessage {
+				// Regular messages flush pending thinking into assistant content first,
+				// even when the regular message itself has a user or system role.
+				return true
+			}
+			if *item.Type == schemas.ResponsesMessageTypeReasoning {
+				continue
+			}
+			return startsAssistantTurn(item)
+		}
+		// With no following item, the system section is last in the emitted messages.
+		return true
 	}
 
 	// hasConversationTurn reports whether a user or assistant message has been emitted. An

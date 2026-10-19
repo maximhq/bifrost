@@ -276454,6 +276454,163 @@
           }
         }
       ]
+    },
+    {
+      "name": "261. Anthropic mid-conversation tool changes before assistant replay (#8358)",
+      "description": "Issue #8358 follows #8207: a system run followed by roleless reasoning/function_call/server-tool items was rejected by the placement check, so the text-only fallback silently dropped tool changes. These two cases replay an assistant tool_use and its user tool_result through native Anthropic and neutral Responses ingress. Captured raw_request must keep the consecutive removal/addition messages in their original positions and leave tools[] unchanged; model tool selection is not a pass condition. Signed thinking and server-tool replay are covered by local conversion tests, where opaque signatures do not require live credentials. Both streaming and unary use the same request builder and are covered locally. Other providers retain their existing native-system capability gates.",
+      "item": [
+        {
+          "name": "anthropic/claude-sonnet-5-5 /anthropic/v1/messages tool changes before assistant replay keep native placement - #8358",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('assistant replay: request accepted', function () {",
+                  "  pm.expect(pm.response.code, txt).to.eql(200);",
+                  "});",
+                  "pm.test('assistant replay: tool changes stay between user and assistant, without changing tools[]', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt).to.be.an('object');",
+                  "  var tools = Array.isArray(rr.tools) ? rr.tools : [];",
+                  "  pm.expect(tools.map(function (t) { return t.name; }), wire).to.eql(['echo', 'old']);",
+                  "  pm.expect(rr.system, 'tool changes hoisted into system: ' + wire).to.be.oneOf([null, undefined]);",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  pm.expect(msgs.map(function (m) { return m.role; }), 'tool changes dropped or moved: ' + wire).to.eql(['user', 'system', 'system', 'assistant', 'user']);",
+                  "  pm.expect(msgs[1].content.length, wire).to.eql(1);",
+                  "  pm.expect(msgs[1].content[0], wire).to.eql({type:'tool_removal', tool:{type:'tool_reference', name:'old'}});",
+                  "  pm.expect(msgs[2].content.length, wire).to.eql(1);",
+                  "  var addition = msgs[2].content[0];",
+                  "  pm.expect(addition.type, wire).to.eql('tool_addition');",
+                  "  pm.expect(addition.tool.type, wire).to.eql('tool_definition');",
+                  "  pm.expect(addition.tool.definition.name, wire).to.eql('get_weather');",
+                  "  pm.expect(addition.tool.definition.input_schema.properties.city.type, wire).to.eql('string');",
+                  "  pm.expect(msgs[3].content[0].type, wire).to.eql('tool_use');",
+                  "  pm.expect(msgs[3].content[0].name, wire).to.eql('get_weather');",
+                  "  pm.expect(msgs[4].content[0].type, wire).to.eql('tool_result');",
+                  "  pm.expect(msgs[4].content[0].tool_use_id, wire).to.eql(msgs[3].content[0].id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              },
+              {
+                "key": "x-api-key",
+                "value": "{{anthropicKey}}"
+              },
+              {
+                "key": "anthropic-version",
+                "value": "2023-06-01"
+              },
+              {
+                "key": "anthropic-beta",
+                "value": "mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_tokens\": 128,\n  \"tools\": [\n    {\n      \"name\": \"echo\",\n      \"input_schema\": {\n        \"type\": \"object\"\n      }\n    },\n    {\n      \"name\": \"old\",\n      \"input_schema\": {\n        \"type\": \"object\"\n      }\n    }\n  ],\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris?\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_removal\",\n          \"tool\": {\n            \"type\": \"tool_reference\",\n            \"name\": \"old\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"name\": \"get_weather\",\n              \"input_schema\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"assistant\",\n      \"content\": [\n        {\n          \"type\": \"tool_use\",\n          \"id\": \"toolu_weather\",\n          \"name\": \"get_weather\",\n          \"input\": {\n            \"city\": \"Paris\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"user\",\n      \"content\": [\n        {\n          \"type\": \"tool_result\",\n          \"tool_use_id\": \"toolu_weather\",\n          \"content\": \"Sunny, 20 degrees Celsius. Reply with this result in one sentence.\"\n        }\n      ]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/anthropic/v1/messages",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "anthropic",
+                "v1",
+                "messages"
+              ]
+            }
+          }
+        },
+        {
+          "name": "anthropic/claude-sonnet-5-5 /v1/responses tool changes before assistant replay keep native placement - #8358",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "var body = {};",
+                  "try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var wire = JSON.stringify(rr || null);",
+                  "pm.test('assistant replay: request accepted', function () {",
+                  "  pm.expect(pm.response.code, txt).to.eql(200);",
+                  "});",
+                  "pm.test('assistant replay: tool changes stay between user and assistant, without changing tools[]', function () {",
+                  "  pm.expect(rr, 'raw_request missing: ' + txt).to.be.an('object');",
+                  "  var tools = Array.isArray(rr.tools) ? rr.tools : [];",
+                  "  pm.expect(tools.map(function (t) { return t.name; }), wire).to.eql(['echo', 'old']);",
+                  "  pm.expect(rr.system, 'tool changes hoisted into system: ' + wire).to.be.oneOf([null, undefined]);",
+                  "  var msgs = Array.isArray(rr.messages) ? rr.messages : [];",
+                  "  pm.expect(msgs.map(function (m) { return m.role; }), 'tool changes dropped or moved: ' + wire).to.eql(['user', 'system', 'system', 'assistant', 'user']);",
+                  "  pm.expect(msgs[1].content.length, wire).to.eql(1);",
+                  "  pm.expect(msgs[1].content[0], wire).to.eql({type:'tool_removal', tool:{type:'tool_reference', name:'old'}});",
+                  "  pm.expect(msgs[2].content.length, wire).to.eql(1);",
+                  "  var addition = msgs[2].content[0];",
+                  "  pm.expect(addition.type, wire).to.eql('tool_addition');",
+                  "  pm.expect(addition.tool.type, wire).to.eql('tool_definition');",
+                  "  pm.expect(addition.tool.definition.name, wire).to.eql('get_weather');",
+                  "  pm.expect(addition.tool.definition.input_schema.properties.city.type, wire).to.eql('string');",
+                  "  pm.expect(msgs[3].content[0].type, wire).to.eql('tool_use');",
+                  "  pm.expect(msgs[3].content[0].name, wire).to.eql('get_weather');",
+                  "  pm.expect(msgs[4].content[0].type, wire).to.eql('tool_result');",
+                  "  pm.expect(msgs[4].content[0].tool_use_id, wire).to.eql(msgs[3].content[0].id);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "x-bf-send-back-raw-request",
+                "value": "true"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"anthropic/claude-sonnet-5-5\",\n  \"max_output_tokens\": 128,\n  \"tools\": [\n    {\n      \"type\": \"function\",\n      \"name\": \"echo\",\n      \"parameters\": {\n        \"type\": \"object\"\n      }\n    },\n    {\n      \"type\": \"function\",\n      \"name\": \"old\",\n      \"parameters\": {\n        \"type\": \"object\"\n      }\n    }\n  ],\n  \"input\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"What is the weather in Paris?\"\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_removal\",\n          \"tool\": {\n            \"type\": \"tool_reference\",\n            \"name\": \"old\"\n          }\n        }\n      ]\n    },\n    {\n      \"role\": \"system\",\n      \"content\": [\n        {\n          \"type\": \"tool_addition\",\n          \"tool\": {\n            \"type\": \"tool_definition\",\n            \"definition\": {\n              \"type\": \"function\",\n              \"name\": \"get_weather\",\n              \"parameters\": {\n                \"type\": \"object\",\n                \"properties\": {\n                  \"city\": {\n                    \"type\": \"string\"\n                  }\n                }\n              }\n            }\n          }\n        }\n      ]\n    },\n    {\n      \"type\": \"function_call\",\n      \"call_id\": \"toolu_weather\",\n      \"name\": \"get_weather\",\n      \"arguments\": \"{\\\"city\\\":\\\"Paris\\\"}\"\n    },\n    {\n      \"type\": \"function_call_output\",\n      \"call_id\": \"toolu_weather\",\n      \"output\": \"Sunny, 20 degrees Celsius. Reply with this result in one sentence.\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

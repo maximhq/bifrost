@@ -3084,6 +3084,357 @@ func TestAnthropicRoundTrip_InlineMCPToolsetKeepsFullConfig(t *testing.T) {
 	})
 }
 
+// #8358: the system run must be judged against the assistant turn the next
+// Responses item emits, not just its optional role. Thinking and tool calls
+// lose that role on ingress, but their Anthropic content is still assistant-owned.
+const midConversationToolChangesBody = `{
+  "model": "anthropic/claude-opus-5-5", "max_tokens": 128,
+  "tools": [
+    {"name": "echo", "input_schema": {"type": "object"}},
+    {"name": "old", "input_schema": {"type": "object"}}
+  ],
+  "messages": [
+    {"role": "user", "content": "hi"},
+    {"role": "system", "content": [{"type": "tool_removal", "tool": {"type": "tool_reference", "name": "old"}}]},
+    {"role": "system", "content": [{"type": "tool_addition", "tool": {"type": "tool_definition", "definition": {
+      "name": "get_weather", "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}
+    }}}]},
+    %s
+  ]
+}`
+
+func TestAnthropicRoundTrip_ToolChangesBeforeAssistantItems(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		tail      string
+		itemType  schemas.ResponsesMessageType
+		blockType string
+	}{
+		{"text control", `{"role":"assistant","content":[{"type":"text","text":"ok"}]},{"role":"user","content":"Continue."}`, schemas.ResponsesMessageTypeMessage, "text"},
+		{"thinking then text", `{"role":"assistant","content":[{"type":"thinking","thinking":"hmm","signature":"sig"},{"type":"text","text":"ok"}]},{"role":"user","content":"Continue."}`, schemas.ResponsesMessageTypeReasoning, "thinking"},
+		{"reference addition before thinking", `{"role":"assistant","content":[{"type":"thinking","thinking":"hmm","signature":"sig"},{"type":"text","text":"ok"}]},{"role":"user","content":"Continue."}`, schemas.ResponsesMessageTypeReasoning, "thinking"},
+		{"redacted thinking then text", `{"role":"assistant","content":[{"type":"redacted_thinking","data":"opaque"},{"type":"text","text":"ok"}]},{"role":"user","content":"Continue."}`, schemas.ResponsesMessageTypeReasoning, "redacted_thinking"},
+		{"tool use then result", `{"role":"assistant","content":[{"type":"tool_use","id":"toolu_weather","name":"get_weather","input":{"city":"Paris"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_weather","content":"sunny"}]}`, schemas.ResponsesMessageTypeFunctionCall, "tool_use"},
+		{"thinking then tool use", `{"role":"assistant","content":[{"type":"thinking","thinking":"hmm","signature":"sig"},{"type":"tool_use","id":"toolu_weather","name":"get_weather","input":{"city":"Paris"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_weather","content":"sunny"}]}`, schemas.ResponsesMessageTypeReasoning, "thinking"},
+		{"computer call", `{"role":"assistant","content":[{"type":"tool_use","id":"toolu_computer","name":"computer","input":{"action":"screenshot"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_computer","content":"ok"}]}`, schemas.ResponsesMessageTypeComputerCall, "tool_use"},
+		{"web search", `{"role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_search","name":"web_search","input":{"query":"weather"}},{"type":"web_search_tool_result","tool_use_id":"srvtoolu_search","content":[]}]},{"role":"user","content":"Continue."}`, schemas.ResponsesMessageTypeWebSearchCall, "server_tool_use"},
+		{"web fetch", `{"role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_fetch","name":"web_fetch","input":{"url":"https://example.com"}},{"type":"web_fetch_tool_result","tool_use_id":"srvtoolu_fetch","content":{"type":"web_fetch_tool_result_error","error_code":"url_not_accessible"}}]},{"role":"user","content":"Continue."}`, schemas.ResponsesMessageTypeWebFetchCall, "server_tool_use"},
+		{"tool search", `{"role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_tools","name":"tool_search_tool_regex","input":{"pattern":"weather"}},{"type":"tool_search_tool_result","tool_use_id":"srvtoolu_tools","content":{"type":"tool_search_tool_search_result","tool_references":[]}}]},{"role":"user","content":"Continue."}`, schemas.ResponsesMessageTypeToolSearchCall, "server_tool_use"},
+		{"code execution", `{"role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_code","name":"code_execution","input":{"code":"print(1)"}},{"type":"code_execution_tool_result","tool_use_id":"srvtoolu_code","content":{"type":"code_execution_result","stdout":"1","stderr":"","return_code":0,"content":[]}}]},{"role":"user","content":"Continue."}`, schemas.ResponsesMessageTypeCodeInterpreterCall, "server_tool_use"},
+		{"advisor", `{"role":"assistant","content":[{"type":"server_tool_use","id":"srvtoolu_advisor","name":"advisor","input":{}},{"type":"advisor_tool_result","tool_use_id":"srvtoolu_advisor","content":{"type":"advisor_result","text":"ok"}}]},{"role":"user","content":"Continue."}`, schemas.ResponsesMessageTypeAdvisorCall, "server_tool_use"},
+		{"MCP call", `{"role":"assistant","content":[{"type":"mcp_tool_use","id":"mcptoolu_weather","name":"get_weather","server_name":"weather","input":{}}]},{"role":"user","content":"Continue."}`, schemas.ResponsesMessageTypeMCPCall, "mcp_tool_use"},
+		{"MCP approval", `{"role":"assistant","content":[{"type":"mcp_tool_use","id":"mcptoolu_weather","name":"get_weather","server_name":"weather","input":{}}]},{"role":"user","content":"Continue."}`, schemas.ResponsesMessageTypeMCPCall, "mcp_tool_use"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, neutral := range []bool{false, true} {
+				t.Run(fmt.Sprintf("neutral=%v", neutral), func(t *testing.T) {
+					ctx, req := toolChangeIngress(t, fmt.Sprintf(midConversationToolChangesBody, tc.tail))
+					if len(req.Input) < 4 {
+						t.Fatalf("ingress dropped conversation items: %+v", req.Input)
+					}
+					if req.Input[3].Type == nil || *req.Input[3].Type != tc.itemType {
+						t.Fatalf("assistant starts with %v, want %s", req.Input[3].Type, tc.itemType)
+					}
+					if tc.itemType != schemas.ResponsesMessageTypeMessage && req.Input[3].Role != nil {
+						t.Fatal("fixture must exercise a roleless assistant item")
+					}
+					if tc.name == "reference addition before thinking" {
+						req.Input[2].Content.ContentBlocks[0].ToolChange = &schemas.ResponsesToolChangeTarget{
+							Type: schemas.ResponsesToolChangeTargetTypeToolReference, Name: schemas.Ptr("get_weather"),
+						}
+					}
+					if tc.name == "MCP approval" {
+						// The neutral approval item uses the same assistant-owned MCP tool-use shape.
+						req.Input[3].Type = schemas.Ptr(schemas.ResponsesMessageTypeMCPApprovalRequest)
+					}
+					if neutral {
+						// Exercise the actual /v1/responses ingress, including its JSON union,
+						// without stripping provider-specific tool-change blocks on OpenAI egress.
+						wire, err := schemas.MarshalSorted(&openai.OpenAIResponsesRequest{
+							Model:               "anthropic/" + req.Model,
+							Input:               openai.OpenAIResponsesRequestInput{OpenAIResponsesRequestInputArray: req.Input},
+							ResponsesParameters: *req.Params,
+						})
+						if err != nil {
+							t.Fatal(err)
+						}
+						var ingress openai.OpenAIResponsesRequest
+						if err := schemas.Unmarshal(wire, &ingress); err != nil {
+							t.Fatal(err)
+						}
+						req = ingress.ToBifrostResponsesRequest(ctx)
+					}
+					for _, streaming := range []bool{false, true} {
+						body, err := BuildAnthropicResponsesRequestBody(ctx, req, AnthropicRequestBuildConfig{
+							Provider: schemas.Anthropic, IsStreaming: streaming, ValidateTools: true,
+						})
+						if err != nil {
+							t.Fatalf("streaming=%v: build body: %v", streaming, err)
+						}
+						out := decodeAnthropicMessagesBody(t, string(body))
+						if len(out.Tools) != 2 || out.Tools[0].Name != "echo" || out.Tools[1].Name != "old" {
+							t.Fatalf("tools[] changed; additions/removals must stay in messages: %s", body)
+						}
+						if out.System != nil {
+							t.Fatalf("tool changes were hoisted into top-level system: %s", body)
+						}
+						msgs, wire := jsonArrayOfObjects(t, out.Messages)
+						if len(msgs) != 5 {
+							t.Fatalf("streaming=%v: want user,system,system,assistant,user; got %d messages (tool changes dropped): %s", streaming, len(msgs), wire)
+						}
+						for i, role := range []string{"user", "system", "system", "assistant", "user"} {
+							if msgs[i]["role"] != role {
+								t.Fatalf("messages[%d].role = %v, want %s: %s", i, msgs[i]["role"], role, wire)
+							}
+						}
+						for i, blockType := range []string{"tool_removal", "tool_addition"} {
+							blocks := wireContentBlocks(t, msgs[i+1], wire)
+							if len(blocks) != 1 || blocks[0]["type"] != blockType {
+								t.Fatalf("messages[%d] did not preserve %s: %s", i+1, blockType, wire)
+							}
+							target := wireToolTarget(t, blocks[0], wire)
+							if i == 0 {
+								if target["type"] != "tool_reference" || target["name"] != "old" {
+									t.Fatalf("removal target changed: %s", wire)
+								}
+							} else if tc.name == "reference addition before thinking" {
+								if target["type"] != "tool_reference" || target["name"] != "get_weather" {
+									t.Fatalf("addition reference changed: %s", wire)
+								}
+							} else {
+								definition, _ := target["definition"].(map[string]any)
+								if target["type"] != "tool_definition" || definition["name"] != "get_weather" || definition["input_schema"] == nil {
+									t.Fatalf("addition definition did not survive in Anthropic shape: %s", wire)
+								}
+							}
+						}
+						blocks := wireContentBlocks(t, msgs[3], wire)
+						expected := decodeAnthropicMessagesBody(t, fmt.Sprintf(midConversationToolChangesBody, tc.tail)).Messages[3].Content.ContentBlocks
+						if len(blocks) != len(expected) {
+							t.Fatalf("assistant content blocks dropped or added: %s", wire)
+						}
+						for i, block := range expected {
+							if blocks[i]["type"] != string(block.Type) {
+								t.Fatalf("assistant block order changed: %s", wire)
+							}
+						}
+						if len(blocks) == 0 || blocks[0]["type"] != tc.blockType {
+							t.Fatalf("assistant start changed: %s", wire)
+						}
+						if tc.blockType == "thinking" && (blocks[0]["thinking"] != "hmm" || blocks[0]["signature"] != "sig") {
+							t.Fatalf("signed thinking changed: %s", wire)
+						}
+						if tc.name == "tool use then result" {
+							results := wireContentBlocks(t, msgs[4], wire)
+							if len(results) != 1 || results[0]["type"] != "tool_result" || results[0]["tool_use_id"] != blocks[0]["id"] {
+								t.Fatalf("tool call/result pairing changed: %s", wire)
+							}
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestAnthropicRoundTrip_ToolChangesRejectInvalidPlacement(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		before string
+		after  string
+	}{
+		{"followed by user", `{"role":"user","content":"hi"}`, `{"role":"user","content":"next"}`},
+		{"after assistant text", `{"role":"assistant","content":"ok"}`, `{"type":"reasoning","summary":[{"type":"summary_text","text":"hmm"}]},{"role":"assistant","content":"ok"}`},
+		{"after client tool call", `{"type":"function_call","call_id":"call_1","name":"echo","arguments":"{}"}`, `{"type":"function_call","call_id":"call_2","name":"echo","arguments":"{}"}`},
+		{"function output", `{"role":"user","content":"hi"}`, `{"type":"function_call_output","call_id":"orphan","output":"ok"}`},
+		{"computer output", `{"role":"user","content":"hi"}`, `{"type":"computer_call_output","call_id":"orphan","output":{"type":"computer_screenshot","image_url":"data:image/png;base64,YQ=="}}`},
+		{"MCP result", `{"role":"user","content":"hi"}`, `{"type":"mcp_call","call_id":"orphan","output":"ok"}`},
+		{"shell output", `{"role":"user","content":"hi"}`, `{"type":"shell_call_output","call_id":"orphan","output":"ok"}`},
+		{"item reference", `{"role":"user","content":"hi"}`, `{"type":"item_reference","id":"msg_1"}`},
+		{"unknown item", `{"role":"user","content":"hi"}`, `{"type":"unknown"}`},
+
+		{"reasoning before function output", `{"role":"user","content":"hi"}`, `{"type":"reasoning","summary":[{"type":"summary_text","text":"hmm"}]},{"type":"function_call_output","call_id":"orphan","output":"ok"}`},
+		{"reasoning before user item reference", `{"role":"user","content":"hi"}`, `{"type":"reasoning","summary":[{"type":"summary_text","text":"hmm"}]},{"type":"item_reference","role":"user","content":"reference text"}`},
+		{"empty reasoning", `{"role":"user","content":"hi"}`, `{"type":"reasoning","summary":[]},{"role":"user","content":"next"}`},
+		{"empty function call", `{"role":"user","content":"hi"}`, `{"type":"function_call"},{"role":"user","content":"next"}`},
+		{"empty web search", `{"role":"user","content":"hi"}`, `{"type":"web_search_call"},{"role":"user","content":"next"}`},
+		{"empty code execution", `{"role":"user","content":"hi"}`, `{"type":"code_interpreter_call"},{"role":"user","content":"next"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, req := toolChangeIngress(t, fmt.Sprintf(midConversationToolChangesBody, `{"role":"user","content":"next"}`))
+			var before, after []schemas.ResponsesMessage
+			if err := schemas.Unmarshal([]byte("["+tc.before+"]"), &before); err != nil {
+				t.Fatal(err)
+			}
+			if err := schemas.Unmarshal([]byte("["+tc.after+"]"), &after); err != nil {
+				t.Fatal(err)
+			}
+			req.Input = append(append(before, req.Input[1:3]...), after...)
+			out, err := ToAnthropicResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(out.Messages) == 0 || len(out.Tools) != 2 || out.Tools[0].Name != "echo" || out.Tools[1].Name != "old" {
+				t.Fatalf("placement fallback lost the conversation or changed tools[]: %+v", out)
+			}
+			for _, msg := range out.Messages {
+				if msg.Role == AnthropicMessageRoleSystem {
+					t.Fatalf("invalid ordering forwarded native system message: %+v", out.Messages)
+				}
+			}
+		})
+	}
+}
+
+// Unsupported native calls already render as assistant text when explicitly
+// role-tagged. Tightening result/output handling must not regress that placement.
+func TestAnthropicRoundTrip_ToolChangesBeforeExplicitAssistantFallbacks(t *testing.T) {
+	t.Parallel()
+	for _, itemType := range []schemas.ResponsesMessageType{
+		schemas.ResponsesMessageTypeFileSearchCall, schemas.ResponsesMessageTypeLocalShellCall,
+		schemas.ResponsesMessageTypeShellCall, schemas.ResponsesMessageTypeApplyPatchCall,
+		schemas.ResponsesMessageTypeCustomToolCall, schemas.ResponsesMessageTypeImageGenerationCall,
+	} {
+		t.Run(string(itemType), func(t *testing.T) {
+			ctx, req := toolChangeIngress(t, fmt.Sprintf(midConversationToolChangesBody, `{"role":"user","content":"Continue."}`))
+			msg := schemas.ResponsesMessage{
+				Type: schemas.Ptr(itemType), Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr("get_weather")},
+			}
+			req.Input = append(req.Input[:3:3], msg, req.Input[3])
+			out, err := ToAnthropicResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(out.Messages) != 5 || out.Messages[1].Role != AnthropicMessageRoleSystem ||
+				out.Messages[2].Role != AnthropicMessageRoleSystem || out.Messages[3].Role != AnthropicMessageRoleAssistant {
+				t.Fatalf("explicit assistant placement regressed: %+v", out.Messages)
+			}
+		})
+	}
+}
+
+// Placement must match what is actually emitted, including skipped tool-search
+// items and item references whose explicit role is retained by the converter.
+func TestAnthropicRoundTrip_ToolChangesPlacementMatchesEmittedItems(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		after      schemas.ResponsesMessage
+		wantSystem bool
+	}{
+		{
+			name: "assistant item reference",
+			after: schemas.ResponsesMessage{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeItemReference),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("reference text")},
+			},
+			wantSystem: true,
+		},
+		{
+			name: "user item reference",
+			after: schemas.ResponsesMessage{
+				Type:    schemas.Ptr(schemas.ResponsesMessageTypeItemReference),
+				Role:    schemas.Ptr(schemas.ResponsesInputMessageRoleUser),
+				Content: &schemas.ResponsesMessageContent{ContentStr: schemas.Ptr("reference text")},
+			},
+		},
+		{
+			name: "empty assistant item reference",
+			after: schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeItemReference),
+				Role: schemas.Ptr(schemas.ResponsesInputMessageRoleAssistant),
+			},
+		},
+		{
+			name: "tool search missing both ids",
+			after: schemas.ResponsesMessage{
+				Type:                 schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr(string(AnthropicToolNameToolSearchRegex))},
+			},
+		},
+		{
+			name: "tool search with item id",
+			after: schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall), ID: schemas.Ptr("srvtoolu_search"),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{Name: schemas.Ptr(string(AnthropicToolNameToolSearchRegex))},
+			},
+			wantSystem: true,
+		},
+		{
+			name: "tool search with call id",
+			after: schemas.ResponsesMessage{
+				Type: schemas.Ptr(schemas.ResponsesMessageTypeToolSearchCall),
+				ResponsesToolMessage: &schemas.ResponsesToolMessage{
+					Name: schemas.Ptr(string(AnthropicToolNameToolSearchRegex)), CallID: schemas.Ptr("srvtoolu_search"),
+				},
+			},
+			wantSystem: true,
+		},
+		{
+			name: "reasoning summary without content",
+			after: schemas.ResponsesMessage{
+				Type:               schemas.Ptr(schemas.ResponsesMessageTypeReasoning),
+				ResponsesReasoning: &schemas.ResponsesReasoning{Summary: []schemas.ResponsesReasoningSummary{{Text: "hmm"}}},
+			},
+			wantSystem: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, req := toolChangeIngress(t, fmt.Sprintf(midConversationToolChangesBody, `{"role":"user","content":"Continue."}`))
+			req.Input = append(req.Input[:3:3], tc.after, req.Input[3])
+			out, err := ToAnthropicResponsesRequest(ctx, req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(out.Tools) != 2 || out.Tools[0].Name != "echo" || out.Tools[1].Name != "old" || out.System != nil {
+				t.Fatalf("tool changes moved out of messages: %+v", out)
+			}
+			if tc.wantSystem {
+				if len(out.Messages) != 5 || out.Messages[1].Role != AnthropicMessageRoleSystem ||
+					out.Messages[2].Role != AnthropicMessageRoleSystem || out.Messages[3].Role != AnthropicMessageRoleAssistant {
+					t.Fatalf("valid assistant start lost its system run: %+v", out.Messages)
+				}
+			} else {
+				for _, msg := range out.Messages {
+					if msg.Role == AnthropicMessageRoleSystem {
+						t.Fatalf("skipped/user item accepted as assistant start: %+v", out.Messages)
+					}
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkConvertBifrostMessagesMidConversationToolChanges(b *testing.B) {
+	for _, bc := range []struct{ name, tail string }{
+		{"common", `{"role":"assistant","content":"ok"},{"role":"user","content":"Continue."}`},
+		{"text", `{"role":"assistant","content":"ok"},{"role":"user","content":"Continue."}`},
+		{"thinking", `{"role":"assistant","content":[{"type":"thinking","thinking":"hmm","signature":"sig"},{"type":"text","text":"ok"}]},{"role":"user","content":"Continue."}`},
+		{"tool", `{"role":"assistant","content":[{"type":"tool_use","id":"toolu_weather","name":"get_weather","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_weather","content":"ok"}]}`},
+	} {
+		b.Run(bc.name, func(b *testing.B) {
+			ctx := schemas.NewBifrostContext(nil, schemas.NoDeadline)
+			var ingress AnthropicMessageRequest
+			if err := schemas.Unmarshal([]byte(fmt.Sprintf(midConversationToolChangesBody, bc.tail)), &ingress); err != nil {
+				b.Fatal(err)
+			}
+			req := ingress.ToBifrostResponsesRequest(ctx)
+			if bc.name == "common" {
+				req.Input = append(req.Input[:1:1], req.Input[3:]...)
+			}
+			caps := schemas.ResolveModelCaps(schemas.Anthropic, req.Model)
+			b.ReportAllocs()
+			for b.Loop() {
+				ConvertBifrostMessagesToAnthropicMessages(ctx, req.Input, true, caps)
+			}
+		})
+	}
+}
+
 // inlineFunctionRequest builds a neutral /v1/responses-shaped request whose system message
 // adds a function by value with the given parameters.
 func inlineFunctionRequest(params *schemas.ToolFunctionParameters) *schemas.BifrostResponsesRequest {
