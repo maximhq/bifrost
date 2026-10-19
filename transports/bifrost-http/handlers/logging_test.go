@@ -1720,3 +1720,50 @@ func TestFindRedactedKeyDeletedSuffix(t *testing.T) {
 		})
 	}
 }
+
+func TestParseBucketSizeOverride(t *testing.T) {
+	end := time.Date(2026, 10, 19, 14, 5, 0, 0, time.UTC)
+	week := end.Add(-7 * 24 * time.Hour)
+	after := end.Add(time.Hour)
+	// An aligned start and 5000 ten-minute buckets, with the end halfway into the last one.
+	capStart := end.Add(-(4999*600 + 300) * time.Second)
+	overCapStart := capStart.Add(-600 * time.Second)
+	cases := []struct {
+		name    string
+		raw     string
+		start   *time.Time
+		want    int64
+		wantErr bool
+	}{
+		{name: "empty value", raw: "", start: &week, wantErr: true},
+		{name: "reversed window", raw: "600", start: &after, wantErr: true},
+		{name: "exactly the bucket cap", raw: "600", start: &capStart, want: 600},
+		{name: "one bucket over the cap", raw: "600", start: &overCapStart, wantErr: true},
+		{name: "ten minutes", raw: "600", start: &week, want: 600},
+		{name: "three hours", raw: "10800", start: &week, want: 10800},
+		{name: "not a number", raw: "abc", start: &week, wantErr: true},
+		{name: "below a minute", raw: "30", start: &week, wantErr: true},
+		{name: "does not divide an hour", raw: "420", start: &week, wantErr: true},
+		{name: "not whole hours", raw: "5400", start: &week, wantErr: true},
+		{name: "too many buckets", raw: "60", start: &week, wantErr: true},
+		{name: "no window", raw: "3600", start: nil, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var endPtr *time.Time
+			if tc.start != nil {
+				endPtr = &end
+			}
+			got, err := parseBucketSizeOverride(tc.raw, tc.start, endPtr)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %d", got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("got %d, %v; want %d", got, err, tc.want)
+			}
+		})
+	}
+}
