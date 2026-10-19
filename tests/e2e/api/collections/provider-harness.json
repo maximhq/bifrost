@@ -278351,6 +278351,138 @@
               ]
             }
           }
+        },
+        {
+          "name": "/v1/images/generations stream - each Seedream image arrives as its own event - byteplus/seedream-4-5-251128",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('stream relays every image and ends with completed', function () {",
+                  "  pm.expect(pm.response.code, 'failed: ' + pm.response.text()).to.eql(200);",
+                  "  var text = pm.response.text();",
+                  "  var partials = text.match(/\"type\":\"image_generation\\.partial_image\"/g) || [];",
+                  "  pm.expect(partials.length, 'expected one partial_image per requested image (n=2): ' + text.slice(0, 500)).to.be.at.least(2);",
+                  "  var completedAt = text.lastIndexOf('\"type\":\"image_generation.completed\"');",
+                  "  pm.expect(completedAt, 'no completed event: ' + text.slice(-500)).to.be.above(-1);",
+                  "  pm.expect(completedAt, 'completed must follow every partial_image: ' + text.slice(-500)).to.be.above(text.lastIndexOf('\"type\":\"image_generation.partial_image\"'));",
+                  "  pm.expect(text, 'no image payload in stream').to.match(/\"(url|b64_json)\":\"[^\"]+\"/);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/seedream-4-5-251128\",\n  \"prompt\": \"The same lighthouse in spring and in winter\",\n  \"size\": \"2048x2048\",\n  \"n\": 2,\n  \"stream\": true\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/images/generations - Seedream background extra param reaches Ark - byteplus/dola-seedream-5-0-pro-260628",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Ark rejects a transparent background with jpeg output', function () {",
+                  "  pm.expect(pm.response.code, 'expected 400 from Ark, so background reached it: ' + pm.response.text()).to.eql(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/dola-seedream-5-0-pro-260628\",\n  \"prompt\": \"A red apple icon\",\n  \"background\": \"transparent\",\n  \"output_format\": \"jpeg\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/images/generations",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "images",
+                "generations"
+              ]
+            }
+          }
+        },
+        {
+          "name": "[EXPECT-400] /v1/videos - Seedance service_tier extra param reaches Ark - byteplus/dreamina-seedance-2-5-260628",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Ark rejects flex on Seedance 2.5', function () {",
+                  "  if (pm.response.code === 200) {",
+                  "    var id = (pm.response.json() || {}).id;",
+                  "    if (id) {",
+                  "      pm.sendRequest({ url: pm.variables.get('baseUrl') + '/v1/videos/' + encodeURIComponent(id), method: 'DELETE' }, function () {});",
+                  "    }",
+                  "  }",
+                  "  pm.expect(pm.response.code, 'expected 400 from Ark, so service_tier reached it: ' + pm.response.text()).to.eql(400);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"byteplus/dreamina-seedance-2-5-260628\",\n  \"prompt\": \"A paper boat drifting down a rainy street\",\n  \"seconds\": \"5\",\n  \"resolution\": \"480p\",\n  \"draft\": true,\n  \"service_tier\": \"flex\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/videos",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "videos"
+              ]
+            }
+          }
         }
       ]
     }

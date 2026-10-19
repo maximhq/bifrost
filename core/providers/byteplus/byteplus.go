@@ -3,13 +3,16 @@ package byteplus
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/bytedance/sonic"
 	"github.com/maximhq/bifrost/core/providers/openai"
 	providerUtils "github.com/maximhq/bifrost/core/providers/utils"
 	schemas "github.com/maximhq/bifrost/core/schemas"
@@ -241,7 +244,9 @@ func (provider *BytePlusProvider) doBytePlusRequest(ctx *schemas.BifrostContext,
 }
 
 // ImageGeneration performs a Seedream image generation request to Ark's /images/generations API.
+// Extra params pass through so Seedream-only fields such as background reach the wire.
 func (provider *BytePlusProvider) ImageGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageGenerationRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -257,6 +262,7 @@ func (provider *BytePlusProvider) ImageGeneration(ctx *schemas.BifrostContext, k
 // ImageEdit performs a Seedream image-to-image request. Seedream edits through the same
 // /images/generations endpoint, with the source images sent as reference images.
 func (provider *BytePlusProvider) ImageEdit(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostImageEditRequest) (*schemas.BifrostImageGenerationResponse, *schemas.BifrostError) {
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -299,9 +305,11 @@ func (provider *BytePlusProvider) doImageRequest(ctx *schemas.BifrostContext, ke
 	return bifrostResp, nil
 }
 
-// VideoGeneration creates a Seedance video generation task.
+// VideoGeneration creates a Seedance video generation task. Extra params pass through so Seedance
+// task options such as draft, service_tier and return_last_frame reach the wire.
 func (provider *BytePlusProvider) VideoGeneration(ctx *schemas.BifrostContext, key schemas.Key, request *schemas.BifrostVideoGenerationRequest) (*schemas.BifrostVideoGenerationResponse, *schemas.BifrostError) {
 	providerName := provider.GetProviderKey()
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
 		ctx,
 		request,
@@ -533,14 +541,245 @@ func (provider *BytePlusProvider) TranscriptionStream(ctx *schemas.BifrostContex
 	return nil, providerUtils.NewUnsupportedOperationError(schemas.TranscriptionStreamRequest, provider.GetProviderKey())
 }
 
-// ImageGenerationStream is not supported by the BytePlus provider.
+// ImageGenerationStream streams a Seedream generation, one event per finished image. Ark streams
+// only on Seedream 5.0 lite, 4.5 and 4.0; other models reject the stream field with a 400.
 func (provider *BytePlusProvider) ImageGenerationStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageGenerationRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageGenerationStreamRequest, provider.GetProviderKey())
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			req, err := ToBytePlusImageGenerationRequest(request)
+			if req != nil {
+				req.Stream = schemas.Ptr(true)
+			}
+			return req, err
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return provider.doImageStream(ctx, postHookRunner, postHookSpanFinalizer, key, jsonData, &schemas.BifrostRequest{ImageGenerationRequest: request},
+		schemas.ImageGenerationEventTypePartial, schemas.ImageGenerationEventTypeCompleted)
 }
 
-// ImageEditStream is not supported by the BytePlus provider.
+// ImageEditStream streams a Seedream image-to-image generation through the same endpoint as ImageGenerationStream.
 func (provider *BytePlusProvider) ImageEditStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, request *schemas.BifrostImageEditRequest) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
-	return nil, providerUtils.NewUnsupportedOperationError(schemas.ImageEditStreamRequest, provider.GetProviderKey())
+	ctx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
+	jsonData, bifrostErr := providerUtils.CheckContextAndGetRequestBody(
+		ctx,
+		request,
+		func() (providerUtils.RequestBodyWithExtraParams, error) {
+			req, err := ToBytePlusImageEditRequest(request)
+			if req != nil {
+				req.Stream = schemas.Ptr(true)
+			}
+			return req, err
+		})
+	if bifrostErr != nil {
+		return nil, bifrostErr
+	}
+	return provider.doImageStream(ctx, postHookRunner, postHookSpanFinalizer, key, jsonData, &schemas.BifrostRequest{ImageEditRequest: request},
+		schemas.ImageEditEventTypePartial, schemas.ImageEditEventTypeCompleted)
+}
+
+// doImageStream posts a streaming Seedream body and relays its events. Every image arrives whole, so each
+// becomes one partial chunk; Ark's usage-only completed event becomes the completed chunk, which repeats
+// the last image the way other providers' completed chunks carry the final one. A failed image is skipped
+// unless Ark reports an internal error, which ends the stream, or no image succeeds at all.
+func (provider *BytePlusProvider) doImageStream(ctx *schemas.BifrostContext, postHookRunner schemas.PostHookRunner, postHookSpanFinalizer func(context.Context), key schemas.Key, jsonData []byte, bifrostReq *schemas.BifrostRequest, partialType, completedType schemas.ImageEventType) (chan *schemas.BifrostStreamChunk, *schemas.BifrostError) {
+	sendBackRawRequest := providerUtils.ShouldSendBackRawRequest(ctx, provider.sendBackRawRequest)
+	sendBackRawResponse := providerUtils.ShouldSendBackRawResponse(ctx, provider.sendBackRawResponse)
+	providerUtils.SetStreamIdleTimeoutIfEmpty(ctx, provider.networkConfig.StreamIdleTimeoutInSeconds)
+
+	req := fasthttp.AcquireRequest()
+	resp := fasthttp.AcquireResponse()
+	resp.StreamBody = true
+	defer fasthttp.ReleaseRequest(req)
+
+	req.Header.SetMethod(http.MethodPost)
+	req.SetRequestURI(provider.networkConfig.BaseURL + providerUtils.GetPathFromContext(ctx, "/api/v3/images/generations"))
+	req.Header.SetContentType("application/json")
+	providerUtils.SetExtraHeaders(ctx, req, provider.networkConfig.ExtraHeaders, nil)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	if value := key.Value.GetValue(); value != "" {
+		req.Header.Set("Authorization", "Bearer "+value)
+	}
+	req.SetBody(jsonData)
+
+	startTime := time.Now()
+	err := providerUtils.DoStreamingRequest(ctx, provider.streamingClient, req, resp)
+	latency := time.Since(startTime)
+	if err != nil {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		if errors.Is(err, context.Canceled) {
+			return nil, providerUtils.SetErrorLatency(&schemas.BifrostError{
+				IsBifrostError: false,
+				Error: &schemas.ErrorField{
+					Type:    schemas.Ptr(schemas.RequestCancelled),
+					Message: schemas.ErrRequestCancelled,
+					Error:   err,
+				},
+			}, latency)
+		}
+		if errors.Is(err, fasthttp.ErrTimeout) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostTimeoutError(schemas.ErrProviderRequestTimedOut, err), latency)
+		}
+		return nil, providerUtils.SetErrorLatency(providerUtils.NewBifrostUpstreamConnectionError(schemas.ErrProviderDoRequest, err), latency)
+	}
+
+	ctx.SetValue(schemas.BifrostContextKeyProviderResponseHeaders, providerUtils.ExtractProviderResponseHeaders(resp))
+	if resp.StatusCode() != fasthttp.StatusOK {
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+		providerUtils.MaterializeStreamErrorBody(ctx, resp)
+		return nil, providerUtils.EnrichError(ctx, openai.ParseOpenAIError(resp), jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency)
+	}
+
+	responseChan := make(chan *schemas.BifrostStreamChunk, schemas.DefaultStreamBufferSize)
+	go func() {
+		defer providerUtils.EnsureStreamFinalizerCalled(ctx, postHookSpanFinalizer)
+		defer func() {
+			if ctx.Err() == context.Canceled {
+				providerUtils.HandleStreamCancellation(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+			} else if ctx.Err() == context.DeadlineExceeded {
+				providerUtils.HandleStreamTimeout(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+			}
+			providerUtils.CloseStream(ctx, responseChan)
+		}()
+		defer providerUtils.ReleaseStreamingResponse(ctx, resp)
+
+		reader, releaseGzip := providerUtils.DecompressStreamBody(resp)
+		defer releaseGzip()
+		reader, stopIdleTimeout := providerUtils.NewIdleTimeoutReader(reader, resp.BodyStream(), providerUtils.GetStreamIdleTimeout(ctx), ctx)
+		defer stopIdleTimeout()
+		stopCancellation := providerUtils.SetupStreamCancellation(ctx, resp.BodyStream(), provider.logger)
+		defer stopCancellation()
+
+		reader, nonSSE := providerUtils.DrainNonSSEStreamReader(resp, reader)
+		if nonSSE != nil {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendNonSSEStreamError(ctx, postHookRunner, nonSSE, responseChan, provider.logger, postHookSpanFinalizer)
+			return
+		}
+		sseReader := providerUtils.GetSSEDataReader(ctx, reader)
+
+		sendError := func(bifrostErr *schemas.BifrostError) {
+			ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+			providerUtils.ProcessAndSendBifrostError(ctx, postHookRunner, providerUtils.EnrichError(ctx, bifrostErr, jsonData, nil, sendBackRawRequest, sendBackRawResponse, latency), responseChan, provider.logger, postHookSpanFinalizer)
+		}
+
+		lastChunkTime := startTime
+		chunkIndex := 0
+		var last *schemas.BifrostImageGenerationStreamResponse
+		var firstFailure *BytePlusError
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			data, readErr := sseReader.ReadDataLine()
+			if readErr != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				if readErr != io.EOF {
+					ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+					providerUtils.ProcessAndSendError(ctx, postHookRunner, readErr, responseChan, provider.logger, postHookSpanFinalizer)
+					return
+				}
+				break
+			}
+
+			var event BytePlusImageStreamEvent
+			parseStart := time.Now()
+			umErr := sonic.Unmarshal(data, &event)
+			schemas.AddStreamParse(ctx, time.Since(parseStart))
+			if umErr != nil {
+				provider.logger.Warn("failed to parse byteplus image stream event: %v", umErr)
+				continue
+			}
+
+			switch event.Type {
+			case bytePlusImageStreamPartialSucceeded:
+				chunk := &schemas.BifrostImageGenerationStreamResponse{
+					Type:      partialType,
+					Index:     chunkIndex,
+					URL:       event.URL,
+					B64JSON:   event.B64JSON,
+					Size:      event.Size,
+					CreatedAt: event.Created,
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						ChunkIndex: chunkIndex,
+						Latency:    time.Since(lastChunkTime).Milliseconds(),
+					},
+				}
+				if event.ImageIndex != nil {
+					chunk.Index = *event.ImageIndex
+				}
+				if sendBackRawResponse {
+					chunk.ExtraFields.RawResponse = string(data)
+				}
+				lastChunkTime = time.Now()
+				chunkIndex++
+				last = chunk
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, chunk),
+					responseChan, postHookSpanFinalizer)
+
+			case bytePlusImageStreamPartialFailed:
+				if event.Error != nil && event.Error.Code == bytePlusInternalServiceError {
+					sendError(bytePlusImageStreamError(event.Error, true))
+					return
+				}
+				if firstFailure == nil {
+					firstFailure = event.Error
+				}
+
+			case bytePlusImageStreamCompleted:
+				if last == nil {
+					sendError(bytePlusImageStreamError(firstFailure, true))
+					return
+				}
+				final := &schemas.BifrostImageGenerationStreamResponse{
+					Type:      completedType,
+					Index:     last.Index,
+					URL:       last.URL,
+					B64JSON:   last.B64JSON,
+					Size:      last.Size,
+					CreatedAt: event.Created,
+					Usage:     ToBifrostImageUsage(event.Usage),
+					ExtraFields: schemas.BifrostResponseExtraFields{
+						ChunkIndex: chunkIndex,
+						Latency:    time.Since(startTime).Milliseconds(),
+					},
+				}
+				final.BackfillParams(bifrostReq)
+				if sendBackRawRequest {
+					providerUtils.ParseAndSetRawRequest(&final.ExtraFields, jsonData)
+				}
+				if sendBackRawResponse {
+					final.ExtraFields.RawResponse = string(data)
+				}
+				ctx.SetValue(schemas.BifrostContextKeyStreamEndIndicator, true)
+				providerUtils.ProcessAndSendResponse(ctx, postHookRunner,
+					providerUtils.GetBifrostResponseForStreamResponse(nil, nil, nil, nil, nil, final),
+					responseChan, postHookSpanFinalizer)
+				return
+
+			default:
+				if event.Error != nil && event.Error.Message != "" {
+					sendError(bytePlusImageStreamError(event.Error, false))
+					return
+				}
+			}
+		}
+
+		// The loop returns on completed, so falling out means the body ended before Ark finished.
+		if ended, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); !ended && !providerUtils.SSEStreamEndedOnMarker(sseReader) {
+			providerUtils.SendStreamTruncatedError(ctx, postHookRunner, responseChan, provider.logger, postHookSpanFinalizer, jsonData)
+		}
+	}()
+
+	return responseChan, nil
 }
 
 // ImageVariation is not supported by the BytePlus provider.

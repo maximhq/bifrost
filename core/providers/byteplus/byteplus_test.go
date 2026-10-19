@@ -742,3 +742,295 @@ func TestToBifrostVideoGenerationResponseTerminalStatuses(t *testing.T) {
 		}
 	}
 }
+
+func passthroughPostHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
+	return resp, err
+}
+
+func sseResponse(events ...string) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, event := range events {
+			_, _ = w.Write([]byte("data: " + event + "\n\n"))
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}
+}
+
+func drainStream(t *testing.T, stream chan *schemas.BifrostStreamChunk) []*schemas.BifrostStreamChunk {
+	t.Helper()
+	var chunks []*schemas.BifrostStreamChunk
+	timeout := time.NewTimer(10 * time.Second)
+	defer timeout.Stop()
+	for {
+		select {
+		case chunk, ok := <-stream:
+			if !ok {
+				return chunks
+			}
+			if chunk != nil {
+				chunks = append(chunks, chunk)
+			}
+		case <-timeout.C:
+			t.Fatal("stream did not close")
+		}
+	}
+}
+
+const (
+	seedreamStreamImage0 = `{"type":"image_generation.partial_succeeded","model":"seedream-4-5-251128","created":1757396757,"image_index":0,"url":"https://cdn.example/0.jpeg","size":"2048x2048"}`
+	seedreamStreamFailed = `{"type":"image_generation.partial_failed","model":"seedream-4-5-251128","created":1757396757,"image_index":1,"error":{"code":"OutputImageSensitiveContentDetected","message":"blocked"}}`
+	seedreamStreamImage2 = `{"type":"image_generation.partial_succeeded","model":"seedream-4-5-251128","created":1757396758,"image_index":2,"url":"https://cdn.example/2.jpeg","size":"2048x2048"}`
+	seedreamStreamDone   = `{"type":"image_generation.completed","model":"seedream-4-5-251128","created":1757396759,"usage":{"generated_images":2,"output_tokens":32768,"total_tokens":32768}}`
+)
+
+// Seedream streams each finished image as its own event and ends with a usage-only completed event.
+func TestBytePlusImageGenerationStream(t *testing.T) {
+	provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/images/generations": sseResponse(seedreamStreamImage0, seedreamStreamFailed, seedreamStreamImage2, seedreamStreamDone),
+	})
+
+	stream, bifrostErr := provider.ImageGenerationStream(testContext(t), passthroughPostHook, nil, testKey(), &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.BytePlus,
+		Model:    "seedream-4-5-251128",
+		Input:    &schemas.ImageGenerationInput{Prompt: "four seasons"},
+		Params:   &schemas.ImageGenerationParameters{N: schemas.Ptr(3)},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ImageGenerationStream error: %+v", bifrostErr.Error)
+	}
+	chunks := drainStream(t, stream)
+
+	body := captured()[0].body
+	if !gjson.GetBytes(body, "stream").Bool() || gjson.GetBytes(body, "sequential_image_generation").String() != "auto" {
+		t.Errorf("stream and sequential generation should be sent, got %s", body)
+	}
+	if len(chunks) != 3 {
+		t.Fatalf("want 2 image chunks and 1 completed chunk, got %d", len(chunks))
+	}
+	for i, want := range []struct {
+		index int
+		url   string
+	}{{0, "https://cdn.example/0.jpeg"}, {2, "https://cdn.example/2.jpeg"}} {
+		chunk := chunks[i].BifrostImageGenerationStreamResponse
+		if chunk == nil || chunk.Type != schemas.ImageGenerationEventTypePartial || chunk.Index != want.index || chunk.URL != want.url || chunk.Size != "2048x2048" {
+			t.Errorf("chunk %d = %+v, want partial image %d at %s", i, chunk, want.index, want.url)
+		}
+	}
+	final := chunks[2].BifrostImageGenerationStreamResponse
+	if final == nil || final.Type != schemas.ImageGenerationEventTypeCompleted {
+		t.Fatalf("last chunk should be completed, got %+v", chunks[2])
+	}
+	if final.Usage == nil || final.Usage.OutputTokens != 32768 || final.Usage.OutputTokensDetails == nil || final.Usage.OutputTokensDetails.NImages != 2 {
+		t.Errorf("completed usage not mapped: %+v", final.Usage)
+	}
+	if final.URL != "https://cdn.example/2.jpeg" {
+		t.Errorf("completed chunk should carry the last image, got %q", final.URL)
+	}
+}
+
+func TestBytePlusImageEditStreamUsesEditEvents(t *testing.T) {
+	provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/images/generations": sseResponse(seedreamStreamImage0, seedreamStreamDone),
+	})
+
+	stream, bifrostErr := provider.ImageEditStream(testContext(t), passthroughPostHook, nil, testKey(), &schemas.BifrostImageEditRequest{
+		Provider: schemas.BytePlus,
+		Model:    "seedream-4-5-251128",
+		Input:    &schemas.ImageEditInput{Prompt: "make it blue", Images: []schemas.ImageInput{{URL: "https://example.com/a.png"}}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("ImageEditStream error: %+v", bifrostErr.Error)
+	}
+	chunks := drainStream(t, stream)
+
+	if body := captured()[0].body; !gjson.GetBytes(body, "stream").Bool() || gjson.GetBytes(body, "image.0").String() != "https://example.com/a.png" {
+		t.Errorf("edit stream body = %s", body)
+	}
+	if len(chunks) != 2 || chunks[0].BifrostImageGenerationStreamResponse == nil || chunks[0].BifrostImageGenerationStreamResponse.Type != schemas.ImageEditEventTypePartial ||
+		chunks[1].BifrostImageGenerationStreamResponse == nil || chunks[1].BifrostImageGenerationStreamResponse.Type != schemas.ImageEditEventTypeCompleted {
+		t.Fatalf("edit stream should use image_edit events, got %+v", chunks)
+	}
+}
+
+// Ark stops the stream after an internal error, so it ends the Bifrost stream too. A moderation miss on one image does not.
+func TestBytePlusImageGenerationStreamErrors(t *testing.T) {
+	cases := []struct {
+		name     string
+		events   []string
+		wantCode string
+		wantType string
+	}{
+		{"internal error ends the stream", []string{seedreamStreamImage0, `{"type":"image_generation.partial_failed","model":"seedream-4-5-251128","created":1,"image_index":1,"error":{"code":"InternalServiceError","message":"internal"}}`}, "InternalServiceError", "server_error"},
+		{"every image failed", []string{seedreamStreamFailed, `{"type":"image_generation.completed","model":"seedream-4-5-251128","created":1,"usage":{"generated_images":0,"output_tokens":0,"total_tokens":0}}`}, "OutputImageSensitiveContentDetected", "content_filter"},
+		{"request-level error event", []string{`{"error":{"code":"BadRequest","message":"missing required parameter"}}`}, "BadRequest", "invalid_request_error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			provider, _, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+				"POST /api/v3/images/generations": sseResponse(tc.events...),
+			})
+			stream, bifrostErr := provider.ImageGenerationStream(testContext(t), passthroughPostHook, nil, testKey(), &schemas.BifrostImageGenerationRequest{
+				Provider: schemas.BytePlus,
+				Model:    "seedream-4-5-251128",
+				Input:    &schemas.ImageGenerationInput{Prompt: "a cat"},
+			})
+			if bifrostErr != nil {
+				t.Fatalf("ImageGenerationStream error: %+v", bifrostErr.Error)
+			}
+			chunks := drainStream(t, stream)
+			if len(chunks) == 0 {
+				t.Fatal("expected an error chunk")
+			}
+			last := chunks[len(chunks)-1].BifrostError
+			if last == nil || last.Error == nil || last.Error.Code == nil || *last.Error.Code != tc.wantCode {
+				t.Fatalf("last chunk should be an error with code %s, got %+v", tc.wantCode, chunks[len(chunks)-1])
+			}
+			if last.Error.Type == nil || *last.Error.Type != tc.wantType {
+				t.Errorf("error type = %v, want %s", last.Error.Type, tc.wantType)
+			}
+		})
+	}
+}
+
+// Seedream-only fields Bifrost has no typed slot for must reach Ark without the passthrough header.
+func TestBytePlusImageExtraParamsReachArk(t *testing.T) {
+	provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/images/generations": jsonResponse(http.StatusOK, `{"model":"dola-seedream-5-0-pro-260628","created":1,"data":[{"url":"https://cdn.example/1.png"}]}`),
+	})
+	if _, bifrostErr := provider.ImageGeneration(testContext(t), testKey(), &schemas.BifrostImageGenerationRequest{
+		Provider: schemas.BytePlus,
+		Model:    "dola-seedream-5-0-pro-260628",
+		Input:    &schemas.ImageGenerationInput{Prompt: "a logo"},
+		Params:   &schemas.ImageGenerationParameters{ExtraParams: map[string]interface{}{"background": "transparent", "optimize_prompt_options": map[string]interface{}{"mode": "fast"}}},
+	}); bifrostErr != nil {
+		t.Fatalf("ImageGeneration error: %+v", bifrostErr.Error)
+	}
+	body := captured()[0].body
+	if gjson.GetBytes(body, "background").String() != "transparent" || gjson.GetBytes(body, "optimize_prompt_options.mode").String() != "fast" {
+		t.Errorf("Seedream extra params should reach Ark, got %s", body)
+	}
+}
+
+func TestToBytePlusVideoGenerationRequestOmniReferences(t *testing.T) {
+	req, err := byteplus.ToBytePlusVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model: "dreamina-seedance-2-5-260628",
+		Input: &schemas.VideoGenerationInput{Prompt: "dance to the beat", VideoURI: schemas.Ptr("https://example.com/a.mp4")},
+		Params: &schemas.VideoGenerationParameters{
+			OutputFormat: schemas.Ptr("mov"),
+			ExtraParams: map[string]any{
+				"reference_videos": []string{"https://example.com/b.mp4", "asset://asset-123"},
+				"reference_audios": []string{"https://example.com/beat.mp3"},
+				"reference_images": []string{"asset://asset-456"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var videos, audios, images []string
+	for _, item := range req.Content {
+		switch item.Role {
+		case "reference_video":
+			videos = append(videos, item.VideoURL.URL)
+		case "reference_audio":
+			if item.Type != "audio_url" || item.AudioURL == nil {
+				t.Errorf("reference audio should be an audio_url item: %+v", item)
+				continue
+			}
+			audios = append(audios, item.AudioURL.URL)
+		case "reference_image":
+			images = append(images, item.ImageURL.URL)
+		}
+	}
+	if strings.Join(videos, ",") != "https://example.com/a.mp4,https://example.com/b.mp4,asset://asset-123" {
+		t.Errorf("reference videos = %v", videos)
+	}
+	if strings.Join(audios, ",") != "https://example.com/beat.mp3" || strings.Join(images, ",") != "asset://asset-456" {
+		t.Errorf("reference audios = %v, images = %v", audios, images)
+	}
+	if req.OutputFormat == nil || *req.OutputFormat != "mov" {
+		t.Errorf("output_format not mapped: %v", req.OutputFormat)
+	}
+	for _, key := range []string{"reference_videos", "reference_audios", "reference_images"} {
+		if _, ok := req.ExtraParams[key]; ok {
+			t.Errorf("%s should be lifted into content, not passed through", key)
+		}
+	}
+}
+
+// A draft is turned into a final video by sending its task id, as Bifrost returned it; the prompt is optional then.
+func TestToBytePlusVideoGenerationRequestDraftTask(t *testing.T) {
+	req, err := byteplus.ToBytePlusVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{
+		Model:  "dreamina-seedance-2-5-260628",
+		Input:  &schemas.VideoGenerationInput{},
+		Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{"draft_task_id": "cgt-draft-1:byteplus"}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(req.Content) != 1 || req.Content[0].Type != "draft_task" || req.Content[0].DraftTask == nil || req.Content[0].DraftTask.ID != "cgt-draft-1" {
+		t.Errorf("draft task content = %+v", req.Content)
+	}
+
+	if _, err := byteplus.ToBytePlusVideoGenerationRequest(&schemas.BifrostVideoGenerationRequest{Model: "m", Input: &schemas.VideoGenerationInput{}}); err == nil {
+		t.Error("a request with neither a prompt nor a draft task should be rejected")
+	}
+}
+
+// Seedance task options with no Bifrost field must reach Ark, and a requested last frame must come back.
+func TestBytePlusVideoExtraParamsAndLastFrame(t *testing.T) {
+	const taskID = "cgt-lastframe"
+	provider, captured, _ := newMockBytePlus(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v3/contents/generations/tasks":          jsonResponse(http.StatusOK, `{"id":"`+taskID+`"}`),
+		"GET /api/v3/contents/generations/tasks/" + taskID: jsonResponse(http.StatusOK, `{"id":"`+taskID+`","model":"dreamina-seedance-2-5-260628","status":"succeeded","content":{"video_url":"https://cdn.example/v.mov","last_frame_url":"https://cdn.example/last.jpeg"},"created_at":100,"updated_at":200,"resolution":"720p","duration":5}`),
+	})
+	ctx := testContext(t)
+
+	created, bifrostErr := provider.VideoGeneration(ctx, testKey(), &schemas.BifrostVideoGenerationRequest{
+		Provider: schemas.BytePlus,
+		Model:    "dreamina-seedance-2-5-260628",
+		Input:    &schemas.VideoGenerationInput{Prompt: "a dog"},
+		Params: &schemas.VideoGenerationParameters{ExtraParams: map[string]any{
+			"return_last_frame": true, "service_tier": "flex", "draft": true, "priority": 5, "omni_reference_task_type": "extend",
+		}},
+	})
+	if bifrostErr != nil {
+		t.Fatalf("VideoGeneration error: %+v", bifrostErr.Error)
+	}
+	body := captured()[0].body
+	for _, field := range []string{"return_last_frame", "service_tier", "draft", "priority", "omni_reference_task_type"} {
+		if !gjson.GetBytes(body, field).Exists() {
+			t.Errorf("%s should reach Ark, got %s", field, body)
+		}
+	}
+
+	retrieved, bifrostErr := provider.VideoRetrieve(ctx, testKey(), &schemas.BifrostVideoRetrieveRequest{Provider: schemas.BytePlus, ID: created.ID})
+	if bifrostErr != nil {
+		t.Fatalf("VideoRetrieve error: %+v", bifrostErr.Error)
+	}
+	if len(retrieved.Videos) != 2 {
+		t.Fatalf("want the video and its last frame, got %+v", retrieved.Videos)
+	}
+	if retrieved.Videos[0].ContentType != "video/quicktime" || *retrieved.Videos[0].URL != "https://cdn.example/v.mov" {
+		t.Errorf("video output = %+v", retrieved.Videos[0])
+	}
+	if retrieved.Videos[1].ContentType != "image/jpeg" || *retrieved.Videos[1].URL != "https://cdn.example/last.jpeg" {
+		t.Errorf("last frame output = %+v", retrieved.Videos[1])
+	}
+}
+
+func BenchmarkToBytePlusVideoGenerationRequest(b *testing.B) {
+	req := &schemas.BifrostVideoGenerationRequest{
+		Model:  "dreamina-seedance-2-5-260628",
+		Input:  &schemas.VideoGenerationInput{Prompt: "a dog", InputReference: schemas.Ptr("https://example.com/first.png")},
+		Params: &schemas.VideoGenerationParameters{Seconds: schemas.Ptr("5"), Size: "1280x720"},
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := byteplus.ToBytePlusVideoGenerationRequest(req); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -26,8 +26,8 @@ Text-to-speech and speech recognition are a separate BytePlus product with its o
 | Responses API | ✅ | ✅ | `/api/v3/responses` |
 | Embeddings | ✅ | - | `/api/v3/embeddings/multimodal` |
 | List Models | ✅ | - | from key configuration |
-| Image Generation | ✅ | ❌ | `/api/v3/images/generations` |
-| Image Edit | ✅ | ❌ | `/api/v3/images/generations` |
+| Image Generation | ✅ | ✅ | `/api/v3/images/generations` |
+| Image Edit | ✅ | ✅ | `/api/v3/images/generations` |
 | Video Generation | ✅ | - | `/api/v3/contents/generations/tasks` |
 | Video Retrieve | ✅ | - | `GET /api/v3/contents/generations/tasks/{id}` |
 | Video List | ✅ | - | `GET /api/v3/contents/generations/tasks` |
@@ -201,7 +201,24 @@ curl -X POST http://localhost:8080/v1/images/generations \
 | `extra_params.watermark` | `watermark` | |
 | `extra_params.sequential_image_generation`, `extra_params.sequential_image_generation_options` | same fields | Override the values derived from `n` |
 
-Any other extra params, such as `guidance_scale` or `optimize_prompt_options`, are sent to Ark unchanged. When content safety blocks some images in a group, Bifrost returns the rest. When it blocks all of them, the request fails with a 400 carrying Ark's error code.
+Any other extra params, such as `background`, `layer_decomposition` or `optimize_prompt_options`, are sent to Ark unchanged. When content safety blocks some images in a group, Bifrost returns the rest. When it blocks all of them, the request fails with a 400 carrying Ark's error code.
+
+## Streaming
+
+Set `stream: true` to get each image as soon as Seedream finishes it. Ark streams on Seedream 5.0 lite, 4.5 and 4.0 only. Seedream 5.0 pro and flash reject the request with a 400.
+
+```bash
+curl -N -X POST http://localhost:8080/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "byteplus/seedream-4-5-251128",
+    "prompt": "The same lighthouse in spring, summer, autumn and winter",
+    "n": 4,
+    "stream": true
+  }'
+```
+
+Each image arrives whole, so every image is one `image_generation.partial_image` event (`image_edit.partial_image` for edits) carrying its `url` or `b64_json`. The stream ends with one `image_generation.completed` event that carries the usage and repeats the last image. An image blocked by content safety is skipped and the rest keep coming. The stream ends with an error if Ark reports an internal error, or if every image is blocked.
 
 ---
 
@@ -235,6 +252,7 @@ curl -X POST http://localhost:8080/v1/videos \
 | `prompt` | `content[]` text item | Required |
 | `input_reference` | `content[]` image item with role `first_frame` | Image to video |
 | `video_uri` | `content[]` video item with role `reference_video` | Models that accept reference video only |
+| `output_format` | `output_format` | `mp4` (default) or `mov`. Seedance 2.5 only. |
 | `seconds` | `duration` | Rounded to whole seconds |
 | `size` | `resolution` + `ratio` | The short side picks `480p`, `720p` or `1080p`, and the shape picks the closest ratio |
 | `seed` | `seed` | |
@@ -242,6 +260,15 @@ curl -X POST http://localhost:8080/v1/videos \
 | `extra_params.resolution`, `extra_params.ratio` | `resolution`, `ratio` | Override the values derived from `size`. `ratio` also accepts `adaptive`. |
 | `extra_params.last_frame` | `content[]` image item with role `last_frame` | |
 | `extra_params.reference_images` | `content[]` image items with role `reference_image` | Can't be combined with first or last frame images |
+| `extra_params.reference_videos` | `content[]` video items with role `reference_video` | Added after `video_uri`. Seedance 2.5 takes up to 10, Seedance 2.0 up to 3. |
+| `extra_params.reference_audios` | `content[]` audio items with role `reference_audio` | `wav` or `mp3`. Seedance 2.5 and 2.0 only. |
+| `extra_params.draft_task_id` | `content[]` draft task item | Turns a draft into the final video. `prompt` is optional when it is set. |
 | `extra_params.callback_url` | `callback_url` | |
 
-Other extra params, such as `camera_fixed`, `watermark`, `service_tier` or `return_last_frame`, are sent to Ark unchanged. Failed, cancelled and expired tasks all come back as `status: failed`, with Ark's error code when it gives one. Model availability differs by region, so check the ModelArk console before pointing video traffic at a non-default region.
+Image references, and the first and last frames, also accept the `asset://<ASSET_ID>` form for media in your Ark asset library.
+
+Other extra params are sent to Ark unchanged. That covers `draft`, `return_last_frame`, `service_tier`, `priority`, `execution_expires_after`, `omni_reference_task_type`, `camera_fixed`, `frames`, `watermark` and `safety_identifier`. A task created with `return_last_frame: true` lists the final frame as a second `videos[]` entry with `content_type: image/jpeg`, after the video, so `GET /v1/videos/{id}/content` still downloads the video. A `mov` output comes back with `content_type: video/quicktime`.
+
+To work from a draft, create a task with `draft: true` at `480p`, then create a second task with `extra_params.draft_task_id` set to the draft's ID as Bifrost returned it. Drafts are valid for 7 days.
+
+Failed, cancelled and expired tasks all come back as `status: failed`, with Ark's error code when it gives one. Model availability differs by region, so check the ModelArk console before pointing video traffic at a non-default region.

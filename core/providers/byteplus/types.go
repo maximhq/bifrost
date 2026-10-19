@@ -24,6 +24,7 @@ type BytePlusImageGenerationRequest struct {
 	Watermark                        *bool                           `json:"watermark,omitempty"`
 	SequentialImageGeneration        *string                         `json:"sequential_image_generation,omitempty"` // "auto" or "disabled"
 	SequentialImageGenerationOptions *BytePlusSequentialImageOptions `json:"sequential_image_generation_options,omitempty"`
+	Stream                           *bool                           `json:"stream,omitempty"`
 	ExtraParams                      map[string]interface{}          `json:"-"`
 }
 
@@ -45,21 +46,51 @@ type BytePlusImageGenerationResponse struct {
 	Created   int64               `json:"created,omitempty"`
 	CreatedAt int64               `json:"created_at,omitempty"`
 	Data      []BytePlusImageData `json:"data"`
-	Usage     *struct {
-		GeneratedImages int `json:"generated_images"`
-		OutputTokens    int `json:"output_tokens"`
-		TotalTokens     int `json:"total_tokens"`
-	} `json:"usage,omitempty"`
-	Error *BytePlusError `json:"error,omitempty"`
+	Usage     *BytePlusImageUsage `json:"usage,omitempty"`
+	Error     *BytePlusError      `json:"error,omitempty"`
+}
+
+// BytePlusImageUsage is the usage block of a Seedream response or completed stream event.
+type BytePlusImageUsage struct {
+	GeneratedImages int `json:"generated_images"`
+	OutputTokens    int `json:"output_tokens"`
+	TotalTokens     int `json:"total_tokens"`
+}
+
+// Seedream stream event types. Each image arrives whole in its own event, and completed carries only usage.
+const (
+	bytePlusImageStreamPartialSucceeded = "image_generation.partial_succeeded"
+	bytePlusImageStreamPartialFailed    = "image_generation.partial_failed"
+	bytePlusImageStreamCompleted        = "image_generation.completed"
+)
+
+// BytePlusImageStreamEvent is one SSE event of a streamed Seedream generation.
+type BytePlusImageStreamEvent struct {
+	Type       string              `json:"type"`
+	Model      string              `json:"model,omitempty"`
+	Created    int64               `json:"created,omitempty"`
+	ImageIndex *int                `json:"image_index,omitempty"`
+	URL        string              `json:"url,omitempty"`
+	B64JSON    string              `json:"b64_json,omitempty"`
+	Size       string              `json:"size,omitempty"`
+	Usage      *BytePlusImageUsage `json:"usage,omitempty"`
+	Error      *BytePlusError      `json:"error,omitempty"`
 }
 
 // BytePlusVideoContentItem is one entry of the Seedance task content array.
 type BytePlusVideoContentItem struct {
-	Type     string                 `json:"type"` // "text", "image_url", "video_url", "audio_url"
-	Role     string                 `json:"role,omitempty"`
-	Text     string                 `json:"text,omitempty"`
-	ImageURL *BytePlusVideoMediaURL `json:"image_url,omitempty"`
-	VideoURL *BytePlusVideoMediaURL `json:"video_url,omitempty"`
+	Type      string                 `json:"type"` // "text", "image_url", "video_url", "audio_url", "draft_task"
+	Role      string                 `json:"role,omitempty"`
+	Text      string                 `json:"text,omitempty"`
+	ImageURL  *BytePlusVideoMediaURL `json:"image_url,omitempty"`
+	VideoURL  *BytePlusVideoMediaURL `json:"video_url,omitempty"`
+	AudioURL  *BytePlusVideoMediaURL `json:"audio_url,omitempty"`
+	DraftTask *BytePlusDraftTask     `json:"draft_task,omitempty"`
+}
+
+// BytePlusDraftTask names the draft task a final Seedance video is generated from.
+type BytePlusDraftTask struct {
+	ID string `json:"id"`
 }
 
 // BytePlusVideoMediaURL wraps a media URL or data URI.
@@ -77,6 +108,7 @@ type BytePlusVideoGenerationRequest struct {
 	Seed          *int                       `json:"seed,omitempty"`
 	GenerateAudio *bool                      `json:"generate_audio,omitempty"`
 	CallbackURL   *string                    `json:"callback_url,omitempty"`
+	OutputFormat  *string                    `json:"output_format,omitempty"` // "mp4" or "mov"
 	ExtraParams   map[string]interface{}     `json:"-"`
 }
 
