@@ -52415,6 +52415,126 @@
         }
       }
     },
+    "/api/governance/budget-requests/{request_id}/approve": {
+      "post": {
+        "operationId": "approveBudgetRequest",
+        "x-mint": {
+          "metadata": {
+            "tag": "Enterprise"
+          },
+          "content": "<Note>\n  This endpoint is available in [Bifrost Enterprise](https://www.getmaxim.ai/bifrost/enterprise) only.\n</Note>\n\n**Required Permissions**\n\n| Permission | Granted via |\n| --- | --- |\n| `VirtualKeys:Update` | RBAC role or API key scope |\n| `AccessProfiles:Update` | Also required when the request targets an access-profile budget |\n\n[How permissions work](/api/procuring-api-keys#required-permissions)\n"
+        },
+        "summary": "Approve a budget increase request",
+        "description": "Approves a pending budget increase request and applies the approved amount as an override on the\ntarget budget. The override is additive: the budget's `max_limit`, `current_usage` and reset schedule\nare unchanged. The status change and the override write happen in one transaction, so a failed write\nleaves the request pending and two approvers can never both apply it.\n\nThe body is optional. `amount`, `mode` and `cycles` default to the values in the request.\n\nWhen the budget already has an active override, the approved amount is added to it. A plain add\n(`override_strategy` empty or `add`) needs both to share a lifetime, meaning the same `mode` and, for\n`cycles`, the same number of cycles remaining; otherwise it returns `409`. Use `replace` to drop the\nactive override and apply the approved amount and duration on their own, or `add_keep_lifetime` to add\nthe amount while keeping the active override's mode and remaining cycles. With `add_keep_lifetime`,\nany `mode` and `cycles` in the body are ignored and the request records the duration actually applied.\n\nApprovers only see requests for virtual keys and access profiles in their data scope; a request outside\nit returns `404`. An approver cannot decide their own request.\n",
+        "tags": [
+          "Governance"
+        ],
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "description": "Budget request ID",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApproveBudgetRequestRequest"
+              },
+              "example": {
+                "override_strategy": "add_keep_lifetime"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "ManagementBearerAuth": []
+          },
+          {
+            "BasicAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Request approved and override applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BudgetRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid body: malformed JSON, `note` longer than 2000 characters, an unknown `override_strategy`,\n`amount` not greater than 0, `mode` not `cycles` or `forever`, or `cycles` outside 1-120 in\n`cycles` mode.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized — missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller lacks `VirtualKeys:Update`, the request targets an access-profile budget and the caller\nlacks `AccessProfiles:Update`, or the caller is the requester.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The budget request does not exist or is outside the approver's data scope, or its virtual key,\naccess profile or budget no longer exists.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request was already decided, the active override's lifetime differs from the approval under a\nplain add, or the override was removed while approving with `add_keep_lifetime`.\n",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BifrostError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/governance/model-configs": {
       "get": {
         "operationId": "listModelConfigs",
@@ -131781,6 +131901,187 @@
           "effective_max_limit": {
             "type": "number",
             "description": "`max_limit` plus `override_amount` while an override is active; equal to `max_limit` otherwise."
+          }
+        }
+      },
+      "ApproveBudgetRequestRequest": {
+        "type": "object",
+        "description": "Optional approver overrides for a budget increase request. `amount`, `mode` and `cycles` default to\nthe requested values.\n",
+        "properties": {
+          "amount": {
+            "type": "number",
+            "description": "Amount in dollars to approve. Must be greater than 0.",
+            "exclusiveMinimum": 0
+          },
+          "mode": {
+            "type": "string",
+            "description": "`cycles` keeps the override active for `cycles` reset windows starting with the current one.\n`forever` keeps it active until it is removed.\n",
+            "enum": [
+              "cycles",
+              "forever"
+            ]
+          },
+          "cycles": {
+            "type": "integer",
+            "description": "Number of reset windows the override stays active for. Must be 1-120 when the effective mode is\n`cycles`, where the effective mode is this body's `mode`, else the requested mode. Ignored when the\neffective mode is `forever`, and ignored with `add_keep_lifetime` when the budget has an active override.\n"
+          },
+          "note": {
+            "type": "string",
+            "description": "Optional note shown with the decision.",
+            "maxLength": 2000
+          },
+          "override_strategy": {
+            "type": "string",
+            "description": "How to combine the approval with an active override on the budget. Empty or `add` adds the amount\nand returns `409` when the lifetimes differ. `replace` replaces the active override.\n`add_keep_lifetime` adds the amount and keeps the active override's mode and remaining cycles.\n",
+            "enum": [
+              "",
+              "add",
+              "replace",
+              "add_keep_lifetime"
+            ]
+          }
+        }
+      },
+      "BudgetRequest": {
+        "type": "object",
+        "description": "A budget increase request, with the target budget's current state.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "requester_user_id": {
+            "type": "string"
+          },
+          "requester_name": {
+            "type": "string"
+          },
+          "requester_email": {
+            "type": "string"
+          },
+          "target_kind": {
+            "type": "string",
+            "enum": [
+              "virtual_key",
+              "access_profile"
+            ]
+          },
+          "virtual_key_id": {
+            "type": "string",
+            "description": "Set when `target_kind` is `virtual_key`."
+          },
+          "access_profile_id": {
+            "type": "integer",
+            "description": "Set when `target_kind` is `access_profile`."
+          },
+          "target_name": {
+            "type": "string",
+            "description": "Name of the virtual key or access profile."
+          },
+          "budget_id": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "number",
+            "description": "Requested amount in dollars."
+          },
+          "mode": {
+            "type": "string",
+            "description": "Requested duration mode.",
+            "enum": [
+              "cycles",
+              "forever"
+            ]
+          },
+          "cycles": {
+            "type": "integer",
+            "description": "Requested number of cycles."
+          },
+          "reason": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "approved",
+              "denied",
+              "cancelled"
+            ]
+          },
+          "decided_by_user_id": {
+            "type": "string"
+          },
+          "decided_by_user_name": {
+            "type": "string"
+          },
+          "decision_note": {
+            "type": "string"
+          },
+          "approved_amount": {
+            "type": "number"
+          },
+          "approved_mode": {
+            "type": "string",
+            "description": "Duration mode actually applied.",
+            "enum": [
+              "cycles",
+              "forever"
+            ]
+          },
+          "approved_cycles": {
+            "type": "integer",
+            "description": "Number of cycles actually applied."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "decided_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "budget": {
+            "$ref": "#/components/schemas/BudgetRequestBudgetSnapshot"
+          },
+          "live_reload": {
+            "type": "string",
+            "description": "`retrying` when the approval is saved but applying it to live governance state failed and is being\nretried in the background. Omitted otherwise.\n",
+            "enum": [
+              "retrying"
+            ]
+          }
+        }
+      },
+      "BudgetRequestBudgetSnapshot": {
+        "type": "object",
+        "description": "The target budget's current state.",
+        "properties": {
+          "max_limit": {
+            "type": "number"
+          },
+          "current_usage": {
+            "type": "number"
+          },
+          "reset_duration": {
+            "type": "string"
+          },
+          "override_amount": {
+            "type": "number"
+          },
+          "override_mode": {
+            "type": "string",
+            "enum": [
+              "cycles",
+              "forever"
+            ]
+          },
+          "override_cycles_remaining": {
+            "type": "integer",
+            "description": "Remaining cycles of the active override. Omitted for an override that lasts until removed."
+          },
+          "effective_max_limit": {
+            "type": "number",
+            "description": "`max_limit` plus any active override."
           }
         }
       },
