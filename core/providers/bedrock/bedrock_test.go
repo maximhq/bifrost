@@ -22,6 +22,7 @@ import (
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func mustMarshalJSON(v interface{}) json.RawMessage {
@@ -7750,6 +7751,85 @@ func TestConverseAdditionalModelRequestFieldsStoreReachesParams(t *testing.T) {
 				forwardedJSON, err := json.Marshal(forwarded)
 				require.NoError(t, err)
 				assert.JSONEq(t, tc.storeJSON, string(forwardedJSON), "Converse additionalModelRequestFields.store")
+			}
+		})
+	}
+}
+
+// TestConverseAdditionalModelRequestFieldsPromptCacheOptionsReachesParams pins that a
+// prompt_cache_options object in additionalModelRequestFields - the only place the AWS
+// SDK's ConverseInput can carry it - lands on Params.PromptCacheOptions, so a gpt-5.6
+// Responses target (OpenAI, Azure, Bedrock Mantle) runs in the mode the caller chose.
+// Since #8334 Bifrost leaves gpt-5.6 in implicit mode, so this key is the only way a
+// /bedrock caller can limit caching to its own cachePoint, or turn caching off (#8554).
+func TestConverseAdditionalModelRequestFieldsPromptCacheOptionsReachesParams(t *testing.T) {
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+
+	cases := []struct {
+		name        string
+		optionsJSON string // raw JSON for the prompt_cache_options key; empty omits it
+		want        *schemas.PromptCacheOptions
+	}{
+		{"explicit", `{"mode": "explicit"}`, &schemas.PromptCacheOptions{Mode: schemas.Ptr("explicit")}},
+		{"implicit_with_ttl", `{"mode": "implicit", "ttl": "30m"}`, &schemas.PromptCacheOptions{Mode: schemas.Ptr("implicit"), TTL: schemas.Ptr("30m")}},
+		{"absent", ``, nil},
+		{"non_object_ignored", `"explicit"`, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			optionsField := ""
+			if tc.optionsJSON != "" {
+				optionsField = `, "prompt_cache_options": ` + tc.optionsJSON
+			}
+			body := []byte(`{
+				"system": [{"text": "You are a terse assistant."}, {"cachePoint": {"type": "default"}}],
+				"messages": [{"role": "user", "content": [{"text": "What is 17*23? Answer briefly."}]}],
+				"additionalModelRequestFields": {"store": false` + optionsField + `}
+			}`)
+
+			var req bedrock.BedrockConverseRequest
+			require.NoError(t, json.Unmarshal(body, &req))
+			req.ModelID = "azure/gpt-5.6-luna"
+
+			mid, err := req.ToBifrostResponsesRequest(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, mid.Params, "Params is nil")
+			assert.Equal(t, tc.want, mid.Params.PromptCacheOptions, "Params.PromptCacheOptions")
+
+			// The Responses body every gpt-5.6 host builds: the caller's mode is on the wire
+			// next to the breakpoint translated from the system cachePoint.
+			wire, err := json.Marshal(openai.ToOpenAIResponsesRequest(ctx, mid))
+			require.NoError(t, err)
+			got := gjson.GetBytes(wire, "prompt_cache_options")
+			if tc.want == nil {
+				assert.False(t, got.Exists(), "outbound body must not invent prompt_cache_options: %s", wire)
+			} else if assert.True(t, got.Exists(), "outbound body dropped prompt_cache_options: %s", wire) {
+				assert.JSONEq(t, tc.optionsJSON, got.Raw, "outbound prompt_cache_options: %s", wire)
+			}
+			assert.Equal(t, 1, strings.Count(string(wire), `"prompt_cache_breakpoint"`),
+				"the system cachePoint must still become exactly one breakpoint: %s", wire)
+
+			// Models without a Responses endpoint take the Chat fallback.
+			chatReq := mid.ToChatRequest()
+			require.NotNil(t, chatReq.Params, "chat fallback Params is nil")
+			assert.Equal(t, tc.want, chatReq.Params.PromptCacheOptions, "chat fallback Params.PromptCacheOptions")
+
+			// Bedrock Converse has no typed slot for it; the key keeps riding in
+			// additionalModelRequestFields exactly as it did before the fix.
+			converse, err := bedrock.ToBedrockResponsesRequest(ctx, mid)
+			require.NoError(t, err)
+			var forwarded interface{}
+			forwardedOK := false
+			if converse.AdditionalModelRequestFields != nil {
+				forwarded, forwardedOK = converse.AdditionalModelRequestFields.Get("prompt_cache_options")
+			}
+			if tc.optionsJSON == "" {
+				assert.False(t, forwardedOK, "Converse egress must not invent prompt_cache_options")
+			} else if assert.True(t, forwardedOK, "Converse egress dropped prompt_cache_options from additionalModelRequestFields") {
+				forwardedJSON, err := json.Marshal(forwarded)
+				require.NoError(t, err)
+				assert.JSONEq(t, tc.optionsJSON, string(forwardedJSON), "Converse additionalModelRequestFields.prompt_cache_options")
 			}
 		})
 	}
