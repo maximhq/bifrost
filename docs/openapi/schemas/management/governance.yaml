@@ -242,6 +242,7 @@ ApproveBudgetRequestRequest:
     amount:
       type: number
       description: Amount in dollars to approve. Must be greater than 0.
+      exclusiveMinimum: 0
     mode:
       type: string
       description: |
@@ -252,9 +253,10 @@ ApproveBudgetRequestRequest:
         - forever
     cycles:
       type: integer
-      description: Number of reset windows the override stays active for. Must be 1-120 when `mode` is `cycles`; ignored when `mode` is `forever`.
-      minimum: 1
-      maximum: 120
+      description: |
+        Number of reset windows the override stays active for. Must be 1-120 when the effective mode is
+        `cycles`, where the effective mode is this body's `mode`, else the requested mode. Ignored when the
+        effective mode is `forever`, and ignored with `add_keep_lifetime` when the budget has an active override.
     note:
       type: string
       description: Optional note shown with the decision.

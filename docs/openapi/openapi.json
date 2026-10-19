@@ -131910,7 +131910,8 @@
         "properties": {
           "amount": {
             "type": "number",
-            "description": "Amount in dollars to approve. Must be greater than 0."
+            "description": "Amount in dollars to approve. Must be greater than 0.",
+            "exclusiveMinimum": 0
           },
           "mode": {
             "type": "string",
@@ -131922,9 +131923,7 @@
           },
           "cycles": {
             "type": "integer",
-            "description": "Number of reset windows the override stays active for. Must be 1-120 when `mode` is `cycles`; ignored when `mode` is `forever`.",
-            "minimum": 1,
-            "maximum": 120
+            "description": "Number of reset windows the override stays active for. Must be 1-120 when the effective mode is\n`cycles`, where the effective mode is this body's `mode`, else the requested mode. Ignored when the\neffective mode is `forever`, and ignored with `add_keep_lifetime` when the budget has an active override.\n"
           },
           "note": {
             "type": "string",
