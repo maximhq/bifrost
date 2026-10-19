@@ -2235,6 +2235,7 @@
             "item": "Enterprise",
             "icon": "building",
             "pages": [
+              "changelogs/ent-v2.3.1",
               "changelogs/ent-v2.3.0",
               "changelogs/ent-v2.2.6",
               "changelogs/ent-v2.2.5",

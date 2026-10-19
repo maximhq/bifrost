@@ -84,6 +84,10 @@ description: "v2.3.1 changelog - 2026-10-19"
 
 ## 🗄️ Database Migrations
 
+<Warning>
+This release includes logstore migrations on the `logs` table (`logs_add_matview_refresh_state_table`, `logs_add_is_passthrough_column`). Adding a column to `logs` needs a short exclusive lock, which has to wait for in-flight log writes and long-running queries. Deploy during a low-traffic window.
+</Warning>
+
 - **add_mcp_client_openapi_spec_column** - Adds `openapi_spec` to `config_mcp_clients`. Non-reversible: dropping it would delete the only stored copy of every OpenAPI client's document. Additive; older binaries ignore it.
 - **add_mcp_client_openapi_config_json_column** - Adds `openapi_config_json` to `config_mcp_clients`. Non-reversible: dropping it would delete every OpenAPI client's base URL and stored credentials. Additive.
 - **add_client_config_extra_fields_placement_column** - Adds `extra_fields_placement` (`NOT NULL DEFAULT 'body'`) to `config_client`. Reversible: rollback drops the column.
