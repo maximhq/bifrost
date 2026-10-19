@@ -367,9 +367,8 @@ func PopulateChatResponseAttributes(resp *schemas.BifrostChatResponse, attrs map
 
 	// Usage
 	if resp.Usage != nil {
-		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
-		attrs[schemas.AttrInputTokens] = resp.Usage.PromptTokens
-		attrs[schemas.AttrOutputTokens] = resp.Usage.CompletionTokens
+		input, output, total := resp.Usage.TokenMeasurements()
+		populateTokenMeasurements(attrs, input, output, total)
 
 		if resp.Usage.PromptTokensDetails != nil {
 			if resp.Usage.PromptTokensDetails.TextTokens > 0 {
@@ -535,9 +534,8 @@ func PopulateTextCompletionResponseAttributes(resp *schemas.BifrostTextCompletio
 
 	// Usage
 	if resp.Usage != nil {
-		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
-		attrs[schemas.AttrInputTokens] = resp.Usage.PromptTokens
-		attrs[schemas.AttrOutputTokens] = resp.Usage.CompletionTokens
+		input, output, total := resp.Usage.TokenMeasurements()
+		populateTokenMeasurements(attrs, input, output, total)
 	}
 }
 
@@ -587,9 +585,8 @@ func PopulateEmbeddingResponseAttributes(resp *schemas.BifrostEmbeddingResponse,
 	}
 	// Usage
 	if resp.Usage != nil {
-		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
-		attrs[schemas.AttrInputTokens] = resp.Usage.PromptTokens
-		attrs[schemas.AttrOutputTokens] = resp.Usage.CompletionTokens
+		input, output, total := resp.Usage.TokenMeasurements()
+		populateTokenMeasurements(attrs, input, output, total)
 	}
 }
 
@@ -919,9 +916,8 @@ func PopulateResponsesResponseAttributes(resp *schemas.BifrostResponsesResponse,
 
 	// Usage
 	if resp.Usage != nil {
-		attrs[schemas.AttrInputTokens] = resp.Usage.InputTokens
-		attrs[schemas.AttrOutputTokens] = resp.Usage.OutputTokens
-		attrs[schemas.AttrTotalTokens] = resp.Usage.TotalTokens
+		input, output, total := resp.Usage.TokenMeasurements()
+		populateTokenMeasurements(attrs, input, output, total)
 
 		if resp.Usage.Cost != nil {
 			attrs[schemas.AttrUsageCost] = resp.Usage.Cost.TotalCost
@@ -1856,4 +1852,16 @@ func extractResponsesReasoning(r *schemas.ResponsesReasoning) string {
 // thin wrapper because tracer.go uses it for root-span propagation.
 func extractMessageContent(content *schemas.ChatMessageContent) string {
 	return schemas.ExtractChatContentText(content)
+}
+
+func populateTokenMeasurements(attrs map[string]any, input, output, total *int) {
+	if input != nil {
+		attrs[schemas.AttrInputTokens] = *input
+	}
+	if output != nil {
+		attrs[schemas.AttrOutputTokens] = *output
+	}
+	if total != nil {
+		attrs[schemas.AttrTotalTokens] = *total
+	}
 }

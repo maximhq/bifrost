@@ -1156,3 +1156,59 @@ func TestChatRequestWithoutToolsOmitsAttribute(t *testing.T) {
 		t.Errorf("%s present with no tools configured", schemas.AttrTools)
 	}
 }
+
+func TestPopulateResponseAttributesPreservesTokenMeasurementPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name, wire string
+		want       map[string]any
+	}{
+		{"empty", `{}`, map[string]any{}},
+		{"input_only", `{"prompt_tokens":7}`, map[string]any{schemas.AttrInputTokens: 7}},
+		{"output_only", `{"completion_tokens":3}`, map[string]any{schemas.AttrOutputTokens: 3}},
+		{"total_only", `{"total_tokens":10}`, map[string]any{schemas.AttrTotalTokens: 10}},
+		{"zero", `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`, map[string]any{schemas.AttrInputTokens: 0, schemas.AttrOutputTokens: 0, schemas.AttrTotalTokens: 0}},
+		{"null", `{"prompt_tokens":null,"completion_tokens":null,"total_tokens":null}`, map[string]any{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var usage schemas.BifrostLLMUsage
+			if err := schemas.Unmarshal([]byte(tc.wire), &usage); err != nil {
+				t.Fatal(err)
+			}
+			for name, populate := range map[string]func(map[string]any){
+				"chat": func(attrs map[string]any) {
+					PopulateChatResponseAttributes(&schemas.BifrostChatResponse{Usage: &usage}, attrs)
+				},
+				"text": func(attrs map[string]any) {
+					PopulateTextCompletionResponseAttributes(&schemas.BifrostTextCompletionResponse{Usage: &usage}, attrs)
+				},
+				"embedding": func(attrs map[string]any) {
+					PopulateEmbeddingResponseAttributes(&schemas.BifrostEmbeddingResponse{Usage: &usage}, attrs)
+				},
+				"responses": func(attrs map[string]any) {
+					PopulateResponsesResponseAttributes(&schemas.BifrostResponsesResponse{Usage: usage.ToResponsesResponseUsage()}, attrs)
+				},
+			} {
+				attrs := map[string]any{}
+				populate(attrs)
+				got := map[string]any{}
+				for _, key := range []string{schemas.AttrInputTokens, schemas.AttrOutputTokens, schemas.AttrTotalTokens} {
+					if value, ok := attrs[key]; ok {
+						got[key] = value
+					}
+				}
+				if !reflect.DeepEqual(got, tc.want) {
+					t.Errorf("%s token attributes = %v; want observed counters %v", name, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkPopulateTokenMeasurementAttributes(b *testing.B) {
+	response := &schemas.BifrostChatResponse{Usage: &schemas.BifrostLLMUsage{PromptTokens: 7, CompletionTokens: 3, TotalTokens: 10}}
+	b.ReportAllocs()
+	for b.Loop() {
+		attrs := map[string]any{}
+		PopulateChatResponseAttributes(response, attrs)
+	}
+}

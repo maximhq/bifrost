@@ -37,6 +37,14 @@ behaviours["upstream-slow"] = () => ({ ...behaviours["upstream-ok"](), delayMs: 
 // content chunk and then a closed socket, a non-streamed request a closed socket.
 behaviours["upstream-cut"] = () => ({ ...behaviours["upstream-ok"](), cut: true });
 
+behaviours["upstream-usage-partial"] = () => {
+	const response = behaviours["upstream-ok"]();
+	const completion = JSON.parse(response.body);
+	completion.model = "upstream-usage-partial";
+	completion.usage = { prompt_tokens: 20 };
+	return { ...response, body: JSON.stringify(completion) };
+};
+
 // A streamed chat request (stream: true) that a behaviour answers with a completion gets the same
 // answer as server-sent chunks: the role, the content, the finish reason, the usage when
 // stream_options.include_usage asks for it, then [DONE].
@@ -206,6 +214,16 @@ const server = http.createServer((req, res) => {
 		// "toString" must be an unknown model, not an inherited function.
 		const name = model.split("~")[0];
 		if (path === "/v1/responses") {
+			if (name === "upstream-usage-partial") {
+				const response = { id: "resp-partial", object: "response", created_at: 1, status: "completed", model: name,
+					output: [{ id: "msg-partial", type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: "hello", annotations: [] }] }],
+					usage: { input_tokens: 20 } };
+				if (parsed.stream === true) {
+					res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+					return res.end(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", sequence_number: 1, response })}\n\n`);
+				}
+				return send(200, {}, JSON.stringify(response));
+			}
 			// A Responses request whose model names an error behaviour gets that error; any other model gets the
 			// fixed reasoning response below.
 			const failing = Object.hasOwn(behaviours, name) ? behaviours[name]() : undefined;

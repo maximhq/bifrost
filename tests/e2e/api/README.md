@@ -1088,3 +1088,26 @@ Two are worth calling out:
   per-second model, so video-to-video under-bills. Run it to measure the gap.
 - **`expect_job_params`** (the Gemini cases) needs `--config-db-url`; without it those checks report
   as skipped rather than failing, so every other check still works against hosted Bifrost.
+
+## Partial token measurements
+
+The local provider-error fixture profile includes `upstream-usage-partial`: it
+reports input tokens without output or total. Folder 261 checks native and
+OpenAI SDK Chat/Responses endpoints, buffered and streamed (eight requests).
+Missing and JSON-null counters remain unmeasured; explicit zero stays measured.
+Numeric presence survives copies, protocol conversion and cumulative streaming.
+A total can be derived only after both component measurements are observed.
+Programmatically constructed usage continues to declare its numeric counters.
+OpenAI cost overrides keep their numeric wire shape without mutating usage.
+
+The presence flags use one byte; alignment grows each usage struct by eight
+bytes on darwin/arm64 (Chat 160 to 168, Responses 144 to 152). No provider payload,
+cache, manager entry or stream-sized buffer is retained. Typed and flat GenAI
+renderers emit only observed scalar counters. With the local fixture/profile
+above, run the following scoped regression (no live provider is required):
+
+```bash
+mkdir -p tmp
+printf '%s\n' '{"values":[{"key":"providerErrorFixture","value":"1","enabled":true}]}' > tmp/partial-token-measurements.env.json
+make run-provider-harness-test PROVIDER=openai FEATURE="partial token measurements" BASE_URL=http://localhost:8790 ENV_FILE=tmp/partial-token-measurements.env.json COMPAT=off DB_VERIFY=0 SKIP_STREAM_CANCEL=1 HARNESS_MAX_REQUESTS=8
+```

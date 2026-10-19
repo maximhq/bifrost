@@ -1946,6 +1946,7 @@ type ContentLogProb struct {
 
 // BifrostLLMUsage represents token usage information
 type BifrostLLMUsage struct {
+	tokenPresence           tokenUsagePresence
 	PromptTokens            int                          `json:"prompt_tokens,omitempty"`
 	PromptTokensDetails     *ChatPromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
 	CompletionTokens        int                          `json:"completion_tokens,omitempty"`

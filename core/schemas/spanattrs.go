@@ -408,9 +408,10 @@ func (d *LLMSpanData) appendUsage(attrs map[string]any) {
 	if u == nil {
 		return
 	}
-	attrs[AttrTotalTokens] = u.TotalTokens
-	attrs[AttrInputTokens] = u.PromptTokens
-	attrs[AttrOutputTokens] = u.CompletionTokens
+	input, output, total := u.TokenMeasurements()
+	setIfNotNil(attrs, AttrTotalTokens, total)
+	setIfNotNil(attrs, AttrInputTokens, input)
+	setIfNotNil(attrs, AttrOutputTokens, output)
 
 	responsesNS := usesInputTokenDetailsNamespace(d.RequestType)
 

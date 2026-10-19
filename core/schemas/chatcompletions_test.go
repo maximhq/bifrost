@@ -6,6 +6,110 @@ import (
 	"testing"
 )
 
+func TestUsageTokenMeasurementPresence(t *testing.T) {
+	for _, tc := range []struct {
+		name, chat, responses string
+	}{
+		{"missing", `{}`, `{}`},
+		{"zero", `{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}`, `{"input_tokens":0,"output_tokens":0,"total_tokens":0}`},
+		{"input_only", `{"prompt_tokens":20}`, `{"input_tokens":20}`},
+		{"output_only", `{"completion_tokens":4}`, `{"output_tokens":4}`},
+		{"total_only", `{"total_tokens":24}`, `{"total_tokens":24}`},
+		{"complete", `{"prompt_tokens":20,"completion_tokens":4,"total_tokens":24}`, `{"input_tokens":20,"output_tokens":4,"total_tokens":24}`},
+		{"null", `{"prompt_tokens":null,"completion_tokens":null,"total_tokens":null}`, `{"input_tokens":null,"output_tokens":null,"total_tokens":null}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var chat BifrostLLMUsage
+			var responses ResponsesResponseUsage
+			if err := Unmarshal([]byte(tc.chat), &chat); err != nil {
+				t.Fatal(err)
+			}
+			if err := Unmarshal([]byte(tc.responses), &responses); err != nil {
+				t.Fatal(err)
+			}
+			for _, value := range []struct {
+				name     string
+				usage    any
+				original string
+				fields   []string
+			}{
+				{"chat", &chat, tc.chat, []string{"prompt_tokens", "completion_tokens", "total_tokens"}},
+				{"chat_copy", chat.DeepCopy(), tc.chat, []string{"prompt_tokens", "completion_tokens", "total_tokens"}},
+				{"responses_to_chat", responses.ToBifrostLLMUsage(), tc.chat, []string{"prompt_tokens", "completion_tokens", "total_tokens"}},
+				{"responses", &responses, tc.responses, []string{"input_tokens", "output_tokens", "total_tokens"}},
+				{"chat_to_responses", chat.ToResponsesResponseUsage(), tc.responses, []string{"input_tokens", "output_tokens", "total_tokens"}},
+			} {
+				t.Run(value.name, func(t *testing.T) {
+					data, err := Marshal(value.usage)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var got, want map[string]any
+					if err := json.Unmarshal(data, &got); err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal([]byte(value.original), &want); err != nil {
+						t.Fatal(err)
+					}
+					for _, field := range value.fields {
+						if got[field] != want[field] {
+							t.Errorf("%s = %v, want %v; wire %s", field, got[field], want[field], data)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+func BenchmarkUsageTokenPresenceRoundTrip(b *testing.B) {
+	data := []byte(`{"prompt_tokens":20,"completion_tokens":4,"total_tokens":24}`)
+	b.ReportAllocs()
+	for b.Loop() {
+		var usage BifrostLLMUsage
+		if err := Unmarshal(data, &usage); err != nil {
+			b.Fatal(err)
+		}
+		if _, err := Marshal(&usage); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func TestTokenUsageAccumulatorDoesNotCompletePartialMeasurements(t *testing.T) {
+	usage := NewTokenUsageAccumulator()
+	var input, output BifrostLLMUsage
+	if err := Unmarshal([]byte(`{"prompt_tokens":20}`), &input); err != nil {
+		t.Fatal(err)
+	}
+	usage.AccumulateTokenUsage(&input)
+	data, err := Marshal(usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["prompt_tokens"] != float64(20) || fields["completion_tokens"] != nil || fields["total_tokens"] != nil {
+		t.Fatalf("partial receipt fabricated measurements: %s", data)
+	}
+	if err := Unmarshal([]byte(`{"completion_tokens":0}`), &output); err != nil {
+		t.Fatal(err)
+	}
+	usage.AccumulateTokenUsage(&output)
+	data, err = Marshal(usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["prompt_tokens"] != float64(20) || fields["completion_tokens"] != float64(0) || fields["total_tokens"] != float64(20) {
+		t.Fatalf("late measured zero did not complete known counters: %s", data)
+	}
+}
+
 // ChatParameters' reasoning union accepts clients that mirror the same
 // directive in both spellings (flat reasoning_* shorthand plus the reasoning
 // object) and canonicalizes to the object form, while still rejecting
