@@ -276442,6 +276442,133 @@
           }
         }
       ]
+    },
+    {
+      "name": "261. Perplexity Agent API web_search maps cross-provider domain filters onto search_domain_filter (perplexity web search filters)",
+      "description": "Perplexity's Agent API web_search only reads filters.search_domain_filter, which is an allowlist or a '-'-prefixed denylist but never both (docs.perplexity.ai/docs/agent-api/tools/web-search). Pre-fix, blocked_domains reached Perplexity unconverted (so the denylist was silently ignored) and other providers' web_search fields (max_uses, time_range_filter, external_web_access, search_content_types) were forwarded as-is. 261.1 pins the denylist mapping and the field cleanup; 261.2 pins that a request carrying both generic lists keeps the allowlist instead of sending a mixed filter. Both read the outbound body from extra_fields.raw_request (send_back_raw_request is on for perplexity in the harness profile). Only /v1/responses reaches the Agent API; /v1/chat/completions serves the Sonar family, whose web_search_options has no domain-list field.",
+      "item": [
+        {
+          "name": "261.1 perplexity/openai/gpt-5.6-sol /v1/responses web_search blocked_domains become a search_domain_filter denylist (perplexity web search filters)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('261.1 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'perplexity rejected the web_search request: ' + txt).to.equal(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var ws = ((rr && rr.tools) || []).filter(function (t) { return t.type === 'web_search'; })[0];",
+                  "pm.test('261.1 web_search tool reached Perplexity' , function () {",
+                  "  pm.expect(rr, 'raw_request missing - send_back_raw_request not honoured: ' + txt.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(ws, 'no web_search tool on the wire: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "var filters = (ws && ws.filters) || {};",
+                  "pm.test('261.1 blocked_domains is sent as a -prefixed search_domain_filter', function () {",
+                  "  pm.expect(filters.search_domain_filter, 'filters on the wire: ' + JSON.stringify(ws)).to.deep.equal(['-reddit.com']);",
+                  "  pm.expect(filters, 'Perplexity does not read blocked_domains: ' + JSON.stringify(ws)).to.not.have.property('blocked_domains');",
+                  "});",
+                  "pm.test('261.1 other providers\\' fields are dropped and user_location is kept', function () {",
+                  "  pm.expect(ws, 'max_uses is Anthropic-only: ' + JSON.stringify(ws)).to.not.have.property('max_uses');",
+                  "  pm.expect(ws.user_location, 'user_location lost: ' + JSON.stringify(ws)).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"perplexity/openai/gpt-5.6-sol\",\n  \"input\": \"In one sentence, what is the capital of France?\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\",\n      \"max_uses\": 2,\n      \"filters\": {\n        \"blocked_domains\": [\n          \"reddit.com\"\n        ]\n      },\n      \"user_location\": {\n        \"type\": \"approximate\",\n        \"country\": \"FR\"\n      }\n    }\n  ],\n  \"max_output_tokens\": 128\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        },
+        {
+          "name": "261.2 perplexity/openai/gpt-5.6-sol /v1/responses web_search with allowed_domains and blocked_domains keeps the allowlist only (perplexity web search filters)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var txt = pm.response.text() || '';",
+                  "pm.test('261.2 exact success status', function () {",
+                  "  pm.expect(pm.response.code, 'perplexity rejected the web_search request: ' + txt).to.equal(200);",
+                  "});",
+                  "var body = {}; try { body = pm.response.json() || {}; } catch (e) { body = {}; }",
+                  "var rr = (body.extra_fields || {}).raw_request;",
+                  "if (typeof rr === 'string') { try { rr = JSON.parse(rr); } catch (e) { rr = null; } }",
+                  "var ws = ((rr && rr.tools) || []).filter(function (t) { return t.type === 'web_search'; })[0];",
+                  "pm.test('261.2 web_search tool reached Perplexity' , function () {",
+                  "  pm.expect(rr, 'raw_request missing - send_back_raw_request not honoured: ' + txt.slice(0, 600)).to.be.an('object');",
+                  "  pm.expect(ws, 'no web_search tool on the wire: ' + JSON.stringify(rr).slice(0, 800)).to.be.an('object');",
+                  "});",
+                  "var filters = (ws && ws.filters) || {};",
+                  "pm.test('261.2 search_domain_filter is allowlist-only, never mixed', function () {",
+                  "  pm.expect(filters.search_domain_filter, 'filters on the wire: ' + JSON.stringify(ws)).to.deep.equal(['wikipedia.org']);",
+                  "  pm.expect(filters, 'generic allowed_domains left on the wire: ' + JSON.stringify(ws)).to.not.have.property('allowed_domains');",
+                  "  pm.expect(filters, 'generic blocked_domains left on the wire: ' + JSON.stringify(ws)).to.not.have.property('blocked_domains');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"perplexity/openai/gpt-5.6-sol\",\n  \"input\": \"In one sentence, what is the capital of France?\",\n  \"tools\": [\n    {\n      \"type\": \"web_search\",\n      \"filters\": {\n        \"allowed_domains\": [\n          \"wikipedia.org\"\n        ],\n        \"blocked_domains\": [\n          \"reddit.com\"\n        ]\n      }\n    }\n  ],\n  \"max_output_tokens\": 128\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/v1/responses",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "v1",
+                "responses"
+              ]
+            }
+          }
+        }
+      ]
     }
   ]
 }

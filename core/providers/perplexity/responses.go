@@ -16,6 +16,13 @@ func isPerplexityResponsesSupported(model string) bool {
 	return bare != "sonar" && !strings.HasPrefix(bare, "sonar-")
 }
 
+// perplexityAgentPresetModel is a Bifrost-only sentinel (not a real Perplexity
+// model): it tells withWireModelForAgentAPI to omit `model` from the wire and let
+// an ExtraParams `preset` (fast/low/medium/high/xhigh/wide-research) pick Perplexity's
+// own default model. Unlike a real model name, "preset" has no meaning as an actual
+// wire model, so both the bare and "perplexity/"-prefixed spellings are treated identically.
+const perplexityAgentPresetModel = "preset"
+
 // ToPerplexityResponsesRequest converts a BifrostResponsesRequest to PerplexityChatRequest
 func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *PerplexityChatRequest {
 	if bifrostReq == nil {
@@ -118,7 +125,6 @@ func ToPerplexityResponsesRequest(bifrostReq *schemas.BifrostResponsesRequest) *
 			if responseFormat, ok := schemas.SafeExtractFromMap(bifrostReq.Params.ExtraParams, "response_format"); ok {
 				perplexityReq.ResponseFormat = &responseFormat
 			}
-
 
 			// Perplexity-specific request fields
 			if numSearchResults, ok := schemas.SafeExtractIntPointer(bifrostReq.Params.ExtraParams["num_search_results"]); ok {
