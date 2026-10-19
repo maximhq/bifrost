@@ -7108,6 +7108,30 @@
                     "type": "boolean",
                     "description": "Per-alias Vertex override: when true, call the alias region as-is and skip promoting multi-region-only models to a multi-region endpoint."
                   },
+                  "vertex_endpoint": {
+                    "type": "object",
+                    "description": "Routes this alias to a custom Vertex endpoint. format is the request body the deployment accepts and method the Vertex route that carries it; neither is inferred from the model name. model_id is the served model name in the JSON body; endpoint_id selects the Vertex endpoint. Uses the key's Google credentials and project/region, with per-alias overrides.",
+                    "properties": {
+                      "endpoint_id": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_-]+$",
+                        "description": "Vertex endpoint resource ID, separate from the served model name."
+                      },
+                      "format": {
+                        "type": "string",
+                        "enum": ["openai_chat"],
+                        "description": "Request body the deployment accepts. openai_chat sends OpenAI chat completions and supports chat completions and the Responses-to-chat bridge only."
+                      },
+                      "method": {
+                        "type": "string",
+                        "enum": ["raw_predict", "chat_completions"],
+                        "default": "raw_predict",
+                        "description": "Vertex route for the format. raw_predict uses v1 :rawPredict / :streamRawPredict; chat_completions uses v1beta1 /chat/completions for both unary and streaming."
+                      }
+                    },
+                    "required": ["endpoint_id", "format"],
+                    "additionalProperties": false
+                  },
                   "inference_profile_arn": {
                     "type": "string",
                     "description": "Per-alias Bedrock inference profile ARN (can use env. prefix)."

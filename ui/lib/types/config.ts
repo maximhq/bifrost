@@ -71,12 +71,19 @@ export interface AliasConfig {
 	// Vertex overrides
 	project_number?: SecretVar;
 	force_single_region?: boolean;
+	vertex_endpoint?: VertexEndpoint;
 	// Bedrock overrides
 	inference_profile_arn?: SecretVar;
 	// Replicate overrides
 	use_deployments_endpoint?: boolean;
 	use_anthropic_endpoints?: boolean;
 	use_openai_endpoints?: boolean;
+}
+
+export interface VertexEndpoint {
+	endpoint_id: string;
+	format: "openai_chat";
+	method?: "raw_predict" | "chat_completions";
 }
 
 // AzureKeyConfig matching Go's schemas.AzureKeyConfig

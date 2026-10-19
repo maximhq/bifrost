@@ -569,6 +569,13 @@ const aliasConfigObjectSchema = z.object({
 	// Vertex overrides
 	project_number: secretVarSchema.optional(),
 	force_single_region: z.boolean().optional(),
+	vertex_endpoint: z
+		.object({
+			endpoint_id: z.string().regex(/^[A-Za-z0-9_-]+$/, "Enter a Vertex endpoint ID or paste a supported endpoint URL"),
+			format: z.enum(["openai_chat"]),
+			method: z.enum(["raw_predict", "chat_completions"]).optional(),
+		})
+		.optional(),
 	// Bedrock overrides
 	inference_profile_arn: secretVarSchema.optional(),
 	// Replicate overrides
