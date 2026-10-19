@@ -120,9 +120,6 @@ func (provider *DeepSeekProvider) Search(ctx *schemas.BifrostContext, key schema
 		Usage:   toolsUsage(deepseekSearchCostPerRequest),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:             schemas.SearchRequest,
-			Provider:                schemas.DeepSeek,
-			OriginalModelRequested:  request.Model,
-			ResolvedModelUsed:       request.Model,
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: providerResponseHeaders,
 		},
@@ -183,9 +180,6 @@ func (provider *DeepSeekProvider) Fetch(ctx *schemas.BifrostContext, key schemas
 		Usage:   toolsUsage(deepseekFetchCostPerRequest),
 		ExtraFields: schemas.BifrostResponseExtraFields{
 			RequestType:             schemas.FetchRequest,
-			Provider:                schemas.DeepSeek,
-			OriginalModelRequested:  request.Model,
-			ResolvedModelUsed:       request.Model,
 			Latency:                 latency.Milliseconds(),
 			ProviderResponseHeaders: providerResponseHeaders,
 		},

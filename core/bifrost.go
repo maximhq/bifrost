@@ -1671,10 +1671,7 @@ func (bifrost *Bifrost) SearchRequest(ctx *schemas.BifrostContext, req *schemas.
 				Message: "query not provided for search request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:            schemas.SearchRequest,
-				Provider:               req.Provider,
-				OriginalModelRequested: req.Model,
-				ResolvedModelUsed:      req.Model,
+				RequestType: schemas.SearchRequest,
 			},
 		}
 	}
@@ -1685,10 +1682,7 @@ func (bifrost *Bifrost) SearchRequest(ctx *schemas.BifrostContext, req *schemas.
 				Message: "count must be between 1 and 50 for search request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:            schemas.SearchRequest,
-				Provider:               req.Provider,
-				OriginalModelRequested: req.Model,
-				ResolvedModelUsed:      req.Model,
+				RequestType: schemas.SearchRequest,
 			},
 		}
 	}
@@ -1723,10 +1717,7 @@ func (bifrost *Bifrost) FetchRequest(ctx *schemas.BifrostContext, req *schemas.B
 				Message: "url not provided for fetch request",
 			},
 			ExtraFields: schemas.BifrostErrorExtraFields{
-				RequestType:            schemas.FetchRequest,
-				Provider:               req.Provider,
-				OriginalModelRequested: req.Model,
-				ResolvedModelUsed:      req.Model,
+				RequestType: schemas.FetchRequest,
 			},
 		}
 	}
@@ -9239,7 +9230,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if !ok {
 			return nil, providerUtils.NewUnsupportedOperationError(schemas.SearchRequest, provider.GetProviderKey())
 		}
-		searchResponse, bifrostError := tools.Search(req.Context, key, req.BifrostRequest.SearchRequest)
+		searchResponse, bifrostError := tools.Search(req.Context, key, req.SearchRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}
@@ -9249,7 +9240,7 @@ func (bifrost *Bifrost) handleProviderRequest(provider schemas.Provider, config 
 		if !ok {
 			return nil, providerUtils.NewUnsupportedOperationError(schemas.FetchRequest, provider.GetProviderKey())
 		}
-		fetchResponse, bifrostError := tools.Fetch(req.Context, key, req.BifrostRequest.FetchRequest)
+		fetchResponse, bifrostError := tools.Fetch(req.Context, key, req.FetchRequest)
 		if bifrostError != nil {
 			return nil, bifrostError
 		}

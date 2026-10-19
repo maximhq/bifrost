@@ -78,7 +78,7 @@ func newServedModelServer(t *testing.T, contentType, body string) *httptest.Serv
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", contentType)
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}))
 	t.Cleanup(server.Close)
 	return server
@@ -427,7 +427,7 @@ func newCapturingServer(t *testing.T, contentType, body string, captured *[]byte
 		raw, _ := io.ReadAll(r.Body)
 		*captured = raw
 		w.Header().Set("Content-Type", contentType)
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}))
 	t.Cleanup(server.Close)
 	return server
@@ -545,7 +545,7 @@ func newToolsServer(t *testing.T, status int, body string, captured *toolsReques
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		fmt.Fprint(w, body)
+		_, _ = fmt.Fprint(w, body)
 	}))
 	t.Cleanup(server.Close)
 	return server
