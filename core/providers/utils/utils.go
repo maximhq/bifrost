@@ -587,7 +587,13 @@ func DoHTTPRequest(client *http.Client, req *http.Request) (*http.Response, erro
 	schemas.AddUpstreamLatency(req.Context(), time.Since(startTime))
 	if observer != nil {
 		if err != nil {
-			observer.Done(err)
+			// URL errors may contain signed query parameters; only expose their cause.
+			observedErr := err
+			var urlErr *url.Error
+			if errors.As(err, &urlErr) {
+				observedErr = urlErr.Err
+			}
+			observer.Done(observedErr)
 		} else {
 			contentType, encoding := resp.Header.Get("Content-Type"), resp.Header.Get("Content-Encoding")
 			observer.Response(resp.StatusCode, contentType, encoding, nil)
