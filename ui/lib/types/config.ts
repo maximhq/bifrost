@@ -527,8 +527,8 @@ export interface AllowedRequests {
 	list_models: boolean;
 	model_retrieve?: boolean;
 	rerank: boolean;
-	search: boolean;
-	fetch: boolean;
+	search?: boolean;
+	fetch?: boolean;
 	decisions?: boolean;
 	video_generation: boolean;
 	video_edit: boolean;
