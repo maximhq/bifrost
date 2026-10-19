@@ -675,6 +675,18 @@ func applyContentOutputToEntry(entry *logstore.Log, result *schemas.BifrostRespo
 	}
 }
 
+// rawResponseIsLoggable reports whether a non-streaming response body may be persisted when
+// content logging and raw storage are both on.
+//
+// Search and Fetch are excluded because their raw bodies carry result content: a Fetch with
+// need_content returns whole page text, and a Search result can carry page content too. The row
+// keeps the query or URL that captureRequestInput records instead. ExtraFields.RawResponse is
+// left as it is, so the API still returns it when send_back_raw_response is enabled — this
+// filters the logger's write only.
+func rawResponseIsLoggable(requestType schemas.RequestType) bool {
+	return requestType != schemas.SearchRequest && requestType != schemas.FetchRequest
+}
+
 func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, result *schemas.BifrostResponse, shouldStoreRaw bool, contentLoggingEnabled bool) {
 	defer applyRefusalLogOutcome(entry)
 	if result == nil {
@@ -709,7 +721,7 @@ func (p *LoggerPlugin) applyNonStreamingOutputToEntry(entry *logstore.Log, resul
 					entry.RawRequest = string(rawRequestBytes)
 				}
 			}
-			if extraFields.RawResponse != nil {
+			if extraFields.RawResponse != nil && rawResponseIsLoggable(extraFields.RequestType) {
 				rawRespBytes, err := sonic.Marshal(extraFields.RawResponse)
 				if err == nil {
 					entry.RawResponse = string(rawRespBytes)
