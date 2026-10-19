@@ -1,3 +1,4 @@
+- [feat]: DeepSeek web tools at `POST /v1/tools/search` and `POST /v1/tools/fetch`, routed to DeepSeek when a body carries no model [@jimaldon](https://github.com/jimaldon)
 ## ✨ Features
 
 - **Virtual Key Metadata in config.json** - `governance.virtual_keys[].metadata` accepts string key/value pairs (for example `cost_center`, `owner`) for cost attribution. Keys use letters, digits, `.`, `_` and `-`; values are up to 512 characters; up to 50 entries [@jimseiwert](https://github.com/jimseiwert)

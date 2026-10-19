@@ -219,6 +219,24 @@ var rerankParamsKnownFields = map[string]bool{
 	"next_token":         true,
 }
 
+// Known fields for SearchHandlerRequest.
+var searchParamsKnownFields = map[string]bool{
+	"model":        true,
+	"fallbacks":    true,
+	"query":        true,
+	"count":        true,
+	"ori_question": true,
+	"localization": true,
+	"need_content": true,
+}
+
+// Known fields for FetchHandlerRequest.
+var fetchParamsKnownFields = map[string]bool{
+	"model":     true,
+	"fallbacks": true,
+	"url":       true,
+}
+
 var decisionParamsKnownFields = map[string]bool{
 	"model":             true,
 	"input":             true,
@@ -655,6 +673,22 @@ type RerankRequest struct {
 	*schemas.RerankParameters
 }
 
+// SearchHandlerRequest is a bifrost web search request.
+type SearchHandlerRequest struct {
+	Query        string  `json:"query"`
+	Count        *int    `json:"count"`
+	OriQuestion  *string `json:"ori_question"`
+	Localization *string `json:"localization"`
+	NeedContent  *bool   `json:"need_content"`
+	BifrostParams
+}
+
+// FetchHandlerRequest is a bifrost page fetch request.
+type FetchHandlerRequest struct {
+	URL string `json:"url"`
+	BifrostParams
+}
+
 // DecisionHandlerRequest is a bifrost decision request
 type DecisionHandlerRequest struct {
 	Input            schemas.DecisionInput      `json:"input"`
@@ -822,6 +856,8 @@ var PathToTypeMapping = map[string]schemas.RequestType{
 	"/v1/responses":              schemas.ResponsesRequest,
 	"/v1/embeddings":             schemas.EmbeddingRequest,
 	"/v1/rerank":                 schemas.RerankRequest,
+	"/v1/tools/search":           schemas.SearchRequest,
+	"/v1/tools/fetch":            schemas.FetchRequest,
 	"/v1/decisions":              schemas.DecisionRequest,
 	"/v1/ocr":                    schemas.OCRRequest,
 	"/v1/audio/speech":           schemas.SpeechRequest,
@@ -881,6 +917,8 @@ func (h *CompletionHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.GET("/v1/responses/{response_id}/input_items", lib.ChainMiddlewares(h.responsesInputItems, responsesInputItemsMW...))
 	r.POST("/v1/embeddings", lib.ChainMiddlewares(h.embeddings, baseMiddlewares...))
 	r.POST("/v1/rerank", lib.ChainMiddlewares(h.rerank, baseMiddlewares...))
+	r.POST("/v1/tools/search", lib.ChainMiddlewares(h.search, baseMiddlewares...))
+	r.POST("/v1/tools/fetch", lib.ChainMiddlewares(h.fetch, baseMiddlewares...))
 	r.POST("/v1/decisions", lib.ChainMiddlewares(h.evaluation, baseMiddlewares...))
 	r.POST("/v1/ocr", lib.ChainMiddlewares(h.ocr, baseMiddlewares...))
 	// ElevenLabs sound-effect models also flow through /v1/audio/speech; the
@@ -1474,6 +1512,165 @@ func (h *CompletionHandler) rerank(ctx *fasthttp.RequestCtx) {
 	}
 	// Send successful response
 	SendJSON(ctx, resp)
+}
+
+// search handles POST /v1/tools/search - run a web search through the provider's tools API.
+func (h *CompletionHandler) search(ctx *fasthttp.RequestCtx) {
+	bifrostSearchReq, err := prepareSearchRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.SearchRequest(bifrostCtx, bifrostSearchReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, resp)
+}
+
+// fetch handles POST /v1/tools/fetch - retrieve one page as Markdown through the provider's
+// tools API.
+func (h *CompletionHandler) fetch(ctx *fasthttp.RequestCtx) {
+	bifrostFetchReq, err := prepareFetchRequest(ctx, h.config)
+	if err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, err.Error())
+		return
+	}
+
+	bifrostCtx, cancel := lib.ConvertToBifrostContext(ctx, h.config)
+	defer cancel()
+	if bifrostCtx == nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Failed to convert context")
+		return
+	}
+
+	resp, bifrostErr := h.client.FetchRequest(bifrostCtx, bifrostFetchReq)
+	if bifrostErr != nil {
+		forwardProviderHeadersFromContext(ctx, bifrostCtx)
+		SendBifrostError(ctx, bifrostErr)
+		return
+	}
+
+	if resp != nil {
+		lib.ApplyBifrostResponseHeaders(ctx, bifrostCtx, resp.ExtraFields)
+	}
+	if streamLargeResponseIfActive(ctx, bifrostCtx) {
+		return
+	}
+	SendJSON(ctx, resp)
+}
+
+// prepareSearchRequest builds a BifrostSearchRequest from the HTTP body.
+//
+// DeepSeek bounds query and ori_question at 128 Unicode characters and count at 1-50, so the
+// same bounds are rejected at the edge with a 400 instead of being sent upstream to fail.
+func prepareSearchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostSearchRequest, error) {
+	req, base, err := prepareRequest[SearchHandlerRequest](ctx, config, searchParamsKnownFields)
+	if err != nil {
+		return nil, err
+	}
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		return nil, fmt.Errorf("query is required for search")
+	}
+	if len([]rune(query)) > 128 {
+		return nil, fmt.Errorf("query must be at most 128 characters")
+	}
+	if req.Count != nil && (*req.Count < 1 || *req.Count > 50) {
+		return nil, fmt.Errorf("count must be between 1 and 50")
+	}
+	if req.OriQuestion != nil {
+		oriQuestion := strings.TrimSpace(*req.OriQuestion)
+		if oriQuestion == "" || len([]rune(oriQuestion)) > 128 {
+			return nil, fmt.Errorf("ori_question must be between 1 and 128 characters")
+		}
+	}
+	provider, model := resolveToolsRouting(base)
+	return &schemas.BifrostSearchRequest{
+		Provider:     provider,
+		Model:        model,
+		Query:        req.Query,
+		Count:        req.Count,
+		OriQuestion:  req.OriQuestion,
+		Localization: req.Localization,
+		NeedContent:  req.NeedContent,
+		Fallbacks:    base.Fallbacks,
+		ExtraParams:  base.ExtraParams,
+	}, nil
+}
+
+// prepareFetchRequest builds a BifrostFetchRequest from the HTTP body.
+//
+// DeepSeek requires an absolute HTTP(S) URL with a host and no embedded credentials, at most
+// 8192 characters. Validating here keeps an obviously malformed URL from costing a request.
+func prepareFetchRequest(ctx *fasthttp.RequestCtx, config *lib.Config) (*schemas.BifrostFetchRequest, error) {
+	req, base, err := prepareRequest[FetchHandlerRequest](ctx, config, fetchParamsKnownFields)
+	if err != nil {
+		return nil, err
+	}
+	rawURL := strings.TrimSpace(req.URL)
+	if rawURL == "" {
+		return nil, fmt.Errorf("url is required for fetch")
+	}
+	if len(rawURL) > 8192 {
+		return nil, fmt.Errorf("url must be at most 8192 characters")
+	}
+	parsed, parseErr := url.Parse(rawURL)
+	if parseErr != nil {
+		return nil, fmt.Errorf("url is not valid")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return nil, fmt.Errorf("url must use http or https")
+	}
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("url must include a host")
+	}
+	if parsed.User != nil {
+		return nil, fmt.Errorf("url must not include credentials")
+	}
+	provider, model := resolveToolsRouting(base)
+	return &schemas.BifrostFetchRequest{
+		Provider:    provider,
+		Model:       model,
+		URL:         rawURL,
+		Fallbacks:   base.Fallbacks,
+		ExtraParams: base.ExtraParams,
+	}, nil
+}
+
+// resolveToolsRouting resolves the provider for a tools request.
+//
+// Search and Fetch carry no model upstream, so an absent model means DeepSeek, the provider
+// that serves these operations. A bare token in "model" is read as a provider name, because
+// there is no model for the caller to name.
+func resolveToolsRouting(base *requestBase) (schemas.ModelProvider, string) {
+	if base == nil {
+		return schemas.DeepSeek, ""
+	}
+	if base.Provider != "" {
+		return base.Provider, base.ModelName
+	}
+	if base.ModelName != "" {
+		return schemas.ModelProvider(base.ModelName), ""
+	}
+	return schemas.DeepSeek, ""
 }
 
 // prepareDecisionRequest prepares a BifrostDecisionRequest from the HTTP
