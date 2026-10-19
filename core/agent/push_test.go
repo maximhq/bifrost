@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/a2aproject/a2a-go/v2/a2aclient"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/push"
 	"github.com/maximhq/bifrost/core/schemas"
 	"github.com/stretchr/testify/require"
@@ -26,6 +28,7 @@ type pushTimingTracer struct {
 	traces   []*schemas.Trace
 	active   map[string]*schemas.Trace
 	released []*schemas.Trace
+	contexts []*schemas.BifrostContext
 }
 
 func (t *pushTimingTracer) CreateTrace(_ string, requestID ...string) string {
@@ -47,6 +50,9 @@ func (t *pushTimingTracer) ReleaseTrace(trace *schemas.Trace) {
 }
 
 func (t *pushTimingTracer) StartSpanID(ctx context.Context, name string, kind schemas.SpanKind) (string, schemas.SpanHandle) {
+	if gateCtx, ok := ctx.(*schemas.BifrostContext); ok {
+		t.contexts = append(t.contexts, gateCtx)
+	}
 	traceID, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
 	trace := t.active[traceID]
 	if trace == nil {
@@ -1325,4 +1331,186 @@ func TestPushDeliveryClientPrivateCallbacks(t *testing.T) {
 	require.NoError(t, err)
 	resp.Body.Close()
 	require.Equal(t, http.StatusFound, resp.StatusCode)
+}
+
+type recordedPushCallback struct {
+	headers http.Header
+	body    []byte
+}
+
+// TestPushDeliveryNativeProtocolLifecycle exercises native SDK CRUD, authenticated ingress, durable relay, and deletion together.
+func TestPushDeliveryNativeProtocolLifecycle(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	manager, _, store, upstream := pushGateway(t)
+	var mu sync.Mutex
+	deliveries := []recordedPushCallback{}
+	deliveryGate := make(chan struct{})
+	releaseDelivery := sync.OnceFunc(func() { close(deliveryGate) })
+	t.Cleanup(releaseDelivery)
+	// The public callback is injected so the finite test needs no externally hosted receiver.
+	manager.pushDeliveryClient = &http.Client{Transport: pushRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		select {
+		case <-deliveryGate:
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		}
+		require.Equal(t, "https://callback.example/events", req.URL.String())
+		require.Equal(t, http.MethodPost, req.Method)
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		deliveries = append(deliveries, recordedPushCallback{headers: req.Header.Clone(), body: body})
+		mu.Unlock()
+		return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(bytes.NewReader(nil)), Header: http.Header{}}, nil
+	})}
+	protocol, ok := manager.ProtocolHandler("fixture")
+	require.True(t, ok)
+	mux := http.NewServeMux()
+	mux.Handle("/rpc", protocol)
+	mux.HandleFunc("/ingress", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		status, _ := manager.AcceptPushCallback(r.Context(), "fixture", r.Header.Get(PushNotificationTokenHeader), body)
+		w.WriteHeader(status)
+	})
+	gateway := httptest.NewServer(mux)
+	defer gateway.Close()
+	manager.externalURL = gateway.URL
+	client, err := a2aclient.NewFromEndpoints(ctx, []*a2a.AgentInterface{a2a.NewAgentInterface(gateway.URL+"/rpc", a2a.TransportProtocolJSONRPC)}, a2aclient.WithJSONRPCTransport(gateway.Client()))
+	require.NoError(t, err)
+	defer client.Destroy()
+	created, err := client.CreateTaskPushConfig(ctx, &a2a.PushConfig{TaskID: "task-1", ID: "cfg-1", URL: "https://callback.example/events", Token: "client-token", Auth: &a2a.PushAuthInfo{Scheme: "Bearer", Credentials: "client-credential"}})
+	require.NoError(t, err)
+	require.Equal(t, "https://callback.example/events", created.URL)
+	require.Empty(t, created.Token)
+	require.Empty(t, created.Auth.Credentials)
+	upstreamConfig := upstream.lastCreated(t)
+	require.Equal(t, gateway.URL+"/agents/a2a/fixture"+GatewayPushCallbackPathSuffix, upstreamConfig.URL)
+	require.NotEmpty(t, upstreamConfig.Token)
+	require.NotEqual(t, "client-token", upstreamConfig.Token)
+	require.Nil(t, upstreamConfig.Auth)
+	got, err := client.GetTaskPushConfig(ctx, &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"})
+	require.NoError(t, err)
+	require.Equal(t, created.URL, got.URL)
+	require.Empty(t, got.Token)
+	listed, err := client.ListTaskPushConfigs(ctx, &a2a.ListTaskPushConfigRequest{TaskID: "task-1"})
+	require.NoError(t, err)
+	require.Len(t, listed, 1)
+	require.Empty(t, listed[0].Token)
+	// postIngress simulates the upstream agent presenting only its minted ingress token.
+	postIngress := func(token string, payload []byte, want int) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, gateway.URL+"/ingress", bytes.NewReader(payload))
+		require.NoError(t, err)
+		req.Header.Set(PushNotificationTokenHeader, token)
+		response, err := gateway.Client().Do(req)
+		require.NoError(t, err)
+		response.Body.Close()
+		require.Equal(t, want, response.StatusCode)
+	}
+	completed := pushEventPayload(t, "task-1")
+	artifact, err := json.Marshal(a2a.StreamResponse{Event: &a2a.TaskArtifactUpdateEvent{TaskID: "task-1", ContextID: "ctx-1", Artifact: &a2a.Artifact{ID: "artifact-1", Parts: []*a2a.Part{a2a.NewTextPart("checkpoint")}}}})
+	require.NoError(t, err)
+	for _, payload := range [][]byte{artifact, completed} {
+		postIngress(upstreamConfig.Token, payload, http.StatusAccepted)
+		postIngress(upstreamConfig.Token, payload, http.StatusAccepted)
+	}
+	for _, token := range []string{"", "wrong-token", "client-token"} {
+		postIngress(token, completed, http.StatusUnauthorized)
+	}
+	postIngress(upstreamConfig.Token, pushEventPayload(t, "other-task"), http.StatusBadRequest)
+	postIngress(upstreamConfig.Token, []byte("invalid-json"), http.StatusBadRequest)
+	postIngress(upstreamConfig.Token, make([]byte, maxPushPayloadSize+1), http.StatusRequestEntityTooLarge)
+	store.pushMu.Lock()
+	require.Len(t, store.deliveries, 2)
+	for _, delivery := range store.deliveries {
+		require.NotEqual(t, schemas.AgentPushDeliveryStatusDelivered, delivery.Status, "202 ingress acceptance must not claim receiver acknowledgement")
+	}
+	store.pushMu.Unlock()
+	releaseDelivery()
+	require.Eventually(t, func() bool {
+		store.pushMu.Lock()
+		defer store.pushMu.Unlock()
+		if len(store.deliveries) != 2 {
+			return false
+		}
+		for _, delivery := range store.deliveries {
+			if delivery.Status != schemas.AgentPushDeliveryStatusDelivered {
+				return false
+			}
+		}
+		return true
+	}, 5*time.Second, 10*time.Millisecond)
+	mu.Lock()
+	received := append([]recordedPushCallback(nil), deliveries...)
+	mu.Unlock()
+	require.Len(t, received, 2, "retransmitted events must produce one delivery each")
+	bodies := [][]byte{}
+	for _, delivery := range received {
+		require.Equal(t, "client-token", delivery.headers.Get(PushNotificationTokenHeader))
+		require.Equal(t, "Bearer client-credential", delivery.headers.Get("Authorization"))
+		require.Equal(t, "application/a2a+json", delivery.headers.Get("Content-Type"))
+		bodies = append(bodies, delivery.body)
+	}
+	require.ElementsMatch(t, [][]byte{artifact, completed}, bodies, "relay must preserve the exact upstream event bytes")
+	store.pushMu.Lock()
+	for _, delivery := range store.deliveries {
+		require.Equal(t, "fixture", delivery.AgentName)
+		require.Equal(t, "task-1", delivery.TaskID)
+		require.Equal(t, "cfg-1", delivery.ConfigID)
+		require.Equal(t, 1, delivery.Attempts)
+		require.Empty(t, delivery.LastError)
+	}
+	store.pushMu.Unlock()
+	require.NoError(t, client.DeleteTaskPushConfig(ctx, &a2a.DeleteTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"}))
+	stored, err := store.GetAgentPushConfig(ctx, "fixture", "task-1", "cfg-1")
+	require.NoError(t, err)
+	require.Nil(t, stored)
+	upstream.mu.Lock()
+	require.Len(t, upstream.deleted, 1)
+	require.Equal(t, "cfg-1", upstream.deleted[0].ID)
+	upstream.mu.Unlock()
+	postIngress(upstreamConfig.Token, completed, http.StatusUnauthorized)
+	_, err = client.GetTaskPushConfig(ctx, &a2a.GetTaskPushConfigRequest{TaskID: "task-1", ID: "cfg-1"})
+	require.Error(t, err)
+	t.Log("5 native CRUD calls, 11 ingress requests, 2 authenticated deduplicated deliveries; exact event bodies and both credential hops verified")
+}
+
+// TestPushRelayReleasesOperationContexts catches idle-poll and delivery watcher
+// leaks without relying on process-wide goroutine counts or manager shutdown.
+func TestPushRelayReleasesOperationContexts(t *testing.T) {
+	for _, operation := range []string{"poll", "prune", "delivery", "poll-error", "prune-error"} {
+		t.Run(operation, func(t *testing.T) {
+			parent, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			store := &pushMaintenanceStore{memoryPushStore: newMemoryPushStore()}
+			if strings.HasSuffix(operation, "-error") {
+				store.err = errors.New("database unavailable")
+			}
+			tracer := &pushTimingTracer{active: map[string]*schemas.Trace{}}
+			relay := newPushRelay(&Manager{ctx: parent, pushStore: store, tracer: tracer})
+			for range 20 {
+				switch operation {
+				case "poll", "poll-error":
+					relay.processDue()
+				case "prune", "prune-error":
+					relay.prune()
+				case "delivery":
+					// Missing config exercises the failed-delivery/outcome path.
+					relay.deliver(&schemas.AgentPushDelivery{ID: "missing-config", AgentName: "agent", TaskID: "task"}, time.Now().Add(time.Minute))
+				}
+				require.NotEmpty(t, tracer.contexts)
+				for _, ctx := range tracer.contexts {
+					require.ErrorIs(t, ctx.Err(), context.Canceled)
+				}
+				tracer.contexts = nil
+				require.NoError(t, parent.Err(), "operation cleanup must not cancel the manager")
+			}
+		})
+	}
 }

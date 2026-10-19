@@ -143,6 +143,25 @@ func TestEmptyCandidatesRegression(t *testing.T) {
 			expectFinish: "stop",
 		},
 		{
+			// A prompt Gemini refuses outright has no candidate; promptFeedback is the only signal.
+			name: "PromptBlocked_NonStream",
+			response: &gemini.GenerateContentResponse{
+				ModelVersion:   "gemini-4-argon",
+				PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{BlockReason: "SAFETY", BlockReasonMessage: "The prompt is blocked due to safety"},
+			},
+			isStream:     false,
+			expectFinish: "content_filter",
+		},
+		{
+			name: "PromptBlocked_Stream",
+			response: &gemini.GenerateContentResponse{
+				ModelVersion:   "gemini-4-argon",
+				PromptFeedback: &gemini.GenerateContentResponsePromptFeedback{BlockReason: "PROHIBITED_CONTENT"},
+			},
+			isStream:     true,
+			expectFinish: "content_filter",
+		},
+		{
 			name: "SafetyFilter_NonStream",
 			response: &gemini.GenerateContentResponse{
 				ResponseID:   "test-3",

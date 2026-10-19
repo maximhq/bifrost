@@ -17,7 +17,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/openai"
 	"github.com/maximhq/bifrost/core/schemas"
 
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 )
 
@@ -236,6 +236,9 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 
 		case *openai.OpenAIChatRequest:
 			r.Model = setModel(r.Model)
+			if deploymentProviderStr == "" || schemas.ModelProvider(deploymentProviderStr) == schemas.Azure {
+				forwardAzureDeploymentChatFields(ctx, bifrostCtx, r)
+			}
 
 		case *openai.OpenAIResponsesRequest:
 			r.Model = setModel(r.Model)
@@ -268,6 +271,34 @@ func AzureEndpointPreHook(handlerStore lib.HandlerStore) func(ctx *fasthttp.Requ
 
 		return nil
 	}
+}
+
+// forwardAzureDeploymentChatFields keeps the top-level fields of an Azure
+// deployments chat body that OpenAIChatRequest does not model (On Your Data
+// data_sources, or a field a newer Azure SDK sends) and turns on extra-params
+// passthrough, so they reach the deployment as the Azure SDK sent them instead
+// of being dropped at decode. The route is Azure's own wire, so no header is
+// needed; it is called only when the deployment resolves to Azure, since a
+// provider-prefixed path names a provider whose wire these fields are not.
+// Fields nested under extra_params (lifted by the router when the passthrough
+// header is set) win over a top-level field of the same name. A large payload
+// is streamed unparsed and is left alone.
+func forwardAzureDeploymentChatFields(ctx *fasthttp.RequestCtx, bifrostCtx *schemas.BifrostContext, req *openai.OpenAIChatRequest) {
+	if bifrostCtx == nil {
+		return
+	}
+	if isLargePayload, _ := bifrostCtx.Value(schemas.BifrostContextKeyLargePayloadMode).(bool); isLargePayload {
+		return
+	}
+	unknown := openai.OpenAIChatRequestUnknownFields(ctx.Request.Body())
+	if len(unknown) == 0 {
+		return
+	}
+	for name, value := range req.ExtraParams {
+		unknown[name] = value
+	}
+	req.SetExtraParams(unknown)
+	bifrostCtx.SetValue(schemas.BifrostContextKeyPassthroughExtraParams, true)
 }
 
 // openAIRawPassthrough reports whether the raw upstream bytes are already the

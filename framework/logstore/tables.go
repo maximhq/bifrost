@@ -159,9 +159,13 @@ type SearchFilters struct {
 	// (error_details.status_code). It is the error field every provider
 	// populates: error.code is empty for most of them, so "what kind of 400s are
 	// these" is usually a question about the status, not the code.
-	StatusCodes     []int             `json:"status_codes,omitempty"`
-	ContentSearch   string            `json:"content_search,omitempty"`
-	MetadataFilters map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	StatusCodes []int `json:"status_codes,omitempty"`
+	// GuardrailOutcomes keeps requests a guardrail acted on: "blocked" matches
+	// a guardrail_intervention error or a recorded intervention, "detected" a
+	// detect-only match in guardrail_debug. Several values are OR-ed together.
+	GuardrailOutcomes []string          `json:"guardrail_outcomes,omitempty"`
+	ContentSearch     string            `json:"content_search,omitempty"`
+	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
@@ -306,6 +310,7 @@ type Log struct {
 	ParentRequestID         *string   `gorm:"type:varchar(255);index" json:"parent_request_id"`
 	Timestamp               time.Time `gorm:"index;index:idx_logs_ts_provider_status,priority:1;index:idx_logs_session_id_timestamp,priority:2;index:idx_logs_vk_ts,priority:2;index:idx_logs_user_ts,priority:2;index:idx_logs_team_ts,priority:2;not null;index:idx_logs_selected_key_ts,priority:2;index:idx_logs_routing_rule_ts,priority:2;index:idx_logs_customer_ts,priority:2;index:idx_logs_business_unit_ts,priority:2;index:idx_logs_project_ts,priority:2" json:"timestamp"`
 	Object                  string    `gorm:"type:varchar(255);index;not null;column:object_type" json:"object"` // text.completion, chat.completion, or embedding
+	IsPassthrough           bool      `gorm:"not null;default:false" json:"is_passthrough,omitempty"`              // Row came from a passthrough route; Object is its inferred type, or passthrough when none is known
 	Provider                string    `gorm:"type:varchar(255);index;index:idx_logs_ts_provider_status,priority:2;not null" json:"provider"`
 	Model                   string    `gorm:"type:varchar(255);index;not null" json:"model"`
 	Alias                   *string   `gorm:"type:varchar(255);index" json:"alias,omitempty"`          // Set when model was resolved via alias mapping; the original name the caller used
@@ -432,9 +437,13 @@ type Log struct {
 	SessionTotalCost   float64 `gorm:"-" json:"session_total_cost,omitempty"`
 	SessionTotalTokens int64   `gorm:"-" json:"session_total_tokens,omitempty"`
 
-	RedactionData          *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
-	RedactionMapping       string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
-	RevealRedactionMapping *schemas.RedactionMapsByPhase `gorm:"-" json:"redaction_mapping,omitempty"` // Virtual field populated only on permitted log-detail reads
+	DeferredGuardrail *schemas.DeferredGuardrailResult `gorm:"-" json:"-"` // Transient: pending output-monitor guardrail result; the writer holds the row until it completes
+
+	RedactionData            *schemas.RedactionData        `gorm:"-" json:"-"`                           // Transient guardrail redaction data consumed by enterprise logstore wrappers
+	PassthroughParseFormat   schemas.ModelProvider         `gorm:"-" json:"-"`                           // Transient: base provider whose wire format the log writer parses passthrough bodies with; empty skips parsing
+	PassthroughParseMaxBytes int64                         `gorm:"-" json:"-"`                           // Transient: large-payload request threshold applied to media parsed from passthrough bodies; 0 keeps everything
+	RedactionMapping         string                        `gorm:"type:text" json:"-"`                   // Reversible redaction mapping (encrypted when an encryption key is set), written by enterprise logstore wrappers; deleted with the row
+	RevealRedactionMapping   *schemas.RedactionMapsByPhase `gorm:"-" json:"redaction_mapping,omitempty"` // Virtual field populated only on permitted log-detail reads
 
 	// Cluster governance fields - attached by the logging plugin when running in a cluster
 	// so that leaders can recover disconnected node usage from the logs table.
@@ -3216,4 +3225,23 @@ func serializeTokenUsage(u *schemas.BifrostLLMUsage) *schemas.BifrostLLMUsage {
 		stored.CompletionTokensDetails = &details
 	}
 	return &stored
+}
+
+// PassthroughObjectType returns the object type a row had before passthrough typing: passthrough
+// or passthrough_stream for a passthrough row stored under its inferred type, Object otherwise.
+// Settings keyed by request type (object-storage exclusions) use it so an exclusion of passthrough
+// keeps covering every passthrough call.
+func (l *Log) PassthroughObjectType() string {
+	if !l.IsPassthrough {
+		return l.Object
+	}
+	if l.Stream {
+		return "passthrough_stream"
+	}
+	return "passthrough"
+}
+
+// IsPassthroughObjectType reports whether objectType names a passthrough call.
+func IsPassthroughObjectType(objectType string) bool {
+	return objectType == "passthrough" || objectType == "passthrough_stream"
 }

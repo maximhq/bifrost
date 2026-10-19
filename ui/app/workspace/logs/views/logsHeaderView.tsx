@@ -26,7 +26,7 @@ import {
 	parseLogSearchInput,
 } from "@/lib/utils/logSearch";
 import { getApiBaseUrl } from "@/lib/utils/port";
-import { getRangeForPeriod, TIME_PERIODS } from "@/lib/utils/timeRange";
+import { getRangeForPeriod, TIME_PERIODS, withPeriodTimezone } from "@/lib/utils/timeRange";
 import { Calculator, ChevronDown, ListTree, MoreVertical, Radio, RefreshCw, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -526,7 +526,7 @@ async function startRecalculateCostJob(
 		credentials: "include",
 		headers,
 		// Override the page's own missing_cost_only filter with the mode chosen in the dialog.
-		body: JSON.stringify({ filters: { ...filters, missing_cost_only: missingCostOnly } }),
+		body: JSON.stringify({ filters: { ...withPeriodTimezone(filters), missing_cost_only: missingCostOnly } }),
 	});
 
 	// 202 Accepted (new job) and 409 Conflict (already running) both carry a status.

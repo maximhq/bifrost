@@ -82,7 +82,8 @@ _clean_build_dir:
 
 build: _clean_build_dir ## Build the plugin (supports: make build GOOS=linux GOARCH=amd64)
 	@mkdir -p $(OUTPUT_DIR)
-	@TARGET_OS="$(GOOS)"; \
+	@set -e; \
+	TARGET_OS="$(GOOS)"; \
 	TARGET_ARCH="$(GOARCH)"; \
 	ACTUAL_OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
 	ACTUAL_ARCH=$$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/;s/arm64/arm64/'); \
@@ -127,7 +128,7 @@ _build-with-docker: # Internal target for Docker-based cross-compilation
 			-e CGO_ENABLED=1 \
 			-e GOOS=$(TARGET_OS) \
 			-e GOARCH=$(TARGET_ARCH) \
-			golang:1.27.0-alpine3.24@sha256:4c9fe60190a2a3350ddc51de80d0224b8a6698d12bdfc999fee45ea9d6c46dbc \
+			golang:1.27.2-alpine3.24@sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d \
 			sh -c "apk add --no-cache gcc musl-dev && \
 				go build -buildmode=plugin -ldflags='-w -s' -trimpath -o $(OUTPUT) main.go"; \
 		echo "$(COLOR_SUCCESS)✓ Plugin built successfully: $(OUTPUT) ($(TARGET_OS)/$(TARGET_ARCH))$(COLOR_RESET)"; \

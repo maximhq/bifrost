@@ -793,6 +793,39 @@ func TestParseDecisionAnswersRecoversWhitespacePaddedParameterTags(t *testing.T)
 	}
 }
 
+// stringifiedAnswerArgs mirrors emit_decision arguments returned by
+// openrouter/anthropic/claude-opus-4.1 where one answer object arrived
+// JSON-encoded as a string (pretty-printed, with a trailing newline) while its
+// siblings stayed well-formed objects.
+const stringifiedAnswerArgs = `{"category": {"choice": "billing", "confidence": 1.0, "probabilities": {"billing":0.9,"bug":0.05,"other":0.05}}, "contact_channel": "{\n  \"choice\": \"email\",\n  \"confidence\": 0.9,\n  \"probabilities\": {\"email\": 0.9, \"phone\": 0.05, \"chat\": 0.05}\n}\n", "is_frustrated": {"value": 0.8, "confidence": 0.7}, "urgency": {"value": 2, "confidence": 0.6, "probabilities": {"0":0.1,"1":0.1,"2":0.8}}}`
+
+func stringifiedAnswerQuestions() map[string]testQuestion {
+	q := mixedQuestions()
+	q["contact_channel"] = testQuestion{
+		Kind:         "choice",
+		Instructions: "How did the customer reach us?",
+		Criteria:     map[string]interface{}{"email": "email", "phone": "phone", "chat": "chat"},
+	}
+	return q
+}
+
+func TestParseDecisionAnswersRecoversStringifiedAnswerObject(t *testing.T) {
+	answers, err := parseAnswers([]byte(stringifiedAnswerArgs), stringifiedAnswerQuestions())
+	if err != nil {
+		t.Fatalf("stringified answer object must be recovered: %v", err)
+	}
+	if len(answers) != 4 {
+		t.Fatalf("expected 4 answers, got %d", len(answers))
+	}
+	got := answers["contact_channel"]
+	if got.Value != "email" || *got.Confidence != 0.9 || got.Probabilities["email"] != 0.9 {
+		t.Errorf("contact_channel = %+v", got)
+	}
+	if answers["category"].Value != "billing" || answers["is_frustrated"].Value != 0.8 {
+		t.Errorf("siblings = %+v / %+v", answers["category"], answers["is_frustrated"])
+	}
+}
+
 func TestParseDecisionAnswersFlattenedRejections(t *testing.T) {
 	q := mixedQuestions()
 	cases := map[string]struct {
@@ -818,6 +851,23 @@ func TestParseDecisionAnswersFlattenedRejections(t *testing.T) {
 		},
 		"string answer without a parameter tag": {
 			args:    `{"is_frustrated": "0.9"}`,
+			wantSub: "not a JSON object",
+		},
+		// A stringified answer is decoded, then validated like any other.
+		"stringified answer with a disallowed choice": {
+			args:    `{"category": "{\"choice\": \"refund\", \"confidence\": 1.0, \"probabilities\": {\"billing\":1}}", "is_frustrated": {"value": 0.9, "confidence": 0.8}, "urgency": {"value": 2, "confidence": 0.6, "probabilities": {"0":0.1,"1":0.1,"2":0.8}}}`,
+			wantSub: "not an allowed option",
+		},
+		"stringified JSON array": {
+			args:    `{"is_frustrated": "[0.9]"}`,
+			wantSub: "not a JSON object",
+		},
+		"stringified malformed object": {
+			args:    `{"is_frustrated": "{\"value\": 0.9"}`,
+			wantSub: "not a JSON object",
+		},
+		"stringified object with a sibling field attached": {
+			args:    `{"is_frustrated": "{\"value\": 0.9}", "confidence": 0.8}`,
 			wantSub: "not a JSON object",
 		},
 	}

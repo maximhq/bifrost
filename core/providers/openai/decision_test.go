@@ -70,7 +70,7 @@ func TestToOpenAIDecisionRequestSendsOnlyText(t *testing.T) {
 // images included, reach OpenAI unchanged.
 func TestToOpenAIDecisionRequestKeepsMessages(t *testing.T) {
 	messages := []schemas.DecisionInputMessage{{Type: schemas.Ptr("message"), Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
-		{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr("Damaged?")},
+		{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("Damaged?")},
 		{Type: schemas.DecisionInputPartTypeImage, ImageURL: schemas.Ptr("https://example.com/box.png"), Detail: schemas.Ptr("high")},
 	}}}}
 	native, err := ToOpenAIDecisionRequest(&schemas.BifrostDecisionRequest{
@@ -84,6 +84,25 @@ func TestToOpenAIDecisionRequestKeepsMessages(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `{"type":"input_image","image_url":"https://example.com/box.png","detail":"high"}`, "the image detail reaches OpenAI")
 	assert.Contains(t, string(body), `{"type":"message","role":"user"`)
+}
+
+// TestToOpenAIDecisionRequestStructuredTextPart pins that a structured text part
+// reaches OpenAI as JSON text, since its input_text carries a string, without
+// changing the caller's request.
+func TestToOpenAIDecisionRequestStructuredTextPart(t *testing.T) {
+	messages := []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
+		{Type: schemas.DecisionInputPartTypeText, Text: &schemas.DecisionText{Structured: map[string]any{"ticket": "refund", "id": 7}}},
+	}}}}
+	native, err := ToOpenAIDecisionRequest(&schemas.BifrostDecisionRequest{
+		Model:     "gpt-6-luna",
+		Input:     schemas.DecisionInput{Messages: messages},
+		Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Instructions: schemas.NewDecisionText("Refund?")}},
+	})
+	require.NoError(t, err)
+	body, err := json.Marshal(native)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `{"type":"input_text","text":"{\"id\":7,\"ticket\":\"refund\"}"}`)
+	assert.NotNil(t, messages[0].Content.Parts[0].Text.Structured, "the caller's request is not modified")
 }
 
 // TestToOpenAIDecisionRequestRejections pins the requests OpenAI cannot serve:
@@ -105,7 +124,7 @@ func TestToOpenAIDecisionRequestRejections(t *testing.T) {
 		"audio part": {
 			request: &schemas.BifrostDecisionRequest{
 				Input: schemas.DecisionInput{Messages: []schemas.DecisionInputMessage{{Role: "user", Content: schemas.DecisionInputContent{Parts: []schemas.DecisionInputPart{
-					{Type: schemas.DecisionInputPartTypeText, Text: schemas.Ptr("listen")},
+					{Type: schemas.DecisionInputPartTypeText, Text: schemas.NewDecisionText("listen")},
 					{Type: "input_audio"},
 				}}}}},
 				Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate}},
@@ -250,6 +269,60 @@ func TestOpenAIProviderDecisionGating(t *testing.T) {
 	for _, call := range calls {
 		assert.True(t, strings.HasPrefix(call, "/v1/decisions "), call)
 	}
+}
+
+// TestOpenAIProviderDecisionCustomProviderGating pins that a custom provider on
+// the OpenAI base is gated by its allowed requests alone, as one on the
+// Typesafe base is: with decisions allowed (set, or allowed requests unset) it
+// forwards every model to /v1/decisions and the upstream rejects a model it
+// does not serve, and with decisions off it is denied. The model gate describes
+// OpenAI's own catalog, which has no rows for a custom provider's models.
+func TestOpenAIProviderDecisionCustomProviderGating(t *testing.T) {
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"dec_1","model":"m","answers":[{"type":"predicate","name":"q","probability":0.5}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}`))
+	}))
+	defer server.Close()
+
+	schemas.SetCapabilityResolver(func(schemas.ModelProvider, string) *schemas.ModelCapabilities { return nil })
+	t.Cleanup(func() { schemas.SetCapabilityResolver(nil) })
+
+	key := schemas.Key{Value: *schemas.NewSecretVar("test-key")}
+	decide := func(allowed *schemas.AllowedRequests, model string) (*schemas.BifrostDecisionResponse, *schemas.BifrostError) {
+		provider := NewOpenAIProvider(&schemas.ProviderConfig{
+			NetworkConfig: schemas.NetworkConfig{BaseURL: server.URL},
+			CustomProviderConfig: &schemas.CustomProviderConfig{
+				CustomProviderKey: "kserve",
+				BaseProviderType:  schemas.OpenAI,
+				AllowedRequests:   allowed,
+			},
+		}, testNoopLogger{})
+		ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+		return provider.Decision(ctx, key, &schemas.BifrostDecisionRequest{
+			Provider:  "kserve",
+			Model:     model,
+			Input:     schemas.DecisionInput{Text: schemas.Ptr("state")},
+			Questions: []schemas.DecisionQuestion{{Type: schemas.DecisionTypePredicate, Name: schemas.Ptr("q"), Instructions: schemas.NewDecisionText("Q?")}},
+		})
+	}
+
+	for name, allowed := range map[string]*schemas.AllowedRequests{"decisions on": {Decision: true}, "unset": nil} {
+		resp, bifrostErr := decide(allowed, "my-decider")
+		if bifrostErr != nil {
+			t.Fatalf("%s: a custom provider allowing decisions must forward any model, got %s", name, bifrostErr.Error.Message)
+		}
+		require.Len(t, resp.Answers, 1, name)
+	}
+	require.Equal(t, []string{"/v1/decisions", "/v1/decisions"}, calls)
+
+	_, bifrostErr := decide(&schemas.AllowedRequests{ChatCompletion: true}, "gpt-6-luna")
+	require.NotNil(t, bifrostErr)
+	require.NotNil(t, bifrostErr.Error.Code)
+	assert.Equal(t, "unsupported_operation", *bifrostErr.Error.Code)
+	assert.Contains(t, bifrostErr.Error.Message, "kserve")
+	require.Len(t, calls, 2, "a provider with decisions off never reaches the endpoint")
 }
 
 // TestOpenAIDecisionRequestKeepsUnknownFields pins that a top-level field the

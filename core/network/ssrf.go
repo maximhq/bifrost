@@ -496,6 +496,25 @@ func AllowlistedPrivateDialContext(dialTimeout time.Duration, allow func() *Allo
 	return allowlistedPrivateDialContext(net.DefaultResolver, dialer.DialContext, allow)
 }
 
+// ResolveAllowlistedPrivateTarget resolves and validates every address before
+// a proxy tunnel is opened. Metadata and link-local targets remain forbidden
+// even when their hostname or network is allowlisted.
+func ResolveAllowlistedPrivateTarget(ctx context.Context, host string, allow *Allowlist) ([]net.IP, error) {
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, err
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("DNS lookup for %s returned no addresses", host)
+	}
+	for _, ip := range ips {
+		if err := checkAllowlistedPrivatePolicy(ip, host, allow); err != nil {
+			return nil, err
+		}
+	}
+	return ips, nil
+}
+
 // allowlistedPrivateDialContext is the seam behind AllowlistedPrivateDialContext,
 // with injectable resolver and dial for tests.
 func allowlistedPrivateDialContext(resolver ipLookuper, dial func(ctx context.Context, network, addr string) (net.Conn, error), allow func() *Allowlist) func(ctx context.Context, netw, addr string) (net.Conn, error) {
@@ -532,6 +551,17 @@ func allowlistedPrivateDialContext(resolver ipLookuper, dial func(ctx context.Co
 	}
 }
 
+// PrivateTargetNotAllowedError identifies a private destination missing operator permission.
+type PrivateTargetNotAllowedError struct {
+	Host string
+	IP   net.IP
+}
+
+// Error describes the rejected destination without prescribing a product-specific setting.
+func (e *PrivateTargetNotAllowedError) Error() string {
+	return fmt.Sprintf("blocked connection to non-public address %s (host %s)", e.IP, e.Host)
+}
+
 // checkAllowlistedPrivatePolicy applies the AllowlistedPrivateDialContext
 // policy to one resolved address of host.
 func checkAllowlistedPrivatePolicy(ip net.IP, host string, allow *Allowlist) error {
@@ -542,7 +572,7 @@ func checkAllowlistedPrivatePolicy(ip net.IP, host string, allow *Allowlist) err
 		return err
 	}
 	if !allow.Permits(host, ip) {
-		return fmt.Errorf("blocked connection to non-public address %s (host %s)", ip, host)
+		return &PrivateTargetNotAllowedError{Host: host, IP: ip}
 	}
 	return nil
 }

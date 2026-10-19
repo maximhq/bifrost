@@ -1,6 +1,6 @@
 module github.com/maximhq/bifrost/cli
 
-go 1.27.0
+go 1.27.2
 
 require (
 	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2

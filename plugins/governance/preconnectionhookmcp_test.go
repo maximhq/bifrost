@@ -206,3 +206,19 @@ func TestPreMCPConnectionHook_CustomerOwnedVirtualKeyStampsCustomerOnly(t *testi
 	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceTeamID))
 	assert.Nil(t, ctx.Value(schemas.BifrostContextKeyGovernanceTeamName))
 }
+
+// TestPreMCPConnectionHook_StampsVirtualKeyMetadata covers the connect path, which stamps the key
+// by hand rather than through StampVirtualKeyScope, so it must carry the metadata on its own.
+func TestPreMCPConnectionHook_StampsVirtualKeyMetadata(t *testing.T) {
+	vk := buildVKForMCPStamping(nil)
+	vk.Metadata = map[string]string{"cost_center": "cc-42"}
+	plugin := newPluginForConnectionHook(t, &configstore.GovernanceConfig{
+		VirtualKeys: []configstoreTables.TableVirtualKey{*vk},
+	})
+	ctx := connectCtx(mcpTestVKValue)
+
+	_, shortCircuit, err := plugin.PreMCPConnectionHook(ctx, connectReq("sentry"))
+	require.NoError(t, err)
+	require.Nil(t, shortCircuit)
+	assert.Equal(t, map[string]string{"cost_center": "cc-42"}, ctx.Value(VirtualKeyMetadataContextKey))
+}

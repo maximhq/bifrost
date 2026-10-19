@@ -30,8 +30,8 @@ import (
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/transports/bifrost-http/integrations"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/integrations"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/valyala/fasthttp"
 	"golang.org/x/sync/semaphore"
 )
@@ -367,6 +367,8 @@ func (c *CorsMiddleware) applyHeaders(ctx *fasthttp.RequestCtx, cfg *corsMiddlew
 			ctx.Response.Header.Set("Access-Control-Allow-Credentials", "true")
 		}
 		ctx.Response.Header.Set("Access-Control-Max-Age", "86400")
+		// Lets browser clients read the x-bifrost-* headers, which carry extra_fields in headers mode.
+		ctx.Response.Header.Set("Access-Control-Expose-Headers", lib.ExposedResponseHeaders)
 		// Vary: Origin tells caches that the response varies based on the Origin
 		// request header, preventing incorrect CORS headers from being served.
 		ctx.Response.Header.Set("Vary", "Origin")
@@ -2260,6 +2262,11 @@ func (m *TracingMiddleware) Middleware() schemas.BifrostHTTPMiddleware {
 			parentSpanID := tracing.ExtractTraceParentSpanID(&ctx.Request.Header)
 			if parentSpanID != "" {
 				ctx.SetUserValue(schemas.BifrostContextKeyParentSpanID, parentSpanID)
+				// Vendor trace state, for connectors that rebuild the parent context. Only
+				// alongside a parent span ID, since there is nothing to parent to without one.
+				if traceState := tracing.ExtractTraceState(&ctx.Request.Header); traceState != "" {
+					tracer.SetTraceAttribute(traceID, schemas.TraceAttrTraceState, traceState)
+				}
 			}
 			// Store a trace completion callback for streaming handlers to use.
 			// Accepts transport plugin logs as a parameter so it never reads from

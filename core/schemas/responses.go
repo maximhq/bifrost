@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -273,7 +274,7 @@ type BifrostResponsesResponse struct {
 	Truncation           *string                             `json:"truncation,omitempty"`
 	Usage                *ResponsesResponseUsage             `json:"usage"`
 	ToolUsage            *ToolUsage                          `json:"tool_usage,omitempty"` // Top-level like OpenAI; Usage.ToolUsage mirrors it for pricing and logging
-	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields"`
+	ExtraFields          BifrostResponseExtraFields          `json:"extra_fields,omitzero"`
 	ProviderExtraFields  map[string]interface{}              `json:"provider_extra_fields,omitempty"`
 
 	// Perplexity-specific fields
@@ -323,10 +324,13 @@ func (r *BifrostResponsesResponse) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON sends tool_usage top-level only, as OpenAI's Responses API does. r is a copy, so
-// clearing usage's copy leaves the caller's response intact.
+// MarshalJSON sends tool_usage top-level only, as OpenAI's Responses API does, and output as
+// [] when nil (a required array clients iterate). r is a copy, so the caller's response is intact.
 func (r BifrostResponsesResponse) MarshalJSON() ([]byte, error) {
 	type alias BifrostResponsesResponse
+	if r.Output == nil {
+		r.Output = []ResponsesMessage{}
+	}
 	if r.Usage != nil && r.Usage.ToolUsage != nil {
 		if r.ToolUsage == nil {
 			r.ToolUsage = r.Usage.ToolUsage
@@ -1493,7 +1497,8 @@ const (
 	ResponsesMessageTypeRefusal              ResponsesMessageType = "refusal"
 	ResponsesMessageTypeCompaction           ResponsesMessageType = "compaction"
 	ResponsesMessageTypeAdditionalTools      ResponsesMessageType = "additional_tools"
-	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call" // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
+	ResponsesMessageTypeAdvisorCall          ResponsesMessageType = "advisor_call"         // Anthropic advisor server tool (server_tool_use + advisor_tool_result)
+	ResponsesMessageTypeConfigurationUpdate  ResponsesMessageType = "configuration_update" // OpenAI mid-conversation reasoning effort change
 )
 
 // ResponsesMessage is a union type that can contain different types of input items
@@ -1557,6 +1562,8 @@ type ResponsesMessage struct {
 	// decode promotes them into the embedded mcp_list_tools fields and strips
 	// required fields. Rather than fail to deserialize the whole input array
 	// or drop/mangle these items, we round-trip the original bytes unchanged.
+	// OpenAI's `configuration_update` item is preserved the same way: its
+	// `reasoning` object has no typed field and OpenAI requires it.
 	// Set by UnmarshalJSON, emitted by MarshalJSON; nil for every other type.
 	rawPreserved []byte
 }
@@ -1566,7 +1573,8 @@ type ResponsesMessage struct {
 func isRawPreservedItem(t string) bool {
 	return t == string(ResponsesMessageTypeToolSearchCall) ||
 		t == string(ResponsesMessageTypeToolSearchOutput) ||
-		t == string(ResponsesMessageTypeAdditionalTools)
+		t == string(ResponsesMessageTypeAdditionalTools) ||
+		t == string(ResponsesMessageTypeConfigurationUpdate)
 }
 
 // UnmarshalJSON preserves codex tool_search/additional_tools items verbatim
@@ -1589,6 +1597,38 @@ func (m *ResponsesMessage) UnmarshalJSON(data []byte) error {
 	if t := gjson.GetBytes(data, "type").String(); isRawPreservedItem(t) {
 		mt := ResponsesMessageType(t)
 		m.Type = &mt
+		// Surface the identity fields too, so converters can pair a tool_search_call with
+		// its output and give the Anthropic blocks they rebuild a stable id.
+		if id := gjson.GetBytes(data, "id"); id.Type == gjson.String && id.String() != "" {
+			m.ID = Ptr(id.String())
+		}
+		if status := gjson.GetBytes(data, "status"); status.Type == gjson.String && status.String() != "" {
+			m.Status = Ptr(status.String())
+		}
+		if callID := gjson.GetBytes(data, "call_id"); callID.Type == gjson.String && callID.String() != "" {
+			m.ResponsesToolMessage = &ResponsesToolMessage{CallID: Ptr(callID.String())}
+		}
+		// Anthropic tool_search_call replays carry the search variant and discovered tools; OpenAI items carry neither.
+		if t == string(ResponsesMessageTypeToolSearchCall) {
+			if name := gjson.GetBytes(data, "name"); name.Type == gjson.String && name.String() != "" {
+				if m.ResponsesToolMessage == nil {
+					m.ResponsesToolMessage = &ResponsesToolMessage{}
+				}
+				m.Name = new(name.String())
+			}
+			var toolReferences []string
+			for _, ref := range gjson.GetBytes(data, "tool_references").Array() {
+				if ref.Type == gjson.String && ref.String() != "" {
+					toolReferences = append(toolReferences, ref.String())
+				}
+			}
+			if len(toolReferences) > 0 {
+				if m.ResponsesToolMessage == nil {
+					m.ResponsesToolMessage = &ResponsesToolMessage{}
+				}
+				m.ResponsesToolSearchCall = &ResponsesToolSearchCall{ToolReferences: toolReferences}
+			}
+		}
 		// Also surface `arguments` (a JSON object for tool_search_call) so downstream
 		// consumers that read Arguments keep working; MarshalJSON still re-emits the
 		// preserved bytes verbatim, so this is additive and does not affect round-trip.
@@ -1896,11 +1936,12 @@ func (rc *ResponsesMessageContent) UnmarshalJSON(data []byte) error {
 type ResponsesMessageContentBlockType string
 
 const (
-	ResponsesInputMessageContentBlockTypeText      ResponsesMessageContentBlockType = "input_text"
-	ResponsesInputMessageContentBlockTypeImage     ResponsesMessageContentBlockType = "input_image"
-	ResponsesInputMessageContentBlockTypeFile      ResponsesMessageContentBlockType = "input_file"
-	ResponsesInputMessageContentBlockTypeAudio     ResponsesMessageContentBlockType = "input_audio"
-	ResponsesInputMessageContentBlockTypeContainer ResponsesMessageContentBlockType = "input_container" // Anthropic-only: file staged into the code-execution container input dir
+	ResponsesInputMessageContentBlockTypeText          ResponsesMessageContentBlockType = "input_text"
+	ResponsesInputMessageContentBlockTypeImage         ResponsesMessageContentBlockType = "input_image"
+	ResponsesInputMessageContentBlockTypeFile          ResponsesMessageContentBlockType = "input_file"
+	ResponsesInputMessageContentBlockTypeAudio         ResponsesMessageContentBlockType = "input_audio"
+	ResponsesInputMessageContentBlockTypeContainer     ResponsesMessageContentBlockType = "input_container" // Anthropic-only: file staged into the code-execution container input dir
+	ResponsesInputMessageContentBlockTypeToolReference ResponsesMessageContentBlockType = "tool_reference"  // Anthropic-only: deferred tool loaded by a client tool_result (custom tool search)
 
 	ResponsesOutputMessageContentTypeText      ResponsesMessageContentBlockType = "output_text"
 	ResponsesOutputMessageContentTypeRefusal   ResponsesMessageContentBlockType = "refusal"
@@ -1953,6 +1994,7 @@ type ResponsesMessageContentBlock struct {
 	FileID    *string                          `json:"file_id,omitempty"` // Reference to uploaded file
 	Text      *string                          `json:"text,omitempty"`
 	Signature *string                          `json:"signature,omitempty"` // Signature of the content (for reasoning)
+	ToolName  *string                          `json:"tool_name,omitempty"` // Deferred tool named by a tool_reference block
 	// EncryptedContent is required on reasoning content blocks during history replay.
 	// OpenAI returns it alongside summary_text blocks; it must be echoed back verbatim.
 	EncryptedContent *string `json:"encrypted_content,omitempty"`
@@ -2160,6 +2202,88 @@ type ResponsesAdvisorCall struct {
 // tool_references); the model then emits a normal tool_use to call one of them.
 type ResponsesToolSearchCall struct {
 	ToolReferences []string `json:"tool_references,omitempty"` // names of discovered (deferred) tools
+}
+
+// ToolSearchExecutionClient marks a tool_search tool or item the caller runs itself.
+const ToolSearchExecutionClient = "client"
+
+// IsVerbatimItem reports whether m was decoded from an item Bifrost round-trips byte
+// for byte (an OpenAI tool_search_call, tool_search_output or additional_tools item).
+func (m *ResponsesMessage) IsVerbatimItem() bool {
+	return len(m.rawPreserved) > 0
+}
+
+// IsClientToolSearchItem reports whether m is a tool_search_call or tool_search_output
+// the caller executes itself (execution "client").
+func (m *ResponsesMessage) IsClientToolSearchItem() bool {
+	return m.ResponsesToolMessage != nil && m.Execution != nil && *m.Execution == ToolSearchExecutionClient
+}
+
+// ToolSearchOutputToolNames returns the names of the tools a tool_search_output
+// loaded, flattening namespaces into their member tools.
+func (m *ResponsesMessage) ToolSearchOutputToolNames() []string {
+	if len(m.ToolSearchOutputTools) == 0 {
+		return nil
+	}
+	var names []string
+	for _, tool := range gjson.ParseBytes(m.ToolSearchOutputTools).Array() {
+		if tool.Get("type").String() == string(ResponsesToolTypeNamespace) {
+			for _, member := range tool.Get("tools").Array() {
+				if name := member.Get("name").String(); name != "" {
+					names = append(names, name)
+				}
+			}
+			continue
+		}
+		if name := tool.Get("name").String(); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// clientToolSearchNames are the function names clients give their own tool search
+// (Claude Code registers ToolSearch; the Anthropic docs example uses tool_search).
+var clientToolSearchNames = []string{"tool_search", "ToolSearch"}
+
+// ClientToolSearchFunctionName returns the name of the function tool the caller runs
+// as its own tool search, or "" when there is none. It only looks when some tool is
+// deferred. A non-deferred function named tool_search or ToolSearch qualifies, as
+// does a function whose earlier result in input carried tool_reference blocks.
+func ClientToolSearchFunctionName(tools []ResponsesTool, input []ResponsesMessage) string {
+	if !slices.ContainsFunc(tools, func(t ResponsesTool) bool { return t.DeferLoading != nil && *t.DeferLoading }) {
+		return ""
+	}
+	isEagerFunction := func(name string) bool {
+		return slices.ContainsFunc(tools, func(t ResponsesTool) bool {
+			return t.Type == ResponsesToolTypeFunction && t.Name != nil && *t.Name == name &&
+				(t.DeferLoading == nil || !*t.DeferLoading)
+		})
+	}
+	for _, name := range clientToolSearchNames {
+		if isEagerFunction(name) {
+			return name
+		}
+	}
+	for i := range input {
+		output := &input[i]
+		if output.Type == nil || *output.Type != ResponsesMessageTypeFunctionCallOutput ||
+			output.ResponsesToolMessage == nil || output.CallID == nil || output.Output == nil ||
+			!slices.ContainsFunc(output.Output.ResponsesFunctionToolCallOutputBlocks, func(b ResponsesMessageContentBlock) bool {
+				return b.Type == ResponsesInputMessageContentBlockTypeToolReference
+			}) {
+			continue
+		}
+		for j := range input[:i] {
+			call := &input[j]
+			if call.Type != nil && *call.Type == ResponsesMessageTypeFunctionCall &&
+				call.ResponsesToolMessage != nil && call.CallID != nil && *call.CallID == *output.CallID &&
+				call.Name != nil && isEagerFunction(*call.Name) {
+				return *call.Name
+			}
+		}
+	}
+	return ""
 }
 
 // ResponsesWebFetchCall carries the Anthropic web_fetch_tool_result payload

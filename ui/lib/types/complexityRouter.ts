@@ -250,6 +250,14 @@ export const OPENAI_DECISION_MODEL = "gpt-6-luna";
 // The picker lists the decider models Perplexity serves.
 export const PERPLEXITY_DECISION_MODEL = "pplx-decider-v1.1-27b";
 
+// AZURE_DECISION_MODEL is the model a newly selected Azure provider starts on: the model
+// name a key alias maps to the user's deployment. The picker lists Microsoft's decision models.
+export const AZURE_DECISION_MODEL = "Microsoft-Decision-1";
+
+// DATABRICKS_DECISION_MODEL is the model a Databricks provider runs: the ai_decide AI
+// Function, the only decision model a Databricks workspace serves.
+export const DATABRICKS_DECISION_MODEL = "ai_decide";
+
 // CLOUDFLARE_DECISION_MODEL is the model a newly selected Cloudflare provider starts on.
 // The picker lists the Clef models Cloudflare Workers AI serves.
 export const CLOUDFLARE_DECISION_MODEL = "@cf/cloudflare/clef-flash";

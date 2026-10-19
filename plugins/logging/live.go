@@ -298,7 +298,8 @@ func (p *LoggerPlugin) buildLiveSessionEntry(ctx *schemas.BifrostContext, pendin
 		dropCapturedInput(entry)
 	}
 
-	entry.MetadataParsed = mergeRealtimeMetadata(pending.InitialData.Metadata, ctx)
+	// The virtual key is merged last again, as in PostLLMHook: the realtime merge must not override it.
+	entry.MetadataParsed = mergeVirtualKeyMetadata(mergeRealtimeMetadata(pending.InitialData.Metadata, ctx), ctx)
 	p.applyLiveContextFields(ctx, entry, time.Since(pending.Timestamp).Milliseconds())
 	entry.RoutingEngineLogs = formatRoutingEngineLogs(ctx.GetRoutingEngineLogs())
 	return entry

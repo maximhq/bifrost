@@ -190,6 +190,52 @@ Compatibility flags that let Bifrost silently adapt request/response shapes for 
 
 ---
 
+## Agent Gateway and Skills Marketplace URLs
+
+Configure these public base URLs independently. Neither feature derives its public URL from request headers.
+
+Public base URLs for MCP, Agent Gateway, and Skills must use HTTP or HTTPS and must not contain userinfo, query strings, or fragments. Ports and path prefixes are supported. API updates reject invalid URLs without echoing their values. Config loading ignores invalid overrides: Agent Gateway and skills marketplace serving stay disabled, while MCP retains its request-derived callback fallback.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `a2a_external_client_url` | string or secret reference | Unset | Enables Agent Gateway protocol operations and supplies agent-card and push-callback URLs. |
+| `skills_external_client_url` | string or secret reference | Unset | Enables Skills Repository marketplace registration and serving. Git must also be installed on the server. |
+
+```json
+{
+  "client": {
+    "a2a_external_client_url": "https://bifrost.example.com",
+    "skills_external_client_url": "https://bifrost.example.com"
+  }
+}
+```
+
+Both fields support environment references such as `env.BIFROST_EXTERNAL_URL` and vault references. They may share a value, but there is no common base-URL setting.
+
+Without a resolved Agent Gateway URL, HTTP protocol endpoints return 503 and A2A gRPC operations return UNAVAILABLE. Agent registration and management remain available. Without a resolved skills URL, marketplace registration and serving are disabled; skill management and direct downloads remain available.
+
+Use **Agents → Agent Settings** or **Skills → Skills Settings** to update the corresponding URL in the dashboard. See [Agent Gateway configuration](/features/agent-gateway/configuration#set-the-public-base-url) and [Skills Repository marketplace access](/features/skills-repository#configure-marketplace-access).
+
+## Agent Gateway destination permissions
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `a2a_private_allowlist` | array of strings | `[]` | Private or loopback hosts, IP addresses, or CIDR ranges permitted for agent card discovery, OAuth, and runtime HTTP or gRPC connections. Entries have no scheme, port, or path. Link-local and cloud metadata addresses are always blocked. |
+
+```json
+{
+  "client": {
+    "a2a_private_allowlist": ["research.internal", "auth.internal"]
+  }
+}
+```
+
+Changing this setting through the dashboard or API requires dashboard authentication. Agents registered while dashboard authentication is bypassed cannot use these private permissions. Operator declarations in config.json can use them.
+
+Network permission does not authorize runtime calls to another service. Set `agents[].credential_origins` when the agent card advertises a runtime origin different from the card's origin. Every runtime endpoint needs origin approval, including requests without configured authentication, because callers can supply upstream credential headers. See [Additional agent endpoints](/features/agent-gateway/authentication#additional-agent-endpoints) for a complete example.
+
+---
+
 ## MCP Agent Settings
 
 | Field | Type | Default | Description |

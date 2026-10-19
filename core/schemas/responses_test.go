@@ -820,6 +820,103 @@ func TestResponsesMessagePreservesToolSearchExecution(t *testing.T) {
 	}
 }
 
+// A verbatim tool_search item surfaces its id, call_id and status, so converters can
+// pair a call with its output and give rebuilt blocks a stable id, while the bytes
+// still round-trip unchanged.
+func TestResponsesMessageSurfacesToolSearchIdentity(t *testing.T) {
+	raw := `{"id":"tsc_1","type":"tool_search_call","status":"completed","arguments":{"query":"loki"},"call_id":"call_1","execution":"client"}`
+	var msg ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(raw), &msg))
+	require.NotNil(t, msg.ID)
+	assert.Equal(t, "tsc_1", *msg.ID)
+	require.NotNil(t, msg.Status)
+	assert.Equal(t, "completed", *msg.Status)
+	require.NotNil(t, msg.ResponsesToolMessage)
+	require.NotNil(t, msg.CallID)
+	assert.Equal(t, "call_1", *msg.CallID)
+	require.NotNil(t, msg.Arguments)
+	assert.True(t, msg.IsVerbatimItem())
+	assert.True(t, msg.IsClientToolSearchItem())
+	encoded, err := MarshalSorted(msg)
+	require.NoError(t, err)
+	assert.Equal(t, raw, string(encoded))
+
+	// Hosted search sends call_id null: no CallID, no client execution.
+	var hosted ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(`{"id":"tsc_2","type":"tool_search_call","execution":"server","call_id":null,"arguments":{}}`), &hosted))
+	assert.Equal(t, "tsc_2", *hosted.ID)
+	assert.Nil(t, hosted.CallID)
+	assert.False(t, hosted.IsClientToolSearchItem())
+}
+
+// An Anthropic tool_search_call replayed through /v1/responses (Bifrost's own output
+// echoed back) surfaces its name and tool_references, so the Anthropic rebuild keeps
+// the search variant and the discovered tools; the bytes still round-trip unchanged.
+func TestResponsesMessageSurfacesAnthropicToolSearchReplay(t *testing.T) {
+	raw := `{"id":"srvtoolu_bdrk_01","arguments":{"query":"summarize_source_1"},"call_id":"srvtoolu_bdrk_01","status":"completed","type":"tool_search_call","name":"tool_search_tool_bm25","tool_references":["summarize_source_1"]}`
+	var msg ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(raw), &msg))
+	require.NotNil(t, msg.ResponsesToolMessage)
+	require.NotNil(t, msg.CallID)
+	assert.Equal(t, "srvtoolu_bdrk_01", *msg.CallID)
+	require.NotNil(t, msg.Name)
+	assert.Equal(t, "tool_search_tool_bm25", *msg.Name)
+	require.NotNil(t, msg.ResponsesToolSearchCall)
+	assert.Equal(t, []string{"summarize_source_1"}, msg.ResponsesToolSearchCall.ToolReferences)
+	require.NotNil(t, msg.Arguments)
+	assert.JSONEq(t, `{"query":"summarize_source_1"}`, *msg.Arguments)
+	assert.False(t, msg.IsClientToolSearchItem())
+	encoded, err := MarshalSorted(msg)
+	require.NoError(t, err)
+	assert.Equal(t, raw, string(encoded))
+
+	// OpenAI items carry neither field.
+	var openai ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(`{"id":"tsc_1","type":"tool_search_call","status":"completed","arguments":{},"call_id":"call_1","execution":"client"}`), &openai))
+	assert.Nil(t, openai.Name)
+	assert.Nil(t, openai.ResponsesToolSearchCall)
+}
+
+func TestResponsesMessageToolSearchOutputToolNames(t *testing.T) {
+	var msg ResponsesMessage
+	require.NoError(t, Unmarshal([]byte(`{"type":"tool_search_output","tools":[{"type":"function","name":"get_weather"},{"type":"namespace","name":"crm","tools":[{"type":"function","name":"list_orders"},{"type":"function","name":"get_order"}]}]}`), &msg))
+	assert.Equal(t, []string{"get_weather", "list_orders", "get_order"}, msg.ToolSearchOutputToolNames())
+	assert.Nil(t, (&ResponsesMessage{}).ToolSearchOutputToolNames())
+}
+
+func TestClientToolSearchFunctionName(t *testing.T) {
+	function := func(name string, deferred bool) ResponsesTool {
+		tool := ResponsesTool{Type: ResponsesToolTypeFunction, Name: Ptr(name), ResponsesToolFunction: &ResponsesToolFunction{}}
+		if deferred {
+			tool.DeferLoading = Ptr(true)
+		}
+		return tool
+	}
+	referenceHistory := []ResponsesMessage{
+		{Type: Ptr(ResponsesMessageTypeFunctionCall), ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr("c1"), Name: Ptr("find_tools")}},
+		{Type: Ptr(ResponsesMessageTypeFunctionCallOutput), ResponsesToolMessage: &ResponsesToolMessage{CallID: Ptr("c1"), Output: &ResponsesToolMessageOutputStruct{
+			ResponsesFunctionToolCallOutputBlocks: []ResponsesMessageContentBlock{{Type: ResponsesInputMessageContentBlockTypeToolReference, ToolName: Ptr("get_weather")}},
+		}}},
+	}
+	for _, tc := range []struct {
+		name  string
+		tools []ResponsesTool
+		input []ResponsesMessage
+		want  string
+	}{
+		{"claude code name", []ResponsesTool{function("ToolSearch", false), function("get_weather", true)}, nil, "ToolSearch"},
+		{"docs name", []ResponsesTool{function("tool_search", false), function("get_weather", true)}, nil, "tool_search"},
+		{"history signal", []ResponsesTool{function("find_tools", false), function("get_weather", true)}, referenceHistory, "find_tools"},
+		{"nothing deferred", []ResponsesTool{function("tool_search", false), function("get_weather", false)}, nil, ""},
+		{"deferred search name is not the search", []ResponsesTool{function("tool_search", true)}, nil, ""},
+		{"no search function", []ResponsesTool{function("lookup", false), function("get_weather", true)}, nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ClientToolSearchFunctionName(tc.tools, tc.input))
+		})
+	}
+}
+
 func TestResponsesMessageRoundTripsToolSearchOutputTools(t *testing.T) {
 	raw := []byte(`{"id":"tso_1","type":"tool_search_output","call_id":"call_1","tools":[{"type":"namespace","name":"telemetry","tools":[{"type":"function","name":"query_loki_logs","description":"query loki","parameters":{"type":"object","properties":{"run_id":{"type":"string"}}}}]}]}`)
 
@@ -1212,6 +1309,29 @@ func TestResponsesMessagePreservesAdditionalTools(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "additional_tools") {
 		t.Fatalf("expected reused receiver to drop preserved bytes, got %s", encoded)
+	}
+}
+
+// TestResponsesMessagePreservesConfigurationUpdate pins #8616: OpenAI's configuration_update
+// item carries its effort under `reasoning`, which the typed decode has no field for, so the
+// item must round-trip verbatim or OpenAI rejects it with "Missing required parameter:
+// 'input[0].reasoning'".
+func TestResponsesMessagePreservesConfigurationUpdate(t *testing.T) {
+	raw := `{"reasoning":{"effort":"high"},"type":"configuration_update"}`
+
+	var msg ResponsesMessage
+	if err := Unmarshal([]byte(raw), &msg); err != nil {
+		t.Fatalf("unmarshal configuration_update item: %v", err)
+	}
+	if msg.Type == nil || *msg.Type != ResponsesMessageType("configuration_update") {
+		t.Fatalf("expected configuration_update item, got %#v", msg.Type)
+	}
+	encoded, err := MarshalSorted(msg)
+	if err != nil {
+		t.Fatalf("marshal configuration_update item: %v", err)
+	}
+	if string(encoded) != raw {
+		t.Fatalf("expected item to round-trip verbatim\nwant: %s\ngot:  %s", raw, encoded)
 	}
 }
 
@@ -2422,4 +2542,23 @@ func TestResponsesMCPItemsKeepServerLabel(t *testing.T) {
 	out, err := Marshal(msg)
 	require.NoError(t, err)
 	assert.Equal(t, "deepwiki", gjson.GetBytes(out, "server_label").String(), string(out))
+}
+
+// TestResponsesStreamEventOmitsEmptyNestedExtraFields pins that a lifecycle event's wrapped
+// response, whose ExtraFields nothing fills, serializes no extra_fields, while a filled one
+// (a unary response) still does.
+func TestResponsesStreamEventOmitsEmptyNestedExtraFields(t *testing.T) {
+	event := BifrostResponsesStreamResponse{
+		Type:        ResponsesStreamResponseTypeCreated,
+		Response:    &BifrostResponsesResponse{ID: new("resp_1"), Model: "gpt-4o"},
+		ExtraFields: BifrostResponseExtraFields{RequestType: ResponsesStreamRequest, Provider: OpenAI},
+	}
+	encoded, err := MarshalSorted(event)
+	require.NoError(t, err)
+	assert.False(t, gjson.GetBytes(encoded, "response.extra_fields").Exists(), "nested extra_fields leaked: %s", encoded)
+	assert.Equal(t, "openai", gjson.GetBytes(encoded, "extra_fields.provider").String(), "top-level extra_fields must stay: %s", encoded)
+
+	unary, err := MarshalSorted(BifrostResponsesResponse{ID: new("resp_1"), ExtraFields: BifrostResponseExtraFields{RequestType: ResponsesRequest}})
+	require.NoError(t, err)
+	assert.Equal(t, "responses", gjson.GetBytes(unary, "extra_fields.request_type").String(), "a filled extra_fields must stay: %s", unary)
 }

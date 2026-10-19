@@ -25,6 +25,7 @@ import (
 	"github.com/bytedance/sonic"
 	"github.com/google/uuid"
 	bifrost "github.com/maximhq/bifrost/core"
+	"github.com/maximhq/bifrost/core/agent"
 	"github.com/maximhq/bifrost/core/mcp"
 	mcputils "github.com/maximhq/bifrost/core/mcp/utils"
 	"github.com/maximhq/bifrost/core/network"
@@ -42,6 +43,7 @@ import (
 	"github.com/maximhq/bifrost/framework/modelcatalog"
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/framework/objectstore"
+	"github.com/maximhq/bifrost/framework/openapimcp"
 	plugins "github.com/maximhq/bifrost/framework/plugins"
 	"github.com/maximhq/bifrost/framework/vectorstore"
 	"github.com/maximhq/bifrost/plugins/compat"
@@ -92,6 +94,8 @@ type HandlerStore interface {
 	ShouldAllowPerRequestRawOverride() bool
 	// ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header
 	ShouldAllowDirectKeys() bool
+	// ShouldSendExtraFieldsInHeaders returns whether inference responses carry extra_fields as headers instead of in the body
+	ShouldSendExtraFieldsInHeaders() bool
 	// IsProviderConfigured reports whether provider has a configuration on this gateway
 	IsProviderConfigured(provider schemas.ModelProvider) bool
 	// GetMCPExternalClientURL returns the configured external base URL Bifrost uses as the
@@ -159,6 +163,13 @@ type pluginOrderInfo struct {
 type ServerConfig struct {
 	ReadBufferSize int `json:"read_buffer_size,omitempty"`
 
+	// BodyBufferPoolLimitBytes caps the request-body buffer a pooled keep-alive
+	// connection keeps between requests; larger buffers are released after each
+	// request. Not set uses DefaultBodyBufferPoolLimitBytes and 0 means unlimited, so
+	// it is a pointer to tell the two apart. See ApplyBodyBufferPoolLimit. Deploy-time
+	// only - read from config.json at startup.
+	BodyBufferPoolLimitBytes *int `json:"body_buffer_pool_limit_bytes,omitempty"`
+
 	// PluginDownloadPrivateAllowlist lists hostnames, IPs, and CIDR ranges that custom
 	// plugin (.so) downloads may reach even when they resolve to a private/loopback/
 	// link-local/CGNAT address (blocked by default to prevent SSRF). Use only for trusted
@@ -225,6 +236,7 @@ type ConfigData struct {
 	presentGovernanceSections map[string]bool
 	presentMCPSections        map[string]bool
 	SkillsRegistry            *SkillsRegistryConfig `json:"skills_registry,omitempty"`
+	rejectedMCPClients        map[string]bool       // file clients dropped while loading; a config.json sync keeps their stored clients
 }
 
 // SkillsRegistryConfig defines declarative skill definitions in config.json.
@@ -365,14 +377,13 @@ func (w *WebhookEndpointConfig) toTable() *configstoreTables.TableWebhookEndpoin
 type AgentRegistrationFileConfig struct {
 	Name                                   string                `json:"name"`
 	AgentCardURL                           string                `json:"agent_card_url"`
-	Tenant                                 string                `json:"tenant,omitempty"`
 	Enabled                                *bool                 `json:"enabled,omitempty"`
 	AllowByDefault                         bool                  `json:"allow_by_default,omitempty"`
 	ForwardAcceptedCredential              bool                  `json:"forward_accepted_credential,omitempty"`
 	ForwardAcceptedCredentialOverridesAuth bool                  `json:"forward_accepted_credential_overrides_auth,omitempty"`
 	DiscoveryAuth                          *schemas.UpstreamAuth `json:"discovery_auth,omitempty"`
 	RuntimeAuth                            *schemas.UpstreamAuth `json:"runtime_auth,omitempty"`
-	ExtensionURIs                          []string              `json:"extension_uris,omitempty"`
+	CredentialOrigins                      []string              `json:"credential_origins,omitempty"`
 	VirtualKeyIDs                          []string              `json:"virtual_key_ids,omitempty"`
 }
 
@@ -392,7 +403,8 @@ func (a *AgentRegistrationFileConfig) validate() error {
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
 		return errors.New("agent_card_url must be an absolute HTTP(S) URL without user info")
 	}
-	return nil
+	_, err = agent.ValidateCredentialOrigins(a.CredentialOrigins)
+	return err
 }
 
 // toRegistration converts a file declaration into the domain model the
@@ -405,20 +417,18 @@ func (a *AgentRegistrationFileConfig) toRegistration() *schemas.AgentRegistratio
 	}
 	ids := slices.Clone(a.VirtualKeyIDs)
 	sort.Strings(ids)
-	uris := slices.Clone(a.ExtensionURIs)
-	sort.Strings(uris)
+	origins, _ := agent.ValidateCredentialOrigins(a.CredentialOrigins)
 	now := time.Now().UTC()
 	return &schemas.AgentRegistration{
 		Name:                                   strings.TrimSpace(a.Name),
 		AgentCardURL:                           a.AgentCardURL,
-		Tenant:                                 a.Tenant,
 		Enabled:                                enabled,
 		AllowByDefault:                         a.AllowByDefault,
 		ForwardAcceptedCredential:              a.ForwardAcceptedCredential,
 		ForwardAcceptedCredentialOverridesAuth: a.ForwardAcceptedCredentialOverridesAuth,
 		DiscoveryAuth:                          a.DiscoveryAuth,
 		RuntimeAuth:                            a.RuntimeAuth,
-		ExtensionURIs:                          uris,
+		CredentialOrigins:                      origins,
 		VirtualKeyIDs:                          ids,
 		CreatedAt:                              now,
 		UpdatedAt:                              now,
@@ -687,7 +697,12 @@ type Config struct {
 	LogsStore   logstore.LogStore
 	// LogsStoreConfig is the effective logs store configuration used to create LogsStore.
 	LogsStoreConfig *logstore.Config
-	ObjectStore     objectstore.ObjectStore
+	// ConfigStoreConfig is the config.json config store configuration used to
+	// create ConfigStore, or nil when the store was defaulted (SQLite) or is
+	// disabled. Downstream migrations that run against the config store
+	// (bifrost-enterprise) read their migration settings from it.
+	ConfigStoreConfig *configstore.Config
+	ObjectStore       objectstore.ObjectStore
 
 	// oauth2SigningKey caches the immutable OAuth2 signing key used to sign and
 	// verify Bifrost-issued /mcp JWTs. The key is created once via an idempotent
@@ -1038,6 +1053,16 @@ func registerFeatureFlags(_ context.Context) error {
 //   - Case conversion for provider names (e.g., "OpenAI" -> "openai")
 //   - In-memory storage for ultra-fast access during request processing
 //   - Graceful handling of missing config files
+//
+// ConfigDir returns the directory config.json was loaded from. Relative paths in
+// the file (openapi_config.spec_file) resolve against it.
+func (c *Config) ConfigDir() string {
+	if c == nil || c.configPath == "" {
+		return ""
+	}
+	return filepath.Dir(c.configPath)
+}
+
 func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	configFilePath := filepath.Join(configDirPath, "config.json")
 	configDBPath := filepath.Join(configDirPath, "config.db")
@@ -1113,6 +1138,7 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 			return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 		}
 		logger.Info("loading configuration from: %s", absConfigFilePath)
+		warnMultiUnitCalendarConfig(data, logger.Warn)
 		// Promote deprecated per-budget / per-rate-limit calendar_aligned to the
 		// owning VK / Team. Independent of config version — the deprecation
 		// predates the v1/v2 allow-list split.
@@ -1156,6 +1182,9 @@ func LoadConfig(ctx context.Context, configDirPath string) (*Config, error) {
 	}
 	if err := ApplyMCPOAuthPrivateAllowlist(config.ClientConfig.MCPOAuthPrivateAllowlist); err != nil {
 		return nil, fmt.Errorf("mcp_oauth_private_allowlist: %w", err)
+	}
+	if oc := config.ClientConfig.OAuth2ServerConfig; oc != nil && slices.Contains(oc.AllowedRedirectURIs, configstoreTables.AllowAnyRedirectURI) {
+		logger.Warn(`oauth2_server_config.allowed_redirect_uris contains "*": any MCP OAuth client may register any https callback, so only the consent page stands between a user and a phishing client`)
 	}
 	config.SetHeaderMatcher(NewHeaderMatcher(config.ClientConfig.HeaderFilterConfig))
 	// 4a. Global proxy (store only). Loaded before providers so the first
@@ -1235,11 +1264,20 @@ func initStores(ctx context.Context, config *Config, configData *ConfigData, con
 	var err error
 	// Initialize config store
 	if configData.ConfigStoreConfig != nil && configData.ConfigStoreConfig.Enabled {
-		// Explicit config store configuration from config.json
-		config.ConfigStore, err = configstore.NewConfigStore(ctx, configData.ConfigStoreConfig, logger)
+		// Explicit config store configuration from config.json. Its migrations
+		// pause materialized-view refreshes under the log store's
+		// migration_matview_cancel_after when config.json carries the log store;
+		// a log store configured only in the database is not readable until the
+		// config store has migrated, so the default applies then.
+		var storeOpts []configstore.Option
+		if configData.LogsStoreConfig != nil {
+			storeOpts = append(storeOpts, configstore.WithMigrationMatViewPause(logstore.MigrationMatViewPauseOptions(configData.LogsStoreConfig, logger)))
+		}
+		config.ConfigStore, err = configstore.NewConfigStore(ctx, configData.ConfigStoreConfig, logger, storeOpts...)
 		if err != nil {
 			return err
 		}
+		config.ConfigStoreConfig = configData.ConfigStoreConfig
 		logger.Info("config store initialized")
 	} else if configData.ConfigStoreConfig == nil {
 		// No config store section — create default SQLite store for persistence
@@ -1466,10 +1504,22 @@ func validateClientConfig(cc *configstore.ClientConfig) error {
 			return fmt.Errorf("oauth2_server_config.issuer_url must be set to a non-empty value when mcp_server_auth_mode is oauth or both")
 		}
 	}
+	// Entries match exactly, so a partial wildcard would silently approve nothing.
+	// PUT /api/config rejects one; config.json and older DB rows reach here.
+	if oc := cc.OAuth2ServerConfig; oc != nil {
+		for _, uri := range oc.AllowedRedirectURIs {
+			if uri != configstoreTables.AllowAnyRedirectURI && strings.Contains(uri, "*") {
+				return fmt.Errorf(`oauth2_server_config.allowed_redirect_uris supports only a bare "*" wildcard`)
+			}
+		}
+	}
 	// The allowlist relaxes an SSRF guard, so a typo must stop startup rather
 	// than leave an entry that silently matches nothing.
 	if _, err := network.ValidatePrivateTargetAllowlist(cc.MCPOAuthPrivateAllowlist); err != nil {
 		return fmt.Errorf("mcp_oauth_private_allowlist: %w", err)
+	}
+	if _, err := network.ValidatePrivateTargetAllowlist(cc.A2APrivateAllowlist); err != nil {
+		return fmt.Errorf("a2a_private_allowlist: %w", err)
 	}
 	return nil
 }
@@ -1493,7 +1543,7 @@ func ApplyMCPOAuthPrivateAllowlist(entries []string) error {
 	return nil
 }
 
-// sanitizeMCPExternalOAuthURLs validates the MCP external OAuth URL overrides
+// sanitizeMCPExternalOAuthURLs validates the MCP, Agent Gateway, and skills public URL overrides
 // on a ClientConfig and clears any invalid override so it cannot leak into
 // OAuth URL generation. The warning intentionally omits the offending value:
 // these fields support env-var references (`env.MY_VAR`), and echoing the
@@ -1503,12 +1553,16 @@ func sanitizeMCPExternalOAuthURLs(client *configstore.ClientConfig) {
 	if client == nil {
 		return
 	}
-	if err := ValidateBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
+	if err := configstore.ValidatePublicBaseURL(client.MCPExternalClientURL.GetValue()); err != nil {
 		logger.Warn("mcp_external_client_url %v; override will be ignored and OAuth URLs will fall back to the request Host header", err)
 		client.MCPExternalClientURL = nil
 	}
-	if err := ValidateBaseURL(client.A2AExternalClientURL.GetValue()); err != nil {
-		logger.Warn("a2a_external_client_url %v; override will be ignored and agent card and push callback URLs will fall back to the request Host header", err)
+	if err := configstore.ValidatePublicBaseURL(client.SkillsExternalClientURL.GetValue()); err != nil {
+		logger.Warn("skills_external_client_url %v; marketplace serving will be disabled", err)
+		client.SkillsExternalClientURL = nil
+	}
+	if err := configstore.ValidatePublicBaseURL(client.A2AExternalClientURL.GetValue()); err != nil {
+		logger.Warn("a2a_external_client_url %v; Agent Gateway protocol endpoints will be disabled", err)
 		client.A2AExternalClientURL = nil
 	}
 }
@@ -2139,6 +2193,45 @@ func reconcileProviderKeys(provider schemas.ModelProvider, keysInConfigJSON, dbK
 }
 
 // loadMCPConfig loads and merges MCP config from file
+// prepareOpenAPIClientFromFile normalizes an openapi client declared in
+// config.json: the auth type must be one the synthesized server can honor, a
+// spec_file is read now (relative to the config directory) so the persisted
+// row carries the document and never depends on the file staying in place, and
+// the server-computed metadata is filled from a parse so the stored row matches
+// an API-created one. A spec_url is left to be fetched at connect time.
+func prepareOpenAPIClientFromFile(c *schemas.MCPClientConfig, configDir string) error {
+	if c.OpenAPIConfig == nil {
+		return fmt.Errorf("connection_type 'openapi' requires openapi_config")
+	}
+	switch c.AuthType {
+	case "", schemas.MCPAuthTypeNone, schemas.MCPAuthTypeHeaders, schemas.MCPAuthTypePerUserHeaders:
+	default:
+		return fmt.Errorf("auth_type %q is not supported for connection_type 'openapi' (use none, headers or per_user_headers)", c.AuthType)
+	}
+	oc := c.OpenAPIConfig
+	if strings.TrimSpace(oc.Spec) == "" && oc.SpecFile != nil && strings.TrimSpace(*oc.SpecFile) != "" {
+		data, err := openapimcp.LoadFile(*oc.SpecFile, configDir)
+		if err != nil {
+			return fmt.Errorf("openapi_config.spec_file: %w", err)
+		}
+		oc.Spec = string(data)
+	}
+	if strings.TrimSpace(oc.Spec) != "" {
+		specURL := ""
+		if oc.SpecURL != nil {
+			specURL = *oc.SpecURL
+		}
+		_, syn, err := openapimcp.Preview([]byte(oc.Spec), openapimcp.ParseOptions{SpecURL: specURL}, openapimcp.SynthesizeOptions{ClientName: c.Name, IncludeDeprecated: oc.IncludeDeprecated}, oc.BaseURL)
+		if err != nil {
+			return fmt.Errorf("openapi_config.spec: %w", err)
+		}
+		openapimcp.ApplyMetadata(oc, []byte(oc.Spec), syn.Document, syn)
+	} else if !oc.HasSpecSource() {
+		return fmt.Errorf("openapi_config requires one of spec, spec_file or spec_url")
+	}
+	return nil
+}
+
 func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) {
 	if config.ConfigStore == nil {
 		if configData.MCP != nil && len(configData.MCP.ClientConfigs) > 0 {
@@ -2184,6 +2277,16 @@ func loadMCPConfig(ctx context.Context, config *Config, configData *ConfigData) 
 			if (c.AuthType == schemas.MCPAuthTypeOauth || c.AuthType == schemas.MCPAuthTypePerUserOauth) &&
 				c.PendingOAuthConfig == nil {
 				c.PendingOAuthConfig = &schemas.OAuth2Config{}
+			}
+			if c.ConnectionType == schemas.MCPConnectionTypeOpenAPI {
+				if err := prepareOpenAPIClientFromFile(c, config.ConfigDir()); err != nil {
+					logger.Error("skipping MCP client config %q from config file: %v; an existing client keeps its stored configuration", c.Name, err)
+					if configData.rejectedMCPClients == nil {
+						configData.rejectedMCPClients = map[string]bool{}
+					}
+					configData.rejectedMCPClients[c.Name] = true
+					continue
+				}
 			}
 			valid = append(valid, c)
 		}
@@ -2298,6 +2401,11 @@ func pinMCPClientImmutableFields(fileClient, existing *schemas.MCPClientConfig) 
 		changed = append(changed, "stdio_config")
 	}
 	fileClient.StdioConfig = existing.StdioConfig
+
+	if fileClient.EndpointSlug != "" && configstore.Slugify(fileClient.EndpointSlug) != existing.EndpointSlug {
+		changed = append(changed, "endpoint_slug")
+	}
+	fileClient.EndpointSlug = existing.EndpointSlug
 
 	// oauth_config drift is not pinned here: it is fully handled by
 	// rotateMCPOauthConfigFromFile at the call sites below, which applies any
@@ -2566,6 +2674,7 @@ func applyMCPClientPinnedStateToRow(row *configstoreTables.TableMCPClient, clien
 	row.ConnectionType = string(clientConfig.ConnectionType)
 	row.ConnectionString = clientConfig.ConnectionString
 	row.StdioConfig = clientConfig.StdioConfig
+	row.EndpointSlug = clientConfig.EndpointSlug
 	row.PerUserHeaderKeys = mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys)
 	row.TokenExchange = clientConfig.TokenExchange
 	row.OauthConfigID = clientConfig.OauthConfigID
@@ -2791,6 +2900,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 	return configstoreTables.TableMCPClient{
 		ClientID:                  clientConfig.ID,
 		Name:                      clientConfig.Name,
+		EndpointSlug:              clientConfig.EndpointSlug,
 		IsCodeModeClient:          clientConfig.IsCodeModeClient,
 		ConnectionType:            string(clientConfig.ConnectionType),
 		ConnectionString:          clientConfig.ConnectionString,
@@ -2815,6 +2925,7 @@ func mcpClientConfigToTable(clientConfig *schemas.MCPClientConfig) (configstoreT
 		PerUserHeaderKeys:         mcputils.CanonicalizeHeaderKeys(clientConfig.PerUserHeaderKeys),
 		TokenExchange:             clientConfig.TokenExchange,
 		PendingOAuthConfig:        clientConfig.PendingOAuthConfig,
+		OpenAPIConfig:             clientConfig.OpenAPIConfig,
 		ConfigHash:                clientConfig.ConfigHash,
 	}, nil
 }
@@ -2853,6 +2964,14 @@ func syncMCPConfigFromFile(ctx context.Context, config *Config, configData *Conf
 	// rejected. A declaration the store refuses must never drive the runtime
 	// (a sub-second interval, for one, would spin the checker).
 	runtimeClients := make([]*schemas.MCPClientConfig, 0, len(fileMCPConfig.ClientConfigs))
+	// A declaration dropped while loading (see rejectedMCPClients) is a
+	// rejected declaration too: its existing client keeps its stored config.
+	for name := range configData.rejectedMCPClients {
+		if existing := existingByName[name]; existing != nil && existing.ID != "" && !keepIDs[existing.ID] {
+			keepIDs[existing.ID] = true
+			runtimeClients = append(runtimeClients, existing)
+		}
+	}
 	updates := make([]configstoreTables.TableMCPClient, 0)
 	adds := make([]*schemas.MCPClientConfig, 0)
 	for _, fileClient := range fileMCPConfig.ClientConfigs {
@@ -3729,6 +3848,12 @@ func mergeGovernanceConfig(ctx context.Context, config *Config, configData *Conf
 					// Resolve MCP client names to IDs for config file mcp_configs
 					configData.Governance.VirtualKeys[i].MCPConfigs = resolveMCPConfigClientIDs(
 						ctx, config.ConfigStore, configData.Governance.VirtualKeys[i].MCPConfigs, newVirtualKey.ID)
+					// An entry without a metadata field keeps the metadata already stored (set
+					// through the API); only an explicit {} clears it. The store's UpdateVirtualKey
+					// keeps it too, and carrying it here keeps the in-memory copy in step.
+					if configData.Governance.VirtualKeys[i].Metadata == nil {
+						configData.Governance.VirtualKeys[i].Metadata = existingVirtualKey.Metadata
+					}
 					virtualKeysToUpdate = append(virtualKeysToUpdate, configData.Governance.VirtualKeys[i])
 					governanceConfig.VirtualKeys[j] = configData.Governance.VirtualKeys[i]
 				} else {
@@ -7475,6 +7600,14 @@ func (c *Config) ShouldEnforceVKObjectOwnership() bool {
 	return c.ClientConfig == nil || c.ClientConfig.EnforceVKObjectOwnership
 }
 
+// ShouldSendExtraFieldsInHeaders reports client.extra_fields_placement == "headers". It reads under
+// Mu, the lock config saves and reloads hold while they copy the client config in; unset means body.
+func (c *Config) ShouldSendExtraFieldsInHeaders() bool {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	return c.ClientConfig != nil && c.ClientConfig.ExtraFieldsPlacement == configstoreTables.ExtraFieldsPlacementHeaders
+}
+
 // ShouldAllowDirectKeys returns whether callers may bypass the registered key pool via x-bf-direct-key header.
 func (c *Config) ShouldAllowDirectKeys() bool {
 	return c.ClientConfig.AllowDirectKeys
@@ -7492,17 +7625,32 @@ func (c *Config) IsProviderConfigured(provider schemas.ModelProvider) bool {
 // redirect_uri when acting as an OAuth client to upstream MCP servers, or empty string
 // if not configured. Resolves env var references automatically.
 func (c *Config) GetMCPExternalClientURL() string {
-	return c.ClientConfig.MCPExternalClientURL.GetValue()
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return ""
+	}
+	value := c.ClientConfig.MCPExternalClientURL.GetValue()
+	if configstore.ValidatePublicBaseURL(value) != nil {
+		return ""
+	}
+	return value
 }
 
 // GetA2AExternalClientURL returns the configured external base URL used for Agent Gateway
 // push-notification callback URLs and served agent card URLs, or empty string if not
 // configured. Resolves env var references automatically.
 func (c *Config) GetA2AExternalClientURL() string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
 	if c.ClientConfig == nil || c.ClientConfig.A2AExternalClientURL == nil {
 		return ""
 	}
-	return c.ClientConfig.A2AExternalClientURL.GetValue()
+	value := c.ClientConfig.A2AExternalClientURL.GetValue()
+	if configstore.ValidatePublicBaseURL(value) != nil {
+		return ""
+	}
+	return value
 }
 
 // GetHeaderMatcher returns the precompiled header matcher for header filtering.
@@ -8997,6 +9145,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 		return fmt.Errorf("MCP client '%s' not found", id)
 	}
 	oldDisabled := oldConfig.Disabled
+	var sharedConnectErr error
 	// Check if client is registered in Bifrost (can be not registered if client initialization failed)
 	clientRegistered := false
 	if clients, err := c.client.GetMCPClients(); err == nil && len(clients) > 0 {
@@ -9004,9 +9153,13 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 			if client.Config.ID == id {
 				clientRegistered = true
 				if err := c.client.UpdateMCPClient(id, updatedConfig); err != nil {
-					// Rollback in-memory changes
-					c.MCPConfig.ClientConfigs[configIndex] = oldConfig
-					return fmt.Errorf("failed to edit MCP client: %w", err)
+					// The runtime saved the update but could not reconnect with it;
+					// the caller has stored it too, so this copy takes it as well and
+					// the error is returned once it has.
+					if !errors.Is(err, mcp.ErrMCPSharedConnectFailedAfterUpdate) {
+						return fmt.Errorf("failed to edit MCP client: %w", err)
+					}
+					sharedConnectErr = fmt.Errorf("failed to edit MCP client: %w", err)
 				}
 				break
 			}
@@ -9054,6 +9207,12 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 	c.MCPConfig.ClientConfigs[configIndex].Disabled = updatedConfig.Disabled
 	c.MCPConfig.ClientConfigs[configIndex].PerUserHeaderKeys = updatedConfig.PerUserHeaderKeys
 	c.MCPConfig.ClientConfigs[configIndex].TokenExchange = updatedConfig.TokenExchange
+	// The public-target restriction can be turned on by an update, never off.
+	c.MCPConfig.ClientConfigs[configIndex].RequirePublicTarget = c.MCPConfig.ClientConfigs[configIndex].RequirePublicTarget || updatedConfig.RequirePublicTarget
+	// openapi_config is PATCH-style: nil keeps the stored block.
+	if updatedConfig.OpenAPIConfig != nil {
+		c.MCPConfig.ClientConfigs[configIndex].OpenAPIConfig = updatedConfig.OpenAPIConfig
+	}
 
 	// Handle disable/enable lifecycle when the Disabled flag toggles and the client
 	// is registered at runtime. We call the core bifrost methods directly (not the
@@ -9082,7 +9241,7 @@ func (c *Config) UpdateMCPClient(ctx context.Context, id string, updatedConfig *
 			}
 		}
 	}
-	return nil
+	return sharedConnectErr
 }
 
 // UpdateMCPClientCredentials updates the auth credentials (headers) for an existing MCP client.
@@ -9315,6 +9474,34 @@ func (c *Config) RedactMCPClientConfig(config *schemas.MCPClientConfig) *schemas
 			tlsCopy.CACertPEM = config.TLSConfig.CACertPEM.Redacted()
 		}
 		configCopy.TLSConfig = &tlsCopy
+	}
+
+	// openapi_config: the upstream credentials are masked and the spec
+	// document is dropped from reads (it is large, and GET
+	// /api/mcp/client/{id}/openapi-spec serves it on demand); the
+	// server-computed metadata describing the spec is kept.
+	if config.OpenAPIConfig != nil {
+		openAPICopy := *config.OpenAPIConfig
+		openAPICopy.Spec = ""
+		if config.OpenAPIConfig.SpecURL != nil {
+			masked := RedactURLCredentials(*config.OpenAPIConfig.SpecURL)
+			openAPICopy.SpecURL = &masked
+		}
+		if config.OpenAPIConfig.BaseURL != nil {
+			masked := RedactURLCredentials(*config.OpenAPIConfig.BaseURL)
+			openAPICopy.BaseURL = &masked
+		}
+		if len(config.OpenAPIConfig.SecurityCredentials) > 0 {
+			openAPICopy.SecurityCredentials = make(map[string]schemas.MCPOpenAPICredential, len(config.OpenAPIConfig.SecurityCredentials))
+			for name, cred := range config.OpenAPIConfig.SecurityCredentials {
+				openAPICopy.SecurityCredentials[name] = schemas.MCPOpenAPICredential{
+					Value:    cred.Value.Redacted(),
+					Username: cred.Username.Redacted(),
+					Password: cred.Password.Redacted(),
+				}
+			}
+		}
+		configCopy.OpenAPIConfig = &openAPICopy
 	}
 
 	return &configCopy
@@ -10409,4 +10596,89 @@ func (c *Config) GetA2AStoreRawRequestResponse() bool {
 	c.Mu.RLock()
 	defer c.Mu.RUnlock()
 	return c.ClientConfig != nil && c.ClientConfig.A2AStoreRawRequestResponse
+}
+
+// RedactURLCredentials masks the parts of a URL (spec_url, base_url) that can carry a
+// credential, every query value and the userinfo (username and password),
+// keeping the rest of the address. The masked form is stable, so an update
+// that sends it back can be recognised as "keep the stored URL".
+func RedactURLCredentials(specURL string) string {
+	u, err := url.Parse(specURL)
+	if err != nil {
+		return specURL
+	}
+	changed := false
+	if u.User != nil {
+		// Either part of a userinfo can be the secret (a token is often sent as
+		// the username), so both are masked.
+		if _, hasPassword := u.User.Password(); hasPassword {
+			u.User = url.UserPassword("redacted", "redacted")
+			changed = true
+		} else if u.User.Username() != "" {
+			u.User = url.User("redacted")
+			changed = true
+		}
+	}
+	if u.RawQuery != "" {
+		query := u.Query()
+		for key, values := range query {
+			for i := range values {
+				values[i] = "redacted"
+			}
+			query[key] = values
+		}
+		u.RawQuery = query.Encode()
+		changed = true
+	}
+	if !changed {
+		return specURL
+	}
+	return u.String()
+}
+
+// GetMCPClientOpenAPISpec returns a copy of an OpenAPI client's stored
+// document, read under the MCP config lock. found reports whether the client
+// exists, and isOpenAPI whether it is an OpenAPI client.
+func (c *Config) GetMCPClientOpenAPISpec(id string) (spec string, isOpenAPI bool, found bool) {
+	c.muMCP.RLock()
+	defer c.muMCP.RUnlock()
+	if c.MCPConfig == nil {
+		return "", false, false
+	}
+	for _, client := range c.MCPConfig.ClientConfigs {
+		if client != nil && client.ID == id {
+			if client.ConnectionType != schemas.MCPConnectionTypeOpenAPI {
+				return "", false, true
+			}
+			if client.OpenAPIConfig != nil {
+				spec = client.OpenAPIConfig.Spec
+			}
+			return spec, true, true
+		}
+	}
+	return "", false, false
+}
+
+// GetSkillsExternalClientURL returns the configured public marketplace URL without request-header fallbacks.
+func (c *Config) GetSkillsExternalClientURL() string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return ""
+	}
+	value := c.ClientConfig.SkillsExternalClientURL.GetValue()
+	if err := configstore.ValidatePublicBaseURL(value); err != nil {
+		return ""
+	}
+	return strings.TrimRight(value, "/")
+}
+
+// GetA2APrivateAllowlist returns a copy of the permitted private Agent Gateway destinations.
+func (c *Config) GetA2APrivateAllowlist() []string {
+	c.Mu.RLock()
+	defer c.Mu.RUnlock()
+	if c.ClientConfig == nil {
+		return nil
+	}
+	return slices.Clone(c.ClientConfig.A2APrivateAllowlist)
 }

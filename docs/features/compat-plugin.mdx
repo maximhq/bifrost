@@ -115,15 +115,17 @@ decisions is not supported by openai provider
 With `convert_decision_to_responses` on, Bifrost instead:
 
 1. Checks whether the model is a native decisions model: its `supports_decisions` datasheet entry, or without one the models Bifrost recognizes by name:
-   - OpenAI's `gpt-6-luna` family (except on OpenRouter, which serves it under its own decisions ID)
+   - OpenAI's `gpt-6-luna` family on `openai` (another provider hosting it, such as Azure or OpenRouter, serves it as a chat model)
    - Typesafe's `typesafe/` models, and every model on the `typesafe` provider
    - `clef` models (`clef`, `clef-flash`, `clef-omni`, by bare name or `@cf/cloudflare/` ID) on `cloudflare`
    - `pplx-decider-*` on `perplexity`
    - `nimble`, `tev1`, `clef`, `clef-flash`, and `laya` (any tag) on `ollama`
+   - `Microsoft-Decision-1` on `azure`
+   - `ai_decide` on `databricks`
 2. If it is, calls the provider's decisions endpoint without any conversion
 3. If not, encodes the questions as a forced function tool, sends the input to the model's Responses API, and maps the call's arguments back to typed answers
 
-**Why it breaks custom providers.** The check relies on the model catalog, which has no entries for custom providers. With the setting on, a custom provider serving decisions, such as [Laya or Nimble](/providers/self-hosted-decision-models) on the Typesafe base format, is emulated through a Responses API it does not serve instead of answered natively. This applies to Complexity Router classification too.
+**Why it breaks custom providers.** The check relies on the model catalog, which has no entries for custom providers. With the setting on, a custom provider serving decisions, such as [Laya or Nimble](/providers/self-hosted-decision-models) on the Typesafe base format, or `gpt-6-luna` behind a custom provider on the OpenAI base format, is emulated through a Responses API it may not serve instead of answered natively. This applies to Complexity Router classification too.
 
 We recommend keeping this setting off and sending decisions to a model that serves them natively. An emulated answer is a chat model's guess, not a calibrated judgment, and it costs a full chat call.
 

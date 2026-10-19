@@ -26,6 +26,7 @@
 //   node tests/e2e/api/runners/run-content-logging-matrix.mjs   (also runs inside make run-e2e-api / run-newman-api-tests.sh)
 //   BIFROST_E2E_BASE_URL=http://localhost:8080 BIFROST_E2E_AUTH_HEADER="Bearer ..." node ...
 
+import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
@@ -197,19 +198,51 @@ async function putClientConfig(snapshot, overrides) {
 // openLogsDb connects to the gateway's logs database and returns a row reader. It throws when the
 // database cannot be located or reached: without it the matrix cannot tell a content-free row from
 // a hidden row that still holds content.
+//
+// A relative SQLite path resolves against the server's working directory, which differs by how the
+// server was started: CI runs the binary from the repo root, while make dev runs it under air from
+// transports/bifrost-http. Unless BIFROST_E2E_SERVER_CWD names it, every candidate file is opened and
+// the first one to return a row this run wrote is the one read from then on.
 async function openLogsDb() {
 	const configPath = process.env.BIFROST_E2E_CONFIG_PATH || path.join(repoRoot, "tests/integrations/python/config.json");
-	const serverCwd = process.env.BIFROST_E2E_SERVER_CWD || repoRoot;
-	const url = readLogsDbUrl(configPath, serverCwd);
-	if (!url) {
+	const serverCwds = process.env.BIFROST_E2E_SERVER_CWD
+		? [process.env.BIFROST_E2E_SERVER_CWD]
+		: [repoRoot, path.join(repoRoot, "transports/bifrost-http")];
+	const urls = [...new Set(serverCwds.map((cwd) => readLogsDbUrl(configPath, cwd)).filter(Boolean))];
+	if (urls.length === 0) {
 		throw new Error(`cannot locate the logs database: set BIFROST_LOGS_DB_URL or point BIFROST_E2E_CONFIG_PATH at the gateway's config.json (tried ${configPath})`);
 	}
+	const url = urls[0];
 	if (url.startsWith("sqlite://")) {
 		const Database = require("better-sqlite3");
-		const db = new Database(url.slice("sqlite://".length), { readonly: true, fileMustExist: true });
-		db.pragma("busy_timeout = 5000");
-		const stmt = db.prepare("SELECT * FROM logs WHERE id = ?");
-		return { label: url, read: async (id) => stmt.get(id) ?? null, close: async () => db.close() };
+		const candidates = urls
+			.map((u) => u.slice("sqlite://".length))
+			.filter((file) => fs.existsSync(file))
+			.map((file) => {
+				const db = new Database(file, { readonly: true, fileMustExist: true });
+				db.pragma("busy_timeout = 5000");
+				return { file, db, stmt: db.prepare("SELECT * FROM logs WHERE id = ?") };
+			});
+		if (candidates.length === 0) {
+			throw new Error(`cannot locate the logs database: none of ${urls.join(", ")} exists; set BIFROST_E2E_SERVER_CWD to the gateway's working directory`);
+		}
+		let pinned = candidates.length === 1 ? candidates[0] : null;
+		return {
+			label: candidates.map((c) => `sqlite://${c.file}`).join(" | "),
+			read: async (id) => {
+				for (const candidate of pinned ? [pinned] : candidates) {
+					const row = candidate.stmt.get(id);
+					if (row) {
+						pinned = candidate;
+						return row;
+					}
+				}
+				return null;
+			},
+			close: async () => {
+				for (const candidate of candidates) candidate.db.close();
+			},
+		};
 	}
 	if (url.startsWith("postgres://") || url.startsWith("postgresql://")) {
 		const { Client } = require("pg");

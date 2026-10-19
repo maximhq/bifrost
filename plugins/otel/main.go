@@ -127,8 +127,9 @@ type Profile struct {
 	// content, tool definitions, and tool call arguments/results are dropped from span attributes.
 	DisableContentLogging bool `json:"disable_content_logging,omitempty"`
 
-	// ExportRawPayloads attaches raw provider bodies to LLM spans. Off by default;
-	// requires store_raw_request_response and is suppressed by disable_content_logging.
+	// ExportRawPayloads attaches captured provider or agent bodies to operation
+	// spans. Off by default; requires the corresponding raw-storage setting and
+	// is suppressed by disable_content_logging.
 	ExportRawPayloads bool `json:"export_raw_payloads,omitempty"`
 
 	// ExcludedAttributes lists span-attribute names to drop before export, matched
@@ -964,8 +965,9 @@ func (p *OtelPlugin) Inject(ctx context.Context, trace *schemas.Trace) error {
 				return
 			}
 			// Free when unconfigured: an empty list returns the trace unchanged.
+			disableContent := t.disableContentLogging || schemas.ContentLoggingDisabledForTrace(trace)
 			traceForTarget := schemas.StripTraceAttributes(trace, t.excludedAttributes)
-			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, traceForTarget, t.requestHeaders, t.disableContentLogging, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
+			resourceSpan := p.convertTraceToResourceSpan(t.serviceName, traceForTarget, t.requestHeaders, disableContent, t.exportRawPayloads, t.groupTracesBySession, t.disableRootSpanContent)
 			// Again after conversion: it adds root-span attributes of its own
 			// (session.id, request id, instance attrs, captured headers).
 			stripExcludedFromResourceSpan(resourceSpan, t.excludedAttributes)

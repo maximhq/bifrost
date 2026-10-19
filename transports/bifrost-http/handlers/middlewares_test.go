@@ -15,6 +15,7 @@ import (
 	"net"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -29,7 +30,7 @@ import (
 	"github.com/maximhq/bifrost/framework/encrypt"
 	"github.com/maximhq/bifrost/framework/temptoken"
 	"github.com/maximhq/bifrost/framework/tracing"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/assert"
 	"github.com/valyala/fasthttp"
 	"github.com/valyala/fasthttp/fasthttputil"
@@ -103,6 +104,39 @@ func TestCorsMiddleware_LocalhostOrigins(t *testing.T) {
 				t.Error("Next handler was not called")
 			}
 		})
+	}
+}
+
+// TestCorsMiddleware_ExposesBifrostResponseHeaders pins that a cross-origin browser client can
+// read the gateway's x-bifrost-* response headers. With client.extra_fields_placement =
+// "headers" they are the only place extra_fields reaches the client, and a browser hides any
+// response header that Access-Control-Expose-Headers does not list.
+func TestCorsMiddleware_ExposesBifrostResponseHeaders(t *testing.T) {
+	SetLogger(&mockLogger{})
+	config := &lib.Config{ClientConfig: &configstore.ClientConfig{AllowedOrigins: []string{"https://app.example.com"}}}
+	handler := NewCorsMiddleware(config).Middleware()(func(ctx *fasthttp.RequestCtx) {})
+
+	for _, origin := range []string{"https://app.example.com", "http://localhost:3000"} {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.Header.Set("Origin", origin)
+		handler(ctx)
+		exposed := strings.Split(string(ctx.Response.Header.Peek("Access-Control-Expose-Headers")), ", ")
+		for _, name := range []string{
+			"x-bifrost-request-id", "x-bifrost-trace-id", "x-bifrost-provider", "x-bifrost-request-type",
+			"x-bifrost-routing-info-provider", "x-bifrost-routing-info-model", "x-bifrost-cache-hit",
+			"x-bifrost-latency-ms", "x-bifrost-converted-request-type", "x-bifrost-error-type", "x-bifrost-retry-after-ms",
+		} {
+			if !slices.Contains(exposed, name) {
+				t.Errorf("origin %s: Access-Control-Expose-Headers %q does not list %s", origin, exposed, name)
+			}
+		}
+	}
+
+	blocked := &fasthttp.RequestCtx{}
+	blocked.Request.Header.Set("Origin", "https://malicious.com")
+	handler(blocked)
+	if got := blocked.Response.Header.Peek("Access-Control-Expose-Headers"); len(got) != 0 {
+		t.Errorf("a non-allowed origin must not get Access-Control-Expose-Headers, got %q", got)
 	}
 }
 
@@ -5171,5 +5205,51 @@ func BenchmarkRequestDecompressionMiddlewareParallel(b *testing.B) {
 			})
 			b.ReportMetric(float64(refused.Load())/float64(total.Load()), "503/op")
 		})
+	}
+}
+
+// A connector rebuilding the caller's parent context needs the vendor trace state, which
+// rides tracestate rather than traceparent. It is captured as a trace attribute, not from
+// RequestHeaders, which exist only when a plugin opted into header capture.
+func TestTracingMiddleware_CapturesTraceState(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	store := tracing.NewTraceStore(5*time.Minute, nil)
+	defer store.Stop()
+	tracer := tracing.NewTracer(store, nil, nil)
+	defer tracer.Stop()
+	mw := NewTracingMiddleware(tracer).Middleware()
+
+	const traceState = "dd=s:2;t.llmobs_ml_app:checkout-agent"
+	// Read inside the handler: the middleware completes the trace on the way out and the
+	// pooled object is reset, so a pointer held past the call sees nil attributes.
+	run := func(headers map[string]string) string {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.Request.SetRequestURI("/openai/v1/chat/completions")
+		ctx.Request.Header.SetMethod("POST")
+		for k, v := range headers {
+			ctx.Request.Header.Set(k, v)
+		}
+		var got string
+		mw(func(c *fasthttp.RequestCtx) {
+			id, _ := c.UserValue(schemas.BifrostContextKeyTraceID).(string)
+			if trace := store.GetTrace(id); trace != nil {
+				v, _ := trace.GetAttribute(schemas.TraceAttrTraceState)
+				got, _ = v.(string)
+			}
+		})(ctx)
+		return got
+	}
+
+	if got := run(map[string]string{
+		"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+		"tracestate":  traceState,
+	}); got != traceState {
+		t.Errorf("tracestate attribute = %q, want %q", got, traceState)
+	}
+
+	// No traceparent means no parent to rebuild, so a lone tracestate is not stored.
+	if got := run(map[string]string{"tracestate": traceState}); got != "" {
+		t.Errorf("tracestate stored with no traceparent: %q", got)
 	}
 }

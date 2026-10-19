@@ -93,3 +93,61 @@ export function visibleSidekiqJobs<T extends Pick<SidekiqJob, "id">>(jobs: T[], 
 export function finishedSidekiqJobIds(jobs: Pick<SidekiqJob, "id" | "status">[]): string[] {
 	return jobs.filter((job) => job.status !== "pending" && job.status !== "running").map((job) => job.id);
 }
+/** How often the news tab refetches. The server caches each feed for 15 minutes, so polling faster gains nothing. */
+export const RSS_POLL_MS = 15 * 60 * 1000;
+
+/**
+ * Only news this recent counts toward the topbar badge. Without a window, a
+ * fresh browser (no read state yet) would light the badge with every item in
+ * every enabled feed; older unread items still show their count on the tab.
+ */
+export const RSS_BADGE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** How far ahead of this browser's clock a feed's publish time may be and still count as fresh. */
+export const RSS_BADGE_CLOCK_SKEW_MS = 60 * 60 * 1000;
+
+/**
+ * Read-state key for a news item. Namespaced so it can share the notification
+ * read list in localStorage without colliding with a notification id.
+ */
+export function rssReadId(itemId: string): string {
+	return `rss:${itemId}`;
+}
+
+export function countUnreadRSSItems(items: { id: string }[], readIds: string[]): number {
+	if (items.length === 0) return 0;
+	const read = new Set(readIds);
+	return items.filter((item) => !read.has(rssReadId(item.id))).length;
+}
+
+/** Unread items published within RSS_BADGE_WINDOW_MS of now; the slice of news that lights the topbar badge. */
+export function countFreshUnreadRSSItems(items: { id: string; published_at: string }[], readIds: string[], now: number): number {
+	if (items.length === 0) return 0;
+	const read = new Set(readIds);
+	return items.filter((item) => {
+		if (read.has(rssReadId(item.id))) return false;
+		const published = Date.parse(item.published_at);
+		// Undated items arrive as the zero time, which parses to year 1 and so never counts as fresh.
+		return Number.isFinite(published) && now - published <= RSS_BADGE_WINDOW_MS && published <= now + RSS_BADGE_CLOCK_SKEW_MS;
+	}).length;
+}
+
+/** True when publishedAt is a real date; false for the Go zero time or anything unparseable, which the news tab renders without a date. */
+export function hasRSSPublishedDate(publishedAt: string): boolean {
+	const parsed = Date.parse(publishedAt);
+	return Number.isFinite(parsed) && new Date(parsed).getUTCFullYear() > 1970;
+}
+/**
+ * News items the user has not cleared. Clearing is per browser, like dismissing
+ * a notification: it reuses the same dismissed list under the rss: namespace,
+ * and an item stays hidden even after its feed is refetched.
+ */
+export function visibleRSSItems<T extends { id: string }>(items: T[], dismissedIds: string[]): T[] {
+	if (items.length === 0 || dismissedIds.length === 0) return items;
+	const dismissed = new Set(dismissedIds);
+	return items.filter((item) => !dismissed.has(rssReadId(item.id)));
+}
+/** The custom logo for an item's feed; the items response sends each logo once, keyed by feed id. */
+export function rssItemIconUrl(feedIcons: Record<string, string> | undefined, feedId: number): string | undefined {
+	return feedIcons?.[String(feedId)];
+}

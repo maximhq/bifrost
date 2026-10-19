@@ -28,7 +28,7 @@ import (
 	"github.com/maximhq/bifrost/framework/oauth2"
 	"github.com/maximhq/bifrost/plugins/compat"
 	"github.com/maximhq/bifrost/plugins/governance"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 )
 
 type inferenceSetupAccount struct {
@@ -532,6 +532,54 @@ func TestUpdateConfig_EnforceVKObjectOwnershipPresence(t *testing.T) {
 		assert.False(t, cfg.ClientConfig.EnforceVKObjectOwnership, "%s left the live value unchanged", body)
 		assert.False(t, stored(), "%s left the stored value unchanged", body)
 	}
+}
+
+// extra_fields_placement is copied only when sent, so a partial save keeps the stored value,
+// and anything other than body/headers is refused before any live mutation.
+func TestUpdateConfig_ExtraFieldsPlacement(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	stored := func() configtables.ExtraFieldsPlacement {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.ExtraFieldsPlacement
+	}
+
+	headers := putConfigCtx(`{"client_config":{"log_retention_days":8,"extra_fields_placement":"headers"}}`)
+	h.updateConfig(headers)
+	require.Equal(t, fasthttp.StatusOK, headers.Response.StatusCode(), string(headers.Response.Body()))
+	assert.True(t, cfg.ShouldSendExtraFieldsInHeaders())
+	assert.Equal(t, configtables.ExtraFieldsPlacementHeaders, stored())
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.True(t, cfg.ShouldSendExtraFieldsInHeaders(), "an omitted field keeps the live value")
+	assert.Equal(t, configtables.ExtraFieldsPlacementHeaders, stored(), "an omitted field keeps the stored value")
+
+	// Only an omitted field keeps the stored value: an explicit empty string or null is a
+	// supplied value, and anything other than body/headers is refused before any change.
+	for _, body := range []string{
+		`{"client_config":{"log_retention_days":8,"extra_fields_placement":"trailers"}}`,
+		`{"client_config":{"log_retention_days":8,"extra_fields_placement":""}}`,
+		`{"client_config":{"log_retention_days":8,"extra_fields_placement":null}}`,
+	} {
+		refused := putConfigCtx(body)
+		h.updateConfig(refused)
+		assert.Equal(t, fasthttp.StatusBadRequest, refused.Response.StatusCode(), "%s: %s", body, refused.Response.Body())
+		assert.True(t, cfg.ShouldSendExtraFieldsInHeaders(), "%s left the live value unchanged", body)
+		assert.Equal(t, configtables.ExtraFieldsPlacementHeaders, stored(), "%s left the stored value unchanged", body)
+	}
+
+	body := putConfigCtx(`{"client_config":{"log_retention_days":8,"extra_fields_placement":"body"}}`)
+	h.updateConfig(body)
+	require.Equal(t, fasthttp.StatusOK, body.Response.StatusCode(), string(body.Response.Body()))
+	assert.False(t, cfg.ShouldSendExtraFieldsInHeaders())
+	assert.Equal(t, configtables.ExtraFieldsPlacementBody, stored())
 }
 
 // TestUpdateConfig_MCPOAuthPrivateAllowlist pins how PUT /api/config handles
@@ -1302,4 +1350,129 @@ func TestUpdateConfig_CompatReloadFailureReportsFailedRestore(t *testing.T) {
 	assert.Contains(t, string(ctx.Response.Body()), "could not be restored")
 	assert.Equal(t, 2, writes, "the handler must attempt the restore write")
 	assert.True(t, cfg.ClientConfig.Compat.ConvertTextToChat, "in-memory compat must stay unchanged")
+}
+
+// TestGetConfigSkillsMarketplaceURL exposes the live resolved URL used by marketplace serving.
+func TestGetConfigSkillsMarketplaceURL(t *testing.T) {
+	t.Setenv("BIFROST_TEST_SKILLS_URL", "https://skills.example/prefix/")
+	for _, value := range []string{"", "http://127.0.0.1:8080", "env.BIFROST_TEST_SKILLS_URL"} {
+		t.Run(value, func(t *testing.T) {
+			cfg := &lib.Config{ClientConfig: &configstore.ClientConfig{SkillsExternalClientURL: schemas.NewSecretVar(value)}}
+			h := &ConfigHandler{store: cfg}
+			ctx := &fasthttp.RequestCtx{}
+			h.getConfig(ctx)
+			require.Equal(t, fasthttp.StatusOK, ctx.Response.StatusCode(), string(ctx.Response.Body()))
+			var response struct {
+				MarketplaceURL *string `json:"skills_marketplace_base_url"`
+			}
+			require.NoError(t, json.Unmarshal(ctx.Response.Body(), &response))
+			require.NotNil(t, response.MarketplaceURL, "the field must be present even when marketplace serving is disabled")
+			require.Equal(t, strings.TrimRight(cfg.ClientConfig.SkillsExternalClientURL.GetValue(), "/"), *response.MarketplaceURL)
+		})
+	}
+}
+
+// TestUpdateConfig_SkillsExternalClientURLPresence pins persistence and partial-update semantics.
+func TestUpdateConfig_SkillsExternalClientURLPresence(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	cfg.ClientConfig.SkillsExternalClientURL = schemas.NewSecretVar("https://bifrost.example.com")
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	require.NotNil(t, cfg.ClientConfig.SkillsExternalClientURL)
+	assert.Equal(t, "https://bifrost.example.com", cfg.ClientConfig.SkillsExternalClientURL.GetValue())
+	persisted, err := store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	require.NotNil(t, persisted.SkillsExternalClientURL)
+	assert.Equal(t, "https://bifrost.example.com", persisted.SkillsExternalClientURL.GetValue())
+
+	cleared := putConfigCtx(`{"client_config":{"log_retention_days":8,"skills_external_client_url":null}}`)
+	h.updateConfig(cleared)
+	require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode(), string(cleared.Response.Body()))
+	assert.Nil(t, cfg.ClientConfig.SkillsExternalClientURL)
+	persisted, err = store.GetClientConfig(bgCtx())
+	require.NoError(t, err)
+	require.NotNil(t, persisted.SkillsExternalClientURL)
+	assert.Empty(t, persisted.SkillsExternalClientURL.GetValue())
+}
+
+// TestUpdateConfigRejectsPrivateSkillsURLComponents prevents public catalogs from exposing URL credentials.
+func TestUpdateConfigRejectsPrivateSkillsURLComponents(t *testing.T) {
+	SetLogger(&mockLogger{})
+	for _, value := range []string{"https://user:password@example.com", "https://example.com?token=private", "https://example.com?"} {
+		store := newRealOAuth2Store(t)
+		cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+		h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+		ctx := putConfigCtx(fmt.Sprintf(`{"client_config":{"log_retention_days":8,"skills_external_client_url":%q}}`, value))
+		h.updateConfig(ctx)
+		require.Equal(t, fasthttp.StatusBadRequest, ctx.Response.StatusCode())
+		require.Contains(t, string(ctx.Response.Body()), "skills_external_client_url")
+		require.NotContains(t, string(ctx.Response.Body()), value)
+	}
+}
+
+// TestUpdateConfig_A2APrivateAllowlist pins how PUT /api/config handles
+// a2a_private_allowlist: an authenticated admin sets it and it is
+// persisted; an omitted field keeps it; a caller admitted with auth bypassed
+// may resend the current value (the dashboard saves the whole client config)
+// but not change it; entries the policy can never honor are refused.
+func TestUpdateConfig_A2APrivateAllowlist(t *testing.T) {
+	SetLogger(&mockLogger{})
+	store := newRealOAuth2Store(t)
+	cfg := newTestOAuth2Config(store, configtables.MCPServerAuthModeHeaders, false)
+	require.NoError(t, store.UpdateClientConfig(bgCtx(), cfg.ClientConfig))
+	h := &ConfigHandler{store: cfg, configManager: stubConfigManager{}}
+	persistedAllowlist := func() []string {
+		t.Helper()
+		persisted, err := store.GetClientConfig(bgCtx())
+		require.NoError(t, err)
+		return persisted.A2APrivateAllowlist
+	}
+
+	set := putConfigCtx(`{"client_config":{"log_retention_days":8,"a2a_private_allowlist":["localhost","127.0.0.1","10.0.0.0/8"]}}`)
+	h.updateConfig(set)
+	require.Equal(t, fasthttp.StatusOK, set.Response.StatusCode(), string(set.Response.Body()))
+	want := []string{"localhost", "127.0.0.1", "10.0.0.0/8"}
+	assert.Equal(t, want, cfg.ClientConfig.A2APrivateAllowlist)
+	assert.Equal(t, want, persistedAllowlist())
+
+	omitted := putConfigCtx(`{"client_config":{"log_retention_days":8}}`)
+	omitted.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updateConfig(omitted)
+	require.Equal(t, fasthttp.StatusOK, omitted.Response.StatusCode(), string(omitted.Response.Body()))
+	assert.Equal(t, want, persistedAllowlist(), "an omitted allowlist must be kept")
+
+	resent := putConfigCtx(`{"client_config":{"log_retention_days":8,"a2a_private_allowlist":["localhost","127.0.0.1","10.0.0.0/8"]}}`)
+	resent.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+	h.updateConfig(resent)
+	require.Equal(t, fasthttp.StatusOK, resent.Response.StatusCode(), string(resent.Response.Body()))
+
+	for _, body := range []string{
+		`{"client_config":{"log_retention_days":8,"a2a_private_allowlist":["localhost","192.168.0.0/16"]}}`,
+		`{"client_config":{"log_retention_days":8,"a2a_private_allowlist":[]}}`,
+	} {
+		changed := putConfigCtx(body)
+		changed.SetUserValue(schemas.BifrostContextKeyAuthBypassed, true)
+		h.updateConfig(changed)
+		require.Equal(t, fasthttp.StatusForbidden, changed.Response.StatusCode(), string(changed.Response.Body()))
+		assert.Contains(t, string(changed.Response.Body()), "a2a_private_allowlist requires an authenticated admin session")
+		assert.Equal(t, want, persistedAllowlist(), "an auth-bypassed caller must not change the allowlist")
+	}
+
+	for _, entry := range []string{"169.254.169.254", "0.0.0.0/0", "metadata.google.internal", "http://localhost:3000"} {
+		invalid := putConfigCtx(`{"client_config":{"log_retention_days":8,"a2a_private_allowlist":["` + entry + `"]}}`)
+		h.updateConfig(invalid)
+		require.Equal(t, fasthttp.StatusBadRequest, invalid.Response.StatusCode(), entry+": "+string(invalid.Response.Body()))
+		assert.Equal(t, want, persistedAllowlist())
+	}
+
+	cleared := putConfigCtx(`{"client_config":{"log_retention_days":8,"a2a_private_allowlist":[]}}`)
+	h.updateConfig(cleared)
+	require.Equal(t, fasthttp.StatusOK, cleared.Response.StatusCode(), string(cleared.Response.Body()))
+	assert.Empty(t, persistedAllowlist())
 }

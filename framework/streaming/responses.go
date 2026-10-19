@@ -724,12 +724,20 @@ type respMsgAccum struct {
 	encrypted   *strings.Builder         // reasoning encrypted content
 }
 
-// buildCompleteMessageFromResponsesStreamChunks builds complete messages from
+// buildCompleteMessageFromResponsesStreamChunks builds complete messages from accumulated chunks.
+func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*ResponsesStreamChunk) []schemas.ResponsesMessage {
+	return BuildResponsesMessagesFromChunks(chunks)
+}
+
+// BuildResponsesMessagesFromChunks builds complete messages from
 // accumulated responses stream chunks. Streamed string fields are gathered into
 // strings.Builder accumulators during the walk and materialized once at the end,
 // avoiding the O(n²) churn of repeated `*field += delta` on immutable strings
 // (mirrors buildCompleteMessageFromChatStreamChunks).
-func (a *Accumulator) buildCompleteMessageFromResponsesStreamChunks(chunks []*ResponsesStreamChunk) []schemas.ResponsesMessage {
+//
+// It sorts chunks in place by ChunkIndex and holds no state, so callers that rebuild a stream
+// outside the Accumulator (e.g. from a recorded passthrough body) get the same result.
+func BuildResponsesMessagesFromChunks(chunks []*ResponsesStreamChunk) []schemas.ResponsesMessage {
 	var messages []schemas.ResponsesMessage
 
 	// Sort chunks by chunk index to ensure correct processing order

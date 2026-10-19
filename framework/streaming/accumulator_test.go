@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -1078,5 +1079,34 @@ func TestResetStreamAccumulatorKeepsRetryChunks(t *testing.T) {
 	}
 	if len(content) != 2 || content[0] != "he" || content[1] != "llo" {
 		t.Fatalf("accumulated chunks = %q, want the retry's [he llo]", content)
+	}
+}
+
+// TestBuildChatMessageFromChunksWithoutAccumulator pins the exported builder used to rebuild
+// recorded streams outside a live Accumulator: out-of-order chunks are sorted and content, reasoning
+// and role are assembled exactly as the Accumulator method does.
+func TestBuildChatMessageFromChunksWithoutAccumulator(t *testing.T) {
+	makeChunks := func() []*ChatStreamChunk {
+		return []*ChatStreamChunk{
+			{ChunkIndex: 2, Delta: &schemas.ChatStreamResponseChoiceDelta{Content: schemas.Ptr("there")}},
+			{ChunkIndex: 0, Delta: &schemas.ChatStreamResponseChoiceDelta{Role: schemas.Ptr(string(schemas.ChatMessageRoleAssistant)), Reasoning: schemas.Ptr("think")}},
+			{ChunkIndex: 1, Delta: &schemas.ChatStreamResponseChoiceDelta{Content: schemas.Ptr("hi ")}},
+		}
+	}
+
+	message := BuildChatMessageFromChunks(makeChunks())
+	if message.Content == nil || message.Content.ContentStr == nil || *message.Content.ContentStr != "hi there" {
+		t.Fatalf("unexpected content: %+v", message.Content)
+	}
+	if message.Role != schemas.ChatMessageRoleAssistant {
+		t.Fatalf("unexpected role %q", message.Role)
+	}
+	if message.ChatAssistantMessage == nil || message.ChatAssistantMessage.Reasoning == nil || *message.ChatAssistantMessage.Reasoning != "think" {
+		t.Fatalf("unexpected reasoning: %+v", message.ChatAssistantMessage)
+	}
+
+	accumulator := NewAccumulator(nil, bifrost.NewDefaultLogger(schemas.LogLevelError))
+	if viaAccumulator := accumulator.buildCompleteMessageFromChatStreamChunks(makeChunks()); !reflect.DeepEqual(viaAccumulator, message) {
+		t.Fatalf("exported builder diverged from Accumulator method:\n got %+v\nwant %+v", message, viaAccumulator)
 	}
 }

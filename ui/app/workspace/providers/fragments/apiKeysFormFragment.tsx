@@ -977,6 +977,29 @@ export function ApiKeyFormFragment({ control, providerName, baseProviderType, fo
 							</FormItem>
 						)}
 					/>
+					<FormField
+						control={control}
+						name="key.vertex_key_config.use_session_routing"
+						render={({ field }) => (
+							<FormItem className="flex flex-row items-center justify-between rounded-sm border p-2">
+								<div className="space-y-1.5">
+									<FormLabel>Session routing</FormLabel>
+									<FormDescription>
+										Send each request&apos;s prompt_cache_key to Gemini models as session_id. Vertex routes requests with the same session
+										ID to one replica, so they reuse its implicit cache. Enable only if Google has turned on session routing for this
+										key&apos;s project.
+									</FormDescription>
+								</div>
+								<FormControl>
+									<Switch
+										data-testid="apikey-vertex-use-session-routing-switch"
+										checked={field.value ?? false}
+										onCheckedChange={field.onChange}
+									/>
+								</FormControl>
+							</FormItem>
+						)}
+					/>
 					{supportsBatchAPI && <BatchAPIFormField control={control} form={form} />}
 				</div>
 			)}

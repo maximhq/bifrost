@@ -729,6 +729,9 @@ func (provider *VertexProvider) ChatCompletion(ctx *schemas.BifrostContext, key 
 					extraParams = reqBody.GetExtraParams()
 					// Strip unsupported fields for Vertex Gemini
 					stripVertexGeminiUnsupportedFields(reqBody)
+					if request.Params != nil {
+						applyVertexSessionRouting(ctx, key, request.Model, request.Params.PromptCacheKey, reqBody)
+					}
 					// Marshal to JSON bytes
 					rawBody, err = providerUtils.MarshalSorted(reqBody)
 					if err != nil {
@@ -1114,6 +1117,9 @@ func (provider *VertexProvider) ChatCompletionStream(ctx *schemas.BifrostContext
 				}
 				// Strip unsupported fields for Vertex Gemini
 				stripVertexGeminiUnsupportedFields(reqBody)
+				if request.Params != nil {
+					applyVertexSessionRouting(ctx, key, request.Model, request.Params.PromptCacheKey, reqBody)
+				}
 				return reqBody, nil
 			},
 		)
@@ -1399,6 +1405,9 @@ func (provider *VertexProvider) Responses(ctx *schemas.BifrostContext, key schem
 				}
 				// Strip unsupported fields for Vertex Gemini
 				stripVertexGeminiUnsupportedFields(reqBody)
+				if request.Params != nil {
+					applyVertexSessionRouting(ctx, key, request.Model, request.Params.PromptCacheKey, reqBody)
+				}
 				return reqBody, nil
 			},
 		)
@@ -1647,6 +1656,9 @@ func (provider *VertexProvider) ResponsesStream(ctx *schemas.BifrostContext, pos
 				}
 				// Strip unsupported fields for Vertex Gemini
 				stripVertexGeminiUnsupportedFields(reqBody)
+				if request.Params != nil {
+					applyVertexSessionRouting(ctx, key, request.Model, request.Params.PromptCacheKey, reqBody)
+				}
 				return reqBody, nil
 			},
 		)
@@ -2904,6 +2916,23 @@ func stripVertexGeminiUnsupportedFields(requestBody *gemini.GeminiGenerationRequ
 	}
 }
 
+// applyVertexSessionRouting sends prompt_cache_key as session_id when the Vertex key enables session routing.
+func applyVertexSessionRouting(ctx *schemas.BifrostContext, key schemas.Key, model string, promptCacheKey *string, reqBody *gemini.GeminiGenerationRequest) {
+	if key.VertexKeyConfig == nil || !key.VertexKeyConfig.UseSessionRouting || promptCacheKey == nil || *promptCacheKey == "" || !schemas.IsGeminiModelFamily(ctx, model) {
+		return
+	}
+	// A session ID the caller passes through as an extra param wins; sending both spellings would conflict.
+	if ctx.Value(schemas.BifrostContextKeyPassthroughExtraParams) == true {
+		if _, ok := reqBody.ExtraParams["session_id"]; ok {
+			return
+		}
+		if _, ok := reqBody.ExtraParams["sessionId"]; ok {
+			return
+		}
+	}
+	reqBody.SessionID = &gemini.GeminiSessionID{Value: *promptCacheKey}
+}
+
 func stripVertexGeminiUnsupportedFieldsRaw(jsonBody []byte) []byte {
 	if len(jsonBody) == 0 {
 		return jsonBody
@@ -3567,6 +3596,8 @@ func (provider *VertexProvider) batchResultsByKey(ctx *schemas.BifrostContext, k
 	return batchResultsResp, nil
 }
 
+// vertexNormalizeBatchUsage normalizes Vertex usageMetadata into OpenAI-compatible
+// usage, ensuring reasoning tokens from thoughtsTokenCount are included in completion_tokens.
 func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
 	raw, ok := body["usageMetadata"]
 	if !ok {
@@ -3582,8 +3613,13 @@ func vertexNormalizeBatchUsage(body map[string]any) map[string]any {
 	}
 	usage := map[string]any{
 		"prompt_tokens":     meta.PromptTokenCount,
-		"completion_tokens": meta.CandidatesTokenCount,
+		"completion_tokens": meta.CandidatesTokenCount + meta.ThoughtsTokenCount,
 		"total_tokens":      meta.TotalTokenCount,
+	}
+	if meta.ThoughtsTokenCount > 0 {
+		usage["completion_tokens_details"] = map[string]any{
+			"reasoning_tokens": meta.ThoughtsTokenCount,
+		}
 	}
 	if meta.CachedContentTokenCount > 0 {
 		usage["prompt_tokens_details"] = map[string]any{
@@ -4732,12 +4768,12 @@ func (provider *VertexProvider) Passthrough(
 
 	var passthroughUsage *schemas.BifrostPassthroughUsage
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
-		switch {
-		case isAnthropicPassthroughPath(req.Path):
+		switch PassthroughWireFormat(req.Path) {
+		case schemas.Anthropic:
 			passthroughUsage = anthropic.ExtractAnthropicMessagesUsage(body)
-		case isMistralPassthroughPath(req.Path):
+		case schemas.Mistral:
 			passthroughUsage = openai.ExtractOAIChatUsage(body)
-		case isOpenAICompatPassthroughPath(req.Path):
+		case schemas.OpenAI:
 			passthroughUsage = openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, body)
 		default:
 			passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
@@ -4913,17 +4949,17 @@ func (provider *VertexProvider) PassthroughStream(
 	observe := func(event []byte) *schemas.BifrostPassthroughUsage {
 		return gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, event)
 	}
-	switch {
-	case isAnthropicPassthroughPath(req.Path):
+	switch PassthroughWireFormat(req.Path) {
+	case schemas.Anthropic:
 		messagesUsage := &anthropic.AnthropicPassthroughStreamUsage{}
 		hasUsage = anthropic.HasAnthropicPassthroughUsage
 		observe = messagesUsage.ObserveEvent
-	case isMistralPassthroughPath(req.Path):
+	case schemas.Mistral:
 		hasUsage = openai.HasOpenAIPassthroughUsage
 		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
 			return openai.ExtractOAIChatUsage(event)
 		}
-	case isOpenAICompatPassthroughPath(req.Path):
+	case schemas.OpenAI:
 		hasUsage = openai.HasOpenAIPassthroughUsage
 		observe = func(event []byte) *schemas.BifrostPassthroughUsage {
 			return openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, event)

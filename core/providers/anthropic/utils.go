@@ -137,6 +137,14 @@ func ProviderRequiresSyntheticStructuredOutput(provider schemas.ModelProvider) b
 // matching ValidateToolsForProvider. The per-type gating mirrors
 // ValidateToolsForProvider exactly — only the control flow differs (partition
 // instead of erroring).
+// SupportsToolSearch reports whether provider serves the Claude model with
+// Anthropic's tool search, the same gate ValidateResponsesToolsForProvider applies
+// to a tool_search tool.
+func SupportsToolSearch(provider schemas.ModelProvider, model string) bool {
+	features, ok := ProviderFeatures[provider]
+	return ok && schemas.ResolveModelCaps(provider, model).SupportsToolSearch(features.ToolSearch)
+}
+
 func ValidateResponsesToolsForProvider(tools []schemas.ResponsesTool, caps schemas.ModelCaps) (keep []schemas.ResponsesTool, dropped []string) {
 	features, ok := ProviderFeatures[caps.Provider()]
 	if !ok {
@@ -3188,7 +3196,7 @@ var betaHeaderPrefixToFeature = map[string]func(ProviderFeatureSupport) bool{
 
 // MergeBetaHeaders collects anthropic-beta values from provider ExtraHeaders and
 // per-request context headers, deduplicating them.
-func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]string) []string {
+func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]schemas.SecretVar) []string {
 	seen := make(map[string]bool)
 	var all []string
 	add := func(v string) {
@@ -3200,8 +3208,8 @@ func MergeBetaHeaders(ctx context.Context, providerExtraHeaders map[string]strin
 		}
 	}
 	for k, v := range providerExtraHeaders {
-		if strings.EqualFold(k, AnthropicBetaHeader) && v != "" {
-			add(v)
+		if strings.EqualFold(k, AnthropicBetaHeader) && v.GetValue() != "" {
+			add(v.GetValue())
 		}
 	}
 

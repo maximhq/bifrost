@@ -120,7 +120,7 @@ bifrost/
 │   └── (architecture|features|providers|mcp|plugins|enterprise|...)
 │
 ├── .claude/skills/                # Claude Code skill definitions (4 skills)
-├── go.work                        # Go workspace — requires Go 1.27.0
+├── go.work                        # Go workspace — requires Go 1.27.2
 ├── Makefile                       # Build, test, dev commands (1300+ lines)
 └── terraform/                     # Infrastructure as Code
 ```
@@ -135,14 +135,14 @@ Bifrost is a **multi-module Go workspace**. Each module has its own `go.mod`:
 go.work
 ├── core/go.mod              # github.com/maximhq/bifrost/core
 ├── framework/go.mod         # github.com/maximhq/bifrost/framework
-├── transports/go.mod        # github.com/maximhq/bifrost/transports
+├── transports/go.mod        # github.com/maximhq/bifrost/transports/v2
 └── plugins/*/go.mod         # 9 plugin modules (governance, telemetry, logging, etc.)
 ```
 
 **Rules:**
 - Run `go mod tidy` in the **specific module directory**, not the root
 - Cross-module imports resolve via workspace locally, but need explicit `require` in `go.mod` for releases
-- The workspace requires **Go 1.27.0** (`go.work` directive)
+- The workspace requires **Go 1.27.2** (`go.work` directive)
 
 ---
 

@@ -77,6 +77,8 @@ Datadog officially supports agentless submission for [LLM Observability](https:/
 | `enable_metrics` | `bool` | No | `true` | Enable metrics emission |
 | `enable_traces` | `bool` | No | `true` | Enable APM traces |
 | `enable_llm_obs` | `bool` | No | `true` | Enable LLM Observability |
+| `otel_llmobs_conversion` | `string` | No | `disabled` | Whether Datadog builds its own LLM Observability spans from Bifrost's traces. One of `disabled`, `inherit`, `enabled`. See [Datadog-Side Conversion](#datadog-side-conversion) |
+| `llmobs_gateway_mode` | `bool` | No | `false` | Follow Datadog's proxy-service pattern for LLM Observability. Changes the exported span shape. See [Gateway Mode](#gateway-mode) |
 | `group_traces_by_session` | `bool` | No | `false` | Group requests sharing the same `x-bf-session-id` into one APM trace (agent mode only). See [Grouping APM Traces by Session](#grouping-apm-traces-by-session) |
 | `disable_content_logging` | `bool` | No | `false` | Drop message content from APM spans and LLM Observability payloads. See [Controlling Exported Content](#controlling-exported-content) |
 | `excluded_attributes` | `string[]` | No | — | Span attribute names to leave out of exported spans. See [Excluding Attributes](#excluding-attributes) |
@@ -395,6 +397,100 @@ traceparent: {version}-{trace-id}-{parent-id}-{trace-flags}
 
 All Datadog APM spans created by Bifrost will be linked to the parent span, appearing as children in the Datadog trace view.
 
+A `tracestate` header sent alongside `traceparent` is carried through as well. This matters
+when the calling service runs a Datadog tracing library with LLM Observability enabled: its
+vendor entry holds the ML app and parent of the caller's LLM Observability trace, and
+without it those are lost at the gateway. A propagated ML app takes precedence over the one
+Bifrost is configured with, so gateway traffic is attributed to the calling application.
+
+```bash
+curl -X POST https://your-bifrost-gateway/v1/chat/completions \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" \
+  -H "tracestate: dd=s:2;t.llmobs_ml_app:checkout-agent" \
+  -d '{...}'
+```
+
+Callers that do not send a `tracestate`, including services using a vendor-neutral tracing
+library, are unaffected: the parent is linked from `traceparent` as before.
+
+### Datadog-Side Conversion
+
+Bifrost sends LLM Observability spans directly. Datadog can also build its own from any
+trace carrying GenAI attributes, which would duplicate what Bifrost already sent, so by
+default Bifrost marks its traces to opt out.
+
+That opt-out applies to the whole trace, including spans from your own services on it. If
+your services instrument their own LLM calls and expect Datadog to convert them, change
+this setting:
+
+| Value | Behavior | Use when |
+|---|---|---|
+| `disabled` (default) | Bifrost opts the trace out of conversion | Bifrost is your only source of LLM Observability data |
+| `inherit` | Bifrost leaves the decision to the services it shares a trace with | Upstream services already decide per request |
+| `enabled` | Bifrost opts the trace in | You want Datadog to convert every trace Bifrost takes part in |
+
+```json
+{
+  "name": "datadog",
+  "config": {
+    "agent_addr": "localhost:8126",
+    "otel_llmobs_conversion": "inherit"
+  }
+}
+```
+
+<Warning>
+**Upgrading from a version without this setting?** Before it existed, the only way to
+change this behaviour was `custom_tags: {"dd_llmobs_enabled": "true"}`. That no longer
+works: this setting is applied last and decides the root span, while a custom tag of the
+same name would still land on every other span, leaving one trace carrying both values.
+Bifrost now refuses a config that sets `dd_llmobs_enabled` through `custom_tags`, so the
+Datadog plugin does not load until the tag is removed. Move it to this setting before the
+upgrade, not after.
+</Warning>
+
+With `inherit` or `enabled`, Bifrost keeps sending its own LLM Observability spans and
+leaves the GenAI attributes off its APM spans, so Datadog has only your services' spans to
+convert and nothing is counted twice. The trade-off is that `gen_ai.*` is no longer
+available for APM span search on Bifrost's spans; the gateway version stays on every span
+as `bifrost.version`.
+
+If you would rather Datadog build every LLM Observability span, including Bifrost's, set
+`enable_llm_obs` to `false` alongside `inherit` or `enabled`. Bifrost then stops sending
+its own and keeps the GenAI attributes on its APM spans for Datadog to convert. Those
+converted spans carry less detail than the ones Bifrost sends directly.
+
+### Gateway Mode
+
+Datadog documents a [pattern for proxy and gateway services](https://docs.datadoghq.com/llm_observability/guide/monitor_proxy_services/)
+that makes all traffic through a gateway queryable in one place. Turning it on changes two
+things:
+
+- A **workflow span** is opened for each request, named `bifrost.request`. Filtering LLM
+  Observability on your service plus that name lists gateway requests rather than raw model
+  calls, and each request's LLM span sits underneath it.
+- **MCP tool and task spans** are exported, so an agentic request shows the tools it ran
+  alongside its model calls.
+
+```json
+{
+  "name": "datadog",
+  "config": {
+    "agent_addr": "localhost:8126",
+    "llmobs_gateway_mode": true
+  }
+}
+```
+
+<Note>
+This changes the shape of exported LLM Observability data: a span is added per request and
+existing LLM spans are nested under it. Saved views, dashboards and breakdowns built on the
+previous shape may need updating, which is why it is off by default. Leaving it off keeps
+exported spans exactly as before.
+</Note>
+
+
 ### What's Captured
 
 For each LLM operation, the plugin sends to LLM Observability:
@@ -405,6 +501,60 @@ For each LLM operation, the plugin sends to LLM Observability:
 - **Latency** - Request duration and time-to-first-token for streaming
 - **Model Info** - Provider, model name, and request parameters
 - **Tool Calls** - Function/tool call details for agentic workflows
+- **Tool Results** - Results of tool calls, matched to the call they answer
+- **Tool Definitions** - The tool list the request offered the model
+- **Prompt Tracking** - Prompt ID and version when the request used a stored prompt
+
+### Prompt Tracking
+
+A request that names a stored prompt (`x-bf-prompt-id`) carries that prompt's ID and version
+on its LLM Observability span. Datadog uses them for the prompt breakdown in the cost view,
+for prompt-version comparison, and for filtering traces by prompt.
+
+The prompt ID, name and version are also sent as span tags and as metric tags, so cost and
+latency can be broken down by prompt version in dashboards. They are only present on
+requests that used a stored prompt.
+
+Prompt tracking is part of exported content: with `disable_content_logging` set, or a prompt
+that has no ID, nothing is annotated.
+
+### Grouping Cost by Attribution
+
+Datadog's cost and token metrics carry only a fixed set of dimensions of their own. Bifrost
+propagates its attribution onto them, so spend is groupable by team, customer, virtual key,
+project, business unit and user with no configuration:
+
+```
+team_name   customer_name   virtual_key_name   project_name   business_unit_name   user_name
+```
+
+Names rather than IDs: the `*_id` tags are UUIDs, which group poorly in a cost view and
+multiply cost-metric cardinality on the Datadog side for no gain. A tag with no value on a
+given span is skipped for that span, so a request without governance attribution simply
+contributes nothing to that breakdown.
+
+`user_name` is the expensive one. The others are bounded by how many teams, customers,
+virtual keys, projects and business units exist; users are not, so this is the key most
+likely to grow your cost-metric series count. Datadog can drop a tag server-side if it
+does.
+
+### Renamed Token and Cost Metrics
+
+Six span metrics now use the names Datadog recognises, which is what lets cached tokens and
+cost appear in the LLM Observability cost view:
+
+| Previous name | Current name |
+|---|---|
+| `cached_read_tokens` | `cache_read_input_tokens` |
+| `cached_write_tokens` | `cache_write_input_tokens` |
+| `reasoning_tokens` | `reasoning_output_tokens` |
+| `time_to_first_token_ms` | `time_to_first_token` (seconds) |
+| `input_cached_read_cost` | `cache_read_input_cost` |
+| `input_cached_write_cost` | `cache_write_input_cost` |
+
+The previous names are still sent alongside the current ones, so existing dashboards keep
+working. They are deprecated and will be removed in a future release. Update any saved query
+or dashboard that reads `@metrics.<previous name>`.
 
 ---
 
@@ -448,6 +598,7 @@ The plugin emits the following metrics to Datadog:
 | `bifrost.stream.first_token_latency` | Histogram | Time to first token (streaming) | provider, model |
 | `bifrost.stream.inter_token_latency` | Histogram | Inter-token latency (streaming) | provider, model |
 | `bifrost.mcp.client.operation.duration` | Histogram | Duration of an MCP tool call (mirrors the OTel semconv `mcp.client.operation.duration`) | mcp_method, mcp_tool_name, network_transport, error_type, virtual_key_id, virtual_key_name, team_id, team_name, customer_id, customer_name, business_unit_id, business_unit_name, project_id, project_name |
+| `bifrost.a2a.client.operation.duration` | Histogram | Agent Gateway operation duration in seconds | operation, method, upstream_transport, error_type, and governance attribution; see [Agent Gateway](#agent-gateway). |
 
 ### Error tags
 
@@ -523,7 +674,7 @@ When Enterprise guardrail redaction is enabled, Bifrost applies trace redaction 
 
 ### Controlling Exported Content
 
-Set `disable_content_logging: true` to stop message content from reaching Datadog. Input and output messages, prompt and instructions, embedding inputs, model reasoning, and tool definitions, calls, and results are dropped from both APM spans and LLM Observability payloads. Metadata is still exported, including model, provider, tokens, cost, latency, status, and governance attribution, so metrics and dashboards are unaffected.
+Set `disable_content_logging: true` to stop message content from reaching Datadog. Input and output messages, prompt and instructions, embedding inputs, model reasoning, tool definitions, calls, and results, and the stored-prompt identifiers used for prompt tracking are dropped from both APM spans and LLM Observability payloads. Metadata is still exported, including model, provider, tokens, cost, latency, status, and governance attribution, so metrics and dashboards are unaffected.
 
 ```json
 {
@@ -674,6 +825,18 @@ Use [Built-in Observability](/features/observability/default) for:
 - Simple self-hosted deployments
 - No external dependencies required
 - Direct database access to logs
+
+---
+
+## Agent Gateway
+
+A2A operations are exported as APM spans through the configured agent or agentless mode. When `enable_llm_obs` is enabled, they also appear as **agent** spans in LLM Observability. The existing service, environment, ML app, session, and tracing configuration applies.
+
+Spans carry the operation name, agent, status, timing, and available task, conversation, transport, and governance attributes. Structured input and output include messages, returned tasks, artifacts, and accumulated streaming output. Streaming updates are available as span events or event metadata. `disable_content_logging`, virtual-key content suppression, and `excluded_attributes` apply before export. Raw HTTP capture is not exported by this connector.
+
+`bifrost.a2a.client.operation.duration` records operation duration in seconds. Its dimensions are `operation`, the available `method` and `upstream_transport`, governance attribution, and `error_type` on failures. Failed and rejected tasks retain their error classification; push callback failures and retries are recorded as separate delivery attempts. Task and session IDs remain span attributes rather than metric tags.
+
+See [Agent Gateway observability](/features/agent-gateway/observability#export-to-observability-connectors) for operation coverage and correlation.
 
 ---
 

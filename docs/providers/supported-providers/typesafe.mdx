@@ -8,8 +8,9 @@ icon: "scale-balanced"
 
 TypeSafe is a specialized decision provider serving the jev family of System One judgment models. A decision request carries a `state` (what to evaluate) and a map of named `questions`; the response carries one typed answer per question. Bifrost performs conversions including:
 
-- **Model ID mapping** - Uses provider model identifier directly (`jev-1.13.0`, `jev-latest`, `jev-preview`)
-- **Question conversion** - Maps Bifrost question types (`predicate`, `choice`, `score`) to TypeSafe's native System One types (`noul`, `choice`, `score`), and choices and levels to its criteria
+- **Model ID mapping** - Uses provider model identifier directly (`jev-1.13.0`, `jev-1.14.0`, `jev-latest`, `jev-preview`)
+- **Question conversion** - Maps Bifrost question types (`predicate`, `choice`, `score`, `box`) to TypeSafe's native System One types (`noul`, `choice`, `score`, `box`), and choices and levels to its criteria
+- **Images** - Images placed by reference in the state, instructions, or criteria reach TypeSafe as its `assets`, as base64 JSON or multipart, with the `TypeSafe-Danger-Zone-Images` header added for you
 - **Answer normalization** - Native `noul`/`choice`/`score` value fields normalize to a unified `value`, with `confidence`, `probabilities`, and `legend` metadata preserved
 - **Usage normalization** - `input_tokens`/`output_tokens` map to Bifrost's `prompt_tokens`/`completion_tokens` (TypeSafe bills input tokens only)
 - **SDK-faithful validation** - Unsupported kinds and malformed criteria are rejected locally with a 400; everything the official SDK types allow (null state, optional instructions, null descriptions, extra top-level fields) is forwarded so the endpoint gives its own verdict
@@ -102,6 +103,7 @@ To run Laya or Nimble on your own infrastructure this way, follow [Self-Hosted D
 | `predicate` | `noul` | `probability` between 0 and 1 | Optional `criteria`: `true`/`false` descriptions |
 | `choice` | `choice` | `choice`: one of the values | Required `choices` (max 255) |
 | `score` | `score` | `score`: rubric score, including fractions | Required ordered `levels` (2-10 on TypeSafe) |
+| `box` | `box` | `box`: `top`, `bottom`, `left`, `right` edges, each a fraction from 0 to 1 of the image, measured from its top-left | `instructions` only; needs Jev 1.14 (see [Images and Box](#images-and-box)) |
 
 ```bash
 curl http://localhost:8080/v1/decisions \
@@ -137,6 +139,76 @@ curl http://localhost:8080/v1/decisions \
 
 The response lists one answer per question, in order. The earlier map-form body (`state` plus questions keyed by name, with `kind` and `criteria`) is still served and answered in the map form; see [Decisions](/quickstart/gateway/decisions#map-form-deprecated).
 
+## Images and Box
+
+TypeSafe reads images placed by reference. Each image is listed once with an ID, and the image is placed wherever that ID is written: in the input, in a question's instructions, or in choice, score, and noul criteria, as a whole value or inside a sentence. An image in the input is evidence every question judges; an image in a question is only that question's reference material, such as an example that defines a choice option. A `box` question answers where something is in an image, and needs Jev 1.14: send `jev-preview` or `jev-1.14.0` until `jev-latest` resolves to 1.14.
+
+Bifrost adds the `TypeSafe-Danger-Zone-Images: true` header that TypeSafe requires whenever a request carries images or a box question, so clients do not send it. It is listed in the provider's **Beta Headers** settings, supported by default; overriding it to unsupported, or setting `network_config.beta_header_overrides` to `{"typesafe-danger-zone-images": false}`, stops Bifrost from sending it, so TypeSafe rejects image and box requests.
+
+<Tabs>
+  <Tab title="/v1/decisions">
+
+An image sent by reference is an `input_image` part with an `id` and its file base64-encoded in `data`; Bifrost reads the format from the bytes, as TypeSafe does. A single message with one `input_text` part plus such parts is sent to TypeSafe as that text for the `state`, and the text may be a string, an object, or an array, so a structured state stays structured:
+
+```bash
+curl http://localhost:8080/v1/decisions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "typesafe/jev-preview",
+    "input": [{
+      "role": "user",
+      "content": [
+        { "type": "input_text", "text": { "camera": "r-cam" } },
+        { "type": "input_image", "id": "r-cam", "data": "/9j/4AAQ..." },
+        { "type": "input_image", "id": "r-thumb", "data": "iVBORw0..." }
+      ]
+    }],
+    "questions": [
+      {
+        "type": "choice",
+        "name": "gesture",
+        "instructions": "Which gesture is the hand in `camera` making?",
+        "choices": [
+          { "value": "thumbs_up", "description": "r-thumb" },
+          { "value": "none", "description": "No hand." }
+        ]
+      },
+      { "type": "box", "name": "hand", "instructions": "the hand in `camera`" }
+    ]
+  }'
+```
+
+The same request can also be sent as multipart, with each image in its own file part named by the image part's `name` instead of `data`; see [Images by Reference](/quickstart/gateway/decisions#images-by-reference). TypeSafe receives `{"state": {"camera": "r-cam"}, "assets": {"r-cam": {...}, "r-thumb": {...}}, ...}`: the example image `r-thumb` appears only in the `gesture` criteria, never in the state. The box answer reads:
+
+```json
+{ "type": "box", "name": "hand", "box": { "top": 0.25, "bottom": 0.82, "left": 0.44, "right": 0.84 }, "confidence": 0.92 }
+```
+
+  </Tab>
+  <Tab title="/typesafe/v1/systemone">
+
+The native route takes TypeSafe's own request: an `assets` map of base64 images in JSON, or, as TypeSafe recommends, a multipart request with the JSON in a part named `request` and each image in its own file part. A multipart request reaches TypeSafe as multipart, each image under its part name, with its content type read from the bytes as TypeSafe reads them:
+
+```bash
+curl http://localhost:8080/typesafe/v1/systemone \
+  -F 'request={
+    "model": "jev-latest",
+    "state": {"door": "a3f1c2e8-door"},
+    "assets": {"a3f1c2e8-door": {"type": "image", "part": "door-photo"}},
+    "questions": {"person_present": {"type": "noul", "instructions": "Is there a person in `door`?"}}
+  };type=application/json' \
+  -F 'door-photo=@door-camera.jpg;type=image/jpeg'
+```
+
+  </Tab>
+</Tabs>
+
+TypeSafe judges the images themselves: an image that is not PNG or JPEG, and size, dimension, and unreferenced-asset limits, return TypeSafe's own `400` or `413`, passed through unchanged. Bifrost rejects only a request it cannot build: an asset naming a file part the request does not carry, a file part or form field no asset names, a repeated part name, a `part` outside a multipart request, an asset type other than `image`, `data_base64` that is not valid base64, an image part with an `id` but no `data` (TypeSafe does not fetch URLs), an image part's `name` in a JSON request or with no matching file part, and an `id` used twice. Images sent by reference work only with TypeSafe. Bifrost does not refuse them for other providers, but those providers do not read them: a provider that needs an `image_url` rejects the part, and one that receives TypeSafe's request shape as is, such as Azure, returns its own error for `assets`. Inline `input_image` parts without an `id` keep working on the providers that read inline images.
+
+<Note>
+Large-payload mode streams an oversized request body to TypeSafe without parsing it, so Bifrost cannot see its images. To send one, forward the client's own `TypeSafe-Danger-Zone-Images` header by adding it to the header allowlist, or send it as `x-bf-eh-typesafe-danger-zone-images`.
+</Note>
+
 ## Field Mapping Reference
 
 How Bifrost's `/v1/decisions` request reaches TypeSafe's native `/v1/systemone` API, and how the answers come back.
@@ -148,10 +220,12 @@ How Bifrost's `/v1/decisions` request reaches TypeSafe's native `/v1/systemone` 
 | `model` | `model` | `typesafe/<id>` (routing prefix stripped) |
 | `input` (string) | `state` (string) | Sent unchanged |
 | `input` (object) | `state` (object) | Sent unchanged |
-| `input` (messages) | `state` (array of `{role, content}`) | Text parts only; an image part is rejected with 400 for this attempt, so a fallback can serve it |
+| `input` (messages) | `state` (array of `{role, content}`) | Text parts only; an image part without an `id` is rejected with 400 for this attempt, so a fallback can serve it |
+| `input` (one message: one `input_text` plus `input_image` parts with an `id`) | `state` and `assets` | The text, as a string, object, or array, is the `state`; each part becomes `assets[id]`: `data` as `data_base64`, with the `format` read from the bytes |
+| `input_image` part with an `id` (other inputs) | `assets[id]` | Removed from the message `state` |
 | `input` (null) | `state: null` | Forwarded (api.typesafe.ai answers 422) |
 | `questions[]` | `questions` keyed by name | An unnamed question is sent as `question_<position>`; a repeated name is rejected with 400 |
-| `questions[].type` | `type` | `predicate` → `noul`; `choice`, `score` unchanged |
+| `questions[].type` | `type` | `predicate` → `noul`; `choice`, `score`, `box` unchanged |
 | `questions[].instructions` | `instructions` | string, object, array (lossless); null or absent is forwarded |
 | `questions[].criteria` | `criteria` | Predicate only: optional map with only `"true"` and `"false"` keys |
 | `questions[].choices` | `criteria` map of option → description | A boolean value is keyed `"true"`/`"false"`; missing, empty, or more than 255 choices rejected with 400 |
@@ -165,11 +239,12 @@ Descriptions may be a string, object, array, or null, and pass through to TypeSa
 
 | Bifrost field | Built from native | Notes |
 |---------------|-------------------|-------|
-| `model` | `model` | Aliases resolve upstream: request `jev-latest`, response reports `jev-1.13.0` |
+| `model` | `model` | Aliases resolve upstream: a `jev-latest` request reports the version it resolved to, such as `jev-1.13.0` |
 | `answers[]` | `answers` keyed by name | In question order; `name` as asked (absent for an unnamed question) |
 | `answers[].type` | `answers.<name>.type` | `noul` → `predicate` |
 | `answers[].probability` \| `.choice` \| `.score` | `.noul` \| `.choice` \| `.score` | A noul outside [0,1] is rejected; a boolean choice answers with its boolean |
 | `answers[].probabilities` | `probabilities` | Listed in choice or level order; score entries carry the level's label |
+| `answers[].box` | `.box` | `top`, `bottom`, `left`, `right` |
 | `answers[].confidence`, `.legend` | `confidence`, `legend` | When supplied |
 | `usage.prompt_tokens` | `usage.input_tokens` | TypeSafe bills input tokens only |
 | `usage.completion_tokens` | `usage.output_tokens` | Output rate is \$0 |
@@ -182,7 +257,9 @@ Every requested question must produce an answer of its declared type; a missing 
 
 | Upstream status | Meaning | Bifrost behavior |
 |-----------------|---------|------------------|
+| 400 | Request rejected upstream, including images (invalid format, dimensions, unreferenced asset) | Status and message preserved |
 | 401 | Invalid or missing API key | Status and message preserved; key marked failed, other keys rotate in |
+| 413 | Request over an image size limit | Status and message preserved |
 | 422 | Request validation failed upstream | Status and validation detail preserved |
 | 429 | Rate limited | Retried with backoff; keys rotate (per-key limit) |
 | 529 | Service overloaded | Retried with backoff on the same key (capacity, not credential) |
@@ -195,7 +272,7 @@ Bifrost also exposes TypeSafe's native API 1:1 under the `/typesafe` prefix, for
 
 | Native Endpoint | Method | Notes |
 |-----------------|--------|-------|
-| `/typesafe/v1/systemone` | POST | Native request/response shape: a `state` and questions keyed by name |
+| `/typesafe/v1/systemone` | POST | Native request/response shape: a `state` and questions keyed by name, with `assets` as JSON or multipart |
 | `/typesafe/v1/models` | GET | Native `{"models": [{"name", "description", "release_date"}]}` shape from the endpoint's own listing |
 
 The native route accepts bare model IDs (`jev-1.13.0`) exactly as TypeSafe does, and additionally accepts `typesafe/`-prefixed IDs.
@@ -208,8 +285,9 @@ Success and error responses from the TypeSafe provider are relayed byte-for-byte
 
 | Model | Notes |
 |-------|-------|
-| `jev-1.13.0` | Current versioned release |
-| `jev-latest` | Alias, currently resolves to `jev-1.13.0` |
-| `jev-preview` | Preview alias, currently resolves to `jev-1.13.0` |
+| `jev-1.13.0` | Versioned release; reads images |
+| `jev-1.14.0` | Versioned release; reads images and answers box questions |
+| `jev-latest` | Alias for the latest release |
+| `jev-preview` | Alias for the preview release |
 
-Responses always report the resolved versioned model. TypeSafe bills input tokens only; the jev pricing, 64k context window, and rate limits are documented at [docs.typesafe.ai/models](https://docs.typesafe.ai/models).
+Aliases resolve upstream, and responses always report the resolved versioned model. TypeSafe bills input tokens only; the jev pricing, 64k context window, and rate limits are documented at [docs.typesafe.ai/models](https://docs.typesafe.ai/models).

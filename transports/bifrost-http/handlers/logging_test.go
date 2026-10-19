@@ -23,7 +23,7 @@ import (
 	"github.com/maximhq/bifrost/framework/queryscope"
 	"github.com/maximhq/bifrost/framework/sidekiq"
 	loggingplugin "github.com/maximhq/bifrost/plugins/logging"
-	"github.com/maximhq/bifrost/transports/bifrost-http/lib"
+	"github.com/maximhq/bifrost/transports/v2/bifrost-http/lib"
 	"github.com/stretchr/testify/require"
 	"github.com/valyala/fasthttp"
 	"gorm.io/gorm"
@@ -107,6 +107,40 @@ func TestParseToolCallNamesFilter(t *testing.T) {
 		filters := parseHistogramFilters(ctx)
 		if got, want := filters.ToolCallNames, []string{"search"}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("histogram tool call names = %#v, want %#v", got, want)
+		}
+	})
+}
+
+// TestParseGuardrailOutcomesFilter verifies guardrail_outcomes reaches the list and histogram filters.
+func TestParseGuardrailOutcomesFilter(t *testing.T) {
+	t.Run("parses comma-separated outcomes", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("guardrail_outcomes", "blocked,detected")
+		filters := &logstore.SearchFilters{}
+
+		parseGuardrailOutcomesFilter(ctx, filters)
+
+		if got, want := filters.GuardrailOutcomes, []string{"blocked", "detected"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("guardrail outcomes = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("leaves filters unchanged when parameter is absent", func(t *testing.T) {
+		filters := &logstore.SearchFilters{}
+
+		parseGuardrailOutcomesFilter(&fasthttp.RequestCtx{}, filters)
+
+		if filters.GuardrailOutcomes != nil {
+			t.Fatalf("guardrail outcomes = %#v, want nil", filters.GuardrailOutcomes)
+		}
+	})
+
+	t.Run("histogram filters honour it", func(t *testing.T) {
+		ctx := &fasthttp.RequestCtx{}
+		ctx.QueryArgs().Set("guardrail_outcomes", "blocked")
+		filters := parseHistogramFilters(ctx)
+		if got, want := filters.GuardrailOutcomes, []string{"blocked"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("histogram guardrail outcomes = %#v, want %#v", got, want)
 		}
 	})
 }
@@ -421,6 +455,93 @@ func TestRecalculateLogCostsResolvesPeriodFilter(t *testing.T) {
 	}
 	if store.createdCount() != 1 {
 		t.Fatalf("expected exactly one job to be enqueued, got %d", store.createdCount())
+	}
+}
+
+// TestRecalculateLogCostsResolvesCalendarPeriodInTimezone verifies a calendar
+// period in the body starts at midnight in the body's timezone.
+func TestRecalculateLogCostsResolvesCalendarPeriodInTimezone(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	mgr := &dashboardLogManager{}
+	store := newFakeSidekiqStore()
+	runner := sidekiq.New(store, &mockLogger{}, 1, "")
+	h := &LoggingHandler{logManager: mgr}
+	h.SetSidekiqBackend(runner, store)
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetRequestURI("/api/logs/recalculate-cost")
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"filters":{"period":"today","timezone":"Asia/Kolkata"}}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.recalculateLogCosts(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusAccepted {
+		t.Fatalf("expected status 202, got %d: %s", got, string(ctx.Response.Body()))
+	}
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	require.NoError(t, err)
+	filters := mgr.lastRecalculateFilters
+	require.NotNil(t, filters.StartTime)
+	require.NotNil(t, filters.EndTime)
+	local := filters.StartTime.In(loc)
+	if local.Hour() != 0 || local.Minute() != 0 || local.Second() != 0 {
+		t.Fatalf("expected start at Kolkata midnight, got %s", local)
+	}
+	if elapsed := filters.EndTime.Sub(*filters.StartTime); elapsed < 0 || elapsed >= 24*time.Hour {
+		t.Fatalf("expected start within the last day, got start=%s end=%s", filters.StartTime, filters.EndTime)
+	}
+}
+
+// TestRecalculateLogCostsRejectsUnknownPeriod verifies an unknown period is a
+// 400 and enqueues nothing, rather than recalculating every log.
+func TestRecalculateLogCostsRejectsUnknownPeriod(t *testing.T) {
+	SetLogger(&mockLogger{})
+
+	mgr := &dashboardLogManager{}
+	store := newFakeSidekiqStore()
+	runner := sidekiq.New(store, &mockLogger{}, 1, "")
+	h := &LoggingHandler{logManager: mgr}
+	h.SetSidekiqBackend(runner, store)
+
+	var req fasthttp.Request
+	req.Header.SetMethod(fasthttp.MethodPost)
+	req.SetRequestURI("/api/logs/recalculate-cost")
+	req.Header.SetContentType("application/json")
+	req.SetBodyString(`{"filters":{"period":"yesterday"}}`)
+
+	ctx := &fasthttp.RequestCtx{}
+	ctx.Init(&req, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 12345}, nil)
+
+	h.recalculateLogCosts(ctx)
+
+	if got := ctx.Response.StatusCode(); got != fasthttp.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d: %s", got, string(ctx.Response.Body()))
+	}
+	if store.createdCount() != 0 {
+		t.Fatalf("expected no job to be enqueued, got %d", store.createdCount())
+	}
+}
+
+// TestParseHistogramFiltersResolvesCalendarPeriodInTimezone verifies the
+// timezone query param reaches calendar period resolution on query-string
+// endpoints.
+func TestParseHistogramFiltersResolvesCalendarPeriodInTimezone(t *testing.T) {
+	ctx := &fasthttp.RequestCtx{}
+	ctx.QueryArgs().Set("period", "this_month")
+	ctx.QueryArgs().Set("timezone", "America/New_York")
+	filters := parseHistogramFilters(ctx)
+
+	loc, err := time.LoadLocation("America/New_York")
+	require.NoError(t, err)
+	require.NotNil(t, filters.StartTime)
+	local := filters.StartTime.In(loc)
+	if local.Day() != 1 || local.Hour() != 0 || local.Minute() != 0 {
+		t.Fatalf("expected start at New York midnight on the 1st, got %s", local)
 	}
 }
 
@@ -1565,5 +1686,84 @@ func TestGetDroppedRequestsMaintenanceSubsetNeverExceedsTotal(t *testing.T) {
 	total, maintenance := body["dropped_requests"], body["dropped_during_maintenance"]
 	if maintenance > total {
 		t.Fatalf("dropped_during_maintenance (%d) exceeds dropped_requests (%d): the subset must be read first", maintenance, total)
+	}
+}
+
+func TestFindRedactedKeyDeletedSuffix(t *testing.T) {
+	existing := []schemas.Key{{ID: "k1", Name: "current-name"}}
+	tests := []struct {
+		name        string
+		keys        []schemas.Key
+		id          string
+		object      string
+		passthrough bool
+		stream      bool
+		want        string
+	}{
+		{name: "existing key uses current name", keys: existing, id: "k1", object: "chat.completion", want: "current-name"},
+		{name: "existing key on passthrough uses current name", keys: existing, id: "k1", object: string(schemas.PassthroughRequest), want: "current-name"},
+		{name: "existing key on inferred passthrough uses current name", keys: existing, id: "k1", object: "chat.completion", passthrough: true, want: "current-name"},
+		{name: "missing key is marked deleted", keys: existing, id: "k2", object: "chat.completion", want: "logged-name (deleted)"},
+		{name: "missing key with empty lookup is marked deleted", keys: nil, id: "k2", object: "chat.completion", want: "logged-name (deleted)"},
+		{name: "missing key on passthrough is not marked deleted", keys: existing, id: "k2", object: string(schemas.PassthroughRequest), want: "logged-name"},
+		{name: "missing key on passthrough stream is not marked deleted", keys: nil, id: "k2", object: string(schemas.PassthroughStreamRequest), want: "logged-name"},
+		{name: "missing key on inferred passthrough is not marked deleted", keys: existing, id: "k2", object: "chat.completion", passthrough: true, want: "logged-name"},
+		{name: "missing key on inferred passthrough stream is not marked deleted", keys: nil, id: "k2", object: "chat.completion.chunk", passthrough: true, stream: true, want: "logged-name"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			log := &logstore.Log{SelectedKeyID: tt.id, SelectedKeyName: "logged-name", Object: tt.object, IsPassthrough: tt.passthrough, Stream: tt.stream}
+			got := findRedactedKey(tt.keys, log)
+			if got.ID != tt.id || got.Name != tt.want {
+				t.Fatalf("findRedactedKey() = {%q, %q}, want {%q, %q}", got.ID, got.Name, tt.id, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseBucketSizeOverride(t *testing.T) {
+	end := time.Date(2026, 10, 19, 14, 5, 0, 0, time.UTC)
+	week := end.Add(-7 * 24 * time.Hour)
+	after := end.Add(time.Hour)
+	// An aligned start and 5000 ten-minute buckets, with the end halfway into the last one.
+	capStart := end.Add(-(4999*600 + 300) * time.Second)
+	overCapStart := capStart.Add(-600 * time.Second)
+	cases := []struct {
+		name    string
+		raw     string
+		start   *time.Time
+		want    int64
+		wantErr bool
+	}{
+		{name: "empty value", raw: "", start: &week, wantErr: true},
+		{name: "reversed window", raw: "600", start: &after, wantErr: true},
+		{name: "exactly the bucket cap", raw: "600", start: &capStart, want: 600},
+		{name: "one bucket over the cap", raw: "600", start: &overCapStart, wantErr: true},
+		{name: "ten minutes", raw: "600", start: &week, want: 600},
+		{name: "three hours", raw: "10800", start: &week, want: 10800},
+		{name: "not a number", raw: "abc", start: &week, wantErr: true},
+		{name: "below a minute", raw: "30", start: &week, wantErr: true},
+		{name: "does not divide an hour", raw: "420", start: &week, wantErr: true},
+		{name: "not whole hours", raw: "5400", start: &week, wantErr: true},
+		{name: "too many buckets", raw: "60", start: &week, wantErr: true},
+		{name: "no window", raw: "3600", start: nil, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var endPtr *time.Time
+			if tc.start != nil {
+				endPtr = &end
+			}
+			got, err := parseBucketSizeOverride(tc.raw, tc.start, endPtr)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got %d", got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("got %d, %v; want %d", got, err, tc.want)
+			}
+		})
 	}
 }

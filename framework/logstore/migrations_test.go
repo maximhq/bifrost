@@ -2,10 +2,12 @@ package logstore
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1134,4 +1136,183 @@ func TestIndexBuildersIgnoreSameNamedIndexInOtherSchema(t *testing.T) {
 		require.NoError(t, db.Raw("SELECT to_regclass(?) IS NOT NULL", shadow+"."+idx.name).Scan(&shadowKept).Error)
 		assert.True(t, shadowKept, "the builders must not drop %s.%s", shadow, idx.name)
 	}
+}
+
+// parkedLogIndexBuild is a CREATE INDEX CONCURRENTLY that pod 1 started and that
+// is still running, as the build of a killed pod keeps running in Postgres.
+type parkedLogIndexBuild struct {
+	pod2    *sql.Conn  // a connection from a second pool, standing in for the next pod
+	done    chan error // pod 1's build result
+	pid     int64      // backend running pod 1's build
+	oid     uint32     // pg_class oid of the index pod 1 is building
+	release func()     // commits the transaction the build is waiting on
+}
+
+// parkLogIndexBuild starts pod 1's build of idx_race_logs_v behind an open
+// REPEATABLE READ transaction (an old pod serving traffic), so the build parks in
+// "waiting for old snapshots" with its index already in pg_index as INVALID: the
+// state the next pod finds after a pod is killed mid-migration.
+func parkLogIndexBuild(t *testing.T) parkedLogIndexBuild {
+	t.Helper()
+	db := trySetupPostgresDB(t)
+	if db == nil {
+		t.Skip("Postgres not available, skipping test")
+	}
+	ctx := context.Background()
+	require.NoError(t, db.Exec("DROP TABLE IF EXISTS race_logs").Error)
+	t.Cleanup(func() { _ = db.Exec("DROP TABLE IF EXISTS race_logs").Error })
+	require.NoError(t, db.Exec(`CREATE TABLE race_logs (id INTEGER PRIMARY KEY, v TEXT NOT NULL)`).Error)
+	require.NoError(t, db.Exec(`INSERT INTO race_logs SELECT g, 'v' || g FROM generate_series(1, 5000) g`).Error)
+
+	pod2DB, err := gorm.Open(postgres.Open(postgresDSN), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	require.NoError(t, err)
+	pod2SQL, err := pod2DB.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pod2SQL.Close() })
+	pod2 := acquirePerfTestSQLConn(t, ctx, pod2DB)
+
+	blocker := acquirePerfTestSQLConn(t, ctx, db)
+	_, err = blocker.ExecContext(ctx, "BEGIN ISOLATION LEVEL REPEATABLE READ")
+	require.NoError(t, err)
+	_, err = blocker.ExecContext(ctx, "SELECT 1")
+	require.NoError(t, err)
+	var once sync.Once
+	release := func() { once.Do(func() { _, _ = blocker.ExecContext(ctx, "COMMIT") }) }
+	t.Cleanup(release)
+
+	pod1 := acquirePerfTestSQLConn(t, ctx, db)
+	build := parkedLogIndexBuild{pod2: pod2, done: make(chan error, 1), release: release}
+	go func() {
+		_, err := pod1.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_race_logs_v ON race_logs (v)")
+		build.done <- err
+	}()
+	require.Eventually(t, func() bool {
+		return db.Raw(`SELECT COALESCE((SELECT pid FROM pg_stat_progress_create_index
+			WHERE relid = to_regclass('race_logs') AND phase = 'waiting for old snapshots'), 0)`).Scan(&build.pid).Error == nil && build.pid != 0
+	}, 20*time.Second, 50*time.Millisecond, "pod 1's build must park in 'waiting for old snapshots'")
+	require.NoError(t, db.Raw(`SELECT to_regclass('idx_race_logs_v')::oid`).Scan(&build.oid).Error)
+	valid, err := pgIndexValid(ctx, pod2, "race_logs", "idx_race_logs_v")
+	require.NoError(t, err)
+	require.False(t, valid, "a build still in progress must read as INVALID in pg_index")
+	return build
+}
+
+// rebuildRaceLogIndex runs the sequence every pgDropIndexConcurrently caller runs:
+// an INVALID index is dropped and rebuilt with CREATE INDEX CONCURRENTLY IF NOT EXISTS.
+func rebuildRaceLogIndex(ctx context.Context, conn *sql.Conn) error {
+	valid, err := pgIndexValid(ctx, conn, "race_logs", "idx_race_logs_v")
+	if err != nil || valid {
+		return err
+	}
+	if err := pgDropIndexConcurrently(ctx, conn, "idx_race_logs_v"); err != nil {
+		return err
+	}
+	_, err = conn.ExecContext(ctx, "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_race_logs_v ON race_logs (v)")
+	return err
+}
+
+// TestPgDropIndexConcurrentlyWaitsForLiveBuild pins that the next pod waits for a
+// concurrent build another backend is still running instead of dropping it. A
+// killed pod's idle advisory-lock session ends at once but its busy build keeps
+// running, so the next pod holds the migration lock while that build is alive.
+// Dropping it blocked behind the build and then failed one side with
+// "tuple concurrently updated".
+func TestPgDropIndexConcurrentlyWaitsForLiveBuild(t *testing.T) {
+	ctx := context.Background()
+	build := parkLogIndexBuild(t)
+	pod2Done := make(chan error, 1)
+	go func() { pod2Done <- rebuildRaceLogIndex(ctx, build.pod2) }()
+
+	db := trySetupPostgresDB(t)
+	var drops int64
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline) && drops == 0; time.Sleep(20 * time.Millisecond) {
+		require.NoError(t, db.Raw(`SELECT COUNT(*) FROM pg_stat_activity
+			WHERE query ILIKE 'DROP INDEX CONCURRENTLY%idx_race_logs_v%'`).Scan(&drops).Error)
+	}
+	build.release()
+	pod1Err, pod2Err := <-build.done, <-pod2Done
+
+	require.Zero(t, drops, "pod 2 issued DROP INDEX CONCURRENTLY against a build another backend was still running")
+	require.NoError(t, pod1Err)
+	require.NoError(t, pod2Err)
+	valid, err := pgIndexValid(ctx, build.pod2, "race_logs", "idx_race_logs_v")
+	require.NoError(t, err)
+	require.True(t, valid)
+	var finalOID uint32
+	require.NoError(t, db.Raw(`SELECT to_regclass('idx_race_logs_v')::oid`).Scan(&finalOID).Error)
+	require.Equal(t, build.oid, finalOID, "pod 1's finished build must be the index that remains, not a second rebuild")
+}
+
+// TestPgDropIndexConcurrentlyRebuildsAfterPeerBuildFails pins that waiting never
+// keeps a broken index: when the build pod 2 waits on dies (cancelled here, as a
+// terminated orphan would be), pod 2 drops the INVALID leftover and rebuilds.
+func TestPgDropIndexConcurrentlyRebuildsAfterPeerBuildFails(t *testing.T) {
+	ctx := context.Background()
+	build := parkLogIndexBuild(t)
+	pod2Done := make(chan error, 1)
+	go func() { pod2Done <- rebuildRaceLogIndex(ctx, build.pod2) }()
+	time.Sleep(500 * time.Millisecond)
+	db := trySetupPostgresDB(t)
+	require.NoError(t, db.Exec("SELECT pg_cancel_backend(?)", build.pid).Error)
+	require.Error(t, <-build.done, "the cancelled build must fail and leave an INVALID index")
+
+	build.release()
+	require.NoError(t, <-pod2Done)
+	valid, err := pgIndexValid(ctx, build.pod2, "race_logs", "idx_race_logs_v")
+	require.NoError(t, err)
+	require.True(t, valid)
+}
+
+// dropMatViewsForColumnDDL drops the materialized views, which select every logs column and so block
+// a DROP COLUMN; setupPerfTestDB recreates them for the next test.
+func dropMatViewsForColumnDDL(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	for _, view := range append(allMatViewNames(), legacyMatViewNames...) {
+		require.NoError(t, db.Exec("DROP MATERIALIZED VIEW IF EXISTS "+view+" CASCADE").Error)
+	}
+}
+
+// TestIsPassthroughMigrationBoundsLockWait pins that adding is_passthrough cannot park at the head of
+// the logs lock queue behind a long-running read (where every later query would wait on it): with a
+// read holding the table, the migration fails fast on its own lock timeout, and succeeds once the
+// read ends.
+func TestIsPassthroughMigrationBoundsLockWait(t *testing.T) {
+	_, db := setupPerfTestDB(t)
+	dropMatViewsForColumnDDL(t, db)
+	require.NoError(t, db.Exec("ALTER TABLE logs DROP COLUMN IF EXISTS is_passthrough").Error)
+	require.NoError(t, db.Exec("DELETE FROM migrations WHERE id = ?", "logs_add_is_passthrough_column").Error)
+
+	holder := db.Begin()
+	require.NoError(t, holder.Error)
+	require.NoError(t, holder.Exec("SELECT 1 FROM logs LIMIT 1").Error)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	started := time.Now()
+	err := migrationAddIsPassthroughColumn(ctx, db, testLogger{})
+	elapsed := time.Since(started)
+	require.NoError(t, holder.Rollback().Error)
+
+	require.Error(t, err, "the migration must not wait out a held table lock")
+	require.Contains(t, err.Error(), "lock timeout", "it must fail on its own lock_timeout, not the caller's deadline")
+	require.Less(t, elapsed, 15*time.Second)
+
+	require.NoError(t, migrationAddIsPassthroughColumn(context.Background(), db, testLogger{}))
+	require.True(t, db.Migrator().HasColumn(&Log{}, "is_passthrough"))
+}
+
+// TestIsPassthroughMigrationRollbackKeepsMarker pins that rolling the migration back does not drop
+// is_passthrough: it is the only thing that tells a passthrough row stored under its inferred type
+// apart from a typed request, so dropping it would silently erase that history.
+func TestIsPassthroughMigrationRollbackKeepsMarker(t *testing.T) {
+	_, db := setupPerfTestDB(t)
+	require.NoError(t, db.Create(&Log{ID: "typed-passthrough", Timestamp: time.Now(), Object: "chat_completion", IsPassthrough: true, Provider: "openai", Status: "success"}).Error)
+	dropMatViewsForColumnDDL(t, db)
+
+	require.NoError(t, isPassthroughColumnMigration(context.Background(), testLogger{}).Rollback(db))
+
+	require.True(t, db.Migrator().HasColumn(&Log{}, "is_passthrough"))
+	var row Log
+	require.NoError(t, db.First(&row, "id = ?", "typed-passthrough").Error)
+	require.True(t, row.IsPassthrough)
 }
