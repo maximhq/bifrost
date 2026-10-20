@@ -1,6 +1,7 @@
 package deepseek_test
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -876,5 +877,34 @@ func TestSearch_RefusesWhatDeepSeekCannotHonour(t *testing.T) {
 				t.Fatalf("status = %v, want 400", bifrostErr.StatusCode)
 			}
 		})
+	}
+}
+
+// fasthttp returns response buffers to a pool when a call ends, so the body must be decoded into
+// one the call owns: read raw, a gzipped answer does not decode, and a pooled one can be
+// overwritten by the next request.
+func TestSearch_DecodesACompressedResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		zw := gzip.NewWriter(w)
+		_, _ = io.WriteString(zw, `{"results":[{"title":"Bifrost","url":"https://example.com/a"}]}`)
+		_ = zw.Close()
+	}))
+	t.Cleanup(server.Close)
+	provider, err := newTestDeepSeekProvider(server.URL)
+	if err != nil {
+		t.Fatalf("NewDeepSeekProvider: %v", err)
+	}
+
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	resp, bifrostErr := provider.Search(ctx, schemas.Key{Value: schemas.SecretVar{Val: "test-api-key"}}, &schemas.BifrostSearchRequest{Provider: schemas.DeepSeek, Query: "q"})
+	if bifrostErr != nil {
+		t.Fatalf("Search: %v", bifrostErr.Error.Message)
+	}
+	if len(resp.Results) != 1 || resp.Results[0].URL != "https://example.com/a" {
+		t.Fatalf("results = %+v, want the decoded page", resp.Results)
 	}
 }

@@ -326,7 +326,13 @@ func (provider *DeepSeekProvider) postToolsRequest(ctx *schemas.BifrostContext, 
 		return nil, latency, providerResponseHeaders, providerUtils.SetErrorLatency(openai.ParseOpenAIError(resp), latency)
 	}
 
-	return resp.Body(), latency, providerResponseHeaders, nil
+	// The response goes back to fasthttp's pool when this returns, so the body is decoded into
+	// one this call owns.
+	body, err := providerUtils.CheckAndDecodeBody(resp)
+	if err != nil {
+		return nil, latency, providerResponseHeaders, providerUtils.NewBifrostOperationError(schemas.ErrProviderResponseDecode, err)
+	}
+	return body, latency, providerResponseHeaders, nil
 }
 
 // toolsUsage reports the flat per-request cost of one tools call.
