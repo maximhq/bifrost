@@ -257,12 +257,11 @@ func (re *Engine) EvaluateRoutingRules(ctx *schemas.BifrostContext, routingCtx *
 					continue
 				}
 
-				re.logger.Debug("[Engine] Rule %s evaluation result: matched=%v", rule.Name, matched)
-
-				// No per-rule entry for a miss: each cost a formatted line and an O(n) append, per rule, per request.
+				// Nothing is logged for a miss: each entry cost a formatted line and an O(n) append, per rule, per request.
 				if !matched {
 					continue
 				}
+				re.logger.Debug("[Engine] Rule %s matched", rule.Name)
 
 				target, ok := selectWeightedTarget(rule.Targets)
 				if !ok {
