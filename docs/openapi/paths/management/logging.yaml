@@ -678,6 +678,12 @@ logs-histogram-cost:
       - $ref: "#/_histogram-parameters/metadata_key"
       - $ref: "#/_histogram-parameters/content_search"
       - $ref: "#/_histogram-parameters/request_id"
+      - name: bucket_size
+        in: query
+        description: "Bucket width in seconds, overriding the width derived from the time range. Requires start_time and end_time (or period). Below an hour it must divide 3600; from an hour up it must be a whole number of hours, at most 31 days. The window may span at most 5000 buckets."
+        schema:
+          type: integer
+          minimum: 60
     security:
       - ManagementBearerAuth: []
       - BasicAuth: []
